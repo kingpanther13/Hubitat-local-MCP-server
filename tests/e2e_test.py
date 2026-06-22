@@ -36,6 +36,12 @@ import requests
 # ---------------------------------------------------------------------------
 
 PREFIX = "BAT_E2E_"
+# Persistent scaffold devices (the shared switch + temp sensors that rule fixtures reference and the
+# poll tests read) carry this marker so the cleanup sweeps SKIP them by name -- created once and
+# reused across runs, never deleted. Under-test fixtures use the bare PREFIX and are still reaped.
+# (The watchdog purges apps/vars only, never devices, so this is purely the test-side device sweep;
+# no watchdog change is needed -- the devices are simply named to dodge the sweep.)
+SCAFFOLD_PREFIX = f"{PREFIX}KEEP_"  # "BAT_E2E_KEEP_"
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -509,7 +515,7 @@ class TestRunner:
             dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
             for d in dev_list:
                 lbl = d.get("label") or d.get("name") or ""
-                if f"{PREFIX}Action_Switch" in lbl:
+                if f"{SCAFFOLD_PREFIX}Action_Switch" in lbl:
                     self._test_switch_id = str(d["id"])
                     return self._test_switch_id
         except Exception:
@@ -519,7 +525,7 @@ class TestRunner:
         # deliberately NOT tracked in created_device_dnis, so teardown leaves it on
         # the hub for the next run to find-and-reuse -- skipping a create+delete
         # every run. Devices that ARE under test still track + delete themselves.
-        self._test_switch_id = self._create_virtual_switch_device(f"{PREFIX}Action_Switch")
+        self._test_switch_id = self._create_virtual_switch_device(f"{SCAFFOLD_PREFIX}Action_Switch")
         assert self._test_switch_id, "Failed to create test switch"
         return self._test_switch_id
 
@@ -567,7 +573,7 @@ class TestRunner:
         if getattr(self, "_test_temp_ids", None):
             return self._test_temp_ids
 
-        labels = [f"{PREFIX}Temp_A", f"{PREFIX}Temp_B"]
+        labels = [f"{SCAFFOLD_PREFIX}Temp_A", f"{SCAFFOLD_PREFIX}Temp_B"]
         found: dict[str, str] = {}
         try:
             vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
@@ -2439,6 +2445,118 @@ class TestRunner:
             self._delete_native(app_id)
 
     @test("native_apps")
+    def test_set_rule_walkstep_action_after_required_expression(self) -> None:
+        # P2c regression: an action authored ENTIRELY via SINGLE-STEP walkStep (not
+        # _rmAddAction, not operation='drive') AFTER a Required Expression must land
+        # TOP-LEVEL, never wrapped under IF(Broken Condition). RM leaves
+        # atomicState.predCapabs dirty after an RE commit; the deferred predClear runs on
+        # the FIRST action-page op (the navigate into doActPage), so the slot is created
+        # with predCapabs already cleared. test_set_rule_action_after_required_expression
+        # proves the same guard for _rmAddAction; this one proves the single-step walker
+        # path -- _rmWalkStep's own deferred-clear hook -- which _rmAddAction's flow never
+        # exercises. strict=True so a relay 504 re-runs this small rule once.
+        sw = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("WalkActRE")
+        try:
+            # RE first: sets predClearPending and dirties predCapabs.
+            re_res = self._rm_call_soft({
+                "appId": app_id,
+                "addRequiredExpression": {"conditions": [
+                    {"capability": "Switch", "deviceIds": [sw], "state": "on"}]},
+                "confirm": True,
+            }, strict=True)
+            assert re_res.get("success") is not False, \
+                f"addRequiredExpression reported failure: {re_res}"
+            # Single-step navigate into the action editor -- this is the op that fires the
+            # deferred predCapabs clear, BEFORE the new action slot is created.
+            nav = self._set_rule(app_id, {"walkStep": {"page": "selectActions", "operation": "navigate",
+                                                       "navigate": {"targetPage": "doActPage"}}}, strict=True)
+            assert nav.get("page") == "doActPage", f"navigate should land on doActPage: {nav}"
+            # The new action's index is the n in the revealed actType.<n> picker -- DERIVE it.
+            act_field = next((i.get("name") for i in ((nav.get("after") or {}).get("inputs") or [])
+                              if str(i.get("name")).startswith("actType.")), None)
+            assert act_field, f"doActPage should reveal an actType.<n> picker: {nav}"
+            n = act_field.split(".", 1)[1]
+            # Author a log action via single-step writes (each reveals the next field) + a Done.
+            self._set_rule(app_id, {"walkStep": {"page": "doActPage", "operation": "write",
+                                                 "write": {f"actType.{n}": "messageActs"}}}, strict=True)
+            self._set_rule(app_id, {"walkStep": {"page": "doActPage", "operation": "write",
+                                                 "write": {f"actSubType.{n}": "getLogMsg"}}}, strict=True)
+            wr = self._set_rule(app_id, {"walkStep": {"page": "doActPage", "operation": "write",
+                                                      "write": {f"logmsg.{n}": "walkstep-after-RE"}}}, strict=True)
+            assert (wr.get("valueEcho") or {}).get("match") is True, \
+                f"single-step logmsg write should round-trip live (valueEcho.match): {wr}"
+            self._set_rule(app_id, {"walkStep": {"page": "doActPage", "operation": "click",
+                                                 "click": {"name": "actionDone"}}}, strict=True)
+            cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id}})
+            assert "Broken Condition" not in str(cfg), \
+                f"predCapabs leaked -- the walkStep-authored post-RE action is wrapped under IF(Broken Condition): {str(cfg)[:800]}"
+            assert "walkstep-after-RE" in str(cfg), \
+                f"the walkStep-authored log action did not commit top-level: {str(cfg)[:800]}"
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_native_app_walkstep_button_controller(self) -> None:
+        # The single-step walkStep walker (introspect + write) is a GENERIC
+        # classic-dynamicPage walker, not RM-specific. The other walkStep tests only drive
+        # an RM rule's appId; this one proves it works on a real NON-RM classic app -- a
+        # Button Controller -- routed through hub_set_native_app. Assign a virtual button
+        # device via a single-step write, and prove both the live round-trip (valueEcho)
+        # and the submitOnChange reveal (origLabel appears once a device is bound).
+        controller_id = None
+        button_dni = None
+        try:
+            # Virtual button device for the controller to bind to (tracked for cleanup).
+            dev = self.client.call_tool("hub_manage_virtual_device", {
+                "action": "create", "deviceType": "Virtual Button",
+                "deviceLabel": f"{PREFIX}WalkBtnDev", "confirm": True,
+            })
+            device_id = str((dev.get("device") or {}).get("id") or "")
+            assert device_id, f"virtual button create did not return a device id: {dev}"
+            button_dni = str((dev.get("device") or {}).get("deviceNetworkId") or "")
+            if button_dni:
+                self.created_device_dnis.append(button_dni)
+
+            # Button Controller instance (tracked for cleanup).
+            ctrl = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app",
+                "args": {"appType": "button_controller", "name": f"{PREFIX}WalkBtnCtrl", "confirm": True},
+            })
+            controller_id = ctrl.get("appId")
+            assert controller_id, f"button controller create did not return an appId: {ctrl}"
+            self.created_native_app_ids.append(str(controller_id))
+
+            # Single-step walkStep INTROSPECT on the non-RM app.
+            intro = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app",
+                "args": {"appId": controller_id, "walkStep": {"page": "mainPage", "operation": "introspect"}, "confirm": True},
+            })
+            assert intro.get("page") == "mainPage", \
+                f"walkStep introspect should land on mainPage of the button controller: {intro}"
+            intro_names = [i.get("name") for i in ((intro.get("before") or {}).get("inputs") or [])]
+            assert "buttonDev" in intro_names, \
+                f"mainPage should expose the buttonDev (capability.pushableButton) picker: {intro_names}"
+
+            # Single-step walkStep WRITE on the non-RM app -- assign the device.
+            wr = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app",
+                "args": {"appId": controller_id, "walkStep": {"page": "mainPage", "operation": "write",
+                                                              "write": {"buttonDev": [device_id]}}, "confirm": True},
+            })
+            assert (wr.get("valueEcho") or {}).get("match") is True, \
+                f"single-step buttonDev write should round-trip live (valueEcho.match): {wr}"
+            after_names = [i.get("name") for i in ((wr.get("after") or {}).get("inputs") or [])]
+            assert "origLabel" in after_names, \
+                f"submitOnChange reveal: origLabel should appear once a button device is assigned: {after_names}"
+        finally:
+            # The controller delete is the only inline teardown; the device is swept by
+            # created_device_dnis. _delete_native handles the deferred-delete mode.
+            if controller_id:
+                self._delete_native(controller_id, gateway="hub_manage_native_rules_and_apps")
+
+    @test("native_apps")
     def test_rule_health_prefers_rulebuilderjson(self) -> None:
         # issue #254: hub_get_rule_health now reads the rule's compiled atomicState
         # (GET /app/ruleBuilderJson) for an authoritative `broken` boolean, with the
@@ -3291,6 +3409,120 @@ class TestRunner:
                     f"compareToDevice + literal state fail-loud should name the mutual-exclusion: {exc}"
         finally:
             self._delete_native(reject_app_id)
+
+    @test("native_apps")
+    def test_set_rule_required_expression_multi_condition(self) -> None:
+        # hub_set_rule edit -> addRequiredExpression with THREE conditions joined by AND, then a
+        # sub-expression. Regression guard for the multi-condition gap-operator bug (root-caused
+        # 2026-06-21 via the native RM wizard + claude-in-chrome): each `oper=AND` written BETWEEN
+        # conditions returns a POST echo that lags one render behind ([oper, doneST] instead of the
+        # settled [cond, doneST]); the request-scoped page cache consumed that lagged echo, so the
+        # next condition's `cond=a` built its body from a schema missing `cond`, dropped the
+        # `cond.type=enum` sidecar, RM silently no-op'd the write, and the walker failed with
+        # "rCapab_<N> not in STPage schema after cond=a; got cond, doneST". THREE conditions exercise
+        # BOTH gap-operators (the 2nd one's lag differs from the 1st), and the sub-expression
+        # exercises the close-sub-expression `oper`. The fix emits `cond`/`oper`'s known enum type
+        # explicitly so the write lands regardless of the lagged cache -- no invalidation, no extra
+        # re-fetch (the round-trip budget that keeps this build under the relay is preserved).
+        # Single-condition REs never hit this (no gap-oper). strict=True: a relay 504 re-runs the
+        # small test once, then is an honest red (a persistent 504 means the build is still too
+        # heavy -- a tool problem to fix, not a test to weaken).
+        dev_a, dev_b = self.get_test_temperature_ids()
+        app_id = self._create_native_rule("MultiCondRE")
+        try:
+            result = self._rm_call_soft({
+                "appId": app_id,
+                "addRequiredExpression": {
+                    "operator": "AND",
+                    "conditions": [
+                        {"capability": "Temperature", "deviceIds": [int(dev_a)], "comparator": ">", "state": 70},
+                        {"capability": "Temperature", "deviceIds": [int(dev_b)], "comparator": "<", "state": 80},
+                        {"capability": "Temperature", "deviceIds": [int(dev_a)], "comparator": ">=", "state": 65},
+                    ],
+                },
+                "confirm": True,
+            }, strict=True)
+            assert result.get("success") is not False, \
+                f"multi-condition addRequiredExpression reported failure (the gap-oper cache regression): {result}"
+            # ALL THREE condition slots must have allocated -- before the fix a `cond=a` after a
+            # gap-operator no-op'd, so the walker threw and not every slot landed.
+            cidx = result.get("conditionIndices") or []
+            assert len(cidx) == 3, \
+                f"multi-condition RE did not allocate all three condition slots (expected 3 conditionIndices): {result}"
+            self._assert_rule_healthy(app_id)
+            # The rule renders all THREE Temperature conditions joined by AND.
+            cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id},
+            })
+            blob = str(cfg)
+            assert blob.lower().count("temperature of") >= 3, \
+                f"rule does not render all three Temperature conditions: {blob[:800]}"
+            assert "AND" in blob, \
+                f"rule does not render the AND joining operator: {blob[:800]}"
+        finally:
+            self._delete_native(app_id)
+
+        # Sub-expression shape: (A > 70 OR B < 80) AND A >= 65. Exercises the close-sub-expression
+        # operator (oper="end-sub-expression )") followed by the outer gap-operator -- an `oper`
+        # echo that ADDS the expression-management buttons while still lagging. The outer cond=a
+        # no-op'd before the fix. Proves the paren/sub-expression path builds live.
+        sub_app_id = self._create_native_rule("SubExprRE")
+        try:
+            sub = self._rm_call_soft({
+                "appId": sub_app_id,
+                "addRequiredExpression": {
+                    "operator": "AND",
+                    "conditions": [
+                        {"subExpression": {"operator": "OR", "conditions": [
+                            {"capability": "Temperature", "deviceIds": [int(dev_a)], "comparator": ">", "state": 70},
+                            {"capability": "Temperature", "deviceIds": [int(dev_b)], "comparator": "<", "state": 80},
+                        ]}},
+                        {"capability": "Temperature", "deviceIds": [int(dev_a)], "comparator": ">=", "state": 65},
+                    ],
+                },
+                "confirm": True,
+            }, strict=True)
+            assert sub.get("success") is not False, \
+                f"sub-expression addRequiredExpression reported failure (close-paren/outer-oper cache regression): {sub}"
+            # Two inner + one outer condition slot must all allocate.
+            scidx = sub.get("conditionIndices") or []
+            assert len(scidx) == 3, \
+                f"sub-expression RE did not allocate all three condition slots (2 inner + 1 outer): {sub}"
+            self._assert_rule_healthy(sub_app_id)
+        finally:
+            self._delete_native(sub_app_id)
+
+    @test("native_apps")
+    def test_set_rule_action_after_required_expression(self) -> None:
+        # predCapabs-clearing guard for the ghost-ifThen (Step 4b of addRequiredExpression).
+        # RM leaves atomicState.predCapabs dirty after an RE commit; without the ghost-ifThen
+        # clear the NEXT non-expression action opens doActPage with that stale predCapabs and RM
+        # wraps the action under "IF (Broken Condition)". NO other e2e adds an action AFTER an RE,
+        # so the ghost-ifThen -- and the page-cache threading that optimizes it -- had no live
+        # guard: a silent predCapabs leak passes every other RE test (none add a trailing action).
+        # Build an RE, add a plain log action, and assert it lands as a top-level action, NOT a
+        # Broken-Condition wrap. strict=True so a relay 504 re-runs this small rule once.
+        sw = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("ActAfterRE")
+        try:
+            re_res = self._rm_call_soft({
+                "appId": app_id,
+                "addRequiredExpression": {"conditions": [
+                    {"capability": "Switch", "deviceIds": [sw], "state": "on"}]},
+                "confirm": True,
+            }, strict=True)
+            assert re_res.get("success") is not False, \
+                f"addRequiredExpression reported failure: {re_res}"
+            # The action added AFTER the RE must NOT be wrapped under a Broken Condition IF --
+            # that wrap is exactly the stale-predCapabs symptom the ghost-ifThen clears.
+            self._add_action_or_raise_504(app_id, {"capability": "log", "message": "after-RE"})
+            self._assert_rule_healthy(app_id)
+            cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id}})
+            assert "Broken Condition" not in str(cfg), \
+                f"ghost-ifThen failed to clear predCapabs -- the post-RE action is wrapped under IF(Broken Condition): {str(cfg)[:800]}"
+        finally:
+            self._delete_native(app_id)
 
     @test("native_apps")
     def test_set_rule_action_mutations(self) -> None:
@@ -6033,10 +6265,12 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
             for d in dev_list:
                 lbl = d.get("label") or d.get("name") or ""
-                # Keep the persistent scaffolding switch (get_test_switch_id find-and-reuse): sweeping it
-                # would defeat the reuse and pay a create every run. Narrow suffix match, NOT a blanket
-                # prefix skip, so genuine under-test device leftovers are still reclaimed.
-                if lbl.endswith("Action_Switch"):
+                # Keep the persistent scaffold devices (shared switch + temp sensors that
+                # get_test_switch_id / get_test_temperature_ids find-and-reuse): sweeping them would
+                # defeat the reuse and pay a create every run. They carry the SCAFFOLD_PREFIX marker,
+                # so this skips ONLY them -- genuine under-test device leftovers (bare PREFIX) are
+                # still reclaimed.
+                if SCAFFOLD_PREFIX in lbl:
                     continue
                 if PREFIX in lbl:
                     dni = str(d.get("deviceNetworkId", d.get("dni", "")))
@@ -6320,19 +6554,39 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
     # -----------------------------------------------------------------------
 
     def run(self, filter_group: str | None = None,
-            filter_test: str | None = None) -> bool:
-        """Run tests. Returns True if all passed."""
+            filter_test: str | None = None,
+            filter_groups: list[str] | None = None,
+            filter_tests: list[str] | None = None) -> bool:
+        """Run tests. Returns True if all passed.
+
+        Selection is a UNION: a test runs if its group is in the requested groups
+        (--group / --groups) OR its display name contains any requested substring
+        (--test / --tests). With no selector, every test runs (the full suite)."""
         self._test_start_time = datetime.now(UTC).isoformat()
+
+        groups_set = set(filter_groups or [])
+        if filter_group:
+            groups_set.add(filter_group)
+        name_subs = list(filter_tests or [])
+        if filter_test:
+            name_subs.append(filter_test)
+        selective = bool(groups_set or name_subs)
 
         tests_to_run = []
         for group, display_name, method_name in TEST_REGISTRY:
-            if filter_group and group != filter_group:
-                continue
-            if filter_test and filter_test not in display_name:
+            if selective and not (group in groups_set
+                                  or any(sub in display_name for sub in name_subs)):
                 continue
             tests_to_run.append((group, display_name, method_name))
 
         if not tests_to_run:
+            if selective:
+                # An explicit --groups/--tests selector that resolves to ZERO tests is an error, not a
+                # pass: a typo'd or renamed name would otherwise exit 0 (green) having run nothing -- a
+                # false green on exactly the one-off lane a maintainer reaches for to confirm a fix.
+                print(f"ERROR: no registered test matched the selector (groups={sorted(groups_set)}, "
+                      f"tests={name_subs}). Nothing ran -- likely a typo or a renamed test.")
+                return False
             print("No tests matched the filter criteria.")
             return True
 
@@ -6503,6 +6757,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Hubitat MCP Server E2E Tests")
     parser.add_argument("--test", help="Run tests matching this substring")
     parser.add_argument("--group", help="Run only this test group")
+    parser.add_argument("--groups", help="Run only these test groups (comma-separated); unions with --tests")
+    parser.add_argument("--tests", help="Run tests whose name contains any of these substrings (comma-separated); unions with --groups")
     parser.add_argument("--cleanup-only", action="store_true",
                         help="Just clean up BAT_E2E_ test artifacts")
     parser.add_argument("--verbose", "-v", action="store_true",
@@ -6640,7 +6896,10 @@ def main() -> None:
                 print(f"  [WARN] Backup failed: {exc}")
                 print("  Tests requiring backup may fail.\n")
 
-    all_passed = runner.run(filter_group=args.group, filter_test=args.test)
+    _grps = [s.strip() for s in args.groups.split(",") if s.strip()] if args.groups else None
+    _tsts = [s.strip() for s in args.tests.split(",") if s.strip()] if args.tests else None
+    all_passed = runner.run(filter_group=args.group, filter_test=args.test,
+                            filter_groups=_grps, filter_tests=_tsts)
     sys.exit(0 if all_passed else 1)
 
 

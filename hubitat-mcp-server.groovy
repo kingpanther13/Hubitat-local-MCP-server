@@ -3114,9 +3114,13 @@ private _hubRequest(String method, String path, Map opts = [:]) {
             result = bodyText
         }
     }
+    long _hubRtT0 = now()
     try {
         if (method == 'GET') httpGet(params, reader)
         else httpPost(params, reader)
+        // [hubrt] per-call diagnostic: every internal hub round-trip funnels through here, so one
+        // debug line profiles a heavy RM wizard build (count + latency of each GET/POST). Debug-gated.
+        logDebug("[hubrt] ${method} ${path} (${now() - _hubRtT0}ms)")
     } catch (Exception e) {
         // hubInternalGetRaw path: a 3xx with followRedirects=false is the success case (read the
         // Location header), not an error.
@@ -3988,7 +3992,7 @@ private Integer _rmCreateChildApp(Integer parentAppId, String namespace = "hubit
 // Non-private so test specs can override via script.metaClass — internal
 // Groovy-script dispatch to private methods bypasses the per-instance
 // metaClass override.
-def _rmClickAppButton(Integer appId, String buttonName, String stateAttribute = null, String pageName = null) {
+def _rmClickAppButton(Integer appId, String buttonName, String stateAttribute = null, String pageName = null, Map cache = null) {
     def body = [
         id: appId.toString(),
         name: buttonName,
@@ -4012,7 +4016,7 @@ def _rmClickAppButton(Integer appId, String buttonName, String stateAttribute = 
         // The hub uses `version` to detect concurrent edits. Fetch the
         // current value so we replay the exact one the UI would send.
         try {
-            def cfg = _rmFetchConfigJson(appId, pageName)
+            def cfg = _rmFetchConfigJson(appId, pageName, cache)
             def v = cfg?.app?.version
             if (v != null) body.version = v.toString()
         } catch (Exception verExc) {
@@ -4024,6 +4028,9 @@ def _rmClickAppButton(Integer appId, String buttonName, String stateAttribute = 
         }
     }
     def resp = hubInternalPostForm("/installedapp/btn", body)
+    // A button click (hasAll / updateRule / doneST / cancelCapab / editCond ...) re-renders the
+    // page and bumps app.version, so every cached page for this app is now stale.
+    _rmCacheInvalidate(cache, appId)
     if (resp?.status != null && resp.status >= 400) {
         throw new IllegalArgumentException("Button click '${buttonName}' on app ${appId} failed: status=${resp.status}")
     }
@@ -4078,8 +4085,8 @@ private String _rmSanitizeRenderForHash(Object sections) {
  */
 // Non-private so test specs can override via script.metaClass — see
 // _rmClickAppButton for the same rationale.
-def _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object value, List applied, String typeHintOverride = null, List skipped = null) {
-    def config = _rmFetchConfigJson(appId, pageName)
+def _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object value, List applied, String typeHintOverride = null, List skipped = null, Map cache = null) {
+    def config = _rmFetchConfigJson(appId, pageName, cache)
     def schema = _rmCollectInputSchema(config?.configPage)
     if (!schema?.containsKey(key)) {
         // Field not in current schema. This is normal for incremental
@@ -4113,23 +4120,32 @@ def _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object val
     // schema unchanged; same write WITH page context committed).
     // Include the context whenever pageName is non-null and isn't the
     // default mainPage.
+    def writeResp = null
     if (pageName && pageName != "mainPage") {
         def body = _rmBuildSettingsBody(appId, settingsMap, schemaForBuild)
         body.formAction = "update"
         body.currentPage = pageName
         body.pageBreadcrumbs = '["mainPage"]'
         if (config?.app?.version != null) body.version = config.app.version.toString()
-        _rmPostSettings(appId, body)
+        writeResp = _rmPostSettings(appId, body, cache)
     } else {
-        _rmUpdateAppSettings(appId, settingsMap, schemaForBuild)
+        _rmUpdateAppSettings(appId, settingsMap, schemaForBuild, cache)
     }
-    // Verify the write took. Re-fetch and compare schemas.
-    def afterCfg = null
+    // Verify the write took. On the sub-page path the POST response IS the re-rendered page model
+    // (consume it -- no verify-GET; appUI.js consumes the same body), and it has the same {app,
+    // configPage, settings} shape a verify-GET would. The mainPage path goes through
+    // _rmUpdateAppSettings (which may re-POST for sticky multiple-flags), so its post-state is read
+    // fresh. The write above already invalidated the cache; consuming re-stores the post-write page.
+    def afterCfg = _rmPagePostResponse(writeResp)
     def verifyFetchErr = null
-    try { afterCfg = _rmFetchConfigJson(appId, pageName) }
-    catch (Exception fetchExc) {
-        verifyFetchErr = fetchExc.message
-        mcpLog("warn", "rm-native", "_rmWriteSettingOnPage: post-write fetch on ${pageName} failed for app ${appId} key=${key} (${fetchExc.message}) -- write status is unverified")
+    if (afterCfg != null) {
+        _rmCacheStore(cache, appId, pageName, afterCfg)
+    } else {
+        try { afterCfg = _rmFetchConfigJson(appId, pageName, cache) }
+        catch (Exception fetchExc) {
+            verifyFetchErr = fetchExc.message
+            mcpLog("warn", "rm-native", "_rmWriteSettingOnPage: post-write fetch on ${pageName} failed for app ${appId} key=${key} (${fetchExc.message}) -- write status is unverified")
+        }
     }
     if (afterCfg == null) {
         // Verification fetch failed — we cannot confirm persistence. Surface
@@ -4234,7 +4250,16 @@ def _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object val
  * Callers (hub_get_app_config, hub_set_rule) use this to discover the input
  * schema (names + types + multiple flags) before issuing a write.
  */
-private Map _rmFetchConfigJson(Integer appId, String pageName = null) {
+private Map _rmFetchConfigJson(Integer appId, String pageName = null, Map cache = null) {
+    // Request-scoped page-schema cache (threaded by the RM condition builders; null for every
+    // other caller -> unchanged behaviour). Keyed strictly on (appId, pageName); only a real
+    // page is cached -- a root read (pageName == null) carries the volatile app.version token
+    // and MUST stay live. A HIT returns exactly what a live fetch would, because every
+    // wizard-page WRITE clears cache[appId] (see _rmCacheInvalidate / _rmCacheStore), so a
+    // cached page is provably current.
+    if (cache != null && pageName != null && cache[appId] instanceof Map && cache[appId].containsKey(pageName)) {
+        return cache[appId][pageName]
+    }
     def path = "/installedapp/configure/json/${appId}"
     if (pageName) path += "/${pageName}"
     def responseText = hubInternalGet(path)
@@ -4250,7 +4275,46 @@ private Map _rmFetchConfigJson(Integer appId, String pageName = null) {
     if (!(parsed instanceof Map) || !parsed.app) {
         throw new IllegalArgumentException("Unexpected response shape from ${path}: missing app object")
     }
+    if (cache != null && pageName != null) {
+        if (!(cache[appId] instanceof Map)) cache[appId] = [:]
+        cache[appId][pageName] = parsed
+    }
     return parsed
+}
+
+// Drop ALL cached pages for an app. Every wizard-page WRITE (any POST to
+// /installedapp/update/json or /installedapp/btn) calls this: cross-page render coupling
+// means one page's write can change how sibling pages render, AND the app.version token
+// shifts, so per-page invalidation would be unsafe. No-op when cache is null.
+private void _rmCacheInvalidate(Map cache, Integer appId) {
+    if (cache != null) cache[appId] = [:]
+}
+
+// Invalidate the app, then store a freshly-rendered page model -- used after a write whose
+// POST response IS the re-rendered page (the hub returns the configPage inline, exactly as
+// the browser consumes it; see _rmPagePostResponse), so the next read is a HIT with no
+// verify-GET. pageModel must be a parsed {app, configPage, ...} Map; if null/invalid the
+// app is just invalidated (next read re-fetches live).
+private void _rmCacheStore(Map cache, Integer appId, String pageName, Map pageModel) {
+    if (cache == null) return
+    cache[appId] = [:]
+    if (pageName != null && pageModel != null && pageModel.configPage != null) cache[appId][pageName] = pageModel
+}
+
+// Parse the page model the hub returns INLINE from an /installedapp/update/json POST. The
+// classic dynamicPage submit returns the re-rendered {app, configPage, settings, ...} in the
+// POST response body (appUI.js jsonSubmit consumes data.configPage directly, with NO
+// follow-up GET). hubInternalPostForm returns a struct {status, data:<body text>}. Returns
+// the parsed Map, or null when the body is empty / non-JSON / lacks app+configPage -- callers
+// fall back to a verify-fetch then (defensive: worst case == today's separate-GET behaviour).
+private Map _rmPagePostResponse(postResp) {
+    try {
+        def data = (postResp instanceof Map) ? postResp.data : postResp
+        if (!data) return null
+        def parsed = (data instanceof String) ? new groovy.json.JsonSlurper().parseText(data) : data
+        if (parsed instanceof Map && parsed.app && parsed.configPage) return parsed
+    } catch (Exception ignore) { }
+    return null
 }
 
 /**
@@ -4850,8 +4914,10 @@ private void _rmVerifyMultipleFlags(Integer appId, Map schema, List<String> touc
 // NOT throw on 4xx, so a rejected write -- typically a stale version token -- must be detected
 // here or it silently reports success. Mirrors the status guard in _rmSubmitFullPageForm
 // (same IllegalStateException runtime-error contract).
-private Map _rmPostSettings(Integer appId, Map body) {
+private Map _rmPostSettings(Integer appId, Map body, Map cache = null) {
     def resp = hubInternalPostForm("/installedapp/update/json", body)
+    // The settings POST re-renders the page and bumps app.version -> drop all cached pages.
+    _rmCacheInvalidate(cache, appId)
     if (resp?.status != null && resp.status >= 400) {
         def bodyPreview = resp.data?.toString()?.take(200)
         throw new IllegalStateException("Settings write for app ${appId} failed: status=${resp.status}${bodyPreview ? "; body=" + bodyPreview : ""}. The write was rejected so nothing was committed (a 4xx is usually a stale version token -- re-fetch via hub_get_app_config(appId=${appId}) and retry).")
@@ -4866,12 +4932,12 @@ private Map _rmPostSettings(Integer appId, Map body) {
  * if still divergent after retry — the caller should surface this and
  * suggest hub_restore_backup.
  */
-private Map _rmUpdateAppSettings(Integer appId, Map settingsMap, Map schema = null) {
+private Map _rmUpdateAppSettings(Integer appId, Map settingsMap, Map schema = null, Map cache = null) {
     if (schema == null) {
         schema = _rmCollectInputSchema(_rmFetchConfigJson(appId)?.configPage)
     }
     def body = _rmBuildSettingsBody(appId, settingsMap, schema)
-    def resp = _rmPostSettings(appId, body)
+    def resp = _rmPostSettings(appId, body, cache)
 
     def touched = settingsMap.keySet().collect { it.toString() }
     try {
@@ -4882,7 +4948,7 @@ private Map _rmUpdateAppSettings(Integer appId, Map settingsMap, Map schema = nu
         // already carries the .multiple=true sidecar intent from the
         // initial build, so the same body is correct to resend.
         mcpLog("warn", "rm-native", "Marshal divergence on app ${appId} -- retrying: ${divergence.message}")
-        _rmPostSettings(appId, body)
+        _rmPostSettings(appId, body, cache)
         _rmVerifyMultipleFlags(appId, schema, touched)
     }
     return resp

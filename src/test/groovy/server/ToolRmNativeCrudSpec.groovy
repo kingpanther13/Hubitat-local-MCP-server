@@ -1570,6 +1570,55 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { it.body["settings[cond]"]?.toString()?.contains("sub-expression") }
     }
 
+    def "STPage cond/oper picker writes always emit their enum type sidecar, so a lagged cached echo can't no-op them (multi-condition + sub-expression RE regression)"() {
+        // Regression gate for the multi-condition / sub-expression Required Expression failures
+        // (live-root-caused 2026-06-21 via the native RM wizard + claude-in-chrome). The request-
+        // scoped page cache consumes each write's inline POST echo with NO verify-GET -- that is the
+        // round-trip win that keeps a multi-condition build under the relay budget. But a
+        // submitOnChange echo for the `cond`/`oper` pickers LAGS one render behind: a gap-operator
+        // (and the close-sub-expression operator) echoes a page that OMITS the very field the NEXT
+        // picker write needs. Reading that cached schema, _rmBuildSettingsBody would find no
+        // `cond`/`oper` entry and DROP the `<key>.type=enum` sidecar, which RM silently no-ops -- the
+        // walker then throws "rCapab_<N> not in STPage schema after cond=a". The fix emits the
+        // picker's KNOWN enum type explicitly, so the write lands against the hub's real page
+        // regardless of the cached schema -- no invalidation, no extra re-fetch (the alternative,
+        // re-fetching the settled page after every operator, is exactly the round-trip cost this PR
+        // exists to remove). This stub primes the cache with a lagged oper echo that omits `cond`.
+        given:
+        // The page the oper write caches LACKS `cond` (its echo lags -- still the oper page).
+        def operPage = [[name: "oper", type: "enum", options: ["": "Click to set", "AND": "AND"]], [name: "doneST", type: "button"]]
+        int getCount = 0
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            getCount++
+            ruleConfigJson(100, "r", operPage)
+        }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            // Lagged echo: still the oper page (omits `cond`) -- this is what the cache stores.
+            [status: 200, location: null, data: ruleConfigJson(100, "r", operPage)]
+        }
+
+        when: "an oper write caches its lagged echo, then a cond=a write builds its body from that cache"
+        def cache = [:]
+        script._rmWriteSubPageField(100, "STPage", "mainPage", "name", 0, [unUsed: null], "oper", "AND", cache)
+        int getsAfterOper = getCount
+        script._rmWriteSubPageField(100, "STPage", "mainPage", "name", 0, [unUsed: null], "cond", "a", cache)
+
+        then: "the cond=a body carries cond.type=enum despite the cached schema lacking `cond` (forced, not schema-derived)"
+        def condWrite = posts.reverse().find { it.body["settings[cond]"] == "a" }
+        condWrite != null
+        condWrite.body["cond.type"] == "enum"
+        condWrite.body["cond.multiple"] == "false"
+
+        and: "the oper write likewise forces its enum type"
+        def operWrite = posts.find { it.body["settings[oper]"] == "AND" }
+        operWrite.body["oper.type"] == "enum"
+
+        and: "no extra re-fetch: the cond=a write read the cached page (no STPage GET beyond the oper write's own)"
+        getCount == getsAfterOper
+    }
+
     // ---------- ghost ifThen predCapabs clear (Step 4b) ----------
     //
     // After addRequiredExpression completes, RM's atomicState.predCapabs retains
@@ -1597,11 +1646,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // Step 4b. Both an STPage Done POST (currentPage=STPage, _action_previous=Done)
     // and the ghost ifThen N click (currentPage=selectActions) must appear.
 
-    def "addRequiredExpression Step 4b fires ghost ifThen: N on selectActions, condActs+getIfThen, actionCancel, nav"() {
-        // Regression gate: ghost IF/THEN wrap after Required Expression commit.
-        // Verifies the exact wire sequence of the ghost ifThen clear:
-        // N click (selectActions) -> actType=condActs -> actSubType=getIfThen
-        // -> actionCancel (doActPage) -> nav doActPage->selectActions.
+    def "addRequiredExpression Step 4b DEFERS the ghost ifThen: flags predClearPending, no ghost POSTs"() {
+        // Regression gate for the ghost-ifThen DEFERRAL. addRequiredExpression no longer runs the
+        // ~9-round-trip ghost ifThen up front (it made the relay-504-prone RE build heavier for nothing
+        // when no action follows). Instead it flags the rule (atomicState.predClearPending); the next
+        // addAction runs the SAME _rmClearPredCapabsViaGhostIfThen just-in-time (see the deferred-clear
+        // specs below). So the RE build emits NO ghost-ifThen POSTs (no N-on-selectActions, no
+        // condActs/getIfThen on doActPage, no actionCancel/Done), and the flag IS set.
         given:
         enableWrite()
         def fetchSeq = 0
@@ -1653,46 +1704,28 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "RE committed successfully (bake-check passed with baked paragraph)"
         result.success == true
 
-        and: "(a) N button clicked on selectActions with stateAttribute=doActN"
-        def nClick = posts.find { it.path == "/installedapp/btn" &&
-                                   it.body?.name == "N" &&
-                                   it.body?.currentPage == "selectActions" }
-        nClick != null
-        nClick.body?.stateAttribute == "doActN"
+        and: "(deferral) NO ghost-ifThen N click on selectActions during the RE build"
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "N" &&
+                     it.body?.currentPage == "selectActions" }
 
-        and: "(b) actType.{idx}=condActs written on doActPage"
-        posts.any { it.path == "/installedapp/update/json" &&
-                    it.body?.currentPage == "doActPage" &&
-                    it.body?.any { k, v -> k?.toString()?.startsWith("settings[actType.") && v == "condActs" } }
+        and: "(deferral) NO condActs / getIfThen writes on doActPage during the RE build"
+        !posts.any { it.path == "/installedapp/update/json" && it.body?.currentPage == "doActPage" &&
+                     it.body?.any { k, v -> k?.toString()?.startsWith("settings[actType.") && v == "condActs" } }
+        !posts.any { it.path == "/installedapp/update/json" && it.body?.currentPage == "doActPage" &&
+                     it.body?.any { k, v -> k?.toString()?.startsWith("settings[actSubType.") && v == "getIfThen" } }
 
-        and: "(b) actSubType.{idx}=getIfThen written on doActPage"
-        posts.any { it.path == "/installedapp/update/json" &&
-                    it.body?.currentPage == "doActPage" &&
-                    it.body?.any { k, v -> k?.toString()?.startsWith("settings[actSubType.") && v == "getIfThen" } }
+        and: "(deferral) the rule is flagged predClearPending so the next addAction runs the clear just-in-time"
+        atomicStateMap.predClearPending?.get("100") == true
 
-        and: "(c) actionCancel clicked on doActPage -- NOT actionDone"
-        def cancelClick = posts.find { it.path == "/installedapp/btn" &&
-                                        it.body?.name == "actionCancel" &&
-                                        it.body?.currentPage == "doActPage" }
-        cancelClick != null
-        !posts.any { it.path == "/installedapp/btn" &&
-                     it.body?.name == "actionDone" &&
-                     it.body?.currentPage == "doActPage" }
-
-        and: "(d) doActPage->selectActions nav fires after the cancel"
-        posts.any { it.path == "/installedapp/update/json" &&
-                    it.body?.currentPage == "doActPage" &&
-                    it.body?.any { k, v -> k?.toString()?.contains("_action_href_name|selectActions|") } }
-
-        and: "(e) no actionDone fired on doActPage anywhere in the sequence"
-        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionDone" }
+        and: "no actionCancel / actionDone here -- the ghost slot is never opened during the RE build"
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name in ["actionCancel", "actionDone"] }
     }
 
-    def "addRequiredExpression Step 4b ghost clear fires AFTER STPage Done (not before)"() {
-        // The ghost ifThen clear must occur AFTER _rmSubmitSubPageDone exits STPage.
-        // Ordering invariant: the STPage Done back-nav (currentPage=STPage,
-        // _action_previous=Done) appears in the POST log BEFORE the selectActions
-        // N click.
+    def "deferred predCapabs clear: _rmRunPendingPredCapabsClear fires the ghost ifThen when flagged, then drops the flag"() {
+        // The deferral's other half. addAction calls _rmRunPendingPredCapabsClear at its entry; when a
+        // preceding addRequiredExpression flagged the rule (atomicState.predClearPending), the SAME
+        // ghost ifThen wire sequence fires (N on selectActions -> condActs+getIfThen on doActPage ->
+        // actionCancel -> nav back) and the flag is dropped. Proves the clear is MOVED, not lost.
         given:
         enableWrite()
         def fetchSeq = 0
@@ -1732,32 +1765,33 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             seenPosts << [path: path, body: body]
             [status: 200, location: null, data: '']
         }
+        // A preceding addRequiredExpression flagged the rule (Step 4b defers the clear to here).
+        atomicStateMap.predClearPending = ["100": true]
 
-        when:
-        script.toolSetRule([
-            appId: 100,
-            addRequiredExpression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
-            confirm: true
-        ])
+        when: "the just-in-time clear runs for the flagged rule (as _rmAddAction does at its entry)"
+        script._rmRunPendingPredCapabsClear(100)
 
-        then: "STPage Done back-nav POST fires before the selectActions N click"
-        // STPage Done: _action_previous=Done is in the POST body (set by _rmSubmitSubPageDone)
-        def stPageDoneIdx = seenPosts.findIndexOf { it.path == "/installedapp/update/json" &&
-                                                     it.body?.currentPage == "STPage" &&
-                                                     it.body?._action_previous == "Done" }
-        // Ghost clear N click
-        def nClickIdx = seenPosts.findIndexOf { it.path == "/installedapp/btn" &&
-                                                 it.body?.name == "N" &&
-                                                 it.body?.currentPage == "selectActions" }
-        stPageDoneIdx != -1
-        nClickIdx != -1
-        stPageDoneIdx < nClickIdx
+        then: "the ghost ifThen N click fires on selectActions with stateAttribute=doActN"
+        def nClick = seenPosts.find { it.path == "/installedapp/btn" && it.body?.name == "N" &&
+                                      it.body?.currentPage == "selectActions" }
+        nClick != null
+        nClick.body?.stateAttribute == "doActN"
+
+        and: "actSubType.{idx}=getIfThen written on doActPage, actionCancel clicked (NOT actionDone)"
+        seenPosts.any { it.path == "/installedapp/update/json" && it.body?.currentPage == "doActPage" &&
+                        it.body?.any { k, v -> k?.toString()?.startsWith("settings[actSubType.") && v == "getIfThen" } }
+        seenPosts.any { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
+        !seenPosts.any { it.path == "/installedapp/btn" && it.body?.name == "actionDone" }
+
+        and: "the predClearPending flag is dropped -- the clear fires at most once"
+        !atomicStateMap.predClearPending?.get("100")
     }
 
-    def "addRequiredExpression Step 4b ghost clear failure warns and still returns success"() {
-        // If the ghost ifThen sequence throws (e.g. N click fails), addRequiredExpression
-        // must still return success=true (the RE itself committed successfully).
-        // A warn mcpLog must fire so the operator can diagnose ghost IF/THEN wrap risk.
+    def "deferred predCapabs clear failure warns and still drops the flag (best-effort)"() {
+        // If the deferred ghost ifThen throws (e.g. N click fails) inside _rmRunPendingPredCapabsClear,
+        // it must NOT propagate out of addAction -- the clear is best-effort. A warn mcpLog fires so the
+        // operator can diagnose the IF(Broken Condition) wrap risk, and the flag is dropped so a failed
+        // clear doesn't retry on every subsequent addAction.
         given:
         enableWrite()
         def fetchSeq = 0
@@ -1795,26 +1829,366 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            // N button click on selectActions throws -- simulates ghost clear failure
+            // N button click throws -- simulates the deferred ghost clear failing
             if (path == "/installedapp/btn" && body?.name == "N") {
                 throw new RuntimeException("hub returned 500 on N click (simulated ghost clear failure)")
             }
             [status: 200, location: null, data: '']
         }
+        // A preceding addRequiredExpression flagged the rule; the deferred clear runs here.
+        atomicStateMap.predClearPending = ["100": true]
 
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addRequiredExpression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
-            confirm: true
+        when: "the deferred just-in-time clear runs but the ghost ifThen N click throws"
+        script._rmRunPendingPredCapabsClear(100)
+
+        then: "a warn log fires naming the deferred-clear failure and the IF(Broken Condition) risk"
+        warnLogs.any { it.msg?.contains("deferred predCapabs clear") && it.msg?.contains("Broken Condition") }
+
+        and: "the flag is still dropped -- best-effort, never retries forever"
+        !atomicStateMap.predClearPending?.get("100")
+    }
+
+    // doActPage schema that serves BOTH the deferred ghost-ifThen clear AND a real log
+    // action's own writes off the same stub: the ghost needs actType.N=condActs +
+    // actSubType.N=getIfThen + actionCancel; the log action needs actType.N=messageActs +
+    // actSubType.N=getLogMsg + logmsg.N + actionDone. Incrementing paragraphs make every
+    // _rmWriteSettingOnPage observe a render shift so writes route applied (not skipped),
+    // but the seam test only asserts POST ORDER, so applied-vs-skipped is immaterial here.
+    private String doActPageGhostAndLogSchemaJson(int ruleId, int seqNum) {
+        JsonOutput.toJson([
+            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
+            configPage: [name: "doActPage", title: "T", install: false, error: null,
+                         sections: [[title: "", input: [
+                             [name: "actType.1", type: "enum",
+                              options: ["condActs": "Conditional Actions", "messageActs": "Messaging and Logging"]],
+                             [name: "actSubType.1", type: "enum",
+                              options: ["getIfThen": "IF Expression THEN", "getLogMsg": "Log a message"]],
+                             [name: "logmsg.1", type: "textarea"],
+                             [name: "actionCancel", type: "button"],
+                             [name: "actionDone", type: "button"]
+                         ], paragraphs: ["seq ${seqNum}".toString()]]]],
+            settings: [:],
+            childApps: []
         ])
+    }
 
-        then: "addRequiredExpression still returns a result -- ghost clear is best-effort, not fatal"
-        result != null
+    def "seam: _rmAddAction fires the deferred predCapabs clear at its entry (ghost POSTs precede the action's own writes; flag dropped)"() {
+        // TEST A. Pins the _rmAddAction entry seam (lib ~4295): a real (non-discover) addAction
+        // calls _rmRunPendingPredCapabsClear FIRST, so the deferred ghost ifThen sequence
+        // (condActs/getIfThen + actionCancel) lands on the wire BEFORE the action bakes its own
+        // doActPage writes (messageActs/getLogMsg), and the predClearPending flag is consumed.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            fetchSeq++
+            doActPageGhostAndLogSchemaJson(100, fetchSeq)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        // A preceding addRequiredExpression flagged the rule (Step 4b deferral).
+        atomicStateMap.predClearPending = ["100": true]
+
+        when: "a real (non-discover) addAction runs while the rule is flagged"
+        script._rmAddAction(100, [capability: "log", message: "seam"])
+
+        then: "(a) the ghost clear's condActs/getIfThen + actionCancel land BEFORE the action's own messageActs write"
+        // Index of the ghost's distinctive getIfThen write (unique to _rmClearPredCapabsViaGhostIfThen).
+        def ghostGetIfThenIdx = posts.findIndexOf { it.path == "/installedapp/update/json" &&
+            it.body?.any { k, v -> k?.toString()?.startsWith("settings[actSubType.") && v == "getIfThen" } }
+        // Index of the ghost's actionCancel (NOT actionDone) -- the slot is discarded, never baked.
+        def ghostCancelIdx = posts.findIndexOf { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
+        // Index of the ACTION's own actType write (messageActs is unique to the log action, not the ghost).
+        def actionTypeIdx = posts.findIndexOf { it.path == "/installedapp/update/json" &&
+            it.body?.any { k, v -> k?.toString()?.startsWith("settings[actType.") && v == "messageActs" } }
+
+        ghostGetIfThenIdx >= 0
+        ghostCancelIdx >= 0
+        actionTypeIdx >= 0
+        ghostGetIfThenIdx < actionTypeIdx
+        ghostCancelIdx < actionTypeIdx
+
+        and: "the ghost never bakes a slot of its own (no actionDone before the action's own writes)"
+        // The first actionDone in the stream, if any, belongs to the ACTION (its bake), never the ghost clear.
+        def firstActionDoneIdx = posts.findIndexOf { it.path == "/installedapp/btn" && it.body?.name == "actionDone" }
+        firstActionDoneIdx < 0 || firstActionDoneIdx > ghostCancelIdx
+
+        and: "(b) the predClearPending flag was consumed -- the deferred clear fires at most once"
+        !atomicStateMap.predClearPending?.get("100")
+    }
+
+    def "seam: _rmAddAction discover mode never touches the hub and leaves the deferred flag intact"() {
+        // TEST A, second case. The discover early-return (lib ~4288) sits ABOVE the
+        // _rmRunPendingPredCapabsClear call (~4295): a {discover:true} probe returns the static
+        // schema with ZERO hub POSTs and MUST NOT consume the pending flag -- a schema probe is
+        // not an action, so it can't be allowed to fire (or eat) the just-in-time clear.
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        atomicStateMap.predClearPending = ["100": true]
+
+        when: "a discover-mode probe runs while the rule is flagged"
+        def schema = script._rmAddAction(100, [discover: true])
+
+        then: "discover returned a schema without issuing any hub POST"
+        schema != null
+        posts.isEmpty()
+
+        and: "the pending flag is untouched -- discover neither fires nor consumes the deferred clear"
+        atomicStateMap.predClearPending?.get("100") == true
+    }
+
+    def "seam: bulk addActions fires the deferred ghost clear exactly once (first add drops the flag, the rest short-circuit)"() {
+        // TEST A, third case. Two sequential _rmAddAction calls under one pending flag: the first
+        // add runs the ghost clear and consumes the flag; the second add's entry-call to
+        // _rmRunPendingPredCapabsClear sees no flag and short-circuits, so the ~9-round-trip ghost
+        // ifThen sequence fires EXACTLY ONCE across the whole bulk add (the lib ~4293 invariant).
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            fetchSeq++
+            doActPageGhostAndLogSchemaJson(100, fetchSeq)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        atomicStateMap.predClearPending = ["100": true]
+
+        when: "two actions are added back-to-back (the bulk addActions shape: sequential _rmAddAction)"
+        script._rmAddAction(100, [capability: "log", message: "first"], true)
+        script._rmAddAction(100, [capability: "log", message: "second"], true)
+
+        then: "the ghost ifThen getIfThen write fired EXACTLY ONCE across both adds"
+        def ghostGetIfThenWrites = posts.count { it.path == "/installedapp/update/json" &&
+            it.body?.any { k, v -> k?.toString()?.startsWith("settings[actSubType.") && v == "getIfThen" } }
+        ghostGetIfThenWrites == 1
+
+        and: "the ghost actionCancel likewise fired exactly once (the clear is not re-run per action)"
+        posts.count { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" } == 1
+
+        and: "the flag is consumed after the first add"
+        !atomicStateMap.predClearPending?.get("100")
+    }
+
+    // ---------- cached cond=a echo: discovery read hits the request cache (no extra STPage GET) ----------
+
+    def "cached cond=a echo: the rCapab discovery read HITs the request cache, no extra STPage GET"() {
+        // TEST E (fuller walker variant). Guards lib ~10105: after the walker writes cond=a via
+        // _rmWriteSubPageField (plain-params path), the POST's inline page echo -- which carries the
+        // freshly-allocated rCapab_<N> slot -- is stored in the request cache via _rmCacheStore. The
+        // very next _rmFetchConfigJson(appId, "STPage", rmCache) that discovers the condition slot
+        // index (cIdx) MUST resolve off that cached echo, issuing NO additional live STPage GET. This
+        // is the round-trip win the PR depends on; a regression that invalidated the cond=a echo would
+        // re-fetch here and re-introduce a round-trip per condition.
+        //
+        // This is the FULLER walker variant requested: it drives the real cond=a write primitive
+        // (_rmWriteSubPageField, exactly as the STPage walker's writeST closure does) plus the real
+        // discovery read (_rmFetchConfigJson), so the cache contract is exercised end-to-end through
+        // production code rather than asserted directly on _rmCacheStore.
+        given:
+        enableWrite()
+        int getCount = 0
+        // The live STPage GET (cache MISS path). If the discovery read ever issues a live GET, this
+        // increments -- the negative assertion below catches it. rCapab_7 to prove cIdx parses off the echo.
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            getCount++
+            ruleConfigJson(100, "r", [
+                [name: "cond", type: "enum", options: ["a": "New condition", "b": "( sub-expression"]],
+                [name: "rCapab_7", type: "enum", options: ["Switch", "Contact", "Motion"]],
+                [name: "doneST", type: "button"]
+            ])
+        }
+        // The cond=a write's inline POST echo: the SETTLED new-condition page carrying the allocated
+        // rCapab_7 slot. _rmWriteSubPageField stores this in the cache via _rmCacheStore, so the
+        // discovery read that follows is a HIT. (Same echo-construction idiom as the ~1573 sidecar test.)
+        def condAEchoPage = [
+            [name: "cond", type: "enum", options: ["a": "New condition", "b": "( sub-expression"]],
+            [name: "rCapab_7", type: "enum", options: ["Switch", "Contact", "Motion"]],
+            [name: "rDev_7", type: "capability.sensor", multiple: true],
+            [name: "doneST", type: "button"]
+        ]
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            // Inline page echo = the post-write re-rendered STPage carrying rCapab_7.
+            [status: 200, location: null, data: ruleConfigJson(100, "r", condAEchoPage)]
+        }
+
+        when: "the walker writes cond=a (plain-params STPage write, exactly as writeST does), then discovers cIdx"
+        def rmCache = [:]
+        // _rmWriteSubPageField with all-null hrefParams takes the plain-GET path and consumes the
+        // inline echo into the cache -- this is the production cond=a write primitive.
+        script._rmWriteSubPageField(100, "STPage", "mainPage", "name", 0, [unUsed: null], "cond", "a", rmCache)
+        int getsAfterCondWrite = getCount
+        // The discovery read (lib ~10105): resolves the rCapab_<N> slot off the cached cond=a echo.
+        def navResp = script._rmFetchConfigJson(100, "STPage", rmCache)
+        def stInputs = (navResp?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+        def rCapabInput = stInputs.find { it?.name?.toString()?.startsWith("rCapab_") }
+        def m = rCapabInput?.name?.toString() =~ /rCapab_(\d+)/
+        def cIdx = m ? ((m[0] as List)[1] as Integer) : null
+
+        then: "the discovery read did NOT issue an additional STPage GET (it HIT the cached cond=a echo)"
+        getCount == getsAfterCondWrite
+
+        and: "the cond=a write itself emitted its enum-type sidecar (forced, regardless of cached schema)"
+        def condWrite = posts.find { it.body["settings[cond]"] == "a" }
+        condWrite != null
+        condWrite.body["cond.type"] == "enum"
+
+        and: "the slot index resolved correctly off the cached echo (rCapab_7 -> cIdx 7)"
+        cIdx == 7
+    }
+
+    // ---------- deferred predCapabs clear: other firing seams (walkStep) + flag drops (restore, delete) ----------
+
+    def "walkStep mutating op on an action page fires the deferred predCapabs clear; reads + non-action pages do not"() {
+        // P2c. _rmWalkStep is a RAW action-authoring path that bypasses _rmAddAction (lib ~6843), so it
+        // carries its own copy of the just-in-time clear: a mutating op (write/click/navigate) on
+        // selectActions or doActPage (or a navigate whose targetPage is one of those) must fire the
+        // deferred ghost ifThen before the raw step lands, else an action authored here after an RE is
+        // wrapped in IF(**Broken Condition**). A read (introspect) lands no action -> no clear; a
+        // mutating op on a non-action page (e.g. selectTriggers) lands no ACTION -> no clear.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            fetchSeq++
+            doActPageGhostAndLogSchemaJson(100, fetchSeq)
+        }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [[name: "tCapab1", type: "enum", options: ["Switch"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "POSITIVE: a write on doActPage (an action page) runs while the rule is flagged"
+        atomicStateMap.predClearPending = ["100": true]
+        // The walkStep tail (raw doActPage write against a minimal schema) may no-op or throw after the
+        // entry-clear has already fired; we only assert the clear ran + flag dropped, so swallow the tail.
+        try {
+            script._rmWalkStep(100, [page: "doActPage", operation: "write", write: ["actType.1": "x"]])
+        } catch (Exception ignored) { /* tail write is immaterial; the entry-clear is what's under test */ }
+
+        then: "the deferred ghost ifThen clear fired (its getIfThen write + actionCancel are observable)"
+        posts.any { it.path == "/installedapp/update/json" &&
+                    it.body?.any { k, v -> k?.toString()?.startsWith("settings[actSubType.") && v == "getIfThen" } }
+        posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
+
+        and: "the predClearPending flag is dropped -- the clear fires at most once"
+        !atomicStateMap.predClearPending?.get("100")
+
+        when: "NEGATIVE (read): an introspect on doActPage runs while the rule is flagged"
+        posts.clear()
+        atomicStateMap.predClearPending = ["100": true]
+        try {
+            script._rmWalkStep(100, [page: "doActPage", operation: "introspect"])
+        } catch (Exception ignored) { }
+
+        then: "no ghost clear fired (a read lands no action) -- no getIfThen write, no actionCancel"
+        !posts.any { it.path == "/installedapp/update/json" &&
+                     it.body?.any { k, v -> k?.toString()?.startsWith("settings[actSubType.") && v == "getIfThen" } }
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
+
+        and: "the flag is left intact -- a read must not consume the deferred clear"
+        atomicStateMap.predClearPending?.get("100") == true
+
+        when: "NEGATIVE (non-action page): a write on selectTriggers runs while the rule is flagged"
+        posts.clear()
+        atomicStateMap.predClearPending = ["100": true]
+        try {
+            script._rmWalkStep(100, [page: "selectTriggers", operation: "write", write: ["tCapab1": "Switch"]])
+        } catch (Exception ignored) { }
+
+        then: "no ghost clear fired (no action lands on a trigger page) -- no getIfThen write, no actionCancel"
+        !posts.any { it.path == "/installedapp/update/json" &&
+                     it.body?.any { k, v -> k?.toString()?.startsWith("settings[actSubType.") && v == "getIfThen" } }
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
+
+        and: "the flag is left intact -- a non-action-page edit must not consume the deferred clear"
+        atomicStateMap.predClearPending?.get("100") == true
+    }
+
+    def "replaceRequiredExpression restore drops the deferred predCapabs-clear flag (null-backup early return)"() {
+        // D. _rmRestoreCommittedREFromBackup rolls back a failed new-RE build, so it drops any
+        // predClearPending the failed build flagged (lib ~10641, at the top before the fileName check):
+        // the restored rule's predCapabs comes from a clean backup, and a leftover flag would fire a
+        // wasted ghost clear on the rule's next addAction. The null-backup early-return path
+        // (fileName == null) reaches the drop and needs no hub stubs.
+        given:
+        enableWrite()
+        atomicStateMap.predClearPending = ["100": true]
+
+        when: "the restore runs with no usable backup handle (null fileName -> early return)"
+        def result = script._rmRestoreCommittedREFromBackup(100, [fileName: null], "boom")
+
+        then: "the restore reports the RE was NOT restored (no backup to restore from)"
+        result.requiredExpressionRestored == false
+
+        and: "the deferred predCapabs-clear flag is dropped -- the rolled-back build's flag is cleared"
+        !atomicStateMap.predClearPending?.get("100")
+    }
+
+    def "toolDeleteNativeApp force-delete drops the deferred predCapabs-clear flag"() {
+        // F. A deleted rule can't carry a deferred clear, so toolDeleteNativeApp drops the flag on a
+        // successful delete (both force and soft paths; lib ~12528/~12551) -- otherwise a later rule
+        // reusing the same appId would inherit a stale flag and fire a wasted ghost clear. Force path
+        // here (copies the existing force-delete spec's hubInternalGetRaw 302 stubbing).
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "to-delete") }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/installedapps", data: ""]
+        }
+        atomicStateMap.predClearPending = ["100": true]
+
+        when: "the rule is force-deleted while flagged"
+        def result = script.toolDeleteNativeApp([appId: 100, confirm: true, force: true])
+
+        then: "the delete succeeded"
         result.success == true
 
-        and: "a warn log fires naming the failure and noting the IF Broken Condition risk"
-        warnLogs.any { it.msg?.contains("ghost ifThen clear failed") && it.msg?.contains("Broken Condition") }
+        and: "the deferred predCapabs-clear flag is dropped -- the rule is gone, no stale flag survives"
+        !atomicStateMap.predClearPending?.get("100")
     }
 
     def "addTrigger writes isCondTrig.<N>=false finalize for non-conditional triggers"() {
@@ -12613,13 +12987,20 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ])
         }
         hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            // The attr write's own _rmWriteSubPageField does a leading fetch (pre-write) and a
-            // trailing verify (1st post-write fetch). The revealStep re-fetch that exposes the
-            // picker is the 2nd post-write fetch -- fail exactly that one so the throw lands on
-            // the reveal (force-write path), not the verify.
+            // Page-schema cache: the attr write's own _rmWriteSubPageField CONSUMES its POST
+            // response; the test stubs POSTs to return data:'' so the consume falls back to a
+            // verify-GET that, on success, STORES the STPage so the following revealStep probe
+            // HITS the cache and issues no GET of its own -- the verify-GET IS the exposure probe
+            // now. To still drive the walker's force-write-on-probe-failure path we fail the FIRST
+            // TWO post-attr STPage fetches: fetch 1 is the rCustomAttr verify-GET (swallowed by
+            // _rmWriteSubPageField, which invalidates the cache), so fetch 2 -- the revealStep
+            // postCfg -- becomes a real GET that also throws and propagates into the walker's
+            // force-write catch. Fetch 3+ (the hasAll click's version fetch) must succeed, hence
+            // the <=2 bound. '*changed*' carries no explicit value, so the catch skips the state_1
+            // write and the picker's *changed* option is never routed (the force-write distinction).
             if (rCustomAttrWritten) {
                 postAttrStFetches++
-                if (postAttrStFetches == 2) return ''
+                if (postAttrStFetches <= 2) return ''
             }
             def inputs = [
                 [name: "cond",          type: "enum",              options: ["a": "New condition"]],
@@ -13442,12 +13823,20 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ])
         }
         hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            // The attr write's own _rmWriteSubPageField does a leading fetch (pre-write) and
-            // a trailing verify (1st post-write fetch). The revealStep exposure probe is the
-            // 2nd post-write fetch -- fail exactly that one so the throw lands on the probe.
+            // Page-schema cache: the attr write's own _rmWriteSubPageField now CONSUMES its POST
+            // response; the test stubs POSTs to return data:'' so the consume falls back to a
+            // verify-GET that, on success, STORES the STPage so the following revealStep probe
+            // (preCfg/postCfg) HITS the cache and issues no GET of its own. The verify-GET IS the
+            // exposure probe now. To still drive the walker's force-write-on-probe-failure
+            // contract we fail the FIRST TWO post-attr STPage fetches: fetch 1 is the rCustomAttr
+            // write's verify-GET (swallowed by _rmWriteSubPageField, which invalidates the cache),
+            // so fetch 2 -- the revealStep postCfg -- becomes a real GET that also throws and
+            // propagates out of _rmRevealStep into the walker's force-write catch. Fetch 3+ (the
+            // post-force-write state_1 write + hasAll click) must succeed so the degraded path
+            // completes, hence the <=2 bound rather than an open-ended throw.
             if (rCustomAttrWritten) {
                 postAttrStFetches++
-                if (postAttrStFetches == 2) return ''
+                if (postAttrStFetches <= 2) return ''
             }
             def inputs = [
                 [name: "cond",          type: "enum",              options: ["a": "New condition"]],
@@ -13557,13 +13946,19 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ])
         }
         hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            // Site B default path: rCapab_1=Temperature (a standard capability), NOT
-            // Custom Attribute. The attr write's own _rmWriteSubPageField does a leading
-            // fetch + a trailing verify; discoverField's first fetch is the 2nd post-write
-            // fetch -- fail exactly that one so the throw lands on the exposure probe.
+            // Site B default path: rCapab_1=Temperature (a standard capability), NOT Custom
+            // Attribute. Page-schema cache: the attr write's own _rmWriteSubPageField CONSUMES
+            // its POST response; the test stubs POSTs to return data:'' so the consume falls back
+            // to a verify-GET that, on success, STORES the STPage so the following exposure-probe
+            // re-fetch HITS the cache -- the verify-GET IS the exposure probe now. To still drive
+            // Site B's force-write-on-probe-failure path we fail the FIRST TWO post-attr STPage
+            // fetches: fetch 1 is the rCustomAttr verify-GET (swallowed, invalidates the cache),
+            // so fetch 2 -- the exposure-probe re-fetch at the default-block try/catch -- becomes a
+            // real GET that throws and lands in Site B's force-write catch. Fetch 3+ (the
+            // post-force-write state_1 write) must succeed, hence the <=2 bound.
             if (rCustomAttrWritten) {
                 postAttrStFetches++
-                if (postAttrStFetches == 2) return ''
+                if (postAttrStFetches <= 2) return ''
             }
             def inputs = [
                 [name: "cond",          type: "enum",                   options: ["a": "New condition"]],
@@ -13972,11 +14367,21 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ])
         }
         hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            // The attr write's own fetch + verify succeed; the revealStep exposure probe is
-            // the 2nd post-write fetch -- fail exactly that one to trigger the force-write.
+            // Page-schema cache: the attr write's own _rmWriteSubPageField CONSUMES its POST
+            // response; with POSTs stubbed to data:'' the consume falls back to a verify-GET that,
+            // on success, STORES the STPage so the revealStep exposure probe HITS the cache -- the
+            // verify-GET IS the probe now, so the clean-rCustomAttr + thrown-separate-probe shape
+            // the old `==2` relied on no longer exists. We fail the FIRST TWO post-attr fetches:
+            // fetch 1 (the rCustomAttr verify-GET) throws -> rCustomAttr records a
+            // verification_fetch_failed skip (a genuinely-lost entry) and the cache is invalidated;
+            // fetch 2 (the revealStep postCfg) becomes a real GET that throws into the force-write
+            // catch -> RelrDev_1 force-written. Fetch 3+ (the state_1 write) succeeds. So this run
+            // now carries TWO degraded reasons and exercises BOTH arms of the repairHints split:
+            // the verify-don't-rewrite hint for the force-written comparator AND the generic
+            // degraded-path hint for the lost rCustomAttr field. Asserted below.
             if (rCustomAttrWritten) {
                 postAttrStFetches++
-                if (postAttrStFetches == 2) return ''
+                if (postAttrStFetches <= 2) return ''
             }
             def inputs = [
                 [name: "cond",          type: "enum",              options: ["a": "New condition"]],
@@ -14045,11 +14450,19 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         verifyHint.toString().contains("value IS in settingsApplied")
         verifyHint.toString().contains("Do NOT re-write")
 
-        and: "it does NOT fold the force-written comparator into the generic fill-missing-fields hint"
-        // The generic lost-field hint exists only when there are genuinely-lost degraded
-        // entries; this run has none (only the force-written skip), so the generic hint must
-        // be absent entirely -- the force-written key is NOT treated as a lost field.
-        !hints.any { it?.toString()?.contains("re-run with rawSettings to fill missing fields") }
+        and: "the force-written comparator is NOT folded into the generic degraded-path hint"
+        // Under the page-schema cache this run carries TWO degraded reasons: RelrDev_1's
+        // comparator_force_written_unverified AND rCustomAttr_1's verification_fetch_failed (the
+        // failed verify-GET that doubles as the exposure probe -- see the STPage stub comment).
+        // The split guard is unchanged and is exactly what matters: the FORCE-WRITTEN comparator
+        // must stay in its verify-don't-rewrite hint and must NEVER be named by the generic
+        // degraded-path hint (which would wrongly tell the caller to re-write a value that DID
+        // land). The generic hint counts lost conditions without naming keys, so RelrDev_1 must
+        // not appear in it; rCustomAttr_1 is the only genuinely-lost field driving it.
+        def genericHint = hints.find { it?.toString()?.contains("used a degraded write path") }
+        genericHint != null
+        !genericHint.toString().contains("RelrDev_1")
+        ((result.settingsSkipped as List) ?: []).any { it instanceof Map && it.key == "rCustomAttr_1" && it.reason == "verification_fetch_failed" }
     }
 
     def "addAction ifThen walker Site B free-path: a non-enum attribute reveals RelrDev_1 and the comparator IS written on doActPage (negative pin)"() {
@@ -16285,10 +16698,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // This mirrors addTrigger's pattern (selectTriggers->mainPage nav at end)
     // and leaves the app in mainPage context for the browser's next visit.
 
-    def "addRequiredExpression Step 4b ends with selectActions->mainPage nav"() {
-        // Verifies the RE nav fix: after the doActPage->selectActions nav, a
-        // second selectActions->mainPage nav fires, leaving the app in mainPage
-        // context so browser STPage visits don't see a conflicting editAct context.
+    def "deferred predCapabs clear ends with selectActions->mainPage nav"() {
+        // The ghost ifThen's nav sequence, now run by _rmRunPendingPredCapabsClear in the DEFERRED
+        // path (not addRequiredExpression): after the doActPage->selectActions nav, a second
+        // selectActions->mainPage nav fires, leaving the app in mainPage context so browser STPage
+        // visits don't see a conflicting editAct context.
         given:
         enableWrite()
         def fetchSeq = 0
@@ -16328,15 +16742,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             posts << [path: path, body: body]
             [status: 200, location: null, data: '']
         }
+        // A preceding addRequiredExpression flagged the rule (Step 4b defers the clear to here).
+        atomicStateMap.predClearPending = ["100": true]
 
-        when:
-        script.toolSetRule([
-            appId: 100,
-            addRequiredExpression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
-            confirm: true
-        ])
+        when: "the deferred just-in-time clear runs (as _rmAddAction does at its entry)"
+        script._rmRunPendingPredCapabsClear(100)
 
-        then: "doActPage->selectActions nav fires (existing invariant d)"
+        then: "doActPage->selectActions nav fires (the ghost ifThen nav, now in the deferred clear)"
         def doActToSelectActionsIdx = posts.findIndexOf { it.path == "/installedapp/update/json" &&
                                                            it.body?.currentPage == "doActPage" &&
                                                            it.body?.any { k, v ->
@@ -31770,14 +32182,20 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
         }
         hubGet.register('/installedapp/configure/json/100/STPage') { params ->
-            // Throw on the SECOND post-rCapab fetch -- the revealStep post-trigger fetch
-            // (the first post-rCapab fetch is _rmWriteSettingOnPage's verify-fetch,
-            // which is wrapped in its own try/catch and would swallow the exception).
-            // Mirrors F4's doActPage throw pattern.
+            // Page-schema cache: the rCapab write's own _rmWriteSubPageField CONSUMES its POST
+            // response; the test stubs POSTs to return data:'' so the consume falls back to a
+            // verify-GET that, on success, STORES the STPage so the revealStep post-trigger fetch
+            // HITS the cache. The verify-GET IS the post-trigger probe now. To still propagate a
+            // mid-walk fetch error out of _rmRevealStep we throw on the FIRST TWO post-rCapab
+            // fetches: fetch 1 is the rCapab verify-GET (swallowed by _rmWriteSubPageField, which
+            // invalidates the cache), so fetch 2 -- the revealStep postCfg -- becomes a real GET
+            // that throws and propagates into the walkConds per-condition catch. Fetch 3 (the
+            // outer-catch cancelCapab's version fetch) must succeed so the single cancel click
+            // lands, hence the <=2 bound. stThrowArmed is set on the propagating throw (fetch 2).
             if (rCapabWritten) {
                 stFetchesAfterRCapab++
-                if (stFetchesAfterRCapab == 2 && !stThrowArmed) {
-                    stThrowArmed = true
+                if (stFetchesAfterRCapab <= 2) {
+                    if (stFetchesAfterRCapab == 2) stThrowArmed = true
                     throw new RuntimeException("simulated mid-walk fetch error on STPage (revealStep post-trigger fetch)")
                 }
             }
@@ -35653,12 +36071,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
 
-        // The RE walk's ghost-ifThen clear ends with a doActPage->selectActions
-        // nav; once that lands, the next updateRule btn click is the RE-block
-        // trailing one -- fail exactly it.
+        // The RE walk ends with the STPage Done back-nav (Step 4, _action_previous=Done); once that
+        // lands, the next updateRule btn click is the RE-block trailing one -- fail exactly it. (The
+        // ghost-ifThen clear is now DEFERRED to addAction, so its doActPage->selectActions nav no longer
+        // runs here to mark the boundary; the Done back-nav is the new last-nav-before-trailing-updateRule.)
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            if (path == "/installedapp/update/json" && body?.currentPage == "doActPage" &&
-                body?.any { k, v -> k?.toString()?.contains("_action_href_name|selectActions|") }) {
+            if (path == "/installedapp/update/json" && body?.currentPage == "STPage" &&
+                body?._action_previous == "Done") {
                 reWalkDone = true
             }
             if (reWalkDone && path == "/installedapp/btn" && body?.name == "updateRule") {
