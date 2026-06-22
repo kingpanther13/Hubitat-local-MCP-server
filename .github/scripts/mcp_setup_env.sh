@@ -67,10 +67,29 @@ jq -nc \
 echo "Captured pre-run state -> $PRE_STATE_FILE"
 cat "$PRE_STATE_FILE"
 
+# Stamp a hub backup FIRST. The hub_update_mcp_settings call below is destructive-confirm-gated
+# (confirm:true requires a hub backup within the last 24h). tests/e2e_test.py stamps a mock backup
+# too, but only LATER in the run (after this configure step), so a >24h gap since the previous e2e
+# run leaves the gate unsatisfied and configure fails ("BACKUP REQUIRED: No hub backup found within
+# the last 24 hours") before the test run ever gets to stamp it. Stamping here makes configure
+# self-sufficient regardless of the gap. Prefer the MOCK backup (stamps only the 24h gate record, no
+# real backupDB write); fall back to a real backup on an older server that lacks mock support.
+echo "Stamping a backup to satisfy the destructive-confirm 24h gate before enabling toggles..."
+BACKUP_RESP="$(mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true,"mock":true}}}' 2>/dev/null || true)"
+if printf '%s' "$BACKUP_RESP" | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null 2>&1; then
+  echo "  Backup gate stamped (MOCK -- no real backupDB write)."
+else
+  echo "::notice::Mock backup unsupported/failed on the baseline app -- falling back to a real backup."
+  mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true}}}' \
+    | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null || {
+    echo "::error::Could not create a hub backup (mock AND real failed). hub_update_mcp_settings below needs one (destructive-confirm 24h gate). Check the test hub."; exit 1; }
+  echo "  Backup gate stamped (REAL backup)."
+fi
+
 # Enable the one toggle the e2e suite needs that is not ON by default. Read/Write
 # are masters (default ON in the deployed PR app); enableCustomRuleEngine is the
 # only stable key this pre-deploy step sets, and it persists through the deploy.
-mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hub_manage_mcp","arguments":{"tool":"hub_update_mcp_settings","args":{"settings":{"enableCustomRuleEngine":true},"confirm":true}}}}' \
+mcp_call '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"hub_manage_mcp","arguments":{"tool":"hub_update_mcp_settings","args":{"settings":{"enableCustomRuleEngine":true},"confirm":true}}}}' \
   | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null
 
 echo "Test environment configured: enableCustomRuleEngine=true (Read/Write masters are ON by default in the deployed app)"
