@@ -550,6 +550,30 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         result.waitFor.neverReported == true
     }
 
+    def "toolSendCommand with waitFor propagates nonNumericAttribute AND its note through the waitFor block"() {
+        given: 'a switch that reports "on" the whole window under a numeric comparator -- gt can never match'
+        def device = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'TestSwitch'
+            getLabel() >> 'Test Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getSupportedAttributes() >> [[name: 'switch']]
+            getCurrentStates() >> [[name: 'switch', value: 'on']]
+        }
+        childDevicesList << device
+
+        when: 'gt 5 on the non-numeric switch attribute, short timeout'
+        def result = script.toolSendCommand('10', 'on', [], [attribute: 'switch', comparator: 'gt', expectedValue: '5', timeoutMs: 100, pollIntervalMs: 50])
+
+        then: 'both the boolean flag AND the actionable note reach the waitFor caller; neverReported absent'
+        1 * device.on()
+        result.success == true
+        result.waitFor.converged == false
+        result.waitFor.nonNumericAttribute == true
+        result.waitFor.note?.contains('can never match')
+        !result.waitFor.containsKey('neverReported')
+    }
+
     def "toolSendCommand with waitFor surfaces interrupted when the poll is interrupted (hub reload)"() {
         given: 'a non-matching attribute so the poll reaches the sleep, where pauseExecution throws'
         def stateDate = Date.parse("yyyy-MM-dd HH:mm:ss", "2025-01-15 10:30:00")

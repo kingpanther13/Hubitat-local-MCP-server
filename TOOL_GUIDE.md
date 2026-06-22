@@ -450,17 +450,23 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 - Higher values (100+) may cause delays on busy devices
 
 **hub_get_device_attribute (poll mode):**
-- Poll mode activates when `expectedValue`/`expectedValues` are supplied (with optional `timeoutMs`/`pollIntervalMs`). BLOCKS the MCP request up to `timeoutMs` MILLISECONDS (default 5000ms = 5 seconds, max 60000ms = 60 seconds). Use sparingly; prefer event-driven flows when available.
+- Poll mode activates when any of `expectedValue`/`expectedValues`/`comparator`/`stableForMs`/`timeoutMs`/`pollIntervalMs` is supplied. An expected value is REQUIRED in poll mode -- supplying only `comparator`/`stableForMs` (or only a timing arg) still routes to poll mode and is then rejected for the missing `expectedValue`/`expectedValues`. BLOCKS the MCP request up to `timeoutMs` MILLISECONDS (default 5000ms = 5 seconds, max 60000ms = 60 seconds). Use sparingly; prefer event-driven flows when available.
 - Concurrent MCP requests queue while this call blocks; avoid parallel poll-mode `hub_get_device_attribute` calls.
-- At least one of `expectedValue` or `expectedValues` must be provided. Both may be set simultaneously -- the poll succeeds if the current value matches either (OR semantics, not XOR).
+- Provide EXACTLY ONE of `expectedValue` or `expectedValues` -- passing both is rejected (same as the `hub_call_device_command` `waitFor` path). For `eq`, a multi-element `expectedValues` set is OR -- the poll succeeds when the value matches ANY member; for `ne`, it succeeds when the value matches NONE of them (it left the whole set). (The numeric comparators below take only `expectedValue`; `between` takes only `expectedValues`.)
+- `comparator` (default `eq`) controls the match operator:
+  - `eq` / `ne`: string-set membership (`eq` = value IS in the expectedValue/expectedValues set; `ne` = value is NOT in the set). `ne` does not match a null/never-reported value.
+  - `gt` / `gte` / `lt` / `lte`: NUMERIC compare of the value (parsed as a decimal) against a single threshold in `expectedValue`. `expectedValues` is rejected for these.
+  - `between`: NUMERIC inclusive range `low <= value <= high`, bounds from `expectedValues` (exactly 2 numeric strings `[low, high]`, `low <= high`). `expectedValue` is rejected.
+  - Numeric comparators never match a null/non-numeric value -- the poll keeps going (and times out if it never becomes numeric-and-in-range). If the attribute reported a value the whole window but it never parsed numeric (e.g. `gt` on `switch="on"`), the timeout adds `nonNumericAttribute: true` (the comparator can never match -- use `eq`/`ne` for a string attribute).
+- `stableForMs` (default 0 = return on first match): the matched condition must hold CONTINUOUSLY for this many MILLISECONDS before the poll converges (debounce). A value that flaps out of the condition restarts the window. Must be `< timeoutMs` (a value `>= timeoutMs` is rejected -- it could never converge). A continuously-flapping value never stabilizes and times out (correct).
 - Re-reads the attribute every `pollIntervalMs` MILLISECONDS (default 200ms, min 50ms, max 5000ms)
 - Returns `success: true` with `finalValue`, `elapsedMs`, `polledCount`, `timedOut: false` when the value matches
-- Returns `success: false` with `timedOut: true` and the last-read `finalValue` on timeout; adds `neverReported: true` if the attribute never returned a non-null value during the entire poll window
+- Returns `success: false` with `timedOut: true` and the last-read `finalValue` on timeout; adds `neverReported: true` if the attribute never returned a non-null value during the entire poll window, or `nonNumericAttribute: true` (with a `note`) if a numeric comparator was used on an attribute that reported a non-numeric value the whole window
 - Returns `success: false` with `interrupted: true` (plus `finalValue`, `elapsedMs`, `polledCount`) if the hub interrupted the sleep (e.g. app reload during poll)
 - `pollIntervalMs` is automatically clamped to `timeoutMs` if larger, ensuring at least one poll
 - For passive one-shot reads, omit `expectedValue`/`expectedValues` (plain read mode) -- poll mode is for waiting on state transitions
 - Common pattern after `hub_call_device_command`: that tool's `state` snapshot is an immediate read taken in the same request, so it is the PRE-effect value (the hub commits the change after the request returns). To confirm the RESULTING state, prefer `hub_call_device_command`'s own `waitFor` arg (block-polls then snapshots the converged value); use this tool standalone to poll an attribute some other actor is changing
-- `hub_call_device_command`'s `waitFor` reuses this poll engine but caps `timeoutMs` at 30000ms (vs 60000ms here) because it BLOCKS a hub thread for the full timeout while a write is in flight; its `pollIntervalMs` defaults to 250ms (vs 200ms here) since a post-command poll follows a write and wider spacing reduces read contention
+- `hub_call_device_command`'s `waitFor` reuses this poll engine (including `comparator` and `stableForMs`, same semantics) but caps `timeoutMs` at 30000ms (vs 60000ms here) because it BLOCKS a hub thread for the full timeout while a write is in flight; its `pollIntervalMs` defaults to 250ms (vs 200ms here) since a post-command poll follows a write and wider spacing reduces read contention. A bad `waitFor` spec (including an invalid comparator/stableForMs) is rejected BEFORE the command fires, so the device is not actuated.
 
 **hub_get_logs:**
 - Returns most recent entries first

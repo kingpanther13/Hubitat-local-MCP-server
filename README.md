@@ -350,7 +350,7 @@ Call a gateway with no arguments to see full parameter schemas. Call with `tool=
 |------|-------------|
 | `hub_list_devices` | List accessible devices (pagination, server-side labelFilter/capabilityFilter, format=ids, field projection; `filter='virtual'` lists only MCP-managed virtual devices) |
 | `hub_get_device` | Full device details: attributes, commands, capabilities |
-| `hub_get_device_attribute` | Get a specific attribute value. Pass `expectedValue` (or `expectedValues`) to block-poll the attribute until it matches or times out — `timeoutMs` in MILLISECONDS (default 5000ms = 5 seconds, max 60000ms). Polling BLOCKS the MCP request; use sparingly and prefer event-driven flows when available. |
+| `hub_get_device_attribute` | Get a specific attribute value. Pass exactly one of `expectedValue` or `expectedValues` to block-poll the attribute until it matches or times out — `timeoutMs` in MILLISECONDS (default 5000ms = 5 seconds, max 60000ms). `comparator` (eq/ne/gt/gte/lt/lte/between) and `stableForMs` (debounce) refine the match; a numeric comparator on a non-numeric attribute times out with `nonNumericAttribute: true`. Polling BLOCKS the MCP request; use sparingly and prefer event-driven flows when available. |
 | `hub_list_device_events` | Recent events for a device. Add `hoursBack` for a time window (up to 7 days of device or location event history); omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events. |
 
 </details>
@@ -442,12 +442,12 @@ Monitoring tools are gated by the Read master (ON by default).
 
 | Tool | Description |
 |------|-------------|
-| `hub_call_device_command` | Send a command (on, off, setLevel, etc.); returns an immediate (PRE-effect) `state` snapshot ({attr: {value, timestamp}}); pass `waitFor` to block-poll for the CONFIRMED resulting state |
+| `hub_call_device_command` | Send a command (on, off, setLevel, etc.); returns an immediate (PRE-effect) `state` snapshot ({attr: {value, timestamp}}); pass `waitFor` to block-poll for the CONFIRMED resulting state (`waitFor` supports `comparator` (eq/ne/gt/gte/lt/lte/between) + `stableForMs` debounce; a bad spec is rejected before the command fires) |
 | `hub_call_device_swap` | Replace a device across ALL apps/rules that reference it (built-in Swap Device tool; compatible replacements only) |
 | `hub_update_device` | Update device properties (label, room, preferences, etc.) |
 | `hub_list_devices` | List accessible devices (pagination, server-side labelFilter/capabilityFilter, format=ids, field projection; `filter='virtual'` lists only MCP-managed virtual devices) (also in `hub_read_devices`) |
 | `hub_get_device` | Full device details: attributes, commands, capabilities (also in `hub_read_devices`) |
-| `hub_get_device_attribute` | Get a specific attribute value. Pass `expectedValue` (or `expectedValues`) to block-poll the attribute until it matches or times out — `timeoutMs` in MILLISECONDS (default 5000ms = 5 seconds, max 60000ms). Polling BLOCKS the MCP request; use sparingly and prefer event-driven flows when available. (also in `hub_read_devices`) |
+| `hub_get_device_attribute` | Get a specific attribute value. Pass exactly one of `expectedValue` or `expectedValues` to block-poll the attribute until it matches or times out — `timeoutMs` in MILLISECONDS (default 5000ms = 5 seconds, max 60000ms). `comparator` (eq/ne/gt/gte/lt/lte/between) and `stableForMs` (debounce) refine the match; a numeric comparator on a non-numeric attribute times out with `nonNumericAttribute: true`. Polling BLOCKS the MCP request; use sparingly and prefer event-driven flows when available. (also in `hub_read_devices`) |
 | `hub_list_device_events` | Recent events for a device. Add `hoursBack` for a time window (up to 7 days of device or location event history); omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events. (also in `hub_read_devices`) |
 
 </details>
