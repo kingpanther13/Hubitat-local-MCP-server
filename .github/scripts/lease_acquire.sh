@@ -92,37 +92,6 @@ set_lease_value() {
   mcp_call "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"hub_manage_variables\",\"arguments\":{\"tool\":\"hub_set_variable\",\"args\":{\"name\":\"_TEST_HUB_LEASED_BY\",\"value\":${value_json}}}}}" >/dev/null
 }
 
-fifo_my_turn() {
-  # FIFO across PRs, decided GitHub-side (the hub never schedules e2e -- GitHub does). Ordered by
-  # when each run actually ENTERED THE LINE: the start time of its "e2e (run)" job -- NOT
-  # run_number (which is creation order). That distinction matters for two maintainer-flagged
-  # cases:
-  #   * an outside-contributor PR parks on the approve gate (status=waiting, already excluded
-  #     below) until a human approves it; its e2e job then STARTS at approval time, so it joins
-  #     the BACK of the line then -- it does NOT cut ahead on its old creation-time number.
-  #   * applying a release:*/e2e:full label spawns a NEW run whose e2e job starts at label time,
-  #     so it joins at the back too (the per-branch concurrency cancels the old focused run).
-  # A FREE lease is claimed only by the run whose e2e job started earliest (ties broken by run id).
-  # On any GitHub-API hiccup this returns "my turn" -- the lease claim+verify still guarantees
-  # one-at-a-time, so a blip only degrades FIFO to first-come, never a double-book.
-  [ -n "${GITHUB_REPOSITORY:-}" ] && [ -n "${GITHUB_RUN_ID:-}" ] || return 0
-  command -v gh >/dev/null 2>&1 || return 0
-  local ids id ts earliest_id="" earliest_ts=""
-  ids="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/hub-e2e.yml/runs?status=in_progress&per_page=100" \
-         --jq '.workflow_runs[].id' 2>/dev/null)" || return 0
-  [ -z "$ids" ] && return 0
-  for id in $ids; do
-    ts="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${id}/jobs" \
-          --jq '[.jobs[] | select(.name=="e2e (run)" and .started_at != null) | .started_at] | min // empty' 2>/dev/null)" || continue
-    [ -z "$ts" ] && continue   # this run's e2e job hasn't started yet -> not contending for the lease yet
-    if [ -z "$earliest_ts" ] || [[ "$ts" < "$earliest_ts" ]] || { [ "$ts" = "$earliest_ts" ] && [ "$id" -lt "$earliest_id" ]; }; then
-      earliest_ts="$ts"; earliest_id="$id"
-    fi
-  done
-  [ -z "$earliest_id" ] && return 0          # nobody's e2e job has started -> proceed (defensive)
-  [ "$earliest_id" = "$GITHUB_RUN_ID" ]      # the earliest-started e2e job is mine -> my turn
-}
-
 # Wait (polling) until the lease is free, expired, or already ours — or until the
 # wait budget runs out. The job's own timeout-minutes bounds the total, and because
 # we claim only AFTER this wait, the lease TTL below starts at acquisition.
@@ -164,16 +133,7 @@ while :; do
       continue
     fi
     if [ -z "$CONFIRM" ]; then
-      # Released (confirmed empty) -- but only the FIFO-earliest run in line claims it; an
-      # earlier-queued run goes first. (The expired-lease reclaim further down is NOT gated:
-      # that path is crash recovery for a holder that never released, where the dead holder
-      # must not keep its place in line.)
-      if fifo_my_turn; then
-        break  # released + my turn
-      fi
-      echo "::notice::Lease is free but an earlier hub-e2e run is ahead in the queue; waiting my turn."
-      sleep "$LEASE_POLL_INTERVAL_S"
-      continue
+      break  # released (confirmed empty by two consecutive reads)
     fi
     CURRENT="$CONFIRM"  # a lease appeared between the two reads -- fall through to the BUSY parse below
   fi
