@@ -4,9 +4,11 @@
 # Usage:  lease_acquire.sh <by-identifier>
 # Env:    MCP_URL — full cloud OAuth URL with access_token
 #         LEASE_WAIT_TIMEOUT_S        — max seconds to WAIT for a successfully-read but HELD
-#                                       lease to free before aborting (default 14400 = 4h: runs
-#                                       QUEUE on the lease, so several PRs can wait their turn
-#                                       on the single shared hub). Set 0 to fail fast.
+#                                       lease to free before aborting (default 14400 = 4h).
+#                                       Native concurrency (the hub-e2e-serialized group) already
+#                                       serializes CI runs, so at most one ever reaches the lease;
+#                                       this budget exists to wait out a HUMAN holding the hub by
+#                                       hand, which concurrency can't see. Set 0 to fail fast.
 #         LEASE_UNREACHABLE_TIMEOUT_S — max seconds to tolerate the endpoint being UNREADABLE
 #                                       (5xx on every read = hub/app down, not lease held)
 #                                       before fast-failing (default 120). Much shorter than the
@@ -14,14 +16,15 @@
 #                                       waiting it out just burns ~10min per run.
 #         LEASE_POLL_INTERVAL_S       — seconds between polls while waiting (default 30).
 #
-# Exits 0 on successful claim. While the lease is read as held by someone else and not
-# expired, this WAITS (polling) and claims it automatically the moment it frees or
-# the holder's TTL lapses — so a run queued behind another holder, or behind a manual
-# hub session that GitHub's `concurrency` group can't see, starts on its own instead
-# of needing a manual re-run. A brief read failure or a malformed/corrupt lease value
-# mid-wait is polled through, never treated as free. Exits 1 if the lease is STILL held
-# after LEASE_WAIT_TIMEOUT_S, if the endpoint stays UNREADABLE past LEASE_UNREACHABLE_TIMEOUT_S
-# (the fast-fail for a down hub/app), or if the post-write race-check shows another claim last.
+# Exits 0 on successful claim. While the lease is read as held and not expired, this WAITS
+# (polling) and claims it automatically the moment it frees or the holder's TTL lapses — so a
+# run blocked by a manual hub session that GitHub's `concurrency` group can't see (a human
+# holding the lease by hand) starts on its own instead of needing a re-run. Cross-PR CI queueing
+# is GitHub native concurrency's job now (the hub-e2e-serialized group), not the lease's. A brief
+# read failure or a malformed/corrupt lease value mid-wait is polled through, never treated as
+# free. Exits 1 if the lease is STILL held after LEASE_WAIT_TIMEOUT_S, if the endpoint stays
+# UNREADABLE past LEASE_UNREACHABLE_TIMEOUT_S (the fast-fail for a down hub/app), or if the
+# post-write race-check shows another claim last.
 #
 # Lease shape (JSON, written into Hubitat Hub Variable `_TEST_HUB_LEASED_BY`):
 #   {"by":"<who>","since":<epoch_ms>,"until":<epoch_ms>}
@@ -66,9 +69,24 @@ mcp_call() {
 }
 
 get_lease_value() {
-  mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_manage_variables","arguments":{"tool":"hub_get_variable","args":{"name":"_TEST_HUB_LEASED_BY"}}}}' \
-    | jq -r '.result.content[0].text' \
-    | jq -r '.value // ""'
+  # Prints the lease value (may be "" when released) + exit 0 for a well-formed tools/call
+  # result OR a "variable not found" error -- a FRESH hub where _TEST_HUB_LEASED_BY was never
+  # created reads as released, so the first claim can bootstrap it (the claim write
+  # auto-creates the var). Any OTHER non-result response exits non-zero so the caller polls
+  # (read-fail path) and never falsely claims: a -32603 the main app emits mid-recompile during
+  # another run's deploy, a transport failure, a non-JSON body. `jq -e` distinguishes a real
+  # result from an error envelope; without it a missing .result.content collapsed to "" and
+  # read as "released", double-booking the single hub.
+  local resp
+  resp="$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_manage_variables","arguments":{"tool":"hub_get_variable","args":{"name":"_TEST_HUB_LEASED_BY"}}}}')" || return 1
+  # "Variable not found" -> the lease var was never created -> released/free. (A transient
+  # not-found can't false-claim: the empty-break still requires a confirming second read.)
+  if printf '%s' "$resp" | jq -e '(.error.message // "") | test("not found"; "i")' >/dev/null 2>&1; then
+    return 0
+  fi
+  local text
+  text="$(printf '%s' "$resp" | jq -e -r '.result.content[0].text')" || return 1
+  printf '%s' "$text" | jq -e -r '.value // ""' || return 1
 }
 
 set_lease_value() {
@@ -107,7 +125,20 @@ while :; do
   read_fail_since=""  # a successful read clears the unreachable streak
 
   if [ -z "$CURRENT" ]; then
-    break  # released
+    # A single empty read is already trustworthy now that get_lease_value strict-parses (a
+    # degraded response returns non-zero and polls, never a false-empty). This confirming read
+    # closes the remaining race: a lease WRITTEN between read1 and our claim. If one appears,
+    # fall through to the BUSY parse below instead of claiming over it.
+    sleep "$VERIFY_SLEEP_S"
+    if ! CONFIRM="$(get_lease_value)"; then
+      echo "::notice::Lease read empty once but the confirm read failed; polling instead of claiming."
+      sleep "$LEASE_POLL_INTERVAL_S"
+      continue
+    fi
+    if [ -z "$CONFIRM" ]; then
+      break  # released (confirmed empty by two consecutive reads)
+    fi
+    CURRENT="$CONFIRM"  # a lease appeared between the two reads -- fall through to the BUSY parse below
   fi
 
   NOW_MS="$(now_ms)"
@@ -162,11 +193,17 @@ CLAIM_AS_STRING="$(printf '%s' "$CLAIM_JSON" | jq -Rs .)"
 
 set_lease_value "$CLAIM_AS_STRING"
 
-# Post-write race-check: re-read after a short delay. If "by" isn't us,
-# someone else's claim landed last and stole the lease — abort.
+# Post-write race-check: re-read after a short delay. If "by" isn't us, someone else's claim
+# landed last and stole the lease — abort. Ride out a lone transient read failure here the way
+# the wait loop does (one retry) so a blip in this 2s window doesn't fail a claim that actually
+# landed; a sustained failure still aborts safely (the 30-min TTL bounds the lease we wrote).
 sleep "$VERIFY_SLEEP_S"
-AFTER="$(get_lease_value)"
-AFTER_BY="$(echo "$AFTER" | jq -r '.by // ""' 2>/dev/null || echo "")"
+if ! AFTER="$(get_lease_value)"; then
+  echo "::warning::Post-write verify read failed transiently; re-reading once."
+  sleep "$VERIFY_SLEEP_S"
+  AFTER="$(get_lease_value)" || { echo "::error::Could not re-read the lease to verify our claim after writing; aborting (the 30-min TTL bounds the lease we wrote)."; exit 1; }
+fi
+AFTER_BY="$(printf '%s' "$AFTER" | jq -r '.by // ""' 2>/dev/null || echo "")"
 
 if [ "$AFTER_BY" != "$BY" ]; then
   echo "::error::Lease stolen by '$AFTER_BY' before our verify check. Aborting."
