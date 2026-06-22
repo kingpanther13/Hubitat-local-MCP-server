@@ -1128,7 +1128,7 @@ def getGatewayConfig() {
             summaries: [
                 hub_create_app: "Install new app code (source|sourceFile|importUrl), OR with installAsUserApp=<codeAppId> create a running instance from already-installed code (mutually exclusive). To save context prefer importUrl (hub fetches the source itself) or hub_write_file + sourceFile; inline source for stubs only. confirm=true",
                 hub_create_driver: "Install new driver. To save context prefer importUrl (hub fetches the source) or hub_write_file + sourceFile; inline source for stubs only. For 1: source|sourceFile|importUrl. For >1: USE BULK (single round-trip: installs=[{source|sourceFile|importUrl},...]). confirm=true",
-                hub_update_app: "Modify existing app code (CRITICAL). To save context prefer importUrl (hub fetches the source itself) or hub_write_file + sourceFile over inline source. Args: appId, source|sourceFile|importUrl|resave, confirm=true",
+                hub_update_app: "Modify existing app code (CRITICAL), and/or enable OAuth on it. To save context prefer importUrl (hub fetches the source itself) or hub_write_file + sourceFile over inline source. Args: appId, source|sourceFile|importUrl|resave, oauth ({enabled,client_id?,client_secret?,refresh_secret?} -- enable/configure OAuth, returns the clientId/secret), confirm=true",
                 hub_update_driver: "Modify existing driver code (CRITICAL). For 1 driver: driverId+source|sourceFile|importUrl|resave. For >1 drivers: USE BULK (single round-trip: updates=[{driverId,sourceFile|importUrl},...]). To save context prefer importUrl (hub fetches) or hub_write_file + sourceFile over inline. confirm=true",
                 hub_delete_item: "Permanently delete an app/driver/library (DESTRUCTIVE, auto-backs up). Args: type (app|driver|library), id, confirm=true",
                 hub_restore_backup: "Restore app/driver to backed-up version. Args: backupKey, confirm=true",
@@ -1141,7 +1141,7 @@ def getGatewayConfig() {
             searchHints: [
                 hub_create_app: "add new application integration groovy",
                 hub_create_driver: "add new device handler type groovy",
-                hub_update_app: "modify change edit application groovy push deploy",
+                hub_update_app: "modify change edit application groovy push deploy oauth enable client id secret access token endpoint",
                 hub_update_driver: "modify change edit device handler type groovy push deploy",
                 hub_delete_item: "remove uninstall application integration device handler driver type groovy library shared",
                 hub_restore_backup: "rollback revert undo previous version",

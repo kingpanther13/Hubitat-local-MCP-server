@@ -2079,6 +2079,17 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 **Expected**: `hub_get_source` with `type=driver`.
 **Equivalent to**: T44
 
+#### T269b — Enable OAuth on an app (#259)
+
+```json
+{
+  "setup_prompt": "I have an app code definition (its source declares OAuth) that needs OAuth turned on. List apps so I can pick one.",
+  "test_prompt": "Enable OAuth on that app for me — I don't want to do it by hand in the UI — and tell me the client id and secret it generated."
+}
+```
+
+**Expected**: `hub_update_app` with `appId` + `oauth={enabled:true}` + `confirm=true` (in `hub_manage_code`). Returns `result.oauth` with the generated `clientId`/`clientSecret`. No source change. Refuses if the target is the MCP server's own app (Developer Mode off).
+
 #### T270 — Are there code backups?
 
 ```json

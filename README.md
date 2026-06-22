@@ -502,7 +502,7 @@ All operations are disruptive. These tools are gated by the Write master (ON by 
 |------|-------------|
 | `hub_create_app` | Install new app from Groovy source or File Manager file (`source` or `sourceFile`). Verifies install succeeded. |
 | `hub_create_driver` | Install new driver from Groovy source or File Manager file (`source` or `sourceFile`). Bulk mode: `installs=[{sourceFile},...]`. Verifies each install succeeded. |
-| `hub_update_app` | Modify existing app code (source, sourceFile, or resave) |
+| `hub_update_app` | Modify existing app code (source, sourceFile, or resave), and/or enable OAuth on it |
 | `hub_update_driver` | Modify existing driver code (single-driver or bulk `updates` array) |
 | `hub_delete_item` | Permanently delete an app, driver, or library (`type`: "app", "driver", "library"; auto-backs up first) |
 | `hub_restore_backup` | Restore app/driver to backed-up version (libraries: see `hub_update_library`). Rule snapshots (incl. Visual Rules) recreate a deleted rule. |

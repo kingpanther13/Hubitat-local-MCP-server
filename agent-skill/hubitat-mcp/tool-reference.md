@@ -223,7 +223,7 @@ Write operations for apps, drivers, libraries, and code bundles: install, update
 | `hub_create_app` | Install a new Groovy app from `source` (inline) or `sourceFile` (File Manager filename). Verifies install compiled cleanly. | Write master |
 | `hub_create_driver` | Install a new Groovy driver from `source` (inline) or `sourceFile` (File Manager filename). Bulk mode: `installs=[{source|sourceFile},...]` (continue-on-error). Verifies each install compiled cleanly. | Write master |
 | `hub_create_library` | Install a new Groovy library (`#include namespace.Name`). Library source must include a `library()` block with `name`, `namespace`, `author`, `description` (4 required; `category` optional). | Write master |
-| `hub_update_app` | Update existing app source code (source, sourceFile, or resave). | Write master |
+| `hub_update_app` | Update existing app source code (source, sourceFile, or resave), and/or enable/configure OAuth on it (`oauth={enabled,client_id?,client_secret?,refresh_secret?}` — returns the generated clientId/secret). | Write master |
 | `hub_update_driver` | Update existing driver source code. Single-driver mode (driverId + source/sourceFile/resave) or bulk mode (updates array of {driverId, sourceFile} pairs, continue-on-error). | Write master |
 | `hub_update_library` | Update existing library source code (libraryId + source/sourceFile/resave). Auto-backs up before modifying. | Write master |
 | `hub_delete_item` | Delete an installed app, driver, or library (`type`: "app", "driver", "library"; auto-backs up). For libraries, ensure no apps/drivers `#include` it first. | Write master |

@@ -1469,7 +1469,124 @@ def toolUpdateAppCode(args) {
     if (args.updates != null) {
         throw new IllegalArgumentException("Bulk mode ('updates' array) is not supported for hub_update_app. Apps do not cluster the way drivers do; update each app individually.")
     }
-    return toolUpdateItemCode("app", "appId", args)
+    if (args.oauth == null) {
+        return toolUpdateItemCode("app", "appId", args)
+    }
+
+    // OAuth fold: enable/configure OAuth on the app CODE definition (apps only), optionally alongside
+    // a source update. The destructive gate fires once here; the inner source path is then called
+    // WITHOUT re-gating. OAuth-only is allowed (no source mode required).
+    requireDestructiveConfirm(args.confirm)
+    if (!args.appId) throw new IllegalArgumentException("appId is required")
+
+    def hasSourceMode = [args.resave, args.sourceFile, args.source, args.importUrl].count { it } > 0
+    def result
+    if (hasSourceMode) {
+        result = toolUpdateItemCodeInner("app", "appId", args)   // gate already fired above
+        if (result?.success != true) return result               // source update failed -- leave OAuth untouched
+    } else {
+        result = [success: true, appId: args.appId.toString(), message: "OAuth settings updated (no source change)."]
+    }
+
+    def oauthRes = _updateAppOAuth(args.appId, args.oauth)
+    result.oauth = oauthRes
+    if (oauthRes.success != true) {
+        result.success = false
+        if (hasSourceMode) result.partial = true   // source saved, OAuth leg failed
+    }
+    return result
+}
+
+// Enable/configure OAuth on an app code definition via /app/updateOAuth (the UI's "Enable OAuth in
+// App" step). Mirrors the admin UI: pre-fills clientId/clientSecret from the app's current values
+// unless the caller overrides them, so re-running never clobbers an already-enabled app; a fresh app
+// has empty creds and the hub generates them. If the current-creds read FAILS, it refuses (returns
+// success:false) rather than submit empty creds and risk blanking a live client. Returns the
+// resulting clientId/clientSecret.
+private Map _updateAppOAuth(appId, oauth) {
+    if (!(oauth instanceof Map)) {
+        throw new IllegalArgumentException("oauth must be an object, e.g. {enabled: true} (optionally client_id, client_secret, refresh_secret).")
+    }
+    // Self-protection: never alter the MCP server's OWN app OAuth -- the clientId/secret back the
+    // live /mcp access token, so changing them would break this very connection. Gated like the
+    // source self-update guard (Developer Mode required to override). Match BOTH the installed-INSTANCE
+    // id (app.id) AND the Apps Code CLASS id -- OAuth targets the class id, which differs from app.id,
+    // so an instance-id-only check would miss the real self-OAuth attempt.
+    boolean isSelf = false
+    def selfInstanceId = app?.id?.toString()
+    if (selfInstanceId != null && appId?.toString() == selfInstanceId) {
+        isSelf = true
+    } else {
+        def selfClassId = _resolveSelfAppClassId()
+        if (selfClassId != null && appId?.toString() == selfClassId.toString()) isSelf = true
+    }
+    if (isSelf && !settings.enableDeveloperMode) {
+        mcpLog("warn", "hub-admin", "hub_update_app: OAuth change to the MCP server's own app (id=${appId}) BLOCKED -- Developer Mode is off")
+        throw new IllegalArgumentException("hub_update_app refuses to change the MCP server's own OAuth (appId=${appId}) while Developer Mode is off -- its client id/secret back the live /mcp access token and changing them would break this connection. Enable Developer Mode to override.")
+    }
+
+    boolean enabled = (oauth.enabled != null) ? (oauth.enabled == true) : true
+    boolean refreshSecret = (oauth.refresh_secret == true)
+    String clientId = (oauth.client_id != null) ? oauth.client_id.toString() : null
+    String clientSecret = (oauth.client_secret != null) ? oauth.client_secret.toString() : null
+    if (clientId == null || clientSecret == null) {
+        def cur = _readAppOAuthCreds(appId)
+        if (cur == null) {
+            // Read FAILED -- can't tell whether the app already has creds. Submitting empty would
+            // clobber existing ones, so refuse rather than risk blanking a live OAuth client.
+            return [success: false, error: "Could not read the app's current OAuth credentials to preserve them.",
+                    note: "Refusing to submit empty credentials (would clobber an already-enabled app's live creds). Pass client_id + client_secret explicitly, or retry."]
+        }
+        if (clientId == null) clientId = cur.clientId?.toString() ?: ""
+        if (clientSecret == null) clientSecret = cur.clientSecret?.toString() ?: ""
+    }
+
+    try {
+        def q = ["id=${java.net.URLEncoder.encode(appId.toString(), 'UTF-8')}",
+                 "oauthEnabled=${enabled}",
+                 "clientId=${java.net.URLEncoder.encode(clientId, 'UTF-8')}",
+                 "clientSecret=${java.net.URLEncoder.encode(clientSecret, 'UTF-8')}",
+                 "refreshSecret=${refreshSecret}"].join("&")
+        def respText = hubInternalGet("/app/updateOAuth?${q}", null, 30)
+        def parsed = null
+        try { parsed = respText ? new groovy.json.JsonSlurper().parseText(respText) : null } catch (Exception ignore) { }
+        if (parsed instanceof Map) {
+            if (parsed.success == true) {
+                return [success: true, enabled: enabled,
+                        clientId: parsed.clientId ?: (clientId ?: null),
+                        clientSecret: parsed.clientSecret ?: (clientSecret ?: null)]
+            }
+            // Surface the hub's own error text from a structured failure rather than a generic message.
+            if (parsed.error || parsed.message) {
+                return [success: false, error: (parsed.error ?: parsed.message)?.toString(), response: respText?.take(300),
+                        note: "The app's source must declare OAuth (an oauth block + mappings) before it can be enabled."]
+            }
+        }
+        return [success: false, error: "/app/updateOAuth did not report success", response: respText?.take(300),
+                note: "The app's source must declare OAuth (an oauth block + mappings) before it can be enabled."]
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "OAuth update failed", e)
+        return [success: false, error: "OAuth update failed: ${e.message}", note: "Check the app id and Hub Security credentials."]
+    }
+}
+
+// Read an app code definition's current OAuth client id/secret from the app-detail JSON
+// (/app/list/single/data/<id> returns [{...oauthClientId, oauthClientSecret...}]). Used to preserve
+// existing creds on re-enable. Returns a Map {clientId, clientSecret} (values may be null for a fresh
+// app) on a SUCCESSFUL read, or NULL if the detail could not be read. The caller MUST distinguish
+// these: "fresh app, no creds yet" (send empty -> hub generates) vs "read failed, don't know" (refuse
+// to submit empty, which would clobber an already-enabled app's live creds).
+private _readAppOAuthCreds(appId) {
+    try {
+        def txt = hubInternalGet("/app/list/single/data/${java.net.URLEncoder.encode(appId.toString(), 'UTF-8')}", null, 30)
+        def d = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
+        def o = (d instanceof List && d) ? d[0] : (d instanceof Map ? d : null)
+        if (!(o instanceof Map)) return null   // unreadable / unrecognized shape -- NOT "no creds"
+        return [clientId: o.oauthClientId, clientSecret: o.oauthClientSecret]
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "Could not read current OAuth creds for app ${appId}", e)
+        return null
+    }
 }
 
 def toolUpdateDriverCode(args) {
@@ -2561,7 +2678,9 @@ Four source modes (mutually exclusive):
 
 Auto-backs up before modifying. Requires Write master + confirm + backup <24h.
 
-Self-update guard: refuses to overwrite the MCP server's own app source unless Developer Mode is on. Optional expectedVersion arg enables optimistic locking. Optional triggerUpdated arg fires updated() on a named instance after save.[[FLAT_TRIM]] A bad self-update bricks the MCP loop. UI Save does NOT fire updated() -- triggerUpdated is opt-in only.[[/FLAT_TRIM]]""",
+Self-update guard: refuses to overwrite the MCP server's own app source unless Developer Mode is on.[[FLAT_TRIM]] Optional expectedVersion arg enables optimistic locking. Optional triggerUpdated arg fires updated() on a named instance after save. A bad self-update bricks the MCP loop. UI Save does NOT fire updated() -- triggerUpdated is opt-in only.
+
+OAuth: pass oauth={enabled:true} to enable OAuth on the app code definition (apps only) -- the programmatic version of the UI's "Enable OAuth in App" -- and get the generated clientId/clientSecret back under result.oauth. Use it to ship apps with OAuth already on instead of the manual UI step. Runs alone (no source change) or alongside a source update.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2572,6 +2691,7 @@ Self-update guard: refuses to overwrite the MCP server's own app source unless D
                     resave: [type: "boolean", description: "Re-save the current source code without changes. Runs entirely on-hub."],
                     expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard. Aborts with conflict:true on version mismatch.[[FLAT_TRIM]] Stringified integers coerced; explicit null rejected.[[/FLAT_TRIM]]"],
                     triggerUpdated: [type: "integer", description: "OPTIONAL post-save lifecycle refresh. Set to the running instance appId; fires updated() so subscriptions/schedules re-initialize.[[FLAT_TRIM]] Default: omitted (matches UI behavior; UI does NOT fire updated() on save).[[/FLAT_TRIM]]"],
+                    oauth: [type: "object", description: "OPTIONAL: enable/configure OAuth on this app (apps only).[[FLAT_TRIM]] Returns the generated clientId/secret. {enabled (bool, default true), client_id?, client_secret?, refresh_secret? (bool, regenerate the secret)}. Omit client_id/client_secret to preserve the app's current values (the hub generates them on first enable); if those current values can't be read it refuses (success:false) rather than risk blanking them -- pass them explicitly to force it. The resulting clientId/clientSecret come back under result.oauth. Can be the only change (no source mode required) or run with a source update. Refuses to alter the MCP server's own app OAuth unless Developer Mode is on (it backs the live /mcp token).[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["appId", "confirm"]
@@ -2588,11 +2708,12 @@ Self-update guard: refuses to overwrite the MCP server's own app source unless D
                     note: [type: "string", description: "Source-mode / recovery guidance"],
                     triggerUpdated: [description: "Instance appId updated() was fired on; present when requested"],
                     updatedFired: [type: "boolean", description: "Whether updated() fired on the instance"],
-                    partial: [type: "boolean", description: "Code saved but the opt-in lifecycle refresh failed"],
+                    partial: [type: "boolean", description: "Code saved but a follow-on leg failed -- the OAuth update, or the opt-in lifecycle refresh"],
                     repairHints: [type: "array", description: "Recovery steps; present on partial/lifecycle failure", items: [type: "string"]],
                     expectedVersion: [type: "integer", description: "Optimistic-lock expected version; present on conflict"],
                     currentVersion: [type: "integer", description: "Hub's actual version; present on conflict"],
                     conflict: [type: "boolean", description: "True when an optimistic-lock conflict aborted the update"],
+                    oauth: [type: "object", description: "OAuth update result; present when the oauth arg was supplied. {success, enabled, clientId, clientSecret}. clientId/clientSecret are the resulting (possibly hub-generated) credentials."],
                     lastBackup: [type: "string", description: "Timestamp of most recent backup"]
                 ],
                 required: ["success"]
@@ -2977,7 +3098,7 @@ def _toolDisplayMeta_partCodeManagement() {
         hub_get_source: [title: "Get Source Code", summary: "Read Groovy source for an app, driver, or library."],
         hub_create_app: [title: "Install App", summary: "Install a new app from source, a File Manager file, or a URL, or instantiate installed app code."],
         hub_create_driver: [title: "Install Driver", summary: "Install one or more drivers from source, File Manager files, or a URL."],
-        hub_update_app: [title: "Update App Code", summary: "Modify an existing app's source code."],
+        hub_update_app: [title: "Update App Code", summary: "Modify an existing app's source code, or enable/configure its OAuth (client id/secret)."],
         hub_update_driver: [title: "Update Driver Code", summary: "Modify an existing driver's source code."],
         hub_create_library: [title: "Install Library", summary: "Install a new Groovy library."],
         hub_update_library: [title: "Update Library Code", summary: "Modify an existing library's source code."],
