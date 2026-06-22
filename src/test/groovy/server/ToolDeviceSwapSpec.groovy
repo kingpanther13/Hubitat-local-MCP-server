@@ -741,4 +741,85 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('new_device_id is required')
     }
+
+    def "device replace list_options read FAILURE returns success:false (not an empty no-candidates result)"() {
+        given:
+        // The read endpoint throws (relay/auth/transient) -- must surface as a failure, NOT as
+        // success:true with empty options (which would read as 'this device is unreplaceable').
+        hubGet.register('/device/getReplacementOptions/80') { params -> throw new RuntimeException("hub unreachable") }
+
+        when:
+        def result = script.toolCallDeviceReplace([old_device_id: '80', list_options: true])
+
+        then:
+        result.success == false
+        result.error.contains('Could not read replacement options')
+    }
+
+    def "device replace list_options non-list response returns success:false (not empty success)"() {
+        given:
+        // A 2xx-but-non-array body (e.g. an {error:...} object or HTML) is a failed read, not
+        // 'no candidates'.
+        hubGet.register('/device/getReplacementOptions/80') { params -> '{"error":"unknown device"}' }
+
+        when:
+        def result = script.toolCallDeviceReplace([old_device_id: '80', list_options: true])
+
+        then:
+        result.success == false
+        result.error.contains('non-list')
+    }
+
+    def "device replace list_options empty array is a clean no-candidates success"() {
+        given:
+        hubGet.register('/device/getReplacementOptions/80') { params -> '[]' }
+
+        when:
+        def result = script.toolCallDeviceReplace([old_device_id: '80', list_options: true])
+
+        then:
+        result.success == true
+        result.optionCount == 0
+        result.note.contains('No compatible replacement')
+    }
+
+    def "device replace apply: a thrown hub error returns a structured failure with a recovery note"() {
+        given:
+        enableWriteWithBackup()
+        hubGet.register('/device/replace?oldId=80&newId=23') { params -> throw new RuntimeException("relay 504") }
+
+        when:
+        def result = script.toolCallDeviceReplace([old_device_id: '80', new_device_id: '23', confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('Device replace failed')
+        result.note.contains('hub_get_device')   // tells the caller how to verify whether it committed
+    }
+
+    def "device replace apply: an unparseable hub response is not greened"() {
+        given:
+        enableWriteWithBackup()
+        hubGet.register('/device/replace?oldId=80&newId=23') { params -> '<html>error</html>' }
+
+        when:
+        def result = script.toolCallDeviceReplace([old_device_id: '80', new_device_id: '23', confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('did not report success')
+        result.response                            // raw body echoed for debugging
+    }
+
+    def "device replace apply without a recent backup throws BACKUP REQUIRED"() {
+        given: 'no lastBackupTimestamp seeded'
+        settingsMap.enableWrite = true
+
+        when:
+        script.toolCallDeviceReplace([old_device_id: '80', new_device_id: '23', confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('BACKUP REQUIRED')
+    }
 }

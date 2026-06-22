@@ -2112,8 +2112,17 @@ def toolCallDeviceReplace(args) {
     if (args?.list_options == true) {
         try {
             def raw = hubInternalGet("/device/getReplacementOptions/${java.net.URLEncoder.encode(oldId, 'UTF-8')}")
-            def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : []
-            def options = (parsed instanceof List) ? parsed.collect { [id: it?.id?.toString(), name: it?.name, deviceTypes: it?.deviceTypes] } : []
+            def parsed = raw?.trim() ? new groovy.json.JsonSlurper().parseText(raw) : null
+            // A genuine "no candidates" answer is an empty JSON array (a List). Anything else --
+            // empty body, an HTML error page, a {error:...} object -- is a FAILED read, not "no
+            // replacements"; reporting it as an empty success would mislead the caller into thinking
+            // the device is unreplaceable. Distinguish the two rather than coalescing both to [].
+            if (!(parsed instanceof List)) {
+                mcpLog("warn", "device-replace", "getReplacementOptions for ${oldId} returned a non-list response: ${raw?.take(200)}")
+                return [success: false, error: "Replacement-options read returned an unexpected (non-list) response.", response: raw?.take(300),
+                        note: "Verify old_device_id (from hub_list_devices) and Hub Security credentials; the hub did not return a candidate list."]
+            }
+            def options = parsed.collect { [id: it?.id?.toString(), name: it?.name, deviceTypes: it?.deviceTypes] }
             return [success: true, listOptions: true, oldDeviceId: oldId, options: options, optionCount: options.size(),
                     note: options ? "Pick an option's id as new_device_id, then call again with confirm=true to replace." : "No compatible replacement devices found for this device."]
         } catch (Exception e) {
