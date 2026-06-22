@@ -715,13 +715,15 @@ private String _describeValueForError(v) {
 }
 
 // Parse a value as BigDecimal for numeric comparator math, or null if it is not numeric.
-// Accepts a Number directly and a numeric-parseable String (the form device states report);
-// anything else (null, non-numeric string, list, map) yields null so the caller treats it as
-// "no match" rather than throwing. NumberFormatException is the only expected failure.
+// Accepts a Number directly and a numeric-parseable CharSequence (a String or a GString --
+// the form device states report); anything else (null, non-numeric string, list, map) yields
+// null so the caller treats it as "no match" rather than throwing. A GString is not a String
+// subtype in Groovy, so match CharSequence and normalize via toString() before parsing.
+// NumberFormatException is the only expected failure.
 private BigDecimal _parseBigDecimalOrNull(v) {
     if (v instanceof Number) return v as BigDecimal
-    if (v instanceof String && v.isNumber()) {
-        try { return new BigDecimal(v) } catch (NumberFormatException ignored) { return null }
+    if (v instanceof CharSequence && v.isNumber()) {
+        try { return new BigDecimal(v.toString()) } catch (NumberFormatException ignored) { return null }
     }
     return null
 }

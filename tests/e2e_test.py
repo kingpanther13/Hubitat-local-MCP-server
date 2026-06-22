@@ -1645,7 +1645,7 @@ class TestRunner:
         sw_id = ""
         try:
             # --- numeric comparator on a dimmer ---
-            dr = self._soft_write(
+            self._soft_write(
                 lambda: self.client.call_tool("hub_manage_virtual_device", {
                     "action": "create", "deviceType": "Virtual Dimmer",
                     "deviceLabel": f"{PREFIX}CmpDimmer", "confirm": True}),

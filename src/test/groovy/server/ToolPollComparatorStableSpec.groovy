@@ -1,5 +1,6 @@
 package server
 
+import spock.lang.IgnoreIf
 import support.TestDevice
 import support.ToolSpecBase
 
@@ -448,6 +449,7 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
     // does NOT converge on the first matching poll -- it must hold for stableForMs
     // of virtual time first. If the debounce gate were removed (converge on first
     // match), polledCount would be 1 and elapsed < stableForMs.
+    @IgnoreIf({ System.getProperty('harnessStrictMetaClass') == 'true' })  // virtual clock needs the pauseExecution metaClass override, which the strict-metaClass groovy2x lane disallows; full coverage runs in the primary test lanes
     def "stableForMs does not converge on the first matching poll; converges only after the window elapses"() {
         given: 'value is at target from the very first read'
         def device = new TestDevice(id: 450, label: 'Switch', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
@@ -471,6 +473,7 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
     // true -> false -> true must RESET the stability window. If the reset
     // (conditionTrueSince = null on a false poll) were dropped, the run would
     // converge using stale accumulated true-time and finalValue could differ.
+    @IgnoreIf({ System.getProperty('harnessStrictMetaClass') == 'true' })  // virtual clock needs the pauseExecution metaClass override, which the strict-metaClass groovy2x lane disallows; full coverage runs in the primary test lanes
     def "stableForMs resets the window when the condition flaps false then true again"() {
         given: 'switch reads on (poll 1), off (poll 2 -> reset), then on from poll 3 onward'
         def readCount = 0
@@ -569,6 +572,7 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
     // comparator + stableForMs combined
     // -------------------------------------------------------------------------
 
+    @IgnoreIf({ System.getProperty('harnessStrictMetaClass') == 'true' })  // virtual clock needs the pauseExecution metaClass override, which the strict-metaClass groovy2x lane disallows; full coverage runs in the primary test lanes
     def "gte + stableForMs converges only after a numeric value holds above threshold for the window"() {
         given: 'temperature already at 73 (>= 72) from the first read'
         def device = new TestDevice(id: 460, label: 'Temp', supportedAttributes: [[name: 'temperature']], attributeValues: [temperature: '73'])
@@ -605,6 +609,7 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
     // _buildWaitForPollArgs pass-through (hub_call_device_command waitFor path)
     // =========================================================================
 
+    @IgnoreIf({ System.getProperty('harnessStrictMetaClass') == 'true' })  // virtual clock needs the pauseExecution metaClass override, which the strict-metaClass groovy2x lane disallows; full coverage runs in the primary test lanes
     def "waitFor passes comparator + stableForMs through and converges via command flow"() {
         given:
         def fired = []
