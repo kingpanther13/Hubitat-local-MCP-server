@@ -1932,6 +1932,133 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         atomicStateMap.itemBackupManifest?.containsKey('app_50')
     }
 
+    // -------- hub_update_app OAuth fold (#259): enable/configure OAuth on an app code definition --------
+
+    def "hub_update_app oauth-only enables OAuth and returns the (hub-generated) creds with no source change"() {
+        given:
+        enableWrite()
+        and: 'fresh app: detail read shows no current creds, so the hub generates and returns them'
+        hubGet.register('/app/list/single/data/42') { params -> '[{"id":42,"oauthClientId":null,"oauthClientSecret":null}]' }
+        hubGet.register('/app/updateOAuth?id=42&oauthEnabled=true&clientId=&clientSecret=&refreshSecret=false') { params ->
+            '{"success":true,"clientId":"gen-id","clientSecret":"gen-secret"}'
+        }
+        def posted = null
+        script.metaClass.hubInternalPostJson = { String path, String body -> posted = path; [success: true] }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '42', oauth: [enabled: true], confirm: true])
+
+        then:
+        result.success == true
+        posted == null                                   // no source save on an OAuth-only update
+        result.message.contains('no source change')
+        result.oauth.success == true
+        result.oauth.enabled == true
+        result.oauth.clientId == 'gen-id'
+        result.oauth.clientSecret == 'gen-secret'
+    }
+
+    def "hub_update_app oauth with explicit client_id/client_secret sends them verbatim (no detail read)"() {
+        given:
+        enableWrite()
+        // Only updateOAuth is registered: if the tool wrongly did the detail read, that GET would be
+        // unregistered and throw, surfacing as success:false -- so success here proves it skipped the read.
+        hubGet.register('/app/updateOAuth?id=42&oauthEnabled=true&clientId=my-id&clientSecret=my-sec&refreshSecret=false') { params ->
+            '{"success":true,"clientId":"my-id","clientSecret":"my-sec"}'
+        }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '42', oauth: [enabled: true, client_id: 'my-id', client_secret: 'my-sec'], confirm: true])
+
+        then:
+        result.success == true
+        result.oauth.clientId == 'my-id'
+    }
+
+    def "hub_update_app oauth refresh_secret=true regenerates the secret"() {
+        given:
+        enableWrite()
+        hubGet.register('/app/updateOAuth?id=42&oauthEnabled=true&clientId=cid&clientSecret=csec&refreshSecret=true') { params ->
+            '{"success":true,"clientId":"cid","clientSecret":"rotated"}'
+        }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '42', oauth: [enabled: true, client_id: 'cid', client_secret: 'csec', refresh_secret: true], confirm: true])
+
+        then:
+        result.success == true
+        result.oauth.clientSecret == 'rotated'
+    }
+
+    def "hub_update_app refuses to change the MCP server's OWN app OAuth when Developer Mode is off"() {
+        given:
+        enableWrite()   // app.id == 1 (the stubbed self app); Developer Mode is off
+
+        when:
+        script.toolUpdateAppCode([appId: '1', oauth: [enabled: true], confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("own OAuth")
+    }
+
+    def "hub_update_app updates source AND enables OAuth in one call"() {
+        given:
+        enableWrite()
+        hubGet.register('/app/ajax/code') { params -> '{"status":"ok","version":7,"source":"old"}' }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true, id: 50] }
+        hubGet.register('/app/updateOAuth?id=50&oauthEnabled=true&clientId=cid&clientSecret=csec&refreshSecret=false') { params ->
+            '{"success":true,"clientId":"cid","clientSecret":"csec"}'
+        }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '50', source: 'new src', oauth: [enabled: true, client_id: 'cid', client_secret: 'csec'], confirm: true])
+
+        then:
+        result.success == true
+        result.sourceMode == 'source'        // source leg ran
+        result.oauth.success == true         // OAuth leg ran
+    }
+
+    def "hub_update_app surfaces an OAuth failure without false-greening"() {
+        given:
+        enableWrite()
+        hubGet.register('/app/updateOAuth?id=42&oauthEnabled=true&clientId=c&clientSecret=s&refreshSecret=false') { params ->
+            '{"success":false}'
+        }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '42', oauth: [enabled: true, client_id: 'c', client_secret: 's'], confirm: true])
+
+        then:
+        result.success == false
+        result.oauth.success == false
+    }
+
+    @spock.lang.Unroll
+    def "hub_update_app via dispatch enables OAuth (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+        hubGet.register('/app/updateOAuth?id=42&oauthEnabled=true&clientId=c&clientSecret=s&refreshSecret=false') { params ->
+            '{"success":true,"clientId":"c","clientSecret":"s"}'
+        }
+
+        when:
+        def response = mcpDriver.callTool('hub_update_app', [appId: '42', oauth: [enabled: true, client_id: 'c', client_secret: 's'], confirm: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.oauth.success == true
+
+        where:
+        useGateways << [true, false]
+    }
+
     @spock.lang.Unroll
     def "hub_update_app via dispatch (source mode) backs up and POSTs to /app/saveOrUpdateJson (useGateways=#useGateways)"() {
         given:

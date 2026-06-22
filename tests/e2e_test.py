@@ -4586,7 +4586,8 @@ definition(
     description: "Throwaway e2e app-code update-leg target",
     category: "Utility",
     iconUrl: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png",
-    iconX2Url: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png"
+    iconX2Url: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png",
+    oauth: true
 )
 
 preferences {
@@ -4595,8 +4596,13 @@ preferences {
     }
 }
 
+mappings {
+    path("/ping") { action: [GET: "ping"] }
+}
+
 def installed() {}
 def updated() {}
+def ping() { render contentType: "text/plain", data: "ok" }
 
 def updateLegMarker() { return "UPDATE-LEG-MARKER-V1" }
 '''
@@ -4702,7 +4708,25 @@ def updateLegMarker() { return "UPDATE-LEG-MARKER-V1" }
             assert int(after_restore["version"]) > version_after, \
                 f"restore reported success but the version did not advance ({version_after} -> {after_restore.get('version')})"
 
-            print(f"    APP_CODE_UPDATE ok -- v{version_before}->v{version_after}; compile error + lock conflict both refused with no write; restore brought V1 back (undo key {pre_restore_key})")
+            # Leg 5 (#259): enable OAuth on the (oauth:true-declaring) code class via the
+            # hub_update_app oauth fold -- the programmatic "Enable OAuth in App". The leg MUST
+            # dispatch and return a structured oauth block; on success the hub returns the generated
+            # clientId. (Throwaway app, never the MCP server -- the self-OAuth guard protects that.)
+            oauth_res = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_update_app",
+                "args": {"appId": code_app_id, "oauth": {"enabled": True}, "confirm": True},
+            })
+            assert isinstance(oauth_res, dict) and "oauth" in oauth_res, \
+                f"hub_update_app(oauth) returned no oauth block: {oauth_res}"
+            ob = oauth_res["oauth"]
+            if ob.get("success"):
+                assert ob.get("clientId"), f"OAuth enabled but no clientId returned: {ob}"
+                oauth_note = f"OAuth enabled (clientId len {len(str(ob['clientId']))})"
+            else:
+                assert ob.get("error"), f"OAuth leg failed without a structured error: {ob}"
+                oauth_note = f"OAuth leg dispatched, structured failure: {ob.get('error')}"
+
+            print(f"    APP_CODE_UPDATE ok -- v{version_before}->v{version_after}; compile error + lock conflict both refused with no write; restore brought V1 back (undo key {pre_restore_key}); {oauth_note}")
         finally:
             if code_app_id:
                 try:
