@@ -1610,6 +1610,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v2.8.0** - feat: fold hub_set_rule to a flat self-gateway + trim RM tool/gateway prose. PRs: [#310](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/310)
 - **v2.7.10** - feat: full mode-management surface (hub_manage_mode + hub_set_mode_manager). PRs: [#313](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/313)
 - **v2.7.9** - feat: multi-device convergence on hub_get_device_attribute (deviceIds + mode any/all). PRs: [#306](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/306)
 - **v2.7.8** - ci: fix lease double-booking + FIFO-order the e2e queue; ci: re-run e2e only when a full-run label flips the lane (not on every toggle); feat: add hub_call_device_replace (re-point a device onto replacement hardware). PRs: [#308](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/308), [#309](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/309), [#307](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/307)
