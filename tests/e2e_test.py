@@ -436,7 +436,12 @@ class TestRunner:
                 continue
             if method and f"(method {method})" not in msg:
                 continue
-            keys.add(f"{entry.get('time', entry.get('timestamp', ''))}|{msg}")
+            # hub_get_logs puts the (sub-second) timestamp in 'name'; 'time' is empty on this hub.
+            # Use name so each trip gets a DISTINCT key -- otherwise identical messages collapse to
+            # one key and the baseline delta can never see a fresh trip (it would hard-fail the
+            # soft-pass on a shared device that already had a matching line in the baseline).
+            ts = entry.get("name") or entry.get("time") or entry.get("timestamp") or ""
+            keys.add(f"{ts}|{msg}")
         return keys
 
     def _limiter_logged(self, device_id: Any, method: str | None = None, baseline: set | None = None) -> bool:
