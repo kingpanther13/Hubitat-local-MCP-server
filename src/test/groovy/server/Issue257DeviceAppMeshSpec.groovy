@@ -93,7 +93,7 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
         hubGet.register('/installedapp/json/5') { params -> JsonOutput.toJson([id: 5, name: "Notifier", disabled: true]) }
 
         when:
-        def result = script.executeTool("hub_set_app_disabled", [app_id: 5, disabled: true])
+        def result = script.executeTool("hub_set_app_disabled", [appId: 5, disabled: true])
 
         then:
         posted.path == "/installedapp/disable"
@@ -112,19 +112,19 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
         hubGet.register('/installedapp/json/7') { params -> JsonOutput.toJson([id: 7, disabled: false]) }
 
         when:
-        def result = script.executeTool("hub_set_app_disabled", [app_id: 7, disabled: true])
+        def result = script.executeTool("hub_set_app_disabled", [appId: 7, disabled: true])
 
         then:
         result.success == false
         result.disabled == false
     }
 
-    def "hub_set_app_disabled rejects a non-positive app_id"() {
+    def "hub_set_app_disabled rejects a non-positive appId"() {
         given:
         settingsMap.enableWrite = true
 
         when:
-        script.executeTool("hub_set_app_disabled", [app_id: 0, disabled: true])
+        script.executeTool("hub_set_app_disabled", [appId: 0, disabled: true])
 
         then:
         thrown(IllegalArgumentException)
@@ -293,7 +293,7 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostJson = { String path, String jsonBody, int timeout = 420, boolean isRetry = false -> throw new RuntimeException("net down") }
 
         when:
-        def result = script.executeTool("hub_set_app_disabled", [app_id: 5, disabled: true])
+        def result = script.executeTool("hub_set_app_disabled", [appId: 5, disabled: true])
 
         then:
         result.success == false
@@ -308,7 +308,7 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
         hubGet.register('/installedapp/json/9') { params -> throw new RuntimeException("404") }
 
         when:
-        def result = script.executeTool("hub_set_app_disabled", [app_id: 9, disabled: true])
+        def result = script.executeTool("hub_set_app_disabled", [appId: 9, disabled: true])
 
         then:
         result.success == false
@@ -321,7 +321,7 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
         settingsMap.enableWrite = true
 
         when:
-        script.executeTool("hub_set_app_disabled", [app_id: 5])
+        script.executeTool("hub_set_app_disabled", [appId: 5])
 
         then:
         thrown(IllegalArgumentException)

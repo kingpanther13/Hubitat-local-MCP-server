@@ -1278,7 +1278,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_native_rules_and_apps: [
-            description: "Native classic-app CRUD + Rule Machine runtime control. WHEN TO USE: creating or editing any NON-Rule-Machine classic SmartApp (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule, etc.) via hub_set_native_app, plus delete/clone/export/import of ANY classic app by appId, plus RMUtils runtime control of RM rules (list/run/pause/resume/setBoolean/health). TO CREATE OR EDIT A RULE MACHINE RULE (triggers/actions/conditions) -- 'create a rule machine rule', 'make a Hubitat rule' -- use the dedicated hub_manage_rule_machine gateway's hub_set_rule tool instead; that is the right path for default rule-authoring requests. The custom_* MCP rule engine (separate surface) is only for sandbox MCP-managed rules not visible in Hubitat's UI -- uncommon outside power-user / testing scenarios. Two surfaces here: (1) RMUtils-based runtime control for RM rules (list/run/pause/resume/setBoolean -- RM-specific because RMUtils is RM-only); (2) admin-layer CRUD that works uniformly across ALL classic SmartApps via /installedapp/* (hub_set_native_app create+edit, hub_delete_native_app, plus clone/copy/duplicate and export/import, by appId). Writes snapshot before every change; restore via the unified hub_list_backups (in hub_read_apps_code) + hub_restore_backup (in hub_manage_code) tools. Completely separate from the MCP custom rule engine (custom_* tools). Reads require the Read master; CRUD requires the Write master (destructive CRUD additionally requires confirm=true + a recent backup). Verification protocol: write operations on RM 5.1 are asynchronous; if a response indicates a hard failure (success: false) or a partial state needing repair (partial: true, or non-empty settingsSkipped), the hub may have applied the change post-response despite the reported status -- verify via hub_get_app_config(appId=N) and inspect persisted settings before retrying.",
+            description: "Native classic-app CRUD + Rule Machine runtime control. Use for: create/edit any non-RM classic SmartApp (Room Lighting, Button Controller, Notifier, Groups+Scenes) via hub_set_native_app (Visual Rules use hub_set_visual_rule); delete/clone/export/import any classic app by appId; and RMUtils runtime control of RM rules (list/run, pause/resume, set private boolean, health). To author a Rule Machine rule's triggers/actions/conditions — 'create a rule machine rule', 'make a Hubitat rule' — use the dedicated hub_manage_rule_machine gateway (hub_set_rule) instead; that is the default rule-authoring path. Not the legacy custom_* sandbox engine. Writes snapshot first (restore via hub_list_backups + hub_restore_backup); destructive ops need confirm=true + a recent backup. RM 5.1 writes are async — on success:false / partial:true, verify via hub_get_app_config(appId) before retrying.",
             tools: ["hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_native_app", "hub_set_app_disabled", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"],
             summaries: [
                 hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
@@ -1287,7 +1287,7 @@ def getGatewayConfig() {
                 hub_set_rule_private_boolean: "Set an RM rule's private boolean (RMUtils). Args: ruleId, value (bool)",
                 hub_set_native_app: "Create or edit any classic native app (Room Lighting, Button Controller, Basic Rule, Notifier, Groups+Scenes, etc.) — generic upsert. Omit appId to create (appType, name); provide appId to edit via settings/button/walkStep. buttonRule={controllerId, buttonNumber, event} creates a Button Rule through its parent controller. Auto-backs-up before edits. For Rule Machine RULES use hub_set_rule (in hub_manage_rule_machine). Args: appId (omit=create), appType, name, settings|button|walkStep|buttonRule, pageName (opt), stateAttribute (opt), confirm.",
                 hub_delete_native_app: "Delete any classic native app (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm",
-                hub_set_app_disabled: "Enable or disable any installed app without deleting it (reversible red-X). Args: app_id, disabled (bool). Read-back verified. For RM rules prefer hub_set_rule_paused.",
+                hub_set_app_disabled: "Enable or disable any installed app without deleting it (reversible red-X). Args: appId, disabled (bool). Read-back verified. For RM rules prefer hub_set_rule_paused.",
                 hub_clone_native_app: "Clone an existing rule/app via Hubitat's first-party appCloner. Cheaper than rebuilding from scratch via the wizard. Args: appId (alias sourceAppId), newName (opt), confirm. Returns newAppId.",
                 hub_export_native_app: "Export a rule/app to its canonical JSON shape via Hubitat's first-party appCloner. Args: appId (alias sourceAppId), saveAs (opt File Manager filename). Returns the JSON content (and writes to File Manager if saveAs given).",
                 hub_import_native_app: "Create a new rule/app from a previously-exported JSON via Hubitat's first-party appCloner. Args: jsonContent | fromFile, parentHintAppId (existing rule under the target parent — used to seed the cloner), newName (opt), confirm. Returns newAppId.",
@@ -1396,7 +1396,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_rule_machine: [
-            description: "Dedicated rule-authoring gateway. Visual Rules Builder is the PRIMARY engine for new automations — hub_set_visual_rule / hub_get_visual_rule / hub_delete_visual_rule — one clean JSON write, no wizard, with if/then/else condition gating. CREATE and EDIT full RM rules with hub_set_rule (triggers, actions, conditions, required expressions, IF/THEN/ELSE, local variables, walkStep) when the automation needs something complex (nested logic, loops, variables, arbitrary device commands); DELETE RM rules with hub_delete_native_app, plus RMUtils runtime control: list rules, trigger/run, pause/resume, set the private boolean, and check rule health. THIS is the right path for 'create a rule' / 'make a Hubitat automation'. For NON-RM classic apps (Room Lighting, Button Controllers, Notifier, Groups+Scenes, etc.) use hub_manage_native_rules_and_apps. Read-only views are also in hub_read_rules.",
+            description: "Dedicated rule-authoring gateway. Visual Rules Builder is the primary engine for new automations (hub_set_visual_rule / hub_get_visual_rule / hub_delete_visual_rule) — one clean JSON write with if/then/else gating. Use hub_set_rule to create/edit a full RM rule (triggers, actions, conditions, required expressions, IF/THEN/ELSE, local variables, walkStep) when the automation needs nested logic, loops, variables, or arbitrary device commands; delete RM rules with hub_delete_native_app; plus RMUtils runtime control (list/run, pause/resume, private boolean, health). This is the path for 'create a rule' / 'make a Hubitat automation'. For non-RM classic apps (Room Lighting, Button Controllers, Notifier, Groups+Scenes) use hub_manage_native_rules_and_apps. Read-only views are in hub_read_rules.",
             tools: ["hub_set_rule", "hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_get_rule_health", "hub_list_rule_local_variables", "hub_delete_native_app", "hub_get_visual_rule", "hub_set_visual_rule", "hub_delete_visual_rule"],
             summaries: [
                 hub_set_rule: "Create or edit a Rule Machine rule (RM 5.1) — the full authoring surface. Omit appId to create (name; optionally bundle addTriggers/addActions); provide appId to edit via addTrigger / addAction / addRequiredExpression / replaceRequiredExpression / addTriggers / addActions / replaceActions / removeAction / clearActions / moveAction / removeTrigger / modifyTrigger / addLocalVariable / removeLocalVariable / patches / walkStep, or raw settings/button. Auto-backs-up first. Args: appId (omit=create), name, <shortcut>|settings|button, confirm.",
@@ -1821,11 +1821,11 @@ def handleGateway(gatewayName, toolName, toolArgs) {
     // gateway rejects them for missing appId/confirm before the handler ever runs.
     // hub_set_rule(guide:true) returns the capability reference inline;
     // addTrigger/addAction {discover:true} return the live machine-readable schema.
-    def isGatedMetaCall = toolName == "hub_set_rule" && (
-        safeArgs.guide == true ||
-        (safeArgs.addTrigger instanceof Map && safeArgs.addTrigger.discover == true) ||
-        (safeArgs.addAction instanceof Map && safeArgs.addAction.discover == true)
-    )
+    // Schema-only calls (legacy guide:true / addTrigger|addAction discover, OR the
+    // self-gateway guide/discover op / args-omitted probe) return content with no
+    // mutation and short-circuit at the top of toolSetRule, so they bypass the
+    // required-param pre-check (else the gateway rejects them for missing confirm).
+    def isGatedMetaCall = toolName == "hub_set_rule" && _isSetRuleSchemaOnlyCall(safeArgs)
     if (required && !isGatedMetaCall) {
         def missing = required.findAll { !safeArgs.containsKey(it) }
         if (missing) {
@@ -1964,7 +1964,17 @@ def getToolDefinitions() {
             // cap (this is the all-tools-individually surface) -- independent of the
             // publishOutputSchemas setting (issue #290), which only gates the gateway-mode
             // base tools and the gateway catalog disclosure, where the budget has headroom.
-            tool.findAll { it.key != 'outputSchema' } + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
+            def base = tool.findAll { it.key != 'outputSchema' }
+            // hub_set_rule self-gateway: in flat mode its 25-param fat inputSchema is the
+            // biggest single consumer of the tools/list budget, so fold it to a thin
+            // {operation,args} selector (the agent probes for an operation's real schema
+            // on demand -- see toolSetRule's envelope normalizer). Gateway mode keeps the
+            // fat schema (already lazily disclosed by its gateway).
+            if (base.name == 'hub_set_rule') {
+                def flatTool = _setRuleFlatTool()
+                base = base + [description: flatTool.description, inputSchema: flatTool.inputSchema]
+            }
+            base + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
         }
     }
 
@@ -2093,7 +2103,10 @@ def executeTool(toolName, args) {
             if (settings.enableRead == false) {
                 throw new IllegalArgumentException("Read tools are disabled. Enable 'Read Tools' in MCP Rule Server app settings to use ${toolName}.")
             }
-        } else if (settings.enableWrite == false) {
+        } else if (settings.enableWrite == false && !(toolName == 'hub_set_rule' && _isSetRuleSchemaOnlyCall(args))) {
+            // hub_set_rule schema-only calls (guide/discover/args-omitted probe) return
+            // reference content and mutate nothing, so they stay reachable when writes
+            // are disabled; every actual write still hits this gate.
             throw new IllegalArgumentException("Write tools are disabled. Enable 'Write Tools' in MCP Rule Server app settings to use ${toolName}.")
         }
     }
@@ -5276,10 +5289,10 @@ RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/priva
 - **hub_set_rule_private_boolean** — set private boolean (Boolean or lowercase "true"/"false" only)
 
 Native CRUD (hub admin-layer, additionally requires the Write master):
-- **hub_set_native_app** — create or edit any classic SmartApp (Button Controller, Notifier, Groups+Scenes, Visual Rule, Basic Rules). Omit appId to create (appType enum: rule_machine / button_controller / groups_scenes / notifier / visual_rule / basic_rule; name); provide appId to edit via settings/button. Create a Button Rule under its controller via buttonRule={controllerId, buttonNumber, event} (returns buttonRuleId; author its actions via hub_set_rule). walkStep (generic classic-page walker) works here too. Returns appId on create. (In the hub_manage_native_rules_and_apps gateway.)
+- **hub_set_native_app** — create or edit any classic SmartApp (Button Controller, Notifier, Groups+Scenes, Basic Rules; edits Visual Rules by appId too). Omit appId to create (appType enum: rule_machine / button_controller / groups_scenes / notifier / basic_rule; name); provide appId to edit via settings/button. Visual Rules are created with hub_set_visual_rule, not this appType enum. Create a Button Rule under its controller via buttonRule={controllerId, buttonNumber, event} (returns buttonRuleId; author its actions via hub_set_rule). walkStep (generic classic-page walker) works here too. Returns appId on create. (In the hub_manage_native_rules_and_apps gateway.)
 - **hub_set_rule** — create or edit a Rule Machine rule. Omit appId to create (name; optionally bundle addTriggers=[...] / addActions=[...] to populate in one call); provide appId to edit via the structured shortcuts (addTrigger / addAction / addRequiredExpression / walkStep / ...). (In the hub_manage_rule_machine gateway.)
 - **hub_set_rule** (edit detail) — edit an existing Rule Machine rule (appId required). Two raw modes (settings (Map) OR button (String)) plus 16 structured shortcuts (addTrigger, addTriggers, addAction, addActions, addRequiredExpression, replaceRequiredExpression, addLocalVariable, removeLocalVariable, removeAction, clearActions, replaceActions, moveAction, removeTrigger, modifyTrigger, patches, walkStep). Args: appId + one of those shortcut keys, plus optional pageName, stateAttribute, confirm. Auto-backs-up before writing; emits the multiple=true 3-field capability contract automatically. removeTrigger={index:N} deletes a trigger; modifyTrigger={index:N, mods:{state:'...'}} changes the state field of an existing trigger (capability/deviceIds changes require removeTrigger + addTrigger).
-- **hub_set_app_disabled** — enable or disable any installed app (red-X) via POST /installedapp/disable; reversible. Args: app_id, disabled (bool). Read-back verified.
+- **hub_set_app_disabled** — enable or disable any installed app (red-X) via POST /installedapp/disable; reversible. Args: appId, disabled (bool). Read-back verified.
 - **hub_delete_native_app** — soft delete (default; refuses if children exist) or force=true. Args: appId, force, confirm. Auto-backs-up before deleting.
 - **hub_clone_native_app** — clone any classic SmartApp via Hubitat's first-party appCloner. Args: sourceAppId, newName (opt), confirm. Returns newAppId. Drives the appCloner's 4-step wizard (cloneRuleButton -> confirmation -> importRule sub-page -> importNow); typical clones complete in tens of seconds.
 - **hub_export_native_app** — export any classic SmartApp to its canonical JSON shape via Hubitat's first-party appCloner. Args: sourceAppId, saveAs (opt File Manager filename). Returns jsonContent. Self-contained document with appReplacements + deviceReplacements + full rule state; round-trips through hub_import_native_app.
