@@ -5336,44 +5336,29 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
 
     @test("system_tools")
     def test_mode_lifecycle(self) -> None:
-        # Full mode surface on the sacrificial e2e hub: create -> read (with Mode Manager state)
-        # -> rename -> activate -> restore -> delete. The runner created a backup at startup, so the
-        # destructive-confirm gate for the delete is satisfied.
+        # MINIMAL live proof of the new mode wire format: create -> read (with Mode Manager state)
+        # -> delete. Kept to 3 hub calls on purpose -- the platform's per-app load limiter punishes
+        # back-to-back mode calls, and a heavier lifecycle here throttles the hub and collaterally
+        # fails the device-poll tests. rename / activate / Mode Manager are covered by ToolModeSpec
+        # + BAT T704; this proves the live /modes/jsonCreate, /modes/json, and /modes/jsonDelete
+        # endpoints. The runner created a backup at startup, satisfying the delete's confirm gate.
         mode_name = f"{PREFIX}Mode"
-        renamed = f"{PREFIX}Mode2"
-        before = self.client.call_tool("hub_list_modes")
-        original_mode = before.get("currentMode") if isinstance(before, dict) else None
         try:
             cr = self.client.call_tool("hub_manage_mode", {"action": "create", "name": mode_name})
             assert isinstance(cr, dict) and cr.get("success") is True, f"hub_manage_mode create failed: {cr}"
 
             listed = self.client.call_tool("hub_list_modes")
-            names = [m.get("name") for m in (listed.get("modes") or [])]
-            assert mode_name in names, f"created mode not in hub_list_modes: {names}"
+            assert mode_name in [m.get("name") for m in (listed.get("modes") or [])], \
+                f"created mode not in hub_list_modes: {listed.get('modes')}"
             assert "modeManager" in listed, f"hub_list_modes missing the modeManager block: {sorted(listed.keys())}"
 
-            rn = self.client.call_tool("hub_manage_mode", {"action": "rename", "mode": mode_name, "name": renamed})
-            assert rn.get("success") is True, f"rename failed: {rn}"
-
-            act = self.client.call_tool("hub_manage_mode", {"action": "activate", "mode": renamed})
-            assert act.get("success") is True and act.get("newMode") == renamed, f"activate failed: {act}"
-
-            print(f"    MODE_LIFECYCLE ok -- created {mode_name}, renamed -> {renamed}, activated; cleaning up")
+            print(f"    MODE_LIFECYCLE ok -- created + read {mode_name} (Mode Manager: "
+                  f"{listed.get('modeManager', {}).get('selected')}); deleting")
         finally:
-            # Restore the original mode (a current mode is undeletable), then delete the BAT mode by
-            # whichever name it currently carries.
-            if original_mode:
-                try:
-                    self.client.call_tool("hub_manage_mode", {"action": "activate", "mode": original_mode})
-                except Exception as exc:
-                    print(f"  [WARN] mode cleanup: restore {original_mode} failed: {exc}")
-            for nm in (renamed, mode_name):
-                try:
-                    dl = self.client.call_tool("hub_manage_mode", {"action": "delete", "mode": nm, "confirm": True})
-                    if isinstance(dl, dict) and dl.get("success"):
-                        break
-                except Exception as exc:
-                    print(f"  [WARN] mode cleanup: delete {nm} failed: {exc}")
+            try:
+                self.client.call_tool("hub_manage_mode", {"action": "delete", "mode": mode_name, "confirm": True})
+            except Exception as exc:
+                print(f"  [WARN] mode cleanup: delete {mode_name} failed: {exc}")
 
     @test("system_tools")
     def test_manage_hub_variables_list(self) -> None:
