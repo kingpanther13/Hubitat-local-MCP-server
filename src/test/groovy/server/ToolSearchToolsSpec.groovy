@@ -37,13 +37,13 @@ class ToolSearchToolsSpec extends ToolSpecBase {
     def "advanced-disabled tools are excluded from hub_search_tools results (#114)"() {
         given:
         searchEnabled()
-        settingsMap.disabled_tools = ["hub_set_mode"]
+        settingsMap.disabled_tools = ["hub_manage_mode"]
 
         when:
         def result = script.toolSearchTools([query: 'set hub mode location', maxResults: 25])
 
         then: 'the deny-list filter (getHiddenToolNames) removes it from the searchable corpus'
-        !(result.results*.tool.contains("hub_set_mode"))
+        !(result.results*.tool.contains("hub_manage_mode"))
     }
 
     def "the corpus + tokens are built once into atomicState and a second identical query is served from cache"() {

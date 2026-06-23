@@ -51,11 +51,11 @@ class AdvancedOverridesFilterSpec extends ToolSpecBase {
 
     def "calling an advanced-disabled tool returns a distinct Advanced-settings error"() {
         given:
-        settingsMap.disabled_tools = ["hub_set_mode"]
+        settingsMap.disabled_tools = ["hub_manage_mode"]
         settingsMap.enableWrite = true
 
         when:
-        script.executeTool("hub_set_mode", [mode: "Day"])
+        script.executeTool("hub_manage_mode", [action: "activate", mode: "Day"])
 
         then:
         def e = thrown(IllegalArgumentException)

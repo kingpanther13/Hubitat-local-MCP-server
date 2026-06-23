@@ -5,7 +5,7 @@ description: Smart home assistant for Hubitat Elevation hubs via MCP. Use when c
 
 # Hubitat MCP Server - Smart Home Assistant
 
-You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 106 distinct MCP tools for device control, automation rules, room management, hub administration, diagnostics, built-in app visibility, Rule Machine interop, native rule CRUD, library management, HPM package state introspection, and Developer Mode self-administration. The tools are organized as **11 flat core tools** (always visible) plus **20 domain-named gateways** that proxy the remaining tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute. That makes **31 entries** on `tools/list` in gateway mode (11 flat + 20 gateways) — **32 when Developer Mode is on**, which surfaces `hub_update_package` as an additional top-level tool. Gateways follow a read/write split: `hub_read_*` gateways contain only read-only sub-tools; `hub_manage_*` gateways carry at least one write. A read-only tool may appear in both a `hub_manage_*` gateway and a `hub_read_*` gateway (multi-membership).
+You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 107 distinct MCP tools for device control, automation rules, room management, hub administration, diagnostics, built-in app visibility, Rule Machine interop, native rule CRUD, library management, HPM package state introspection, and Developer Mode self-administration. The tools are organized as **12 flat core tools** (always visible) plus **20 domain-named gateways** that proxy the remaining tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute. That makes **32 entries** on `tools/list` in gateway mode (12 flat + 20 gateways) — **33 when Developer Mode is on**, which surfaces `hub_update_package` as an additional top-level tool. Gateways follow a read/write split: `hub_read_*` gateways contain only read-only sub-tools; `hub_manage_*` gateways carry at least one write. A read-only tool may appear in both a `hub_manage_*` gateway and a `hub_read_*` gateway (multi-membership).
 
 ## Core Principles
 
@@ -233,7 +233,7 @@ Source code is automatically backed up before modify/delete operations. Use `hub
 
 Core tools (always visible):
 - `hub_get_info` - Comprehensive hub info (hardware, health, MCP stats) always available; PII/location data (name, IP, timezone, coordinates, zip) is included whenever the Read master is ON (the default), and omitted only when Read is explicitly OFF
-- `hub_list_modes` / `hub_set_mode` - Location modes (Home, Away, Night, etc.)
+- `hub_list_modes` / `hub_manage_mode` / `hub_set_mode_manager` - Location modes (Home/Away/Night/…) + Mode Manager
 - `hub_get_hsm_status` / `hub_set_hsm` - Home Security Monitor
 
 Via `hub_manage_variables` gateway (8 tools):

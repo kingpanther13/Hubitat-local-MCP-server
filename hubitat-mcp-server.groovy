@@ -2192,7 +2192,8 @@ def executeTool(toolName, args) {
         // System Tools
         case "hub_get_info": return toolGetHubInfo(args)
         case "hub_list_modes": return toolGetModes()
-        case "hub_set_mode": return toolSetMode(args.mode)
+        case "hub_manage_mode": return toolManageMode(args)
+        case "hub_set_mode_manager": return toolSetModeManager(args)
         case "hub_list_variables": return toolListVariables(args)
         case "hub_get_variable": return toolGetVariable(args.name)
         case "hub_set_variable": return toolSetVariable(args.name, args.value)
