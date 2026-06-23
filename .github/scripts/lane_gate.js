@@ -11,8 +11,9 @@
 // for `unlabeled`) so the decision doesn't depend on whether the webhook's pull_request.labels
 // already reflects this event.
 //
-// This MUST stay in lockstep with the cancel-in-progress expression in hub-e2e.yml: that expression
-// keys on the same first-full-label test and must remain a strict SUBSET of this decision.
+// This MUST stay in lockstep with the concurrency GROUP expression in hub-e2e.yml: its "shares the
+// per-branch group" test keys on the same first-full-label set and must remain a strict SUBSET of
+// this decision (so a shared run never cancels a run that then skips). cancel-in-progress is `true`.
 const FULL = ['release:patch', 'release:minor', 'release:major', 'e2e:full'];
 
 function decide(eventName, payload) {

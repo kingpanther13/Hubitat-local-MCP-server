@@ -90,7 +90,7 @@ permissions:
   statuses: write
 
 # New-commit-cancel, per branch: a fresh push / reopen / dispatch (and the FIRST full-run label, per
-# the cancel-in-progress note below) on a branch cancels the older
+# the group note below) on a branch cancels the older
 # in-flight run for that SAME branch, and its replacement re-queues at the BACK of the e2e job's
 # FIFO group. Per-branch (head-repo + head_ref) so two forks reusing a branch name don't cancel
 # each other, and an unapproved fork PR only ever holds ITS OWN branch's group -- never the shared
@@ -99,31 +99,32 @@ permissions:
 # Cancelling mid-run is safe: the e2e job's disarm/restore + lease-release steps are `if: always()`
 # (so a cancel still frees the hub), and a hard kill is backstopped by the dead-man watchdog's
 # deadline restore plus the 30-min lease TTL.
-# cancel-in-progress supersedes an in-flight run. TRUE for a commit/reopen/dispatch, AND for the
-# FIRST full-run label (release:*/e2e:full added when the PR has NO other full-run label): applying
-# it while a FOCUSED run is live cancels that run and starts the full run. FALSE for a REDUNDANT
-# full-run label (a 2nd one while already full) and any non-lane label -- so applying a label while a
-# FULL run is already live does NOT cancel it; that run finishes and the redundant run skips (see the
-# lane-gate job below). GitHub expressions have NO arithmetic, so "first full-run label" is encoded
-# as: the added label is full AND none of the OTHER full-run labels are present (the 4 cases below).
-# This MUST stay in lockstep with the lane-gate job's run decision (both key on the same full-run
-# label set); cancel is a deliberate SUBSET of lane-gate.run (it only cancels a run that will then DO
-# work), so any drift degrades to "didn't cancel" (a slower lane change), never to cancelling a run
-# that then skips. cancel-in-progress is an expression (allowed) evaluated with the github context.
-# DEMOTE asymmetry: removing the LAST full-run label re-runs (lane-gate=true, focused) but does NOT
-# cancel an in-flight FULL run -- cancel is labeled-only (false for every unlabeled event), so the
-# demote run just queues behind the full run and posts the pending gate last. That's an instance of
-# the subset gap above (slower, never a lost run), not a bug.
+# group + cancel-in-progress: a run that should SUPERSEDE another -- a commit/reopen/dispatch, OR the
+# FIRST full-run label promoting a live FOCUSED run to full -- shares the per-branch group, so
+# cancel-in-progress (true) cancels the older run. EVERY OTHER label event -- a redundant full label,
+# a non-lane label, or a DEMOTE (the last full label removed) -- gets an ISOLATED per-run group so it
+# can neither cancel nor EVICT another run. That isolation is load-bearing: the per-branch group is
+# queue:single, so a no-op label run entering the SHARED group would EVICT a pending demote/flip run
+# (pending eviction happens regardless of cancel-in-progress), silently dropping a run that still owed
+# the gate a status. The "shares the group" test below is the FIRST-full-run-label condition (GitHub
+# has no arithmetic, so it's enumerated: the added label is full AND no OTHER full label is present);
+# it is a strict SUBSET of lane_gate.js's run decision, so a shared run never cancels a run that then
+# skips. It MUST stay in lockstep with lane_gate.js (same full-run-label set). DEMOTE: removing the
+# last full label re-runs focused in its OWN isolated group (never evicted); it does not cancel the
+# in-flight full run, just queues behind it in the e2e job's hub-e2e-serialized group and posts the
+# pending gate after it.
 concurrency:
-  group: hub-e2e-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: >-
-    ${{ github.event_name != 'pull_request_target'
+  group: >-
+    ${{ (github.event_name != 'pull_request_target'
     || (github.event.action != 'labeled' && github.event.action != 'unlabeled')
     || (github.event.action == 'labeled' && (
     (github.event.label.name == 'release:patch' && !contains(github.event.pull_request.labels.*.name, 'release:minor') && !contains(github.event.pull_request.labels.*.name, 'release:major') && !contains(github.event.pull_request.labels.*.name, 'e2e:full'))
     || (github.event.label.name == 'release:minor' && !contains(github.event.pull_request.labels.*.name, 'release:patch') && !contains(github.event.pull_request.labels.*.name, 'release:major') && !contains(github.event.pull_request.labels.*.name, 'e2e:full'))
     || (github.event.label.name == 'release:major' && !contains(github.event.pull_request.labels.*.name, 'release:patch') && !contains(github.event.pull_request.labels.*.name, 'release:minor') && !contains(github.event.pull_request.labels.*.name, 'e2e:full'))
-    || (github.event.label.name == 'e2e:full' && !contains(github.event.pull_request.labels.*.name, 'release:patch') && !contains(github.event.pull_request.labels.*.name, 'release:minor') && !contains(github.event.pull_request.labels.*.name, 'release:major')))) }}
+    || (github.event.label.name == 'e2e:full' && !contains(github.event.pull_request.labels.*.name, 'release:patch') && !contains(github.event.pull_request.labels.*.name, 'release:minor') && !contains(github.event.pull_request.labels.*.name, 'release:major')))))
+    && format('hub-e2e-{0}-{1}', github.event.pull_request.head.repo.full_name || github.repository, github.head_ref || github.ref_name)
+    || format('hub-e2e-{0}-{1}-isolated-{2}', github.event.pull_request.head.repo.full_name || github.repository, github.head_ref || github.ref_name, github.run_id) }}
+  cancel-in-progress: true
 
 jobs:
   # The hub-less self-deploy recovery guard (issue #237) is NOT here: running untrusted
