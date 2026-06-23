@@ -904,18 +904,24 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.events*.description == ['after bookmark']
     }
 
-    def "hub_list_device_events: an unparseable since throws -32602-style IllegalArgumentException"() {
+    @spock.lang.Unroll
+    def "hub_list_device_events: an unparseable since (#desc) throws -32602-style IllegalArgumentException"() {
         given: 'a selected device so routing reaches the since parse before any HTTP'
         def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')
         settingsMap.selectedDevices = [device]
 
         when:
-        script.toolGetDeviceHistory([deviceId: '42', since: 'not-a-timestamp'])
+        script.toolGetDeviceHistory([deviceId: '42', since: badSince])
 
-        then:
+        then: 'the clean caller-error path -- never a StringIndexOutOfBounds from stripping the trailing Z off a 1-char input'
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('since is not a valid timestamp')
         ex.message.contains('epoch milliseconds')
+
+        where:
+        desc            | badSince
+        'plain garbage' | 'not-a-timestamp'
+        'bare Z'        | 'Z'   // 1-char Z-strip: old s[0..-2] threw StringIndexOutOfBounds; substring yields a clean caller error
     }
 
     @spock.lang.Unroll

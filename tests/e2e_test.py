@@ -1184,18 +1184,61 @@ class TestRunner:
         dev_id = self.get_test_switch_id()
         assert dev_id, "Failed to get the shared scaffold switch"
 
-        # Drive two state changes (on, off) so there is fresh history to bookmark,
-        # then block-poll each so the events are committed before we read them back.
-        def _drive_and_settle(value: str) -> None:
-            self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": value})
-            for _ in range(3):
-                r = self.client.call_tool("hub_get_device_attribute", {
-                    "deviceId": dev_id, "attribute": "switch",
-                    "expectedValue": value, "timeoutMs": 4000})
-                if isinstance(r, dict) and r.get("timedOut") is False:
-                    return
-        _drive_and_settle("on")
-        _drive_and_settle("off")
+        # A far-future since yields an empty list, NOT an error. Checked first because
+        # it needs no fresh events, so it stays covered even if the platform load
+        # limiter throttles the toggles below into a limiter-proven soft-pass.
+        fut = self.client.call_tool("hub_list_device_events", {
+            "deviceId": dev_id, "since": "2099-01-01T00:00:00.000+0000"})
+        assert isinstance(fut, dict) and fut.get("count") == 0 and fut.get("events") == [], \
+            f"future since should yield an empty list, not: {fut}"
+
+        # Drive a state change and block-poll until it commits, so there is fresh
+        # history to bookmark. Mirrors the poll tests' limiter handling: a command the
+        # platform's per-app load limiter throttled false-succeeds with NO event, so if
+        # the change does not land, bounce the server app via the watchdog and retry
+        # once. Returns True only when the new value actually committed.
+        def _drive_and_settle(value: str) -> bool:
+            def _attempt() -> bool:
+                self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": value})
+                for _ in range(3):
+                    r = self.client.call_tool("hub_get_device_attribute", {
+                        "deviceId": dev_id, "attribute": "switch",
+                        "expectedValue": value, "timeoutMs": 4000})
+                    if isinstance(r, dict) and r.get("timedOut") is False and r.get("value") == value:
+                        return True
+                return False
+            if _attempt():
+                return True
+            if self._clear_load_throttle(f"'{value}' on scaffold {dev_id} never landed (since-bookmark setup)"):
+                return _attempt()
+            return False
+
+        # When the limiter is proven to have aborted delivery (dispatch reached the
+        # device; hub log carries the LimitExceededException naming it), soft-pass:
+        # the since FILTER LOGIC is covered by the Spock unit specs -- the live smoke
+        # just cannot observe fresh events while the platform throttles them.
+        def _limiter_soft_pass(method: str, baseline: set) -> bool:
+            if self._limiter_logged(dev_id, method=method, baseline=baseline):
+                print("    [LIMITER] scaffold dispatch throttled by the platform; the since "
+                      "filter logic is covered by the Spock specs -- soft-passing the live smoke")
+                self._soft_passes.append(
+                    "devices/test_list_device_events_since_bookmark: limiter-proven pass "
+                    "(dispatch reached the device; platform load limiter aborted delivery)")
+                return True
+            return False
+
+        # Toggle to the OPPOSITE of the current state so there is always a real
+        # state-change event -- driving the value the switch already holds is a no-op
+        # that emits nothing (the cause of an empty 1-hour window on a quiet scaffold).
+        cur = self.client.call_tool("hub_get_device_attribute", {"deviceId": dev_id, "attribute": "switch"})
+        start = cur.get("value") if isinstance(cur, dict) else None
+        first, second = ("off", "on") if start == "on" else ("on", "off")
+        setup_baseline = self._limiter_lines(dev_id)
+        if not _drive_and_settle(first) or not _drive_and_settle(second):
+            if _limiter_soft_pass(first, setup_baseline) or _limiter_soft_pass(second, setup_baseline):
+                return
+            assert False, \
+                f"setup toggles did not land and the hub log shows no limiter evidence (dev {dev_id})"
 
         # Read the recent history (history mode via hoursBack) and grab the newest
         # event's date as the bookmark. The event store is eventually-consistent on
@@ -1221,8 +1264,14 @@ class TestRunner:
 
         # Drive ONE more change after the bookmark so there is a strictly-newer event
         # to find. The `since` window is exclusive (events AFTER the bookmark), so the
-        # bookmarked event itself will NOT come back -- only this new one.
-        _drive_and_settle("on")
+        # bookmarked event itself will NOT come back -- only this new one. The scaffold
+        # sits at `second` after setup, so drive `first` (its opposite) for a real change.
+        post_baseline = self._limiter_lines(dev_id)
+        if not _drive_and_settle(first):
+            if _limiter_soft_pass(first, post_baseline):
+                return
+            assert False, \
+                f"post-bookmark toggle did not land and the hub log shows no limiter evidence (dev {dev_id})"
 
         def _iso_epoch_ms(s: str) -> int:
             # Hub emits ISO-8601 with a numeric offset (e.g. +0000 / -0700), no colon.
@@ -1257,12 +1306,6 @@ class TestRunner:
         # not a fixed count.
         assert all(_iso_epoch_ms(r["date"]) > _iso_epoch_ms(bookmark) for r in new_rows if r.get("date")), \
             f"since returned an event at or before the bookmark: {new_rows}"
-
-        # A far-future since yields an empty list, NOT an error.
-        fut = self.client.call_tool("hub_list_device_events", {
-            "deviceId": dev_id, "since": "2099-01-01T00:00:00.000+0000"})
-        assert isinstance(fut, dict) and fut.get("count") == 0 and fut.get("events") == [], \
-            f"future since should yield an empty list, not: {fut}"
 
     @test("diagnostics")
     def test_radio_details_include_topology(self) -> None:

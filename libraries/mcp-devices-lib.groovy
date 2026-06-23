@@ -1560,7 +1560,7 @@ def _resolveSinceWindow(args, hoursBack) {
     // Echo a real ISO bookmark String verbatim (the round-trip case); format any
     // epoch-ms input -- Number OR all-digit String -- into canonical ISO so the echo
     // is always a presentable timestamp, never raw digits.
-    def echo = (args.since instanceof Number || (args.since != null && args.since.toString().trim().isLong())) ?
+    def echo = (args.since instanceof Number || args.since.toString().trim().isLong()) ?
         parsed.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ") : args.since.toString()
     return [parsed, "explicit", null, echo]
 }
@@ -1580,7 +1580,7 @@ def _parseSinceArg(since) {
     if (s.isLong()) return new Date(s.toLong())
     // Z means UTC -- swap it for the equivalent numeric offset so the offset-bearing
     // formats below interpret the wall-clock as UTC rather than hub-local.
-    if (s.endsWith("Z")) s = s[0..-2] + "+0000"
+    if (s.endsWith("Z")) s = s.substring(0, s.length() - 1) + "+0000"
     def formats = [
         "yyyy-MM-dd'T'HH:mm:ss.SSSZ",   // canonical round-trip: 2026-06-23T10:00:00.000-0600
         "yyyy-MM-dd'T'HH:mm:ssZ"        // no millis, offset:    2026-06-23T10:00:00-0600
