@@ -154,7 +154,7 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
     }
 
     def "hub_set_rule flat-mode is the thin self-gateway selector that still reaches discover/guide"() {
-        // Flat mode no longer emits hub_set_rule's 24-param fat schema; it folds to a
+        // Flat mode no longer emits hub_set_rule's 25-param fat schema; it folds to a
         // thin {operation,appId,args,confirm} selector (the per-operation schema is
         // fetched on demand via the args-omitted probe). The fat per-capability prose +
         // pointers live in gateway mode + the probe (covered by the sibling tests).

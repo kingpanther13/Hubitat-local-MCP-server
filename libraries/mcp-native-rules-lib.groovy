@@ -7565,26 +7565,41 @@ Map _setRuleFromEnvelope(Map env) {
     // guide/discover are always schema/meta (no mutation), regardless of confirm.
     if (op == 'guide') return [args: [guide: true]]
     if (op == 'discover') {
-        def kind = (payload instanceof Map && payload.kind) ? payload.kind.toString() : 'action'
+        def kind = (payload instanceof Map && payload.kind != null) ? payload.kind.toString().toLowerCase() : 'action'
+        if (kind != 'trigger' && kind != 'action') {
+            throw new IllegalArgumentException("hub_set_rule operation='discover': args.kind must be 'trigger' or 'action' (got '${kind}').")
+        }
         def kn = (kind == 'trigger') ? 'addTrigger' : 'addAction'
-        def disc = [discover: true]
-        if (payload instanceof Map && payload.capability != null) disc.capability = payload.capability
-        return [args: [(kn): disc]]
+        return [args: [(kn): [discover: true]]]
     }
     // No confirm -> probe (return the op's arg schema, no mutation).
     if (env.confirm != true) {
         return [_schema: _setRuleOperationSchema(op)]
     }
     // EXECUTE (confirm == true): re-key into the legacy shape.
+    if (op == 'create') {
+        // create makes a NEW rule: it must OMIT appId (a stray appId would otherwise route to
+        // an EDIT of that rule), and only the create-honored bundle keys are valid -- an
+        // edit-only key must reject LOUDLY here, not be silently dropped before the create arm sees it.
+        if (env.appId != null) {
+            throw new IllegalArgumentException("hub_set_rule operation='create' must OMIT appId (it makes a NEW rule). To edit rule ${env.appId}, call the matching edit operation with that appId.")
+        }
+        if (!(payload instanceof Map)) {
+            throw new IllegalArgumentException("hub_set_rule operation='create': args must be an object of {name, addTriggers, addActions, addRequiredExpression, ...}.")
+        }
+        def allowed = (['name'] + _setRuleCreateHonored())
+        def extraneous = (payload as Map).keySet().findAll { !allowed.contains(it) }
+        if (extraneous) {
+            throw new IllegalArgumentException("hub_set_rule operation='create' accepts only ${allowed.join(', ')} in args; ${extraneous.sort().join(', ')} require an existing rule -- create first, then call that operation with the returned appId.")
+        }
+        def legacyCreate = [confirm: true]
+        allowed.each { k -> if ((payload as Map).containsKey(k)) legacyCreate[k] = payload[k] }
+        return [args: legacyCreate]
+    }
     def legacy = [:]
     if (env.appId != null) legacy.appId = env.appId
     legacy.confirm = true
-    if (op == 'create') {
-        def p = (payload instanceof Map) ? payload : [:]
-        (['name'] + _setRuleCreateHonored()).each { k ->
-            if (p.containsKey(k)) legacy[k] = p[k]
-        }
-    } else if (op == 'buttonRule') {
+    if (op == 'buttonRule') {
         legacy.buttonRule = payload
     } else if (op == 'clearActions') {
         legacy.clearActions = true   // boolean op: presence == intent (takes no payload)
@@ -7619,6 +7634,8 @@ Map _setRuleOperationSchema(String op) {
         usage = "To apply: call hub_set_rule again with operation='create', omit appId, confirm:true, and args = {name + any addTriggers/addActions/addRequiredExpression matching argsSchema}."
     } else if (op == 'clearActions') {
         usage = "To apply: call hub_set_rule again with operation='clearActions', appId=<ruleId>, confirm:true (no args needed)."
+    } else if (op == 'buttonRule') {
+        usage = "To apply: call hub_set_rule again with operation='buttonRule', omit appId, confirm:true, and args = {controllerId, buttonNumber, event} matching argsSchema (the bare object — do NOT wrap it under 'buttonRule')."
     } else {
         usage = "To apply: call hub_set_rule again with operation='${op}', appId=<ruleId>, confirm:true, and args = a value matching argsSchema (the bare object/value — do NOT wrap it under '${op}')."
     }
@@ -11180,8 +11197,10 @@ def _applyNativeAppEdit(args) {
     // Discover mode short-circuit: {addTrigger: {discover: true}} or
     // {addAction: {discover: true}} returns static schema with no hub
     // interaction -- bypass the in-handler requireDestructiveConfirm gate (confirm
-    // + backup snapshot). The Write master still gates this write centrally in
-    // executeTool. Pure static data; no hub dependency whatsoever.
+    // + backup snapshot). Being a no-mutation schema return, executeTool's Write
+    // master deliberately lets this through even when writes are disabled
+    // (_isSetRuleSchemaOnlyCall); a confirmed write stays Write-master gated.
+    // Pure static data; no hub dependency whatsoever.
     if (args?.addTrigger instanceof Map && args.addTrigger.discover == true) {
         return _rmAddTrigger(0, args.addTrigger as Map)
     }

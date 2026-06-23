@@ -244,4 +244,56 @@ class SetRuleSelfGatewaySpec extends ToolSpecBase {
         script._setRuleFromEnvelope([operation: 'addAction', appId: 5, args: '{"capability":"switch"}', confirm: true]).args ==
             [appId: 5, confirm: true, addAction: [capability: 'switch']]
     }
+
+    def "buttonRule probe usage omits appId (controllerId rides in args, not appId)"() {
+        when:
+        def r = script.toolSetRule([operation: 'buttonRule'])
+
+        then: 'buttonRule creates under a controller -- usage must NOT tell the caller to pass appId=<ruleId>'
+        r.usage.contains('omit appId')
+        r.usage.contains('controllerId')
+        !r.usage.contains('appId=<ruleId>')
+    }
+
+    def "the settings op is NOT unwrapped (a single-key {settings: ...} payload is preserved)"() {
+        expect: 'every other single edit op tolerantly unwraps {op: value}, but settings must not -- its payload is a raw {inputName: value} map that may legitimately have a key named settings'
+        script._setRuleFromEnvelope([operation: 'settings', appId: 5, args: [settings: 'x'], confirm: true]).args ==
+            [appId: 5, confirm: true, settings: [settings: 'x']]
+    }
+
+    def "discover rejects an unknown kind instead of silently defaulting to action"() {
+        when:
+        script._setRuleFromEnvelope([operation: 'discover', args: [kind: 'triggerz']])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("must be 'trigger' or 'action'")
+    }
+
+    def "envelope probe via the gateway bypasses the required-param pre-check and returns schema"() {
+        when: 'a flat-style envelope probe arrives through the gateway (no confirm)'
+        def r = script.handleGateway('hub_manage_rule_machine', 'hub_set_rule', [operation: 'addAction'])
+
+        then: 'isGatedMetaCall lets it past the required:[confirm] pre-check; the probe schema returns, nothing mutated'
+        r.note?.toString()?.contains('no rule was changed')
+        r.argsSchema != null
+    }
+
+    def "create rejects a stray appId (it would otherwise route to an EDIT of that rule)"() {
+        when:
+        script._setRuleFromEnvelope([operation: 'create', appId: 5, args: [name: 'X', addActions: [[capability: 'log']]], confirm: true])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('must OMIT appId')
+    }
+
+    def "create rejects an edit-only key in args instead of silently dropping it"() {
+        when:
+        script._setRuleFromEnvelope([operation: 'create', args: [name: 'X', replaceActions: []], confirm: true])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('require an existing rule')
+    }
 }
