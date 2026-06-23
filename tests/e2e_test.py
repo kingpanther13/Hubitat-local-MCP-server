@@ -5009,6 +5009,46 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                 except Exception as exc:
                     print(f"  [WARN] device-swap cleanup: delete device DNI={dni} failed: {exc}")
 
+    @test("device_replace")
+    def test_call_device_replace_list_options_read(self) -> None:
+        # WHY no happy-path replace here: /device/replace re-points a device onto
+        # replacement HARDWARE and PRESERVES the old id -- a mutating, hard-to-undo
+        # operation needing a real compatible free-standing replacement node, which the
+        # MCP tool surface cannot create (every fixture is an MCP child device). The full
+        # apply round-trip is BAT/manual-only (tests/BAT-v2.md T703). This scenario
+        # exercises the safe read-only leg live: list_options drives
+        # GET /device/getReplacementOptions/<id> and returns the structured candidate
+        # array without mutating anything.
+        dev_id, dni = self._create_swap_switch(f"{PREFIX}Replace_A")
+        try:
+            result = self.client.call_tool("hub_manage_devices", {
+                "tool": "hub_call_device_replace",
+                "args": {"old_device_id": dev_id, "list_options": True},
+            })
+            assert isinstance(result, dict), f"hub_call_device_replace(list_options) returned non-dict: {result}"
+            # Read leg: success with an options array (a virtual fixture usually has no
+            # compatible replacement -> empty list), or a structured failure -- never a
+            # silent mutation. Assert the structured contract either way.
+            if result.get("success") is True:
+                assert result.get("listOptions") is True, f"list_options read missing listOptions flag: {result}"
+                assert isinstance(result.get("options"), list), f"options is not a list: {result}"
+                opt_count = result.get("optionCount")
+                assert isinstance(opt_count, int) and opt_count == len(result["options"]), \
+                    f"optionCount does not match options length: {result}"
+                print(f"    DEVICE_REPLACE ok -- list_options read {opt_count} compatible candidate(s) for {dev_id}, no mutation")
+            else:
+                assert result.get("error"), f"list_options failure without a structured error: {result}"
+                print(f"    DEVICE_REPLACE ok -- list_options returned a structured failure (no mutation): {result.get('error')}")
+        finally:
+            try:
+                self.client.call_tool("hub_manage_virtual_device", {
+                    "action": "delete", "deviceNetworkId": dni, "confirm": True,
+                })
+                if dni in self.created_device_dnis:
+                    self.created_device_dnis.remove(dni)
+            except Exception as exc:
+                print(f"  [WARN] device-replace cleanup: delete device DNI={dni} failed: {exc}")
+
     # -----------------------------------------------------------------------
     # GROUP 4h: hub_variables (1 test) -- hub-NAMESPACE variable lifecycle
     # (the system Hub Variables app, not the legacy rule_engine map).

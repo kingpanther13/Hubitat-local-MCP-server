@@ -1,0 +1,25 @@
+name: lease-scripts-test
+
+# Regression guard for the e2e hub-lease scripts. Runs the pure-shell parser test
+# (tests/lease_scripts_test.sh) whenever the lease scripts or the test change, so the
+# false-empty read that double-booked the test hub cannot quietly come back. No hub, no
+# secrets -- just bash + jq on the runner.
+on:
+  pull_request:
+    paths:
+      - '.github/scripts/lease_acquire.sh'
+      - '.github/scripts/lease_release.sh'
+      - 'tests/lease_scripts_test.sh'
+      - '.github/workflows/lease-scripts-test.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  lease-parse-guard:
+    name: lease parse guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run lease parse guard
+        run: bash tests/lease_scripts_test.sh

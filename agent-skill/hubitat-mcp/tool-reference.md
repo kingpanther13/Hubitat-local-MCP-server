@@ -1,6 +1,6 @@
 # Tool Reference
 
-Quick reference for all 105 MCP tools. The server exposes **31 items on `tools/list`**: 11 flat core tools + 20 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute. A tool MAY appear under more than one gateway (multi-membership); read-only tools inside a mixed `hub_manage_*` gateway are also surfaced under a pure-read `hub_read_*` gateway.
+Quick reference for all 106 MCP tools. The server exposes **31 items on `tools/list`**: 11 flat core tools + 20 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute. A tool MAY appear under more than one gateway (multi-membership); read-only tools inside a mixed `hub_manage_*` gateway are also surfaced under a pure-read `hub_read_*` gateway.
 
 For the most authoritative reference, call `hub_get_tool_guide` via MCP.
 
@@ -49,7 +49,7 @@ These 11 tools are never behind a gateway. Every other tool is reachable through
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `hub_get_tool_guide` | Full tool reference from the MCP server itself. | None |
-| `hub_search_tools` | BM25 natural language search across all 105 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
+| `hub_search_tools` | BM25 natural language search across all 106 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
 
 ---
 
@@ -145,7 +145,7 @@ Read-only variable access: list, get value/metadata, and observe recent changes.
 | `hub_get_variable` | Get a variable's value + metadata (type, deviceId, attribute). | None |
 | `hub_list_variable_changes` | Recent hub-variable changes since the MCP app last started. Filter by name, sinceMs, limit. | None |
 
-### hub_manage_devices (7 tools)
+### hub_manage_devices (8 tools)
 
 Device control and property edits, plus the read tools (also surfaced under `hub_read_devices`).
 
@@ -153,6 +153,7 @@ Device control and property edits, plus the read tools (also surfaced under `hub
 |------|-------------|-------------|
 | `hub_call_device_command` | Send a command to a device (on, off, setLevel, etc.). Returns an immediate (PRE-effect) `state` snapshot ({attr: {value, timestamp}}); pass `waitFor` to block-poll an attribute to its expected value and get the CONFIRMED resulting state. `waitFor` supports `comparator` (eq/ne/gt/gte/lt/lte/between) and `stableForMs` (debounce), same as `hub_get_device_attribute`; a bad `waitFor` spec is rejected before the command fires. | None |
 | `hub_call_device_swap` | Replace `from_device_id` with `to_device_id` across ALL apps/rules that reference it (the hub's built-in Swap Device tool). Only capability-compatible replacements are accepted; an incompatible target returns the compatible options. Preview the blast radius with `hub_list_device_dependents` first. | `confirm` + backup <24h |
+| `hub_call_device_replace` | Replace a dead/failing device's hardware while KEEPING its device id and ALL app/rule references — re-points `old_device_id` onto `new_device_id`'s node (the new hardware adopts the OLD id). Distinct from `hub_call_device_swap`, which instead moves references onto the new device's id. Call with `list_options=true` first to read the hub's compatible `new_device_id` candidates (read-only, no confirm). | `confirm` + backup <24h (apply path) |
 | `hub_update_device` | Update device properties (label, name, room, preferences, enabled). | Varies by property |
 | `hub_list_devices` | List accessible devices. Pagination, `labelFilter` (substring), `capabilityFilter` (exact), `format='ids'` (flat ID array), `fields=[...]` (projection), `filter='virtual'` (only MCP-managed virtual devices, with their states). Use `detailed=false` first, paginate `detailed=true` (limit 20-30). | None |
 | `hub_get_device` | Full device details: attributes, commands, capabilities, room. | None |

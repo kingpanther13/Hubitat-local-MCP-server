@@ -123,8 +123,9 @@ Builds on the existing 30-min lease (`lease_acquire.sh`) + importUrl deploy mode
 
 ### Integration points (existing)
 
-- Lease: `.github/scripts/lease_acquire.sh:21-22,68-75`; serialized via `hub-e2e.yml:37-39`
-  concurrency group.
+- Lease: `.github/scripts/lease_acquire.sh` (`get_lease_value` strict-parse); cross-PR runs are
+  serialized by the `hub-e2e-serialized` concurrency group (`hub-e2e.yml` e2e job, `queue: max`)
+  plus the workflow-level per-branch cancel group. The lease is the hub-side lock for a human-held hub.
 - 5xx-tolerant deploy/verify pattern to mirror for reboot polling:
   `mcp_deploy_source.sh:187-213`, `mcp_verify_deploy.sh:102-118`.
 - Destructive-ops gateway: `hubitat-mcp-server.groovy`.
