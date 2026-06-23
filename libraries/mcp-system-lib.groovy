@@ -235,7 +235,7 @@ def toolGetModes() {
         def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
         if (parsed instanceof Map) {
             if (parsed.modes instanceof List) {
-                modes = parsed.modes.collect { [id: it.id?.toString(), name: it.name, icon: it.icon] }
+                modes = parsed.modes.collect { [id: it?.id?.toString(), name: it?.name, icon: it?.icon] }
             }
             // Only surface modeManager when the payload actually carries it -- a Map that lacks the
             // manager keys (an error envelope, or a firmware shape change) must NOT yield an all-null
@@ -263,7 +263,7 @@ def toolGetModes() {
 private _resolveModeId(idOrName) {
     def s = idOrName?.toString()?.trim()
     if (!s) return null
-    def m = location.modes?.find { it.id.toString() == s || it.name.equalsIgnoreCase(s) }
+    def m = location.modes?.find { it?.id?.toString() == s || it?.name?.equalsIgnoreCase(s) }
     return m ? m.id : null
 }
 
