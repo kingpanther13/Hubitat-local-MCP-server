@@ -27,7 +27,9 @@
 
 <!-- These bullets are what HPM users will see when prompted to update — write for end users, not developers.
      Sub-bullets are supported (nest with 2-space indent).
-     If you skip this section, the release entry will fall back to just the PR title. -->
+     If you skip this section, the release entry will fall back to just the PR title.
+     LEAVE COMPLETELY BLANK IF THERE ARE NO RELEASE NOTES — typing "None" in here will LITERALLY
+     give a release note that says "None". -->
 
 - 
 
