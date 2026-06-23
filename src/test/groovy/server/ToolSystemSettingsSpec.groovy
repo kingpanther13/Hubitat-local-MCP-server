@@ -4,49 +4,52 @@ import support.TestHub
 import support.TestLocation
 import support.ToolSpecBase
 import spock.lang.Shared
+import groovy.json.JsonSlurper
 
 /**
  * Spec for hub_set_system_settings in libraries/mcp-system-lib.groovy (issue #259):
- *   toolSetSystemSettings -> hub_set_system_settings (hub-GLOBAL location settings write)
+ *   toolSetSystemSettings -> hub_set_system_settings (hub-GLOBAL location/identity settings write)
  *
- * Wire format (verified against resources/hub2-source/vue-hub2.min.js):
- *   hubName                                       -> GET /hub/updateName?name=<urlenc>
- *   latitude/longitude/timeZone/temperatureScale/zipCode -> ONE GET /hub/updateLatLongTimezone
- *        (granular wholesale endpoint -> read-merge current location.* values; zipCode -> postalCode)
- *   identifyHub==true                             -> GET /hub/advanced/blinkLED
+ * Wire format (verified live against a real hub):
+ *   READ current state: GET /hub/details/json -> {hubName,timeZone,latitude,longitude,zipCode,
+ *                       tempScale,dateFormat,timeFormat,ttsCurrent,mdnsName,...}
+ *   WRITE (wholesale):  POST /location/update {name,timeZone,latitude,longitude,clock,dateFormat,
+ *                       zipCode,temperatureScale,voice,mdnsName} -- read-merge: build from the current
+ *                       values, override only the provided args; hubName is the `name` field, so every
+ *                       setting goes through this ONE atomic POST.
  *
- * The /hub/* GETs are stubbed via hubGet.register (the harness routes hubInternalGet through it);
- * the SDK location.* read-merge baseline comes from a shared TestLocation seeded with realistic
- * coordinates/scale/zip. A timeZone change reboots the hub, so that leg is confirm-gated
- * (enableWrite()+lastBackupTimestamp satisfy the gate); the other fields are Write-master-only.
+ * The GET is stubbed via hubGet.register; the POST is captured via script.metaClass.hubInternalPostJson.
+ * A timeZone change reboots the hub, so it is confirm-gated (enableWrite()+lastBackupTimestamp satisfy it).
  */
 class ToolSystemSettingsSpec extends ToolSpecBase {
 
+    // The current-state JSON the hub returns from /hub/details/json (the read-merge source).
+    private static final String DETAILS = '{"hubName":"CrameHub","timeZone":"US/Eastern","latitude":28.3078,' +
+        '"longitude":-81.3681,"zipCode":"34744","tempScale":"F","dateFormat":"MDY","timeFormat":"12",' +
+        '"ttsCurrent":"Nicole","mdnsName":"hubitat"}'
+
     @Shared private TestLocation sharedLocation = new TestLocation()
+
+    private Map posted   // captured POST: [path: ..., body: <parsed JSON map>]
 
     def setupSpec() {
         appExecutor.getLocation() >> sharedLocation
     }
 
     def setup() {
-        // Deterministic read-merge baseline (TestLocation defaults, restated so a prior test's
-        // mutation can't leak): UTC tz, NYC coordinates, F scale, 10001 zip.
-        sharedLocation.timeZone = TimeZone.getTimeZone('UTC')
-        sharedLocation.latitude = 40.7128
-        sharedLocation.longitude = -74.006
-        sharedLocation.temperatureScale = 'F'
-        sharedLocation.zipCode = '10001'
         sharedLocation.hub = new TestHub()
+        posted = [:]
+        hubGet.register('/hub/details/json') { params -> DETAILS }
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            posted.path = path
+            posted.body = new JsonSlurper().parseText(body)
+            return [success: true]
+        }
     }
 
     private void enableWrite() {
         settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L   // matches the harness fixed now()
-    }
-
-    private String latLongCall() {
-        // The single /hub/updateLatLongTimezone GET this run made (path includes the query string).
-        return hubGet.calls.collect { it.path }.find { it.startsWith('/hub/updateLatLongTimezone') }
     }
 
     // ---------- no-args validation ----------
@@ -63,6 +66,7 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
         ex.message.contains('hubName')
         ex.message.contains('temperatureScale')
         ex.message.contains('timeZone')
+        posted.isEmpty()
     }
 
     def "confirm-only (no settable field) still throws -- confirm is not a settable field"() {
@@ -76,33 +80,11 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
         thrown(IllegalArgumentException)
     }
 
-    // ---------- hubName ----------
+    // ---------- read-merge POST /location/update ----------
 
-    def "hubName URL-encodes the value and GETs /hub/updateName"() {
+    def "temperatureScale-only read-merges the FULL payload from /hub/details/json into one POST"() {
         given:
         enableWrite()
-        hubGet.register('/hub/updateName?name=My+New+Hub') { params -> 'OK' }
-
-        when:
-        def result = script.toolSetSystemSettings([hubName: 'My New Hub'])
-
-        then:
-        result.success == true
-        result.applied == ['hubName']
-        hubGet.calls.any { it.path == '/hub/updateName?name=My+New+Hub' }
-        // hubName alone must NOT touch the lat/long/tz endpoint
-        latLongCall() == null
-    }
-
-    // ---------- updateLatLongTimezone read-merge ----------
-
-    def "temperatureScale-only read-merges the other fields from location.* into one updateLatLongTimezone GET"() {
-        given:
-        enableWrite()
-        // Wholesale endpoint: changing only temperatureScale must still carry the CURRENT
-        // lat/long/tz/zip (read-merged) so they aren't blanked.
-        def expected = '/hub/updateLatLongTimezone?latitude=40.7128&longitude=-74.006&timeZone=UTC&temperatureScale=C&postalCode=10001'
-        hubGet.register(expected) { params -> 'OK' }
 
         when:
         def result = script.toolSetSystemSettings([temperatureScale: 'C'])
@@ -110,15 +92,38 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
         then:
         result.success == true
         result.applied == ['temperatureScale']
-        latLongCall() == expected
-        !hubGet.calls.any { it.path.startsWith('/hub/updateName') }
+        posted.path == '/location/update'
+        posted.body.temperatureScale == 'C'      // changed
+        // every other field preserved from the current /hub/details/json (no blanking)
+        posted.body.name == 'CrameHub'
+        posted.body.timeZone == 'US/Eastern'
+        posted.body.latitude == 28.3078
+        posted.body.longitude == -81.3681
+        posted.body.zipCode == '34744'
+        posted.body.clock == '12'                // timeFormat -> clock, carried through
+        posted.body.dateFormat == 'MDY'
+        posted.body.voice == 'Nicole'            // ttsCurrent -> voice, carried through
+        posted.body.mdnsName == 'hubitat'
     }
 
-    def "latitude/longitude override only those fields; timeZone/scale/zip come from location.*"() {
+    def "hubName maps to the payload's name field; others preserved"() {
         given:
         enableWrite()
-        def expected = '/hub/updateLatLongTimezone?latitude=51.5074&longitude=-0.1278&timeZone=UTC&temperatureScale=F&postalCode=10001'
-        hubGet.register(expected) { params -> 'OK' }
+
+        when:
+        def result = script.toolSetSystemSettings([hubName: 'Loft'])
+
+        then:
+        result.success == true
+        result.applied == ['hubName']
+        posted.body.name == 'Loft'
+        posted.body.temperatureScale == 'F'   // preserved from cur.tempScale
+        posted.body.timeZone == 'US/Eastern'
+    }
+
+    def "latitude/longitude override only those fields; the rest come from the current state"() {
+        given:
+        enableWrite()
 
         when:
         def result = script.toolSetSystemSettings([latitude: 51.5074, longitude: -0.1278])
@@ -126,36 +131,23 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
         then:
         result.success == true
         result.applied as Set == ['latitude', 'longitude'] as Set
-        latLongCall() == expected
+        posted.body.latitude == 51.5074
+        posted.body.longitude == -0.1278
+        posted.body.timeZone == 'US/Eastern'
+        posted.body.temperatureScale == 'F'
     }
 
-    def "zipCode maps to the postalCode query param (URL-encoded)"() {
+    def "zipCode overrides the payload zipCode"() {
         given:
         enableWrite()
-        hubGet.register('/hub/updateLatLongTimezone?latitude=40.7128&longitude=-74.006&timeZone=UTC&temperatureScale=F&postalCode=SW1A+1AA') { params -> 'OK' }
 
         when:
         def result = script.toolSetSystemSettings([zipCode: 'SW1A 1AA'])
 
         then:
         result.success == true
-        latLongCall().contains('postalCode=SW1A+1AA')
-        !latLongCall().contains('zipCode=')
-    }
-
-    def "timeZone value is URL-encoded (slash -> %2F) in the merged GET"() {
-        given:
-        enableWrite()
-        def expected = '/hub/updateLatLongTimezone?latitude=40.7128&longitude=-74.006&timeZone=America%2FNew_York&temperatureScale=F&postalCode=10001'
-        hubGet.register(expected) { params -> 'OK' }
-
-        when:
-        def result = script.toolSetSystemSettings([timeZone: 'America/New_York', confirm: true])
-
-        then:
-        result.success == true
-        result.applied == ['timeZone']
-        latLongCall() == expected
+        result.applied == ['zipCode']
+        posted.body.zipCode == 'SW1A 1AA'
     }
 
     // ---------- temperatureScale validation ----------
@@ -170,14 +162,51 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('temperatureScale')
+        posted.isEmpty()
 
         where:
         bad << ['f', 'c', 'Fahrenheit', 'K', '']
     }
 
+    // ---------- lat/long range validation ----------
+
+    def "out-of-range / non-numeric #key=#val is rejected (-> -32602) with no POST"() {
+        given:
+        enableWrite()
+
+        when:
+        script.toolSetSystemSettings([(key): val])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains(key)
+        posted.isEmpty()
+
+        where:
+        key         | val
+        'latitude'  | 91
+        'latitude'  | -91
+        'longitude' | 181
+        'longitude' | -181
+        'latitude'  | 'notanumber'
+    }
+
+    def "string coordinates coerce to numbers in the payload"() {
+        given:
+        enableWrite()
+
+        when:
+        def result = script.toolSetSystemSettings([latitude: '45.0', longitude: '-120.5'])
+
+        then:
+        result.success == true
+        posted.body.latitude == 45.0       // coerced to a number, not the string "45.0"
+        posted.body.longitude == -120.5
+    }
+
     // ---------- confirm gate (timeZone only) ----------
 
-    def "timeZone change WITHOUT confirm throws the destructive gate (and makes no hub call)"() {
+    def "timeZone change WITHOUT confirm throws the destructive gate and makes no POST"() {
         given:
         settingsMap.enableWrite = true   // no backup, no confirm
 
@@ -186,15 +215,12 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
 
         then:
         thrown(IllegalArgumentException)
-        // the gate fires before any hub write
-        latLongCall() == null
+        posted.isEmpty()
     }
 
-    def "timeZone change WITH confirm + recent backup is allowed"() {
+    def "timeZone change WITH confirm + recent backup is allowed and warns about the reboot"() {
         given:
-        enableWrite()   // sets a backup timestamp matching now() -> within 24h
-        def expected = '/hub/updateLatLongTimezone?latitude=40.7128&longitude=-74.006&timeZone=America%2FChicago&temperatureScale=F&postalCode=10001'
-        hubGet.register(expected) { params -> 'OK' }
+        enableWrite()
 
         when:
         def result = script.toolSetSystemSettings([timeZone: 'America/Chicago', confirm: true])
@@ -202,13 +228,13 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
         then:
         result.success == true
         result.applied == ['timeZone']
-        latLongCall() == expected
+        posted.body.timeZone == 'America/Chicago'
+        result.note.contains('reboot')
     }
 
     def "confirm is NOT required for non-timeZone fields (no backup present)"() {
         given:
         settingsMap.enableWrite = true   // deliberately NO backup timestamp
-        hubGet.register('/hub/updateName?name=Loft') { params -> 'OK' }
 
         when:
         def result = script.toolSetSystemSettings([hubName: 'Loft'])
@@ -218,31 +244,14 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
         result.applied == ['hubName']
     }
 
-    // ---------- hubName + lat/long/tz in one call ----------
+    // ---------- error envelopes (no false-green) ----------
 
-    def "hubName + latitude in one call: both legs fire (updateName + updateLatLongTimezone)"() {
+    def "a failing POST returns the structured error envelope (does NOT throw)"() {
         given:
         enableWrite()
-        hubGet.register('/hub/updateName?name=Den') { params -> 'OK' }
-        def expectedLL = '/hub/updateLatLongTimezone?latitude=12.34&longitude=-74.006&timeZone=UTC&temperatureScale=F&postalCode=10001'
-        hubGet.register(expectedLL) { params -> 'OK' }
-
-        when:
-        def result = script.toolSetSystemSettings([hubName: 'Den', latitude: 12.34])
-
-        then:
-        result.success == true
-        result.applied as Set == ['hubName', 'latitude'] as Set
-        hubGet.calls.any { it.path == '/hub/updateName?name=Den' }
-        latLongCall() == expectedLL
-    }
-
-    // ---------- runtime-error envelope (hub call fails) ----------
-
-    def "a failing hub call returns the structured error envelope (does NOT throw)"() {
-        given:
-        enableWrite()
-        hubGet.register('/hub/updateName?name=Boom') { params -> throw new RuntimeException('relay down') }
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            throw new RuntimeException('relay down')
+        }
 
         when:
         def result = script.toolSetSystemSettings([hubName: 'Boom'])
@@ -250,8 +259,38 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
         then:
         result.success == false
         result.error.contains('relay down')
+        result.applied == []
         result.note != null
-        result.applied == []   // failed before appending hubName
+    }
+
+    def "a non-success POST body surfaces success=false (no false-green)"() {
+        given:
+        enableWrite()
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            [success: false, message: 'bad value']
+        }
+
+        when:
+        def result = script.toolSetSystemSettings([temperatureScale: 'C'])
+
+        then:
+        result.success == false
+        result.error.contains('bad value')
+        result.applied == []
+    }
+
+    def "an unreadable /hub/details/json surfaces a structured error and makes NO POST"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/details/json') { params -> throw new RuntimeException('details down') }
+
+        when:
+        def result = script.toolSetSystemSettings([temperatureScale: 'C'])
+
+        then:
+        result.success == false
+        result.error.contains('current hub settings')
+        posted.isEmpty()
     }
 
     // ---------- dispatch envelope ----------
@@ -260,7 +299,6 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        hubGet.register('/hub/updateName?name=Dispatch') { params -> 'OK' }
 
         when:
         def response = mcpDriver.callTool('hub_set_system_settings', [hubName: 'Dispatch'])

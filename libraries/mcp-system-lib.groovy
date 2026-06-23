@@ -224,84 +224,96 @@ def toolGetHubInfo(args = null) {
     return info
 }
 
-// hub_set_system_settings: write the hub-GLOBAL location settings. All params optional; pass only
-// what changes. Wire format verified against resources/hub2-source/vue-hub2.min.js (do NOT re-derive):
-//   hubName                                       -> GET /hub/updateName?name=<urlenc>
-//   latitude/longitude/timeZone/temperatureScale/zipCode -> ONE GET /hub/updateLatLongTimezone
-//        (granular wholesale endpoint: read-merge the CURRENT location.* values, override only the
-//         provided args; zipCode maps to the postalCode query param)
-// A timeZone change REBOOTS the hub, so that leg alone is confirm-gated (requireDestructiveConfirm);
-// the other fields are Write-master-only. Arg validation throws (-> -32602); hub-call failures return
-// the structured runtime-error envelope ([success:false, error, note]) -- never thrown.
-def _urlEnc(value) {
-    return java.net.URLEncoder.encode(value?.toString() ?: "", "UTF-8")
-}
-
+// hub_set_system_settings: write the hub-GLOBAL location/identity settings. All params optional; pass
+// only what changes. Wire format verified live (read /hub/details/json + the Settings page's POST):
+//   READ current state:  GET /hub/details/json -> {hubName,timeZone,latitude,longitude,zipCode,
+//                         tempScale,dateFormat,timeFormat,ttsCurrent,mdnsName,...}
+//   WRITE (wholesale):    POST /location/update with the FULL payload {name,timeZone,latitude,longitude,
+//                         clock,dateFormat,zipCode,temperatureScale,voice,mdnsName}. The endpoint blanks
+//                         omitted fields, so we READ-MERGE: build the payload from the current values and
+//                         override only the provided args (clock/dateFormat/voice/mdnsName -- not settable
+//                         here -- are always carried through). hubName is the payload's `name` field, so
+//                         every setting goes through this ONE atomic POST.
+// A timeZone change REBOOTS the hub, so it is confirm-gated (requireDestructiveConfirm). Arg validation
+// throws (-> -32602); hub-call failures return the structured runtime-error envelope -- never thrown.
 def toolSetSystemSettings(args) {
     args = args ?: [:]
     def settable = ["hubName", "timeZone", "latitude", "longitude", "zipCode", "temperatureScale"]
     if (!settable.any { args.containsKey(it) }) {
         throw new IllegalArgumentException("Provide at least one field to change: ${settable.join(', ')}. All are optional; pass only what changes.")
     }
-
-    def tempScale = null
-    if (args.containsKey("temperatureScale")) {
-        tempScale = args.temperatureScale?.toString()
-        if (!(tempScale in ["F", "C"])) {
-            throw new IllegalArgumentException("temperatureScale must be 'F' or 'C' (uppercase), got: ${args.temperatureScale}")
-        }
+    if (args.containsKey("temperatureScale") && !(args.temperatureScale?.toString() in ["F", "C"])) {
+        throw new IllegalArgumentException("temperatureScale must be 'F' or 'C' (uppercase), got: ${args.temperatureScale}")
     }
+    _validateCoordinate("latitude", args, -90, 90)
+    _validateCoordinate("longitude", args, -180, 180)
 
-    // latLongTimezone is the wholesale granular endpoint -- it is called iff any of its fields change.
-    def llKeys = ["latitude", "longitude", "timeZone", "temperatureScale", "zipCode"]
-    boolean wantsLatLong = llKeys.any { args.containsKey(it) }
-
-    // A timeZone change reboots the hub -- gate ONLY that leg.
+    // A timeZone change reboots the hub -- confirm-gate it.
     if (args.containsKey("timeZone")) {
         requireDestructiveConfirm(args.confirm)
     }
 
-    def applied = []
+    def cur
     try {
-        if (args.containsKey("hubName")) {
-            hubInternalGet("/hub/updateName?name=${_urlEnc(args.hubName)}")
-            applied << "hubName"
-        }
-
-        if (wantsLatLong) {
-            // Read-merge: start from the SDK's current values, override only what was passed.
-            def curLat = location.latitude
-            def curLon = location.longitude
-            def curTz = location.timeZone?.ID
-            def curScale = location.temperatureScale
-            def curZip = location.zipCode
-
-            def lat = args.containsKey("latitude") ? args.latitude : curLat
-            def lon = args.containsKey("longitude") ? args.longitude : curLon
-            def tz = args.containsKey("timeZone") ? args.timeZone : curTz
-            def scale = args.containsKey("temperatureScale") ? tempScale : curScale
-            def zip = args.containsKey("zipCode") ? args.zipCode : curZip
-
-            def query = "latitude=${_urlEnc(lat)}&longitude=${_urlEnc(lon)}&timeZone=${_urlEnc(tz)}" +
-                        "&temperatureScale=${_urlEnc(scale)}&postalCode=${_urlEnc(zip)}"
-            hubInternalGet("/hub/updateLatLongTimezone?${query}")
-            llKeys.each { if (args.containsKey(it)) applied << it }
-        }
+        def raw = hubInternalGet("/hub/details/json")
+        cur = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
     } catch (Exception e) {
-        mcpLogError("hub-admin", "hub_set_system_settings hub call failed", e)
-        return [
-            success: false,
-            error: "Failed to apply hub settings: ${e.message}",
-            applied: applied,
-            note: "Some fields may have been applied before the failure (see 'applied'). Check Hub Security credentials; read back current values with hub_get_info."
-        ]
+        mcpLogError("hub-admin", "hub_set_system_settings could not read current settings", e)
+        return [success: false, error: "Could not read current hub settings (/hub/details/json): ${e.message}",
+                note: "Nothing was changed. Verify the hub is reachable and retry."]
+    }
+    if (!(cur instanceof Map)) {
+        return [success: false, error: "Unexpected /hub/details/json response; cannot safely merge.",
+                note: "Nothing was changed."]
     }
 
-    return [
-        success: true,
-        applied: applied,
-        note: "Read back the current values with hub_get_info. A timeZone change reboots the hub (1-3 min downtime)."
+    // Read-merge the FULL wholesale payload from the current values, overriding only the provided args
+    // (the POST blanks omitted fields). clock/dateFormat/voice/mdnsName are preserved as-is.
+    def payload = [
+        name:             args.containsKey("hubName")          ? args.hubName          : cur.hubName,
+        timeZone:         args.containsKey("timeZone")         ? args.timeZone         : cur.timeZone,
+        latitude:         args.containsKey("latitude")         ? args.latitude         : cur.latitude,
+        longitude:        args.containsKey("longitude")        ? args.longitude        : cur.longitude,
+        clock:            cur.timeFormat,
+        dateFormat:       cur.dateFormat,
+        zipCode:          args.containsKey("zipCode")          ? args.zipCode          : cur.zipCode,
+        temperatureScale: args.containsKey("temperatureScale") ? args.temperatureScale : cur.tempScale,
+        voice:            cur.ttsCurrent,
+        mdnsName:         cur.mdnsName,
     ]
+
+    def parsed
+    try {
+        parsed = hubInternalPostJson("/location/update", groovy.json.JsonOutput.toJson(payload))
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "hub_set_system_settings /location/update failed", e)
+        return [success: false, error: "Failed to apply hub settings: ${e.message}",
+                note: "Nothing was changed (the update is one atomic POST). Read current values with hub_get_info."]
+    }
+    if (!(parsed instanceof Map && parsed.success == true)) {
+        def err = (parsed instanceof Map) ? (parsed.message ?: parsed.error) : null
+        return [success: false, error: err ?: "/location/update did not report success", applied: [],
+                note: "Nothing was changed. Read current values with hub_get_info."]
+    }
+    return [success: true, applied: settable.findAll { args.containsKey(it) },
+            note: "Read back the current values with hub_get_info." +
+                  (args.containsKey("timeZone") ? " A timeZone change reboots the hub (1-3 min downtime)." : "")]
+}
+
+// Validate an optional lat/long arg: coerce a string to a number and bound the range (-> -32602 on a
+// bad value), so an out-of-range coordinate is rejected before it reaches the hub.
+private _validateCoordinate(String key, Map args, Number lo, Number hi) {
+    if (!args.containsKey(key)) return
+    def v = args[key]
+    if (v instanceof String) {
+        try { v = v.toBigDecimal() } catch (Exception e) {
+            throw new IllegalArgumentException("${key} must be a number, got: ${args[key]}")
+        }
+    }
+    if (!(v instanceof Number) || v < lo || v > hi) {
+        throw new IllegalArgumentException("${key} must be a number between ${lo} and ${hi}, got: ${args[key]}")
+    }
+    args[key] = v   // write back the coerced number so the /location/update payload sends a number, not a string
 }
 
 def toolGetModes() {
@@ -1133,6 +1145,9 @@ def _idempotentWriteToolNames_partSystem() {
     return [
         // Hub state
         "hub_set_hsm", "hub_set_mode_manager"
+        // hub_set_system_settings is deliberately OMITTED here (non-idempotent): its timeZone leg
+        // reboots the hub, so a retry with the same args re-triggers the reboot -- not "no additional
+        // effect" -- which is the conservative, accurate idempotentHint for this tool.
     ]
 }
 

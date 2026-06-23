@@ -556,7 +556,10 @@ class TestRunner:
                     fired = True
                     break
                 print(f"    [THROTTLE] hub_reboot attempt {attempt} did not confirm: {str(resp)[:160]}")
-            except McpError as exc:
+            except Exception as exc:
+                # Broad on purpose: firing a reboot inherently drops the connection (ConnectionError /
+                # Timeout from requests, which are NOT McpError), so catch + retry instead of crashing
+                # the runner. This is a recovery loop, not an assertion path.
                 print(f"    [THROTTLE] hub_reboot attempt {attempt} errored ({str(exc)[:120]}) -- retrying")
             time.sleep(5)
         if not fired:
@@ -5706,12 +5709,16 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
 
     @test("system_tools")
     def test_set_system_settings(self) -> None:
-        # hub_set_system_settings writes hub-GLOBAL location settings. To keep the sacrificial e2e hub
-        # usable mid-suite this test NEVER changes timeZone (a tz change reboots the hub). It proves:
-        #   1 temperatureScale round-trips to its CURRENT value (a no-op write) -> success + applied
-        #   2 hubName round-trips to its CURRENT value (a no-op write) -> success + applied
-        #   3 the timeZone leg's confirm gate REJECTS without confirm (-32602 / "confirm") AND the
-        #     hub's timeZone is unchanged afterward (no reboot, nothing mutated)
+        # hub_set_system_settings writes hub-GLOBAL location/identity settings via a read-merge of
+        # GET /hub/details/json -> POST /location/update. To keep the sacrificial e2e hub usable
+        # mid-suite this test NEVER changes timeZone (a tz change reboots the hub). It proves EVERY
+        # aspect of the tool:
+        #   1 ALL settable non-tz fields (temperatureScale, hubName, latitude, longitude, zipCode)
+        #     round-trip to their CURRENT values in ONE atomic no-op POST -> success + each in applied
+        #     (the read-merge preserves everything; nothing actually changes)
+        #   2 out-of-range latitude is rejected by validation (-32602) before any hub write
+        #   3 the timeZone leg's confirm gate REJECTS without confirm AND the hub's timeZone is
+        #     unchanged afterward (no reboot, nothing mutated)
         # Every write goes through _set_call so an "excessive hub load" limiter trip bounces the app via
         # the watchdog and retries once -- the same contract the mode-lifecycle test uses.
         def _set_call(args: dict, label: str) -> Any:
@@ -5725,21 +5732,40 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         # Read current settings to round-trip them (no-op writes -- nothing actually changes).
         before = self.client.call_tool("hub_get_info")
         assert isinstance(before, dict), f"hub_get_info returned {type(before)}"
-        cur_scale = before.get("temperatureScale")
-        cur_name = before.get("name")          # PII -- present when the Read master is ON (default)
         cur_tz = before.get("timeZone")
 
-        # 1 -- temperatureScale round-trip (no-op). Only run when the current scale is readable.
-        if cur_scale in ("F", "C"):
-            r1 = _set_call({"temperatureScale": cur_scale}, "temperatureScale round-trip")
-            assert isinstance(r1, dict) and r1.get("success") is True, f"temperatureScale round-trip failed: {r1}"
-            assert "temperatureScale" in (r1.get("applied") or []), f"applied did not include temperatureScale: {r1}"
+        # 1 -- every readable settable non-tz field, set back to its CURRENT value in ONE atomic POST.
+        # (name/latitude/longitude/zipCode are PII -> present only when the Read master is ON, the
+        # default; include each only when readable so the test still works with Read OFF.)
+        roundtrip: dict = {}
+        if before.get("temperatureScale") in ("F", "C"):
+            roundtrip["temperatureScale"] = before["temperatureScale"]
+        if before.get("name"):
+            roundtrip["hubName"] = before["name"]
+        if before.get("latitude") is not None:
+            roundtrip["latitude"] = before["latitude"]
+        if before.get("longitude") is not None:
+            roundtrip["longitude"] = before["longitude"]
+        if before.get("zipCode"):
+            roundtrip["zipCode"] = before["zipCode"]
+        if roundtrip:
+            r1 = _set_call(roundtrip, "settings round-trip")
+            assert isinstance(r1, dict) and r1.get("success") is True, f"settings round-trip failed: {r1}"
+            for k in roundtrip:
+                assert k in (r1.get("applied") or []), f"applied did not include {k}: {r1}"
 
-        # 2 -- hubName round-trip (no-op). cur_name is None only if the Read master is OFF; skip then.
-        if cur_name:
-            r2 = _set_call({"hubName": cur_name}, "hubName round-trip")
-            assert isinstance(r2, dict) and r2.get("success") is True, f"hubName round-trip failed: {r2}"
-            assert "hubName" in (r2.get("applied") or []), f"applied did not include hubName: {r2}"
+        # 2 -- out-of-range latitude must be rejected by validation (-32602) before any hub write.
+        rejected_lat = False
+        lat_detail = None
+        try:
+            lat_detail = self.client.call_tool("hub_set_system_settings", {"latitude": 999})
+            blob = (lat_detail if isinstance(lat_detail, str) else json.dumps(lat_detail)).lower()
+            rejected_lat = (isinstance(lat_detail, dict) and bool(lat_detail.get("isError"))) \
+                or "latitude" in blob or "between" in blob
+        except McpError as exc:  # also catches McpToolError (subclass)
+            lat_detail = str(exc)
+            rejected_lat = "latitude" in lat_detail.lower() or "between" in lat_detail.lower()
+        assert rejected_lat, f"out-of-range latitude (999) must be rejected by validation, got: {lat_detail}"
 
         # 3 -- the timeZone confirm gate: a tz change WITHOUT confirm must be refused (no reboot). The
         # refusal surfaces as a raised McpError/-32602 ("confirm"/"backup"/"safety check"), OR an
