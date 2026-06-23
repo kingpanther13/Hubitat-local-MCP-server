@@ -39,7 +39,7 @@ class AdvancedOverridesPageSpec extends ToolSpecBase {
 
     def "resetOverridesBtn removes both override settings and logs an audit line"() {
         given: "the app stub carries the two override settings, and a captured mcpLog"
-        sharedAppStub.settingsStore['disabled_tools'] = ['hub_set_mode']
+        sharedAppStub.settingsStore['disabled_tools'] = ['hub_manage_mode']
         sharedAppStub.settingsStore['disabled_gateways'] = ['hub_manage_files']
         def logs = []
         script.metaClass.mcpLog = { String level, String component, String msg -> logs << [level: level, msg: msg] }

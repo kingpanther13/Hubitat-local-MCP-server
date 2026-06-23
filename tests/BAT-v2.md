@@ -1,6 +1,6 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split (11 flat core + 20 gateways = 31 on tools/list, 106 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split (12 flat core + 20 gateways = 32 on tools/list, 107 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -2433,9 +2433,9 @@ These operations are too destructive for automated testing. Test manually with e
 
 | Component | Count |
 |-----------|-------|
-| Flat core tools on `tools/list` | 11 |
+| Flat core tools on `tools/list` | 12 |
 | Gateways on `tools/list` | 20 |
-| Total visible on `tools/list` | 31 |
+| Total visible on `tools/list` | 32 |
 | Total distinct tools in codebase | 106 |
 
 **7 read gateways**: `hub_read_apps_code` (11), `hub_read_devices` (4), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3)
@@ -2446,7 +2446,7 @@ These operations are too destructive for automated testing. Test manually with e
 
 ### Tool Coverage (non-destructive tools only)
 
-All 106 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 107 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
@@ -4045,6 +4045,22 @@ Tools in this section require **the Read master** and HPM itself must be install
 **Expected**: AI calls `hub_call_device_replace(list_options=true)` first to read the compatible candidates, then `hub_call_device_replace` with `old_device_id`/`new_device_id`/`confirm=true`. The response is `success=true` with `replaced={oldDeviceId, newDeviceId}` and `preservedDeviceId=<old id>`. The KEY invariant: the OLD device id survives and keeps all its app/rule references — `hub_list_device_dependents` on the old id still lists 'BAT Replace Rule' (replace re-points hardware; it does NOT migrate references like swap does).
 
 **Failure modes**: the tool refuses without `confirm` or a recent backup (expected gate — create the backup, don't bypass). `list_options` returns an empty list even though a compatible donor exists (the hub did not offer it — usually a fixture is an MCP child device or not capability-compatible; this scenario requires free-standing same-driver devices). A structured `success=false` naming an incompatible `new_device_id` (the donor was not in the hub's compatible set — re-read `list_options`). `preservedDeviceId` is the NEW id instead of the old one, or the rule's dependents move to the donor (that would be swap behaviour, not replace — a wire-format regression). Routing the request to `hub_call_device_swap` instead of `hub_call_device_replace` (swap migrates references onto the new id; replace keeps the old id — different end states).
+
+---
+
+### T704 — manage location modes end-to-end (create, activate, rename, Mode Manager, delete)
+
+```json
+{
+  "setup_prompt": "Make sure the Write master is on and a hub backup exists (<24h). Note the hub's current location mode so it can be restored at the end.",
+  "test_prompt": "I want a new house mode called 'Vacation'. Add it, then switch the house into it. After that, rename 'Vacation' to 'Holiday'. Tell me which built-in automation is currently in charge of changing the house mode automatically. Finally, switch the house back to its normal everyday mode and get rid of the 'Holiday' mode entirely.",
+  "teardown_prompt": "If the 'Vacation'/'Holiday' mode still exists, make sure the house is on a normal mode and then remove it. Leave the active mode as it was before the test."
+}
+```
+
+**Expected**: the AI discovers the mode-management surface itself — it creates the mode, activates it, renames it, reports which Mode Manager runs, restores the everyday mode, and deletes the test mode. It should route the create/rename/activate/delete to `hub_manage_mode` (`action` enum), read the active manager from `hub_list_modes` (`modeManager.selected`), and may use `hub_set_mode_manager` only if it changes the manager. The delete must be `confirm=true`-gated and is performed only after the active mode is something other than the mode being deleted. Each step's result should report `success=true`, and a final `hub_list_modes` should no longer list the test mode.
+
+**Failure modes**: the AI tries to create/delete modes by editing `configuration.yaml`-style files or a rule instead of the mode tool (wrong surface). Deleting the mode while it is the *current* mode (the hub refuses; the AI must switch away first). Calling `hub_manage_mode` delete without `confirm` (expected gate — it must create/confirm a backup, not bypass). Inventing a separate "Mode Manager" tool when the manager state is simply read from `hub_list_modes`. Leaving the test mode behind, or leaving the house on the test mode instead of restoring the original.
 
 ---
 

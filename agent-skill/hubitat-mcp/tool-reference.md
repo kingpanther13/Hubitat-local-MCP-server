@@ -1,6 +1,6 @@
 # Tool Reference
 
-Quick reference for all 106 MCP tools. The server exposes **31 items on `tools/list`**: 11 flat core tools + 20 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute. A tool MAY appear under more than one gateway (multi-membership); read-only tools inside a mixed `hub_manage_*` gateway are also surfaced under a pure-read `hub_read_*` gateway.
+Quick reference for all 107 MCP tools. The server exposes **32 items on `tools/list`**: 12 flat core tools + 20 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute. A tool MAY appear under more than one gateway (multi-membership); read-only tools inside a mixed `hub_manage_*` gateway are also surfaced under a pure-read `hub_read_*` gateway.
 
 For the most authoritative reference, call `hub_get_tool_guide` via MCP.
 
@@ -36,8 +36,9 @@ These 11 tools are never behind a gateway. Every other tool is reachable through
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `hub_get_info` | Comprehensive hub info (hardware, health, MCP stats) always available; PII/location data (name, IP, timezone, coordinates, zip) requires the Read master. | None |
-| `hub_list_modes` | List location modes. | None |
-| `hub_set_mode` | Change location mode (Home, Away, Night, etc.). | None |
+| `hub_list_modes` | List location modes (with the active one) + Mode Manager state. | None |
+| `hub_manage_mode` | Create, rename, delete, or activate a location mode (`action` enum). | `confirm` for delete |
+| `hub_set_mode_manager` | Pick which Mode Manager runs (builtIn/easy/legacy) + update its per-mode conditions. | None |
 | `hub_get_hsm_status` | Get Home Security Monitor status. | None |
 | `hub_set_hsm` | Change HSM arm mode. | None |
 | `hub_create_backup` | Create full hub database backup. | Write master |
@@ -49,7 +50,7 @@ These 11 tools are never behind a gateway. Every other tool is reachable through
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `hub_get_tool_guide` | Full tool reference from the MCP server itself. | None |
-| `hub_search_tools` | BM25 natural language search across all 106 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
+| `hub_search_tools` | BM25 natural language search across all 107 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
 
 ---
 

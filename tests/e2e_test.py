@@ -878,12 +878,12 @@ class TestRunner:
         names = {t.get("name") for t in tools}
         # hub_update_package is a Developer-Mode-only TOP-LEVEL tool (issue #250): it shows on
         # tools/list ONLY with Developer Mode on (this e2e hub has it on -- a documented precondition).
-        # The documented DEFAULT catalog is 31 (11 core + 20 gateways); exclude the dev-mode tool so
+        # The documented DEFAULT catalog is 32 (12 core + 20 gateways); exclude the dev-mode tool so
         # the count matches the default regardless of the toggle, then assert the dev-mode tool is
         # present on this dev-on hub.
         default_tools = [t for t in tools if t.get("name") != "hub_update_package"]
-        assert len(default_tools) == 31, \
-            f"Expected 31 default tools (11 core + 20 gateways), got {len(default_tools)}: {sorted(names)}"
+        assert len(default_tools) == 32, \
+            f"Expected 32 default tools (12 core + 20 gateways), got {len(default_tools)}: {sorted(names)}"
         assert "hub_update_package" in names, \
             "hub_update_package must be a top-level tool when Developer Mode is on (issue #250)"
 
@@ -5333,6 +5333,49 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         has_modes = ("modes" in result if isinstance(result, dict) else isinstance(result, list))
         assert has_modes or "currentMode" in result, \
             f"hub_list_modes response missing modes/currentMode: {list(result.keys()) if isinstance(result, dict) else type(result)}"
+
+    @test("system_tools")
+    def test_mode_lifecycle(self) -> None:
+        # Full mode surface on the sacrificial e2e hub: create -> read (with Mode Manager state)
+        # -> rename -> activate -> restore -> delete. The runner created a backup at startup, so the
+        # destructive-confirm gate for the delete is satisfied.
+        mode_name = f"{PREFIX}Mode"
+        renamed = f"{PREFIX}Mode2"
+        before = self.client.call_tool("hub_list_modes")
+        original_mode = before.get("currentMode") if isinstance(before, dict) else None
+        try:
+            cr = self.client.call_tool("hub_manage_mode", {"action": "create", "name": mode_name})
+            assert isinstance(cr, dict) and cr.get("success") is True, f"hub_manage_mode create failed: {cr}"
+
+            listed = self.client.call_tool("hub_list_modes")
+            names = [m.get("name") for m in (listed.get("modes") or [])]
+            assert mode_name in names, f"created mode not in hub_list_modes: {names}"
+            assert "modeManager" in listed, f"hub_list_modes missing the modeManager block: {sorted(listed.keys())}"
+
+            rn = self.client.call_tool("hub_manage_mode", {"action": "rename", "mode": mode_name, "name": renamed})
+            assert rn.get("success") is True, f"rename failed: {rn}"
+            assert renamed in [m.get("name") for m in (self.client.call_tool("hub_list_modes").get("modes") or [])], \
+                "renamed mode not reflected in hub_list_modes"
+
+            act = self.client.call_tool("hub_manage_mode", {"action": "activate", "mode": renamed})
+            assert act.get("success") is True and act.get("newMode") == renamed, f"activate failed: {act}"
+
+            print(f"    MODE_LIFECYCLE ok -- created {mode_name}, renamed -> {renamed}, activated; cleaning up")
+        finally:
+            # Restore the original mode (a current mode is undeletable), then delete the BAT mode by
+            # whichever name it currently carries.
+            if original_mode:
+                try:
+                    self.client.call_tool("hub_manage_mode", {"action": "activate", "mode": original_mode})
+                except Exception as exc:
+                    print(f"  [WARN] mode cleanup: restore {original_mode} failed: {exc}")
+            for nm in (renamed, mode_name):
+                try:
+                    dl = self.client.call_tool("hub_manage_mode", {"action": "delete", "mode": nm, "confirm": True})
+                    if isinstance(dl, dict) and dl.get("success"):
+                        break
+                except Exception as exc:
+                    print(f"  [WARN] mode cleanup: delete {nm} failed: {exc}")
 
     @test("system_tools")
     def test_manage_hub_variables_list(self) -> None:
