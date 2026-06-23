@@ -249,7 +249,9 @@ def toolGetModes() {
                 try {
                     def craw = hubInternalGet("/modes/easyModeManager/json")
                     if (craw) modeManager.easyConditions = new groovy.json.JsonSlurper().parseText(craw)
-                } catch (Exception ignore) { }
+                } catch (Exception ce) {
+                    mcpLog("debug", "modes", "Integrated Mode Manager conditions unreadable (omitted from modeManager): ${ce.message}")
+                }
             }
         }
     } catch (Exception e) {

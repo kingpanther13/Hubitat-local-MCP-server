@@ -183,12 +183,85 @@ class ToolModeSpec extends ToolSpecBase {
         result.error.contains('duplicate')
     }
 
-    def "hub_manage_mode rejects an unknown action"() {
+    def "hub_manage_mode rejects a missing or unknown action (#action)"() {
         when:
-        script.toolManageMode([action: 'frobnicate'])
+        script.toolManageMode([action: action])
 
         then:
         thrown(IllegalArgumentException)
+
+        where:
+        action << [null, '', '   ', 'frobnicate']
+    }
+
+    def "hub_manage_mode create/rename without a name throws (#args)"() {
+        given:
+        enableWrite()
+        seedModes()
+
+        when:
+        script.toolManageMode(args)
+
+        then:
+        thrown(IllegalArgumentException)
+
+        where:
+        args << [[action: 'create'], [action: 'rename', mode: 'Night']]
+    }
+
+    def "hub_manage_mode activate rejects an unknown target mode"() {
+        given:
+        seedModes()
+
+        when:
+        script.toolManageMode([action: 'activate', mode: 'Nonexistent'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('not found')
+    }
+
+    def "hub_manage_mode create includes the icon in the body when provided"() {
+        given:
+        enableWrite()
+        def sent = [:]
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> sent.body = body; return [success: true] }
+
+        when:
+        script.toolManageMode([action: 'create', name: 'Vacation', icon: 'fa-plane'])
+
+        then:
+        sent.body.contains('fa-plane')
+        sent.body.contains('Vacation')
+    }
+
+    def "hub_manage_mode rename includes the icon in the body when provided"() {
+        given:
+        enableWrite()
+        seedModes()
+        def sent = [:]
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> sent.body = body; return [success: true] }
+
+        when:
+        script.toolManageMode([action: 'rename', mode: 'Night', name: 'Evening', icon: 'fa-moon'])
+
+        then:
+        sent.body.contains('fa-moon')
+        sent.body.contains('Evening')
+    }
+
+    def "hub_manage_mode delete surfaces a transport exception without false-greening"() {
+        given:
+        enableWrite()
+        seedModes()
+        hubGet.register('/modes/jsonDelete/3') { params -> throw new RuntimeException('relay down') }
+
+        when:
+        def result = script.toolManageMode([action: 'delete', mode: 'Away', confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('relay down')
     }
 
     def "hub_manage_mode via dispatch returns the success envelope (useGateways=#useGateways)"() {
@@ -246,6 +319,17 @@ class ToolModeSpec extends ToolSpecBase {
 
         when:
         script.toolSetModeManager([manager: 'bogus'])
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
+    def "hub_set_mode_manager with neither manager nor conditions throws"() {
+        given:
+        enableWrite()
+
+        when:
+        script.toolSetModeManager([:])
 
         then:
         thrown(IllegalArgumentException)
