@@ -414,24 +414,20 @@ class TestRunner:
             self._first_device_id = str(devices[0]["id"])
         return self._first_device_id
 
-    def _limiter_logged(self, device_id: Any, method: str | None = None) -> bool:
-        """Hub-log proof that a device dispatch REACHED the device but the platform's
-        per-app load limiter aborted delivery. A blocked dispatch false-succeeds (the
-        LimitExceededException fires in the DEVICE's context, after our tool already
-        returned success), but it always leaves a hub error-log line naming the device,
-        this app, and the command method:
-            dev|<id>|<label>|...LimitExceededException: App <N> generates excessive hub load ... (method on)
-        Matching on the exact device id (the round-trip tests use fresh throwaway
-        devices, so no stale entries can match) discriminates 'tool works, platform
-        throttled' from a genuine dispatch bug. Log reads stay available while blocked
-        (only device dispatch is affected -- verified live 2026-06-12)."""
+    def _limiter_lines(self, device_id: Any, method: str | None = None) -> set:
+        """The set of hub ERROR-log keys ("time|message") proving the platform's per-app load
+        limiter aborted delivery for device_id (and, if given, command method). Keyed by time+message
+        so a caller can BASELINE this set immediately before a dispatch and later detect a FRESH trip
+        (a key not in the baseline) -- the only sound way to attribute a limiter line to THIS dispatch
+        on a SHARED device, where a prior test may have left a matching line in the 40-entry window."""
         try:
             res = self.client.call_tool("hub_manage_logs", {
                 "tool": "hub_get_logs", "args": {"level": "ERROR", "limit": 40},
             })
         except Exception as exc:
             print(f"    [LIMITER] hub log read failed ({exc}) -- cannot verify a limiter block")
-            return False
+            return set()
+        keys = set()
         for entry in (res.get("logs") or []) if isinstance(res, dict) else []:
             msg = str(entry.get("message", ""))
             if not msg.startswith(f"dev|{device_id}|"):
@@ -440,8 +436,27 @@ class TestRunner:
                 continue
             if method and f"(method {method})" not in msg:
                 continue
+            keys.add(f"{entry.get('time', entry.get('timestamp', ''))}|{msg}")
+        return keys
+
+    def _limiter_logged(self, device_id: Any, method: str | None = None, baseline: set | None = None) -> bool:
+        """Hub-log proof that a device dispatch REACHED the device but the platform's
+        per-app load limiter aborted delivery. A blocked dispatch false-succeeds (the
+        LimitExceededException fires in the DEVICE's context, after our tool already
+        returned success), but it always leaves a hub error-log line naming the device,
+        this app, and the command method:
+            dev|<id>|<label>|...LimitExceededException: App <N> generates excessive hub load ... (method on)
+        For a FRESH throwaway device id no stale entry can match, so baseline=None is sound. For a
+        SHARED device, pass `baseline` (from _limiter_lines() captured BEFORE the dispatch): only a
+        line NOT in the baseline counts, so the soft-pass requires a fresh trip from THIS dispatch
+        and can never be satisfied by a stale line a prior test left on the shared device.
+        Log reads stay available while blocked (only device dispatch is affected -- verified live 2026-06-12)."""
+        fresh = self._limiter_lines(device_id, method)
+        if baseline is not None:
+            fresh = fresh - baseline
+        if fresh:
             print(f"    [LIMITER] hub log confirms the dispatch reached device {device_id} and the "
-                  f"platform load limiter aborted delivery: {msg[:180]}")
+                  f"platform load limiter aborted delivery: {sorted(fresh)[0][:200]}")
             return True
         return False
 
@@ -5410,7 +5425,12 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             mm = listed.get("modeManager")
             assert isinstance(mm, dict), f"hub_list_modes missing the modeManager block: {sorted(listed.keys())}"
             assert mm.get("selected") in settable_managers, f"modeManager.selected not a valid manager: {mm}"
-            assert "easyConditions" in mm, f"modeManager missing the easyConditions key: {mm}"
+            # easyConditions is a best-effort sub-read (libraries/mcp-system-lib.groovy omits the key
+            # if the separate /modes/easyModeManager/json GET throws), so only assert its SHAPE when
+            # present -- don't fail the whole lifecycle on a transient sub-read miss. The exact
+            # key-presence contract is pinned by ToolModeSpec, not this live test.
+            if "easyConditions" in mm:
+                assert isinstance(mm["easyConditions"], dict), f"easyConditions not an object: {mm}"
 
             # PORTION 2 -- rename (by name) WITH a new icon, read back the new name + icon
             _time.sleep(PORTION)
@@ -6443,6 +6463,10 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         """Happy path: device already in expected state -> polledCount=1, success=true."""
         # Use the shared virtual switch; get_or_create ensures it exists in 'off' state.
         dev_id = self.get_test_switch_id()
+        # Baseline the limiter log BEFORE any dispatch: this is the SHARED switch, so a prior test
+        # may have left an 'off' limiter line in the window. The soft-pass below must only accept a
+        # FRESH line from this dispatch, never a stale one (else a real poll regression hides here).
+        limiter_base = self._limiter_lines(dev_id, method="off")
 
         def _drive_off_and_poll() -> Any:
             # Drive it to 'off' first so we know its state.
@@ -6466,7 +6490,7 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         # platform load limiter aborted event delivery, soft-pass: the limiter warning IS proof the
         # tool worked, so this is a platform capacity signal at the tail of the full run, not a
         # product failure. (Bounce + retry above already tried to recover; this is the last resort.)
-        if result.get("success") is not True and self._limiter_logged(dev_id, method="off"):
+        if result.get("success") is not True and self._limiter_logged(dev_id, method="off", baseline=limiter_base):
             self._soft_passes.append(
                 "poll_until_attribute/test_poll_immediate_match: limiter-proven "
                 "('off' dispatched; platform throttled event delivery so the poll could not converge)")
@@ -6480,6 +6504,10 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         """Timeout path: value won't match -> timedOut=true, elapsedMs approx timeoutMs."""
         dev_id = self.get_test_switch_id()
         import time as _time
+        # Baseline BEFORE dispatch (shared switch): the success=True soft-pass below is the strictest
+        # of the four (success=True is THIS test's failure shape), so it must accept only a FRESH
+        # limiter line from this dispatch -- never a stale 'off' line a prior test left on this device.
+        limiter_base = self._limiter_lines(dev_id, method="off")
 
         def _drive_off_and_poll_for_on() -> tuple[Any, float]:
             # Ensure switch is 'off' so 'on' won't match.
@@ -6503,7 +6531,7 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         # If it STILL false-matches and the hub log proves the 'off' dispatch reached the device but
         # the platform limiter aborted delivery (switch stuck 'on'), soft-pass -- the tool worked;
         # this is a tail-of-run capacity signal, not a product failure.
-        if result.get("success") is True and self._limiter_logged(dev_id, method="off"):
+        if result.get("success") is True and self._limiter_logged(dev_id, method="off", baseline=limiter_base):
             self._soft_passes.append(
                 "poll_until_attribute/test_poll_timeout: limiter-proven "
                 "('off' dispatched but throttled, leaving the switch stuck 'on' so the timeout poll matched early)")
