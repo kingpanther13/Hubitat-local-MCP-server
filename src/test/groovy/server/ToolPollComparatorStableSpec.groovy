@@ -1437,4 +1437,191 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
         response.error.message.contains('deviceId is required')
         response.error.message.contains('deviceIds')
     }
+
+    // =========================================================================
+    // Multi-device + non-eq/gt comparators: between, ne, multi-member expectedValues
+    // (the aggregate path runs the shared _evalAttrCondition for every comparator).
+    // =========================================================================
+
+    def "mode all + between does NOT converge when one device is out of range (per-device matched flags)"() {
+        given: 'A at 70 (inside [68,72]), B at 75 (outside) -- all-mode cannot converge'
+        def a = new TestDevice(id: 770, label: 'In Range', supportedAttributes: [[name: 'temperature']], attributeValues: [temperature: '70'])
+        def b = new TestDevice(id: 771, label: 'Out Of Range', supportedAttributes: [[name: 'temperature']], attributeValues: [temperature: '75'])
+        childDevicesList << a
+        childDevicesList << b
+
+        when:
+        def r = script.toolPollUntilAttribute([deviceIds: ['770', '771'], attribute: 'temperature', comparator: 'between', expectedValues: ['68', '72'], mode: 'all', timeoutMs: 100, pollIntervalMs: 50])
+
+        then: 'B out of range keeps all-mode from converging; the in-range device still counts as 1 (partial-convergence count)'
+        r.success == false
+        r.timedOut == true
+        r.mode == 'all'
+        r.convergedCount == 1
+        r.devices.find { it.deviceId == '770' }.matched == true
+        r.devices.find { it.deviceId == '771' }.matched == false
+    }
+
+    def "mode any + ne converges when one device's value is NOT in the set"() {
+        given: 'A locked (in set -> not-ne), B unlocked (NOT in set -> satisfies ne) -- any-mode converges via B'
+        def a = new TestDevice(id: 772, label: 'A Locked', supportedAttributes: [[name: 'lock']], attributeValues: [lock: 'locked'])
+        def b = new TestDevice(id: 773, label: 'B Unlocked', supportedAttributes: [[name: 'lock']], attributeValues: [lock: 'unlocked'])
+        childDevicesList << a
+        childDevicesList << b
+
+        when:
+        def r = script.toolPollUntilAttribute([deviceIds: ['772', '773'], attribute: 'lock', comparator: 'ne', expectedValue: 'locked', mode: 'any', timeoutMs: 5000])
+
+        then: 'B is not-in-set so ne is satisfied -> any-mode converges; A still does not match'
+        r.success == true
+        r.timedOut == false
+        r.mode == 'any'
+        r.convergedCount == 1
+        r.devices.find { it.deviceId == '772' }.matched == false
+        r.devices.find { it.deviceId == '773' }.matched == true
+    }
+
+    def "mode all + multi-member expectedValues OR-set converges when each device matches a (possibly different) set member"() {
+        given: 'A reads heat, B reads cool -- the eq OR-set {heat, cool} matches each'
+        def a = new TestDevice(id: 774, label: 'A Heat', supportedAttributes: [[name: 'thermostatMode']], attributeValues: [thermostatMode: 'heat'])
+        def b = new TestDevice(id: 775, label: 'B Cool', supportedAttributes: [[name: 'thermostatMode']], attributeValues: [thermostatMode: 'cool'])
+        childDevicesList << a
+        childDevicesList << b
+
+        when: 'eq {heat, cool}: each device matches a different member -> all-mode converges'
+        def r = script.toolPollUntilAttribute([deviceIds: ['774', '775'], attribute: 'thermostatMode', expectedValues: ['heat', 'cool'], mode: 'all', timeoutMs: 5000])
+
+        then:
+        r.success == true
+        r.timedOut == false
+        r.mode == 'all'
+        r.convergedCount == 2
+        r.devices.every { it.matched == true }
+        // Negative pin: a clean converge with no read fault must NOT emit readError on any device.
+        r.devices.every { !it.containsKey('readError') }
+    }
+
+    // =========================================================================
+    // Per-device read fault mid-poll degrades that device, does NOT abort the poll
+    // (regression guard for the per-device read try/catch + readError flag).
+    // =========================================================================
+
+    // LOAD-BEARING GUARD (both-ways pending): a device whose read THROWS mid-poll must degrade to
+    // matched:false + readError for that device, while the OTHER device's converged state is still
+    // returned -- the poll must NOT error out and discard everyone. Without the per-device try/catch
+    // the thrown exception propagates out of the whole poll (mapped to a JSON-RPC error), so this
+    // spec goes RED (the call throws instead of returning the per-device shape).
+    def "multi-device: a device whose read throws degrades to readError while the other device still converges"() {
+        given: 'A throws on every read; B is at on -- any-mode must converge via B, A flagged readError'
+        def a = Spy(TestDevice)
+        a.id = 780
+        a.label = 'Faulting A'
+        a.supportedAttributes = [[name: 'switch']]
+        a.getCurrentStates() >> { throw new IllegalStateException("device removed mid-poll") }
+        def b = new TestDevice(id: 781, label: 'Healthy B', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        childDevicesList << a
+        childDevicesList << b
+
+        when: 'any-mode: B matches, so the aggregate converges despite A faulting'
+        def r = script.toolPollUntilAttribute([deviceIds: ['780', '781'], attribute: 'switch', expectedValue: 'on', mode: 'any', timeoutMs: 5000])
+
+        then: 'the poll did NOT throw; B converged; A is degraded (matched:false + readError) not lost'
+        r.success == true
+        r.timedOut == false
+        r.mode == 'any'
+        r.convergedCount == 1
+        def da = r.devices.find { it.deviceId == '780' }
+        def db = r.devices.find { it.deviceId == '781' }
+        da.matched == false
+        da.readError == true
+        db.matched == true
+        !db.containsKey('readError')
+    }
+
+    def "multi-device timeout: a faulting device reports readError per-device; a healthy non-target is unaffected"() {
+        given: 'A throws every read; B is at off (a real non-target) -- all-mode times out'
+        def a = Spy(TestDevice)
+        a.id = 782
+        a.label = 'Faulting A'
+        a.supportedAttributes = [[name: 'switch']]
+        a.getCurrentStates() >> { throw new IllegalStateException("device removed mid-poll") }
+        def b = new TestDevice(id: 783, label: 'NonTarget B', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'off'])
+        childDevicesList << a
+        childDevicesList << b
+
+        when:
+        def r = script.toolPollUntilAttribute([deviceIds: ['782', '783'], attribute: 'switch', expectedValue: 'on', mode: 'all', timeoutMs: 100, pollIntervalMs: 50])
+
+        then: 'timed out, returned the per-device shape (not thrown); A flagged readError, B not'
+        r.success == false
+        r.timedOut == true
+        r.devices.size() == 2
+        def da = r.devices.find { it.deviceId == '782' }
+        def db = r.devices.find { it.deviceId == '783' }
+        da.readError == true
+        da.matched == false
+        !db.containsKey('readError')
+        db.matched == false
+    }
+
+    // LOAD-BEARING GUARD (both-ways pending): the SINGLE-device path mirrors the multi guard -- a
+    // read that throws mid-poll must degrade to an unread (null) tick and surface readError on the
+    // timeout, not propagate the exception out of the whole poll. Without the try/catch the call
+    // throws and this spec goes RED.
+    def "single-device: a read that throws mid-poll times out with readError, does not propagate"() {
+        given: 'the device throws on every read'
+        def device = Spy(TestDevice)
+        device.id = 784
+        device.label = 'Faulting Single'
+        device.supportedAttributes = [[name: 'switch']]
+        device.getCurrentStates() >> { throw new IllegalStateException("device removed mid-poll") }
+        childDevicesList << device
+
+        when:
+        def r = script.toolPollUntilAttribute([deviceId: '784', attribute: 'switch', expectedValue: 'on', timeoutMs: 100, pollIntervalMs: 50])
+
+        then: 'the poll returned a structured timeout (did not throw) and flagged readError'
+        r.success == false
+        r.timedOut == true
+        r.readError == true
+        r.finalValue == null
+    }
+
+    def "single-device: a read that throws early then recovers still converges and flags readError"() {
+        given: 'read throws on poll 1, then reports on from poll 2 onward'
+        def readCount = 0
+        def device = Spy(TestDevice)
+        device.id = 785
+        device.label = 'Recovering Single'
+        device.supportedAttributes = [[name: 'switch']]
+        device.getCurrentStates() >> {
+            readCount++
+            if (readCount == 1) throw new IllegalStateException("transient read fault")
+            return [[name: 'switch', value: 'on']]
+        }
+        childDevicesList << device
+
+        when:
+        def r = script.toolPollUntilAttribute([deviceId: '785', attribute: 'switch', expectedValue: 'on', timeoutMs: 5000, pollIntervalMs: 50])
+
+        then: 'converged after recovery; readError latched from the earlier fault even on success'
+        r.success == true
+        r.timedOut == false
+        r.readError == true
+        r.finalValue == 'on'
+    }
+
+    def "single-device: a clean converge with no read fault does NOT emit readError"() {
+        given: 'a healthy device at on -- no read ever throws'
+        def device = new TestDevice(id: 786, label: 'Healthy Single', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        childDevicesList << device
+
+        when:
+        def r = script.toolPollUntilAttribute([deviceId: '786', attribute: 'switch', expectedValue: 'on', timeoutMs: 5000])
+
+        then: 'negative pin: success path must not latch readError when nothing faulted (guards an always-latch regression)'
+        r.success == true
+        r.timedOut == false
+        !r.containsKey('readError')
+    }
 }

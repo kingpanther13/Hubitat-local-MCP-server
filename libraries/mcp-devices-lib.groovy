@@ -524,6 +524,7 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null) {
             // plain timeout apart from a hub-reload interrupt or a never-reported attribute.
             if (poll.timedOut == true)      waitForBlock.timedOut = true
             if (poll.interrupted == true)   waitForBlock.interrupted = true
+            if (poll.readError == true)     waitForBlock.readError = true
             if (poll.neverReported == true) waitForBlock.neverReported = true
             if (poll.nonNumericAttribute == true) waitForBlock.nonNumericAttribute = true
             // nonNumericAttribute carries an actionable note (names the comparator/attribute,
@@ -912,17 +913,12 @@ def toolGetAttribute(deviceId, attribute) {
     ]
 }
 
-// Evaluate one read value against the active comparator. Single source of truth for the
-// match logic, so the single-device and multi-device poll paths can never diverge on what
-// "matched" means. Returns [matched, numeric]: matched is the boolean condition result;
-// numeric reports whether THIS value parsed as a number under a numeric comparator (so the
-// caller can latch sawNumeric per device -- it separates "reported non-numeric the whole
-// window" from "never reported" on a timeout). For eq/ne, numeric is always false (the flag
-// is only meaningful for the numeric comparators).
-//   - eq: value is in matchSet (with the numeric-string equality fallback for Number/"50.0").
-//   - ne: a non-null value NOT in matchSet (a null/never-reported value never satisfies ne,
-//     consistent with the numeric comparators -- it will not falsely converge on null).
-//   - gt/gte/lt/lte/between: numeric; a null/non-numeric value never matches.
+// Single source of truth for the per-value match logic, shared by the single- and multi-device
+// poll paths so they can never diverge. Returns [matched, numeric]: matched is the boolean
+// condition result (eq = value in matchSet; ne = a non-null value NOT in matchSet; gt/gte/lt/lte/
+// between = numeric, a null/non-numeric value never matches); numeric is true only when THIS value
+// parsed as a number under a numeric comparator (false for eq/ne), letting the caller latch the
+// per-device sawNumeric signal.
 def _evalAttrCondition(value, comparator, matchSet, numericThreshold, betweenLow, betweenHigh) {
     if (comparator == "eq" || comparator == "ne") {
         def inSet = matchSet.contains(value?.toString()) ||
@@ -1234,6 +1230,11 @@ def toolPollUntilAttribute(args) {
     // from "reported numbers but never crossed the threshold." Surfaced as nonNumericAttribute
     // on the timeout return. Only meaningful for the numeric comparators.
     def sawNumeric     = false
+    // Latches true if any poll's per-device read threw (e.g. the device was removed mid-poll, so
+    // currentStates faults). A read fault degrades that tick to an unread (null) value rather than
+    // aborting the whole poll, and surfaces as readError on the return so the caller knows the
+    // value is unreliable -- it is not silently indistinguishable from a never-reported attribute.
+    def sawReadError   = false
     // Debounce tracking: the poll-clock time the match condition first became true in the
     // current contiguous run. Reset to null on any poll where the condition is false, so a
     // value that flaps out of range restarts the stability window. null while the condition is
@@ -1251,7 +1252,16 @@ def toolPollUntilAttribute(args) {
         // value here matches that snapshot path (the snapshot's currentValue FALLBACK branch only
         // runs when currentStates is empty). find(...) is null until the attribute has reported;
         // a State's .value is the reported value (a String in Hubitat).
-        finalValue = device.currentStates?.find { it.name == args.attribute }?.value
+        try {
+            finalValue = device.currentStates?.find { it.name == args.attribute }?.value
+        } catch (Exception e) {
+            // A per-device read fault (e.g. the device was removed after up-front resolution)
+            // must degrade this tick to an unread value, not abort the poll. Treat as null so
+            // this poll does not match; latch readError for the return.
+            finalValue = null
+            if (!sawReadError) mcpLog("warn", "device", "poll_until_attribute read failed for '${deviceLabel}' on poll ${polledCount + 1}: ${e.message ?: e.toString()}")
+            sawReadError = true
+        }
         polledCount++
         if (finalValue != null) {
             everNonNull = true
@@ -1277,13 +1287,17 @@ def toolPollUntilAttribute(args) {
         if (condition) {
             if (conditionTrueSince == null) conditionTrueSince = now()
             if ((now() - conditionTrueSince) >= stableForMs) {
-                return [
+                def okResponse = [
                     success     : true,
                     finalValue  : finalValue,
                     elapsedMs   : elapsedMs,
                     polledCount : polledCount,
                     timedOut    : false
                 ]
+                // A read fault earlier in the window did not prevent convergence, but the value
+                // was unreliable at least once -- surface it so the caller knows.
+                if (sawReadError) okResponse.readError = true
+                return okResponse
             }
         } else {
             conditionTrueSince = null
@@ -1302,6 +1316,10 @@ def toolPollUntilAttribute(args) {
                 // (see sawChange declaration). Deliberately omitted from the success path.
                 transitioning : sawChange
             ]
+            // A per-device read threw at least once during the window (e.g. the device was
+            // removed mid-poll). The value is unreliable; surface it distinctly from a
+            // never-reported attribute.
+            if (sawReadError) response.readError = true
             // Attribute exists in supportedAttributes but never reported a value during
             // the entire poll window -- driver has not yet emitted a reading.
             if (!everNonNull) response.neverReported = true
@@ -1330,13 +1348,15 @@ def toolPollUntilAttribute(args) {
             // when the hub is restarting or the app is being reloaded.
             elapsedMs = (now() - startMs) as Integer
             mcpLog("warn", "device", "poll_until_attribute interrupted after ${polledCount} poll(s) (elapsed=${elapsedMs}ms): ${e.message}")
-            return [
+            def intResponse = [
                 success     : false,
                 interrupted : true,
                 finalValue  : finalValue,
                 elapsedMs   : elapsedMs,
                 polledCount : polledCount
             ]
+            if (sawReadError) intResponse.readError = true
+            return intResponse
         }
     }
 }
@@ -1368,6 +1388,10 @@ def _pollMultiDevice(args, devices, deviceLabels, deviceIdList, mode, comparator
     def lastNonNull = (0..<n).collect { null }
     def finalValue  = (0..<n).collect { null }
     def matched     = (0..<n).collect { false }
+    // Latches per device if its read threw on any poll (e.g. removed mid-poll). A read fault on
+    // one device degrades only THAT device's tick to an unread value -- the poll continues and
+    // every other device's converged/honest state is still returned, never discarded by a throw.
+    def sawReadError = (0..<n).collect { false }
     // Aggregate-debounce anchor: the whole any/all predicate must hold continuously for stableForMs.
     def conditionTrueSince = null
 
@@ -1376,7 +1400,16 @@ def _pollMultiDevice(args, devices, deviceLabels, deviceIdList, mode, comparator
         // reasoning as the single path: currentValue()/currentState(attr) are request-cached and
         // never refresh on a real async device, so they would never converge).
         for (int i = 0; i < n; i++) {
-            def v = devices[i].currentStates?.find { it.name == args.attribute }?.value
+            def v
+            try {
+                v = devices[i].currentStates?.find { it.name == args.attribute }?.value
+            } catch (Exception e) {
+                // Degrade only this device's tick to an unread (null) value; the loop continues
+                // so the other devices' honest state is preserved. Latch readError for this device.
+                v = null
+                if (!sawReadError[i]) mcpLog("warn", "device", "poll_until_attribute (multi-device) read failed for '${deviceLabels[i]}' on poll ${polledCount + 1}: ${e.message ?: e.toString()}")
+                sawReadError[i] = true
+            }
             finalValue[i] = v
             if (v != null) {
                 everNonNull[i] = true
@@ -1404,12 +1437,18 @@ def _pollMultiDevice(args, devices, deviceLabels, deviceIdList, mode, comparator
                 return [
                     success        : true,
                     mode           : mode,
-                    devices        : (0..<n).collect { i -> [
-                        deviceId  : deviceIdList[i],
-                        device    : deviceLabels[i],
-                        finalValue: finalValue[i],
-                        matched   : matched[i]
-                    ] },
+                    devices        : (0..<n).collect { i ->
+                        def entry = [
+                            deviceId  : deviceIdList[i],
+                            device    : deviceLabels[i],
+                            finalValue: finalValue[i],
+                            matched   : matched[i]
+                        ]
+                        // A read fault on this device did not block aggregate convergence, but
+                        // its value was unreliable at least once -- surface it.
+                        if (sawReadError[i]) entry.readError = true
+                        entry
+                    },
                     convergedCount : convergedCount,
                     elapsedMs      : elapsedMs,
                     polledCount    : polledCount,
@@ -1432,6 +1471,7 @@ def _pollMultiDevice(args, devices, deviceLabels, deviceIdList, mode, comparator
                     matched   : matched[i]
                 ]
                 // TIMEOUT-only per-device honesty signals, only where true.
+                if (sawReadError[i]) entry.readError = true
                 if (!everNonNull[i]) entry.neverReported = true
                 // Numeric comparator on an attribute that reported but never parsed numeric:
                 // it can never match (distinct from neverReported -- the everNonNull && !sawNumeric
@@ -1478,12 +1518,16 @@ def _pollMultiDevice(args, devices, deviceLabels, deviceIdList, mode, comparator
                 success        : false,
                 interrupted    : true,
                 mode           : mode,
-                devices        : (0..<n).collect { i -> [
-                    deviceId  : deviceIdList[i],
-                    device    : deviceLabels[i],
-                    finalValue: finalValue[i],
-                    matched   : matched[i]
-                ] },
+                devices        : (0..<n).collect { i ->
+                    def entry = [
+                        deviceId  : deviceIdList[i],
+                        device    : deviceLabels[i],
+                        finalValue: finalValue[i],
+                        matched   : matched[i]
+                    ]
+                    if (sawReadError[i]) entry.readError = true
+                    entry
+                },
                 convergedCount : matched.count { it },
                 elapsedMs      : elapsedMs,
                 polledCount    : polledCount
@@ -2560,6 +2604,7 @@ Only query devices the user has mentioned or that are relevant to their request.
                         device: [type: "string", description: "Device label"],
                         finalValue: [description: "Last value read for this device (live event-store value)"],
                         matched: [type: "boolean", description: "Whether this device's condition was satisfied on the final poll"],
+                        readError: [type: "boolean", description: "Present and true (success OR timeout) if reading this device threw on any poll (e.g. it was removed mid-poll); its value was treated as unread for that tick and the poll continued for the other devices"],
                         neverReported: [type: "boolean", description: "TIMEOUT only: present and true if this device never reported the attribute in the window"],
                         nonNumericAttribute: [type: "boolean", description: "TIMEOUT only: present and true if a numeric comparator was used on this device and it reported a non-numeric value the whole window (can never match)"]
                     ]]],
@@ -2567,6 +2612,7 @@ Only query devices the user has mentioned or that are relevant to their request.
                     elapsedMs: [type: "integer", description: "Poll mode: elapsed time in milliseconds"],
                     polledCount: [type: "integer", description: "Poll mode: number of poll iterations performed (one iteration reads every device in multi-device mode)"],
                     timedOut: [type: "boolean", description: "Poll mode: true if the timeout elapsed without convergence"],
+                    readError: [type: "boolean", description: "Poll mode, SINGLE-device only: present and true (success OR timeout) if reading the device threw on any poll (e.g. it was removed mid-poll); that tick's value was treated as unread. Multi-device reports this per-device under devices[]."],
                     neverReported: [type: "boolean", description: "Poll mode, SINGLE-device only: present and true if the attribute never reported a value in the window (multi-device reports this per-device under devices[])"],
                     nonNumericAttribute: [type: "boolean", description: "Poll mode, SINGLE-device, TIMEOUT only: present and true when a numeric comparator (gt/gte/lt/lte/between) was used on an attribute that reported a non-numeric value the whole window, so the comparator can never match it (e.g. gt on switch=\"on\"). Distinct from neverReported. Multi-device reports this per-device under devices[]. Use eq/ne for a string attribute."],
                     note: [type: "string", description: "Poll mode, TIMEOUT only: human-readable recovery guidance. Single-device: present with nonNumericAttribute. Multi-device: present when at least one device is a can-never-match non-numeric (names the comparator/attribute, suggests eq/ne for a string attribute)."],
@@ -2619,6 +2665,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
                         elapsedMs  : [type: "integer", description: "Time spent polling, in milliseconds (absent on a poll error)"],
                         timedOut   : [type: "boolean", description: "Present and true if the poll timed out without a match"],
                         interrupted: [type: "boolean", description: "Present and true if the poll was interrupted (hub reload)"],
+                        readError: [type: "boolean", description: "Present and true if reading the device threw on any poll (e.g. it was removed mid-poll); that tick's value was treated as unread"],
                         neverReported: [type: "boolean", description: "Present and true if the attribute never reported a value during the poll window"],
                         nonNumericAttribute: [type: "boolean", description: "Present and true on a TIMEOUT when a numeric comparator (gt/gte/lt/lte/between) was used on an attribute that reported a non-numeric value the whole window, so it can never match (use eq/ne for a string attribute). Distinct from neverReported."],
                         note       : [type: "string", description: "Present with nonNumericAttribute -- human-readable recovery guidance (names the comparator/attribute, suggests eq/ne for a string attribute)."],
