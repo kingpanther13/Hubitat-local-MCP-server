@@ -153,30 +153,31 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         gwBytes < 40_000
     }
 
-    def "hub_set_rule flat-mode description keeps the discover/TOOL_GUIDE pointer for trimmed sections"() {
+    def "hub_set_rule flat-mode is the thin self-gateway selector that still reaches discover/guide"() {
+        // Flat mode no longer emits hub_set_rule's 25-param fat schema; it folds to a
+        // thin {operation,appId,args,confirm} selector (the per-operation schema is
+        // fetched on demand via the args-omitted probe). The fat per-capability prose +
+        // pointers live in gateway mode + the probe (covered by the sibling tests).
         given:
         settingsMap.useGateways = false
         enableEveryToggle()
 
         when:
         def def_ = script.getToolDefinitions().find { it.name == 'hub_set_rule' }
-        def addTrigger = def_.inputSchema.properties.addTrigger.description
-        def addAction = def_.inputSchema.properties.addAction.description
-        def addRequiredExpression = def_.inputSchema.properties.addRequiredExpression.description
+        def props = def_.inputSchema.properties
 
-        then: 'addTrigger trimmed -- per-capability families gone, but pointers remain'
-        !addTrigger.contains('Capability families and the spec fields each accepts')
-        addTrigger.contains('{discover: true}')
-        addTrigger.contains("hub_get_tool_guide(section='set_rule_reference')")
+        then: 'flat hub_set_rule is the thin selector, NOT the fat 24-param schema'
+        props.keySet() == ['operation', 'appId', 'args', 'confirm'] as Set
+        props.operation.enum.containsAll(['create', 'addTrigger', 'addAction', 'addRequiredExpression', 'guide', 'discover'])
 
-        and: 'addAction trimmed -- capability list gone, but pointers remain'
-        !addAction.contains('Capability families and the spec fields each accepts')
-        addAction.contains('docs/rm_action_subtype_schemas.md')
-        addAction.contains('{discover: true}')
+        and: 'an agent is never blind: guide + discover are reachable operations, and the description points to both'
+        props.operation.enum.contains('guide')
+        props.operation.enum.contains('discover')
+        (def_.description + props.operation.description).toLowerCase().contains('discover')
+        (def_.description + props.operation.description).toLowerCase().contains('guide')
 
-        and: 'addRequiredExpression trimmed -- STPage enum gone, hub_get_tool_guide pointer remains'
-        !addRequiredExpression.contains("RM's STPage capability list")
-        addRequiredExpression.contains("hub_get_tool_guide(section='set_rule_reference')")
+        and: 'far smaller than the fat schema (the whole point of the fold)'
+        groovy.json.JsonOutput.toJson(def_).length() < 4000
     }
 
     def "hub_set_rule per-capability reference lives in the guide; inline keeps a name summary + pointer"() {
@@ -482,14 +483,17 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         !listDevicesFlat.contains('Server-side filtering (all applied before pagination)')
         listDevicesGw.contains('Server-side filtering (all applied before pagination)')
 
-        and: 'hub_set_rule create paragraph is inline in BOTH modes (not FLAT_TRIM-wrapped): condensed partial-success + a pointer to the full protocol in the guide'
-        // The old verbose [[FLAT_TRIM]] "PARTIAL-SUCCESS HANDLING" block was deduped down to a
-        // single inline "Partial-success:" sentence (present in both modes) that points to
-        // hub_get_tool_guide(section='set_rule_create_reference') for the full protocol.
-        !createNativeFlat.contains('PARTIAL-SUCCESS HANDLING')
-        createNativeFlat.contains('Partial-success')
+        and: 'hub_set_rule fat schema (gateway mode + probe source) carries the deduped partial-success contract + the create-reference pointer'
+        // hub_set_rule is now a flat self-gateway: in flat mode it is the thin
+        // {operation,args} selector (no partial-success prose, no FLAT_TRIM); the fat
+        // schema served in gateway mode + the args-omitted probe holds the deduped
+        // single "Partial-success" statement + the set_rule_create_reference pointer.
+        !createNativeGw.contains('PARTIAL-SUCCESS HANDLING')
         createNativeGw.contains('Partial-success')
-        createNativeFlat.contains("hub_get_tool_guide(section='set_rule_create_reference')")
+        createNativeGw.contains("hub_get_tool_guide(section='set_rule_create_reference')")
+
+        and: 'flat-mode hub_set_rule is the thin selector -- the fat partial-success prose is NOT on the flat wire'
+        !createNativeFlat.contains('Partial-success')
 
         and: 'flat-mode keeps a hub_get_tool_guide pointer for hub_list_devices too -- callers must have a fallback'
         listDevicesFlat.contains('hub_get_tool_guide(')

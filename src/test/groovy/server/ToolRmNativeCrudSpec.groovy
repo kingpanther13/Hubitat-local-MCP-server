@@ -11025,7 +11025,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // bounded fallback that could be "" -- the two negation assertions below would
         // then pass vacuously. Pinning the canonical preamble phrase makes the
         // precondition red whenever the extraction failed to reach the addAction text.
-        addActionDesc.contains("Add a Rule Machine ACTION")
+        addActionDesc.contains("Add an RM ACTION")
         !addActionDesc.contains("still issue")
         !addActionDesc.contains("button='updateRule'")
     }

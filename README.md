@@ -610,7 +610,7 @@ Reads (`hub_list_rules`, `hub_get_rule_health`, `hub_get_visual_rule`) are gated
 | `hub_call_rule` | Trigger an RM rule (`action`: "rule"/"actions"/"stop") |
 | `hub_set_rule_paused` | Pause or resume an RM rule (`value=true` pauses, `value=false` resumes; reversible) |
 | `hub_set_rule_private_boolean` | Set an RM rule's private boolean variable |
-| `hub_set_native_app` | Create or edit any classic native app (omit `appId` to create; `appType` enum covers Button Controllers / Notifier / Groups+Scenes / Visual Rule / Basic Rules; default `rule_machine`). Create a Button Rule under its controller via `buttonRule`. Returns `appId`. Generic upsert; `walkStep` (generic classic-page walker) also works here. |
+| `hub_set_native_app` | Create or edit any classic native app (omit `appId` to create; `appType` enum covers Button Controllers / Notifier / Groups+Scenes / Basic Rules; default `rule_machine`). Visual Rules are edit/delete-only by `appId` — create them with `hub_set_visual_rule`. Create a Button Rule under its controller via `buttonRule`. Returns `appId`. Generic upsert; `walkStep` (generic classic-page walker) also works here. |
 | `hub_set_rule` | Author a Rule Machine rule by appId (omit `appId` to create) — triggers, actions, required expressions, settings, structured shortcuts. Auto-snapshots before every write. `clearActions` / `replaceActions` commit the delete synchronously via a full selectActions page-form submit (runs RM's trashActs handler in-band), so the actions are gone when the call returns. A thin defensive verify-retry remains: on the rare residual it returns `partial:true, asyncCommitLikely:true` with `stage` + `safeRecovery` -- verify via `hub_get_app_config` rather than rolling back. |
 | `hub_delete_native_app` | Delete a classic native app (auto-snapshot to File Manager before deleting). |
 | `hub_clone_native_app` | Clone an existing classic SmartApp via Hubitat's `appCloner` endpoint. Returns the new `appId`. |
@@ -1611,6 +1611,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v2.8.0** - feat: fold hub_set_rule to a flat self-gateway + trim RM tool/gateway prose. PRs: [#310](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/310)
 - **v2.7.10** - feat: full mode-management surface (hub_manage_mode + hub_set_mode_manager). PRs: [#313](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/313)
 - **v2.7.9** - feat: multi-device convergence on hub_get_device_attribute (deviceIds + mode any/all). PRs: [#306](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/306)
 - **v2.7.8** - ci: fix lease double-booking + FIFO-order the e2e queue; ci: re-run e2e only when a full-run label flips the lane (not on every toggle); feat: add hub_call_device_replace (re-point a device onto replacement hardware). PRs: [#308](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/308), [#309](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/309), [#307](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/307)
