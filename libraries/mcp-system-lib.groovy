@@ -260,11 +260,11 @@ def toolSetSystemSettings(args) {
     } catch (Exception e) {
         mcpLogError("hub-admin", "hub_set_system_settings could not read current settings", e)
         return [success: false, error: "Could not read current hub settings (/hub/details/json): ${e.message}",
-                note: "Nothing was changed. Verify the hub is reachable and retry."]
+                applied: [], note: "Nothing was changed. Verify the hub is reachable and retry."]
     }
     if (!(cur instanceof Map)) {
         return [success: false, error: "Unexpected /hub/details/json response; cannot safely merge.",
-                note: "Nothing was changed."]
+                applied: [], note: "Nothing was changed."]
     }
 
     // Read-merge the FULL wholesale payload from the current values, overriding only the provided args
@@ -288,7 +288,7 @@ def toolSetSystemSettings(args) {
     } catch (Exception e) {
         mcpLogError("hub-admin", "hub_set_system_settings /location/update failed", e)
         return [success: false, error: "Failed to apply hub settings: ${e.message}",
-                note: "Nothing was changed (the update is one atomic POST). Read current values with hub_get_info."]
+                applied: [], note: "Nothing was changed (the update is one atomic POST). Read current values with hub_get_info."]
     }
     if (!(parsed instanceof Map && parsed.success == true)) {
         def err = (parsed instanceof Map) ? (parsed.message ?: parsed.error) : null
