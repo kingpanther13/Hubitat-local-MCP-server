@@ -2104,6 +2104,59 @@ def toolCallDeviceSwap(args) {
     }
 }
 
+def toolCallDeviceReplace(args) {
+    def oldId = args?.old_device_id?.toString()?.trim()
+    if (!oldId) throw new IllegalArgumentException("old_device_id is required")
+
+    // Read-only mode: list the hub's compatible replacement candidates (no write, no confirm).
+    if (args?.list_options == true) {
+        try {
+            def raw = hubInternalGet("/device/getReplacementOptions/${java.net.URLEncoder.encode(oldId, 'UTF-8')}")
+            def parsed = raw?.trim() ? new groovy.json.JsonSlurper().parseText(raw) : null
+            // A genuine "no candidates" answer is an empty JSON array (a List). Anything else --
+            // empty body, an HTML error page, a {error:...} object -- is a FAILED read, not "no
+            // replacements"; reporting it as an empty success would mislead the caller into thinking
+            // the device is unreplaceable. Distinguish the two rather than coalescing both to [].
+            if (!(parsed instanceof List)) {
+                mcpLog("warn", "device-replace", "getReplacementOptions for ${oldId} returned a non-list response: ${raw?.take(200)}")
+                return [success: false, error: "Replacement-options read returned an unexpected (non-list) response.", response: raw?.take(300),
+                        note: "Verify old_device_id (from hub_list_devices) and Hub Security credentials; the hub did not return a candidate list."]
+            }
+            def options = parsed.collect { [id: it?.id?.toString(), name: it?.name, deviceTypes: it?.deviceTypes] }
+            return [success: true, listOptions: true, oldDeviceId: oldId, options: options, optionCount: options.size(),
+                    note: options ? "Pick an option's id as new_device_id, then call again with confirm=true to replace." : "No compatible replacement devices found for this device."]
+        } catch (Exception e) {
+            mcpLogError("device-replace", "getReplacementOptions for ${oldId} failed", e)
+            return [success: false, error: "Could not read replacement options: ${e.message}",
+                    note: "Verify old_device_id (from hub_list_devices) and Hub Security credentials."]
+        }
+    }
+
+    def newId = args?.new_device_id?.toString()?.trim()
+    if (!newId) throw new IllegalArgumentException("new_device_id is required to replace (or pass list_options=true to list compatible candidates)")
+    if (oldId == newId) throw new IllegalArgumentException("old_device_id and new_device_id must be different devices")
+    requireDestructiveConfirm(args.confirm)
+
+    mcpLog("warn", "device-replace", "Replacing device ${oldId} with ${newId} via /device/replace (old id + references preserved)")
+    try {
+        def raw = hubInternalGet("/device/replace?oldId=${java.net.URLEncoder.encode(oldId, 'UTF-8')}&newId=${java.net.URLEncoder.encode(newId, 'UTF-8')}")
+        def parsed = null
+        try { parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null } catch (Exception ignore) { }
+        if (parsed instanceof Map && parsed.success == true) {
+            return [success: true, replaced: [oldDeviceId: oldId, newDeviceId: newId], preservedDeviceId: oldId,
+                    message: "Device ${oldId} now uses ${newId}'s hardware; its id and all app/rule references are preserved.",
+                    note: "Verify with hub_get_device(deviceId=${oldId})."]
+        }
+        def errText = (parsed instanceof Map) ? (parsed.message ?: parsed.error) : null
+        return [success: false, error: errText ?: "/device/replace did not report success", response: raw?.take(300),
+                note: "new_device_id must be capability-compatible -- list valid candidates with list_options=true. Nothing was replaced."]
+    } catch (Exception e) {
+        mcpLogError("device-replace", "replace ${oldId} -> ${newId} failed", e)
+        return [success: false, error: "Device replace failed: ${e.message}",
+                note: "Verify the device ids and Hub Security credentials. The replace may not have committed -- check hub_get_device(deviceId=${oldId})."]
+    }
+}
+
 private Integer _deviceSwapDependentCount(String deviceId) {
     try {
         def responseText = hubInternalGet("/device/fullJson/${deviceId}")
@@ -2528,6 +2581,44 @@ The hub only offers compatible replacement devices: an incompatible to_device_id
                 required: ["success"]
             ]
         ],
+        [
+            name: "hub_call_device_replace",
+            description: """⚠️ DESTRUCTIVE: Replace a device's hardware while KEEPING its id + all app/rule references.[[FLAT_TRIM]] Re-points old_device_id onto new_device_id's node; the new hardware adopts the OLD id, so the old device's rules and dashboard tiles stay intact. Use when a Z-Wave/Zigbee device died and you paired a compatible replacement. Differs from hub_call_device_swap, which instead migrates references onto the NEW device's id.
+
+First call list_options=true to read the hub's compatible replacement candidates for old_device_id (read-only, no confirm), pick one as new_device_id, then call again with confirm=true. Pre-flight (apply path): hub backup <24h, a compatible new_device_id, user approval, confirm=true.[[/FLAT_TRIM]]""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    old_device_id: [type: "string", description: "Device to replace; its id is preserved.[[FLAT_TRIM]] From hub_list_devices.[[/FLAT_TRIM]]"],
+                    new_device_id: [type: "string", description: "Compatible replacement device.[[FLAT_TRIM]] Its hardware is adopted under the old id; required to apply, omit when list_options=true.[[/FLAT_TRIM]]"],
+                    list_options: [type: "boolean", description: "Read-only: list compatible replacement candidates (no confirm)."],
+                    confirm: [type: "boolean", description: "REQUIRED to apply (omit for list_options): must be true.[[FLAT_TRIM]] Confirms a backup <24h + user approval.[[/FLAT_TRIM]]"]
+                ],
+                required: ["old_device_id"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the replace (or options read) succeeded"],
+                    listOptions: [type: "boolean", description: "True when this was a read-only list_options call"],
+                    options: [type: "array", description: "Compatible replacement candidates (list_options); each {id, name, deviceTypes}", items: [type: "object", properties: [
+                        id: [type: "string", description: "Candidate device ID"],
+                        name: [type: "string", description: "Candidate device name"],
+                        deviceTypes: [type: "array", description: "Dashboard/device types the candidate supports", items: [type: "string"]]
+                    ]]],
+                    optionCount: [type: "integer", description: "Number of compatible candidates"],
+                    replaced: [type: "object", description: "The committed replace (apply path)", properties: [
+                        oldDeviceId: [type: "string", description: "The preserved device id"],
+                        newDeviceId: [type: "string", description: "The device whose hardware was adopted"]
+                    ]],
+                    preservedDeviceId: [type: "string", description: "The device id that survives (the old id)"],
+                    message: [type: "string", description: "Human-readable result"],
+                    error: [type: "string", description: "Failure reason (success=false)"],
+                    note: [type: "string", description: "Next-step / recovery guidance"]
+                ],
+                required: ["success"]
+            ]
+        ],
     ]
 }
 
@@ -2561,6 +2652,7 @@ def _toolDisplayMeta_partDevices() {
         hub_list_device_events: [title: "List Device Events", summary: "Recent events for a device or app, or location events when neither is given."],
         hub_call_device_command: [title: "Send Device Command", summary: "Send a command like on, off, or setLevel to a device."],
         hub_call_device_swap: [title: "Swap Device", summary: "Replace a device across all apps and rules that reference it, in one operation."],
+        hub_call_device_replace: [title: "Replace Device Hardware", summary: "Re-point a device to replacement hardware, keeping its id and all references."],
         hub_update_device: [title: "Update Device Properties", summary: "Update a device's label, room, or preferences."],
         hub_delete_device: [title: "Delete Device", summary: "Permanently delete a device from the hub (no undo)."]
     ]
