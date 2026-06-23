@@ -738,6 +738,11 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
         !r.containsKey('transitioning')
         !r.containsKey('neverReported')
         !r.containsKey('nonNumericAttribute')
+        // The shared _evalAttrCondition refactor must NOT bleed multi-device fields into the
+        // single-device response shape.
+        !r.containsKey('mode')
+        !r.containsKey('devices')
+        !r.containsKey('convergedCount')
     }
 
     // =========================================================================
@@ -946,5 +951,677 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
 
         where:
         useGateways << [true, false]
+    }
+
+    // =========================================================================
+    // Multi-device convergence: deviceIds + mode (any/all)
+    // =========================================================================
+
+    // LOAD-BEARING GUARD (both-ways pending): mode:all must NOT converge while any device
+    // still fails the condition. Two devices, one at target and one not -- all-mode times out.
+    def "mode all converges only when EVERY device matches"() {
+        given: 'A at on (matches), B at off (does not) -- all-mode cannot converge'
+        def a = new TestDevice(id: 600, label: 'A', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        def b = new TestDevice(id: 601, label: 'B', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'off'])
+        childDevicesList << a
+        childDevicesList << b
+
+        when:
+        def r = script.toolPollUntilAttribute([deviceIds: ['600', '601'], attribute: 'switch', expectedValue: 'on', mode: 'all', timeoutMs: 100, pollIntervalMs: 50])
+
+        then: 'B never matches, so all-mode times out; the per-device array reports both states'
+        r.success == false
+        r.timedOut == true
+        r.mode == 'all'
+        r.convergedCount == 1
+        r.devices.size() == 2
+        // Positional pin: devices[i] aligns with the input deviceIds order (devices[i] <-> deviceIdList[i]).
+        r.devices*.deviceId == ['600', '601']
+        r.devices.find { it.deviceId == '600' }.matched == true
+        r.devices.find { it.deviceId == '601' }.matched == false
+    }
+
+    def "mode all converges when both devices match"() {
+        given: 'both at on'
+        def a = new TestDevice(id: 602, label: 'A', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        def b = new TestDevice(id: 603, label: 'B', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        childDevicesList << a
+        childDevicesList << b
+
+        when:
+        def r = script.toolPollUntilAttribute([deviceIds: ['602', '603'], attribute: 'switch', expectedValue: 'on', mode: 'all', timeoutMs: 5000])
+
+        then:
+        r.success == true
+        r.timedOut == false
+        r.convergedCount == 2
+        r.devices.every { it.matched == true }
+    }
+
+    // LOAD-BEARING GUARD (both-ways pending): mode:any must converge as soon as ONE device
+    // matches, even while others do not. If the predicate were ALL by mistake, this would time out.
+    def "mode any converges on the first device to match"() {
+        given: 'A matches, B does not -- any-mode converges'
+        def a = new TestDevice(id: 604, label: 'A', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        def b = new TestDevice(id: 605, label: 'B', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'off'])
+        childDevicesList << a
+        childDevicesList << b
+
+        when:
+        def r = script.toolPollUntilAttribute([deviceIds: ['604', '605'], attribute: 'switch', expectedValue: 'on', mode: 'any', timeoutMs: 5000])
+
+        then:
+        r.success == true
+        r.timedOut == false
+        r.mode == 'any'
+        r.convergedCount == 1
+    }
+
+    def "mode defaults to all when omitted with deviceIds"() {
+        given: 'one device off -> default all-mode cannot converge'
+        def a = new TestDevice(id: 606, label: 'A', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        def b = new TestDevice(id: 607, label: 'B', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'off'])
+        childDevicesList << a
+        childDevicesList << b
+
+        when:
+        def r = script.toolPollUntilAttribute([deviceIds: ['606', '607'], attribute: 'switch', expectedValue: 'on', timeoutMs: 100, pollIntervalMs: 50])
+
+        then: 'default all-mode -> B keeps it from converging'
+        r.success == false
+        r.mode == 'all'
+    }
+
+    def "device-count cap rejects more than 20 deviceIds -> IAE naming the cap and the count"() {
+        given:
+        (700..722).each { childDevicesList << new TestDevice(id: it, label: "D${it}", supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on']) }
+        def ids = (700..720).collect { it.toString() }   // 21 devices
+
+        when:
+        script.toolPollUntilAttribute([deviceIds: ids, attribute: 'switch', expectedValue: 'on', timeoutMs: 5000])
+
+        then: 'distinctive substrings -- not bare 20/21 which could match an unrelated number'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('has 21 device IDs')
+        ex.message.contains('cap is 20 per poll')
+    }
+
+    def "deviceId and deviceIds both present -> IAE"() {
+        given:
+        def a = new TestDevice(id: 730, label: 'A', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        childDevicesList << a
+
+        when:
+        script.toolPollUntilAttribute([deviceId: '730', deviceIds: ['730'], attribute: 'switch', expectedValue: 'on', timeoutMs: 5000])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('exactly one of deviceId or deviceIds')
+        ex.message.contains('not both')
+    }
+
+    def "a missing id in deviceIds -> IAE naming WHICH id"() {
+        given: 'only 731 exists; 999 is absent'
+        def a = new TestDevice(id: 731, label: 'A', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        childDevicesList << a
+
+        when:
+        script.toolPollUntilAttribute([deviceIds: ['731', '999'], attribute: 'switch', expectedValue: 'on', timeoutMs: 5000])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('Device not found: 999')
+    }
+
+    def "attribute unsupported on one device in the list -> IAE naming that device"() {
+        given: 'A has switch, B (the named one) does not'
+        def a = new TestDevice(id: 732, label: 'A', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        def b = new TestDevice(id: 733, label: 'No Switch B', supportedAttributes: [[name: 'temperature']], attributeValues: [temperature: '70'])
+        childDevicesList << a
+        childDevicesList << b
+
+        when:
+        script.toolPollUntilAttribute([deviceIds: ['732', '733'], attribute: 'switch', expectedValue: 'on', timeoutMs: 5000])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("not found on device 'No Switch B'")
+    }
+
+    def "mode with a single deviceId -> IAE (mode applies only to deviceIds)"() {
+        given:
+        def a = new TestDevice(id: 734, label: 'A', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        childDevicesList << a
+
+        when:
+        script.toolPollUntilAttribute([deviceId: '734', attribute: 'switch', expectedValue: 'on', mode: 'any', timeoutMs: 5000])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('mode')
+        ex.message.contains('deviceIds')
+    }
+
+    def "invalid mode value -> IAE listing [any, all]"() {
+        given:
+        def a = new TestDevice(id: 735, label: 'A', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        childDevicesList << a
+
+        when:
+        script.toolPollUntilAttribute([deviceIds: ['735'], attribute: 'switch', expectedValue: 'on', mode: 'either', timeoutMs: 5000])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('any')
+        ex.message.contains('all')
+        ex.message.contains('either')
+    }
+
+    def "mode explicitly null -> IAE"() {
+        given:
+        def a = new TestDevice(id: 736, label: 'A', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        childDevicesList << a
+
+        when:
+        script.toolPollUntilAttribute([deviceIds: ['736'], attribute: 'switch', expectedValue: 'on', mode: null, timeoutMs: 5000])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('mode')
+        ex.message.toLowerCase().contains('null')
+    }
+
+    def "deviceIds explicitly null -> IAE"() {
+        when:
+        script.toolPollUntilAttribute([deviceIds: null, attribute: 'switch', expectedValue: 'on', timeoutMs: 5000])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('deviceIds')
+        ex.message.toLowerCase().contains('null')
+    }
+
+    def "empty deviceIds list -> IAE"() {
+        when:
+        script.toolPollUntilAttribute([deviceIds: [], attribute: 'switch', expectedValue: 'on', timeoutMs: 5000])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('deviceIds')
+    }
+
+    def "neither deviceId nor deviceIds -> IAE mentioning both"() {
+        when:
+        script.toolPollUntilAttribute([attribute: 'switch', expectedValue: 'on', timeoutMs: 5000])
+
+        then: '"deviceId (single" is the distinctive prefix -- a bare contains("deviceId") would be'
+        // satisfied by the "deviceIds" substring alone, so it would not prove the message names
+        // the single-device alternative at all. Pin the single-device phrasing AND deviceIds.
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('deviceId (single')
+        ex.message.contains('deviceIds')
+    }
+
+    def "a non-string element in deviceIds -> IAE naming the index"() {
+        when:
+        script.toolPollUntilAttribute([deviceIds: ['100', 200], attribute: 'switch', expectedValue: 'on', timeoutMs: 5000])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('deviceIds[1]')
+    }
+
+    def "per-device neverReported and nonNumericAttribute surface on a multi-device timeout"() {
+        given: 'A never reports temperature; B reports a non-numeric value the whole window'
+        def a = new TestDevice(id: 740, label: 'Never', supportedAttributes: [[name: 'temperature']], attributeValues: [:])
+        def b = new TestDevice(id: 741, label: 'NonNumeric', supportedAttributes: [[name: 'temperature']], attributeValues: [temperature: 'warm'])
+        childDevicesList << a
+        childDevicesList << b
+
+        when: 'gt 50 (numeric comparator), all-mode -- neither device can match'
+        def r = script.toolPollUntilAttribute([deviceIds: ['740', '741'], attribute: 'temperature', comparator: 'gt', expectedValue: '50', mode: 'all', timeoutMs: 100, pollIntervalMs: 50])
+
+        then:
+        r.success == false
+        r.timedOut == true
+        def da = r.devices.find { it.deviceId == '740' }
+        def db = r.devices.find { it.deviceId == '741' }
+        da.neverReported == true
+        !da.containsKey('nonNumericAttribute')
+        db.nonNumericAttribute == true
+        !db.containsKey('neverReported')
+        r.note?.contains('can never match')
+    }
+
+    // LOAD-BEARING GUARD (both-ways pending): the stableForMs window debounces the AGGREGATE
+    // predicate. An all-mode poll where one device flaps out of the condition must RESTART the
+    // window -- the whole any/all condition has to hold continuously, not just at the final poll.
+    @IgnoreIf({ System.getProperty('harnessStrictMetaClass') == 'true' })  // virtual clock needs the pauseExecution metaClass override, which the strict-metaClass groovy2x lane disallows; full coverage runs in the primary test lanes
+    def "stableForMs debounces the aggregate predicate -- an all-mode device that flaps restarts the window"() {
+        given: 'A holds on; B reads on (poll1), off (poll2 -> aggregate false, reset), on from poll3'
+        def a = new TestDevice(id: 742, label: 'Steady', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        def readCount = 0
+        def b = Spy(TestDevice)
+        b.id = 743
+        b.label = 'Flapping B'
+        b.supportedAttributes = [[name: 'switch']]
+        b.getCurrentStates() >> {
+            readCount++
+            def v = (readCount == 1) ? 'on' : (readCount == 2 ? 'off' : 'on')
+            return [[name: 'switch', value: v]]
+        }
+        childDevicesList << a
+        childDevicesList << b
+        def clock = installVirtualClock()
+
+        when: 'all-mode, stableForMs=200, pollIntervalMs=100: the stable aggregate run begins only at poll 3'
+        def r = script.toolPollUntilAttribute([deviceIds: ['742', '743'], attribute: 'switch', expectedValue: 'on', mode: 'all', stableForMs: 200, timeoutMs: 5000, pollIntervalMs: 100])
+
+        then: 'B off at poll 2 resets the aggregate window -- convergence cannot occur before poll 5'
+        r.success == true
+        r.timedOut == false
+        r.polledCount >= 5
+    }
+
+    // LOAD-BEARING GUARD (both-ways pending): the multi-device timeout must surface aggregate
+    // transitioning=true when at least one device is still MOVING (>=2 distinct numeric reads)
+    // under a numeric comparator it never satisfies -- distinct from a stable non-target. The
+    // companion stable device asserts transitioning is the aggregate (any-device-moving), not
+    // per-device. (The lone prior multi-device timeout spec used static values, so the
+    // anyTransitioning branch was untested.)
+    @IgnoreIf({ System.getProperty('harnessStrictMetaClass') == 'true' })  // virtual clock needs the pauseExecution metaClass override, which the strict-metaClass groovy2x lane disallows; full coverage runs in the primary test lanes
+    def "multi-device timeout flags aggregate transitioning when one device is still moving (numeric)"() {
+        given: 'A stable at 30 (a real non-target); B moves 40 -> 45 across polls -- both < gt 50'
+        def a = new TestDevice(id: 760, label: 'Stable NonTarget', supportedAttributes: [[name: 'temperature']], attributeValues: [temperature: '30'])
+        def readCount = 0
+        def b = Spy(TestDevice)
+        b.id = 761
+        b.label = 'Moving B'
+        b.supportedAttributes = [[name: 'temperature']]
+        b.getCurrentStates() >> {
+            readCount++
+            // Two distinct numeric reads (sawChange=true), neither satisfies gt 50, both numeric
+            // (so it is still-settling, NOT nonNumericAttribute).
+            def v = (readCount == 1) ? '40' : '45'
+            return [[name: 'temperature', value: v]]
+        }
+        childDevicesList << a
+        childDevicesList << b
+        installVirtualClock()
+
+        when: 'all-mode gt 50 -- never converges; B keeps moving across polls'
+        def r = script.toolPollUntilAttribute([deviceIds: ['760', '761'], attribute: 'temperature', comparator: 'gt', expectedValue: '50', mode: 'all', timeoutMs: 500, pollIntervalMs: 100])
+
+        then: 'aggregate transitioning fires (B moved); no nonNumericAttribute (both reads numeric)'
+        r.success == false
+        r.timedOut == true
+        r.transitioning == true
+        def db = r.devices.find { it.deviceId == '761' }
+        !db.containsKey('nonNumericAttribute')
+        !r.containsKey('note')
+    }
+
+    def "multi-device timeout reports transitioning false when every device is a stable non-target"() {
+        given: 'both stable below the threshold -- no movement across polls'
+        def a = new TestDevice(id: 762, label: 'Stable A', supportedAttributes: [[name: 'temperature']], attributeValues: [temperature: '30'])
+        def b = new TestDevice(id: 763, label: 'Stable B', supportedAttributes: [[name: 'temperature']], attributeValues: [temperature: '35'])
+        childDevicesList << a
+        childDevicesList << b
+
+        when: 'all-mode gt 50 -- stable non-targets, neither moves'
+        def r = script.toolPollUntilAttribute([deviceIds: ['762', '763'], attribute: 'temperature', comparator: 'gt', expectedValue: '50', mode: 'all', timeoutMs: 100, pollIntervalMs: 50])
+
+        then: 'no device moved -> transitioning is false (a real mismatch, not still-settling)'
+        r.success == false
+        r.timedOut == true
+        r.transitioning == false
+    }
+
+    def "multi-device poll interrupted by hub reload returns the per-device shape with convergedCount"() {
+        given: 'two devices not yet matching, so the poll reaches sleep; pauseExecution throws'
+        def a = new TestDevice(id: 764, label: 'A', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'off'])
+        def b = new TestDevice(id: 765, label: 'B', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        childDevicesList << a
+        childDevicesList << b
+        script.metaClass.pauseExecution = { long ms -> throw new InterruptedException("hub reloading") }
+
+        when:
+        def r = script.toolPollUntilAttribute([deviceIds: ['764', '765'], attribute: 'switch', expectedValue: 'on', mode: 'all', timeoutMs: 5000, pollIntervalMs: 200])
+
+        then: 'interrupted shape: per-device array, convergedCount present, no timedOut'
+        r.success == false
+        r.interrupted == true
+        r.mode == 'all'
+        r.devices.size() == 2
+        r.convergedCount == 1
+        !r.containsKey('timedOut')
+    }
+
+    // LOAD-BEARING GUARD (both-ways pending): any-mode with NO device matching must time out,
+    // success==false, convergedCount==0. Pins the any predicate at convergedCount > 0 -- a
+    // regression to >= 0 would falsely converge here on the first poll.
+    def "mode any with NO device matching times out (convergedCount 0, no false-converge)"() {
+        given: 'both off; expecting on -> any-mode has zero matches'
+        def a = new TestDevice(id: 608, label: 'A', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'off'])
+        def b = new TestDevice(id: 609, label: 'B', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'off'])
+        childDevicesList << a
+        childDevicesList << b
+
+        when:
+        def r = script.toolPollUntilAttribute([deviceIds: ['608', '609'], attribute: 'switch', expectedValue: 'on', mode: 'any', timeoutMs: 100, pollIntervalMs: 50])
+
+        then: 'no match -> any-mode times out, never false-converges'
+        r.success == false
+        r.timedOut == true
+        r.mode == 'any'
+        r.convergedCount == 0
+        r.devices.every { !it.matched }
+    }
+
+    // LOAD-BEARING GUARD (both-ways pending): a duplicate id in deviceIds must be rejected up
+    // front -- a dup would double-count convergedCount and emit duplicate devices[] rows.
+    def "duplicate deviceIds -> IAE naming the duplicate(s)"() {
+        given:
+        def a = new TestDevice(id: 744, label: 'A', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        childDevicesList << a
+
+        when:
+        script.toolPollUntilAttribute([deviceIds: ['744', '744'], attribute: 'switch', expectedValue: 'on', timeoutMs: 5000])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('duplicate')
+        ex.message.contains('744')
+    }
+
+    def "deviceId with a present-but-null deviceIds -> engine IAE, not a silent one-shot read"() {
+        given: 'the dispatch routes a present-but-null deviceIds into the engine so its null-guard fires'
+        def a = new TestDevice(id: 745, label: 'A', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        childDevicesList << a
+
+        when:
+        def response = mcpDriver.callTool('hub_get_device_attribute', [deviceId: '745', deviceIds: null, attribute: 'switch'])
+
+        then: 'reaches the engine -> deviceIds must not be null IAE -> -32602 (not a silent value read)'
+        response.error.code == -32602
+        response.error.message.contains('deviceIds')
+        response.error.message.toLowerCase().contains('null')
+    }
+
+    def "deviceId with a present-but-null mode -> engine IAE, not a silent one-shot read"() {
+        given:
+        def a = new TestDevice(id: 746, label: 'A', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        childDevicesList << a
+
+        when:
+        def response = mcpDriver.callTool('hub_get_device_attribute', [deviceId: '746', mode: null, attribute: 'switch'])
+
+        then: 'present-but-null mode reaches the engine -> mode must not be null IAE -> -32602'
+        response.error.code == -32602
+        response.error.message.toLowerCase().contains('mode')
+        response.error.message.toLowerCase().contains('null')
+    }
+
+    @spock.lang.Unroll
+    def "hub_get_device_attribute with deviceIds routes to multi-device poll mode (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        def a = new TestDevice(id: 1110, label: 'Disp A', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        def b = new TestDevice(id: 1111, label: 'Disp B', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        childDevicesList << a
+        childDevicesList << b
+
+        when:
+        def response = mcpDriver.callTool('hub_get_device_attribute', [deviceIds: ['1110', '1111'], attribute: 'switch', expectedValue: 'on', mode: 'all', timeoutMs: 5000])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.mode == 'all'
+        inner.convergedCount == 2
+
+        where:
+        useGateways << [true, false]
+    }
+
+    // LOAD-BEARING GUARD (both-ways pending): the hub_get_device_attribute schema must NOT make
+    // deviceId protocol-level required -- the server's requiredParamsByTool() enforcement rejects
+    // a deviceIds-only call ("Missing required parameter: deviceId") BEFORE the engine's XOR logic
+    // can run, making multi-device mode UNREACHABLE on the real MCP surface. deviceId/deviceIds is
+    // a runtime-validated XOR (exactly like expectedValue/expectedValues, also absent from
+    // required). Re-adding deviceId to required turns this RED. attribute stays required.
+    def "hub_get_device_attribute inputSchema.required is [attribute] -- deviceId is NOT protocol-required"() {
+        when:
+        def def0 = script.getAllToolDefinitions().find { it.name == 'hub_get_device_attribute' }
+
+        then:
+        def0 != null
+        def0.inputSchema.required == ['attribute']
+        !def0.inputSchema.required.contains('deviceId')
+    }
+
+    def "requiredParamsByTool does not list deviceId for hub_get_device_attribute (deviceIds-only is not pre-rejected)"() {
+        when: 'the dispatch-time required-param enforcement map'
+        def required = script.requiredParamsByTool()['hub_get_device_attribute']
+
+        then: 'only attribute -- a deviceIds-only call is not rejected for a missing deviceId'
+        (required as Set) == (['attribute'] as Set)
+    }
+
+    def "a bare one-shot call with no deviceId and no deviceIds -> actionable IAE (not 'Device not found: null')"() {
+        given: 'no deviceId, no deviceIds, no poll args -> the one-shot guard fires'
+        def device = new TestDevice(id: 1112, label: 'Bare', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        childDevicesList << device
+
+        when:
+        def response = mcpDriver.callTool('hub_get_device_attribute', [attribute: 'switch'])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('deviceId is required')
+        response.error.message.contains('deviceIds')
+    }
+
+    def "a one-shot call with an empty-string deviceId -> actionable IAE (not 'Device not found: ')"() {
+        given: 'empty-string deviceId, no poll args -> the one-shot guard rejects blank, not just null'
+        def device = new TestDevice(id: 1113, label: 'Empty', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        childDevicesList << device
+
+        when:
+        def response = mcpDriver.callTool('hub_get_device_attribute', [deviceId: '', attribute: 'switch'])
+
+        then: 'empty/blank is rejected with the same actionable message, not slipped to a blank-id miss'
+        response.error.code == -32602
+        response.error.message.contains('deviceId is required')
+        response.error.message.contains('deviceIds')
+    }
+
+    // =========================================================================
+    // Multi-device + non-eq/gt comparators: between, ne, multi-member expectedValues
+    // (the aggregate path runs the shared _evalAttrCondition for every comparator).
+    // =========================================================================
+
+    def "mode all + between does NOT converge when one device is out of range (per-device matched flags)"() {
+        given: 'A at 70 (inside [68,72]), B at 75 (outside) -- all-mode cannot converge'
+        def a = new TestDevice(id: 770, label: 'In Range', supportedAttributes: [[name: 'temperature']], attributeValues: [temperature: '70'])
+        def b = new TestDevice(id: 771, label: 'Out Of Range', supportedAttributes: [[name: 'temperature']], attributeValues: [temperature: '75'])
+        childDevicesList << a
+        childDevicesList << b
+
+        when:
+        def r = script.toolPollUntilAttribute([deviceIds: ['770', '771'], attribute: 'temperature', comparator: 'between', expectedValues: ['68', '72'], mode: 'all', timeoutMs: 100, pollIntervalMs: 50])
+
+        then: 'B out of range keeps all-mode from converging; the in-range device still counts as 1 (partial-convergence count)'
+        r.success == false
+        r.timedOut == true
+        r.mode == 'all'
+        r.convergedCount == 1
+        r.devices.find { it.deviceId == '770' }.matched == true
+        r.devices.find { it.deviceId == '771' }.matched == false
+    }
+
+    def "mode any + ne converges when one device's value is NOT in the set"() {
+        given: 'A locked (in set -> not-ne), B unlocked (NOT in set -> satisfies ne) -- any-mode converges via B'
+        def a = new TestDevice(id: 772, label: 'A Locked', supportedAttributes: [[name: 'lock']], attributeValues: [lock: 'locked'])
+        def b = new TestDevice(id: 773, label: 'B Unlocked', supportedAttributes: [[name: 'lock']], attributeValues: [lock: 'unlocked'])
+        childDevicesList << a
+        childDevicesList << b
+
+        when:
+        def r = script.toolPollUntilAttribute([deviceIds: ['772', '773'], attribute: 'lock', comparator: 'ne', expectedValue: 'locked', mode: 'any', timeoutMs: 5000])
+
+        then: 'B is not-in-set so ne is satisfied -> any-mode converges; A still does not match'
+        r.success == true
+        r.timedOut == false
+        r.mode == 'any'
+        r.convergedCount == 1
+        r.devices.find { it.deviceId == '772' }.matched == false
+        r.devices.find { it.deviceId == '773' }.matched == true
+    }
+
+    def "mode all + multi-member expectedValues OR-set converges when each device matches a (possibly different) set member"() {
+        given: 'A reads heat, B reads cool -- the eq OR-set {heat, cool} matches each'
+        def a = new TestDevice(id: 774, label: 'A Heat', supportedAttributes: [[name: 'thermostatMode']], attributeValues: [thermostatMode: 'heat'])
+        def b = new TestDevice(id: 775, label: 'B Cool', supportedAttributes: [[name: 'thermostatMode']], attributeValues: [thermostatMode: 'cool'])
+        childDevicesList << a
+        childDevicesList << b
+
+        when: 'eq {heat, cool}: each device matches a different member -> all-mode converges'
+        def r = script.toolPollUntilAttribute([deviceIds: ['774', '775'], attribute: 'thermostatMode', expectedValues: ['heat', 'cool'], mode: 'all', timeoutMs: 5000])
+
+        then:
+        r.success == true
+        r.timedOut == false
+        r.mode == 'all'
+        r.convergedCount == 2
+        r.devices.every { it.matched == true }
+        // Negative pin: a clean converge with no read fault must NOT emit readError on any device.
+        r.devices.every { !it.containsKey('readError') }
+    }
+
+    // =========================================================================
+    // Per-device read fault mid-poll degrades that device, does NOT abort the poll
+    // (regression guard for the per-device read try/catch + readError flag).
+    // =========================================================================
+
+    // LOAD-BEARING GUARD (both-ways pending): a device whose read THROWS mid-poll must degrade to
+    // matched:false + readError for that device, while the OTHER device's converged state is still
+    // returned -- the poll must NOT error out and discard everyone. Without the per-device try/catch
+    // the thrown exception propagates out of the whole poll (mapped to a JSON-RPC error), so this
+    // spec goes RED (the call throws instead of returning the per-device shape).
+    def "multi-device: a device whose read throws degrades to readError while the other device still converges"() {
+        given: 'A throws on every read; B is at on -- any-mode must converge via B, A flagged readError'
+        def a = Spy(TestDevice)
+        a.id = 780
+        a.label = 'Faulting A'
+        a.supportedAttributes = [[name: 'switch']]
+        a.getCurrentStates() >> { throw new IllegalStateException("device removed mid-poll") }
+        def b = new TestDevice(id: 781, label: 'Healthy B', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        childDevicesList << a
+        childDevicesList << b
+
+        when: 'any-mode: B matches, so the aggregate converges despite A faulting'
+        def r = script.toolPollUntilAttribute([deviceIds: ['780', '781'], attribute: 'switch', expectedValue: 'on', mode: 'any', timeoutMs: 5000])
+
+        then: 'the poll did NOT throw; B converged; A is degraded (matched:false + readError) not lost'
+        r.success == true
+        r.timedOut == false
+        r.mode == 'any'
+        r.convergedCount == 1
+        def da = r.devices.find { it.deviceId == '780' }
+        def db = r.devices.find { it.deviceId == '781' }
+        da.matched == false
+        da.readError == true
+        db.matched == true
+        !db.containsKey('readError')
+    }
+
+    def "multi-device timeout: a faulting device reports readError per-device; a healthy non-target is unaffected"() {
+        given: 'A throws every read; B is at off (a real non-target) -- all-mode times out'
+        def a = Spy(TestDevice)
+        a.id = 782
+        a.label = 'Faulting A'
+        a.supportedAttributes = [[name: 'switch']]
+        a.getCurrentStates() >> { throw new IllegalStateException("device removed mid-poll") }
+        def b = new TestDevice(id: 783, label: 'NonTarget B', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'off'])
+        childDevicesList << a
+        childDevicesList << b
+
+        when:
+        def r = script.toolPollUntilAttribute([deviceIds: ['782', '783'], attribute: 'switch', expectedValue: 'on', mode: 'all', timeoutMs: 100, pollIntervalMs: 50])
+
+        then: 'timed out, returned the per-device shape (not thrown); A flagged readError, B not'
+        r.success == false
+        r.timedOut == true
+        r.devices.size() == 2
+        def da = r.devices.find { it.deviceId == '782' }
+        def db = r.devices.find { it.deviceId == '783' }
+        da.readError == true
+        da.matched == false
+        !db.containsKey('readError')
+        db.matched == false
+    }
+
+    // LOAD-BEARING GUARD (both-ways pending): the SINGLE-device path mirrors the multi guard -- a
+    // read that throws mid-poll must degrade to an unread (null) tick and surface readError on the
+    // timeout, not propagate the exception out of the whole poll. Without the try/catch the call
+    // throws and this spec goes RED.
+    def "single-device: a read that throws mid-poll times out with readError, does not propagate"() {
+        given: 'the device throws on every read'
+        def device = Spy(TestDevice)
+        device.id = 784
+        device.label = 'Faulting Single'
+        device.supportedAttributes = [[name: 'switch']]
+        device.getCurrentStates() >> { throw new IllegalStateException("device removed mid-poll") }
+        childDevicesList << device
+
+        when:
+        def r = script.toolPollUntilAttribute([deviceId: '784', attribute: 'switch', expectedValue: 'on', timeoutMs: 100, pollIntervalMs: 50])
+
+        then: 'the poll returned a structured timeout (did not throw) and flagged readError'
+        r.success == false
+        r.timedOut == true
+        r.readError == true
+        r.finalValue == null
+    }
+
+    def "single-device: a read that throws early then recovers still converges and flags readError"() {
+        given: 'read throws on poll 1, then reports on from poll 2 onward'
+        def readCount = 0
+        def device = Spy(TestDevice)
+        device.id = 785
+        device.label = 'Recovering Single'
+        device.supportedAttributes = [[name: 'switch']]
+        device.getCurrentStates() >> {
+            readCount++
+            if (readCount == 1) throw new IllegalStateException("transient read fault")
+            return [[name: 'switch', value: 'on']]
+        }
+        childDevicesList << device
+
+        when:
+        def r = script.toolPollUntilAttribute([deviceId: '785', attribute: 'switch', expectedValue: 'on', timeoutMs: 5000, pollIntervalMs: 50])
+
+        then: 'converged after recovery; readError latched from the earlier fault even on success'
+        r.success == true
+        r.timedOut == false
+        r.readError == true
+        r.finalValue == 'on'
+    }
+
+    def "single-device: a clean converge with no read fault does NOT emit readError"() {
+        given: 'a healthy device at on -- no read ever throws'
+        def device = new TestDevice(id: 786, label: 'Healthy Single', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        childDevicesList << device
+
+        when:
+        def r = script.toolPollUntilAttribute([deviceId: '786', attribute: 'switch', expectedValue: 'on', timeoutMs: 5000])
+
+        then: 'negative pin: success path must not latch readError when nothing faulted (guards an always-latch regression)'
+        r.success == true
+        r.timedOut == false
+        !r.containsKey('readError')
     }
 }
