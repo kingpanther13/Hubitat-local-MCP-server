@@ -733,8 +733,20 @@ jobs:
             STATE=pending; DESC="e2e pending; no label -- add release:* or e2e:full to run the full suite"
           fi
           echo "Posting gate status 'Full e2e (runs with label)': $STATE -- $DESC"
-          gh api -X POST "repos/${{ github.repository }}/statuses/$SHA" \
-            -f state="$STATE" -f context="Full e2e (runs with label)" -f description="$DESC" >/dev/null
+          # Retry the status POST (like lease_acquire.sh's mcp_call): a transient GitHub API blip on
+          # this single call must not fail an otherwise-green run and force a ~20-min re-run just to
+          # re-post the required gate. A persistent failure (5 misses) still fails the job honestly.
+          for attempt in 1 2 3 4 5; do
+            if gh api -X POST "repos/${{ github.repository }}/statuses/$SHA" \
+                 -f state="$STATE" -f context="Full e2e (runs with label)" -f description="$DESC" >/dev/null; then
+              break
+            fi
+            if [ "$attempt" = 5 ]; then
+              echo "::error::Gate status POST failed after 5 attempts."; exit 1
+            fi
+            echo "::warning::Gate status POST attempt ${attempt}/5 failed; retrying in 5s..."
+            sleep 5
+          done
 
       # Disarm the v2 dead-man watchdog -- this is also what RESTORES main: it pushes the pre-deploy
       # known-good snapshot back through the watchdog's own restore plumbing ($WATCHDOG_URL) (replacing
