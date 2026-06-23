@@ -89,7 +89,8 @@ permissions:
   # the POST 403s ("Resource not accessible by integration") and the gate can never report.
   statuses: write
 
-# New-commit-cancel, per branch: a fresh push / reopen / dispatch on a branch cancels the older
+# New-commit-cancel, per branch: a fresh push / reopen / dispatch (and the FIRST full-run label, per
+# the cancel-in-progress note below) on a branch cancels the older
 # in-flight run for that SAME branch, and its replacement re-queues at the BACK of the e2e job's
 # FIFO group. Per-branch (head-repo + head_ref) so two forks reusing a branch name don't cancel
 # each other, and an unapproved fork PR only ever holds ITS OWN branch's group -- never the shared
@@ -109,6 +110,10 @@ permissions:
 # label set); cancel is a deliberate SUBSET of lane-gate.run (it only cancels a run that will then DO
 # work), so any drift degrades to "didn't cancel" (a slower lane change), never to cancelling a run
 # that then skips. cancel-in-progress is an expression (allowed) evaluated with the github context.
+# DEMOTE asymmetry: removing the LAST full-run label re-runs (lane-gate=true, focused) but does NOT
+# cancel an in-flight FULL run -- cancel is labeled-only (false for every unlabeled event), so the
+# demote run just queues behind the full run and posts the pending gate last. That's an instance of
+# the subset gap above (slower, never a lost run), not a bug.
 concurrency:
   group: hub-e2e-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: >-
@@ -140,31 +145,13 @@ jobs:
     outputs:
       run: ${{ steps.decide.outputs.run }}
     steps:
+      # Checkout is the BASE ref under pull_request_target (trusted) -- the lane decision gates the
+      # `approve` job, so it must run base's logic, never the PR's. The decision is a pure function in
+      # .github/scripts/lane_gate.js, unit-tested by tests/lane_gate_test.js (+ lane-gate-test.yml).
+      # It MUST stay in lockstep with the cancel-in-progress expression's first-full-label test above.
+      - uses: actions/checkout@v7
       - id: decide
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const FULL = ['release:patch', 'release:minor', 'release:major', 'e2e:full'];
-            const action = context.payload.action;
-            // Non-label events (opened/synchronize/reopened/dispatch) always run.
-            if (context.eventName !== 'pull_request_target' || (action !== 'labeled' && action !== 'unlabeled')) {
-              core.setOutput('run', 'true');
-              return;
-            }
-            // Normalize the label set so the decision doesn't hinge on whether the webhook's
-            // pull_request.labels already reflects this event: force the event label IN for
-            // `labeled`, OUT for `unlabeled`.
-            const evLabel = context.payload.label && context.payload.label.name;
-            let labels = (context.payload.pull_request.labels || []).map(l => l.name);
-            if (action === 'labeled' && evLabel && !labels.includes(evLabel)) labels.push(evLabel);
-            if (action === 'unlabeled') labels = labels.filter(l => l !== evLabel);
-            const fullCount = labels.filter(l => FULL.includes(l)).length;
-            const evIsFull = FULL.includes(evLabel);
-            // Lane flips only when this label is the FIRST full label (labeled -> fullCount 1) or
-            // the LAST one removed (unlabeled -> fullCount 0). Otherwise the lane is unchanged.
-            const run = evIsFull && fullCount === (action === 'labeled' ? 1 : 0);
-            core.info(`lane-gate: action=${action} evLabel=${evLabel} evIsFull=${evIsFull} fullCount=${fullCount} -> run=${run}`);
-            core.setOutput('run', run ? 'true' : 'false');
+        run: node .github/scripts/lane_gate.js
 
   # Approval gate. The environment NAME is chosen from the PR author's relationship to
   # the repo:
@@ -718,7 +705,12 @@ jobs:
       #   full lane passed       -> success;   full lane failed -> failure.
       #   docs-only / no secret  -> success (the gate skip path; e2e not required to run).
       - name: Post e2e gate status
-        if: always()
+        # always() EXCEPT on cancel: a focused run cancelled by the FIRST-full-label promote shares the
+        # PR head SHA with the full run it spawned (a label add doesn't change the SHA, unlike a commit),
+        # so its PENDING post could land AFTER the full run's success/failure on the SAME status context
+        # and strand the required gate. !cancelled() makes a cancelled run skip the post, leaving the
+        # status to the run that supersedes it. (The teardown steps below stay always() to free the hub.)
+        if: always() && !cancelled()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
