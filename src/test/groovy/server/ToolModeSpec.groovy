@@ -267,4 +267,120 @@ class ToolModeSpec extends ToolSpecBase {
         where:
         useGateways << [true, false]
     }
+
+    // ---------- failure / resolution branches (review follow-ups) ----------
+
+    def "hub_manage_mode delete surfaces a hub refusal without false-greening"() {
+        given:
+        enableWrite()
+        seedModes()
+        hubGet.register('/modes/jsonDelete/3') { params -> '{"success":false,"message":"mode is in use"}' }
+
+        when:
+        def result = script.toolManageMode([action: 'delete', mode: 'Away', confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('in use')
+    }
+
+    def "hub_manage_mode rename surfaces a hub failure without false-greening"() {
+        given:
+        enableWrite()
+        seedModes()
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> [success: false, message: 'name taken'] }
+
+        when:
+        def result = script.toolManageMode([action: 'rename', mode: 'Night', name: 'Day'])
+
+        then:
+        result.success == false
+        result.error.contains('name taken')
+    }
+
+    def "hub_manage_mode resolves the target by numeric id and case-insensitively (#id)"() {
+        given:
+        enableWrite()
+        seedModes()
+        def sent = [:]
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> sent.body = body; return [success: true] }
+        hubGet.register('/modes/json') { params -> '{"modes":[]}' }
+
+        when:
+        script.toolManageMode([action: 'rename', mode: id, name: 'Evening'])
+
+        then:
+        sent.body.contains('"id":2')   // both '2' (id string) and 'night' (lowercase) resolve to Night = id 2
+
+        where:
+        id << ['2', 'night']
+    }
+
+    def "hub_set_mode_manager surfaces a manager-select failure and skips the conditions leg"() {
+        given:
+        enableWrite()
+        hubGet.register('/modes/setModeManager/easy') { params -> '{"success":false}' }
+        def condCalled = false
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> condCalled = true; return [success: true] }
+
+        when:
+        def result = script.toolSetModeManager([manager: 'easy', conditions: ['1': []]])
+
+        then:
+        result.success == false
+        condCalled == false   // conditions NOT applied after the manager leg failed (no partial apply)
+    }
+
+    def "hub_set_mode_manager applies manager + conditions in one call"() {
+        given:
+        enableWrite()
+        hubGet.register('/modes/setModeManager/easy') { params -> '{"success":true}' }
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> [success: true] }
+
+        when:
+        def result = script.toolSetModeManager([manager: 'easy', conditions: ['1': [[type: 'time']]]])
+
+        then:
+        result.success == true
+        result.manager == 'easy'
+        result.conditionsUpdated == true
+    }
+
+    def "hub_set_mode_manager surfaces a conditions-update failure"() {
+        given:
+        enableWrite()
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> [success: false, message: 'bad conditions'] }
+
+        when:
+        def result = script.toolSetModeManager([conditions: ['1': []]])
+
+        then:
+        result.success == false
+        result.conditionsError.contains('bad conditions')
+    }
+
+    def "hub_list_modes falls back to the SDK list for a 2xx non-Map body"() {
+        given:
+        seedModes()
+        hubGet.register('/modes/json') { params -> '[]' }   // valid JSON, not a Map
+
+        when:
+        def result = script.toolGetModes()
+
+        then:
+        result.modes*.name == ['Day', 'Night', 'Away']
+        !result.containsKey('modeManager')
+    }
+
+    def "hub_list_modes omits modeManager when the payload lacks the manager keys"() {
+        given:
+        seedModes()
+        hubGet.register('/modes/json') { params -> '{"modes":[{"id":1,"name":"Day"}]}' }   // Map, no manager keys
+
+        when:
+        def result = script.toolGetModes()
+
+        then:
+        !result.containsKey('modeManager')   // no all-null block masking a malformed/error body
+    }
 }

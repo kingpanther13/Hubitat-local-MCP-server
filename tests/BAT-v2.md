@@ -381,7 +381,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Calls `hub_get_tool_guide` with section parameter. Returns reference content.
 
-### T18 — hub_set_mode (read-only verification)
+### T18 — hub_manage_mode (read-only verification)
 
 ```json
 {
@@ -389,7 +389,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_list_modes`. Reads only, does not call `hub_set_mode`.
+**Expected**: Calls `hub_list_modes`. Reads only, does not call `hub_manage_mode`.
 
 ### T19 — hub_manage_virtual_device (create)
 
@@ -1898,7 +1898,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `hub_list_modes`. Should NOT call `hub_set_mode`.
+**Expected**: `hub_list_modes`. Should NOT call `hub_manage_mode`.
 **Equivalent to**: T15, T18
 
 #### T242 — Is my security system armed?
@@ -2379,7 +2379,7 @@ These operations are too destructive for automated testing. Test manually with e
 | Delete app/driver/library | `hub_delete_item` (type: app\|driver\|library) | hub_manage_code | Permanent code removal |
 | Restore item backup | `hub_restore_backup` | hub_manage_code | Overwrites current code |
 | Set HSM | `hub_set_hsm` | core | Changes security system state |
-| Set Mode | `hub_set_mode` | core | Changes hub mode (may trigger automations) |
+| Manage Mode | `hub_manage_mode` | core | Create/rename/delete/activate a mode (delete is destructive + confirm-gated) |
 
 ---
 
@@ -2436,13 +2436,13 @@ These operations are too destructive for automated testing. Test manually with e
 | Flat core tools on `tools/list` | 12 |
 | Gateways on `tools/list` | 20 |
 | Total visible on `tools/list` | 32 |
-| Total distinct tools in codebase | 106 |
+| Total distinct tools in codebase | 107 |
 
 **7 read gateways**: `hub_read_apps_code` (11), `hub_read_devices` (4), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3)
 
 **13 manage gateways**: `hub_manage_code` (11), `hub_manage_custom_rules` (8), `hub_manage_destructive_ops` (4), `hub_manage_devices` (7), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
 
-**11 flat core tools**: `hub_manage_virtual_device`, `hub_get_tool_guide`, `hub_report_issue`, `hub_search_tools`, `hub_get_info`, `hub_list_modes`, `hub_set_mode`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_update_firmware`, `hub_create_backup`
+**12 flat core tools**: `hub_manage_virtual_device`, `hub_get_tool_guide`, `hub_report_issue`, `hub_search_tools`, `hub_get_info`, `hub_list_modes`, `hub_manage_mode`, `hub_set_mode_manager`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_update_firmware`, `hub_create_backup`
 
 ### Tool Coverage (non-destructive tools only)
 
@@ -2882,13 +2882,13 @@ These tests exercise the universal **Read** and **Write** master toggles and the
 
 ```json
 {
-  "setup_prompt": "Confirm a cached MCP session can currently call hub_set_mode (note the current mode first — do NOT change it). Then, in the app settings UI, open **Advanced: Per-tool Overrides**, add `hub_set_mode` to the disabled tools list, click Done. Do NOT reconnect the client yet (we want a stale cache for the test_prompt).",
+  "setup_prompt": "Confirm a cached MCP session can currently call hub_manage_mode (note the current mode first — do NOT change it). Then, in the app settings UI, open **Advanced: Per-tool Overrides**, add `hub_manage_mode` to the disabled tools list, click Done. Do NOT reconnect the client yet (we want a stale cache for the test_prompt).",
   "test_prompt": "Set my hub mode to its current mode (a no-op that still exercises the tool). Report exactly what error or response you get.",
-  "teardown_prompt": "In the app settings UI, open **Advanced: Per-tool Overrides** and click **Reset all overrides** (or remove hub_set_mode from the list), click Done, and reconnect the MCP client."
+  "teardown_prompt": "In the app settings UI, open **Advanced: Per-tool Overrides** and click **Reset all overrides** (or remove hub_manage_mode from the list), click Done, and reconnect the MCP client."
 }
 ```
 
-**Expected**: After a client reconnect, `hub_set_mode` is absent from `tools/list` and from `hub_search_tools` results, but still present in `hub_get_tool_guide`. On the stale-cache call (no reconnect), the tool is rejected with a **distinct** Advanced-settings error containing `"is disabled in Advanced settings (Per-tool Overrides)"` — NOT the generic `"Write tools are disabled"` master message. AI surfaces the specific error and points the user at the Advanced overrides page.
+**Expected**: After a client reconnect, `hub_manage_mode` is absent from `tools/list` and from `hub_search_tools` results, but still present in `hub_get_tool_guide`. On the stale-cache call (no reconnect), the tool is rejected with a **distinct** Advanced-settings error containing `"is disabled in Advanced settings (Per-tool Overrides)"` — NOT the generic `"Write tools are disabled"` master message. AI surfaces the specific error and points the user at the Advanced overrides page.
 
 ### T233 — Disable a gateway ⇒ all its tools (including shared) vanish
 

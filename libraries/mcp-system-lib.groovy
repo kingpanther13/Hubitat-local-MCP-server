@@ -237,13 +237,18 @@ def toolGetModes() {
             if (parsed.modes instanceof List) {
                 modes = parsed.modes.collect { [id: it.id?.toString(), name: it.name, icon: it.icon] }
             }
-            modeManager = [selected: parsed.selectedModeManager, appId: parsed.modeManagerAppId?.toString(),
-                           easyModeManagerAppId: parsed.easyModeManagerAppId?.toString()]
-            if (parsed.selectedModeManager == "easy") {
-                try {
-                    def craw = hubInternalGet("/modes/easyModeManager/json")
-                    if (craw) modeManager.easyConditions = new groovy.json.JsonSlurper().parseText(craw)
-                } catch (Exception ignore) { }
+            // Only surface modeManager when the payload actually carries it -- a Map that lacks the
+            // manager keys (an error envelope, or a firmware shape change) must NOT yield an all-null
+            // block that masks the read as "manager unset".
+            if (parsed.containsKey("selectedModeManager") || parsed.containsKey("modeManagerAppId")) {
+                modeManager = [selected: parsed.selectedModeManager, appId: parsed.modeManagerAppId?.toString(),
+                               easyModeManagerAppId: parsed.easyModeManagerAppId?.toString()]
+                if (parsed.selectedModeManager == "easy") {
+                    try {
+                        def craw = hubInternalGet("/modes/easyModeManager/json")
+                        if (craw) modeManager.easyConditions = new groovy.json.JsonSlurper().parseText(craw)
+                    } catch (Exception ignore) { }
+                }
             }
         }
     } catch (Exception e) {
@@ -296,7 +301,10 @@ private _modePost(String path, Map body) {
 
 private _modeWriteResult(String op, parsed) {
     if (parsed instanceof Map && parsed.success == true) {
-        return [success: true, action: op, modes: toolGetModes().modes]
+        // Don't re-read the full mode list here -- that's an extra /modes/json round-trip per write
+        // and the hub's per-app load limiter punishes back-to-back calls. The caller reads via
+        // hub_list_modes when it needs the updated list.
+        return [success: true, action: op, note: "Read the updated mode list with hub_list_modes."]
     }
     def err = (parsed instanceof Map) ? (parsed.message ?: parsed.error) : null
     return [success: false, action: op, error: err ?: "/modes/${op == 'create' ? 'jsonCreate' : 'jsonUpdate'} did not report success",
@@ -309,7 +317,8 @@ private _modeDelete(modeId) {
         def parsed = null
         try { parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null } catch (Exception ignore) { }
         if (parsed instanceof Map && parsed.success == true) {
-            return [success: true, action: "delete", deletedModeId: modeId.toString(), modes: toolGetModes().modes]
+            return [success: true, action: "delete", deletedModeId: modeId.toString(),
+                    note: "Read the updated mode list with hub_list_modes."]
         }
         def err = (parsed instanceof Map) ? (parsed.message ?: parsed.error) : null
         return [success: false, action: "delete", error: err ?: "/modes/jsonDelete did not report success", response: raw?.take(300),
@@ -330,7 +339,8 @@ private _modeActivate(String modeName) {
     }
     def previousMode = location.mode
     location.setMode(mode.name)
-    return [success: true, action: "activate", previousMode: previousMode, newMode: mode.name]
+    return [success: true, action: "activate", previousMode: previousMode, newMode: mode.name,
+            note: "Verify the active mode with hub_list_modes (setMode is a fire-and-return SDK call)."]
 }
 
 def toolSetModeManager(args) {
@@ -357,6 +367,12 @@ def toolSetModeManager(args) {
             mcpLogError("modes", "setModeManager ${wire} failed", e)
             return [success: false, error: "Set mode manager failed: ${e.message}", note: "Verify Hub Security credentials."]
         }
+    }
+    // If a manager switch was requested and failed, don't apply conditions into whatever manager is
+    // still active -- that would be a confusing partial apply.
+    if (manager && result.success != true) {
+        result.note = "Manager selection failed; conditions were not applied. Read state with hub_list_modes."
+        return result
     }
     if (conditions != null) {
         try {

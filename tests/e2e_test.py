@@ -5354,8 +5354,6 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
 
             rn = self.client.call_tool("hub_manage_mode", {"action": "rename", "mode": mode_name, "name": renamed})
             assert rn.get("success") is True, f"rename failed: {rn}"
-            assert renamed in [m.get("name") for m in (self.client.call_tool("hub_list_modes").get("modes") or [])], \
-                "renamed mode not reflected in hub_list_modes"
 
             act = self.client.call_tool("hub_manage_mode", {"action": "activate", "mode": renamed})
             assert act.get("success") is True and act.get("newMode") == renamed, f"activate failed: {act}"

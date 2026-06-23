@@ -21,9 +21,9 @@ Opt-in cursor pagination is wired into the read-only list-returning tools below.
 
 **Tools with cursor:** `hub_list_devices` (including `filter='virtual'`), `hub_list_apps` (both `scope=types` and `scope=instances`), `hub_list_drivers`, `hub_list_libraries`, `hub_list_bundles`, `hub_list_hpm_packages`, `hub_list_rules`, `hub_get_custom_rule` (list mode, ruleId omitted), `hub_list_variables`, `hub_list_captured_states`, `hub_list_backups`, `hub_list_files`, `hub_list_rooms`, `hub_get_device_health`, `hub_list_device_dependents`, `hub_get_logs`, `hub_get_memory_history`, `hub_get_debug_logs`. See [TOOL_GUIDE.md](../../TOOL_GUIDE.md) for per-tool page sizes.
 
-## Core Tools (11) — Always flat and visible on tools/list
+## Core Tools (12) — Always flat and visible on tools/list
 
-These 11 tools are never behind a gateway. Every other tool is reachable through one or more of the 20 gateways below.
+These 12 tools are never behind a gateway. Every other tool is reachable through one or more of the 20 gateways below.
 
 ### Virtual Device Tools (1)
 
@@ -31,7 +31,7 @@ These 11 tools are never behind a gateway. Every other tool is reachable through
 |------|-------------|-------------|
 | `hub_manage_virtual_device` | Create or delete MCP-managed virtual devices (action="create"/"delete"). For create, provide exactly ONE of: `deviceType` (15 built-in types -- not-found is isError platform error) or `customDriver={namespace, name}` (installed driver -- not-found is -32602 input error with hub_list_drivers hint). The two are mutually exclusive (including blank/whitespace `deviceType` with `customDriver`). Create response: `{success, message, tips, device: {id, name, label, deviceNetworkId, driverNamespace, driverType, typeName (deprecated alias), capabilities, commands, attributes}}`. Delete response: `{success, deviceId, deviceNetworkId, deviceLabel, message}`. To list MCP-managed virtual devices with their states, use `hub_list_devices` with `filter='virtual'`. | Write master |
 
-### System Tools (8)
+### System Tools (9)
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
