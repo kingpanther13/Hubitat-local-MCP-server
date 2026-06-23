@@ -395,12 +395,23 @@ class TestRunner:
         # accumulated wizard pages (now kept small by the per-concern rule tests), not test
         # cadence. The knob stays for diagnostics.
         self.pace_seconds = float(os.environ.get("E2E_PACE_SECONDS", "0"))
+        # Opt-in escalation so a recurring per-app load limiter is NOT soft-passed forever: once the
+        # limiter has tripped (and been app-bounced) this many times in a run, escalate from an
+        # app-bounce to a full HUB REBOOT, which resets the platform's load counters (an app-bounce
+        # only clears the app instance). 0 = disabled (default; pure soft-pass behaviour). Capped at a
+        # few reboots/run so it can never loop. See _reboot_hub_for_limiter / _clear_load_throttle.
+        self.limiter_reboot_after = int(os.environ.get("E2E_LIMITER_REBOOT_AFTER", "0"))
+        self._limiter_reboots = 0
 
         self._current_test = ""
 
         # Cached helpers
         self._first_device_id: str | None = None
-        self._test_start_time: str | None = None  # ISO for log check
+        self._test_start_time: str | None = None  # ISO marker (diagnostic; window uses the snapshot below)
+        # Hub error-log snapshot taken at run start so test_no_hub_errors flags only NEW errors. The
+        # hub logs local time in the entry's 'name' field and leaves 'time' empty, so a timestamp
+        # compare against the UTC runner clock is unreliable -- a name+message set-delta needs no clock.
+        self._error_log_baseline: set = set()
 
     # -- Helpers -------------------------------------------------------------
 
@@ -514,7 +525,56 @@ class TestRunner:
         time.sleep(3)
         self.throttle_bounces += 1
         print(f"    [THROTTLE] bounce #{self.throttle_bounces} complete -- retrying the blocked dispatch once.")
+        # Escalate to a full hub reboot once the limiter has tripped enough times this run (opt-in via
+        # E2E_LIMITER_REBOOT_AFTER), so a recurring limiter is actively recovered instead of soft-passed
+        # forever. Trigger at each multiple of the threshold, capped at 3 reboots/run (never loops).
+        if (self.limiter_reboot_after > 0
+                and self.throttle_bounces >= self.limiter_reboot_after * (self._limiter_reboots + 1)
+                and self._limiter_reboots < 3):
+            self._reboot_hub_for_limiter()
         return True
+
+    def _reboot_hub_for_limiter(self) -> bool:
+        """Escalation for a recurring per-app load limiter: REBOOT the hub to reset the platform's
+        load counters (an app-bounce only clears the app instance; a reboot clears the whole platform).
+        Opt-in via E2E_LIMITER_REBOOT_AFTER. Fired through MCP_URL's hub_reboot -- the hub-level
+        /hub/reboot goes through even when device dispatch is throttled (verified live); the call is
+        retried a few times in case the tool dispatch itself is briefly throttled. Counts the ATTEMPT
+        up front so the caller's cap bounds total reboots regardless of outcome. Returns True on a
+        verified recovery. (The watchdog has no plain reboot tool today; if MCP_URL ever proves
+        unreliable here, mirror hub_reboot into the watchdog and switch to WATCHDOG_URL.)"""
+        self._limiter_reboots += 1
+        print(f"    [THROTTLE] limiter tripped {self.throttle_bounces}x this run -- escalating to a HUB REBOOT "
+              f"#{self._limiter_reboots} (E2E_LIMITER_REBOOT_AFTER={self.limiter_reboot_after}) to reset the "
+              "platform load counters.")
+        fired = False
+        for attempt in range(1, 4):
+            try:
+                resp = self.client.call_tool("hub_manage_destructive_ops",
+                                             {"tool": "hub_reboot", "args": {"confirm": True}})
+                if isinstance(resp, dict) and resp.get("success"):
+                    fired = True
+                    break
+                print(f"    [THROTTLE] hub_reboot attempt {attempt} did not confirm: {str(resp)[:160]}")
+            except McpError as exc:
+                print(f"    [THROTTLE] hub_reboot attempt {attempt} errored ({str(exc)[:120]}) -- retrying")
+            time.sleep(5)
+        if not fired:
+            print("    [THROTTLE] could not fire hub_reboot -- continuing (soft-pass still applies).")
+            return False
+        print("    [THROTTLE] hub_reboot accepted; waiting ~60s for the hub to go down, then polling for recovery...")
+        time.sleep(60)
+        for _ in range(32):
+            try:
+                info = self.client.call_tool("hub_get_info", {})
+                if isinstance(info, dict) and info:
+                    print(f"    [THROTTLE] hub is back after reboot #{self._limiter_reboots}.")
+                    return True
+            except Exception:
+                pass
+            time.sleep(15)
+        print("    [THROTTLE] hub did not come back within ~8 min of the reboot -- continuing.")
+        return False
 
     def get_test_switch_id(self) -> str:
         """Get or create the persistent BAT_E2E_ virtual switch scaffold that rule
@@ -6648,30 +6708,24 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
 
     @test("error_verification")
     def test_no_hub_errors(self) -> None:
-        """Soft check: look for hub errors logged during the test window."""
+        """Soft check: flag hub errors logged DURING the run (new since the run-start snapshot)."""
         try:
             result = self.client.call_tool("hub_manage_logs", {
                 "tool": "hub_get_logs",
                 "args": {"level": "error"},
             })
             logs = result if isinstance(result, list) else result.get("logs", [])
-            if logs:
-                # Filter to logs during our test window
-                recent = []
-                if self._test_start_time:
-                    for entry in logs:
-                        ts = entry.get("time", entry.get("timestamp", ""))
-                        if ts >= self._test_start_time:
-                            recent.append(entry)
-                else:
-                    recent = logs
-
-                if recent:
-                    print(f"    [WARN] {len(recent)} hub error(s) found during test window:")
-                    for e in recent[:5]:
-                        msg = e.get("message", e.get("msg", str(e)))[:120]
-                        print(f"           - {msg}")
-                    # Soft check: warn but don't fail
+            # New errors = entries whose name+message key was not present at run start. (The old
+            # implementation compared entry["time"] -- always "" on this hub -- against a UTC ISO
+            # marker, so the window never matched and this check silently flagged nothing.)
+            recent = [e for e in logs
+                      if f"{e.get('name', '')}|{e.get('message', e.get('msg', ''))}" not in self._error_log_baseline]
+            if recent:
+                print(f"    [WARN] {len(recent)} hub error(s) logged during the run:")
+                for e in recent[:5]:
+                    msg = str(e.get("message", e.get("msg", str(e))))[:120]
+                    print(f"           - {msg}")
+                # Soft check: warn but don't fail
         except Exception as exc:
             print(f"    [WARN] Could not check hub logs: {exc}")
 
@@ -7089,6 +7143,16 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         (--group / --groups) OR its display name contains any requested substring
         (--test / --tests). With no selector, every test runs (the full suite)."""
         self._test_start_time = datetime.now(UTC).isoformat()
+        # Snapshot the hub error log NOW so test_no_hub_errors can flag only errors logged DURING the
+        # run (a name+message set-delta -- no clock alignment needed; see _error_log_baseline).
+        try:
+            _base = self.client.call_tool("hub_manage_logs", {"tool": "hub_get_logs", "args": {"level": "error"}})
+            _blogs = _base if isinstance(_base, list) else _base.get("logs", [])
+            self._error_log_baseline = {
+                f"{e.get('name', '')}|{e.get('message', e.get('msg', ''))}" for e in _blogs}
+        except Exception as exc:
+            print(f"  [WARN] could not snapshot the hub error log at run start: {exc}")
+            self._error_log_baseline = set()
 
         groups_set = set(filter_groups or [])
         if filter_group:
