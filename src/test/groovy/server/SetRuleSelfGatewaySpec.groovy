@@ -107,6 +107,20 @@ class SetRuleSelfGatewaySpec extends ToolSpecBase {
         e.message.contains('addActions')
     }
 
+    def "patches is NOT permissively unwrapped -- only a bare array or {patches:[...]}, never {otherKey:[...]}"() {
+        expect: 'a bare array and the op-name wrap {patches:[...]} both pass straight to the handler'
+        script._setRuleFromEnvelope([operation: 'patches', appId: 5, args: [[addAction: [capability: 'switch']]], confirm: true]).args.patches == [[addAction: [capability: 'switch']]]
+        script._setRuleFromEnvelope([operation: 'patches', appId: 5, args: [patches: [[addAction: [capability: 'switch']]]], confirm: true]).args.patches == [[addAction: [capability: 'switch']]]
+
+        when: 'a non-{patches:...} single-key map (e.g. {addActions:[...]}) is a malformed patches payload, NOT a wrapper -> targeted bare-array error, not a silent unwrap into the inner action list'
+        script._setRuleFromEnvelope([operation: 'patches', appId: 5, args: [addActions: [[capability: 'switch']]], confirm: true])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('bare array')
+        e.message.contains('patches')
+    }
+
     def "the flat-mode args schema admits array + boolean payloads (list ops / clearActions), not only object"() {
         given:
         settingsMap.useGateways = false
