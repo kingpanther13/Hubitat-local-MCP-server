@@ -1948,6 +1948,13 @@ class TestRunner:
                                       "confirm": True}, strict=True)
             assert res.get("success") is not False, f"envelope-form addAction failed: {res}"
             self._assert_rule_healthy(app_id)
+            # List-op tolerance: addActions wants a BARE array; an array accidentally wrapped
+            # under a single key ({actions:[...]}) must be unwrapped and baked, not rejected.
+            wrapped = self._rm_call_soft({"operation": "addActions", "appId": app_id,
+                                          "args": {"actions": [{"capability": "log", "message": "wrapped-list"}]},
+                                          "confirm": True}, strict=True)
+            assert wrapped.get("success") is not False, f"wrapped-array addActions (list-op unwrap) failed: {wrapped}"
+            self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
 

@@ -7507,7 +7507,7 @@ def _setRuleFlatTool() {
             properties: [
                 operation: [type: "string", enum: _setRuleOperations(), description: "What to do. Call WITHOUT confirm to get this operation's argument schema back (no mutation), then call again with args filled + confirm:true. 'create' = new rule (omit appId; name + bundle in args) — on a create, partial bakes are reported via partial/repairHints; full create+repair protocol: hub_get_tool_guide(section='set_rule_create_reference'). All others edit an existing rule (need appId). 'guide' returns the full capability reference; 'discover' returns the live per-capability field schema (args={kind:'trigger'|'action'})."],
                 appId: [type: "integer", description: "RM rule ID. OMIT for operation='create'; PROVIDE for every edit operation (appId is the create-vs-edit switch)."],
-                args: [type: "object", description: "Arguments for the chosen operation — the exact shape comes from the schema probe (call without confirm first). For 'create' args holds name + optional addTriggers/addActions/addRequiredExpression. Pass the bare operation payload (e.g. {capability:'switch',...}), not wrapped under the operation name."],
+                args: [type: ["object", "array", "boolean"], description: "Arguments for the chosen operation — the exact shape comes from the schema probe (call without confirm first). Most ops take an object; the list ops (addTriggers/addActions/replaceActions/patches) take a bare array and clearActions takes true. For 'create' args holds name + optional addTriggers/addActions/addRequiredExpression. Pass the bare operation payload (e.g. {capability:'switch',...}), not wrapped under the operation name."],
                 confirm: [type: "boolean", description: "Set true to APPLY the operation (any write). Omit (or false) to get the schema back instead (a no-mutation probe). Writes also need the Write master + a recent backup."]
             ],
             required: ["operation"]
@@ -7609,6 +7609,16 @@ Map _setRuleFromEnvelope(Map env) {
         // contain a single input literally named 'settings'; unwrapping there would misread it.
         def val = payload
         if (op != 'settings' && val instanceof Map && val.size() == 1 && val.containsKey(op)) val = val[op]
+        // List-shaped ops take a BARE array. A caller who wrapped it under any single key
+        // (e.g. {actions:[...]}) is unwrapped here; a payload that still isn't a List gets a
+        // targeted error naming the bare-array shape instead of the generic "nothing provided".
+        if (op in ['addTriggers', 'addActions', 'replaceActions', 'patches']) {
+            if (val instanceof Map && val.size() == 1 && val.values()[0] instanceof List) val = val.values()[0]
+            if (!(val instanceof List)) {
+                def got = (val == null) ? 'nothing' : (val instanceof Map ? 'an object' : 'a non-array value')
+                throw new IllegalArgumentException("hub_set_rule operation='${op}': args must be a bare array, e.g. args:[{...},...] (got ${got}). Call without confirm to see the schema.")
+            }
+        }
         legacy[op] = val
     }
     return [args: legacy]

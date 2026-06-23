@@ -88,6 +88,38 @@ class SetRuleSelfGatewaySpec extends ToolSpecBase {
             [appId: 5, confirm: true, removeAction: [index: 2]]
     }
 
+    def "list ops accept a bare array, unwrap an accidental single-key wrap, and reject a non-array"() {
+        expect: 'a bare array passes straight through for every list-shaped op'
+        ['addActions', 'addTriggers', 'replaceActions', 'patches'].every { op ->
+            script._setRuleFromEnvelope([operation: op, appId: 5, args: [[capability: 'switch']], confirm: true]).args[op] == [[capability: 'switch']]
+        }
+
+        and: 'an accidental single-key wrap of the array is unwrapped to the bare array -- whether the key is the op name or any other (e.g. {actions:[...]})'
+        script._setRuleFromEnvelope([operation: 'addActions', appId: 5, args: [actions: [[capability: 'switch']]], confirm: true]).args.addActions == [[capability: 'switch']]
+        script._setRuleFromEnvelope([operation: 'addTriggers', appId: 5, args: [addTriggers: [[capability: 'Switch']]], confirm: true]).args.addTriggers == [[capability: 'Switch']]
+
+        when: 'a list op gets a non-array object, it is rejected with a targeted bare-array error (not the generic "nothing provided")'
+        script._setRuleFromEnvelope([operation: 'addActions', appId: 5, args: [capability: 'switch'], confirm: true])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('bare array')
+        e.message.contains('addActions')
+    }
+
+    def "the flat-mode args schema admits array + boolean payloads (list ops / clearActions), not only object"() {
+        given:
+        settingsMap.useGateways = false
+
+        when:
+        def flat = script.getToolDefinitions().find { it.name == 'hub_set_rule' }
+        def argsType = flat.inputSchema.properties.args.type
+
+        then: 'a union type so the documented bare-array (and clearActions=true) shapes are schema-valid for strict clients'
+        argsType instanceof List
+        ('array' in argsType) && ('object' in argsType) && ('boolean' in argsType)
+    }
+
     def "create execute lifts name + bundle from args and omits appId"() {
         when:
         def r = script._setRuleFromEnvelope([operation: 'create', args: [name: 'My Rule', addTriggers: [[capability: 'Switch']], addActions: [[capability: 'switch']]], confirm: true])
