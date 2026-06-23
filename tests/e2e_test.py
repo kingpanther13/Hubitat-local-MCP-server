@@ -1011,6 +1011,25 @@ class TestRunner:
         assert "addTrigger" in blob and "walkStep" in blob, \
             f"guide:true response missing the capability reference content: {blob[:200]}"
 
+    @test("infrastructure")
+    def test_set_rule_self_gateway_meta(self) -> None:
+        # The flat self-gateway {operation, ...} envelope is re-keyed by toolSetRule
+        # regardless of mode, so its no-mutation paths are exercisable through the
+        # gateway here. guide / discover / probe must return schema and change NOTHING.
+        guide = self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_set_rule", "args": {"operation": "guide"}})
+        assert "addTrigger" in str(guide) and "walkStep" in str(guide), \
+            f"operation=guide did not return the capability reference: {str(guide)[:200]}"
+        disc = self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_set_rule", "args": {"operation": "discover", "args": {"kind": "action"}}})
+        assert "capability" in str(disc).lower(), \
+            f"operation=discover did not return a live schema: {str(disc)[:200]}"
+        # PROBE: operation set, NO confirm -> returns the arg schema, mutates nothing.
+        probe = self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_set_rule", "args": {"operation": "addAction"}})
+        assert "no rule was changed" in str(probe), \
+            f"operation probe (no confirm) should return schema, not execute: {str(probe)[:200]}"
+
     # -----------------------------------------------------------------------
     # GROUP 2: devices (4 tests)
     # -----------------------------------------------------------------------
@@ -1326,7 +1345,7 @@ class TestRunner:
 
         def set_disabled(val):
             res = self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_set_app_disabled", "args": {"app_id": APP_ID, "disabled": val}})
+                "tool": "hub_set_app_disabled", "args": {"appId": APP_ID, "disabled": val}})
             assert res.get("success") is True, f"hub_set_app_disabled(disabled={val}) failed: {res}"
             assert res.get("disabled") == val, f"hub_set_app_disabled read-back wrong: wanted {val}, got {res}"
             return res
@@ -1911,6 +1930,55 @@ class TestRunner:
     # rule engine (custom_* tools); these drive the NATIVE Rule Machine + classic
     # SmartApp surface that appears in Hubitat's own UI.
     # -----------------------------------------------------------------------
+
+    @test("native_apps")
+    def test_set_rule_self_gateway_envelope_edit(self) -> None:
+        # EXECUTE via the flat self-gateway envelope: {operation, appId, args, confirm}
+        # re-keys to the canonical edit and bakes a real action on the live hub. A
+        # confirm-less probe in the middle must NOT mutate.
+        app_id = self._create_native_rule("SelfGwEnv", {
+            "addActions": [{"capability": "log", "message": "first"}]})
+        try:
+            probe = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule", "args": {"operation": "addAction", "appId": app_id}})
+            assert "no rule was changed" in str(probe), \
+                f"envelope probe (no confirm) mutated or did not return schema: {str(probe)[:200]}"
+            res = self._rm_call_soft({"operation": "addAction", "appId": app_id,
+                                      "args": {"capability": "log", "message": "via-envelope"},
+                                      "confirm": True}, strict=True)
+            assert res.get("success") is not False, f"envelope-form addAction failed: {res}"
+            self._assert_rule_healthy(app_id)
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_self_gateway_envelope_create(self) -> None:
+        # CREATE via the flat self-gateway envelope: operation='create' lifts name + the
+        # bundle from args and routes to the create arm, baking a real rule on the live hub.
+        label = f"{PREFIX}SelfGwCreate"
+        env = {"operation": "create",
+               "args": {"name": label,
+                        "addActions": [{"capability": "log", "message": "envelope-create"}]},
+               "confirm": True}
+        created = None
+        try:
+            created = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": env})
+            app_id = created.get("appId")
+        except (McpError, McpToolError, requests.HTTPError) as exc:
+            if "504" not in str(exc):
+                raise
+            time.sleep(3.0)
+            app_id = self._find_app_id_by_label(label)
+            assert app_id, f"envelope create '{label}' lost to relay 504 and not found by label"
+        assert app_id, f"envelope create did not return an appId: {created}"
+        self.created_native_app_ids.append(str(app_id))
+        try:
+            if created is not None:
+                assert created.get("success") is not False and not created.get("partial"), \
+                    f"envelope create did not fully bake: {created}"
+            self._assert_rule_healthy(app_id)
+        finally:
+            self._delete_native(app_id)
 
     def _untrack_native_app(self, app_id) -> None:
         if str(app_id) in self.created_native_app_ids:
