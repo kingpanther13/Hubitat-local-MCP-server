@@ -1,0 +1,24 @@
+name: lane-gate-test
+
+# Regression guard for the lane-gate decision (.github/scripts/lane_gate.js) that hub-e2e.yml runs to
+# decide whether a label event re-runs e2e. A wrong decision can silently strand the required merge
+# gate or double-book the single shared test hub, so the pure decision is unit-tested here. Pure
+# node; no hub, no secrets.
+on:
+  pull_request:
+    paths:
+      - '.github/scripts/lane_gate.js'
+      - 'tests/lane_gate_test.js'
+      - '.github/workflows/lane-gate-test.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  lane-gate-guard:
+    name: lane-gate decision guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run lane-gate decision guard
+        run: node tests/lane_gate_test.js

@@ -44,8 +44,9 @@ name: Hub E2E (test hub)
 on:
   pull_request_target:
     branches: [main]
-    # `labeled`/`unlabeled` are included so toggling the full-run label (release:patch|minor|major
-    # or e2e:full) re-evaluates the lane immediately. See the "TWO-LANE FLOW" block below.
+    # `labeled`/`unlabeled` are included so the lane-gate job can re-evaluate on a full-run-label
+    # (release:patch|minor|major|e2e:full) toggle -- but e2e RE-RUNS only when the toggle FLIPS the
+    # lane (focused <-> full); a redundant toggle is a no-op. See the "TWO-LANE FLOW" block below.
     types: [opened, synchronize, reopened, labeled, unlabeled]
     # Deliberately NO `paths:` filter. `e2e` is a REQUIRED status check, and a paths-filtered
     # required check never reports on a PR that doesn't touch those paths -- it sits at
@@ -88,7 +89,8 @@ permissions:
   # the POST 403s ("Resource not accessible by integration") and the gate can never report.
   statuses: write
 
-# New-commit-cancel, per branch: a fresh push / label add / dispatch on a branch cancels the older
+# New-commit-cancel, per branch: a fresh push / reopen / dispatch (and the FIRST full-run label, per
+# the group note below) on a branch cancels the older
 # in-flight run for that SAME branch, and its replacement re-queues at the BACK of the e2e job's
 # FIFO group. Per-branch (head-repo + head_ref) so two forks reusing a branch name don't cancel
 # each other, and an unapproved fork PR only ever holds ITS OWN branch's group -- never the shared
@@ -97,8 +99,31 @@ permissions:
 # Cancelling mid-run is safe: the e2e job's disarm/restore + lease-release steps are `if: always()`
 # (so a cancel still frees the hub), and a hard kill is backstopped by the dead-man watchdog's
 # deadline restore plus the 30-min lease TTL.
+# group + cancel-in-progress: a run that should SUPERSEDE another -- a commit/reopen/dispatch, OR the
+# FIRST full-run label promoting a live FOCUSED run to full -- shares the per-branch group, so
+# cancel-in-progress (true) cancels the older run. EVERY OTHER label event -- a redundant full label,
+# a non-lane label, or a DEMOTE (the last full label removed) -- gets an ISOLATED per-run group so it
+# can neither cancel nor EVICT another run. That isolation is load-bearing: the per-branch group is
+# queue:single, so a no-op label run entering the SHARED group would EVICT a pending demote/flip run
+# (pending eviction happens regardless of cancel-in-progress), silently dropping a run that still owed
+# the gate a status. The "shares the group" test below is the FIRST-full-run-label condition (GitHub
+# has no arithmetic, so it's enumerated: the added label is full AND no OTHER full label is present);
+# it is a strict SUBSET of lane_gate.js's run decision, so a shared run never cancels a run that then
+# skips. It MUST stay in lockstep with lane_gate.js (same full-run-label set). DEMOTE: removing the
+# last full label re-runs focused in its OWN isolated group (never evicted); it does not cancel the
+# in-flight full run, just queues behind it in the e2e job's hub-e2e-serialized group and posts the
+# pending gate after it.
 concurrency:
-  group: hub-e2e-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
+  group: >-
+    ${{ (github.event_name != 'pull_request_target'
+    || (github.event.action != 'labeled' && github.event.action != 'unlabeled')
+    || (github.event.action == 'labeled' && (
+    (github.event.label.name == 'release:patch' && !contains(github.event.pull_request.labels.*.name, 'release:minor') && !contains(github.event.pull_request.labels.*.name, 'release:major') && !contains(github.event.pull_request.labels.*.name, 'e2e:full'))
+    || (github.event.label.name == 'release:minor' && !contains(github.event.pull_request.labels.*.name, 'release:patch') && !contains(github.event.pull_request.labels.*.name, 'release:major') && !contains(github.event.pull_request.labels.*.name, 'e2e:full'))
+    || (github.event.label.name == 'release:major' && !contains(github.event.pull_request.labels.*.name, 'release:patch') && !contains(github.event.pull_request.labels.*.name, 'release:minor') && !contains(github.event.pull_request.labels.*.name, 'e2e:full'))
+    || (github.event.label.name == 'e2e:full' && !contains(github.event.pull_request.labels.*.name, 'release:patch') && !contains(github.event.pull_request.labels.*.name, 'release:minor') && !contains(github.event.pull_request.labels.*.name, 'release:major')))))
+    && format('hub-e2e-{0}-{1}', github.event.pull_request.head.repo.full_name || github.repository, github.head_ref || github.ref_name)
+    || format('hub-e2e-{0}-{1}-isolated-{2}', github.event.pull_request.head.repo.full_name || github.repository, github.head_ref || github.ref_name, github.run_id) }}
   cancel-in-progress: true
 
 jobs:
@@ -106,6 +131,28 @@ jobs:
   # PR code in this privileged pull_request_target workflow is a cache-poisoning vector,
   # so it lives in the unprivileged self-deploy-recovery.yml (pull_request) instead --
   # it needs no secret and no hub, and runs on every PR there in a safe context.
+
+  # Lane-change gate. A LABEL event (labeled/unlabeled) re-runs e2e ONLY when it actually flips the
+  # lane (focused <-> full). Adding a 2nd full-run label (release:patch|minor|major|e2e:full) when
+  # the PR is ALREADY full, or removing one while another remains, leaves the lane unchanged -- the
+  # prior run's result still stands, so this run skips (no redundant re-deploy). The FIRST full-run
+  # label (focused->full) and removing the LAST one (full->focused) DO re-run, as does every
+  # non-label event (opened/synchronize/reopened/dispatch). `approve` (and thus `e2e`) gate on this
+  # output (probe is dispatch-only, where lane-gate is always true, so it is never label-gated in
+  # practice). lane-gate ITSELF always runs; on a skip every DOWNSTREAM job is skipped and posts
+  # nothing, so the prior posted gate status is untouched.
+  lane-gate:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      # Checkout is the BASE ref under pull_request_target (trusted) -- the lane decision gates the
+      # `approve` job, so it must run base's logic, never the PR's. The decision is a pure function in
+      # .github/scripts/lane_gate.js, unit-tested by tests/lane_gate_test.js (+ lane-gate-test.yml).
+      # It MUST stay in lockstep with the cancel-in-progress expression's first-full-label test above.
+      - uses: actions/checkout@v7
+      - id: decide
+        run: node .github/scripts/lane_gate.js
 
   # Approval gate. The environment NAME is chosen from the PR author's relationship to
   # the repo:
@@ -125,6 +172,8 @@ jobs:
   # hub for trusted runs -- it's only in the workflow-level per-branch group, which is isolated per
   # branch. e2e starts only once this job succeeds (`needs`).
   approve:
+    needs: [lane-gate]
+    if: needs.lane-gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     environment:
       name: ${{ (github.event_name == 'workflow_dispatch' || github.event.pull_request.author_association == 'OWNER' || github.event.pull_request.author_association == 'MEMBER' || github.event.pull_request.author_association == 'COLLABORATOR' || github.event.pull_request.user.login == 'level99' || github.event.pull_request.user.login == 'kingpanther13') && 'e2e-auto' || 'e2e-approval' }}
@@ -216,8 +265,8 @@ jobs:
     # SEPARATE posted commit status named "Full e2e (runs with label)" (see TWO-LANE FLOW at top + the
     # "Post e2e gate status" step). Branch protection requires "Full e2e (runs with label)", NOT "e2e (run)".
     name: e2e (run)
-    needs: [approve]
-    if: inputs.probe_only != 'true'
+    needs: [lane-gate, approve]
+    if: inputs.probe_only != 'true' && needs.lane-gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     # Bounds the EXECUTING job. Cross-PR queueing happens BEFORE this clock starts (a run waits its
     # turn in the hub-e2e-serialized concurrency group, and behind the approve gate, both in
@@ -657,7 +706,12 @@ jobs:
       #   full lane passed       -> success;   full lane failed -> failure.
       #   docs-only / no secret  -> success (the gate skip path; e2e not required to run).
       - name: Post e2e gate status
-        if: always()
+        # always() EXCEPT on cancel: a focused run cancelled by the FIRST-full-label promote shares the
+        # PR head SHA with the full run it spawned (a label add doesn't change the SHA, unlike a commit),
+        # so its PENDING post could land AFTER the full run's success/failure on the SAME status context
+        # and strand the required gate. !cancelled() makes a cancelled run skip the post, leaving the
+        # status to the run that supersedes it. (The teardown steps below stay always() to free the hub.)
+        if: always() && !cancelled()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -679,8 +733,20 @@ jobs:
             STATE=pending; DESC="e2e pending; no label -- add release:* or e2e:full to run the full suite"
           fi
           echo "Posting gate status 'Full e2e (runs with label)': $STATE -- $DESC"
-          gh api -X POST "repos/${{ github.repository }}/statuses/$SHA" \
-            -f state="$STATE" -f context="Full e2e (runs with label)" -f description="$DESC" >/dev/null
+          # Retry the status POST (like lease_acquire.sh's mcp_call): a transient GitHub API blip on
+          # this single call must not fail an otherwise-green run and force a ~20-min re-run just to
+          # re-post the required gate. A persistent failure (5 misses) still fails the job honestly.
+          for attempt in 1 2 3 4 5; do
+            if gh api -X POST "repos/${{ github.repository }}/statuses/$SHA" \
+                 -f state="$STATE" -f context="Full e2e (runs with label)" -f description="$DESC" >/dev/null; then
+              break
+            fi
+            if [ "$attempt" = 5 ]; then
+              echo "::error::Gate status POST failed after 5 attempts."; exit 1
+            fi
+            echo "::warning::Gate status POST attempt ${attempt}/5 failed; retrying in 5s..."
+            sleep 5
+          done
 
       # Disarm the v2 dead-man watchdog -- this is also what RESTORES main: it pushes the pre-deploy
       # known-good snapshot back through the watchdog's own restore plumbing ($WATCHDOG_URL) (replacing
