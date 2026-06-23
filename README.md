@@ -1609,6 +1609,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v2.7.9** - feat: multi-device convergence on hub_get_device_attribute (deviceIds + mode any/all). PRs: [#306](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/306)
 - **v2.7.8** - ci: fix lease double-booking + FIFO-order the e2e queue; ci: re-run e2e only when a full-run label flips the lane (not on every toggle); feat: add hub_call_device_replace (re-point a device onto replacement hardware). PRs: [#308](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/308), [#309](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/309), [#307](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/307)
 - **v2.7.7** - feat: enable OAuth on apps via hub_update_app. PRs: [#305](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/305)
 - **v2.7.6** - chore: clarify the hub-var refresh-failure log message; build(deps): bump actions/checkout from 6 to 7 in the github-actions group ([#304](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/304), @app/dependabot); feat: comparator + stableForMs read-side convergence (hub_get_device_attribute + waitFor). PRs: [#302](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/302), [#304](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/304), [#303](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/303)
