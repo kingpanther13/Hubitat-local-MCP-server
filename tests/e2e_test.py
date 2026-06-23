@@ -5351,34 +5351,50 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         mode_name = f"{PREFIX}Mode"
         renamed = f"{PREFIX}Mode2"
         settable_managers = {"builtIn", "legacy", "app"}
-        before = self.client.call_tool("hub_list_modes")
+
+        # Every mode tool is a server-app HTTP write; under accumulated full-run load the
+        # platform's per-app load limiter can reject a dispatch outright with a tool-level
+        # "App <N> generates excessive hub load" error. Route every call through the same
+        # limiter contract the dispatch-dependent tests use -- bounce the app via the
+        # watchdog and retry once -- so a capacity blip recovers (and the bounce resets the
+        # load window for the tests that follow) instead of hard-failing a healthy build.
+        # Coverage is unchanged: every call still runs; only a throttled call is retried.
+        def _mode_call(name: str, args: dict, label: str) -> Any:
+            try:
+                return self.client.call_tool(name, args)
+            except McpToolError as exc:
+                if "excessive hub load" in str(exc) and self._clear_load_throttle(f"{label}: {exc}"):
+                    return self.client.call_tool(name, args)
+                raise
+
+        before = _mode_call("hub_list_modes", {}, "list modes (before)")
         original_mode = before.get("currentMode") if isinstance(before, dict) else None
         original_mgr = (before.get("modeManager") or {}).get("selected") if isinstance(before, dict) else None
         try:
             # --- hub_manage_mode: create -> read -> rename -> activate ---
-            cr = self.client.call_tool("hub_manage_mode", {"action": "create", "name": mode_name})
+            cr = _mode_call("hub_manage_mode", {"action": "create", "name": mode_name}, "create mode")
             assert isinstance(cr, dict) and cr.get("success") is True, f"create failed: {cr}"
 
-            listed = self.client.call_tool("hub_list_modes")
+            listed = _mode_call("hub_list_modes", {}, "list modes (after create)")
             assert mode_name in [m.get("name") for m in (listed.get("modes") or [])], \
                 f"created mode not in hub_list_modes: {listed.get('modes')}"
             assert "modeManager" in listed, f"hub_list_modes missing the modeManager block: {sorted(listed.keys())}"
 
-            rn = self.client.call_tool("hub_manage_mode", {"action": "rename", "mode": mode_name, "name": renamed})
+            rn = _mode_call("hub_manage_mode", {"action": "rename", "mode": mode_name, "name": renamed}, "rename mode")
             assert rn.get("success") is True, f"rename (jsonUpdate) failed: {rn}"
 
-            act = self.client.call_tool("hub_manage_mode", {"action": "activate", "mode": renamed})
+            act = _mode_call("hub_manage_mode", {"action": "activate", "mode": renamed}, "activate mode")
             assert act.get("success") is True and act.get("newMode") == renamed, f"activate failed: {act}"
             if original_mode:
-                self.client.call_tool("hub_manage_mode", {"action": "activate", "mode": original_mode})
+                _mode_call("hub_manage_mode", {"action": "activate", "mode": original_mode}, "restore active mode")
 
             # --- hub_set_mode_manager: select (setModeManager) + Integrated Mode Manager conditions round-trip ---
             target_mgr = original_mgr if original_mgr in settable_managers else "builtIn"
-            sel = self.client.call_tool("hub_set_mode_manager", {"manager": target_mgr})
+            sel = _mode_call("hub_set_mode_manager", {"manager": target_mgr}, "select manager")
             assert sel.get("success") is True and sel.get("manager") == target_mgr, \
                 f"set_mode_manager({target_mgr}) failed: {sel}"
-            conds = (self.client.call_tool("hub_list_modes").get("modeManager") or {}).get("easyConditions")
-            cw = self.client.call_tool("hub_set_mode_manager", {"conditions": conds if conds is not None else {}})
+            conds = (_mode_call("hub_list_modes", {}, "read conditions").get("modeManager") or {}).get("easyConditions")
+            cw = _mode_call("hub_set_mode_manager", {"conditions": conds if conds is not None else {}}, "set conditions")
             assert cw.get("success") is True and cw.get("conditionsUpdated") is True, \
                 f"easyModeManager conditions round-trip failed: {cw}"
 
@@ -5388,18 +5404,18 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             # restore the Mode Manager only when the original was a settable built-in option
             if original_mgr in settable_managers:
                 try:
-                    self.client.call_tool("hub_set_mode_manager", {"manager": original_mgr})
+                    _mode_call("hub_set_mode_manager", {"manager": original_mgr}, "restore manager")
                 except Exception as exc:
                     print(f"  [WARN] mode cleanup: restore Mode Manager '{original_mgr}' failed: {exc}")
             # restore the original mode (a current mode is undeletable), then delete the BAT mode
             if original_mode:
                 try:
-                    self.client.call_tool("hub_manage_mode", {"action": "activate", "mode": original_mode})
+                    _mode_call("hub_manage_mode", {"action": "activate", "mode": original_mode}, "restore active mode (finally)")
                 except Exception:
                     pass
             for nm in (renamed, mode_name):
                 try:
-                    dl = self.client.call_tool("hub_manage_mode", {"action": "delete", "mode": nm, "confirm": True})
+                    dl = _mode_call("hub_manage_mode", {"action": "delete", "mode": nm, "confirm": True}, f"delete {nm}")
                     if isinstance(dl, dict) and dl.get("success"):
                         break
                 except Exception as exc:
