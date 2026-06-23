@@ -4112,6 +4112,22 @@ Tools in this section require **the Read master** and HPM itself must be install
 
 ---
 
+### T647 — hub_list_device_events since bookmark: only-new-events round-trip
+
+```json
+{
+  "setup_prompt": "Create a BAT virtual switch (hub_manage_virtual_device, deviceType 'Virtual Switch'). Toggle it on, then off, so it has a couple of recent events.",
+  "test_prompt": "Call hub_list_device_events for the BAT switch with hoursBack=1 and note the most recent event's `date`. Now toggle the switch again (one more command). Then call hub_list_device_events for the same device passing `since` = that recorded `date`. Confirm the response returns ONLY the events that happened after the bookmark (not the pre-bookmark ones), that `sinceMode` is 'explicit', that `since` is echoed back, and that no `hoursBack` field is present. Finally call it once with `since` set to a clearly future timestamp and confirm an empty events list (count 0, not an error).",
+  "teardown_prompt": "Delete the BAT virtual switch (hub_manage_virtual_device action='delete')."
+}
+```
+
+**Expected**: with `since` supplied the result routes to history mode, `sinceMode='explicit'`, `since` is echoed, `hoursBack` is omitted, `sinceTimestamp` equals the supplied bookmark, and only post-bookmark events are returned. A future `since` yields `count: 0` with an empty list (valid, not an error). A returned `date` fed straight back as `since` parses cleanly (round-trip). An unparseable `since` would be rejected with -32602.
+
+**Failure modes**: `since` ignored and recent-N or full-hoursBack events returned; `hoursBack` still echoed as if it bounded the window; future `since` throwing instead of returning empty; a returned `date` failing to parse when fed back as `since` (format drift); `sinceMode` missing.
+
+---
+
 ## Section 16: Visual Rules Builder Tests (hub_get_visual_rule / hub_set_visual_rule / hub_delete_visual_rule)
 
 The Visual Rules Builder tools live in the `hub_manage_rule_machine` gateway (the read, `hub_get_visual_rule`, is also in `hub_read_rules`). Reads require the Read master; `hub_set_visual_rule` / `hub_delete_visual_rule` require the Write master + `confirm=true` + a hub backup within 24h. The Visual Rules Builder parent app must be installed on the hub (the list mode returns an actionable error if not).

@@ -1536,11 +1536,67 @@ def _pollMultiDevice(args, devices, deviceLabels, deviceIdList, mode, comparator
     }
 }
 
+// Resolve the history window start. `since` (absolute bookmark -- ISO-8601 in the
+// same format this tool emits in `date`/`sinceTimestamp`, or epoch milliseconds)
+// takes precedence over `hoursBack` (relative) when both are supplied. Returns
+// [sinceDate, sinceMode, effectiveHoursBack, sinceEcho]: sinceMode is "explicit"
+// when `since` drove the window (effectiveHoursBack null -- it did not bound
+// anything) or "relative" when hoursBack did. sinceEcho (explicit mode only) is
+// the value to surface back to the caller: the caller's String verbatim (so a
+// round-tripped ISO bookmark comes back byte-for-byte, not reformatted into the
+// JVM-local TZ), or canonical ISO when the caller passed epoch-ms (keeps the echo
+// a presentable string regardless of input type). An unparseable `since` is a
+// caller error.
+def _resolveSinceWindow(args, hoursBack) {
+    if (args.since == null) {
+        return [new Date(now() - (hoursBack * 3600000L)), "relative", hoursBack, null]
+    }
+    def parsed = _parseSinceArg(args.since)
+    if (parsed == null) {
+        throw new IllegalArgumentException("since is not a valid timestamp: '${args.since}'. " +
+            "Use the same ISO-8601 format this tool emits in 'date'/'sinceTimestamp' " +
+            "(yyyy-MM-dd'T'HH:mm:ss.SSSZ, e.g. 2026-06-23T10:00:00.000-0600), or epoch milliseconds (an integer).")
+    }
+    // Echo a real ISO bookmark String verbatim (the round-trip case); format any
+    // epoch-ms input -- Number OR all-digit String -- into canonical ISO so the echo
+    // is always a presentable timestamp, never raw digits.
+    def echo = (args.since instanceof Number || (args.since != null && args.since.toString().trim().isLong())) ?
+        parsed.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ") : args.since.toString()
+    return [parsed, "explicit", null, echo]
+}
+
+// Parse a `since` arg to a Date, or null if unparseable. Accepts epoch milliseconds
+// (Number or all-digit String) and ISO-8601 strings -- the canonical round-trip
+// format and a cheap millis-less variant, both with a numeric offset. A trailing
+// 'Z' (Zulu/UTC) is normalized to +0000 first so it parses as UTC, not the hub's
+// local zone. The 2-arg Date.parse(format, str) overload is sandbox-allowed (unlike
+// Date.format(String, Locale)).
+def _parseSinceArg(since) {
+    if (since instanceof Number) {
+        return new Date(since.toLong())
+    }
+    def s = since.toString().trim()
+    if (s.isEmpty()) return null
+    if (s.isLong()) return new Date(s.toLong())
+    // Z means UTC -- swap it for the equivalent numeric offset so the offset-bearing
+    // formats below interpret the wall-clock as UTC rather than hub-local.
+    if (s.endsWith("Z")) s = s[0..-2] + "+0000"
+    def formats = [
+        "yyyy-MM-dd'T'HH:mm:ss.SSSZ",   // canonical round-trip: 2026-06-23T10:00:00.000-0600
+        "yyyy-MM-dd'T'HH:mm:ssZ"        // no millis, offset:    2026-06-23T10:00:00-0600
+    ]
+    for (fmt in formats) {
+        // probe-parse: any exception means this format didn't match -- try the next
+        try { return Date.parse(fmt, s) } catch (Exception ignored) {}
+    }
+    return null
+}
+
 def toolGetDeviceHistory(args) {
     def hoursBack = Math.min(args.hoursBack ?: 24, 168)
     def limit = Math.min(args.limit ?: 100, 500)
     def attributeFilter = args.attribute
-    def sinceDate = new Date(now() - (hoursBack * 3600000L))
+    def (sinceDate, sinceMode, effectiveHoursBack, sinceEcho) = _resolveSinceWindow(args, hoursBack)
 
     // App-scope branch: events an installed app/rule emitted, read from the same
     // endpoint the admin UI's per-app Events page uses. The endpoint takes no
@@ -1576,14 +1632,15 @@ def toolGetDeviceHistory(args) {
         for (evt in appRows) {
             if (!(evt instanceof Map)) continue
             if (attributeFilter && evt.name != attributeFilter) continue
-            // Best-effort hoursBack window, mirroring the location branch: drop
-            // events older than sinceDate when the date parses; keep them if it
-            // doesn't (don't silently lose history), and count the unparseable
-            // rows so the caller can see the window was not fully enforced.
+            // Strictly-after window, mirroring the location branch: drop events at or
+            // before sinceDate when the date parses (so re-passing a returned `date`
+            // as `since` never replays that same event); keep rows whose date doesn't
+            // parse (don't silently lose history), counting them so the caller can see
+            // the window was not fully enforced.
             def evtDate = null
             try { evtDate = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", evt.date?.toString()) }
             catch (Exception ignored) { timeFilterUnparseable++ }
-            if (evtDate != null && evtDate.before(sinceDate)) continue
+            if (evtDate != null && !evtDate.after(sinceDate)) continue
             appResults << [
                 name: evt.name,
                 value: evt.value,
@@ -1593,16 +1650,21 @@ def toolGetDeviceHistory(args) {
             if (appResults.size() >= limit) break
         }
 
-        mcpLog("info", "monitoring", "Retrieved ${appResults.size()} app history events for app ${appIdStr} (${hoursBack}h back) from /installedapp/eventsJson")
+        mcpLog("info", "monitoring", "Retrieved ${appResults.size()} app history events for app ${appIdStr} (${sinceMode} window since ${sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")}) from /installedapp/eventsJson")
         def appResult = [
             source: "app",
             appId: appIdStr as Integer,
-            hoursBack: hoursBack,
             attributeFilter: attributeFilter,
             events: appResults,
             count: appResults.size(),
+            sinceMode: sinceMode,
             sinceTimestamp: sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
         ]
+        // Echo only the field that actually bounded the window: hoursBack for a
+        // relative window, the verbatim caller bookmark for an absolute one. Mixing
+        // both would imply hoursBack bounded the result when `since` did.
+        if (sinceMode == "relative") appResult.hoursBack = effectiveHoursBack
+        else appResult.since = sinceEcho
         // Mirror the hub-log path: surface rows that escaped the time window
         // because their date would not parse (the window is always active here).
         if (timeFilterUnparseable > 0) appResult.timeFilterUnparseable = timeFilterUnparseable
@@ -1640,14 +1702,15 @@ def toolGetDeviceHistory(args) {
         for (evt in rows) {
             if (!(evt instanceof Map)) continue
             if (attributeFilter && evt.name != attributeFilter) continue
-            // Best-effort hoursBack window: drop events older than sinceDate when the
-            // ISO+offset date parses; keep them if it doesn't (don't silently lose
-            // history), counting the unparseable rows. The numeric offset (e.g.
-            // -0400) parses via the 'Z' pattern.
+            // Strictly-after window: drop events at or before sinceDate when the
+            // ISO+offset date parses (so re-passing a returned `date` as `since` never
+            // replays that same event); keep rows whose date doesn't parse (don't
+            // silently lose history), counting them. The numeric offset (e.g. -0400)
+            // parses via the 'Z' pattern.
             def evtDate = null
             try { evtDate = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", evt.date?.toString()) }
             catch (Exception ignored) { timeFilterUnparseable++ }
-            if (evtDate != null && evtDate.before(sinceDate)) continue
+            if (evtDate != null && !evtDate.after(sinceDate)) continue
             locResults << [
                 name: evt.name,
                 value: evt.value,
@@ -1660,15 +1723,17 @@ def toolGetDeviceHistory(args) {
             if (locResults.size() >= limit) break
         }
 
-        mcpLog("info", "monitoring", "Retrieved ${locResults.size()} location history events (${hoursBack}h back) from /logs/eventsJson")
+        mcpLog("info", "monitoring", "Retrieved ${locResults.size()} location history events (${sinceMode} window since ${sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")}) from /logs/eventsJson")
         def locResult = [
             source: "location",
-            hoursBack: hoursBack,
             attributeFilter: attributeFilter,
             events: locResults,
             count: locResults.size(),
+            sinceMode: sinceMode,
             sinceTimestamp: sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
         ]
+        if (sinceMode == "relative") locResult.hoursBack = effectiveHoursBack
+        else locResult.since = sinceEcho
         // Mirror the hub-log path: surface rows that escaped the always-active
         // time window because their date would not parse.
         if (timeFilterUnparseable > 0) locResult.timeFilterUnparseable = timeFilterUnparseable
@@ -1689,7 +1754,14 @@ def toolGetDeviceHistory(args) {
                 note: "Retry; if persistent, drop hoursBack/attribute to read the most-recent events instead, or check the device's Events page in the hub UI."]
     }
 
-    def results = events?.collect { evt ->
+    // eventsSince inclusivity at the boundary is undocumented, so post-filter to
+    // strictly-after sinceDate for parity with the app/location branches -- an event
+    // whose timestamp equals `since` must not replay when a returned `date` is fed
+    // back as the bookmark. A row with no usable date is kept (don't silently drop),
+    // matching the other branches' parse-fail tolerance.
+    def results = (events ?: []).findAll { evt ->
+        evt.date == null || evt.date.after(sinceDate)
+    }.collect { evt ->
         [
             name: evt.name,
             value: evt.value,
@@ -1698,23 +1770,26 @@ def toolGetDeviceHistory(args) {
             date: evt.date?.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ"),
             isStateChange: evt.isStateChange
         ]
-    } ?: []
+    }
 
     if (attributeFilter) {
         results = results.findAll { it.name == attributeFilter }
     }
 
-    mcpLog("info", "monitoring", "Retrieved ${results.size()} history events for ${deviceLabel} (${hoursBack}h back)")
-    return [
+    mcpLog("info", "monitoring", "Retrieved ${results.size()} history events for ${deviceLabel} (${sinceMode} window since ${sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")})")
+    def deviceResult = [
         source: "device",
         device: deviceLabel,
         deviceId: args.deviceId,
-        hoursBack: hoursBack,
         attributeFilter: attributeFilter,
         events: results,
         count: results.size(),
+        sinceMode: sinceMode,
         sinceTimestamp: sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
     ]
+    if (sinceMode == "relative") deviceResult.hoursBack = effectiveHoursBack
+    else deviceResult.since = sinceEcho
+    return deviceResult
 }
 
 def toolUpdateDevice(args) {
@@ -2733,13 +2808,14 @@ If no exact device match: suggest similar devices and get user confirmation befo
             name: "hub_list_device_events",
             description: """Get event history for a device, an APP (app events: events emitted by an app or rule -- automation events), or the location.
 
-Default: most-recent events for a device (deviceId + optional limit). Add hoursBack to widen/narrow the window (default 24h for app/location modes, max 168h). appId returns an installed app's events instead. Omit deviceId/appId for location-level events.[[FLAT_TRIM]] attribute filters by event name. Higher limits (50+) may slow the hub.[[/FLAT_TRIM]]""",
+Default: most-recent events for a device (deviceId + optional limit). Add hoursBack for a relative window, or since for an absolute bookmark (events after an exact timestamp -- since wins if both are given). appId returns an installed app's events instead. Omit deviceId/appId for location-level events.[[FLAT_TRIM]] attribute filters by event name. Higher limits (50+) may slow the hub. For change-watching loops: record a returned event `date`, then pass it back as `since` to get only the new events since that bookmark.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
                     deviceId: [type: "string", description: "Device ID. Mutually exclusive with appId; omit both for location-level events (mode/HSM/hub variable)."],
                     appId: [type: "integer", description: "Installed-app ID for per-app events (what the app/rule emitted).[[FLAT_TRIM]] Rows: {name, value, description, date}.[[/FLAT_TRIM]] Mutually exclusive with deviceId."],
-                    hoursBack: [type: "integer", description: "If set, return up to this many hours of history (max 168 = 7 days) instead of just the most recent events."],
+                    hoursBack: [type: "integer", description: "If set, return up to this many hours of history (max 168 = 7 days) instead of just the most recent events. Ignored when since is given."],
+                    since: [type: ["string", "integer"], description: "Absolute window start -- return only events AFTER this timestamp. ISO-8601 string in the same format this tool emits in `date`/`sinceTimestamp` (e.g. 2026-06-23T10:00:00.000-0600), or epoch milliseconds (integer). Takes precedence over hoursBack. A future timestamp yields an empty list. Routes to history mode like hoursBack."],
                     attribute: [type: "string", description: "Event-name filter. Device: an attribute (e.g. 'switch').[[FLAT_TRIM]] Location: 'mode', 'hsmStatus', 'hsmAlert', or a hub-variable name.[[/FLAT_TRIM]]"],
                     limit: [type: "integer", description: "Max events to return. Recent mode default 10; history mode default 100 (max 500). Higher values may slow hub.", default: 10]
                 ]
@@ -2761,9 +2837,11 @@ Default: most-recent events for a device (deviceId + optional limit). Add hoursB
                     deviceId: [type: "string", description: "Device ID; present in history mode"],
                     appId: [type: "integer", description: "App ID; present in app mode"],
                     source: [type: "string", description: "'device', 'app', or 'location'; present in history mode"],
-                    hoursBack: [type: "integer", description: "History window in hours; present in history mode"],
+                    sinceMode: [type: "string", enum: ["explicit", "relative"], description: "Which window drove the result: 'explicit' (since bookmark) or 'relative' (hoursBack); present in history mode"],
+                    hoursBack: [type: "integer", description: "Relative history window in hours; present in history mode only when sinceMode='relative'"],
+                    since: [type: "string", description: "Echoed absolute window start (ISO); present in history mode only when sinceMode='explicit'"],
                     attributeFilter: [type: "string", description: "Echoed attribute filter; present in history mode"],
-                    sinceTimestamp: [type: "string", description: "Window start (ISO); present in history mode"],
+                    sinceTimestamp: [type: "string", description: "Actual window start used (ISO); present in history mode"],
                     timeFilterUnparseable: [type: "integer", description: "App/location modes: rows kept despite unparseable dates (window not enforced for them); present when > 0"]
                 ]
             ]

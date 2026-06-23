@@ -1170,6 +1170,100 @@ class TestRunner:
         assert "mcpAuthorizedCount" in result and "unauthorizedCount" in result, \
             "scope='all' missing mcpAuthorizedCount/unauthorizedCount"
 
+    @test("devices")
+    def test_list_device_events_since_bookmark(self) -> None:
+        # The `since` absolute-bookmark filter on hub_list_device_events: record a
+        # returned event date, drive one more event, then ask for events SINCE that
+        # bookmark and confirm nothing OLDER than the bookmark comes back. Uses the
+        # shared persistent scaffold switch (same as the poll tests) -- a freshly-
+        # created virtual device does not reliably record events in this harness, so
+        # depend on the scaffold's stable event store instead. The scaffold may carry
+        # prior history; the "nothing older than the bookmark" assertion is what makes
+        # this robust without assuming a clean slate (it bookmarks the newest event
+        # and checks no returned event predates it -- no fixed-count assumption).
+        dev_id = self.get_test_switch_id()
+        assert dev_id, "Failed to get the shared scaffold switch"
+
+        # Drive two state changes (on, off) so there is fresh history to bookmark,
+        # then block-poll each so the events are committed before we read them back.
+        def _drive_and_settle(value: str) -> None:
+            self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": value})
+            for _ in range(3):
+                r = self.client.call_tool("hub_get_device_attribute", {
+                    "deviceId": dev_id, "attribute": "switch",
+                    "expectedValue": value, "timeoutMs": 4000})
+                if isinstance(r, dict) and r.get("timedOut") is False:
+                    return
+        _drive_and_settle("on")
+        _drive_and_settle("off")
+
+        # Read the recent history (history mode via hoursBack) and grab the newest
+        # event's date as the bookmark. The event store is eventually-consistent on
+        # the history path, so settle-retry the read (re-issuing it each attempt)
+        # instead of asserting immediately -- the e2e analog of the suite's other
+        # eventual-consistency handling. A genuine regression still fails clearly
+        # after the retries are exhausted.
+        hist = {}
+        rows = []
+        for _ in range(6):
+            hist = self.client.call_tool("hub_list_device_events", {"deviceId": dev_id, "hoursBack": 1})
+            if isinstance(hist, dict) and hist.get("events"):
+                rows = hist["events"]
+                break
+            time.sleep(1)
+        assert isinstance(hist, dict), f"history-mode call did not return an object: {hist}"
+        assert hist.get("sinceMode") == "relative", f"hoursBack call should report sinceMode=relative: {hist}"
+        assert "hoursBack" in hist and "since" not in hist, \
+            f"relative mode should echo hoursBack, not since: {hist}"
+        assert rows, f"expected some events after two toggles, got none: {hist}"
+        bookmark = rows[0].get("date")
+        assert isinstance(bookmark, str) and bookmark, f"newest event missing a date to bookmark: {rows[0]}"
+
+        # Drive ONE more change after the bookmark so there is a strictly-newer event
+        # to find. The `since` window is exclusive (events AFTER the bookmark), so the
+        # bookmarked event itself will NOT come back -- only this new one.
+        _drive_and_settle("on")
+
+        def _iso_epoch_ms(s: str) -> int:
+            # Hub emits ISO-8601 with a numeric offset (e.g. +0000 / -0700), no colon.
+            return int(datetime.strptime(s, "%Y-%m-%dT%H:%M:%S.%f%z").timestamp() * 1000)
+
+        # Round-trip: feed the recorded date straight back as `since`. The new event is
+        # eventually-consistent on the history path, so settle-retry the read until at
+        # least one strictly-newer event surfaces (so the "only-newer" check below
+        # cannot pass vacuously on an empty list).
+        res = {}
+        new_rows = []
+        for _ in range(6):
+            res = self.client.call_tool("hub_list_device_events", {"deviceId": dev_id, "since": bookmark})
+            if isinstance(res, dict) and res.get("events"):
+                new_rows = res["events"]
+                break
+            time.sleep(1)
+        assert isinstance(res, dict), f"since call did not return an object: {res}"
+        assert res.get("sinceMode") == "explicit", f"since call should report sinceMode=explicit: {res}"
+        assert res.get("since") == bookmark, f"since not echoed verbatim (round-trip): {res}"
+        assert "hoursBack" not in res, f"since mode must not echo hoursBack as if it bounded the window: {res}"
+        # sinceTimestamp is canonical-formatted in the hub-local zone, so compare the
+        # INSTANT, not the string (a string match is TZ-coincidental).
+        assert _iso_epoch_ms(res.get("sinceTimestamp", "")) == _iso_epoch_ms(bookmark), \
+            f"sinceTimestamp should be the same instant as the supplied bookmark: {res}"
+        # At least one strictly-newer event must come back (the post-bookmark toggle) --
+        # this makes the "only-newer" relationship check below non-vacuous.
+        assert len(new_rows) >= 1, f"expected at least one event after the bookmark, got none: {res}"
+        # Every returned event must be strictly newer than the bookmark; the bookmarked
+        # instant and anything older must be absent. Holds even though the shared
+        # scaffold carries prior history -- it asserts a relationship to the bookmark,
+        # not a fixed count.
+        assert all(_iso_epoch_ms(r["date"]) > _iso_epoch_ms(bookmark) for r in new_rows if r.get("date")), \
+            f"since returned an event at or before the bookmark: {new_rows}"
+
+        # A far-future since yields an empty list, NOT an error.
+        fut = self.client.call_tool("hub_list_device_events", {
+            "deviceId": dev_id, "since": "2099-01-01T00:00:00.000+0000"})
+        assert isinstance(fut, dict) and fut.get("count") == 0 and fut.get("events") == [], \
+            f"future since should yield an empty list, not: {fut}"
+
     @test("diagnostics")
     def test_radio_details_include_topology(self) -> None:
         # Item 3 (#257): include_topology folds the read-only mesh route map into hub_get_radio_details.
