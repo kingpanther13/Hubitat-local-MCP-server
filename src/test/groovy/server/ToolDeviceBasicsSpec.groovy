@@ -1034,10 +1034,11 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         'in-range BigDecimal' | 5000.0G    | 50.0G
     }
 
-    def "toolSendCommand waitFor poll-loop exception still returns success + snapshot (command already fired)"() {
-        given: 'the poll loop throws after the command fires (e.g. a malformed read)'
-        // The poll AND the snapshot both read currentStates. Throw on the poll's first read,
-        // then return a valid list so the post-fire snapshot still succeeds.
+    def "toolSendCommand waitFor poll-loop read Exception degrades to readError and still converges + snapshot"() {
+        given: 'the first poll read throws an Exception, then a valid read converges'
+        // The poll AND the snapshot both read currentStates. Throw an Exception on the poll's
+        // first read; the engine's per-read catch(Exception) degrades that tick to an unread
+        // (null) value and latches readError, then read 2 converges on the real value.
         def stateDate = Date.parse("yyyy-MM-dd HH:mm:ss", "2025-01-15 10:30:00")
         def reads = 0
         def device = Spy(TestDevice) {
@@ -1056,17 +1057,17 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         when:
         def result = script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on'])
 
-        then: 'the command succeeded, waitFor reports non-convergence with an error note carrying the class, snapshot still taken'
+        then: 'the command succeeded; the transient read Exception is flagged but the poll recovered and converged'
         1 * device.on()
         result.success == true
-        result.waitFor.converged == false
-        result.waitFor.finalValue == null
-        result.waitFor.error?.contains('waitFor poll failed')
-        result.waitFor.error?.contains('RuntimeException')
+        result.waitFor.converged == true
+        result.waitFor.readError == true
+        result.waitFor.finalValue == 'on'
         result.state.switch.value == 'on'
 
-        and: 'the snapshot itself succeeded (read 2 valid), so partial comes purely from waitFor.error'
-        result.partial == true
+        and: 'a recovered read hiccup is not a degraded confirmation -- no waitFor.error, not partial'
+        !result.waitFor.containsKey('error')
+        result.partial != true
     }
 
     def "toolSendCommand waitFor poll-loop NON-Exception throwable still returns success + snapshot (catch Throwable)"() {
