@@ -731,7 +731,7 @@ def _getAllToolDefinitions_partSystem() {
         // System Tools
         [
             name: "hub_get_info",
-            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, free memory, internal temperature, database size, MCP server stats, and current security/toggle settings. Also surfaces the pending hub firmware/platform update (platformUpdate) + Safe Mode (safeMode).[[FLAT_TRIM]] Pass includeHealthAlerts=true for the hub's full health-alerts block from /hub2/hubData (radio offline, backup failures, low memory, DB bloat, weak mesh), or includeAppUpdate=true to also check GitHub for a newer MCP server APP version (returned under appUpdate). Use this for health checks, version lookups, or when triaging hub performance. Location/PII fields (name, local IP, timezone, coordinates, zip code) are returned only when Read master is enabled; otherwise they are omitted.[[/FLAT_TRIM]]",
+            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, memory, temperature, DB size, MCP stats, and security/toggle settings.[[FLAT_TRIM]] Also surfaces the pending hub firmware/platform update (platformUpdate) + Safe Mode (safeMode). Pass includeHealthAlerts=true for the hub's full health-alerts block from /hub2/hubData (radio offline, backup failures, low memory, DB bloat, weak mesh), or includeAppUpdate=true to also check GitHub for a newer MCP server APP version (returned under appUpdate). Use this for health checks, version lookups, or when triaging hub performance. Location/PII fields (name, local IP, timezone, coordinates, zip code) are returned only when Read master is enabled; otherwise they are omitted.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -792,7 +792,7 @@ def _getAllToolDefinitions_partSystem() {
         ],
         [
             name: "hub_list_modes",
-            description: "List the hub's location modes (with the active one) + Mode Manager state. Use it to get valid mode names + ids (hub-specific, e.g. Day/Night/Away) before activating/renaming/deleting a mode.",
+            description: "List the hub's location modes (with the active one) + Mode Manager state.[[FLAT_TRIM]] Use it to get valid mode names + ids (hub-specific, e.g. Day/Night/Away) before activating/renaming/deleting a mode.[[/FLAT_TRIM]]",
             inputSchema: [type: "object", properties: [:]],
             outputSchema: [
                 type: "object",
@@ -867,7 +867,7 @@ def _getAllToolDefinitions_partSystem() {
         ],
         [
             name: "hub_get_hsm_status",
-            description: "Get the current HSM (Hubitat Safety Monitor) armed status, any active alert, and the valid HSM arm commands. Use this to check the security-system state or to confirm a change made via hub_set_hsm.",
+            description: "Get the current HSM (Hubitat Safety Monitor) armed status, any active alert, and the valid HSM arm commands.[[FLAT_TRIM]] Use this to check the security-system state or to confirm a change made via hub_set_hsm.[[/FLAT_TRIM]]",
             inputSchema: [type: "object", properties: [:]],
             outputSchema: [
                 type: "object",
@@ -902,9 +902,7 @@ def _getAllToolDefinitions_partSystem() {
         ],
         [
             name: "hub_create_backup",
-            description: """Create a full hub backup. REQUIRED before any Write master operation (24h validity).
-
-Requires Write master + confirm. This is the only write tool that doesn't require a prior backup.""",
+            description: """Create a full hub backup. REQUIRED before any Write master operation (24h validity).[[FLAT_TRIM]] Requires Write master + confirm. This is the only write tool that doesn't require a prior backup.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
