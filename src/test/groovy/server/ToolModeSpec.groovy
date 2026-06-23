@@ -54,16 +54,16 @@ class ToolModeSpec extends ToolSpecBase {
         result.modeManager.appId == '1814'
     }
 
-    def "hub_list_modes reads Easy Mode Manager conditions when the easy manager is active"() {
+    def "hub_list_modes reads the Integrated Mode Manager conditions regardless of which manager is selected"() {
         given:
-        hubGet.register('/modes/json') { params -> '{"modes":[{"id":1,"name":"Day"}],"selectedModeManager":"easy","modeManagerAppId":1814,"easyModeManagerAppId":65}' }
+        hubGet.register('/modes/json') { params -> '{"modes":[{"id":1,"name":"Day"}],"selectedModeManager":"builtIn","modeManagerAppId":1814,"easyModeManagerAppId":65}' }
         hubGet.register('/modes/easyModeManager/json') { params -> '{"1":[{"type":"time"}]}' }
 
         when:
         def result = script.toolGetModes()
 
         then:
-        result.modeManager.selected == 'easy'
+        result.modeManager.selected == 'builtIn'
         result.modeManager.easyConditions == ['1': [[type: 'time']]]
     }
 
@@ -215,17 +215,17 @@ class ToolModeSpec extends ToolSpecBase {
     def "hub_set_mode_manager selects the manager via /modes/setModeManager"() {
         given:
         enableWrite()
-        hubGet.register('/modes/setModeManager/easy') { params -> '{"success":true}' }
+        hubGet.register('/modes/setModeManager/legacy') { params -> '{"success":true}' }
 
         when:
-        def result = script.toolSetModeManager([manager: 'easy'])
+        def result = script.toolSetModeManager([manager: 'legacy'])
 
         then:
         result.success == true
-        result.manager == 'easy'
+        result.manager == 'legacy'
     }
 
-    def "hub_set_mode_manager updates Easy Mode Manager conditions"() {
+    def "hub_set_mode_manager updates Integrated Mode Manager conditions"() {
         given:
         enableWrite()
         def sent = [:]
@@ -319,12 +319,12 @@ class ToolModeSpec extends ToolSpecBase {
     def "hub_set_mode_manager surfaces a manager-select failure and skips the conditions leg"() {
         given:
         enableWrite()
-        hubGet.register('/modes/setModeManager/easy') { params -> '{"success":false}' }
+        hubGet.register('/modes/setModeManager/builtIn') { params -> '{"success":false}' }
         def condCalled = false
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> condCalled = true; return [success: true] }
 
         when:
-        def result = script.toolSetModeManager([manager: 'easy', conditions: ['1': []]])
+        def result = script.toolSetModeManager([manager: 'builtIn', conditions: ['1': []]])
 
         then:
         result.success == false
@@ -334,15 +334,15 @@ class ToolModeSpec extends ToolSpecBase {
     def "hub_set_mode_manager applies manager + conditions in one call"() {
         given:
         enableWrite()
-        hubGet.register('/modes/setModeManager/easy') { params -> '{"success":true}' }
+        hubGet.register('/modes/setModeManager/builtIn') { params -> '{"success":true}' }
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false -> [success: true] }
 
         when:
-        def result = script.toolSetModeManager([manager: 'easy', conditions: ['1': [[type: 'time']]]])
+        def result = script.toolSetModeManager([manager: 'builtIn', conditions: ['1': [[type: 'time']]]])
 
         then:
         result.success == true
-        result.manager == 'easy'
+        result.manager == 'builtIn'
         result.conditionsUpdated == true
     }
 

@@ -38,7 +38,7 @@ These 12 tools are never behind a gateway. Every other tool is reachable through
 | `hub_get_info` | Comprehensive hub info (hardware, health, MCP stats) always available; PII/location data (name, IP, timezone, coordinates, zip) requires the Read master. | None |
 | `hub_list_modes` | List location modes (with the active one) + Mode Manager state. | None |
 | `hub_manage_mode` | Create, rename, delete, or activate a location mode (`action` enum). | `confirm` for delete |
-| `hub_set_mode_manager` | Pick which Mode Manager runs (builtIn/easy/legacy) + update its per-mode conditions. | None |
+| `hub_set_mode_manager` | Pick which Mode Manager runs (builtIn/legacy/app) + update its per-mode conditions. | None |
 | `hub_get_hsm_status` | Get Home Security Monitor status. | None |
 | `hub_set_hsm` | Change HSM arm mode. | None |
 | `hub_create_backup` | Create full hub database backup. | Write master |

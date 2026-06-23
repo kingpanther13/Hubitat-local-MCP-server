@@ -281,7 +281,7 @@ The server has 107 tools total. To keep the MCP `tools/list` manageable, **12 co
 | `hub_get_info` | Comprehensive hub info: hardware, health, MCP stats. PII (name, IP, location) is included whenever the Read master is ON (the default) |
 | `hub_list_modes` | List location modes (with the active one) + Mode Manager state |
 | `hub_manage_mode` | Create, rename, delete, or activate a location mode (`action` enum; delete needs `confirm`) |
-| `hub_set_mode_manager` | Pick which Mode Manager runs (builtIn/easy/legacy) + update its per-mode conditions |
+| `hub_set_mode_manager` | Pick which Mode Manager runs (builtIn/legacy/app) + update its per-mode conditions |
 | `hub_get_hsm_status` | Get Home Security Monitor status |
 | `hub_set_hsm` | Change HSM arm mode |
 
@@ -1180,7 +1180,7 @@ For easier bug reporting:
   > *Native app preferred.* Hubitat's built-in Zone Motion Controller creates a virtual motion device that aggregates multiple sensors. If the user adds this virtual device to MCP's selected devices, MCP can already see and trigger on it. The AI can also replicate the logic using `create_virtual_device` + `hub_create_custom_rule` with multi-device triggers if needed. Only implement if MCP cannot adequately interact with the native app's output device.
 
 - [x] **Mode Manager (automated mode changes)** — done (`hub_set_mode_manager` + `hub_list_modes.modeManager`)
-  > *Native app preferred.* Hubitat's built-in Mode Manager handles time-based and presence-based mode changes. The MCP can already read/manage modes via `hub_list_modes`/`hub_manage_mode`, trigger on `mode_change`, and build time/presence-triggered rules that activate a mode. Now also exposed directly: `hub_set_mode_manager` selects the manager and sets Easy Mode Manager conditions, and `hub_list_modes` reports the active manager.
+  > *Native app preferred.* Hubitat's built-in Mode Manager handles time-based and presence-based mode changes. The MCP can already read/manage modes via `hub_list_modes`/`hub_manage_mode`, trigger on `mode_change`, and build time/presence-triggered rules that activate a mode. Now also exposed directly: `hub_set_mode_manager` selects the manager and sets the Integrated Mode Manager's conditions, and `hub_list_modes` reports the active manager.
 
 - [ ] **Button Controller (streamlined button-to-action mapping)** — `Low priority`
   > *Native app preferred.* Hubitat's built-in Button Controller handles this natively. The MCP rule engine already has `button_event` triggers with full support for button numbers (1–20) and action types (pushed/held/doubleTapped/released). The AI can create these rules directly via `hub_create_custom_rule`. No dedicated tool needed.

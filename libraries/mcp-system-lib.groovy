@@ -243,12 +243,13 @@ def toolGetModes() {
             if (parsed.containsKey("selectedModeManager") || parsed.containsKey("modeManagerAppId")) {
                 modeManager = [selected: parsed.selectedModeManager, appId: parsed.modeManagerAppId?.toString(),
                                easyModeManagerAppId: parsed.easyModeManagerAppId?.toString()]
-                if (parsed.selectedModeManager == "easy") {
-                    try {
-                        def craw = hubInternalGet("/modes/easyModeManager/json")
-                        if (craw) modeManager.easyConditions = new groovy.json.JsonSlurper().parseText(craw)
-                    } catch (Exception ignore) { }
-                }
+                // The Integrated/built-in Mode Manager's per-mode conditions live at a separate endpoint
+                // that's independent of which manager is selected (returns {} when none are set). Read it
+                // best-effort so callers see the current automation conditions.
+                try {
+                    def craw = hubInternalGet("/modes/easyModeManager/json")
+                    if (craw) modeManager.easyConditions = new groovy.json.JsonSlurper().parseText(craw)
+                } catch (Exception ignore) { }
             }
         }
     } catch (Exception e) {
@@ -347,13 +348,13 @@ def toolSetModeManager(args) {
     def manager = args?.manager?.toString()?.trim()?.toLowerCase()
     def conditions = args?.conditions
     if (!manager && conditions == null) {
-        throw new IllegalArgumentException("Pass 'manager' (builtIn|easy|legacy) and/or 'conditions' (Easy Mode Manager per-mode conditions, from hub_list_modes.modeManager.easyConditions).")
+        throw new IllegalArgumentException("Pass 'manager' (builtIn|legacy|app) and/or 'conditions' (Integrated Mode Manager per-mode conditions, from hub_list_modes.modeManager.easyConditions).")
     }
     def result = [success: true]
     if (manager) {
-        def wireByKey = [builtin: "builtIn", easy: "easy", legacy: "legacy"]
+        def wireByKey = [builtin: "builtIn", legacy: "legacy", app: "app"]
         def wire = wireByKey[manager]
-        if (!wire) throw new IllegalArgumentException("manager must be one of builtIn, easy, legacy")
+        if (!wire) throw new IllegalArgumentException("manager must be one of builtIn, legacy, app")
         try {
             def raw = hubInternalGet("/modes/setModeManager/${wire}")
             def parsed = null
@@ -381,12 +382,12 @@ def toolSetModeManager(args) {
                 result.conditionsUpdated = true
             } else {
                 result.success = false
-                result.conditionsError = (cres instanceof Map ? (cres.message ?: cres.error) : null) ?: "Easy Mode Manager conditions update did not report success"
+                result.conditionsError = (cres instanceof Map ? (cres.message ?: cres.error) : null) ?: "Integrated Mode Manager conditions update did not report success"
             }
         } catch (Exception e) {
             mcpLogError("modes", "easyModeManager update failed", e)
             result.success = false
-            result.conditionsError = "Easy Mode Manager conditions update failed: ${e.message}"
+            result.conditionsError = "Integrated Mode Manager conditions update failed: ${e.message}"
         }
     }
     result.note = "Read current manager state + conditions with hub_list_modes (modeManager block)."
@@ -804,10 +805,10 @@ def _getAllToolDefinitions_partSystem() {
                         icon: [type: "string", description: "Mode icon name (when available)"]
                     ]]],
                     modeManager: [type: "object", description: "Mode Manager state (when readable)", properties: [
-                        selected: [type: "string", description: "Active manager: builtIn | easy | legacy"],
+                        selected: [type: "string", description: "Active manager: builtIn | legacy | app (a 3rd-party mode-manager app)"],
                         appId: [type: "string", description: "Mode Manager app id"],
-                        easyModeManagerAppId: [type: "string", description: "Easy Mode Manager app id"],
-                        easyConditions: [type: "object", description: "Per-mode Easy Mode Manager conditions (only when selected=easy)"]
+                        easyModeManagerAppId: [type: "string", description: "Integrated Mode Manager app id"],
+                        easyConditions: [type: "object", description: "The Integrated Mode Manager's per-mode automation conditions, keyed by mode id ({} when none set)"]
                     ]]
                 ],
                 required: ["currentMode", "modes"]
@@ -844,12 +845,12 @@ def _getAllToolDefinitions_partSystem() {
         ],
         [
             name: "hub_set_mode_manager",
-            description: """Configure the hub's Mode Manager — select which manager runs and/or set its Easy Mode Manager conditions.[[FLAT_TRIM]] Mode Manager is the built-in automation that changes the location mode automatically: 'manager' selects builtIn (time-based), easy (condition-based), or legacy. 'conditions' replaces the Easy Mode Manager per-mode condition set — read the current shape from hub_list_modes.modeManager.easyConditions first (read-modify-write). Read state back with hub_list_modes.[[/FLAT_TRIM]]""",
+            description: """Configure the hub's Mode Manager — select which manager runs and/or set its per-mode conditions.[[FLAT_TRIM]] Mode Manager is the automation that changes the location mode automatically: 'manager' selects builtIn (the Integrated Mode Manager), legacy (the legacy Mode Manager app), or app (a 3rd-party mode-manager app — only valid when one is installed). 'conditions' replaces the Integrated Mode Manager's per-mode condition set (POST /modes/easyModeManager/json) — read the current shape from hub_list_modes.modeManager.easyConditions first and modify-then-write. Read state back with hub_list_modes.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    manager: [type: "string", enum: ["builtIn", "easy", "legacy"], description: "Which Mode Manager to activate."],
-                    conditions: [type: "object", description: "OPTIONAL: Easy Mode Manager per-mode conditions to set.[[FLAT_TRIM]] Same shape as hub_list_modes.modeManager.easyConditions (keyed by mode id); read-modify-write that block.[[/FLAT_TRIM]]"]
+                    manager: [type: "string", enum: ["builtIn", "legacy", "app"], description: "Which Mode Manager to activate.[[FLAT_TRIM]] app = a 3rd-party mode-manager app, valid only when one is installed.[[/FLAT_TRIM]]"],
+                    conditions: [type: "object", description: "OPTIONAL: per-mode automation conditions to set.[[FLAT_TRIM]] Same shape as hub_list_modes.modeManager.easyConditions (keyed by mode id); read-modify-write that block.[[/FLAT_TRIM]]"]
                 ]
             ],
             outputSchema: [

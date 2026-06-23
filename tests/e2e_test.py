@@ -5340,14 +5340,17 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         #   hub_manage_mode      create -> rename -> activate -> delete  (/modes/jsonCreate, /modes/jsonUpdate,
         #                        SDK location.setMode, /modes/jsonDelete)
         #   hub_list_modes       read incl. the Mode Manager block       (/modes/json [+ /modes/easyModeManager/json])
-        #   hub_set_mode_manager select + Easy Mode Manager conditions   (/modes/setModeManager, POST /modes/easyModeManager/json)
-        # Conditions are round-tripped (read the live shape, write it back unchanged) so the body is
-        # whatever the hub actually serves -- no guessed payload. Mode + Mode-Manager state are restored
+        #   hub_set_mode_manager select + Integrated Mode Manager conds  (/modes/setModeManager, POST /modes/easyModeManager/json)
+        # The manager we select is whichever one the hub currently reports as active (a guaranteed-valid
+        # no-op -- 'app' is only accepted when a 3rd-party mode-manager app is installed, which it is iff
+        # the hub already has it selected), falling back to builtIn (the always-available Integrated
+        # manager). Conditions are round-tripped (read the live shape, write it back unchanged) so the body
+        # is whatever the hub actually serves -- no guessed payload. Mode + Mode-Manager state are restored
         # best-effort (the hub is sacrificial + watchdog-recoverable). The runner's startup backup
         # satisfies the delete's confirm gate.
         mode_name = f"{PREFIX}Mode"
         renamed = f"{PREFIX}Mode2"
-        settable_managers = {"builtIn", "easy", "legacy"}
+        settable_managers = {"builtIn", "legacy", "app"}
         before = self.client.call_tool("hub_list_modes")
         original_mode = before.get("currentMode") if isinstance(before, dict) else None
         original_mgr = (before.get("modeManager") or {}).get("selected") if isinstance(before, dict) else None
@@ -5369,9 +5372,11 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             if original_mode:
                 self.client.call_tool("hub_manage_mode", {"action": "activate", "mode": original_mode})
 
-            # --- hub_set_mode_manager: select (setModeManager) + Easy Mode Manager conditions round-trip ---
-            sel = self.client.call_tool("hub_set_mode_manager", {"manager": "easy"})
-            assert sel.get("success") is True and sel.get("manager") == "easy", f"set_mode_manager(easy) failed: {sel}"
+            # --- hub_set_mode_manager: select (setModeManager) + Integrated Mode Manager conditions round-trip ---
+            target_mgr = original_mgr if original_mgr in settable_managers else "builtIn"
+            sel = self.client.call_tool("hub_set_mode_manager", {"manager": target_mgr})
+            assert sel.get("success") is True and sel.get("manager") == target_mgr, \
+                f"set_mode_manager({target_mgr}) failed: {sel}"
             conds = (self.client.call_tool("hub_list_modes").get("modeManager") or {}).get("easyConditions")
             cw = self.client.call_tool("hub_set_mode_manager", {"conditions": conds if conds is not None else {}})
             assert cw.get("success") is True and cw.get("conditionsUpdated") is True, \
