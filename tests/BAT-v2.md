@@ -239,6 +239,18 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Calls `hub_get_device_attribute` (poll mode) with `attribute=switch, comparator="ne", expectedValue="off", timeoutMs=3000`. The switch reads `on` (not in the set), so `ne` converges immediately: `success: true, timedOut: false` with `finalValue` of `on`. (A null/never-reported value does NOT satisfy `ne`.)
 
+### T07i — hub_get_device_attribute multi-device convergence (deviceIds + mode any/all)
+
+```json
+{
+  "setup_prompt": "Create two virtual switches 'BAT Multi A' and 'BAT Multi B' and turn both on.",
+  "test_prompt": "Wait until BOTH 'BAT Multi A' and 'BAT Multi B' have switch 'on' in a single call (poll both device IDs together, mode all, 5-second timeout). Then turn 'BAT Multi B' off and wait until EITHER one is 'on' (mode any). Report convergedCount for each.",
+  "teardown_prompt": "Delete the virtual devices 'BAT Multi A' and 'BAT Multi B'."
+}
+```
+
+**Expected**: Calls `hub_get_device_attribute` (poll mode) with `deviceIds=[idA, idB], attribute=switch, expectedValue="on", mode="all", timeoutMs=5000` -- both on, so it converges with `success: true, convergedCount: 2` and a compact per-device `devices` array (each `{deviceId, device, finalValue, matched}`), not full device objects. After B is turned off, the `mode="any"` call still converges on A: `success: true, convergedCount: 1` (an `all` call here would have timed out). `deviceIds` is mutually exclusive with `deviceId` (max 20 devices); `mode` is rejected with a single `deviceId`; a missing ID in the list is rejected naming which ID.
+
 ### T07f — hub_call_device_command waitFor with debounce (stableForMs)
 
 ```json
@@ -2450,7 +2462,7 @@ All 107 distinct tools are covered by at least one test, excluding the destructi
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 255 test scenarios** (122 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 3 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 4 read-side convergence) plus 13 excluded destructive operations documented for manual testing
+**Total: 256 test scenarios** (122 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 3 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 4 read-side convergence + 1 multi-device convergence) plus 13 excluded destructive operations documented for manual testing
 
 ---
 

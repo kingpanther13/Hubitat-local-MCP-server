@@ -6388,6 +6388,93 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         # Wall clock should reflect roughly the timeout (within 1 second of variance)
         assert elapsed_wall >= 1800, f"Wall clock too short ({elapsed_wall:.0f}ms); poll may not have blocked"
 
+    @test("poll_until_attribute")
+    def test_poll_multi_device(self) -> None:
+        """Multi-device convergence: deviceIds + mode (any/all) on two throwaway switches."""
+        a_dni = ""
+        b_dni = ""
+        try:
+            self._soft_write(
+                lambda: self.client.call_tool("hub_manage_virtual_device", {
+                    "action": "create", "deviceType": "Virtual Switch",
+                    "deviceLabel": f"{PREFIX}MultiA", "confirm": True}),
+                lambda: self._find_device_dni_by_label(f"{PREFIX}MultiA"),
+                "create multi-device switch A",
+            )
+            self._soft_write(
+                lambda: self.client.call_tool("hub_manage_virtual_device", {
+                    "action": "create", "deviceType": "Virtual Switch",
+                    "deviceLabel": f"{PREFIX}MultiB", "confirm": True}),
+                lambda: self._find_device_dni_by_label(f"{PREFIX}MultiB"),
+                "create multi-device switch B",
+            )
+
+            def _lookup(label: str) -> tuple[str, str]:
+                vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": label})
+                for d in (vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])):
+                    if label in (d.get("label") or d.get("name") or ""):
+                        return str(d.get("id")), str(d.get("deviceNetworkId") or d.get("dni") or "")
+                return "", ""
+
+            a_id, a_dni = _lookup(f"{PREFIX}MultiA")
+            b_id, b_dni = _lookup(f"{PREFIX}MultiB")
+            if a_dni:
+                self.created_device_dnis.append(a_dni)
+            if b_dni:
+                self.created_device_dnis.append(b_dni)
+            assert a_id and b_id, "Failed to create the two multi-device switches"
+
+            # Drive both to 'on' so all-mode can converge. waitFor confirms each landed.
+            for did in (a_id, b_id):
+                self.client.call_tool("hub_call_device_command", {
+                    "deviceId": did, "command": "on",
+                    "waitFor": {"attribute": "switch", "expectedValue": "on", "timeoutMs": 5000},
+                })
+
+            # mode=all: both on -> converges, convergedCount == 2.
+            all_poll = self.client.call_tool("hub_get_device_attribute", {
+                "deviceIds": [a_id, b_id], "attribute": "switch",
+                "expectedValue": "on", "mode": "all", "timeoutMs": 5000,
+            })
+            assert isinstance(all_poll, dict), f"multi-device all poll unexpected: {all_poll!r}"
+            if all_poll.get("success") is not True and self._clear_load_throttle(
+                    f"multi-device 'on' never landed on both: {all_poll}"):
+                for did in (a_id, b_id):
+                    self.client.call_tool("hub_call_device_command", {
+                        "deviceId": did, "command": "on",
+                        "waitFor": {"attribute": "switch", "expectedValue": "on", "timeoutMs": 5000}})
+                all_poll = self.client.call_tool("hub_get_device_attribute", {
+                    "deviceIds": [a_id, b_id], "attribute": "switch",
+                    "expectedValue": "on", "mode": "all", "timeoutMs": 5000})
+            assert all_poll.get("success") is True, f"all-mode should converge (both on): {all_poll}"
+            assert all_poll.get("mode") == "all", f"mode echo wrong: {all_poll}"
+            assert all_poll.get("convergedCount") == 2, f"convergedCount should be 2: {all_poll}"
+            assert isinstance(all_poll.get("devices"), list) and len(all_poll["devices"]) == 2, \
+                f"per-device array should have 2 entries: {all_poll}"
+
+            # Drive B to 'off'; mode=any (expecting 'on') still converges on A.
+            self.client.call_tool("hub_call_device_command", {
+                "deviceId": b_id, "command": "off",
+                "waitFor": {"attribute": "switch", "expectedValue": "off", "timeoutMs": 5000}})
+            any_poll = self.client.call_tool("hub_get_device_attribute", {
+                "deviceIds": [a_id, b_id], "attribute": "switch",
+                "expectedValue": "on", "mode": "any", "timeoutMs": 5000,
+            })
+            assert isinstance(any_poll, dict), f"multi-device any poll unexpected: {any_poll!r}"
+            # A on, B off: any-mode converges; exactly one device matches, so convergedCount is 1
+            # (all-mode would have timed out here).
+            assert any_poll.get("success") is True, f"any-mode should converge (A on): {any_poll}"
+            assert any_poll.get("mode") == "any", f"mode echo wrong: {any_poll}"
+            assert any_poll.get("convergedCount") == 1, f"convergedCount should be exactly 1 (A on, B off): {any_poll}"
+        finally:
+            for dni in (a_dni, b_dni):
+                if dni:
+                    try:
+                        self.client.call_tool("hub_manage_virtual_device", {
+                            "action": "delete", "deviceNetworkId": dni, "confirm": True})
+                    except Exception as exc:
+                        print(f"  [WARN] could not delete multi-device test device ({dni}): {exc}")
+
     # -----------------------------------------------------------------------
     # GROUP 12: error_verification (1 test)
     # -----------------------------------------------------------------------
