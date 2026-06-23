@@ -1514,9 +1514,14 @@ class TestRunner:
                 f"'{value}' snapshot missing switch value/timestamp: {cmd['state']}"
             # The timestamp must be a properly-formatted "yyyy-MM-dd HH:mm:ss" string, not
             # a JVM Date.toString() (which a formatTimestamp-on-Date regression would emit).
+            # A fresh device whose event the platform limiter throttled has an EMPTY snapshot
+            # (value/timestamp null, no state ever committed) -- only format-check a timestamp that
+            # is actually present; the caller's limiter-proven soft-pass (and the round-trip poll)
+            # handle the null case, and the regression this guards emits a malformed STRING, not null.
             ts = snap.get("timestamp")
-            assert isinstance(ts, str) and re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$", ts), \
-                f"'{value}' snapshot switch timestamp not formatted yyyy-MM-dd HH:mm:ss: {snap!r}"
+            if ts is not None:
+                assert isinstance(ts, str) and re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$", ts), \
+                    f"'{value}' snapshot switch timestamp not formatted yyyy-MM-dd HH:mm:ss: {snap!r}"
             return _poll_switch(value)
 
         try:
