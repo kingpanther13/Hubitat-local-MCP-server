@@ -225,29 +225,175 @@ def toolGetHubInfo(args = null) {
 }
 
 def toolGetModes() {
+    def currentMode = location.mode
     def modes = location.modes?.collect { [id: it.id.toString(), name: it.name] }
-    return [
-        currentMode: location.mode,
-        modes: modes
-    ]
+    def modeManager = null
+    // Enrich with per-mode icon + Mode Manager state from the HTTP surface (the SDK exposes
+    // neither). Best-effort: fall back to the SDK list if /modes/json can't be read.
+    try {
+        def raw = hubInternalGet("/modes/json")
+        def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+        if (parsed instanceof Map) {
+            if (parsed.modes instanceof List) {
+                modes = parsed.modes.collect { [id: it?.id?.toString(), name: it?.name, icon: it?.icon] }
+            }
+            // Only surface modeManager when the payload actually carries it -- a Map that lacks the
+            // manager keys (an error envelope, or a firmware shape change) must NOT yield an all-null
+            // block that masks the read as "manager unset".
+            if (parsed.containsKey("selectedModeManager") || parsed.containsKey("modeManagerAppId")) {
+                modeManager = [selected: parsed.selectedModeManager, appId: parsed.modeManagerAppId?.toString(),
+                               easyModeManagerAppId: parsed.easyModeManagerAppId?.toString()]
+                // The Integrated/built-in Mode Manager's per-mode conditions live at a separate endpoint
+                // that's independent of which manager is selected (returns {} when none are set). Read it
+                // best-effort so callers see the current automation conditions.
+                try {
+                    def craw = hubInternalGet("/modes/easyModeManager/json")
+                    if (craw) modeManager.easyConditions = new groovy.json.JsonSlurper().parseText(craw)
+                } catch (Exception ce) {
+                    mcpLog("debug", "modes", "Integrated Mode Manager conditions unreadable (omitted from modeManager): ${ce.message}")
+                }
+            }
+        }
+    } catch (Exception e) {
+        mcpLog("warn", "modes", "Could not read /modes/json (using SDK mode list): ${e.message}")
+    }
+    def result = [currentMode: currentMode, modes: modes]
+    if (modeManager != null) result.modeManager = modeManager
+    return result
 }
 
-def toolSetMode(modeName) {
+// Resolve a mode id or name to its numeric SDK id; null if no match.
+private _resolveModeId(idOrName) {
+    def s = idOrName?.toString()?.trim()
+    if (!s) return null
+    def m = location.modes?.find { it?.id?.toString() == s || it?.name?.equalsIgnoreCase(s) }
+    return m ? m.id : null
+}
+
+def toolManageMode(args) {
+    def action = args?.action?.toString()?.trim()?.toLowerCase()
+    if (!action) throw new IllegalArgumentException("action is required: one of create, rename, delete, activate")
+    switch (action) {
+        case "create":
+            def name = args?.name?.toString()?.trim()
+            if (!name) throw new IllegalArgumentException("name is required to create a mode")
+            def body = args?.icon ? [name: name, icon: args.icon.toString()] : [name: name]
+            return _modeWriteResult("create", _modePost("/modes/jsonCreate", body))
+        case "rename":
+            def name = args?.name?.toString()?.trim()
+            def modeId = _resolveModeId(args?.mode)
+            if (!name) throw new IllegalArgumentException("name (the new mode name) is required to rename a mode")
+            if (modeId == null) throw new IllegalArgumentException("mode not found: '${args?.mode}'. Pass a mode id or current name (from hub_list_modes).")
+            def body = args?.icon ? [id: modeId, name: name, icon: args.icon.toString()] : [id: modeId, name: name]
+            return _modeWriteResult("rename", _modePost("/modes/jsonUpdate", body))
+        case "delete":
+            def modeId = _resolveModeId(args?.mode)
+            if (modeId == null) throw new IllegalArgumentException("mode not found: '${args?.mode}'. Pass a mode id or name (from hub_list_modes).")
+            requireDestructiveConfirm(args.confirm)
+            return _modeDelete(modeId)
+        case "activate":
+            return _modeActivate(args?.mode?.toString()?.trim())
+        default:
+            throw new IllegalArgumentException("Unknown action '${action}'. Valid: create, rename, delete, activate.")
+    }
+}
+
+private _modePost(String path, Map body) {
+    return hubInternalPostJson(path, groovy.json.JsonOutput.toJson(body))
+}
+
+private _modeWriteResult(String op, parsed) {
+    if (parsed instanceof Map && parsed.success == true) {
+        // Don't re-read the full mode list here -- that's an extra /modes/json round-trip per write
+        // and the hub's per-app load limiter punishes back-to-back calls. The caller reads via
+        // hub_list_modes when it needs the updated list.
+        return [success: true, action: op, note: "Read the updated mode list with hub_list_modes."]
+    }
+    def err = (parsed instanceof Map) ? (parsed.message ?: parsed.error) : null
+    return [success: false, action: op, error: err ?: "/modes/${op == 'create' ? 'jsonCreate' : 'jsonUpdate'} did not report success",
+            note: "Verify the mode name/id and Hub Security credentials; read current modes with hub_list_modes. Nothing was changed."]
+}
+
+private _modeDelete(modeId) {
+    try {
+        def raw = hubInternalGet("/modes/jsonDelete/${java.net.URLEncoder.encode(modeId.toString(), 'UTF-8')}")
+        def parsed = null
+        try { parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null } catch (Exception ignore) { }
+        if (parsed instanceof Map && parsed.success == true) {
+            return [success: true, action: "delete", deletedModeId: modeId.toString(),
+                    note: "Read the updated mode list with hub_list_modes."]
+        }
+        def err = (parsed instanceof Map) ? (parsed.message ?: parsed.error) : null
+        return [success: false, action: "delete", error: err ?: "/modes/jsonDelete did not report success", response: raw?.take(300),
+                note: "A mode that is current or referenced by Mode Manager/rules may be undeletable. Nothing was deleted."]
+    } catch (Exception e) {
+        mcpLogError("modes", "delete mode ${modeId} failed", e)
+        return [success: false, action: "delete", error: "Mode delete failed: ${e.message}",
+                note: "Verify the mode id and Hub Security credentials."]
+    }
+}
+
+private _modeActivate(String modeName) {
+    if (!modeName) throw new IllegalArgumentException("mode (the mode name to activate) is required")
     def mode = location.modes?.find { it.name.equalsIgnoreCase(modeName) }
     if (!mode) {
         def available = location.modes?.collect { it.name }
         throw new IllegalArgumentException("Mode '${modeName}' not found. Available: ${available}")
     }
-
-    // Capture current mode BEFORE changing it
     def previousMode = location.mode
     location.setMode(mode.name)
+    return [success: true, action: "activate", previousMode: previousMode, newMode: mode.name,
+            note: "Verify the active mode with hub_list_modes (setMode is a fire-and-return SDK call)."]
+}
 
-    return [
-        success: true,
-        previousMode: previousMode,
-        newMode: mode.name
-    ]
+def toolSetModeManager(args) {
+    def manager = args?.manager?.toString()?.trim()?.toLowerCase()
+    def conditions = args?.conditions
+    if (!manager && conditions == null) {
+        throw new IllegalArgumentException("Pass 'manager' (builtIn|legacy|app) and/or 'conditions' (Integrated Mode Manager per-mode conditions, from hub_list_modes.modeManager.easyConditions).")
+    }
+    def result = [success: true]
+    if (manager) {
+        def wireByKey = [builtin: "builtIn", legacy: "legacy", app: "app"]
+        def wire = wireByKey[manager]
+        if (!wire) throw new IllegalArgumentException("manager must be one of builtIn, legacy, app")
+        try {
+            def raw = hubInternalGet("/modes/setModeManager/${wire}")
+            def parsed = null
+            try { parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null } catch (Exception ignore) { }
+            result.manager = wire
+            if (!(parsed instanceof Map && parsed.success == true)) {
+                result.success = false
+                result.error = (parsed instanceof Map ? (parsed.message ?: parsed.error) : null) ?: "/modes/setModeManager did not report success"
+            }
+        } catch (Exception e) {
+            mcpLogError("modes", "setModeManager ${wire} failed", e)
+            return [success: false, error: "Set mode manager failed: ${e.message}", note: "Verify Hub Security credentials."]
+        }
+    }
+    // If a manager switch was requested and failed, don't apply conditions into whatever manager is
+    // still active -- that would be a confusing partial apply.
+    if (manager && result.success != true) {
+        result.note = "Manager selection failed; conditions were not applied. Read state with hub_list_modes."
+        return result
+    }
+    if (conditions != null) {
+        try {
+            def cres = hubInternalPostJson("/modes/easyModeManager/json", groovy.json.JsonOutput.toJson(conditions))
+            if (cres instanceof Map && cres.success == true) {
+                result.conditionsUpdated = true
+            } else {
+                result.success = false
+                result.conditionsError = (cres instanceof Map ? (cres.message ?: cres.error) : null) ?: "Integrated Mode Manager conditions update did not report success"
+            }
+        } catch (Exception e) {
+            mcpLogError("modes", "easyModeManager update failed", e)
+            result.success = false
+            result.conditionsError = "Integrated Mode Manager conditions update failed: ${e.message}"
+        }
+    }
+    result.note = "Read current manager state + conditions with hub_list_modes (modeManager block)."
+    return result
 }
 
 def toolGetHsmStatus() {
@@ -588,7 +734,7 @@ def _getAllToolDefinitions_partSystem() {
         // System Tools
         [
             name: "hub_get_info",
-            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, free memory, internal temperature, database size, MCP server stats, and current security/toggle settings. Also surfaces the pending hub firmware/platform update (platformUpdate) + Safe Mode (safeMode).[[FLAT_TRIM]] Pass includeHealthAlerts=true for the hub's full health-alerts block from /hub2/hubData (radio offline, backup failures, low memory, DB bloat, weak mesh), or includeAppUpdate=true to also check GitHub for a newer MCP server APP version (returned under appUpdate). Use this for health checks, version lookups, or when triaging hub performance. Location/PII fields (name, local IP, timezone, coordinates, zip code) are returned only when Read master is enabled; otherwise they are omitted.[[/FLAT_TRIM]]",
+            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, memory, temperature, DB size, MCP stats, and security/toggle settings.[[FLAT_TRIM]] Also surfaces the pending hub firmware/platform update (platformUpdate) + Safe Mode (safeMode). Pass includeHealthAlerts=true for the hub's full health-alerts block from /hub2/hubData (radio offline, backup failures, low memory, DB bloat, weak mesh), or includeAppUpdate=true to also check GitHub for a newer MCP server APP version (returned under appUpdate). Use this for health checks, version lookups, or when triaging hub performance. Location/PII fields (name, local IP, timezone, coordinates, zip code) are returned only when Read master is enabled; otherwise they are omitted.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -649,7 +795,7 @@ def _getAllToolDefinitions_partSystem() {
         ],
         [
             name: "hub_list_modes",
-            description: "List the hub's available location modes and report the current one. Use this before hub_set_mode to discover valid mode names (they are hub-specific, e.g. Day/Night/Away).",
+            description: "List the hub's location modes (with the active one) + Mode Manager state.[[FLAT_TRIM]] Use it to get valid mode names + ids (hub-specific, e.g. Day/Night/Away) before activating/renaming/deleting a mode.[[/FLAT_TRIM]]",
             inputSchema: [type: "object", properties: [:]],
             outputSchema: [
                 type: "object",
@@ -657,35 +803,74 @@ def _getAllToolDefinitions_partSystem() {
                     currentMode: [type: "string", description: "Current location mode name"],
                     modes: [type: "array", description: "Available modes", items: [type: "object", properties: [
                         id: [type: "string", description: "Mode ID"],
-                        name: [type: "string", description: "Mode name"]
-                    ]]]
+                        name: [type: "string", description: "Mode name"],
+                        icon: [type: "string", description: "Mode icon name (when available)"]
+                    ]]],
+                    modeManager: [type: "object", description: "Mode Manager state (when readable)", properties: [
+                        selected: [type: "string", description: "Active manager: builtIn | legacy | app (a 3rd-party mode-manager app)"],
+                        appId: [type: "string", description: "Mode Manager app id"],
+                        easyModeManagerAppId: [type: "string", description: "Integrated Mode Manager app id"],
+                        easyConditions: [type: "object", description: "The Integrated Mode Manager's per-mode automation conditions, keyed by mode id ({} when none set)"]
+                    ]]
                 ],
                 required: ["currentMode", "modes"]
             ]
         ],
         [
-            name: "hub_set_mode",
-            description: "Set the location mode. Valid mode names are hub-specific — get them from hub_list_modes first. Always verify the mode changed after.",
+            name: "hub_manage_mode",
+            description: """⚠️ Create, rename, delete, or activate a hub location mode.[[FLAT_TRIM]] The full mode-management surface in one tool. Modes (Day/Night/Away/…) are hub-wide states apps and rules trigger on. Read current modes + ids with hub_list_modes first. delete is irreversible and breaks any app/rule referencing that mode, so it requires confirm=true + a recent backup; create/rename/activate do not.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    mode: [type: "string", description: "Mode name"]
+                    action: [type: "string", enum: ["create", "rename", "delete", "activate"], description: "create | rename | delete | activate a location mode."],
+                    name: [type: "string", description: "New mode name (create), or the new name (rename)."],
+                    mode: [type: "string", description: "Target for rename/delete/activate: id or name (from hub_list_modes)."],
+                    icon: [type: "string", description: "OPTIONAL icon for create/rename.[[FLAT_TRIM]] Font Awesome name, e.g. fa-moon, fa-sun.[[/FLAT_TRIM]]"],
+                    confirm: [type: "boolean", description: "REQUIRED for action=delete: must be true.[[FLAT_TRIM]] Confirms a backup <24h + that breaking mode references is intended.[[/FLAT_TRIM]]"]
                 ],
-                required: ["mode"]
+                required: ["action"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
-                    success: [type: "boolean", description: "Whether the mode was set"],
-                    previousMode: [type: "string", description: "Mode before the change"],
-                    newMode: [type: "string", description: "Mode after the change"]
+                    success: [type: "boolean", description: "Whether the action succeeded"],
+                    action: [type: "string", description: "The action performed"],
+                    modes: [type: "array", description: "Resulting mode list (create/rename/delete)", items: [type: "object"]],
+                    previousMode: [type: "string", description: "Mode before activate"],
+                    newMode: [type: "string", description: "Mode after activate"],
+                    deletedModeId: [type: "string", description: "The deleted mode id"],
+                    error: [type: "string", description: "Failure reason (success=false)"],
+                    note: [type: "string", description: "Guidance / recovery"]
                 ],
-                required: ["success", "previousMode", "newMode"]
+                required: ["success"]
+            ]
+        ],
+        [
+            name: "hub_set_mode_manager",
+            description: """Configure the hub's Mode Manager — select which manager runs and/or set its per-mode conditions.[[FLAT_TRIM]] Mode Manager is the automation that changes the location mode automatically: 'manager' selects builtIn (the Integrated Mode Manager), legacy (the legacy Mode Manager app), or app (a 3rd-party mode-manager app — only valid when one is installed). 'conditions' replaces the Integrated Mode Manager's per-mode condition set (POST /modes/easyModeManager/json) — read the current shape from hub_list_modes.modeManager.easyConditions first and modify-then-write. Read state back with hub_list_modes.[[/FLAT_TRIM]]""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    manager: [type: "string", enum: ["builtIn", "legacy", "app"], description: "Which Mode Manager to activate.[[FLAT_TRIM]] app = a 3rd-party mode-manager app, valid only when one is installed.[[/FLAT_TRIM]]"],
+                    conditions: [type: "object", description: "OPTIONAL: per-mode automation conditions to set.[[FLAT_TRIM]] Same shape as hub_list_modes.modeManager.easyConditions (keyed by mode id); read-modify-write that block.[[/FLAT_TRIM]]"]
+                ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the change succeeded"],
+                    manager: [type: "string", description: "The manager that was selected"],
+                    conditionsUpdated: [type: "boolean", description: "True if conditions were applied"],
+                    error: [type: "string", description: "Manager-selection failure reason"],
+                    conditionsError: [type: "string", description: "Conditions-update failure reason"],
+                    note: [type: "string", description: "Guidance"]
+                ],
+                required: ["success"]
             ]
         ],
         [
             name: "hub_get_hsm_status",
-            description: "Get the current HSM (Hubitat Safety Monitor) armed status, any active alert, and the valid HSM arm commands. Use this to check the security-system state or to confirm a change made via hub_set_hsm.",
+            description: "Get the current HSM (Hubitat Safety Monitor) armed status, any active alert, and the valid HSM arm commands.[[FLAT_TRIM]] Use this to check the security-system state or to confirm a change made via hub_set_hsm.[[/FLAT_TRIM]]",
             inputSchema: [type: "object", properties: [:]],
             outputSchema: [
                 type: "object",
@@ -720,9 +905,7 @@ def _getAllToolDefinitions_partSystem() {
         ],
         [
             name: "hub_create_backup",
-            description: """Create a full hub backup. REQUIRED before any Write master operation (24h validity).
-
-Requires Write master + confirm. This is the only write tool that doesn't require a prior backup.""",
+            description: """Create a full hub backup. REQUIRED before any Write master operation (24h validity).[[FLAT_TRIM]] Requires Write master + confirm. This is the only write tool that doesn't require a prior backup.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -843,7 +1026,7 @@ def _idempotentWriteToolNames_partSystem() {
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
     return [
         // Hub state
-        "hub_set_mode", "hub_set_hsm"
+        "hub_set_hsm", "hub_set_mode_manager"
     ]
 }
 
@@ -863,8 +1046,9 @@ def _toolDisplayMeta_partSystem() {
     return [
         // Hub state + modes
         hub_get_info: [title: "Get Hub Info", summary: "Comprehensive hub info: hardware, health, firmware/platform-update status, network, and MCP stats."],
-        hub_list_modes: [title: "List Modes", summary: "List the hub's location modes and which one is active."],
-        hub_set_mode: [title: "Set Mode", summary: "Change the hub's location mode (Home, Away, Night, etc.)."],
+        hub_list_modes: [title: "List Modes", summary: "List the hub's location modes, the active one, and Mode Manager state."],
+        hub_manage_mode: [title: "Manage Modes", summary: "Create, rename, delete, or activate a hub location mode."],
+        hub_set_mode_manager: [title: "Set Mode Manager", summary: "Pick the Mode Manager and update its per-mode conditions."],
         hub_get_hsm_status: [title: "Get HSM Status", summary: "Get the current Hubitat Safety Monitor arm status."],
         hub_set_hsm: [title: "Set HSM Arm Mode", summary: "Arm or disarm Hubitat Safety Monitor."],
         // Hub utilities

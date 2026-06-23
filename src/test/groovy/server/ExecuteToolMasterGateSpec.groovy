@@ -29,7 +29,7 @@ class ExecuteToolMasterGateSpec extends ToolSpecBase {
         settingsMap.enableWrite = false
 
         when:
-        script.executeTool("hub_set_mode", [mode: "Day"])
+        script.executeTool("hub_manage_mode", [action: "activate", mode: "Day"])
 
         then:
         def e = thrown(IllegalArgumentException)
@@ -44,7 +44,7 @@ class ExecuteToolMasterGateSpec extends ToolSpecBase {
         expect: "the master gate hides neither reads nor writes by default"
         def hidden = script.getHiddenToolNames()
         !hidden.contains("hub_list_modes")   // a read
-        !hidden.contains("hub_set_mode")     // a write
+        !hidden.contains("hub_manage_mode")     // a write
 
         and: "a stub-free read tool dispatches past the master gate (no 'disabled' error)"
         script.executeTool("hub_get_tool_guide", [:]) != null

@@ -414,24 +414,20 @@ class TestRunner:
             self._first_device_id = str(devices[0]["id"])
         return self._first_device_id
 
-    def _limiter_logged(self, device_id: Any, method: str | None = None) -> bool:
-        """Hub-log proof that a device dispatch REACHED the device but the platform's
-        per-app load limiter aborted delivery. A blocked dispatch false-succeeds (the
-        LimitExceededException fires in the DEVICE's context, after our tool already
-        returned success), but it always leaves a hub error-log line naming the device,
-        this app, and the command method:
-            dev|<id>|<label>|...LimitExceededException: App <N> generates excessive hub load ... (method on)
-        Matching on the exact device id (the round-trip tests use fresh throwaway
-        devices, so no stale entries can match) discriminates 'tool works, platform
-        throttled' from a genuine dispatch bug. Log reads stay available while blocked
-        (only device dispatch is affected -- verified live 2026-06-12)."""
+    def _limiter_lines(self, device_id: Any, method: str | None = None) -> set:
+        """The set of hub ERROR-log keys ("time|message") proving the platform's per-app load
+        limiter aborted delivery for device_id (and, if given, command method). Keyed by time+message
+        so a caller can BASELINE this set immediately before a dispatch and later detect a FRESH trip
+        (a key not in the baseline) -- the only sound way to attribute a limiter line to THIS dispatch
+        on a SHARED device, where a prior test may have left a matching line in the 40-entry window."""
         try:
             res = self.client.call_tool("hub_manage_logs", {
                 "tool": "hub_get_logs", "args": {"level": "ERROR", "limit": 40},
             })
         except Exception as exc:
             print(f"    [LIMITER] hub log read failed ({exc}) -- cannot verify a limiter block")
-            return False
+            return set()
+        keys = set()
         for entry in (res.get("logs") or []) if isinstance(res, dict) else []:
             msg = str(entry.get("message", ""))
             if not msg.startswith(f"dev|{device_id}|"):
@@ -440,8 +436,32 @@ class TestRunner:
                 continue
             if method and f"(method {method})" not in msg:
                 continue
+            # hub_get_logs puts the (sub-second) timestamp in 'name'; 'time' is empty on this hub.
+            # Use name so each trip gets a DISTINCT key -- otherwise identical messages collapse to
+            # one key and the baseline delta can never see a fresh trip (it would hard-fail the
+            # soft-pass on a shared device that already had a matching line in the baseline).
+            ts = entry.get("name") or entry.get("time") or entry.get("timestamp") or ""
+            keys.add(f"{ts}|{msg}")
+        return keys
+
+    def _limiter_logged(self, device_id: Any, method: str | None = None, baseline: set | None = None) -> bool:
+        """Hub-log proof that a device dispatch REACHED the device but the platform's
+        per-app load limiter aborted delivery. A blocked dispatch false-succeeds (the
+        LimitExceededException fires in the DEVICE's context, after our tool already
+        returned success), but it always leaves a hub error-log line naming the device,
+        this app, and the command method:
+            dev|<id>|<label>|...LimitExceededException: App <N> generates excessive hub load ... (method on)
+        For a FRESH throwaway device id no stale entry can match, so baseline=None is sound. For a
+        SHARED device, pass `baseline` (from _limiter_lines() captured BEFORE the dispatch): only a
+        line NOT in the baseline counts, so the soft-pass requires a fresh trip from THIS dispatch
+        and can never be satisfied by a stale line a prior test left on the shared device.
+        Log reads stay available while blocked (only device dispatch is affected -- verified live 2026-06-12)."""
+        fresh = self._limiter_lines(device_id, method)
+        if baseline is not None:
+            fresh = fresh - baseline
+        if fresh:
             print(f"    [LIMITER] hub log confirms the dispatch reached device {device_id} and the "
-                  f"platform load limiter aborted delivery: {msg[:180]}")
+                  f"platform load limiter aborted delivery: {sorted(fresh)[0][:200]}")
             return True
         return False
 
@@ -878,12 +898,12 @@ class TestRunner:
         names = {t.get("name") for t in tools}
         # hub_update_package is a Developer-Mode-only TOP-LEVEL tool (issue #250): it shows on
         # tools/list ONLY with Developer Mode on (this e2e hub has it on -- a documented precondition).
-        # The documented DEFAULT catalog is 31 (11 core + 20 gateways); exclude the dev-mode tool so
+        # The documented DEFAULT catalog is 32 (12 core + 20 gateways); exclude the dev-mode tool so
         # the count matches the default regardless of the toggle, then assert the dev-mode tool is
         # present on this dev-on hub.
         default_tools = [t for t in tools if t.get("name") != "hub_update_package"]
-        assert len(default_tools) == 31, \
-            f"Expected 31 default tools (11 core + 20 gateways), got {len(default_tools)}: {sorted(names)}"
+        assert len(default_tools) == 32, \
+            f"Expected 32 default tools (12 core + 20 gateways), got {len(default_tools)}: {sorted(names)}"
         assert "hub_update_package" in names, \
             "hub_update_package must be a top-level tool when Developer Mode is on (issue #250)"
 
@@ -1533,9 +1553,14 @@ class TestRunner:
                 f"'{value}' snapshot missing switch value/timestamp: {cmd['state']}"
             # The timestamp must be a properly-formatted "yyyy-MM-dd HH:mm:ss" string, not
             # a JVM Date.toString() (which a formatTimestamp-on-Date regression would emit).
+            # A fresh device whose event the platform limiter throttled has an EMPTY snapshot
+            # (value/timestamp null, no state ever committed) -- only format-check a timestamp that
+            # is actually present; the caller's limiter-proven soft-pass (and the round-trip poll)
+            # handle the null case, and the regression this guards emits a malformed STRING, not null.
             ts = snap.get("timestamp")
-            assert isinstance(ts, str) and re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$", ts), \
-                f"'{value}' snapshot switch timestamp not formatted yyyy-MM-dd HH:mm:ss: {snap!r}"
+            if ts is not None:
+                assert isinstance(ts, str) and re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$", ts), \
+                    f"'{value}' snapshot switch timestamp not formatted yyyy-MM-dd HH:mm:ss: {snap!r}"
             return _poll_switch(value)
 
         try:
@@ -5410,6 +5435,180 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             f"hub_list_modes response missing modes/currentMode: {list(result.keys()) if isinstance(result, dict) else type(result)}"
 
     @test("system_tools")
+    def test_mode_lifecycle(self) -> None:
+        # FULL live coverage of the mode surface on the sacrificial e2e hub -- proves every
+        # capability of hub_manage_mode / hub_list_modes / hub_set_mode_manager by e2e alone
+        # (no BAT needed). Organised into numbered PORTIONS so a per-app load-limiter trip can
+        # be pinpointed to a portion in the run log: actions within a portion are spaced ~0.3s
+        # and each portion is preceded by a longer pause + a "[MODE PORTION N]" marker.
+        # Coverage by portion:
+        #   1 create WITH icon -> list read-back asserts name+icon round-trip + modeManager block shape
+        #   2 rename (by name) WITH a new icon -> read-back asserts new name landed, old gone, icon changed
+        #   3 resolve target by NUMERIC id (rename) + case-insensitive name (activate)
+        #   4 currentMode read-back reflects the activate; restore original active mode
+        #   5 set_mode_manager applies manager + conditions in ONE call (both asserted)
+        #   6 rejection gates (cheap, fail before any hub write): delete-without-confirm, missing/unknown
+        #     action, activate missing/unknown, rename unknown target, invalid manager, no-arg manager
+        #   7 delete WITH confirm -> asserts success + deletedModeId + the mode is gone
+        # Every server-app write goes through _mode_call: on an "excessive hub load" block it bounces
+        # the app via the watchdog and retries once (the limiter contract the dispatch tests use) --
+        # coverage is unchanged, only a throttled call is retried. The hub is sacrificial +
+        # watchdog-recoverable; the runner's startup backup satisfies the delete confirm gate.
+        # NOTE: the SDK fallback in hub_list_modes and the structured create/delete write-FAILURE
+        # contracts need fault injection / firmware-dependent states (a duplicate-name or
+        # delete-current refusal), so they are proven in ToolModeSpec unit tests, not here.
+        import time as _time
+        STEP = 0.3      # spacing between actions inside a portion
+        PORTION = 2.0   # pause between portions (also widens the limiter window so a trip localises)
+        mode_name = f"{PREFIX}Mode"
+        renamed = f"{PREFIX}Mode2"
+        renamed2 = f"{PREFIX}Mode3"
+        settable_managers = {"builtIn", "legacy", "app"}
+
+        def _mode_call(name: str, args: dict, label: str) -> Any:
+            try:
+                return self.client.call_tool(name, args)
+            except McpToolError as exc:
+                if "excessive hub load" in str(exc) and self._clear_load_throttle(f"{label}: {exc}"):
+                    return self.client.call_tool(name, args)
+                raise
+
+        def _expect_rejected(fn, needle: str, label: str) -> None:
+            # Validation/confirm-gate rejections come back as a JSON-RPC -32602 (McpError) and fire
+            # BEFORE any hub write, so they cannot trip the limiter; the needle check also tells a
+            # genuine rejection apart from a stray "excessive hub load" error.
+            try:
+                fn()
+            except McpError as exc:
+                assert needle.lower() in str(exc).lower(), f"{label}: expected '{needle}' in error, got: {exc}"
+                return
+            raise AssertionError(f"{label}: expected a rejection containing '{needle}', but the call succeeded")
+
+        def _mode_names() -> list:
+            return [m.get("name") for m in (_mode_call("hub_list_modes", {}, "list modes").get("modes") or [])]
+
+        before = _mode_call("hub_list_modes", {}, "list modes (before)")
+        original_mode = before.get("currentMode") if isinstance(before, dict) else None
+        original_mgr = (before.get("modeManager") or {}).get("selected") if isinstance(before, dict) else None
+        created_id = None
+        try:
+            # PORTION 1 -- create WITH icon, then read it back (name + icon round-trip via /modes/json)
+            print("    [MODE PORTION 1] create + icon round-trip read-back")
+            cr = _mode_call("hub_manage_mode", {"action": "create", "name": mode_name, "icon": "fa-moon"}, "create mode")
+            assert isinstance(cr, dict) and cr.get("success") is True, f"create failed: {cr}"
+            _time.sleep(STEP)
+            listed = _mode_call("hub_list_modes", {}, "list modes (after create)")
+            created = next((m for m in (listed.get("modes") or []) if m.get("name") == mode_name), None)
+            assert created is not None, f"created mode not in hub_list_modes: {listed.get('modes')}"
+            assert created.get("icon") == "fa-moon", f"create icon did not round-trip via /modes/json: {created}"
+            created_id = str(created.get("id"))
+            mm = listed.get("modeManager")
+            assert isinstance(mm, dict), f"hub_list_modes missing the modeManager block: {sorted(listed.keys())}"
+            assert mm.get("selected") in settable_managers, f"modeManager.selected not a valid manager: {mm}"
+            # easyConditions is a best-effort sub-read (libraries/mcp-system-lib.groovy omits the key
+            # if the separate /modes/easyModeManager/json GET throws), so only assert its SHAPE when
+            # present -- don't fail the whole lifecycle on a transient sub-read miss. The exact
+            # key-presence contract is pinned by ToolModeSpec, not this live test.
+            if "easyConditions" in mm:
+                assert isinstance(mm["easyConditions"], dict), f"easyConditions not an object: {mm}"
+
+            # PORTION 2 -- rename (by name) WITH a new icon, read back the new name + icon
+            _time.sleep(PORTION)
+            print("    [MODE PORTION 2] rename (by name) + icon read-back")
+            rn = _mode_call("hub_manage_mode", {"action": "rename", "mode": mode_name, "name": renamed, "icon": "fa-sun"}, "rename by name")
+            assert rn.get("success") is True, f"rename (jsonUpdate) failed: {rn}"
+            _time.sleep(STEP)
+            after = _mode_call("hub_list_modes", {}, "list modes (after rename)").get("modes") or []
+            names = [m.get("name") for m in after]
+            assert renamed in names and mode_name not in names, f"rename did not persist (old name still present?): {names}"
+            ren = next((m for m in after if m.get("name") == renamed), None)
+            assert ren and ren.get("icon") == "fa-sun", f"rename icon did not round-trip: {ren}"
+
+            # PORTION 3 -- resolve by NUMERIC id (rename), then case-insensitive name (activate)
+            _time.sleep(PORTION)
+            print("    [MODE PORTION 3] numeric-id resolution + case-insensitive activate")
+            rn2 = _mode_call("hub_manage_mode", {"action": "rename", "mode": created_id, "name": renamed2}, "rename by numeric id")
+            assert rn2.get("success") is True, f"rename by numeric id ({created_id}) failed: {rn2}"
+            _time.sleep(STEP)
+            assert renamed2 in _mode_names(), "rename-by-id did not persist"
+            _time.sleep(STEP)
+            act = _mode_call("hub_manage_mode", {"action": "activate", "mode": renamed2.lower()}, "activate (case-insensitive)")
+            assert act.get("success") is True and act.get("newMode") == renamed2, f"case-insensitive activate failed: {act}"
+
+            # PORTION 4 -- currentMode read-back reflects the activate; restore the original active mode
+            _time.sleep(PORTION)
+            print("    [MODE PORTION 4] currentMode read-back + restore")
+            cur = _mode_call("hub_list_modes", {}, "list modes (current)").get("currentMode")
+            assert cur == renamed2, f"currentMode did not reflect the activate (got {cur!r}, expected {renamed2!r})"
+            if original_mode:
+                _time.sleep(STEP)
+                _mode_call("hub_manage_mode", {"action": "activate", "mode": original_mode}, "restore active mode")
+
+            # PORTION 5 -- set_mode_manager: select manager AND set conditions in a SINGLE call
+            _time.sleep(PORTION)
+            print("    [MODE PORTION 5] set_mode_manager select + conditions (one call)")
+            target_mgr = original_mgr if original_mgr in settable_managers else "builtIn"
+            conds = (_mode_call("hub_list_modes", {}, "read conditions").get("modeManager") or {}).get("easyConditions")
+            _time.sleep(STEP)
+            both = _mode_call("hub_set_mode_manager",
+                              {"manager": target_mgr, "conditions": conds if conds is not None else {}},
+                              "set manager + conditions")
+            assert both.get("success") is True, f"combined set_mode_manager failed: {both}"
+            assert both.get("manager") == target_mgr, f"manager echo wrong: {both}"
+            assert both.get("conditionsUpdated") is True, f"conditionsUpdated not set on the combined call: {both}"
+
+            # PORTION 6 -- rejection gates (each fails fast BEFORE any hub write -> cheap on the limiter)
+            _time.sleep(PORTION)
+            print("    [MODE PORTION 6] validation + confirm-gate rejections")
+            _expect_rejected(lambda: self.client.call_tool("hub_manage_mode", {"action": "delete", "mode": renamed2}),
+                             "confirm", "delete without confirm")
+            assert renamed2 in _mode_names(), "delete-without-confirm must NOT have deleted the mode"
+            _expect_rejected(lambda: self.client.call_tool("hub_manage_mode", {}), "action", "missing action")
+            _expect_rejected(lambda: self.client.call_tool("hub_manage_mode", {"action": "frobnicate"}), "action", "unknown action")
+            _expect_rejected(lambda: self.client.call_tool("hub_manage_mode", {"action": "activate"}), "required", "activate without a mode")
+            _expect_rejected(lambda: self.client.call_tool("hub_manage_mode", {"action": "activate", "mode": f"{PREFIX}NoSuchMode"}),
+                             "not found", "activate an unknown mode")
+            _expect_rejected(lambda: self.client.call_tool("hub_manage_mode", {"action": "rename", "mode": f"{PREFIX}NoSuchMode", "name": "X"}),
+                             "not found", "rename an unknown target")
+            _expect_rejected(lambda: self.client.call_tool("hub_set_mode_manager", {"manager": "bogus"}),
+                             "builtIn", "invalid manager value")
+            _expect_rejected(lambda: self.client.call_tool("hub_set_mode_manager", {}),
+                             "manager", "set_mode_manager with no args")
+
+            # PORTION 7 -- delete WITH confirm: assert the result (not swallowed) + the mode is gone
+            _time.sleep(PORTION)
+            print("    [MODE PORTION 7] delete with confirm + gone read-back")
+            dl = _mode_call("hub_manage_mode", {"action": "delete", "mode": renamed2, "confirm": True}, "delete with confirm")
+            assert dl.get("success") is True, f"delete with confirm failed: {dl}"
+            assert str(dl.get("deletedModeId")) == created_id, f"deletedModeId mismatch: {dl} (expected {created_id})"
+            _time.sleep(STEP)
+            assert renamed2 not in _mode_names(), "mode still present after a confirmed delete"
+            created_id = None  # deleted -- the finally sweep has nothing to do
+
+            print(f"    MODE_LIFECYCLE ok -- full surface proven by e2e: icons, id+name(+case) resolution, "
+                  f"confirm gate both ways, manager+conditions in one call (manager was: {original_mgr})")
+        finally:
+            # restore the Mode Manager only when the original was a settable option
+            if original_mgr in settable_managers:
+                try:
+                    _mode_call("hub_set_mode_manager", {"manager": original_mgr}, "restore manager")
+                except Exception as exc:
+                    print(f"  [WARN] mode cleanup: restore Mode Manager '{original_mgr}' failed: {exc}")
+            # restore the original mode (a current mode is undeletable), then sweep any leftover BAT mode
+            if original_mode:
+                try:
+                    _mode_call("hub_manage_mode", {"action": "activate", "mode": original_mode}, "restore active mode (finally)")
+                except Exception:
+                    pass
+            for nm in (renamed2, renamed, mode_name):
+                try:
+                    dl = _mode_call("hub_manage_mode", {"action": "delete", "mode": nm, "confirm": True}, f"cleanup delete {nm}")
+                    if isinstance(dl, dict) and dl.get("success"):
+                        break
+                except Exception as exc:
+                    print(f"  [WARN] mode cleanup: delete {nm} failed: {exc}")
+
+    @test("system_tools")
     def test_manage_hub_variables_list(self) -> None:
         result = self.client.call_tool("hub_manage_variables", {
             "tool": "hub_list_variables",
@@ -6344,6 +6543,10 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         """Happy path: device already in expected state -> polledCount=1, success=true."""
         # Use the shared virtual switch; get_or_create ensures it exists in 'off' state.
         dev_id = self.get_test_switch_id()
+        # Baseline the limiter log BEFORE any dispatch: this is the SHARED switch, so a prior test
+        # may have left an 'off' limiter line in the window. The soft-pass below must only accept a
+        # FRESH line from this dispatch, never a stale one (else a real poll regression hides here).
+        limiter_base = self._limiter_lines(dev_id, method="off")
 
         def _drive_off_and_poll() -> Any:
             # Drive it to 'off' first so we know its state.
@@ -6363,6 +6566,15 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         if result.get("success") is not True and self._clear_load_throttle(
                 f"'off' on device {dev_id} never landed: {result}"):
             result = _drive_off_and_poll()
+        # If it STILL fails and the hub log proves the 'off' dispatch reached the device but the
+        # platform load limiter aborted event delivery, soft-pass: the limiter warning IS proof the
+        # tool worked, so this is a platform capacity signal at the tail of the full run, not a
+        # product failure. (Bounce + retry above already tried to recover; this is the last resort.)
+        if result.get("success") is not True and self._limiter_logged(dev_id, method="off", baseline=limiter_base):
+            self._soft_passes.append(
+                "poll_until_attribute/test_poll_immediate_match: limiter-proven "
+                "('off' dispatched; platform throttled event delivery so the poll could not converge)")
+            return
         assert result.get("success") is True, f"Expected success=true, got: {result}"
         assert result.get("timedOut") is False, f"Expected timedOut=false, got: {result}"
         assert result.get("polledCount", 0) >= 1, f"Expected polledCount>=1, got: {result}"
@@ -6372,6 +6584,10 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         """Timeout path: value won't match -> timedOut=true, elapsedMs approx timeoutMs."""
         dev_id = self.get_test_switch_id()
         import time as _time
+        # Baseline BEFORE dispatch (shared switch): the success=True soft-pass below is the strictest
+        # of the four (success=True is THIS test's failure shape), so it must accept only a FRESH
+        # limiter line from this dispatch -- never a stale 'off' line a prior test left on this device.
+        limiter_base = self._limiter_lines(dev_id, method="off")
 
         def _drive_off_and_poll_for_on() -> tuple[Any, float]:
             # Ensure switch is 'off' so 'on' won't match.
@@ -6392,6 +6608,14 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         if result.get("success") is True and self._clear_load_throttle(
                 f"'off' on device {dev_id} never landed (poll matched 'on'): {result}"):
             result, elapsed_wall = _drive_off_and_poll_for_on()
+        # If it STILL false-matches and the hub log proves the 'off' dispatch reached the device but
+        # the platform limiter aborted delivery (switch stuck 'on'), soft-pass -- the tool worked;
+        # this is a tail-of-run capacity signal, not a product failure.
+        if result.get("success") is True and self._limiter_logged(dev_id, method="off", baseline=limiter_base):
+            self._soft_passes.append(
+                "poll_until_attribute/test_poll_timeout: limiter-proven "
+                "('off' dispatched but throttled, leaving the switch stuck 'on' so the timeout poll matched early)")
+            return
         assert result.get("success") is False, f"Expected success=false, got: {result}"
         assert result.get("timedOut") is True, f"Expected timedOut=true, got: {result}"
         # Wall clock should reflect roughly the timeout (within 1 second of variance)
@@ -6455,6 +6679,15 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                 all_poll = self.client.call_tool("hub_get_device_attribute", {
                     "deviceIds": [a_id, b_id], "attribute": "switch",
                     "expectedValue": "on", "mode": "all", "timeoutMs": 5000})
+            # If both devices STILL never report and the hub log proves the 'on' dispatches reached
+            # them but the platform limiter aborted delivery, soft-pass -- the tool worked; this is a
+            # tail-of-run capacity signal, not a product failure.
+            if all_poll.get("success") is not True and (
+                    self._limiter_logged(a_id, method="on") or self._limiter_logged(b_id, method="on")):
+                self._soft_passes.append(
+                    "poll_until_attribute/test_poll_multi_device: limiter-proven "
+                    "('on' dispatched to both; platform throttled event delivery so all-mode could not converge)")
+                return
             assert all_poll.get("success") is True, f"all-mode should converge (both on): {all_poll}"
             assert all_poll.get("mode") == "all", f"mode echo wrong: {all_poll}"
             assert all_poll.get("convergedCount") == 2, f"convergedCount should be 2: {all_poll}"

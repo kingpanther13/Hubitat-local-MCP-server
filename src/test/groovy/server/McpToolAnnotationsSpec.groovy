@@ -117,7 +117,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_call_device_command', 'hub_call_device_swap', 'hub_call_device_replace',
             'hub_create_custom_rule', 'hub_update_custom_rule', 'hub_delete_custom_rule',
             'hub_import_custom_rule', 'hub_clone_custom_rule', 'hub_export_custom_rule',
-            'hub_set_mode',
+            'hub_manage_mode', 'hub_set_mode_manager',
             'hub_set_variable', 'hub_create_variable', 'hub_delete_variable',
             'hub_create_connector', 'hub_delete_connector',
             'hub_set_hsm', 'hub_set_log_level',
@@ -318,7 +318,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
 
         def expectedIdempotent = [
             'hub_update_custom_rule', 'hub_delete_custom_rule',
-            'hub_set_mode', 'hub_set_hsm',
+            'hub_set_hsm', 'hub_set_mode_manager',
             'hub_set_variable', 'hub_delete_variable', 'hub_create_connector', 'hub_delete_connector',
             'hub_update_mcp_settings', 'hub_set_log_level', 'hub_delete_debug_logs',
             'hub_delete_captured_state',
@@ -344,7 +344,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_create_backup',
             'hub_reboot', 'hub_shutdown', 'hub_update_firmware', 'hub_call_gc',
             'hub_call_zwave', 'hub_call_zigbee', 'hub_call_matter', 'hub_call_destructive_radio',
-            'hub_manage_virtual_device',
+            'hub_manage_virtual_device', 'hub_manage_mode',
             'hub_create_room',
             'hub_create_app', 'hub_create_driver', 'hub_create_library',
             'hub_call_rule', 'hub_set_rule', 'hub_set_native_app',
@@ -506,7 +506,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_call_device_command', 'hub_call_device_swap', 'hub_call_device_replace',
             'hub_create_custom_rule', 'hub_update_custom_rule', 'hub_delete_custom_rule',
             'hub_import_custom_rule', 'hub_clone_custom_rule', 'hub_export_custom_rule',
-            'hub_set_mode',
+            'hub_manage_mode', 'hub_set_mode_manager',
             'hub_set_variable', 'hub_create_variable', 'hub_delete_variable',
             'hub_create_connector', 'hub_delete_connector',
             'hub_update_mcp_settings',
@@ -576,7 +576,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         names.size() == (names as Set).size()
 
         and: 'no chunk dropped — the full surface is present (bump on intentional add/remove)'
-        names.size() == 106
+        names.size() == 107
 
         and: 'sentinels from the first and last chunks survive the concatenation chain'
         names.contains('hub_list_devices')   // first chunk

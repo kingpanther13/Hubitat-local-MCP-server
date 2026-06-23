@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 2.7.9 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 2.7.10 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -2205,7 +2205,8 @@ def executeTool(toolName, args) {
         // System Tools
         case "hub_get_info": return toolGetHubInfo(args)
         case "hub_list_modes": return toolGetModes()
-        case "hub_set_mode": return toolSetMode(args.mode)
+        case "hub_manage_mode": return toolManageMode(args)
+        case "hub_set_mode_manager": return toolSetModeManager(args)
         case "hub_list_variables": return toolListVariables(args)
         case "hub_get_variable": return toolGetVariable(args.name)
         case "hub_set_variable": return toolSetVariable(args.name, args.value)
@@ -5003,7 +5004,7 @@ private Map _rmForceDeleteApp(Integer appId) {
 
 
 def currentVersion() {
-    return "2.7.9"
+    return "2.7.10"
 }
 
 

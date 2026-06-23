@@ -1,6 +1,6 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split (11 flat core + 20 gateways = 31 on tools/list, 106 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split (12 flat core + 20 gateways = 32 on tools/list, 107 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -393,7 +393,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Calls `hub_get_tool_guide` with section parameter. Returns reference content.
 
-### T18 — hub_set_mode (read-only verification)
+### T18 — hub_manage_mode (read-only verification)
 
 ```json
 {
@@ -401,7 +401,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_list_modes`. Reads only, does not call `hub_set_mode`.
+**Expected**: Calls `hub_list_modes`. Reads only, does not call `hub_manage_mode`.
 
 ### T19 — hub_manage_virtual_device (create)
 
@@ -1910,7 +1910,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `hub_list_modes`. Should NOT call `hub_set_mode`.
+**Expected**: `hub_list_modes`. Should NOT call `hub_manage_mode`.
 **Equivalent to**: T15, T18
 
 #### T242 — Is my security system armed?
@@ -2391,7 +2391,7 @@ These operations are too destructive for automated testing. Test manually with e
 | Delete app/driver/library | `hub_delete_item` (type: app\|driver\|library) | hub_manage_code | Permanent code removal |
 | Restore item backup | `hub_restore_backup` | hub_manage_code | Overwrites current code |
 | Set HSM | `hub_set_hsm` | core | Changes security system state |
-| Set Mode | `hub_set_mode` | core | Changes hub mode (may trigger automations) |
+| Manage Mode | `hub_manage_mode` | core | Create/rename/delete/activate a mode (delete is destructive + confirm-gated) |
 
 ---
 
@@ -2445,20 +2445,20 @@ These operations are too destructive for automated testing. Test manually with e
 
 | Component | Count |
 |-----------|-------|
-| Flat core tools on `tools/list` | 11 |
+| Flat core tools on `tools/list` | 12 |
 | Gateways on `tools/list` | 20 |
-| Total visible on `tools/list` | 31 |
-| Total distinct tools in codebase | 106 |
+| Total visible on `tools/list` | 32 |
+| Total distinct tools in codebase | 107 |
 
 **7 read gateways**: `hub_read_apps_code` (11), `hub_read_devices` (4), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3)
 
 **13 manage gateways**: `hub_manage_code` (11), `hub_manage_custom_rules` (8), `hub_manage_destructive_ops` (4), `hub_manage_devices` (7), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
 
-**11 flat core tools**: `hub_manage_virtual_device`, `hub_get_tool_guide`, `hub_report_issue`, `hub_search_tools`, `hub_get_info`, `hub_list_modes`, `hub_set_mode`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_update_firmware`, `hub_create_backup`
+**12 flat core tools**: `hub_manage_virtual_device`, `hub_get_tool_guide`, `hub_report_issue`, `hub_search_tools`, `hub_get_info`, `hub_list_modes`, `hub_manage_mode`, `hub_set_mode_manager`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_update_firmware`, `hub_create_backup`
 
 ### Tool Coverage (non-destructive tools only)
 
-All 106 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 107 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
@@ -2894,13 +2894,13 @@ These tests exercise the universal **Read** and **Write** master toggles and the
 
 ```json
 {
-  "setup_prompt": "Confirm a cached MCP session can currently call hub_set_mode (note the current mode first — do NOT change it). Then, in the app settings UI, open **Advanced: Per-tool Overrides**, add `hub_set_mode` to the disabled tools list, click Done. Do NOT reconnect the client yet (we want a stale cache for the test_prompt).",
+  "setup_prompt": "Confirm a cached MCP session can currently call hub_manage_mode (note the current mode first — do NOT change it). Then, in the app settings UI, open **Advanced: Per-tool Overrides**, add `hub_manage_mode` to the disabled tools list, click Done. Do NOT reconnect the client yet (we want a stale cache for the test_prompt).",
   "test_prompt": "Set my hub mode to its current mode (a no-op that still exercises the tool). Report exactly what error or response you get.",
-  "teardown_prompt": "In the app settings UI, open **Advanced: Per-tool Overrides** and click **Reset all overrides** (or remove hub_set_mode from the list), click Done, and reconnect the MCP client."
+  "teardown_prompt": "In the app settings UI, open **Advanced: Per-tool Overrides** and click **Reset all overrides** (or remove hub_manage_mode from the list), click Done, and reconnect the MCP client."
 }
 ```
 
-**Expected**: After a client reconnect, `hub_set_mode` is absent from `tools/list` and from `hub_search_tools` results, but still present in `hub_get_tool_guide`. On the stale-cache call (no reconnect), the tool is rejected with a **distinct** Advanced-settings error containing `"is disabled in Advanced settings (Per-tool Overrides)"` — NOT the generic `"Write tools are disabled"` master message. AI surfaces the specific error and points the user at the Advanced overrides page.
+**Expected**: After a client reconnect, `hub_manage_mode` is absent from `tools/list` and from `hub_search_tools` results, but still present in `hub_get_tool_guide`. On the stale-cache call (no reconnect), the tool is rejected with a **distinct** Advanced-settings error containing `"is disabled in Advanced settings (Per-tool Overrides)"` — NOT the generic `"Write tools are disabled"` master message. AI surfaces the specific error and points the user at the Advanced overrides page.
 
 ### T233 — Disable a gateway ⇒ all its tools (including shared) vanish
 
@@ -4057,6 +4057,22 @@ Tools in this section require **the Read master** and HPM itself must be install
 **Expected**: AI calls `hub_call_device_replace(list_options=true)` first to read the compatible candidates, then `hub_call_device_replace` with `old_device_id`/`new_device_id`/`confirm=true`. The response is `success=true` with `replaced={oldDeviceId, newDeviceId}` and `preservedDeviceId=<old id>`. The KEY invariant: the OLD device id survives and keeps all its app/rule references — `hub_list_device_dependents` on the old id still lists 'BAT Replace Rule' (replace re-points hardware; it does NOT migrate references like swap does).
 
 **Failure modes**: the tool refuses without `confirm` or a recent backup (expected gate — create the backup, don't bypass). `list_options` returns an empty list even though a compatible donor exists (the hub did not offer it — usually a fixture is an MCP child device or not capability-compatible; this scenario requires free-standing same-driver devices). A structured `success=false` naming an incompatible `new_device_id` (the donor was not in the hub's compatible set — re-read `list_options`). `preservedDeviceId` is the NEW id instead of the old one, or the rule's dependents move to the donor (that would be swap behaviour, not replace — a wire-format regression). Routing the request to `hub_call_device_swap` instead of `hub_call_device_replace` (swap migrates references onto the new id; replace keeps the old id — different end states).
+
+---
+
+### T704 — manage location modes end-to-end (create, activate, rename, Mode Manager, delete)
+
+```json
+{
+  "setup_prompt": "Make sure the Write master is on and a hub backup exists (<24h). Note the hub's current location mode so it can be restored at the end.",
+  "test_prompt": "I want a new house mode called 'Vacation'. Add it, then switch the house into it. After that, rename 'Vacation' to 'Holiday'. Tell me which built-in automation is currently in charge of changing the house mode automatically. Finally, switch the house back to its normal everyday mode and get rid of the 'Holiday' mode entirely.",
+  "teardown_prompt": "If the 'Vacation'/'Holiday' mode still exists, make sure the house is on a normal mode and then remove it. Leave the active mode as it was before the test."
+}
+```
+
+**Expected**: the AI discovers the mode-management surface itself — it creates the mode, activates it, renames it, reports which Mode Manager runs, restores the everyday mode, and deletes the test mode. It should route the create/rename/activate/delete to `hub_manage_mode` (`action` enum), read the active manager from `hub_list_modes` (`modeManager.selected`), and may use `hub_set_mode_manager` only if it changes the manager. The delete must be `confirm=true`-gated and is performed only after the active mode is something other than the mode being deleted. Each step's result should report `success=true`, and a final `hub_list_modes` should no longer list the test mode.
+
+**Failure modes**: the AI tries to create/delete modes by editing `configuration.yaml`-style files or a rule instead of the mode tool (wrong surface). Deleting the mode while it is the *current* mode (the hub refuses; the AI must switch away first). Calling `hub_manage_mode` delete without `confirm` (expected gate — it must create/confirm a backup, not bypass). Inventing a separate "Mode Manager" tool when the manager state is simply read from `hub_list_modes`. Leaving the test mode behind, or leaving the house on the test mode instead of restoring the original.
 
 ---
 
