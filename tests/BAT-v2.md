@@ -1,6 +1,6 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split (12 flat core + 20 gateways = 32 on tools/list, 107 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split (13 flat core + 20 gateways = 33 on tools/list, 108 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -362,6 +362,26 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 ```
 
 **Expected**: Surfaces the hub's own health alerts via `hub_get_info` with `includeHealthAlerts=true` (or `hub_get_metrics`'s `healthAlerts`). Reports `safeMode` and the active alert flags (e.g. `hubLowMemory`, `zwaveOffline`, `localBackupFailed`). Read-only — makes no changes.
+
+### T14d — change the hub's temperature scale
+
+```json
+{
+  "test_prompt": "Switch my hub's temperature scale to Celsius."
+}
+```
+
+**Expected**: Calls `hub_set_system_settings` with `temperatureScale: "C"` (the lat/long/timeZone/zip are read-merged from current values, so they are preserved). Reports success and that `temperatureScale` was applied. Does NOT require `confirm` (only a timeZone change reboots the hub). Read back with `hub_get_info`.
+
+### T14e — change the hub's time zone (reboot-gated)
+
+```json
+{
+  "test_prompt": "Set my hub's time zone to America/Denver."
+}
+```
+
+**Expected**: Recognizes that changing the time zone REBOOTS the hub, so it warns the user and calls `hub_set_system_settings` with `timeZone: "America/Denver"` and `confirm: true` (after ensuring a recent backup). Without `confirm` the call is rejected with a `-32602` confirm-gate error and nothing changes.
 
 ### T15 — hub_list_modes
 
@@ -2445,24 +2465,24 @@ These operations are too destructive for automated testing. Test manually with e
 
 | Component | Count |
 |-----------|-------|
-| Flat core tools on `tools/list` | 12 |
+| Flat core tools on `tools/list` | 13 |
 | Gateways on `tools/list` | 20 |
-| Total visible on `tools/list` | 32 |
-| Total distinct tools in codebase | 107 |
+| Total visible on `tools/list` | 33 |
+| Total distinct tools in codebase | 108 |
 
 **7 read gateways**: `hub_read_apps_code` (11), `hub_read_devices` (4), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3)
 
 **13 manage gateways**: `hub_manage_code` (11), `hub_manage_custom_rules` (8), `hub_manage_destructive_ops` (4), `hub_manage_devices` (7), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
 
-**12 flat core tools**: `hub_manage_virtual_device`, `hub_get_tool_guide`, `hub_report_issue`, `hub_search_tools`, `hub_get_info`, `hub_list_modes`, `hub_manage_mode`, `hub_set_mode_manager`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_update_firmware`, `hub_create_backup`
+**13 flat core tools**: `hub_manage_virtual_device`, `hub_get_tool_guide`, `hub_report_issue`, `hub_search_tools`, `hub_get_info`, `hub_list_modes`, `hub_manage_mode`, `hub_set_mode_manager`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_set_system_settings`, `hub_update_firmware`, `hub_create_backup`
 
 ### Tool Coverage (non-destructive tools only)
 
-All 107 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 108 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 256 test scenarios** (122 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 3 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 4 read-side convergence + 1 multi-device convergence) plus 13 excluded destructive operations documented for manual testing
+**Total: 258 test scenarios** (124 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 3 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 4 read-side convergence + 1 multi-device convergence) plus 13 excluded destructive operations documented for manual testing
 
 ---
 

@@ -958,12 +958,12 @@ class TestRunner:
         names = {t.get("name") for t in tools}
         # hub_update_package is a Developer-Mode-only TOP-LEVEL tool (issue #250): it shows on
         # tools/list ONLY with Developer Mode on (this e2e hub has it on -- a documented precondition).
-        # The documented DEFAULT catalog is 32 (12 core + 20 gateways); exclude the dev-mode tool so
+        # The documented DEFAULT catalog is 33 (13 core + 20 gateways); exclude the dev-mode tool so
         # the count matches the default regardless of the toggle, then assert the dev-mode tool is
         # present on this dev-on hub.
         default_tools = [t for t in tools if t.get("name") != "hub_update_package"]
-        assert len(default_tools) == 32, \
-            f"Expected 32 default tools (12 core + 20 gateways), got {len(default_tools)}: {sorted(names)}"
+        assert len(default_tools) == 33, \
+            f"Expected 33 default tools (13 core + 20 gateways), got {len(default_tools)}: {sorted(names)}"
         assert "hub_update_package" in names, \
             "hub_update_package must be a top-level tool when Developer Mode is on (issue #250)"
 
@@ -5628,6 +5628,66 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             assert pu.get("availableVersion"), f"available=true but no availableVersion: {pu}"
         assert "safeMode" in result, f"hub_get_info missing safeMode: {sorted(result)}"
         assert "healthAlerts" not in result, "healthAlerts must be absent without includeHealthAlerts=true"
+
+    @test("system_tools")
+    def test_set_system_settings(self) -> None:
+        # hub_set_system_settings writes hub-GLOBAL location settings. To keep the sacrificial e2e hub
+        # usable mid-suite this test NEVER changes timeZone (a tz change reboots the hub). It proves:
+        #   1 temperatureScale round-trips to its CURRENT value (a no-op write) -> success + applied
+        #   2 hubName round-trips to its CURRENT value (a no-op write) -> success + applied
+        #   3 the timeZone leg's confirm gate REJECTS without confirm (-32602 / "confirm") AND the
+        #     hub's timeZone is unchanged afterward (no reboot, nothing mutated)
+        # Every write goes through _set_call so an "excessive hub load" limiter trip bounces the app via
+        # the watchdog and retries once -- the same contract the mode-lifecycle test uses.
+        def _set_call(args: dict, label: str) -> Any:
+            try:
+                return self.client.call_tool("hub_set_system_settings", args)
+            except McpToolError as exc:
+                if "excessive hub load" in str(exc) and self._clear_load_throttle(f"{label}: {exc}"):
+                    return self.client.call_tool("hub_set_system_settings", args)
+                raise
+
+        # Read current settings to round-trip them (no-op writes -- nothing actually changes).
+        before = self.client.call_tool("hub_get_info")
+        assert isinstance(before, dict), f"hub_get_info returned {type(before)}"
+        cur_scale = before.get("temperatureScale")
+        cur_name = before.get("name")          # PII -- present when the Read master is ON (default)
+        cur_tz = before.get("timeZone")
+
+        # 1 -- temperatureScale round-trip (no-op). Only run when the current scale is readable.
+        if cur_scale in ("F", "C"):
+            r1 = _set_call({"temperatureScale": cur_scale}, "temperatureScale round-trip")
+            assert isinstance(r1, dict) and r1.get("success") is True, f"temperatureScale round-trip failed: {r1}"
+            assert "temperatureScale" in (r1.get("applied") or []), f"applied did not include temperatureScale: {r1}"
+
+        # 2 -- hubName round-trip (no-op). cur_name is None only if the Read master is OFF; skip then.
+        if cur_name:
+            r2 = _set_call({"hubName": cur_name}, "hubName round-trip")
+            assert isinstance(r2, dict) and r2.get("success") is True, f"hubName round-trip failed: {r2}"
+            assert "hubName" in (r2.get("applied") or []), f"applied did not include hubName: {r2}"
+
+        # 3 -- the timeZone confirm gate: a tz change WITHOUT confirm must be refused (no reboot). The
+        # refusal surfaces as a raised McpError/-32602 ("confirm"/"backup"/"safety check"), OR an
+        # isError envelope returned as a dict -- accept either. The tz value passed equals the CURRENT
+        # tz so that even if the gate were (wrongly) bypassed, nothing would actually change.
+        refused = False
+        detail = None
+        gate_args = {"timeZone": cur_tz or "America/New_York"}
+        try:
+            detail = self.client.call_tool("hub_set_system_settings", gate_args)
+            blob = (detail if isinstance(detail, str) else json.dumps(detail)).lower()
+            refused = (isinstance(detail, dict) and bool(detail.get("isError"))) \
+                or "confirm" in blob or "backup" in blob or "safety check" in blob
+        except McpError as exc:  # also catches McpToolError (subclass)
+            detail = str(exc)
+            refused = any(s in detail.lower() for s in ("confirm", "backup", "safety check"))
+        assert refused, \
+            f"hub_set_system_settings timeZone change without confirm must be refused by the gate, got: {detail}"
+
+        # Confirm nothing changed: the hub's timeZone is still what it was before the rejected call.
+        after = self.client.call_tool("hub_get_info")
+        assert after.get("timeZone") == cur_tz, \
+            f"timeZone changed despite the confirm-gate rejection: before={cur_tz!r} after={after.get('timeZone')!r}"
 
     @test("system_tools")
     def test_list_libraries(self) -> None:

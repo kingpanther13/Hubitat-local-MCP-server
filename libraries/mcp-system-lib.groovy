@@ -224,6 +224,86 @@ def toolGetHubInfo(args = null) {
     return info
 }
 
+// hub_set_system_settings: write the hub-GLOBAL location settings. All params optional; pass only
+// what changes. Wire format verified against resources/hub2-source/vue-hub2.min.js (do NOT re-derive):
+//   hubName                                       -> GET /hub/updateName?name=<urlenc>
+//   latitude/longitude/timeZone/temperatureScale/zipCode -> ONE GET /hub/updateLatLongTimezone
+//        (granular wholesale endpoint: read-merge the CURRENT location.* values, override only the
+//         provided args; zipCode maps to the postalCode query param)
+// A timeZone change REBOOTS the hub, so that leg alone is confirm-gated (requireDestructiveConfirm);
+// the other fields are Write-master-only. Arg validation throws (-> -32602); hub-call failures return
+// the structured runtime-error envelope ([success:false, error, note]) -- never thrown.
+def _urlEnc(value) {
+    return java.net.URLEncoder.encode(value?.toString() ?: "", "UTF-8")
+}
+
+def toolSetSystemSettings(args) {
+    args = args ?: [:]
+    def settable = ["hubName", "timeZone", "latitude", "longitude", "zipCode", "temperatureScale"]
+    if (!settable.any { args.containsKey(it) }) {
+        throw new IllegalArgumentException("Provide at least one field to change: ${settable.join(', ')}. All are optional; pass only what changes.")
+    }
+
+    def tempScale = null
+    if (args.containsKey("temperatureScale")) {
+        tempScale = args.temperatureScale?.toString()
+        if (!(tempScale in ["F", "C"])) {
+            throw new IllegalArgumentException("temperatureScale must be 'F' or 'C' (uppercase), got: ${args.temperatureScale}")
+        }
+    }
+
+    // latLongTimezone is the wholesale granular endpoint -- it is called iff any of its fields change.
+    def llKeys = ["latitude", "longitude", "timeZone", "temperatureScale", "zipCode"]
+    boolean wantsLatLong = llKeys.any { args.containsKey(it) }
+
+    // A timeZone change reboots the hub -- gate ONLY that leg.
+    if (args.containsKey("timeZone")) {
+        requireDestructiveConfirm(args.confirm)
+    }
+
+    def applied = []
+    try {
+        if (args.containsKey("hubName")) {
+            hubInternalGet("/hub/updateName?name=${_urlEnc(args.hubName)}")
+            applied << "hubName"
+        }
+
+        if (wantsLatLong) {
+            // Read-merge: start from the SDK's current values, override only what was passed.
+            def curLat = location.latitude
+            def curLon = location.longitude
+            def curTz = location.timeZone?.ID
+            def curScale = location.temperatureScale
+            def curZip = location.zipCode
+
+            def lat = args.containsKey("latitude") ? args.latitude : curLat
+            def lon = args.containsKey("longitude") ? args.longitude : curLon
+            def tz = args.containsKey("timeZone") ? args.timeZone : curTz
+            def scale = args.containsKey("temperatureScale") ? tempScale : curScale
+            def zip = args.containsKey("zipCode") ? args.zipCode : curZip
+
+            def query = "latitude=${_urlEnc(lat)}&longitude=${_urlEnc(lon)}&timeZone=${_urlEnc(tz)}" +
+                        "&temperatureScale=${_urlEnc(scale)}&postalCode=${_urlEnc(zip)}"
+            hubInternalGet("/hub/updateLatLongTimezone?${query}")
+            llKeys.each { if (args.containsKey(it)) applied << it }
+        }
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "hub_set_system_settings hub call failed", e)
+        return [
+            success: false,
+            error: "Failed to apply hub settings: ${e.message}",
+            applied: applied,
+            note: "Some fields may have been applied before the failure (see 'applied'). Check Hub Security credentials; read back current values with hub_get_info."
+        ]
+    }
+
+    return [
+        success: true,
+        applied: applied,
+        note: "Read back the current values with hub_get_info. A timeZone change reboots the hub (1-3 min downtime)."
+    ]
+}
+
 def toolGetModes() {
     def currentMode = location.mode
     def modes = location.modes?.collect { [id: it.id.toString(), name: it.name] }
@@ -904,6 +984,32 @@ def _getAllToolDefinitions_partSystem() {
             ]
         ],
         [
+            name: "hub_set_system_settings",
+            description: """Set hub-GLOBAL location settings: hub name, time zone, latitude/longitude, zip code, temperature scale. All optional — pass only what changes.[[FLAT_TRIM]] lat/long/timeZone/temperatureScale/zipCode are written together via one granular endpoint that read-merges current values, so omitted fields keep their value. ⚠️ Changing timeZone REBOOTS the hub (1-3 min downtime) — it requires confirm=true + a backup <24h; the other fields need only the Write master. Read back applied values with hub_get_info. Requires Write master.[[/FLAT_TRIM]]""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    hubName: [type: "string", description: "New hub name."],
+                    timeZone: [type: "string", description: "IANA time zone ID, e.g. 'America/New_York'.[[FLAT_TRIM]] ⚠️ Changing this REBOOTS the hub — requires confirm=true + a recent backup.[[/FLAT_TRIM]]"],
+                    latitude: [type: "number", description: "Latitude in decimal degrees, e.g. 40.7128."],
+                    longitude: [type: "number", description: "Longitude in decimal degrees, e.g. -74.006."],
+                    zipCode: [type: "string", description: "Postal/zip code, e.g. '10001'."],
+                    temperatureScale: [type: "string", enum: ["F", "C"], description: "Temperature scale: F or C."],
+                    confirm: [type: "boolean", description: "Required only to change timeZone (reboots the hub).[[FLAT_TRIM]] Must be true; confirms a backup <24h + that the reboot is intended.[[/FLAT_TRIM]]"]
+                ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the settings were applied"],
+                    applied: [type: "array", description: "The fields that were changed", items: [type: "string"]],
+                    error: [type: "string", description: "Failure reason (success=false)"],
+                    note: [type: "string", description: "Guidance / recovery; how to read back values"]
+                ],
+                required: ["success"]
+            ]
+        ],
+        [
             name: "hub_create_backup",
             description: """Create a full hub backup. REQUIRED before any Write master operation (24h validity).[[FLAT_TRIM]] Requires Write master + confirm. This is the only write tool that doesn't require a prior backup.[[/FLAT_TRIM]]""",
             inputSchema: [
@@ -1051,6 +1157,7 @@ def _toolDisplayMeta_partSystem() {
         hub_set_mode_manager: [title: "Set Mode Manager", summary: "Pick the Mode Manager and update its per-mode conditions."],
         hub_get_hsm_status: [title: "Get HSM Status", summary: "Get the current Hubitat Safety Monitor arm status."],
         hub_set_hsm: [title: "Set HSM Arm Mode", summary: "Arm or disarm Hubitat Safety Monitor."],
+        hub_set_system_settings: [title: "Set System Settings", summary: "Set hub name, time zone, latitude/longitude, zip code, or temperature scale."],
         // Hub utilities
         hub_create_backup: [title: "Create Hub Backup", summary: "Create a full hub backup (required before destructive writes)."],
         hub_update_firmware: [title: "Update Hub Firmware", summary: "Install the hub's pending platform/firmware update (downloads, installs, and reboots the hub)."],

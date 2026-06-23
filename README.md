@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 107 MCP tools (32 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 108 MCP tools (33 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 107 tools total — 12 core tools are always visible, while the rest are organized behind 20 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 108 tools total — 13 core tools are always visible, while the rest are organized behind 20 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
 
 ## Requirements
 
@@ -267,14 +267,14 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (107 total — 32 on tools/list)
+### MCP Tools (108 total — 33 on tools/list)
 
-The server has 107 tools total. To keep the MCP `tools/list` manageable, **12 core tools** are always visible and the remaining tools are organized behind **20 domain-named gateways** (7 read-only `hub_read_*` gateways + 13 write-bearing `hub_manage_*` gateways). The AI sees 32 items on `tools/list` (12 + 20 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 108 tools total. To keep the MCP `tools/list` manageable, **13 core tools** are always visible and the remaining tools are organized behind **20 domain-named gateways** (7 read-only `hub_read_*` gateways + 13 write-bearing `hub_manage_*` gateways). The AI sees 33 items on `tools/list` (13 + 20 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
-#### Core Tools (12) — Always visible on tools/list
+#### Core Tools (13) — Always visible on tools/list
 
 <details>
-<summary><b>System</b> (6) — Hub modes, HSM, and info</summary>
+<summary><b>System</b> (7) — Hub modes, HSM, settings, and info</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -284,6 +284,7 @@ The server has 107 tools total. To keep the MCP `tools/list` manageable, **12 co
 | `hub_set_mode_manager` | Pick which Mode Manager runs (builtIn/legacy/app) + update its per-mode conditions |
 | `hub_get_hsm_status` | Get Home Security Monitor status |
 | `hub_set_hsm` | Change HSM arm mode |
+| `hub_set_system_settings` | Set hub-global settings: name, time zone, latitude/longitude, zip, temperature scale (timeZone change reboots the hub; needs `confirm`) |
 
 </details>
 
