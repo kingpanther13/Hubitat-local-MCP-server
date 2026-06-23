@@ -5336,29 +5336,35 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
 
     @test("system_tools")
     def test_mode_lifecycle(self) -> None:
-        # FULL live coverage of the mode surface on the sacrificial e2e hub, every wire path:
-        #   hub_manage_mode      create -> rename -> activate -> delete  (/modes/jsonCreate, /modes/jsonUpdate,
-        #                        SDK location.setMode, /modes/jsonDelete)
-        #   hub_list_modes       read incl. the Mode Manager block       (/modes/json [+ /modes/easyModeManager/json])
-        #   hub_set_mode_manager select + Integrated Mode Manager conds  (/modes/setModeManager, POST /modes/easyModeManager/json)
-        # The manager we select is whichever one the hub currently reports as active (a guaranteed-valid
-        # no-op -- 'app' is only accepted when a 3rd-party mode-manager app is installed, which it is iff
-        # the hub already has it selected), falling back to builtIn (the always-available Integrated
-        # manager). Conditions are round-tripped (read the live shape, write it back unchanged) so the body
-        # is whatever the hub actually serves -- no guessed payload. Mode + Mode-Manager state are restored
-        # best-effort (the hub is sacrificial + watchdog-recoverable). The runner's startup backup
-        # satisfies the delete's confirm gate.
+        # FULL live coverage of the mode surface on the sacrificial e2e hub -- proves every
+        # capability of hub_manage_mode / hub_list_modes / hub_set_mode_manager by e2e alone
+        # (no BAT needed). Organised into numbered PORTIONS so a per-app load-limiter trip can
+        # be pinpointed to a portion in the run log: actions within a portion are spaced ~0.3s
+        # and each portion is preceded by a longer pause + a "[MODE PORTION N]" marker.
+        # Coverage by portion:
+        #   1 create WITH icon -> list read-back asserts name+icon round-trip + modeManager block shape
+        #   2 rename (by name) WITH a new icon -> read-back asserts new name landed, old gone, icon changed
+        #   3 resolve target by NUMERIC id (rename) + case-insensitive name (activate)
+        #   4 currentMode read-back reflects the activate; restore original active mode
+        #   5 set_mode_manager applies manager + conditions in ONE call (both asserted)
+        #   6 rejection gates (cheap, fail before any hub write): delete-without-confirm, missing/unknown
+        #     action, activate missing/unknown, rename unknown target, invalid manager, no-arg manager
+        #   7 delete WITH confirm -> asserts success + deletedModeId + the mode is gone
+        # Every server-app write goes through _mode_call: on an "excessive hub load" block it bounces
+        # the app via the watchdog and retries once (the limiter contract the dispatch tests use) --
+        # coverage is unchanged, only a throttled call is retried. The hub is sacrificial +
+        # watchdog-recoverable; the runner's startup backup satisfies the delete confirm gate.
+        # NOTE: the SDK fallback in hub_list_modes and the structured create/delete write-FAILURE
+        # contracts need fault injection / firmware-dependent states (a duplicate-name or
+        # delete-current refusal), so they are proven in ToolModeSpec unit tests, not here.
+        import time as _time
+        STEP = 0.3      # spacing between actions inside a portion
+        PORTION = 2.0   # pause between portions (also widens the limiter window so a trip localises)
         mode_name = f"{PREFIX}Mode"
         renamed = f"{PREFIX}Mode2"
+        renamed2 = f"{PREFIX}Mode3"
         settable_managers = {"builtIn", "legacy", "app"}
 
-        # Every mode tool is a server-app HTTP write; under accumulated full-run load the
-        # platform's per-app load limiter can reject a dispatch outright with a tool-level
-        # "App <N> generates excessive hub load" error. Route every call through the same
-        # limiter contract the dispatch-dependent tests use -- bounce the app via the
-        # watchdog and retry once -- so a capacity blip recovers (and the bounce resets the
-        # load window for the tests that follow) instead of hard-failing a healthy build.
-        # Coverage is unchanged: every call still runs; only a throttled call is retried.
         def _mode_call(name: str, args: dict, label: str) -> Any:
             try:
                 return self.client.call_tool(name, args)
@@ -5367,55 +5373,131 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                     return self.client.call_tool(name, args)
                 raise
 
+        def _expect_rejected(fn, needle: str, label: str) -> None:
+            # Validation/confirm-gate rejections come back as a JSON-RPC -32602 (McpError) and fire
+            # BEFORE any hub write, so they cannot trip the limiter; the needle check also tells a
+            # genuine rejection apart from a stray "excessive hub load" error.
+            try:
+                fn()
+            except McpError as exc:
+                assert needle.lower() in str(exc).lower(), f"{label}: expected '{needle}' in error, got: {exc}"
+                return
+            raise AssertionError(f"{label}: expected a rejection containing '{needle}', but the call succeeded")
+
+        def _mode_names() -> list:
+            return [m.get("name") for m in (_mode_call("hub_list_modes", {}, "list modes").get("modes") or [])]
+
         before = _mode_call("hub_list_modes", {}, "list modes (before)")
         original_mode = before.get("currentMode") if isinstance(before, dict) else None
         original_mgr = (before.get("modeManager") or {}).get("selected") if isinstance(before, dict) else None
+        created_id = None
         try:
-            # --- hub_manage_mode: create -> read -> rename -> activate ---
-            cr = _mode_call("hub_manage_mode", {"action": "create", "name": mode_name}, "create mode")
+            # PORTION 1 -- create WITH icon, then read it back (name + icon round-trip via /modes/json)
+            print("    [MODE PORTION 1] create + icon round-trip read-back")
+            cr = _mode_call("hub_manage_mode", {"action": "create", "name": mode_name, "icon": "fa-moon"}, "create mode")
             assert isinstance(cr, dict) and cr.get("success") is True, f"create failed: {cr}"
-
+            _time.sleep(STEP)
             listed = _mode_call("hub_list_modes", {}, "list modes (after create)")
-            assert mode_name in [m.get("name") for m in (listed.get("modes") or [])], \
-                f"created mode not in hub_list_modes: {listed.get('modes')}"
-            assert "modeManager" in listed, f"hub_list_modes missing the modeManager block: {sorted(listed.keys())}"
+            created = next((m for m in (listed.get("modes") or []) if m.get("name") == mode_name), None)
+            assert created is not None, f"created mode not in hub_list_modes: {listed.get('modes')}"
+            assert created.get("icon") == "fa-moon", f"create icon did not round-trip via /modes/json: {created}"
+            created_id = str(created.get("id"))
+            mm = listed.get("modeManager")
+            assert isinstance(mm, dict), f"hub_list_modes missing the modeManager block: {sorted(listed.keys())}"
+            assert mm.get("selected") in settable_managers, f"modeManager.selected not a valid manager: {mm}"
+            assert "easyConditions" in mm, f"modeManager missing the easyConditions key: {mm}"
 
-            rn = _mode_call("hub_manage_mode", {"action": "rename", "mode": mode_name, "name": renamed}, "rename mode")
+            # PORTION 2 -- rename (by name) WITH a new icon, read back the new name + icon
+            _time.sleep(PORTION)
+            print("    [MODE PORTION 2] rename (by name) + icon read-back")
+            rn = _mode_call("hub_manage_mode", {"action": "rename", "mode": mode_name, "name": renamed, "icon": "fa-sun"}, "rename by name")
             assert rn.get("success") is True, f"rename (jsonUpdate) failed: {rn}"
+            _time.sleep(STEP)
+            after = _mode_call("hub_list_modes", {}, "list modes (after rename)").get("modes") or []
+            names = [m.get("name") for m in after]
+            assert renamed in names and mode_name not in names, f"rename did not persist (old name still present?): {names}"
+            ren = next((m for m in after if m.get("name") == renamed), None)
+            assert ren and ren.get("icon") == "fa-sun", f"rename icon did not round-trip: {ren}"
 
-            act = _mode_call("hub_manage_mode", {"action": "activate", "mode": renamed}, "activate mode")
-            assert act.get("success") is True and act.get("newMode") == renamed, f"activate failed: {act}"
+            # PORTION 3 -- resolve by NUMERIC id (rename), then case-insensitive name (activate)
+            _time.sleep(PORTION)
+            print("    [MODE PORTION 3] numeric-id resolution + case-insensitive activate")
+            rn2 = _mode_call("hub_manage_mode", {"action": "rename", "mode": created_id, "name": renamed2}, "rename by numeric id")
+            assert rn2.get("success") is True, f"rename by numeric id ({created_id}) failed: {rn2}"
+            _time.sleep(STEP)
+            assert renamed2 in _mode_names(), "rename-by-id did not persist"
+            _time.sleep(STEP)
+            act = _mode_call("hub_manage_mode", {"action": "activate", "mode": renamed2.lower()}, "activate (case-insensitive)")
+            assert act.get("success") is True and act.get("newMode") == renamed2, f"case-insensitive activate failed: {act}"
+
+            # PORTION 4 -- currentMode read-back reflects the activate; restore the original active mode
+            _time.sleep(PORTION)
+            print("    [MODE PORTION 4] currentMode read-back + restore")
+            cur = _mode_call("hub_list_modes", {}, "list modes (current)").get("currentMode")
+            assert cur == renamed2, f"currentMode did not reflect the activate (got {cur!r}, expected {renamed2!r})"
             if original_mode:
+                _time.sleep(STEP)
                 _mode_call("hub_manage_mode", {"action": "activate", "mode": original_mode}, "restore active mode")
 
-            # --- hub_set_mode_manager: select (setModeManager) + Integrated Mode Manager conditions round-trip ---
+            # PORTION 5 -- set_mode_manager: select manager AND set conditions in a SINGLE call
+            _time.sleep(PORTION)
+            print("    [MODE PORTION 5] set_mode_manager select + conditions (one call)")
             target_mgr = original_mgr if original_mgr in settable_managers else "builtIn"
-            sel = _mode_call("hub_set_mode_manager", {"manager": target_mgr}, "select manager")
-            assert sel.get("success") is True and sel.get("manager") == target_mgr, \
-                f"set_mode_manager({target_mgr}) failed: {sel}"
             conds = (_mode_call("hub_list_modes", {}, "read conditions").get("modeManager") or {}).get("easyConditions")
-            cw = _mode_call("hub_set_mode_manager", {"conditions": conds if conds is not None else {}}, "set conditions")
-            assert cw.get("success") is True and cw.get("conditionsUpdated") is True, \
-                f"easyModeManager conditions round-trip failed: {cw}"
+            _time.sleep(STEP)
+            both = _mode_call("hub_set_mode_manager",
+                              {"manager": target_mgr, "conditions": conds if conds is not None else {}},
+                              "set manager + conditions")
+            assert both.get("success") is True, f"combined set_mode_manager failed: {both}"
+            assert both.get("manager") == target_mgr, f"manager echo wrong: {both}"
+            assert both.get("conditionsUpdated") is True, f"conditionsUpdated not set on the combined call: {both}"
 
-            print(f"    MODE_LIFECYCLE ok -- create/read/rename/activate + Mode Manager select + conditions "
-                  f"round-trip (was: {original_mgr}); restoring + deleting")
+            # PORTION 6 -- rejection gates (each fails fast BEFORE any hub write -> cheap on the limiter)
+            _time.sleep(PORTION)
+            print("    [MODE PORTION 6] validation + confirm-gate rejections")
+            _expect_rejected(lambda: self.client.call_tool("hub_manage_mode", {"action": "delete", "mode": renamed2}),
+                             "confirm", "delete without confirm")
+            assert renamed2 in _mode_names(), "delete-without-confirm must NOT have deleted the mode"
+            _expect_rejected(lambda: self.client.call_tool("hub_manage_mode", {}), "action", "missing action")
+            _expect_rejected(lambda: self.client.call_tool("hub_manage_mode", {"action": "frobnicate"}), "action", "unknown action")
+            _expect_rejected(lambda: self.client.call_tool("hub_manage_mode", {"action": "activate"}), "required", "activate without a mode")
+            _expect_rejected(lambda: self.client.call_tool("hub_manage_mode", {"action": "activate", "mode": f"{PREFIX}NoSuchMode"}),
+                             "not found", "activate an unknown mode")
+            _expect_rejected(lambda: self.client.call_tool("hub_manage_mode", {"action": "rename", "mode": f"{PREFIX}NoSuchMode", "name": "X"}),
+                             "not found", "rename an unknown target")
+            _expect_rejected(lambda: self.client.call_tool("hub_set_mode_manager", {"manager": "bogus"}),
+                             "builtIn", "invalid manager value")
+            _expect_rejected(lambda: self.client.call_tool("hub_set_mode_manager", {}),
+                             "manager", "set_mode_manager with no args")
+
+            # PORTION 7 -- delete WITH confirm: assert the result (not swallowed) + the mode is gone
+            _time.sleep(PORTION)
+            print("    [MODE PORTION 7] delete with confirm + gone read-back")
+            dl = _mode_call("hub_manage_mode", {"action": "delete", "mode": renamed2, "confirm": True}, "delete with confirm")
+            assert dl.get("success") is True, f"delete with confirm failed: {dl}"
+            assert str(dl.get("deletedModeId")) == created_id, f"deletedModeId mismatch: {dl} (expected {created_id})"
+            _time.sleep(STEP)
+            assert renamed2 not in _mode_names(), "mode still present after a confirmed delete"
+            created_id = None  # deleted -- the finally sweep has nothing to do
+
+            print(f"    MODE_LIFECYCLE ok -- full surface proven by e2e: icons, id+name(+case) resolution, "
+                  f"confirm gate both ways, manager+conditions in one call (manager was: {original_mgr})")
         finally:
-            # restore the Mode Manager only when the original was a settable built-in option
+            # restore the Mode Manager only when the original was a settable option
             if original_mgr in settable_managers:
                 try:
                     _mode_call("hub_set_mode_manager", {"manager": original_mgr}, "restore manager")
                 except Exception as exc:
                     print(f"  [WARN] mode cleanup: restore Mode Manager '{original_mgr}' failed: {exc}")
-            # restore the original mode (a current mode is undeletable), then delete the BAT mode
+            # restore the original mode (a current mode is undeletable), then sweep any leftover BAT mode
             if original_mode:
                 try:
                     _mode_call("hub_manage_mode", {"action": "activate", "mode": original_mode}, "restore active mode (finally)")
                 except Exception:
                     pass
-            for nm in (renamed, mode_name):
+            for nm in (renamed2, renamed, mode_name):
                 try:
-                    dl = _mode_call("hub_manage_mode", {"action": "delete", "mode": nm, "confirm": True}, f"delete {nm}")
+                    dl = _mode_call("hub_manage_mode", {"action": "delete", "mode": nm, "confirm": True}, f"cleanup delete {nm}")
                     if isinstance(dl, dict) and dl.get("success"):
                         break
                 except Exception as exc:
