@@ -131,6 +131,18 @@ class ToolBackupSpec extends ToolSpecBase {
         thrown(IllegalArgumentException)
     }
 
+    def "a schedule with confirm:false is rejected BEFORE the schedule is written (no partial side effect)"() {
+        given:
+        settingsMap.enableWrite = true
+
+        when:
+        script.toolCreateHubBackup([schedule: [hour: 5, minute: 0], confirm: false])
+
+        then:
+        thrown(IllegalArgumentException)
+        posted.isEmpty()   // the /hub2/updateBackupSchedule POST never happened
+    }
+
     def "a schedule with an out-of-range hour fails as a structured error (no throw, no backup)"() {
         given:
         enableWrite()
@@ -181,27 +193,42 @@ class ToolBackupSpec extends ToolSpecBase {
         thrown(IllegalArgumentException)
     }
 
-    def "scope=hub_cloud requires cloudBackupPassword"() {
+    def "scope=hub_cloud requires path"() {
         given:
         enableWrite()
 
         when:
-        script.toolRestoreItemBackup([scope: 'hub_cloud', confirm: true])
+        script.toolRestoreItemBackup([scope: 'hub_cloud', cloudBackupPassword: 'pw', confirm: true])
 
         then:
         thrown(IllegalArgumentException)
     }
 
-    def "scope=hub_cloud with a password succeeds"() {
+    def "scope=hub_cloud requires cloudBackupPassword"() {
         given:
         enableWrite()
 
         when:
-        def r = script.toolRestoreItemBackup([scope: 'hub_cloud', cloudBackupPassword: 'pw', confirm: true])
+        script.toolRestoreItemBackup([scope: 'hub_cloud', path: 'cloud/abc.lzf', confirm: true])
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
+    def "scope=hub_cloud with path + password succeeds (sends fileName + restorePassword)"() {
+        given:
+        enableWrite()
+        def q = [:]
+        hubGet.register('/hub2/restoreCloudBackup') { params -> q.putAll(params ?: [:]); '{"success":true}' }
+
+        when:
+        def r = script.toolRestoreItemBackup([scope: 'hub_cloud', path: 'cloud/abc.lzf', cloudBackupPassword: 'pw', confirm: true])
 
         then:
         r.success == true
         r.location == 'hub_cloud'
+        q.fileName == 'cloud/abc.lzf'        // the cloud backup is identified by its path, sent as fileName
+        q.restorePassword == 'pw'            // NOT "p"
     }
 
     def "an invalid restore scope throws"() {

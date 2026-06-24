@@ -391,7 +391,7 @@ def toolRestoreItemBackup(args) {
 // These manage the WHOLE-HUB database backup (settings/devices/automations/state), a DIFFERENT domain
 // from the source-code item backups above. Wire format reverse-engineered from resources/hub2-source
 // (vue-hub2.min.js): list = GET /hub2/localBackups (array) and GET /hub2/cloudBackups?force= ({backups:[]});
-// restore = GET /hub2/restoreLocalBackup?fileName= and GET /hub2/restoreCloudBackup?p=<password>&t=<ms>
+// restore = GET /hub2/restoreLocalBackup?fileName= and GET /hub2/restoreCloudBackup?fileName=<path>&restorePassword=<pwd>&t=<ms>
 // (BOTH reboot the hub); delete = GET /hub2/deleteLocalBackup?fileName= and GET /hub2/deleteCloudBackup?path=;
 // schedule = POST /hub2/updateBackupSchedule. Upload/restore-uploaded are browser multipart .lzf uploads
 // (no headless MCP path) and are intentionally NOT implemented.
@@ -399,31 +399,36 @@ def toolRestoreItemBackup(args) {
 def toolCreateHubBackup(args) {
     args = args ?: [:]
 
-    // Folded-in SCHEDULE update (no separate tool): when a `schedule` object is supplied, set the
-    // hub's auto-backup schedule via /hub2/updateBackupSchedule. With scheduleOnly=true we ONLY set
-    // the schedule and skip creating a backup now; otherwise the create-now path also runs.
+    // Folded-in SCHEDULE update (no separate tool): a `schedule` object sets the hub's auto-backup
+    // schedule via /hub2/updateBackupSchedule. Only a scheduleOnly call that ALSO carries a schedule
+    // skips creating a backup (and skips confirm); every other shape creates a backup and needs
+    // confirm. Validate confirm for the create path BEFORE writing the schedule, so a confirm:false
+    // call can't mutate the schedule and then fail (no partial side effect).
+    def schedulePresent = args.schedule != null
+    def scheduleOnly = args.scheduleOnly == true
+    def willCreate = !(scheduleOnly && schedulePresent)
+    if (willCreate && !args.confirm) {
+        throw new IllegalArgumentException("You must set confirm=true to create a backup (or pass scheduleOnly=true WITH a schedule to only set the schedule).")
+    }
+
     def scheduleUpdated = false
-    if (args.schedule != null) {
+    if (schedulePresent) {
         def sched = _setHubBackupSchedule(args.schedule)
         if (!(sched instanceof Map && sched.success == true)) {
             return [success: false, error: "Failed to update backup schedule: ${(sched instanceof Map) ? (sched.error ?: 'unknown') : 'unknown'}",
-                    note: "Nothing was changed. Provide hour (0-23), minute (0-59), and the localBackupFrequency/cloudBackupFrequency you want; retry."]
+                    note: "Nothing was changed. See the schedule field guidance and retry."]
         }
         scheduleUpdated = true
-        if (args.scheduleOnly == true) {
+        if (scheduleOnly) {
             return [success: true, scheduleUpdated: true,
                     message: "Backup schedule updated; no immediate backup created (scheduleOnly=true).",
                     note: "Run hub_create_backup again without scheduleOnly to also create a backup now."]
         }
     }
 
-    // The Write master is enforced centrally in executeTool; this tool creates the backup itself,
-    // so it cannot require a pre-existing recent one (no requireDestructiveConfirm). A create-now
-    // still needs confirm; a scheduleOnly call already returned above without needing it.
-    if (!args.confirm) {
-        throw new IllegalArgumentException("You must set confirm=true to create a backup (or pass scheduleOnly=true to only set the schedule).")
-    }
-
+    // The Write master is enforced centrally in executeTool; this tool creates the backup itself, so
+    // it cannot require a pre-existing recent one (no requireDestructiveConfirm). Confirm for the
+    // create path was already validated above (before any schedule write).
     if (args.mock == true) {
         // Test-hub lever (maintainer-directed): stamp ONLY the destructive-confirm gate record
         // without performing any real backup -- the hub backup is a heavy operation the platform's
@@ -620,8 +625,11 @@ private _listHubBackups(boolean wantLocal, boolean wantCloud) {
     return out
 }
 
-// Hub-DB restore (GET /hub2/restoreLocalBackup?fileName= | /hub2/restoreCloudBackup?p=&t=). BOTH reboot
-// the hub. Confirm-gated by the caller (toolRestoreItemBackup). location: "hub_local" | "hub_cloud".
+// Hub-DB restore. BOTH reboot the hub. Confirm-gated by the caller (toolRestoreItemBackup).
+// Wire format verified against vue-hub2.min.js:
+//   local: GET /hub2/restoreLocalBackup?fileName=<name>
+//   cloud: GET /hub2/restoreCloudBackup?fileName=<path>&restorePassword=<pwd>&restoreZb=&restoreZw=&restoreFiles=&deleteExistingFiles=&t=<ms>
+// Cloud restores the DATABASE only by default (radios/files NOT restored) -- the safe minimal default.
 private _restoreHubBackup(String location, Map args) {
     try {
         def parsed
@@ -630,8 +638,16 @@ private _restoreHubBackup(String location, Map args) {
             def raw = hubInternalGet("/hub2/restoreLocalBackup", [fileName: args.fileName.toString()], 120)
             parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
         } else {
+            if (!args.path) throw new IllegalArgumentException("scope=hub_cloud restore requires path (the cloud backup's `path` from hub_list_backups scope=hub_cloud)")
             if (!args.cloudBackupPassword) throw new IllegalArgumentException("scope=hub_cloud restore requires cloudBackupPassword (the encryption password set on the cloud backup)")
-            def raw = hubInternalGet("/hub2/restoreCloudBackup", [p: args.cloudBackupPassword.toString(), t: now()], 120)
+            def q = [
+                fileName: args.path.toString(),                       // the cloud backup id is its `path`
+                restorePassword: args.cloudBackupPassword.toString(),
+                restoreZb: false, restoreZw: false, restoreFiles: false, deleteExistingFiles: false,
+                suppressZWaveFirmwareMismatchHubNewer: false,
+                t: now()
+            ]
+            def raw = hubInternalGet("/hub2/restoreCloudBackup", q, 120)
             parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
         }
         if (parsed instanceof Map && parsed.success == true) {
@@ -935,13 +951,14 @@ def _getAllToolDefinitions_partItemBackups() {
         ],
         [
             name: "hub_restore_backup",
-            description: """⚠️ Restore a backup — tell the user first; hub-DB scopes REBOOT the hub. scope=source (default): an app/driver/rule by backupKey (deleted code → hub_create_*; deleted rules DO recreate). scope=hub_local/hub_cloud: restore the WHOLE hub DB (hub_local→fileName; hub_cloud→cloudBackupPassword). scope=hub_uploaded: upload an external .lzf from backupUrl, then restore (open-world). Write master + confirm.""",
+            description: """⚠️ Restore a backup — tell the user first; hub-DB scopes REBOOT the hub. scope=source (default): an app/driver/rule by backupKey (deleted code → hub_create_*; deleted rules DO recreate). scope=hub_local/hub_cloud: restore the WHOLE hub DB (hub_local→fileName; hub_cloud→path+cloudBackupPassword). scope=hub_uploaded: upload an external .lzf from backupUrl, then restore (open-world). Write master + confirm.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     scope: [type: "string", enum: ["source", "hub_local", "hub_cloud", "hub_uploaded"], description: "source (default) | hub_local | hub_cloud | hub_uploaded."],
                     backupKey: [type: "string", description: "scope=source: backupKey from hub_list_backups (e.g. app_123)."],
                     fileName: [type: "string", description: "scope=hub_local: backup name from hub_list_backups."],
+                    path: [type: "string", description: "scope=hub_cloud: the cloud backup `path` from hub_list_backups(scope=hub_cloud)."],
                     cloudBackupPassword: [type: "string", description: "scope=hub_cloud: cloud backup encryption password."],
                     backupUrl: [type: "string", description: "scope=hub_uploaded: http(s) URL to the .lzf to upload+restore."],
                     confirm: [type: "boolean", description: "REQUIRED true. Confirms the restore (hub-DB scopes reboot)."]

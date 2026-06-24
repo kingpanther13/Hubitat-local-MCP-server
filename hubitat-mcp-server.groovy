@@ -2343,7 +2343,7 @@ def executeTool(toolName, args) {
         case "hub_set_rule_private_boolean": return toolSetRmRuleBoolean(args)
 
         // Native Rule Machine CRUD (hub admin-layer; backups flow through
-        // hub_list_backups (hub_read_apps_code) + hub_restore_backup (hub_manage_code))
+        // hub_list_backups (hub_read_apps_code) + hub_restore_backup (hub_manage_backup))
         case "hub_set_rule": return toolSetRule(args)
         case "hub_set_native_app": return toolSetNativeApp(args)
         case "hub_set_app_disabled": return toolSetAppDisabled(args)
@@ -5319,7 +5319,7 @@ Native CRUD (hub admin-layer, additionally requires the Write master):
 
 For READING an RM rule's current state, use **hub_get_app_config** in the hub_read_apps_code gateway — it works on any installed app including RM rules and returns the same configPage shape that hub_set_rule expects to see.
 
-For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub_read_apps_code) + **hub_restore_backup** (in hub_manage_code) — RM rule snapshots have type="rm-rule" in those tools' output and hub_restore_backup auto-dispatches the rule-restore path.
+For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub_read_apps_code) + **hub_restore_backup** (in hub_manage_backup) — RM rule snapshots have type="rm-rule" in those tools' output and hub_restore_backup auto-dispatches the rule-restore path.
 
 **Safety model for native CRUD:**
 1. Every write is preceded by a full snapshot (configure/json + statusJson) saved to File Manager; the response's backup.backupKey is the restore handle.
