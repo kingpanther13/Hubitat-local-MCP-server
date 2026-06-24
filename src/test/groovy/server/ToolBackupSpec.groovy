@@ -494,4 +494,39 @@ class ToolBackupSpec extends ToolSpecBase {
         r.success == true
         r.scheduleUpdated == false
     }
+
+    // ---------- through the hub_manage_backup gateway (not just flat dispatch) ----------
+    // The full-e2e break was a backup tool reached via the wrong gateway; flat-dispatch tests can't
+    // catch gateway-membership drift, so route the backup tools THROUGH hub_manage_backup here too.
+
+    def "the hub_manage_backup gateway catalog lists every backup sub-tool (membership)"() {
+        when:
+        def cat = script.handleGateway('hub_manage_backup', null, null)
+
+        then:
+        cat.tools*.name.containsAll(['hub_list_backups', 'hub_get_backup', 'hub_restore_backup', 'hub_delete_backup'])
+    }
+
+    def "hub_restore_backup routes THROUGH the hub_manage_backup gateway"() {
+        given:
+        enableWrite()
+
+        when:
+        def r = script.handleGateway('hub_manage_backup', 'hub_restore_backup', [scope: 'hub_local', fileName: 'local-1.lzf', confirm: true])
+
+        then:
+        r.success == true
+        r.location == 'hub_local'
+    }
+
+    def "hub_delete_backup routes THROUGH the hub_manage_backup gateway"() {
+        given:
+        enableWrite()
+
+        when:
+        def r = script.handleGateway('hub_manage_backup', 'hub_delete_backup', [location: 'local', fileName: 'local-1.lzf', confirm: true])
+
+        then:
+        r.success == true
+    }
 }
