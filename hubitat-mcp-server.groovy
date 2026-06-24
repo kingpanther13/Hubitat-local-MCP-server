@@ -851,7 +851,14 @@ def handleToolsCall(msg) {
         // Map with a bp_warning field, which serializes naturally below. OFF by default -> the
         // detector is never invoked, so there is zero overhead on the success hot path.
         if (settings.enableReactiveBPS == true && result instanceof Map && (result.isError == true || result.success == false)) {
-            _applyReactiveBpsWarning(toolName, args, result)
+            // A best-practice HINT must never mask the genuine tool error: if attaching it ever throws
+            // (e.g. a future tool returns an immutable result Map), log and fall through with the
+            // original result intact.
+            try {
+                _applyReactiveBpsWarning(toolName, args, result)
+            } catch (Exception bpErr) {
+                mcpLog("warn", "server", "Reactive BPS hint failed for ${toolName}: ${bpErr.message}", null, [details: [tool: toolName]])
+            }
         }
         def jsonText
         try {
@@ -926,9 +933,14 @@ def handleToolsCall(msg) {
         // gate's OWN missing-key refusal (it already points at the guide) so a blocked write is
         // not double-coached.
         def msgText = e.message
-        if (settings.enableReactiveBPS == true && !(e.message?.startsWith("Mandatory best-practice"))) {
-            def w = _reactiveBpsWarning(toolName, args, e.message)
-            if (w) msgText = "${e.message} ${w}"
+        if (settings.enableReactiveBPS == true && e.message && !e.message.startsWith("Mandatory best-practice")) {
+            // Same guard as the returned-error path: a hint failure must not lose the validation error.
+            try {
+                def w = _reactiveBpsWarning(toolName, args, e.message)
+                if (w) msgText = "${e.message} ${w}"
+            } catch (Exception bpErr) {
+                mcpLog("warn", "server", "Reactive BPS hint failed for ${toolName}: ${bpErr.message}", null, [details: [tool: toolName]])
+            }
         }
         return jsonRpcError(msg.id, -32602, "Invalid params: ${msgText}")
     } catch (Exception e) {
@@ -2154,7 +2166,7 @@ def executeTool(toolName, args) {
     if (!isGatewayName && settings.enableMandatoryBPS == true
             && !getReadOnlyToolNames().contains(toolName)
             && !(toolName in ['hub_get_tool_guide', 'hub_update_mcp_settings'])
-            && !(toolName == 'hub_set_rule' && _isSetRuleSchemaOnlyCall(args))) {
+            && !(toolName == 'hub_set_rule' && _isSetRuleSchemaOnlyCall(args ?: [:]))) {
         if (args?.bestPracticeKey?.toString() != hubBpsGuideKey()) {
             throw new IllegalArgumentException("Mandatory best-practice acknowledgment is enabled for write tools. Read hub_get_tool_guide(section='best_practice_reference') to obtain the required acknowledgment key, then pass it as the bestPracticeKey argument on this call. The key appears only in that guide section.")
         }
@@ -5065,7 +5077,7 @@ def currentVersion() {
 // Single source of truth for the acknowledgment key the enableMandatoryBPS gate validates.
 // The same literal is ALSO typed into the best_practice_reference guide body below (a Groovy
 // '''-string cannot interpolate ${...}, and switching it to a """ string would hide the key
-// from sandbox-lint's section-key parser) -- BpsGuideKeySpec asserts the two copies stay in sync.
+// from sandbox-lint's section-key parser) -- ExecuteToolMandatoryBpsGateSpec asserts the two copies stay in sync.
 def hubBpsGuideKey() { 'bps-ack-299' }
 
 // Reactive best-practice detector (issue #299). Returns a single nullable nudge for a failed

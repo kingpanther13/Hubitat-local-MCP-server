@@ -245,7 +245,7 @@ def _getAllToolDefinitions_partDiscovery() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    section: [type: "string", description: "REQUIRED for efficiency: device_authorization, hub_admin_write, virtual_devices, hub_update_device, rules, backup, file_manager, performance, builtin_app_tools, set_rule_reference, set_rule_create_reference. Full guide only if absolutely necessary.", enum: ["device_authorization", "hub_admin_write", "virtual_devices", "hub_update_device", "rules", "backup", "file_manager", "performance", "builtin_app_tools", "set_rule_reference", "set_rule_create_reference"]]
+                    section: [type: "string", description: "REQUIRED for efficiency: device_authorization, best_practice_reference, hub_admin_write, virtual_devices, update_device, rules, backup, file_manager, performance, builtin_app_tools, set_rule_reference, set_rule_create_reference, visual_rule_reference. Full guide only if absolutely necessary.", enum: ["device_authorization", "best_practice_reference", "hub_admin_write", "virtual_devices", "update_device", "rules", "backup", "file_manager", "performance", "builtin_app_tools", "set_rule_reference", "set_rule_create_reference", "visual_rule_reference"]]
                 ]
             ],
             outputSchema: [

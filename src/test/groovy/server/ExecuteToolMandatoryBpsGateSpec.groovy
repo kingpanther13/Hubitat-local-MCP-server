@@ -132,4 +132,49 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         expect: "the key the gate validates is the same literal the guide hands the LLM"
         (script.getToolGuideSections()['best_practice_reference'] as String).contains(script.hubBpsGuideKey())
     }
+
+    def "gate ON + non-string key value is rejected (toString coercion does not bypass)"() {
+        given:
+        settingsMap.enableMandatoryBPS = true
+
+        when: "a numeric bestPracticeKey -> coerced to '12345' != the key -> blocked"
+        script.executeTool("hub_set_hsm", [mode: "armHome", bestPracticeKey: 12345])
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
+    // ---- gateway-routed gate (the production call shape): the sub-tool re-enters
+    // executeTool via handleGateway and is gated on re-entry. requiredParamsByTool is
+    // stubbed empty so the gateway's required-param pre-check is a no-op and the call
+    // reaches the BPS gate. ----
+
+    def "gate applies to a gateway-routed write sub-tool on re-entry (blocked without the key)"() {
+        given:
+        settingsMap.enableMandatoryBPS = true
+        script.metaClass.requiredParamsByTool = { -> [:] }
+        script.metaClass.toolCreateVariable = { a -> [success: true, stubbed: true] }
+
+        when: "a write reached through its gateway, no key -> blocked when the sub-tool re-enters"
+        script.executeTool("hub_manage_variables", [tool: "hub_create_variable", args: [name: "x"]])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.startsWith("Mandatory best-practice")
+    }
+
+    def "gate passes a gateway-routed write when the key is in the inner args"() {
+        given:
+        settingsMap.enableMandatoryBPS = true
+        script.metaClass.requiredParamsByTool = { -> [:] }
+        script.metaClass.toolCreateVariable = { a -> [success: true, stubbed: true] }
+
+        when:
+        def result = script.executeTool("hub_manage_variables",
+            [tool: "hub_create_variable", args: [name: "x", bestPracticeKey: script.hubBpsGuideKey()]])
+
+        then:
+        noExceptionThrown()
+        result.stubbed == true
+    }
 }
