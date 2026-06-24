@@ -6708,16 +6708,17 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             f"the self app must be planned LAST (deployed last so its recompile is the final act): {apps}"
 
     # -----------------------------------------------------------------------
-    # GROUP 10b: best-practice gate + reactive hints (issue #299, opt-in)
-    # Proves the FULL forced-read-key flow + reactive hints against the live hub so the
-    # feature does not need hand-testing. CRITICAL: every test that flips a toggle ON
-    # restores it OFF in finally -- a stuck enableMandatoryBPS would block every later
-    # write test in the suite. hub_update_mcp_settings is itself gate-exempt, so the
-    # restore (and self-disable) always works without the key.
+    # GROUP 10b: best-practice gate + reactive hints (issue #299)
+    # Proves the FULL forced-read-key flow + reactive hints against the live hub so the feature
+    # does not need hand-testing. The mandatory gate ships ON by default; the e2e env setup
+    # (mcp_setup_env.sh) pins enableMandatoryBPS=false so the rest of the suite's keyless writes
+    # run, and these tests flip it on/off themselves. CRITICAL: every test that turns the gate ON
+    # restores it OFF in finally -- a stuck gate would block every later write test. The reactive
+    # hint has no toggle (always on) and points each failed write at THAT tool's own guide section.
     # -----------------------------------------------------------------------
 
     def _set_bps(self, **toggles) -> None:
-        """Flip the issue-#299 BPS toggles via the gate-exempt settings tool."""
+        """Set the issue-#299 gate toggle via the gate-exempt settings tool."""
         res = self.client.call_tool("hub_manage_mcp", {
             "tool": "hub_update_mcp_settings",
             "args": {"settings": toggles, "confirm": True},
@@ -6768,8 +6769,8 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             self._set_bps(enableMandatoryBPS=False)
 
     @test("best_practice_gating")
-    def test_bps_gate_off_by_default_allows_write(self) -> None:
-        """Gate OFF -> a write WITHOUT any key succeeds (legacy behaviour preserved)."""
+    def test_bps_gate_disabled_allows_keyless_write(self) -> None:
+        """Gate explicitly OFF -> a write WITHOUT any key succeeds (the toggle genuinely disables it)."""
         var_name = f"{PREFIX}BPS_Off"
         self._set_bps(enableMandatoryBPS=False)
         self.created_variable_names.append(var_name)
@@ -6818,20 +6819,34 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             self._set_bps(enableMandatoryBPS=False)
 
     @test("best_practice_gating")
-    def test_reactive_bps_hint_on_write_error(self) -> None:
-        """Reactive ON -> a failed write (bogus device) carries a best-practice hint pointing at
-        the guide. Reactive OFF (restored) -> the bare error returns."""
-        self._set_bps(enableReactiveBPS=True)
+    def test_reactive_bps_device_command_links_to_device_authorization(self) -> None:
+        """Reactive hints are ALWAYS on (no toggle): a failed hub_call_device_command gains a
+        pointer to ITS own section (device_authorization), naming the failing tool -- proving the
+        best-practice content is actually returned and is tool-specific, not a generic page."""
+        self._set_bps(enableMandatoryBPS=False)  # ensure the gate isn't masking the tool's own error
         try:
-            try:
-                self.client.call_tool("hub_call_device_command", {"deviceId": "99999", "command": "on"})
-                raise AssertionError("bogus device command should have errored")
-            except McpError as e:
-                msg = str(e)
-                assert "get_tool_guide" in msg, f"reactive hint missing the guide pointer: {msg}"
-                assert "best_practice_reference" in msg, f"reactive hint missing the guide section: {msg}"
-        finally:
-            self._set_bps(enableReactiveBPS=False)
+            self.client.call_tool("hub_call_device_command", {"deviceId": "99999", "command": "on"})
+            raise AssertionError("bogus device command should have errored")
+        except McpError as e:
+            msg = str(e)
+            assert "device_authorization" in msg, f"reactive hint missing the device_authorization section: {msg}"
+            assert "get_tool_guide" in msg, f"reactive hint missing the guide pointer: {msg}"
+            assert "hub_call_device_command" in msg, f"reactive hint should name the failing tool: {msg}"
+            assert "best_practice_reference" not in msg, f"hint should be tool-specific, not the generic page: {msg}"
+
+    @test("best_practice_gating")
+    def test_reactive_bps_virtual_device_links_to_virtual_devices(self) -> None:
+        """A DIFFERENT failing tool -> a DIFFERENT section: a hub_manage_virtual_device delete of a
+        bogus device points at virtual_devices, proving the per-tool section mapping is live."""
+        self._set_bps(enableMandatoryBPS=False)
+        try:
+            self.client.call_tool("hub_manage_virtual_device", {
+                "action": "delete", "deviceNetworkId": "BAT_E2E_bogus_dni_x", "confirm": True})
+            raise AssertionError("deleting a bogus virtual device should have errored")
+        except McpError as e:
+            msg = str(e)
+            assert "virtual_devices" in msg, f"reactive hint missing the virtual_devices section: {msg}"
+            assert "get_tool_guide" in msg, f"reactive hint missing the guide pointer: {msg}"
 
     # -----------------------------------------------------------------------
     # GROUP 11: hub_get_device_attribute poll mode (2 tests -- wall-clock coverage, I7)

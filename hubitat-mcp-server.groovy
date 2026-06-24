@@ -173,14 +173,11 @@ def mainPage() {
                  description: "Disable individual tools or whole gateways below the Read/Write masters (deny-only)."
         }
 
-        section("Best-Practice Guidance (opt-in)") {
-            paragraph "Two opt-in aids that surface this project's best practices to the AI without bloating every tool description. Both default OFF — enable only for clients that can carry the extra context."
+        section("Best-Practice Guidance") {
+            paragraph "Surfaces this project's best practices to the AI. Reactive hints are always on: a failed write tool's error gains a pointer to that tool's own guide section. The acknowledgment gate below is ON by default."
             input "enableMandatoryBPS", "bool", title: "Require Best-Practice Guide Acknowledgment (write tools)",
-                  description: "When ON, every write tool is blocked until the AI reads hub_get_tool_guide(section='best_practice_reference') and passes the acknowledgment key it publishes as the bestPracticeKey argument. Reads, the guide, and this settings tool stay reachable, so the AI can never lock itself out. Default OFF.",
-                  defaultValue: false, submitOnChange: true
-            input "enableReactiveBPS", "bool", title: "Surface Best-Practice Hints on Write Errors",
-                  description: "When ON, a failed write tool's error carries a short, domain-specific best-practice hint pointing at the guide (e.g. native Rule Machine over the legacy custom rule engine). Zero cost when OFF. Default OFF.",
-                  defaultValue: false, submitOnChange: true
+                  description: "ON by default. When ON, every write tool is blocked until the AI reads hub_get_tool_guide(section='best_practice_reference') and passes the acknowledgment key it publishes as the bestPracticeKey argument. Reads, the guide, and this settings tool stay reachable, so the AI can never lock itself out. Turn OFF for clients that can't carry the extra context.",
+                  defaultValue: true, submitOnChange: true
         }
 
         section("Developer Mode") {
@@ -844,13 +841,13 @@ def handleToolsCall(msg) {
                 isError: true
             ])
         }
-        // ---- Reactive best-practice hint on a returned error (issue #299, opt-in) ----
-        // The runtime-error contract is [success:false, error:.., note:..]; some refusals also
-        // set isError:true. When enableReactiveBPS is ON, surface a single domain-specific
-        // best-practice nudge (pointing at the guide) on either error shape by mutating the result
-        // Map with a bp_warning field, which serializes naturally below. OFF by default -> the
-        // detector is never invoked, so there is zero overhead on the success hot path.
-        if (settings.enableReactiveBPS == true && result instanceof Map && (result.isError == true || result.success == false)) {
+        // ---- Reactive best-practice hint on a returned error (issue #299, always on) ----
+        // The runtime-error contract is [success:false, error:.., note:..]; some refusals also set
+        // isError:true. Surface a one-line pointer to the FAILING tool's own guide section on either
+        // error shape by mutating the result Map with a bp_warning field, which serializes naturally
+        // below. The detector is a pure function that returns null on success-shaped or
+        // no-section/permission errors, so there is no meaningful overhead on the hot path.
+        if (result instanceof Map && (result.isError == true || result.success == false)) {
             // A best-practice HINT must never mask the genuine tool error: if attaching it ever throws
             // (e.g. a future tool returns an immutable result Map), log and fall through with the
             // original result intact.
@@ -927,13 +924,13 @@ def handleToolsCall(msg) {
         mcpLog("warn", "server", "Validation error in ${toolName}: ${e.message}", null, [
             details: [tool: toolName, error: e.message]
         ])
-        // Reactive best-practice hint on a thrown validation error (issue #299, opt-in). Most
+        // Reactive best-practice hint on a thrown validation error (issue #299, always on). Most
         // recoverable tool errors (device-not-found, unsupported command, missing confirm) throw
-        // IllegalArgumentException -> -32602, so this is the primary reactive surface. Exclude the
-        // gate's OWN missing-key refusal (it already points at the guide) so a blocked write is
-        // not double-coached.
+        // IllegalArgumentException -> -32602, so this is the primary reactive surface. _reactiveBpsWarning
+        // already excludes the gate's own refusal + permission errors and returns null when the tool has
+        // no dedicated section, so no extra guard is needed here beyond the null-message check.
         def msgText = e.message
-        if (settings.enableReactiveBPS == true && e.message && !e.message.startsWith("Mandatory best-practice")) {
+        if (e.message) {
             // Same guard as the returned-error path: a hint failure must not lose the validation error.
             try {
                 def w = _reactiveBpsWarning(toolName, args, e.message)
@@ -1355,7 +1352,7 @@ def getGatewayConfig() {
                 hub_update_mcp_settings: "Update one or more of the MCP rule app's own settings (toggles, log level, tuning params). Args: settings (map of key→value), confirm=true. Allowlist-gated."
             ],
             searchHints: [
-                hub_update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableRead enableCustomRuleEngine useGateways publishOutputSchemas outputSchema output schema structured content claude desktop gateway mode consolidate flat tools ci automation enableMandatoryBPS enableReactiveBPS best practice acknowledgment gate reactive warnings"
+                hub_update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableRead enableCustomRuleEngine useGateways publishOutputSchemas outputSchema output schema structured content claude desktop gateway mode consolidate flat tools ci automation enableMandatoryBPS best practice acknowledgment gate"
             ]
         ],
         hub_read_devices: [
@@ -2152,18 +2149,19 @@ def executeTool(toolName, args) {
         }
     }
 
-    // ---- Mandatory best-practice acknowledgment gate (issue #299, opt-in) ----
+    // ---- Mandatory best-practice acknowledgment gate (issue #299) ----
     // When enableMandatoryBPS is ON, every write tool requires the caller to first read
     // hub_get_tool_guide(section='best_practice_reference') and pass the acknowledgment key
     // it publishes as the bestPracticeKey argument. The block message names ONLY how to get
-    // the key, never the key itself, so the LLM must actually read the guide. Default OFF
-    // (some clients can't carry the extra context). Strict `== true` so null/unset = inactive,
-    // matching the #113 master-gate convention. Reuses the isGatewayName + read/write partition
-    // already computed above -- gateway names short-circuit (sub-tools gate on re-entry).
-    // Two tools are exempt so enabling the gate can NEVER lock the caller out: hub_get_tool_guide
-    // (read-only; the only way to discover the key) and hub_update_mcp_settings (the toggle-off
-    // escape hatch). hub_set_rule schema-only probes stay reachable like the Write master above.
-    if (!isGatewayName && settings.enableMandatoryBPS == true
+    // the key, never the key itself, so the LLM must actually read the guide. ON by default:
+    // `!= false` so null/unset/true = active and only an explicit false disables it, mirroring
+    // the #113 master-gate convention (the Spock harness + the e2e env setup pin it false so the
+    // suites' keyless writes run). Reuses the isGatewayName + read/write partition already
+    // computed above -- gateway names short-circuit (sub-tools gate on re-entry). Two tools are
+    // exempt so the gate can NEVER lock the caller out: hub_get_tool_guide (read-only; the only
+    // way to discover the key) and hub_update_mcp_settings (the toggle-off escape hatch).
+    // hub_set_rule schema-only probes stay reachable like the Write master above.
+    if (!isGatewayName && settings.enableMandatoryBPS != false
             && !getReadOnlyToolNames().contains(toolName)
             && !(toolName in ['hub_get_tool_guide', 'hub_update_mcp_settings'])
             && !(toolName == 'hub_set_rule' && _isSetRuleSchemaOnlyCall(args ?: [:]))) {
@@ -5080,26 +5078,45 @@ def currentVersion() {
 // from sandbox-lint's section-key parser) -- ExecuteToolMandatoryBpsGateSpec asserts the two copies stay in sync.
 def hubBpsGuideKey() { 'bps-ack-299' }
 
-// Reactive best-practice detector (issue #299). Returns a single nullable nudge for a failed
-// write, ordered most-specific-first; null when nothing matches (no generic fallback, so a clean
-// error stays quiet). Conservative keyword/regex matches only -- pure function, no hub I/O.
-// Idempotent: returns null when the error text already points at the guide, so a retry can't
-// stack hints. Every hint ends by pointing at the consolidated best_practice_reference section.
-// (args is reserved for future arg-shape detectors, e.g. "hub_set_rule created with no trigger".)
+// Map a (write) tool to the hub_get_tool_guide section that documents IT (issue #299). This is the
+// reactive hint's whole point: on an error, point the LLM at the FAILING tool's own reference, not
+// a generic page. Sections are the real keys in getToolGuideSections(); the groupings mirror where
+// each family already cites hub_get_tool_guide(section=...) in its descriptions/errors. Returns null
+// for tools with no dedicated section -- those get NO reactive hint (a generic pointer is exactly
+// what this feature must avoid).
+def _guideSectionForTool(toolName) {
+    def t = (toolName ?: '').toString()
+    if (t == 'hub_set_rule') return 'set_rule_reference'
+    if (t == 'hub_set_visual_rule' || t == 'hub_delete_visual_rule') return 'visual_rule_reference'
+    if (t.endsWith('_custom_rule')) return 'rules'
+    if (t in ['hub_set_native_app', 'hub_delete_native_app', 'hub_clone_native_app',
+              'hub_export_native_app', 'hub_import_native_app', 'hub_set_app_disabled',
+              'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean']) return 'builtin_app_tools'
+    if (t == 'hub_update_device') return 'update_device'
+    if (t == 'hub_manage_virtual_device') return 'virtual_devices'
+    if (t in ['hub_create_backup', 'hub_restore_backup']) return 'backup'
+    if (t in ['hub_write_file', 'hub_delete_file']) return 'file_manager'
+    if (t in ['hub_delete_device', 'hub_delete_room', 'hub_delete_item', 'hub_reboot', 'hub_shutdown',
+              'hub_update_firmware', 'hub_call_destructive_radio', 'hub_call_zwave', 'hub_call_zigbee',
+              'hub_call_matter', 'hub_call_device_swap', 'hub_call_device_replace']) return 'hub_admin_write'
+    if (t in ['hub_call_device_command', 'hub_get_device_attribute']) return 'device_authorization'
+    return null
+}
+
+// Reactive best-practice hint (issue #299, always on). On a write-tool error, return a one-line
+// pointer to the FAILING tool's own guide section (via _guideSectionForTool) so the LLM can recover
+// from the tool's reference. Pure function, no hub I/O. Returns null when: the tool has no dedicated
+// section (no generic fallback by design); the error is a permission/config refusal, not a tool-
+// domain error (the fix there is a toggle, not the guide); or the error already points at the guide
+// (idempotent -- many tools self-cite, so a retry can't stack hints). (args reserved for future
+// arg-shape hints, e.g. "hub_set_rule created with no trigger".)
 def _reactiveBpsWarning(toolName, args, errorText) {
     def txt = (errorText ?: '').toString()
     if (txt.contains('get_tool_guide')) return null
-    def suffix = ' See hub_get_tool_guide(section="best_practice_reference") for details.'
-    if (toolName?.toString()?.endsWith('_custom_rule') || txt =~ /(?i)legacy|custom rule engine/) {
-        return 'The custom MCP rule engine is legacy; prefer native Rule Machine (hub_manage_native_rules_and_apps / hub_set_rule) for new rule work.' + suffix
-    }
-    if (txt =~ /(?i)device.*not\s*found|no.*device.*matching|invalid.*device/) {
-        return 'Resolve the device first: use hub_list_devices to find the exact deviceId (device IDs compare as strings).' + suffix
-    }
-    if (txt =~ /(?i)confirm|backup.*required|requireDestructiveConfirm/) {
-        return 'Destructive writes need confirm=true plus a hub backup within 24h (hub_create_backup).' + suffix
-    }
-    return null
+    if (txt =~ /(?i)tools are disabled|Developer Mode tools are disabled|disabled in Advanced settings|^Mandatory best-practice/) return null
+    def section = _guideSectionForTool(toolName)
+    if (!section) return null
+    return "See hub_get_tool_guide(section=\"${section}\") for ${toolName}'s reference and best practices."
 }
 
 // Attach a reactive best-practice hint to a returned-error result Map in place (issue #299).
@@ -5136,14 +5153,17 @@ def getToolGuideSections() {
 
 Acknowledgment key: bps-ack-299
 
-When the "Require Best-Practice Guide Acknowledgment" setting is ON (opt-in, default OFF), every
-write tool requires you to pass this exact key as the `bestPracticeKey` argument on the call --
+The "Require Best-Practice Guide Acknowledgment" gate is ON by default. While it is on, every write
+tool requires you to pass this exact key as the `bestPracticeKey` argument on the call --
 e.g. `bestPracticeKey: "bps-ack-299"`. Read this section once, then include that argument on each
 write for the rest of the session. Reads, hub_get_tool_guide, and hub_update_mcp_settings are
-never gated, so you can always reach this guide and toggle the setting off. The key is published
-only here, so supplying it proves you consulted these practices before writing.
+never gated, so you can always reach this guide and (if needed) toggle the gate off. The key is
+published only here, so supplying it proves you consulted these practices before writing.
 
-### Write-tool best practices (mirrors the reactive hints)
+Reactive hints are always on (no toggle): when a write tool errors, the error gains a one-line
+pointer to THAT tool's own guide section -- follow it for the failing tool's reference.
+
+### Write-tool best practices
 
 - Rules: prefer native Rule Machine (hub_manage_native_rules_and_apps / hub_set_rule) over the
   legacy custom_* MCP rule engine for new automation work -- the custom engine is legacy and

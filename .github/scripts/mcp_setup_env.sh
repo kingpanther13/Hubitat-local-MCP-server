@@ -86,10 +86,12 @@ else
   echo "  Backup gate stamped (REAL backup)."
 fi
 
-# Enable the one toggle the e2e suite needs that is not ON by default. Read/Write
-# are masters (default ON in the deployed PR app); enableCustomRuleEngine is the
-# only stable key this pre-deploy step sets, and it persists through the deploy.
-mcp_call '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"hub_manage_mcp","arguments":{"tool":"hub_update_mcp_settings","args":{"settings":{"enableCustomRuleEngine":true},"confirm":true}}}}' \
+# Configure the toggles the e2e suite needs. enableCustomRuleEngine ON (custom_* tests).
+# enableMandatoryBPS OFF: the best-practice gate (issue #299) ships ON by default, which would
+# block every keyless write in the suite; the best_practice_gating tests flip it on/off themselves.
+# hub_update_mcp_settings is itself gate-exempt, so this disable lands even with the gate ON.
+# Read/Write are masters (default ON in the deployed PR app).
+mcp_call '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"hub_manage_mcp","arguments":{"tool":"hub_update_mcp_settings","args":{"settings":{"enableCustomRuleEngine":true,"enableMandatoryBPS":false},"confirm":true}}}}' \
   | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null
 
-echo "Test environment configured: enableCustomRuleEngine=true (Read/Write masters are ON by default in the deployed app)"
+echo "Test environment configured: enableCustomRuleEngine=true, enableMandatoryBPS=false (Read/Write masters ON by default in the deployed app)"

@@ -61,12 +61,24 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         result.stubbed == true
     }
 
-    def "gate OFF (null/unset) leaves writes reachable without a key (legacy behaviour preserved)"() {
+    def "gate is ON by default (null/unset) -- a keyless write is blocked"() {
+        given: "no explicit setting -- the gate ships ON (settings.enableMandatoryBPS != false)"
+        settingsMap.remove('enableMandatoryBPS')
+
+        when:
+        script.executeTool("hub_set_hsm", [mode: "armHome"])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.startsWith("Mandatory best-practice")
+    }
+
+    def "gate is ON by default (null/unset) -- the correct key dispatches"() {
         given:
         settingsMap.remove('enableMandatoryBPS')
 
         expect:
-        script.executeTool("hub_set_hsm", [mode: "armHome"]).stubbed == true
+        script.executeTool("hub_set_hsm", [mode: "armHome", bestPracticeKey: script.hubBpsGuideKey()]).stubbed == true
     }
 
     def "gate OFF (explicit false) leaves writes reachable without a key"() {
