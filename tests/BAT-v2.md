@@ -2409,7 +2409,7 @@ These operations are too destructive for automated testing. Test manually with e
 | Update app code | `hub_update_app` | hub_manage_code | Modifies production code |
 | Update driver code | `hub_update_driver` | hub_manage_code | Modifies production code |
 | Delete app/driver/library | `hub_delete_item` (type: app\|driver\|library) | hub_manage_code | Permanent code removal |
-| Restore item backup | `hub_restore_backup` | hub_manage_code | Overwrites current code |
+| Restore item backup | `hub_restore_backup` | hub_manage_backup | Overwrites current code |
 | Set HSM | `hub_set_hsm` | core | Changes security system state |
 | Manage Mode | `hub_manage_mode` | core | Create/rename/delete/activate a mode (delete is destructive + confirm-gated) |
 

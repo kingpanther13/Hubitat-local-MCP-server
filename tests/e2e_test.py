@@ -4501,7 +4501,7 @@ class TestRunner:
         new_id = None
         try:
             try:
-                restored = self.client.call_tool("hub_manage_code", {
+                restored = self.client.call_tool("hub_manage_backup", {
                     "tool": "hub_restore_backup",
                     "args": {"backupKey": backup_key, "confirm": True},
                 })
@@ -4882,7 +4882,7 @@ def updateLegMarker() { return "UPDATE-LEG-MARKER-V1" }
             # holds the V1 source (backupItemSource keeps the pre-edit original for an
             # hour rather than re-snapshotting on the later legs), so hub_restore_backup
             # must bring V1 back and hand back a pre-restore backup key as the undo path.
-            restored = self.client.call_tool("hub_manage_code", {
+            restored = self.client.call_tool("hub_manage_backup", {
                 "tool": "hub_restore_backup",
                 "args": {"backupKey": f"app_{code_app_id}", "confirm": True},
             })
