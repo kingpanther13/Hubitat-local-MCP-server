@@ -1122,16 +1122,33 @@ def getGatewayConfig() {
                 hub_list_hpm_packages: "package manager HPM tracked installed manifest version inventory community apps drivers drift orphan missing required"
             ]
         ],
+        hub_manage_backup: [
+            description: "Whole-hub database backup management plus source-code backup restore (issue #259 item #1): create a hub backup and set its automatic schedule, list/restore/delete local + cloud hub-DB backups, and restore source-code backups. Hub-DB restore/delete are destructive — a hub-DB restore REBOOTS the hub — and need confirm + a recent backup. The read tools (hub_list_backups/hub_get_backup) are also in hub_read_apps_code.",
+            tools: ["hub_create_backup", "hub_list_backups", "hub_get_backup", "hub_restore_backup", "hub_delete_backup"],
+            summaries: [
+                hub_create_backup: "Create a whole-hub DB backup; optionally set the auto-backup schedule. Args: confirm, schedule?, scheduleOnly?, mock?",
+                hub_list_backups: "List backups. scope=source (code) | hub_local | hub_cloud | hub | all. Args: scope?, cursor?",
+                hub_get_backup: "Get source from a code backup. Args: backupKey",
+                hub_restore_backup: "Restore a code/rule backup (scope=source + backupKey) OR the whole hub DB (scope=hub_local + fileName | hub_cloud + cloudBackupPassword -- REBOOTS). Args: scope?, backupKey?/fileName?/cloudBackupPassword?, confirm",
+                hub_delete_backup: "Delete a whole-hub DB backup. Args: location (local|cloud), fileName?/path?, confirm"
+            ],
+            searchHints: [
+                hub_create_backup: "create make hub database backup snapshot schedule automatic nightly before destructive write",
+                hub_list_backups: "list show backups code source whole hub database local cloud restore points",
+                hub_get_backup: "view read saved previous version revision source",
+                hub_restore_backup: "restore revert roll back code rule whole hub database disaster recovery migration reboot",
+                hub_delete_backup: "delete remove prune hub database backup local cloud free space recovery point"
+            ]
+        ],
         hub_manage_code: [
             description: "Install, update, and delete hub apps, drivers, libraries, and code bundles (install/delete/export). All operations modify hub code and require Write master. Read-only counterparts (hub_get_source, list_*) live in the hub_read_apps_code gateway.",
-            tools: ["hub_create_app", "hub_create_driver", "hub_update_app", "hub_update_driver", "hub_delete_item", "hub_restore_backup", "hub_create_library", "hub_update_library", "hub_install_bundle", "hub_delete_bundle", "hub_export_bundle"],
+            tools: ["hub_create_app", "hub_create_driver", "hub_update_app", "hub_update_driver", "hub_delete_item", "hub_create_library", "hub_update_library", "hub_install_bundle", "hub_delete_bundle", "hub_export_bundle"],
             summaries: [
                 hub_create_app: "Install new app code (source|sourceFile|importUrl), OR with installAsUserApp=<codeAppId> create a running instance from already-installed code (mutually exclusive). To save context prefer importUrl (hub fetches the source itself) or hub_write_file + sourceFile; inline source for stubs only. confirm=true",
                 hub_create_driver: "Install new driver. To save context prefer importUrl (hub fetches the source) or hub_write_file + sourceFile; inline source for stubs only. For 1: source|sourceFile|importUrl. For >1: USE BULK (single round-trip: installs=[{source|sourceFile|importUrl},...]). confirm=true",
                 hub_update_app: "Modify existing app code (CRITICAL), and/or enable OAuth on it. To save context prefer importUrl (hub fetches the source itself) or hub_write_file + sourceFile over inline source. Args: appId, source|sourceFile|importUrl|resave, oauth ({enabled,client_id?,client_secret?,refresh_secret?} -- enable/configure OAuth, returns the clientId/secret), confirm=true",
                 hub_update_driver: "Modify existing driver code (CRITICAL). For 1 driver: driverId+source|sourceFile|importUrl|resave. For >1 drivers: USE BULK (single round-trip: updates=[{driverId,sourceFile|importUrl},...]). To save context prefer importUrl (hub fetches) or hub_write_file + sourceFile over inline. confirm=true",
                 hub_delete_item: "Permanently delete an app/driver/library (DESTRUCTIVE, auto-backs up). Args: type (app|driver|library), id, confirm=true",
-                hub_restore_backup: "Restore app/driver to backed-up version. Args: backupKey, confirm=true",
                 hub_create_library: "Install new Groovy library (#include namespace.Name). To save context prefer importUrl (hub fetches the source) or hub_write_file + sourceFile; inline source for stubs only. Args: source|sourceFile|importUrl, confirm=true",
                 hub_update_library: "Modify existing library code. To save context prefer importUrl (hub fetches) or hub_write_file + sourceFile over inline. Args: libraryId, source|sourceFile|importUrl|resave, confirm=true",
                 hub_install_bundle: "Install a code bundle (.zip) from a URL the way HPM does (hub fetches+unpacks into Libraries/Apps/Drivers Code). Args: importUrl (zip), primary?, confirm=true",
@@ -1144,7 +1161,6 @@ def getGatewayConfig() {
                 hub_update_app: "modify change edit application groovy push deploy oauth enable client id secret access token endpoint",
                 hub_update_driver: "modify change edit device handler type groovy push deploy",
                 hub_delete_item: "remove uninstall application integration device handler driver type groovy library shared",
-                hub_restore_backup: "rollback revert undo previous version",
                 hub_create_library: "add new shared groovy library include namespace",
                 hub_update_library: "modify change edit groovy library shared code push deploy",
                 hub_install_bundle: "install bundle zip package hpm hubitat package manager uploadZipFromUrl library delivery deploy code",
@@ -1661,7 +1677,8 @@ def getToolDisplayMeta() {
         hub_manage_variables: [title: "Manage Variables", summary: "Create, set, and delete hub variables and their connectors."],
         hub_manage_rooms: [title: "Manage Rooms", summary: "Create, rename, and delete rooms."],
         hub_manage_destructive_ops: [title: "Manage Destructive Ops", summary: "Reboot or shut down the hub, or permanently delete devices."],
-        hub_manage_code: [title: "Manage Code", summary: "Install, update, and delete apps, drivers, libraries, and code bundles; restore backups."],
+        hub_manage_backup: [title: "Manage Backups", summary: "Create/list/restore/delete hub-database backups (and restore code backups); set the backup schedule."],
+        hub_manage_code: [title: "Manage Code", summary: "Install, update, and delete apps, drivers, libraries, and code bundles."],
         hub_manage_logs: [title: "Manage Logs", summary: "Read hub logs and performance stats; clear MCP debug logs and set log level."],
         hub_manage_diagnostics: [title: "Manage Diagnostics", summary: "Diagnostics plus maintenance actions: GC and state snapshots."],
         hub_manage_radio: [title: "Manage Radio", summary: "Configure and operate the Z-Wave, Zigbee, and Matter radios: repair, inclusion, exclusion, channels."],
@@ -2257,6 +2274,7 @@ def executeTool(toolName, args) {
 
         // Write master Tools
         case "hub_create_backup": return toolCreateHubBackup(args)
+        case "hub_delete_backup": return toolDeleteHubBackup(args)
         case "hub_reboot": return toolRebootHub(args)
         case "hub_shutdown": return toolShutdownHub(args)
 
