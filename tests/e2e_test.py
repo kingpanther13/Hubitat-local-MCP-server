@@ -1172,33 +1172,62 @@ class TestRunner:
 
     @test("devices")
     def test_list_device_events_since_bookmark(self) -> None:
-        # The `since` absolute-bookmark filter on hub_list_device_events: record a
-        # returned event date, drive one more event, then ask for events SINCE that
-        # bookmark and confirm nothing OLDER than the bookmark comes back. Uses the
-        # shared persistent scaffold switch (same as the poll tests) -- a freshly-
-        # created virtual device does not reliably record events in this harness, so
-        # depend on the scaffold's stable event store instead. The scaffold may carry
-        # prior history; the "nothing older than the bookmark" assertion is what makes
-        # this robust without assuming a clean slate (it bookmarks the newest event
-        # and checks no returned event predates it -- no fixed-count assumption).
+        # The `since` absolute-bookmark filter on hub_list_device_events. READ-DRIVEN:
+        # it bookmarks an EXISTING event in the scaffold's history and asserts the filter
+        # relationship (only strictly-newer events come back). History READS are never
+        # load-limited (unlike device commands), so the happy path drives no toggles at
+        # all and is immune to the platform's per-app load limiter. A seed step drives
+        # events only if the scaffold somehow lacks >=2 distinct timestamps, and
+        # limiter-proven soft-passes if even seeding is throttled.
         dev_id = self.get_test_switch_id()
         assert dev_id, "Failed to get the shared scaffold switch"
 
-        # A far-future since yields an empty list, NOT an error. Checked first because
-        # it needs no fresh events, so it stays covered even if the platform load
-        # limiter throttles the toggles below into a limiter-proven soft-pass.
+        def _iso_epoch_ms(s: str) -> int:
+            # Hub emits ISO-8601 with a numeric offset (e.g. +0000 / -0700), no colon.
+            return int(datetime.strptime(s, "%Y-%m-%dT%H:%M:%S.%f%z").timestamp() * 1000)
+
+        # A far-future since yields an empty list, NOT an error (needs no events).
         fut = self.client.call_tool("hub_list_device_events", {
             "deviceId": dev_id, "since": "2099-01-01T00:00:00.000+0000"})
         assert isinstance(fut, dict) and fut.get("count") == 0 and fut.get("events") == [], \
             f"future since should yield an empty list, not: {fut}"
 
-        # Drive a state change and block-poll until it commits, so there is fresh
-        # history to bookmark. Mirrors the poll tests' limiter handling: a command the
-        # platform's per-app load limiter throttled false-succeeds with NO event, so if
-        # the change does not land, bounce the server app via the watchdog and retry
-        # once. Returns True only when the new value actually committed.
-        def _drive_and_settle(value: str) -> bool:
-            def _attempt() -> bool:
+        # Read the scaffold's history (relative/hoursBack mode). Also pins the
+        # relative-mode envelope: sinceMode=relative, echoes hoursBack not since.
+        # Settle-retry for the history path's eventual consistency.
+        def _read_history() -> dict:
+            h = {}
+            for _ in range(6):
+                h = self.client.call_tool("hub_list_device_events", {"deviceId": dev_id, "hoursBack": 168})
+                if isinstance(h, dict) and h.get("events"):
+                    return h
+                time.sleep(1)
+            return h if isinstance(h, dict) else {}
+
+        # The newest event timestamp STRICTLY older than the most-recent one, as
+        # (epoch_ms, iso_string). Bookmarking it guarantees >=1 strictly-newer event
+        # (the most-recent cluster) comes back, so the only-newer check is non-vacuous.
+        def _bookmark_from(rows) -> tuple | None:
+            ts = [(_iso_epoch_ms(r["date"]), r["date"]) for r in rows if r.get("date")]
+            if not ts:
+                return None
+            newest = ts[0][0]
+            older = [(ms, s) for (ms, s) in ts if ms < newest]
+            return older[0] if older else None
+
+        hist = _read_history()
+        assert hist.get("sinceMode") == "relative", f"hoursBack call should report sinceMode=relative: {hist}"
+        assert "hoursBack" in hist and "since" not in hist, \
+            f"relative mode should echo hoursBack, not since: {hist}"
+        bm = _bookmark_from(hist.get("events", []))
+
+        # Seed only if the scaffold lacks >=2 distinct timestamps (rare -- it is the
+        # suite's shared action switch). Drive two opposite toggles, limiter-aware:
+        # bounce the server app via the watchdog and retry once; if the platform still
+        # throttles delivery (hub log carries the LimitExceededException), soft-pass --
+        # the filter logic is fully covered by the Spock specs.
+        if bm is None:
+            def _drive(value: str) -> bool:
                 self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": value})
                 for _ in range(3):
                     r = self.client.call_tool("hub_get_device_attribute", {
@@ -1207,105 +1236,56 @@ class TestRunner:
                     if isinstance(r, dict) and r.get("timedOut") is False and r.get("value") == value:
                         return True
                 return False
-            if _attempt():
-                return True
-            if self._clear_load_throttle(f"'{value}' on scaffold {dev_id} never landed (since-bookmark setup)"):
-                return _attempt()
-            return False
-
-        # When the limiter is proven to have aborted delivery (dispatch reached the
-        # device; hub log carries the LimitExceededException naming it), soft-pass:
-        # the since FILTER LOGIC is covered by the Spock unit specs -- the live smoke
-        # just cannot observe fresh events while the platform throttles them.
-        def _limiter_soft_pass(method: str, baseline: set) -> bool:
-            if self._limiter_logged(dev_id, method=method, baseline=baseline):
+            baseline = self._limiter_lines(dev_id)
+            cur = self.client.call_tool("hub_get_device_attribute", {"deviceId": dev_id, "attribute": "switch"})
+            start = cur.get("value") if isinstance(cur, dict) else None
+            a, b = ("off", "on") if start == "on" else ("on", "off")
+            for v in (a, b):
+                if not _drive(v) and self._clear_load_throttle(
+                        f"'{v}' on scaffold {dev_id} never landed (since-bookmark seed)"):
+                    _drive(v)
+            hist = _read_history()
+            bm = _bookmark_from(hist.get("events", []))
+            if bm is None and self._limiter_logged(dev_id, baseline=baseline):
                 print("    [LIMITER] scaffold dispatch throttled by the platform; the since "
                       "filter logic is covered by the Spock specs -- soft-passing the live smoke")
                 self._soft_passes.append(
                     "devices/test_list_device_events_since_bookmark: limiter-proven pass "
-                    "(dispatch reached the device; platform load limiter aborted delivery)")
-                return True
-            return False
-
-        # Toggle to the OPPOSITE of the current state so there is always a real
-        # state-change event -- driving the value the switch already holds is a no-op
-        # that emits nothing (the cause of an empty 1-hour window on a quiet scaffold).
-        cur = self.client.call_tool("hub_get_device_attribute", {"deviceId": dev_id, "attribute": "switch"})
-        start = cur.get("value") if isinstance(cur, dict) else None
-        first, second = ("off", "on") if start == "on" else ("on", "off")
-        setup_baseline = self._limiter_lines(dev_id)
-        if not _drive_and_settle(first) or not _drive_and_settle(second):
-            if _limiter_soft_pass(first, setup_baseline) or _limiter_soft_pass(second, setup_baseline):
+                    "(seed dispatch reached the device; platform load limiter aborted delivery)")
                 return
-            assert False, \
-                f"setup toggles did not land and the hub log shows no limiter evidence (dev {dev_id})"
+        assert bm is not None, \
+            f"scaffold {dev_id} lacked >=2 distinct event timestamps to bookmark, with no limiter evidence"
+        bookmark_ms, bookmark = bm
 
-        # Read the recent history (history mode via hoursBack) and grab the newest
-        # event's date as the bookmark. The event store is eventually-consistent on
-        # the history path, so settle-retry the read (re-issuing it each attempt)
-        # instead of asserting immediately -- the e2e analog of the suite's other
-        # eventual-consistency handling. A genuine regression still fails clearly
-        # after the retries are exhausted.
-        hist = {}
-        rows = []
-        for _ in range(6):
-            hist = self.client.call_tool("hub_list_device_events", {"deviceId": dev_id, "hoursBack": 1})
-            if isinstance(hist, dict) and hist.get("events"):
-                rows = hist["events"]
-                break
-            time.sleep(1)
-        assert isinstance(hist, dict), f"history-mode call did not return an object: {hist}"
-        assert hist.get("sinceMode") == "relative", f"hoursBack call should report sinceMode=relative: {hist}"
-        assert "hoursBack" in hist and "since" not in hist, \
-            f"relative mode should echo hoursBack, not since: {hist}"
-        assert rows, f"expected some events after two toggles, got none: {hist}"
-        bookmark = rows[0].get("date")
-        assert isinstance(bookmark, str) and bookmark, f"newest event missing a date to bookmark: {rows[0]}"
-
-        # Drive ONE more change after the bookmark so there is a strictly-newer event
-        # to find. The `since` window is exclusive (events AFTER the bookmark), so the
-        # bookmarked event itself will NOT come back -- only this new one. The scaffold
-        # sits at `second` after setup, so drive `first` (its opposite) for a real change.
-        post_baseline = self._limiter_lines(dev_id)
-        if not _drive_and_settle(first):
-            if _limiter_soft_pass(first, post_baseline):
-                return
-            assert False, \
-                f"post-bookmark toggle did not land and the hub log shows no limiter evidence (dev {dev_id})"
-
-        def _iso_epoch_ms(s: str) -> int:
-            # Hub emits ISO-8601 with a numeric offset (e.g. +0000 / -0700), no colon.
-            return int(datetime.strptime(s, "%Y-%m-%dT%H:%M:%S.%f%z").timestamp() * 1000)
-
-        # Round-trip: feed the recorded date straight back as `since`. The new event is
-        # eventually-consistent on the history path, so settle-retry the read until at
-        # least one strictly-newer event surfaces (so the "only-newer" check below
-        # cannot pass vacuously on an empty list).
-        res = {}
-        new_rows = []
-        for _ in range(6):
-            res = self.client.call_tool("hub_list_device_events", {"deviceId": dev_id, "since": bookmark})
-            if isinstance(res, dict) and res.get("events"):
-                new_rows = res["events"]
-                break
-            time.sleep(1)
+        # Round-trip: feed the recorded date string straight back as `since`. The window
+        # is exclusive, so the bookmarked instant and everything older must be absent,
+        # and the most-recent event(s) -- strictly after the bookmark -- must come back.
+        res = self.client.call_tool("hub_list_device_events", {"deviceId": dev_id, "since": bookmark})
         assert isinstance(res, dict), f"since call did not return an object: {res}"
+        new_rows = res.get("events", [])
         assert res.get("sinceMode") == "explicit", f"since call should report sinceMode=explicit: {res}"
         assert res.get("since") == bookmark, f"since not echoed verbatim (round-trip): {res}"
         assert "hoursBack" not in res, f"since mode must not echo hoursBack as if it bounded the window: {res}"
         # sinceTimestamp is canonical-formatted in the hub-local zone, so compare the
         # INSTANT, not the string (a string match is TZ-coincidental).
-        assert _iso_epoch_ms(res.get("sinceTimestamp", "")) == _iso_epoch_ms(bookmark), \
+        assert _iso_epoch_ms(res.get("sinceTimestamp", "")) == bookmark_ms, \
             f"sinceTimestamp should be the same instant as the supplied bookmark: {res}"
-        # At least one strictly-newer event must come back (the post-bookmark toggle) --
-        # this makes the "only-newer" relationship check below non-vacuous.
-        assert len(new_rows) >= 1, f"expected at least one event after the bookmark, got none: {res}"
+        # Non-vacuous: at least the most-recent event is strictly after the bookmark.
+        assert len(new_rows) >= 1, f"expected >=1 event strictly after the bookmark, got none: {res}"
         # Every returned event must be strictly newer than the bookmark; the bookmarked
-        # instant and anything older must be absent. Holds even though the shared
-        # scaffold carries prior history -- it asserts a relationship to the bookmark,
-        # not a fixed count.
-        assert all(_iso_epoch_ms(r["date"]) > _iso_epoch_ms(bookmark) for r in new_rows if r.get("date")), \
+        # instant and anything older must be absent.
+        assert all(_iso_epoch_ms(r["date"]) > bookmark_ms for r in new_rows if r.get("date")), \
             f"since returned an event at or before the bookmark: {new_rows}"
+
+        # Epoch-ms input resolves to the SAME instant and echoes canonical ISO (not raw
+        # digits); the same bookmark instant must return the same result set.
+        res_ms = self.client.call_tool("hub_list_device_events", {"deviceId": dev_id, "since": bookmark_ms})
+        assert isinstance(res_ms, dict) and res_ms.get("sinceMode") == "explicit", \
+            f"epoch-ms since should report explicit mode: {res_ms}"
+        assert _iso_epoch_ms(res_ms.get("since", "")) == bookmark_ms, \
+            f"epoch-ms since should echo canonical ISO of the same instant: {res_ms}"
+        assert res_ms.get("count") == res.get("count"), \
+            f"epoch-ms and ISO bookmarks at the same instant should return the same set: {res_ms} vs {res}"
 
     @test("diagnostics")
     def test_radio_details_include_topology(self) -> None:
