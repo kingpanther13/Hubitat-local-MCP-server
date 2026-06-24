@@ -1,6 +1,6 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split (13 flat core + 20 gateways = 33 on tools/list, 108 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split (13 flat core + 21 gateways = 34 on tools/list, 109 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -1523,7 +1523,7 @@ Run these prompts on BOTH v0.7.7 (all 74 on tools/list) and v0.8.0 (11 flat + 19
 
 ## Section 9: Stress Tests
 
-### T120 — Many-gateway stress (7 of 20 gateways)
+### T120 — Many-gateway stress (7 of 21 gateways)
 
 ```json
 {
@@ -2466,8 +2466,8 @@ These operations are too destructive for automated testing. Test manually with e
 | Component | Count |
 |-----------|-------|
 | Flat core tools on `tools/list` | 13 |
-| Gateways on `tools/list` | 20 |
-| Total visible on `tools/list` | 33 |
+| Gateways on `tools/list` | 21 |
+| Total visible on `tools/list` | 34 |
 | Total distinct tools in codebase | 108 |
 
 **7 read gateways**: `hub_read_apps_code` (11), `hub_read_devices` (4), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3)
@@ -2478,7 +2478,7 @@ These operations are too destructive for automated testing. Test manually with e
 
 ### Tool Coverage (non-destructive tools only)
 
-All 108 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 109 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 

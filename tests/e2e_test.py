@@ -990,12 +990,12 @@ class TestRunner:
         names = {t.get("name") for t in tools}
         # hub_update_package is a Developer-Mode-only TOP-LEVEL tool (issue #250): it shows on
         # tools/list ONLY with Developer Mode on (this e2e hub has it on -- a documented precondition).
-        # The documented DEFAULT catalog is 33 (13 core + 20 gateways); exclude the dev-mode tool so
+        # The documented DEFAULT catalog is 33 (13 core + 21 gateways); exclude the dev-mode tool so
         # the count matches the default regardless of the toggle, then assert the dev-mode tool is
         # present on this dev-on hub.
         default_tools = [t for t in tools if t.get("name") != "hub_update_package"]
         assert len(default_tools) == 33, \
-            f"Expected 33 default tools (13 core + 20 gateways), got {len(default_tools)}: {sorted(names)}"
+            f"Expected 33 default tools (13 core + 21 gateways), got {len(default_tools)}: {sorted(names)}"
         assert "hub_update_package" in names, \
             "hub_update_package must be a top-level tool when Developer Mode is on (issue #250)"
 

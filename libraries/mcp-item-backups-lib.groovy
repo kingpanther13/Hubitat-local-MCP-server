@@ -154,8 +154,12 @@ def toolRestoreItemBackup(args) {
         requireDestructiveConfirm(args.confirm)
         return _restoreHubBackup(scope, args)
     }
+    if (scope == "hub_uploaded") {
+        requireDestructiveConfirm(args.confirm)
+        return _restoreUploadedBackup(args)
+    }
     if (scope != "source") {
-        throw new IllegalArgumentException("scope must be 'source' (default), 'hub_local', or 'hub_cloud'.")
+        throw new IllegalArgumentException("scope must be 'source' (default), 'hub_local', 'hub_cloud', or 'hub_uploaded'.")
     }
     requireDestructiveConfirm(args.confirm)
 
@@ -620,6 +624,92 @@ def toolDeleteHubBackup(args) {
     }
 }
 
+// scope=hub_uploaded: fetch an external .lzf from backupUrl, multipart-POST it to /hub2/uploadBackup,
+// then GET /hub2/restoreUploadedBackup (reboots). The use case is migrating a backup from ANOTHER hub
+// or restoring an archived off-hub file (if the backup is already on this hub, use hub_local/hub_cloud).
+// OPEN-WORLD: it reaches the internet to fetch backupUrl. Confirm-gated by the caller.
+// CAVEAT: the binary multipart is unit-tested for orchestration but NOT validated against a live hub
+// (the destructive path is deliberately excluded from e2e); very large backups may strain the sandbox.
+private _restoreUploadedBackup(Map args) {
+    if (!args.backupUrl) throw new IllegalArgumentException("scope=hub_uploaded restore requires backupUrl (an http(s) URL to the .lzf backup to upload and restore)")
+    def url = args.backupUrl.toString()
+    if (!(url ==~ /(?i)^https?:\/\/.+/)) throw new IllegalArgumentException("backupUrl must be an http(s) URL, got: ${url}")
+    byte[] fileBytes
+    try {
+        fileBytes = _fetchBytesFromUrl(url)
+    } catch (Exception e) {
+        return [success: false, type: "hub-db", location: "hub_uploaded", error: "Could not fetch the backup from backupUrl: ${e.message}",
+                note: "Verify the URL is reachable from the hub and points at a .lzf backup file."]
+    }
+    if (fileBytes == null || fileBytes.length == 0) {
+        return [success: false, type: "hub-db", location: "hub_uploaded", error: "Fetched 0 bytes from backupUrl.",
+                note: "The URL returned an empty body; check it points at a real .lzf backup."]
+    }
+    try {
+        def up = _postMultipartBackup("/hub2/uploadBackup", "uploadFile", "uploaded.lzf", fileBytes)
+        if (!(up instanceof Map && up.success == true)) {
+            return [success: false, type: "hub-db", location: "hub_uploaded",
+                    error: "Upload to the hub failed: ${(up instanceof Map) ? (up.message ?: up.error ?: 'hub rejected the upload') : 'unexpected response'}",
+                    note: "Nothing was restored."]
+        }
+        def raw = hubInternalGet("/hub2/restoreUploadedBackup", null, 120)
+        def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+        if (parsed instanceof Map && parsed.success == true) {
+            return [success: true, type: "hub-db", location: "hub_uploaded",
+                    message: "Uploaded backup accepted — the hub is rebooting now to restore it.",
+                    note: "Re-check hub reachability after the reboot; the database is being replaced from the uploaded backup."]
+        }
+        return [success: false, type: "hub-db", location: "hub_uploaded",
+                error: (parsed instanceof Map) ? (parsed.message ?: parsed.error ?: "restore did not report success") : "unexpected response",
+                note: "The backup uploaded but the restore did not confirm — verify hub state."]
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "uploaded-backup restore failed", e)
+        return [success: false, type: "hub-db", location: "hub_uploaded", error: e.message, note: "Nothing was restored."]
+    }
+}
+
+// Fetch raw bytes from an http(s) URL (the .lzf to upload). Binary fetch via httpGet with textParser off.
+private byte[] _fetchBytesFromUrl(String url) {
+    byte[] out = null
+    httpGet([uri: url, timeout: 120, textParser: false]) { resp ->
+        def d = resp?.data
+        if (d instanceof byte[]) out = d
+        else if (d != null) out = d.bytes   // InputStream -> bytes
+    }
+    return out
+}
+
+// Build a multipart/form-data body for a single binary file part and POST it. Returns the parsed
+// response Map (or a {success:<2xx>} fallback). Used only by _restoreUploadedBackup.
+private _postMultipartBackup(String path, String field, String fileName, byte[] fileBytes) {
+    def boundary = "----mcpBackupBoundary${now()}"
+    byte[] pre = ("--${boundary}\r\nContent-Disposition: form-data; name=\"${field}\"; filename=\"${fileName}\"\r\nContent-Type: application/octet-stream\r\n\r\n").toString().getBytes("UTF-8")
+    byte[] post = ("\r\n--${boundary}--\r\n").toString().getBytes("UTF-8")
+    // Concatenate the multipart parts WITHOUT naming a java.io stream class (sandbox-blocked,
+    // SANDBOX-015): build a Byte list and coerce to byte[]. Adequate for typical backups; very
+    // large ones are slow, but this path is niche (migration/DR) and unverified-live anyway.
+    List parts = []
+    parts.addAll(pre as List)
+    parts.addAll(fileBytes as List)
+    parts.addAll(post as List)
+    byte[] body = parts as byte[]
+    def params = [uri: hubBaseUri(), path: path, timeout: 300,
+                  requestContentType: "multipart/form-data; boundary=${boundary}".toString(),
+                  body: body]
+    def cookie = getHubSecurityCookie()
+    if (cookie) params.headers = [Cookie: cookie]
+    def result = [success: false]
+    httpPost(params) { resp ->
+        def d = resp?.data
+        if (d instanceof Map) { result = d }
+        else {
+            try { result = new groovy.json.JsonSlurper().parseText(d?.toString() ?: "{}") }
+            catch (Exception ig) { result = [success: (resp?.status in [200, 201, 202])] }
+        }
+    }
+    return result
+}
+
 def _getAllToolDefinitions_partItemBackups() {
     return [
         // ==================== Hub-DB (whole-hub) backup tools — issue #259 item #1 ====================
@@ -771,14 +861,16 @@ def _getAllToolDefinitions_partItemBackups() {
         [
             name: "hub_restore_backup",
             description: """⚠️ Restore a backup. Tell the user first. Default scope='source': restore an app/driver/rule to a backed-up version (pass backupKey from hub_list_backups). If a CODE item was DELETED, use hub_create_app/hub_create_driver/hub_create_library instead; rule snapshots (incl. Visual Rules) DO recreate a deleted rule; library backups return a clear error directing you to hub_update_library.
-scope='hub_local'/'hub_cloud' RESTORE THE ENTIRE HUB DATABASE and REBOOT the hub (minutes of downtime, all current state replaced) — far higher blast radius than a code restore. hub_local needs fileName (from hub_list_backups scope=hub_local); hub_cloud needs cloudBackupPassword. Requires Write master + confirm.""",
+scope='hub_local'/'hub_cloud' RESTORE THE ENTIRE HUB DATABASE and REBOOT the hub (minutes of downtime, all current state replaced) — far higher blast radius than a code restore. hub_local needs fileName (from hub_list_backups scope=hub_local); hub_cloud needs cloudBackupPassword.
+scope='hub_uploaded' uploads an external .lzf from backupUrl (a backup from ANOTHER hub or an archived off-hub file) and restores it (also reboots) — OPEN-WORLD: the hub fetches backupUrl from the internet. Requires Write master + confirm.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    scope: [type: "string", enum: ["source", "hub_local", "hub_cloud"], description: "What to restore. 'source' (default)=code/rule backup by backupKey. 'hub_local'/'hub_cloud'=WHOLE-HUB database restore (wipes + reboots the hub)."],
+                    scope: [type: "string", enum: ["source", "hub_local", "hub_cloud", "hub_uploaded"], description: "What to restore. 'source' (default)=code/rule backup by backupKey. 'hub_local'/'hub_cloud'=WHOLE-HUB database restore (wipes + reboots). 'hub_uploaded'=upload an external .lzf from backupUrl, then restore (reboots)."],
                     backupKey: [type: "string", description: "scope=source: the backup key from hub_list_backups (e.g., 'app_123', 'driver_456', 'library_42')."],
                     fileName: [type: "string", description: "scope=hub_local: the backup `name` from hub_list_backups(scope=hub_local)."],
                     cloudBackupPassword: [type: "string", description: "scope=hub_cloud: the encryption password set on the cloud backup."],
+                    backupUrl: [type: "string", description: "scope=hub_uploaded: an http(s) URL to the .lzf backup to upload + restore (e.g. a backup from another hub). e.g. https://host/myhub-backup.lzf"],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms the user approved the restore (a hub-DB restore reboots the hub)."]
                 ],
                 required: ["confirm"]
@@ -831,6 +923,13 @@ def _idempotentWriteToolNames_partItemBackups() {
         // hub_create_backup is deliberately NOT here -- each call makes a fresh backup.
         "hub_delete_backup"
     ]
+}
+
+def _openWorldToolNames_partItemBackups() {
+    // hub_restore_backup can reach the internet (scope=hub_uploaded fetches backupUrl), so the whole
+    // tool is open-world (the MCP openWorldHint is per-tool, not per-scope). Contributed to the app's
+    // getOpenWorldToolNames() aggregator.
+    return ["hub_restore_backup"]
 }
 
 def _toolDisplayMeta_partItemBackups() {

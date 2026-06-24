@@ -1123,20 +1123,18 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_backup: [
-            description: "Whole-hub database backup management plus source-code backup restore (issue #259 item #1): create a hub backup and set its automatic schedule, list/restore/delete local + cloud hub-DB backups, and restore source-code backups. Hub-DB restore/delete are destructive — a hub-DB restore REBOOTS the hub — and need confirm + a recent backup. The read tools (hub_list_backups/hub_get_backup) are also in hub_read_apps_code.",
-            tools: ["hub_create_backup", "hub_list_backups", "hub_get_backup", "hub_restore_backup", "hub_delete_backup"],
+            description: "Hub-database backup management plus source-code backup restore (issue #259 item #1): list/restore/delete local + cloud whole-hub backups, restore an uploaded external backup, and restore source-code backups. Creating a backup and setting the automatic-backup schedule is the core hub_create_backup tool (kept top-level as the pre-flight for destructive ops). Hub-DB restore/delete are destructive — a hub-DB restore REBOOTS the hub — and need confirm + a recent backup. The read tools (hub_list_backups/hub_get_backup) are also in hub_read_apps_code.",
+            tools: ["hub_list_backups", "hub_get_backup", "hub_restore_backup", "hub_delete_backup"],
             summaries: [
-                hub_create_backup: "Create a whole-hub DB backup; optionally set the auto-backup schedule. Args: confirm, schedule?, scheduleOnly?, mock?",
                 hub_list_backups: "List backups. scope=source (code) | hub_local | hub_cloud | hub | all. Args: scope?, cursor?",
                 hub_get_backup: "Get source from a code backup. Args: backupKey",
-                hub_restore_backup: "Restore a code/rule backup (scope=source + backupKey) OR the whole hub DB (scope=hub_local + fileName | hub_cloud + cloudBackupPassword -- REBOOTS). Args: scope?, backupKey?/fileName?/cloudBackupPassword?, confirm",
+                hub_restore_backup: "Restore a code/rule backup (scope=source + backupKey) OR the whole hub DB (scope=hub_local + fileName | hub_cloud + cloudBackupPassword | hub_uploaded + backupUrl -- REBOOTS). Args: scope?, backupKey?/fileName?/cloudBackupPassword?/backupUrl?, confirm",
                 hub_delete_backup: "Delete a whole-hub DB backup. Args: location (local|cloud), fileName?/path?, confirm"
             ],
             searchHints: [
-                hub_create_backup: "create make hub database backup snapshot schedule automatic nightly before destructive write",
                 hub_list_backups: "list show backups code source whole hub database local cloud restore points",
                 hub_get_backup: "view read saved previous version revision source",
-                hub_restore_backup: "restore revert roll back code rule whole hub database disaster recovery migration reboot",
+                hub_restore_backup: "restore revert roll back code rule whole hub database disaster recovery migration upload reboot",
                 hub_delete_backup: "delete remove prune hub database backup local cloud free space recovery point"
             ]
         ],
@@ -1627,6 +1625,7 @@ def getOpenWorldToolNames() {
         + _openWorldToolNames_partSystem()
         + _openWorldToolNames_partCodeManagement()
         + _openWorldToolNames_partSelfAdmin()
+        + _openWorldToolNames_partItemBackups()
     ) as Set
 }
 
@@ -1677,7 +1676,7 @@ def getToolDisplayMeta() {
         hub_manage_variables: [title: "Manage Variables", summary: "Create, set, and delete hub variables and their connectors."],
         hub_manage_rooms: [title: "Manage Rooms", summary: "Create, rename, and delete rooms."],
         hub_manage_destructive_ops: [title: "Manage Destructive Ops", summary: "Reboot or shut down the hub, or permanently delete devices."],
-        hub_manage_backup: [title: "Manage Backups", summary: "Create/list/restore/delete hub-database backups (and restore code backups); set the backup schedule."],
+        hub_manage_backup: [title: "Manage Backups", summary: "List, restore, and delete hub-database backups, and restore code backups (create + schedule is the core hub_create_backup)."],
         hub_manage_code: [title: "Manage Code", summary: "Install, update, and delete apps, drivers, libraries, and code bundles."],
         hub_manage_logs: [title: "Manage Logs", summary: "Read hub logs and performance stats; clear MCP debug logs and set log level."],
         hub_manage_diagnostics: [title: "Manage Diagnostics", summary: "Diagnostics plus maintenance actions: GC and state snapshots."],
