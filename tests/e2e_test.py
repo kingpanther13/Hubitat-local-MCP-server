@@ -148,13 +148,15 @@ class HubitatMcpClient:
         if "hub_update_mcp_settings" in _pj:
             replay_safe = True
 
-        # Pace writes only. The heavy RM wizard edits (confirm:true) ride the cloud relay's
-        # gateway-timeout edge; a 0.2s pre-send gap caps the server app's short-window duty
-        # cycle so the write finishes before the relay 504s. Reads carry no such load and skip
-        # it -- that is the speedup. `not replay_safe` is the confirm-bearing-write marker;
-        # hub_update_mcp_settings is a light idempotent settings write and stays unpaced.
-        if not replay_safe:
-            time.sleep(0.2)
+        # Pace EVERY call with a 0.2s pre-send gap. The gap caps the server app's short-window
+        # duty cycle, which is exactly what the platform's per-app load limiter measures
+        # ("App 38 generates excessive hub load"). Reads were previously exempted as a speedup
+        # on the theory that only confirm-bearing wizard writes carried load -- but the full
+        # 137-test lane proved that wrong: accumulated back-to-back READS pushed app 38's
+        # short-window duty cycle over the limiter, cascading the heaviest group (native_apps
+        # RM wizard) into a wall of 500s. So reads are paced too. Cost is ~0.2s x calls; the
+        # alternative is a flaky full lane. E2E_PACE_SECONDS adds further per-TEST spacing.
+        time.sleep(0.2)
 
         # Chaos mode (E2E_CHAOS_504=<0..1>): after a WRITE completes, discard its response and
         # raise the exact relay-504 error with probability <rate>. This reproduces on demand the
@@ -246,6 +248,7 @@ class HubitatMcpClient:
         envelope (batch caps, 202-for-notifications, JSON-RPC framing) — paths
         the result-unwrapping call_tool/_send helpers deliberately hide.
         """
+        time.sleep(0.2)   # same per-call duty-cycle pacing as _send (see the limiter note there)
         last_exc: Exception | None = None
         for attempt in range(3):
             try:
@@ -389,11 +392,13 @@ class TestRunner:
         self.server_app_id = os.environ.get("HUBITAT_APP_ID", "")
         self.throttle_bounces = 0
         self._soft_passes: list[str] = []
-        # Inter-test pacing (see _run_one): optional client-side breathing room per test.
-        # Default 0 -- the load-limiter trips traced to byte volume pushed through the server
-        # app generally: real per-run hub backups (now mocked away on the test hub) AND large
-        # accumulated wizard pages (now kept small by the per-concern rule tests), not test
-        # cadence. The knob stays for diagnostics.
+        # Inter-test pacing (see _run_one): optional client-side breathing room per test, ON TOP
+        # of the unconditional 0.2s per-call gap in _send. Byte volume (real per-run hub backups,
+        # large accumulated wizard pages) is one limiter input, but call CADENCE is another and was
+        # wrongly dismissed: the full 137-test lane still tripped the per-app limiter with backups
+        # mocked and rules kept small, because back-to-back calls (reads included) drove app 38's
+        # short-window duty cycle over the ceiling. The _send 0.2s gap is the primary lever; raise
+        # this for additional per-test spacing if the lane is still hot.
         self.pace_seconds = float(os.environ.get("E2E_PACE_SECONDS", "0"))
         # Opt-in escalation so a recurring per-app load limiter is NOT soft-passed forever: once the
         # limiter has tripped (and been app-bounced) this many times in a run, escalate from an
@@ -718,22 +723,34 @@ class TestRunner:
         method = getattr(self, method_name)
         self._current_test = f"{group}/{name}"
         t0 = time.monotonic()
-        # Maintainer policy: a 504-caused failure (or 504-reasoned abort) gets ONE full
-        # test re-run before being declared failed -- the test re-creates its own fixtures
-        # and the verify-by-label helpers adopt anything the first attempt committed. A
-        # second 504-caused failure is then an honest red.
+        # Maintainer policy: a transient-caused failure gets ONE full test re-run before being
+        # declared failed -- the test re-creates its own fixtures and the verify-by-label helpers
+        # adopt anything the first attempt committed. Two transient classes get the retry:
+        #   - a relay 504 (response lost), and
+        #   - a server 5xx that is NOT a 504 (typically "500 Internal Server Error"): under the
+        #     per-app load limiter a wizard write throws hub-side because LimitExceededException
+        #     aborts a sub-step, surfacing as a 500 the 504 path missed -- which is what cascaded
+        #     the native_apps group into hard reds on the full lane. For the 5xx case we first
+        #     recover the app (bounce via the watchdog, escalating to a hub reboot per
+        #     E2E_LIMITER_REBOOT_AFTER) so the re-run hits a healthy app instance.
+        # Both re-run the WHOLE test on its own fresh fixtures -- never a transport replay. A
+        # second transient failure is then an honest red.
+        retry_reason = ""
         for attempt in (1, 2):
             try:
                 method()
                 elapsed = time.monotonic() - t0
-                msg = "(passed on retry after relay 504)" if attempt == 2 else ""
                 if attempt == 2:
-                    self._soft_passes.append(f"{group}/{name}: passed on retry after relay 504")
+                    msg = f"(passed on retry after {retry_reason})"
+                    self._soft_passes.append(f"{group}/{name}: passed on retry after {retry_reason}")
+                else:
+                    msg = ""
                 self._record(name, group, "pass", message=msg, duration=elapsed)
                 return
             except SkipTest as exc:
                 elapsed = time.monotonic() - t0
                 if "504" in str(exc) and attempt == 1:
+                    retry_reason = "relay 504"
                     print(f"    [RETRY] {name} aborted by relay 504 -- re-running the test once")
                     continue
                 if "504" in str(exc):
@@ -744,8 +761,20 @@ class TestRunner:
                 return
             except Exception as exc:
                 elapsed = time.monotonic() - t0
-                if "504" in str(exc) and attempt == 1:
+                es = str(exc)
+                if "504" in es and attempt == 1:
+                    retry_reason = "relay 504"
                     print(f"    [RETRY] {name} failed on a relay 504 -- re-running the test once")
+                    continue
+                # Server 5xx that is NOT a 504 (500/501/502/503): suspected per-app load limiter.
+                # Bounce/recover the app (which escalates to a reboot at the configured threshold),
+                # then re-run once on fresh fixtures. _clear_load_throttle raises only if the app is
+                # left disabled -- that is a genuine emergency and is allowed to propagate loudly.
+                if attempt == 1 and re.search(r"\b50[0-3]\b", es):
+                    retry_reason = "limiter 5xx"
+                    print(f"    [RETRY] {name} failed on a server 5xx ({es[:80]}) -- suspected load "
+                          "limiter; recovering the app and re-running once")
+                    self._clear_load_throttle(f"server 5xx on {name}: {es[:120]}")
                     continue
                 # The summary table stays readable with a 200-char message, but the FULL
                 # failure goes to the run log here -- a truncated structured response
