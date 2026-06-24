@@ -2373,6 +2373,7 @@ def executeTool(toolName, args) {
         case "hub_read_rooms":
         case "hub_read_rules":
         case "hub_read_variables":
+        case "hub_manage_backup":
         case "hub_manage_code":
         case "hub_manage_custom_rules":
         case "hub_manage_destructive_ops":

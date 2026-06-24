@@ -193,6 +193,29 @@ class GatewayToggleSpec extends ToolSpecBase {
         }
     }
 
+    def "every gateway in getGatewayConfig routes through executeTool's dispatch (no missing gateway case)"() {
+        // executeTool routes gateway NAMES to handleGateway via a hand-maintained case list that is
+        // SEPARATE from getGatewayConfig(). A gateway added to the config without a matching case falls
+        // through to the Unknown-tool default on the REAL tools/call path -- a spec that calls
+        // handleGateway() directly misses it (that gap shipped hub_manage_backup with no case and only
+        // the full e2e lane caught it). Derive from the config so the two lists can't drift.
+        given:
+        settingsMap.useGateways = true
+
+        expect:
+        script.getGatewayConfig().keySet().every { gw ->
+            boolean routed = true
+            try {
+                script.executeTool(gw, [:])   // no sub-tool -> gateway catalog; must NOT hit the default
+            } catch (IllegalArgumentException e) {
+                routed = !e.message.startsWith("Unknown tool: ${gw}")
+            } catch (Exception ignored) {
+            }
+            assert routed, "executeTool has no gateway-routing case for '${gw}' -- it's in getGatewayConfig() but missing from the executeTool switch"
+            routed
+        }
+    }
+
     def "useGateways=false: dispatch still works for a sub-tool called by its real name"() {
         given:
         settingsMap.useGateways = false
