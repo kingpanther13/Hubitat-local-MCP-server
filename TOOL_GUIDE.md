@@ -108,6 +108,23 @@ Tools without cursor support (`hub_get_app_config`, `hub_export_native_app`, `hu
 
 ---
 
+## Best-Practice Reference
+
+Surfaced via `hub_get_tool_guide(section='best_practice_reference')`. This section backs the two best-practice aids (issue #299):
+
+- **Require Best-Practice Guide Acknowledgment** (`enableMandatoryBPS`) — **ON by default**. While on, every write tool is blocked until the AI reads this guide section and passes the acknowledgment key it publishes as the `bestPracticeKey` argument. The **Acknowledgment key** value lives only in the in-app guide section (served by `hub_get_tool_guide`), never in this doc, so reading the guide is the only way to obtain it. `hub_get_tool_guide` and `hub_update_mcp_settings` are exempt from the gate, so the AI can always read the key or toggle the gate off — it can never lock itself out.
+- **Reactive best-practice hints** — **always on, no toggle**. When a write tool errors, the error gains a one-line pointer to **that tool's own** guide section (not a generic page), so the AI can recover from the failing tool's reference.
+
+The best practices it teaches:
+
+- Prefer **native Rule Machine** (`hub_manage_native_rules_and_apps` / `hub_set_rule`) over the legacy `custom_*` rule engine for new automation work.
+- Resolve devices by exact `deviceId` (compare as strings) with `hub_list_devices` before acting.
+- Destructive writes need `confirm=true` plus a backup within 24h (`hub_create_backup`).
+
+This is the consolidation target: best-practice content can move here from individual write-tool descriptions over time, kept lean on the wire while the gate guarantees the AI has read it.
+
+---
+
 ## Destructive Write Tools - Pre-Flight Checklist
 
 All destructive write tools (the `confirm`+backup tier) require these steps:

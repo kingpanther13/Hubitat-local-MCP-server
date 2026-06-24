@@ -91,6 +91,8 @@ fi
 # e2e hub: the suite is meant to exercise the production gateway-routed surface (the catalog real
 # clients see), so we set it explicitly rather than relying on the null->on default in case a prior
 # run left it off. Both keys are long-standing and persist through the source swap into the PR app.
+# (The issue #299 best-practice gate ships ON by default; it is pinned OFF POST-deploy by the e2e
+# runner -- this pre-deploy step runs against main, which does not know that key.)
 mcp_call '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"hub_manage_mcp","arguments":{"tool":"hub_update_mcp_settings","args":{"settings":{"enableCustomRuleEngine":true,"useGateways":true},"confirm":true}}}}' \
   | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null
 

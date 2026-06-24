@@ -277,6 +277,11 @@ abstract class HarnessSpec extends Specification {
         atomicStateMap.clear()
         settingsMap.clear()
         settingsMap.selectedDevices = []
+        // The issue #299 best-practice gate ships ON (settings.enableMandatoryBPS != false), which
+        // would block every keyless write tool the specs exercise. Pin it OFF by default here --
+        // analogous to the e2e env setup -- so unconcerned write specs run; ExecuteToolMandatoryBpsGateSpec
+        // removes/sets it explicitly to test the gate (including the default-ON behaviour).
+        settingsMap.enableMandatoryBPS = false
         // CI matrix dispatch-mode dimension: when set, forces useGateways
         // default per-test. Tests that explicitly pin useGateways in given:
         // still win (the given: assignment overrides).

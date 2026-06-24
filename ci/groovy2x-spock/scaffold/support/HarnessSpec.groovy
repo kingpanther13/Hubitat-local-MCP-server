@@ -193,6 +193,10 @@ abstract class HarnessSpec extends Specification {
         atomicStateMap.clear()
         settingsMap.clear()
         settingsMap.selectedDevices = []
+        // The issue #299 best-practice gate ships ON (settings.enableMandatoryBPS != false), which
+        // would block every keyless write the specs exercise. Pin it OFF by default here -- mirrors
+        // the root support/HarnessSpec; ExecuteToolMandatoryBpsGateSpec sets it explicitly to test it.
+        settingsMap.enableMandatoryBPS = false
         // CI matrix dispatch-mode dimension: when set, forces useGateways
         // default per-test. Tests that explicitly pin useGateways in given:
         // still win.

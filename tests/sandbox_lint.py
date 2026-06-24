@@ -1389,6 +1389,7 @@ def check_tool_guide_pointers(src_override: str | None = None,
     #    the lint tolerant of prose edits while catching renames.
     key_to_heading_hint = {
         "device_authorization": "Device Authorization",
+        "best_practice_reference": "Best-Practice Reference",
         "hub_admin_write": "Destructive Write",
         "virtual_devices": "Virtual Device",
         "update_device": "update_device",
@@ -1441,6 +1442,13 @@ def check_tool_guide_pointers(src_override: str | None = None,
     #    represents a load-bearing API surface fact (capability name, error keyword,
     #    API endpoint slug, etc.).
     default_anchors = {
+        "best_practice_reference": [
+            # The acknowledgment-key line the enableMandatoryBPS gate publishes (the phrase, not
+            # the secret value -- the key literal must NEVER reach TOOL_GUIDE.md).
+            "Acknowledgment key",
+            # The flagship anti-pattern nudge mirrored by the reactive detector + the gate guide.
+            "native Rule Machine",
+        ],
         "set_rule_reference": [
             # setVariable / Hub Variable addAction family
             "setVariable",
