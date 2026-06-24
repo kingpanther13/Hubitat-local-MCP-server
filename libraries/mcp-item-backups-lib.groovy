@@ -413,6 +413,13 @@ def toolCreateHubBackup(args) {
         }
     }
 
+    // The Write master is enforced centrally in executeTool; this tool creates the backup itself,
+    // so it cannot require a pre-existing recent one (no requireDestructiveConfirm). A create-now
+    // still needs confirm; a scheduleOnly call already returned above without needing it.
+    if (!args.confirm) {
+        throw new IllegalArgumentException("You must set confirm=true to create a backup (or pass scheduleOnly=true to only set the schedule).")
+    }
+
     if (args.mock == true) {
         // Test-hub lever (maintainer-directed): stamp ONLY the destructive-confirm gate record
         // without performing any real backup -- the hub backup is a heavy operation the platform's
