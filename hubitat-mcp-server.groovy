@@ -2219,6 +2219,7 @@ def executeTool(toolName, args) {
         case "hub_update_package": return toolUpdatePackage(args)
         case "hub_get_hsm_status": return toolGetHsmStatus()
         case "hub_set_hsm": return toolSetHsm(args.mode)
+        case "hub_set_system_settings": return toolSetSystemSettings(args)
 
         // Captured State Management
         case "hub_list_captured_states": return toolListCapturedStates(args)

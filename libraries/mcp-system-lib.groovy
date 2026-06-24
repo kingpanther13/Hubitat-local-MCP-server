@@ -224,6 +224,98 @@ def toolGetHubInfo(args = null) {
     return info
 }
 
+// hub_set_system_settings: write the hub-GLOBAL location/identity settings. All params optional; pass
+// only what changes. Wire format verified live (read /hub/details/json + the Settings page's POST):
+//   READ current state:  GET /hub/details/json -> {hubName,timeZone,latitude,longitude,zipCode,
+//                         tempScale,dateFormat,timeFormat,ttsCurrent,mdnsName,...}
+//   WRITE (wholesale):    POST /location/update with the FULL payload {name,timeZone,latitude,longitude,
+//                         clock,dateFormat,zipCode,temperatureScale,voice,mdnsName}. The endpoint blanks
+//                         omitted fields, so we READ-MERGE: build the payload from the current values and
+//                         override only the provided args (clock/dateFormat/voice/mdnsName -- not settable
+//                         here -- are always carried through). hubName is the payload's `name` field, so
+//                         every setting goes through this ONE atomic POST.
+// A timeZone change REBOOTS the hub, so it is confirm-gated (requireDestructiveConfirm). Arg validation
+// throws (-> -32602); hub-call failures return the structured runtime-error envelope -- never thrown.
+def toolSetSystemSettings(args) {
+    args = args ?: [:]
+    def settable = ["hubName", "timeZone", "latitude", "longitude", "zipCode", "temperatureScale"]
+    if (!settable.any { args.containsKey(it) }) {
+        throw new IllegalArgumentException("Provide at least one field to change: ${settable.join(', ')}. All are optional; pass only what changes.")
+    }
+    if (args.containsKey("temperatureScale") && !(args.temperatureScale?.toString() in ["F", "C"])) {
+        throw new IllegalArgumentException("temperatureScale must be 'F' or 'C' (uppercase), got: ${args.temperatureScale}")
+    }
+    _validateCoordinate("latitude", args, -90, 90)
+    _validateCoordinate("longitude", args, -180, 180)
+
+    // A timeZone change reboots the hub -- confirm-gate it.
+    if (args.containsKey("timeZone")) {
+        requireDestructiveConfirm(args.confirm)
+    }
+
+    def cur
+    try {
+        def raw = hubInternalGet("/hub/details/json")
+        cur = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "hub_set_system_settings could not read current settings", e)
+        return [success: false, error: "Could not read current hub settings (/hub/details/json): ${e.message}",
+                applied: [], note: "Nothing was changed. Verify the hub is reachable and retry."]
+    }
+    if (!(cur instanceof Map)) {
+        return [success: false, error: "Unexpected /hub/details/json response; cannot safely merge.",
+                applied: [], note: "Nothing was changed."]
+    }
+
+    // Read-merge the FULL wholesale payload from the current values, overriding only the provided args
+    // (the POST blanks omitted fields). clock/dateFormat/voice/mdnsName are preserved as-is.
+    def payload = [
+        name:             args.containsKey("hubName")          ? args.hubName          : cur.hubName,
+        timeZone:         args.containsKey("timeZone")         ? args.timeZone         : cur.timeZone,
+        latitude:         args.containsKey("latitude")         ? args.latitude         : cur.latitude,
+        longitude:        args.containsKey("longitude")        ? args.longitude        : cur.longitude,
+        clock:            cur.timeFormat,
+        dateFormat:       cur.dateFormat,
+        zipCode:          args.containsKey("zipCode")          ? args.zipCode          : cur.zipCode,
+        temperatureScale: args.containsKey("temperatureScale") ? args.temperatureScale : cur.tempScale,
+        voice:            cur.ttsCurrent,
+        mdnsName:         cur.mdnsName,
+    ]
+
+    def parsed
+    try {
+        parsed = hubInternalPostJson("/location/update", groovy.json.JsonOutput.toJson(payload))
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "hub_set_system_settings /location/update failed", e)
+        return [success: false, error: "Failed to apply hub settings: ${e.message}",
+                applied: [], note: "Nothing was changed (the update is one atomic POST). Read current values with hub_get_info."]
+    }
+    if (!(parsed instanceof Map && parsed.success == true)) {
+        def err = (parsed instanceof Map) ? (parsed.message ?: parsed.error) : null
+        return [success: false, error: err ?: "/location/update did not report success", applied: [],
+                note: "Nothing was changed. Read current values with hub_get_info."]
+    }
+    return [success: true, applied: settable.findAll { args.containsKey(it) },
+            note: "Read back the current values with hub_get_info." +
+                  (args.containsKey("timeZone") ? " A timeZone change reboots the hub (1-3 min downtime)." : "")]
+}
+
+// Validate an optional lat/long arg: coerce a string to a number and bound the range (-> -32602 on a
+// bad value), so an out-of-range coordinate is rejected before it reaches the hub.
+private _validateCoordinate(String key, Map args, Number lo, Number hi) {
+    if (!args.containsKey(key)) return
+    def v = args[key]
+    if (v instanceof String) {
+        try { v = v.toBigDecimal() } catch (Exception e) {
+            throw new IllegalArgumentException("${key} must be a number, got: ${args[key]}")
+        }
+    }
+    if (!(v instanceof Number) || v < lo || v > hi) {
+        throw new IllegalArgumentException("${key} must be a number between ${lo} and ${hi}, got: ${args[key]}")
+    }
+    args[key] = v   // write back the coerced number so the /location/update payload sends a number, not a string
+}
+
 def toolGetModes() {
     def currentMode = location.mode
     def modes = location.modes?.collect { [id: it.id.toString(), name: it.name] }
@@ -904,6 +996,32 @@ def _getAllToolDefinitions_partSystem() {
             ]
         ],
         [
+            name: "hub_set_system_settings",
+            description: """Set hub-GLOBAL location settings: hub name, time zone, latitude/longitude, zip code, temperature scale. All optional — pass only what changes.[[FLAT_TRIM]] lat/long/timeZone/temperatureScale/zipCode are written together via one granular endpoint that read-merges current values, so omitted fields keep their value. ⚠️ Changing timeZone REBOOTS the hub (1-3 min downtime) — it requires confirm=true + a backup <24h; the other fields need only the Write master. Read back applied values with hub_get_info. Requires Write master.[[/FLAT_TRIM]]""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    hubName: [type: "string", description: "New hub name."],
+                    timeZone: [type: "string", description: "IANA time zone ID, e.g. 'America/New_York'.[[FLAT_TRIM]] ⚠️ Changing this REBOOTS the hub — requires confirm=true + a recent backup.[[/FLAT_TRIM]]"],
+                    latitude: [type: "number", description: "Latitude in decimal degrees, e.g. 40.7128."],
+                    longitude: [type: "number", description: "Longitude in decimal degrees, e.g. -74.006."],
+                    zipCode: [type: "string", description: "Postal/zip code, e.g. '10001'."],
+                    temperatureScale: [type: "string", enum: ["F", "C"], description: "Temperature scale: F or C."],
+                    confirm: [type: "boolean", description: "Required only to change timeZone (reboots the hub).[[FLAT_TRIM]] Must be true; confirms a backup <24h + that the reboot is intended.[[/FLAT_TRIM]]"]
+                ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the settings were applied"],
+                    applied: [type: "array", description: "The fields that were changed", items: [type: "string"]],
+                    error: [type: "string", description: "Failure reason (success=false)"],
+                    note: [type: "string", description: "Guidance / recovery; how to read back values"]
+                ],
+                required: ["success"]
+            ]
+        ],
+        [
             name: "hub_create_backup",
             description: """Create a full hub backup. REQUIRED before any Write master operation (24h validity).[[FLAT_TRIM]] Requires Write master + confirm. This is the only write tool that doesn't require a prior backup.[[/FLAT_TRIM]]""",
             inputSchema: [
@@ -1027,6 +1145,9 @@ def _idempotentWriteToolNames_partSystem() {
     return [
         // Hub state
         "hub_set_hsm", "hub_set_mode_manager"
+        // hub_set_system_settings is deliberately OMITTED here (non-idempotent): its timeZone leg
+        // reboots the hub, so a retry with the same args re-triggers the reboot -- not "no additional
+        // effect" -- which is the conservative, accurate idempotentHint for this tool.
     ]
 }
 
@@ -1051,6 +1172,7 @@ def _toolDisplayMeta_partSystem() {
         hub_set_mode_manager: [title: "Set Mode Manager", summary: "Pick the Mode Manager and update its per-mode conditions."],
         hub_get_hsm_status: [title: "Get HSM Status", summary: "Get the current Hubitat Safety Monitor arm status."],
         hub_set_hsm: [title: "Set HSM Arm Mode", summary: "Arm or disarm Hubitat Safety Monitor."],
+        hub_set_system_settings: [title: "Set System Settings", summary: "Set hub name, time zone, latitude/longitude, zip code, or temperature scale."],
         // Hub utilities
         hub_create_backup: [title: "Create Hub Backup", summary: "Create a full hub backup (required before destructive writes)."],
         hub_update_firmware: [title: "Update Hub Firmware", summary: "Install the hub's pending platform/firmware update (downloads, installs, and reboots the hub)."],

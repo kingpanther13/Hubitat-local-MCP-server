@@ -77,9 +77,26 @@ class TestLocation implements Location {
      */
     TimeZone timeZone = TimeZone.getTimeZone("UTC")
 
+    /**
+     * Location settings read by hub_set_system_settings' read-merge (it reads
+     * the current {@code location.latitude/longitude/temperatureScale/zipCode}
+     * and overrides only the provided args). Declared on the Location interface;
+     * explicit getters below override @AutoImplement's null/zero defaults so a
+     * spec can seed a realistic baseline and assert which fields the wholesale
+     * /hub/updateLatLongTimezone POST carried through unchanged.
+     */
+    BigDecimal latitude = 40.7128
+    BigDecimal longitude = -74.006
+    String temperatureScale = 'F'
+    String zipCode = '10001'
+
     @Override String getMode() { _mode }
     @Override void setMode(String m) { _mode = m; modeSetCalls << m }
     @Override TimeZone getTimeZone() { timeZone }
+    @Override BigDecimal getLatitude() { latitude }
+    @Override BigDecimal getLongitude() { longitude }
+    @Override String getTemperatureScale() { temperatureScale }
+    @Override String getZipCode() { zipCode }
     @Override String getName() { 'TestLocation' }
     @Override Long getId() { 1L }
 }

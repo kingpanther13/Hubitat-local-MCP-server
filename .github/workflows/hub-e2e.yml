@@ -659,6 +659,12 @@ jobs:
           # WATCHDOG_URL, overlapping the restore-poll wait) instead of the test critical path.
           # NOT set on the post-restore --cleanup-only step below, which stays the idempotent backstop.
           E2E_DEFER_NATIVE_DELETES: '1'
+          # Self-heal the per-app load limiter instead of soft-passing it forever: after this many
+          # limiter trips (each already app-bounced) in a run, escalate to a full hub reboot, which
+          # resets the platform's short-window load counters (an app-bounce only clears the app
+          # instance). The full 137-test lane otherwise drives app 38 over the limiter and cascades
+          # the native_apps RM-wizard writes into hard 500s. Capped at a few reboots/run (cannot loop).
+          E2E_LIMITER_REBOOT_AFTER: '2'
           E2E_LANE: ${{ steps.gate.outputs.lane }}
           E2E_GROUPS: ${{ steps.gate.outputs.groups }}
           E2E_TESTS: ${{ steps.gate.outputs.tests }}

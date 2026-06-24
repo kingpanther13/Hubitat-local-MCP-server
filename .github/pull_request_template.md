@@ -27,7 +27,9 @@
 
 <!-- These bullets are what HPM users will see when prompted to update — write for end users, not developers.
      Sub-bullets are supported (nest with 2-space indent).
-     If you skip this section, the release entry will fall back to just the PR title. -->
+     If you skip this section, the release entry will fall back to just the PR title.
+     LEAVE COMPLETELY BLANK IF THERE ARE NO RELEASE NOTES — typing "None" in here will LITERALLY
+     give a release note that says "None". -->
 
 - 
 
@@ -37,7 +39,8 @@
 
 ## Checklist
 
-- [ ] **Unit tests added for any new MCP tools** (required — see [docs/testing.md](docs/testing.md) for the harness + recipes)
+- [ ] **Unit tests added for any new MCP tools, regressions, or bug fixes** (required — see [docs/testing.md](docs/testing.md) for the harness + recipes)
+- [ ] **e2e tests added for new tools and/or regression tests added for any bug fix** (see `tests/e2e_test.py`)
 - [ ] Sandbox lint passes: `python tests/sandbox_lint.py`
 - [ ] `./gradlew test` passes locally (or CI confirms)
 - [ ] Live-hub BAT tests updated if tool behaviour changed (see `tests/BAT-v2.md`)

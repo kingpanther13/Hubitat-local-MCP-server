@@ -148,13 +148,15 @@ class HubitatMcpClient:
         if "hub_update_mcp_settings" in _pj:
             replay_safe = True
 
-        # Pace writes only. The heavy RM wizard edits (confirm:true) ride the cloud relay's
-        # gateway-timeout edge; a 0.2s pre-send gap caps the server app's short-window duty
-        # cycle so the write finishes before the relay 504s. Reads carry no such load and skip
-        # it -- that is the speedup. `not replay_safe` is the confirm-bearing-write marker;
-        # hub_update_mcp_settings is a light idempotent settings write and stays unpaced.
-        if not replay_safe:
-            time.sleep(0.2)
+        # Pace EVERY call with a 0.2s pre-send gap. The gap caps the server app's short-window
+        # duty cycle, which is exactly what the platform's per-app load limiter measures
+        # ("App 38 generates excessive hub load"). Reads were previously exempted as a speedup
+        # on the theory that only confirm-bearing wizard writes carried load -- but the full
+        # 137-test lane proved that wrong: accumulated back-to-back READS pushed app 38's
+        # short-window duty cycle over the limiter, cascading the heaviest group (native_apps
+        # RM wizard) into a wall of 500s. So reads are paced too. Cost is ~0.2s x calls; the
+        # alternative is a flaky full lane. E2E_PACE_SECONDS adds further per-TEST spacing.
+        time.sleep(0.2)
 
         # Chaos mode (E2E_CHAOS_504=<0..1>): after a WRITE completes, discard its response and
         # raise the exact relay-504 error with probability <rate>. This reproduces on demand the
@@ -246,6 +248,7 @@ class HubitatMcpClient:
         envelope (batch caps, 202-for-notifications, JSON-RPC framing) — paths
         the result-unwrapping call_tool/_send helpers deliberately hide.
         """
+        time.sleep(0.2)   # same per-call duty-cycle pacing as _send (see the limiter note there)
         last_exc: Exception | None = None
         for attempt in range(3):
             try:
@@ -389,18 +392,31 @@ class TestRunner:
         self.server_app_id = os.environ.get("HUBITAT_APP_ID", "")
         self.throttle_bounces = 0
         self._soft_passes: list[str] = []
-        # Inter-test pacing (see _run_one): optional client-side breathing room per test.
-        # Default 0 -- the load-limiter trips traced to byte volume pushed through the server
-        # app generally: real per-run hub backups (now mocked away on the test hub) AND large
-        # accumulated wizard pages (now kept small by the per-concern rule tests), not test
-        # cadence. The knob stays for diagnostics.
+        # Inter-test pacing (see _run_one): optional client-side breathing room per test, ON TOP
+        # of the unconditional 0.2s per-call gap in _send. Byte volume (real per-run hub backups,
+        # large accumulated wizard pages) is one limiter input, but call CADENCE is another and was
+        # wrongly dismissed: the full 137-test lane still tripped the per-app limiter with backups
+        # mocked and rules kept small, because back-to-back calls (reads included) drove app 38's
+        # short-window duty cycle over the ceiling. The _send 0.2s gap is the primary lever; raise
+        # this for additional per-test spacing if the lane is still hot.
         self.pace_seconds = float(os.environ.get("E2E_PACE_SECONDS", "0"))
+        # Opt-in escalation so a recurring per-app load limiter is NOT soft-passed forever: once the
+        # limiter has tripped (and been app-bounced) this many times in a run, escalate from an
+        # app-bounce to a full HUB REBOOT, which resets the platform's load counters (an app-bounce
+        # only clears the app instance). 0 = disabled (default; pure soft-pass behaviour). Capped at a
+        # few reboots/run so it can never loop. See _reboot_hub_for_limiter / _clear_load_throttle.
+        self.limiter_reboot_after = int(os.environ.get("E2E_LIMITER_REBOOT_AFTER", "0"))
+        self._limiter_reboots = 0
 
         self._current_test = ""
 
         # Cached helpers
         self._first_device_id: str | None = None
-        self._test_start_time: str | None = None  # ISO for log check
+        self._test_start_time: str | None = None  # ISO marker (diagnostic; window uses the snapshot below)
+        # Hub error-log snapshot taken at run start so test_no_hub_errors flags only NEW errors. The
+        # hub logs local time in the entry's 'name' field and leaves 'time' empty, so a timestamp
+        # compare against the UTC runner clock is unreliable -- a name+message set-delta needs no clock.
+        self._error_log_baseline: set = set()
 
     # -- Helpers -------------------------------------------------------------
 
@@ -514,7 +530,59 @@ class TestRunner:
         time.sleep(3)
         self.throttle_bounces += 1
         print(f"    [THROTTLE] bounce #{self.throttle_bounces} complete -- retrying the blocked dispatch once.")
+        # Escalate to a full hub reboot once the limiter has tripped enough times this run (opt-in via
+        # E2E_LIMITER_REBOOT_AFTER), so a recurring limiter is actively recovered instead of soft-passed
+        # forever. Trigger at each multiple of the threshold, capped at 3 reboots/run (never loops).
+        if (self.limiter_reboot_after > 0
+                and self.throttle_bounces >= self.limiter_reboot_after * (self._limiter_reboots + 1)
+                and self._limiter_reboots < 3):
+            self._reboot_hub_for_limiter()
         return True
+
+    def _reboot_hub_for_limiter(self) -> bool:
+        """Escalation for a recurring per-app load limiter: REBOOT the hub to reset the platform's
+        load counters (an app-bounce only clears the app instance; a reboot clears the whole platform).
+        Opt-in via E2E_LIMITER_REBOOT_AFTER. Fired through MCP_URL's hub_reboot -- the hub-level
+        /hub/reboot goes through even when device dispatch is throttled (verified live); the call is
+        retried a few times in case the tool dispatch itself is briefly throttled. Counts the ATTEMPT
+        up front so the caller's cap bounds total reboots regardless of outcome. Returns True on a
+        verified recovery. (The watchdog has no plain reboot tool today; if MCP_URL ever proves
+        unreliable here, mirror hub_reboot into the watchdog and switch to WATCHDOG_URL.)"""
+        self._limiter_reboots += 1
+        print(f"    [THROTTLE] limiter tripped {self.throttle_bounces}x this run -- escalating to a HUB REBOOT "
+              f"#{self._limiter_reboots} (E2E_LIMITER_REBOOT_AFTER={self.limiter_reboot_after}) to reset the "
+              "platform load counters.")
+        fired = False
+        for attempt in range(1, 4):
+            try:
+                resp = self.client.call_tool("hub_manage_destructive_ops",
+                                             {"tool": "hub_reboot", "args": {"confirm": True}})
+                if isinstance(resp, dict) and resp.get("success"):
+                    fired = True
+                    break
+                print(f"    [THROTTLE] hub_reboot attempt {attempt} did not confirm: {str(resp)[:160]}")
+            except Exception as exc:
+                # Broad on purpose: firing a reboot inherently drops the connection (ConnectionError /
+                # Timeout from requests, which are NOT McpError), so catch + retry instead of crashing
+                # the runner. This is a recovery loop, not an assertion path.
+                print(f"    [THROTTLE] hub_reboot attempt {attempt} errored ({str(exc)[:120]}) -- retrying")
+            time.sleep(5)
+        if not fired:
+            print("    [THROTTLE] could not fire hub_reboot -- continuing (soft-pass still applies).")
+            return False
+        print("    [THROTTLE] hub_reboot accepted; waiting ~60s for the hub to go down, then polling for recovery...")
+        time.sleep(60)
+        for _ in range(32):
+            try:
+                info = self.client.call_tool("hub_get_info", {})
+                if isinstance(info, dict) and info:
+                    print(f"    [THROTTLE] hub is back after reboot #{self._limiter_reboots}.")
+                    return True
+            except Exception:
+                pass
+            time.sleep(15)
+        print("    [THROTTLE] hub did not come back within ~8 min of the reboot -- continuing.")
+        return False
 
     def get_test_switch_id(self) -> str:
         """Get or create the persistent BAT_E2E_ virtual switch scaffold that rule
@@ -655,22 +723,34 @@ class TestRunner:
         method = getattr(self, method_name)
         self._current_test = f"{group}/{name}"
         t0 = time.monotonic()
-        # Maintainer policy: a 504-caused failure (or 504-reasoned abort) gets ONE full
-        # test re-run before being declared failed -- the test re-creates its own fixtures
-        # and the verify-by-label helpers adopt anything the first attempt committed. A
-        # second 504-caused failure is then an honest red.
+        # Maintainer policy: a transient-caused failure gets ONE full test re-run before being
+        # declared failed -- the test re-creates its own fixtures and the verify-by-label helpers
+        # adopt anything the first attempt committed. Two transient classes get the retry:
+        #   - a relay 504 (response lost), and
+        #   - a server 5xx that is NOT a 504 (typically "500 Internal Server Error"): under the
+        #     per-app load limiter a wizard write throws hub-side because LimitExceededException
+        #     aborts a sub-step, surfacing as a 500 the 504 path missed -- which is what cascaded
+        #     the native_apps group into hard reds on the full lane. For the 5xx case we first
+        #     recover the app (bounce via the watchdog, escalating to a hub reboot per
+        #     E2E_LIMITER_REBOOT_AFTER) so the re-run hits a healthy app instance.
+        # Both re-run the WHOLE test on its own fresh fixtures -- never a transport replay. A
+        # second transient failure is then an honest red.
+        retry_reason = ""
         for attempt in (1, 2):
             try:
                 method()
                 elapsed = time.monotonic() - t0
-                msg = "(passed on retry after relay 504)" if attempt == 2 else ""
                 if attempt == 2:
-                    self._soft_passes.append(f"{group}/{name}: passed on retry after relay 504")
+                    msg = f"(passed on retry after {retry_reason})"
+                    self._soft_passes.append(f"{group}/{name}: passed on retry after {retry_reason}")
+                else:
+                    msg = ""
                 self._record(name, group, "pass", message=msg, duration=elapsed)
                 return
             except SkipTest as exc:
                 elapsed = time.monotonic() - t0
                 if "504" in str(exc) and attempt == 1:
+                    retry_reason = "relay 504"
                     print(f"    [RETRY] {name} aborted by relay 504 -- re-running the test once")
                     continue
                 if "504" in str(exc):
@@ -681,8 +761,20 @@ class TestRunner:
                 return
             except Exception as exc:
                 elapsed = time.monotonic() - t0
-                if "504" in str(exc) and attempt == 1:
+                es = str(exc)
+                if "504" in es and attempt == 1:
+                    retry_reason = "relay 504"
                     print(f"    [RETRY] {name} failed on a relay 504 -- re-running the test once")
+                    continue
+                # Server 5xx that is NOT a 504 (500/501/502/503): suspected per-app load limiter.
+                # Bounce/recover the app (which escalates to a reboot at the configured threshold),
+                # then re-run once on fresh fixtures. _clear_load_throttle raises only if the app is
+                # left disabled -- that is a genuine emergency and is allowed to propagate loudly.
+                if attempt == 1 and re.search(r"\b50[0-3]\b", es):
+                    retry_reason = "limiter 5xx"
+                    print(f"    [RETRY] {name} failed on a server 5xx ({es[:80]}) -- suspected load "
+                          "limiter; recovering the app and re-running once")
+                    self._clear_load_throttle(f"server 5xx on {name}: {es[:120]}")
                     continue
                 # The summary table stays readable with a 200-char message, but the FULL
                 # failure goes to the run log here -- a truncated structured response
@@ -898,12 +990,12 @@ class TestRunner:
         names = {t.get("name") for t in tools}
         # hub_update_package is a Developer-Mode-only TOP-LEVEL tool (issue #250): it shows on
         # tools/list ONLY with Developer Mode on (this e2e hub has it on -- a documented precondition).
-        # The documented DEFAULT catalog is 32 (12 core + 20 gateways); exclude the dev-mode tool so
+        # The documented DEFAULT catalog is 33 (13 core + 20 gateways); exclude the dev-mode tool so
         # the count matches the default regardless of the toggle, then assert the dev-mode tool is
         # present on this dev-on hub.
         default_tools = [t for t in tools if t.get("name") != "hub_update_package"]
-        assert len(default_tools) == 32, \
-            f"Expected 32 default tools (12 core + 20 gateways), got {len(default_tools)}: {sorted(names)}"
+        assert len(default_tools) == 33, \
+            f"Expected 33 default tools (13 core + 20 gateways), got {len(default_tools)}: {sorted(names)}"
         assert "hub_update_package" in names, \
             "hub_update_package must be a top-level tool when Developer Mode is on (issue #250)"
 
@@ -5645,6 +5737,89 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         assert "healthAlerts" not in result, "healthAlerts must be absent without includeHealthAlerts=true"
 
     @test("system_tools")
+    def test_set_system_settings(self) -> None:
+        # hub_set_system_settings writes hub-GLOBAL location/identity settings via a read-merge of
+        # GET /hub/details/json -> POST /location/update. To keep the sacrificial e2e hub usable
+        # mid-suite this test NEVER changes timeZone (a tz change reboots the hub). It proves EVERY
+        # aspect of the tool:
+        #   1 ALL settable non-tz fields (temperatureScale, hubName, latitude, longitude, zipCode)
+        #     round-trip to their CURRENT values in ONE atomic no-op POST -> success + each in applied
+        #     (the read-merge preserves everything; nothing actually changes)
+        #   2 out-of-range latitude is rejected by validation (-32602) before any hub write
+        #   3 the timeZone leg's confirm gate REJECTS without confirm AND the hub's timeZone is
+        #     unchanged afterward (no reboot, nothing mutated)
+        # Every write goes through _set_call so an "excessive hub load" limiter trip bounces the app via
+        # the watchdog and retries once -- the same contract the mode-lifecycle test uses.
+        def _set_call(args: dict, label: str) -> Any:
+            try:
+                return self.client.call_tool("hub_set_system_settings", args)
+            except McpToolError as exc:
+                if "excessive hub load" in str(exc) and self._clear_load_throttle(f"{label}: {exc}"):
+                    return self.client.call_tool("hub_set_system_settings", args)
+                raise
+
+        # Read current settings to round-trip them (no-op writes -- nothing actually changes).
+        before = self.client.call_tool("hub_get_info")
+        assert isinstance(before, dict), f"hub_get_info returned {type(before)}"
+        cur_tz = before.get("timeZone")
+
+        # 1 -- every readable settable non-tz field, set back to its CURRENT value in ONE atomic POST.
+        # (name/latitude/longitude/zipCode are PII -> present only when the Read master is ON, the
+        # default; include each only when readable so the test still works with Read OFF.)
+        roundtrip: dict = {}
+        if before.get("temperatureScale") in ("F", "C"):
+            roundtrip["temperatureScale"] = before["temperatureScale"]
+        if before.get("name"):
+            roundtrip["hubName"] = before["name"]
+        if before.get("latitude") is not None:
+            roundtrip["latitude"] = before["latitude"]
+        if before.get("longitude") is not None:
+            roundtrip["longitude"] = before["longitude"]
+        if before.get("zipCode"):
+            roundtrip["zipCode"] = before["zipCode"]
+        if roundtrip:
+            r1 = _set_call(roundtrip, "settings round-trip")
+            assert isinstance(r1, dict) and r1.get("success") is True, f"settings round-trip failed: {r1}"
+            for k in roundtrip:
+                assert k in (r1.get("applied") or []), f"applied did not include {k}: {r1}"
+
+        # 2 -- out-of-range latitude must be rejected by validation (-32602) before any hub write.
+        rejected_lat = False
+        lat_detail = None
+        try:
+            lat_detail = self.client.call_tool("hub_set_system_settings", {"latitude": 999})
+            blob = (lat_detail if isinstance(lat_detail, str) else json.dumps(lat_detail)).lower()
+            rejected_lat = (isinstance(lat_detail, dict) and bool(lat_detail.get("isError"))) \
+                or "latitude" in blob or "between" in blob
+        except McpError as exc:  # also catches McpToolError (subclass)
+            lat_detail = str(exc)
+            rejected_lat = "latitude" in lat_detail.lower() or "between" in lat_detail.lower()
+        assert rejected_lat, f"out-of-range latitude (999) must be rejected by validation, got: {lat_detail}"
+
+        # 3 -- the timeZone confirm gate: a tz change WITHOUT confirm must be refused (no reboot). The
+        # refusal surfaces as a raised McpError/-32602 ("confirm"/"backup"/"safety check"), OR an
+        # isError envelope returned as a dict -- accept either. The tz value passed equals the CURRENT
+        # tz so that even if the gate were (wrongly) bypassed, nothing would actually change.
+        refused = False
+        detail = None
+        gate_args = {"timeZone": cur_tz or "America/New_York"}
+        try:
+            detail = self.client.call_tool("hub_set_system_settings", gate_args)
+            blob = (detail if isinstance(detail, str) else json.dumps(detail)).lower()
+            refused = (isinstance(detail, dict) and bool(detail.get("isError"))) \
+                or "confirm" in blob or "backup" in blob or "safety check" in blob
+        except McpError as exc:  # also catches McpToolError (subclass)
+            detail = str(exc)
+            refused = any(s in detail.lower() for s in ("confirm", "backup", "safety check"))
+        assert refused, \
+            f"hub_set_system_settings timeZone change without confirm must be refused by the gate, got: {detail}"
+
+        # Confirm nothing changed: the hub's timeZone is still what it was before the rejected call.
+        after = self.client.call_tool("hub_get_info")
+        assert after.get("timeZone") == cur_tz, \
+            f"timeZone changed despite the confirm-gate rejection: before={cur_tz!r} after={after.get('timeZone')!r}"
+
+    @test("system_tools")
     def test_list_libraries(self) -> None:
         result = self.client.call_tool("hub_list_libraries")
         libs = result if isinstance(result, list) else result.get("libraries", [])
@@ -6723,30 +6898,24 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
 
     @test("error_verification")
     def test_no_hub_errors(self) -> None:
-        """Soft check: look for hub errors logged during the test window."""
+        """Soft check: flag hub errors logged DURING the run (new since the run-start snapshot)."""
         try:
             result = self.client.call_tool("hub_manage_logs", {
                 "tool": "hub_get_logs",
                 "args": {"level": "error"},
             })
             logs = result if isinstance(result, list) else result.get("logs", [])
-            if logs:
-                # Filter to logs during our test window
-                recent = []
-                if self._test_start_time:
-                    for entry in logs:
-                        ts = entry.get("time", entry.get("timestamp", ""))
-                        if ts >= self._test_start_time:
-                            recent.append(entry)
-                else:
-                    recent = logs
-
-                if recent:
-                    print(f"    [WARN] {len(recent)} hub error(s) found during test window:")
-                    for e in recent[:5]:
-                        msg = e.get("message", e.get("msg", str(e)))[:120]
-                        print(f"           - {msg}")
-                    # Soft check: warn but don't fail
+            # New errors = entries whose name+message key was not present at run start. (The old
+            # implementation compared entry["time"] -- always "" on this hub -- against a UTC ISO
+            # marker, so the window never matched and this check silently flagged nothing.)
+            recent = [e for e in logs
+                      if f"{e.get('name', '')}|{e.get('message', e.get('msg', ''))}" not in self._error_log_baseline]
+            if recent:
+                print(f"    [WARN] {len(recent)} hub error(s) logged during the run:")
+                for e in recent[:5]:
+                    msg = str(e.get("message", e.get("msg", str(e))))[:120]
+                    print(f"           - {msg}")
+                # Soft check: warn but don't fail
         except Exception as exc:
             print(f"    [WARN] Could not check hub logs: {exc}")
 
@@ -7164,6 +7333,16 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         (--group / --groups) OR its display name contains any requested substring
         (--test / --tests). With no selector, every test runs (the full suite)."""
         self._test_start_time = datetime.now(UTC).isoformat()
+        # Snapshot the hub error log NOW so test_no_hub_errors can flag only errors logged DURING the
+        # run (a name+message set-delta -- no clock alignment needed; see _error_log_baseline).
+        try:
+            _base = self.client.call_tool("hub_manage_logs", {"tool": "hub_get_logs", "args": {"level": "error"}})
+            _blogs = _base if isinstance(_base, list) else _base.get("logs", [])
+            self._error_log_baseline = {
+                f"{e.get('name', '')}|{e.get('message', e.get('msg', ''))}" for e in _blogs}
+        except Exception as exc:
+            print(f"  [WARN] could not snapshot the hub error log at run start: {exc}")
+            self._error_log_baseline = set()
 
         groups_set = set(filter_groups or [])
         if filter_group:
