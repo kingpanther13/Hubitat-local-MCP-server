@@ -6710,11 +6710,11 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
     # -----------------------------------------------------------------------
     # GROUP 10b: best-practice gate + reactive hints (issue #299)
     # Proves the FULL forced-read-key flow + reactive hints against the live hub so the feature
-    # does not need hand-testing. The mandatory gate ships ON by default; the e2e env setup
-    # (mcp_setup_env.sh) pins enableMandatoryBPS=false so the rest of the suite's keyless writes
-    # run, and these tests flip it on/off themselves. CRITICAL: every test that turns the gate ON
-    # restores it OFF in finally -- a stuck gate would block every later write test. The reactive
-    # hint has no toggle (always on) and points each failed write at THAT tool's own guide section.
+    # does not need hand-testing. The mandatory gate ships ON by default; main() verifies that on
+    # the freshly-deployed hub and then pins enableMandatoryBPS=false so the rest of the suite's
+    # keyless writes run, and these tests flip it on/off themselves. CRITICAL: every test that turns
+    # the gate ON restores it OFF in finally -- a stuck gate would block every later write test. The
+    # reactive hint has no toggle (always on) and points each failed write at THAT tool's own section.
     # -----------------------------------------------------------------------
 
     def _set_bps(self, **toggles) -> None:
@@ -7816,6 +7816,24 @@ def main() -> None:
             except Exception as exc:
                 print(f"  [WARN] Backup failed: {exc}")
                 print("  Tests requiring backup may fail.\n")
+
+    # Issue #299 best-practice gate ships ON by default (settings.enableMandatoryBPS != false).
+    # 1) Prove it on the freshly-deployed hub: a keyless write MUST be blocked. 2) Then pin it OFF so
+    # the rest of the suite's keyless writes run -- the best_practice_gating tests flip it back on.
+    # hub_update_mcp_settings is gate-exempt, so the disable lands even with the gate active.
+    try:
+        client.call_tool("hub_call_device_command", {"deviceId": "BAT_E2E_bps_probe", "command": "on"})
+        gate_on = False
+    except McpError as exc:
+        gate_on = "Mandatory best-practice" in str(exc)
+        if not gate_on:
+            raise AssertionError(f"expected the default-ON gate to block a keyless write, got: {exc}") from None
+    assert gate_on, "FATAL: the best-practice gate is not ON by default on the deployed hub"
+    print("Best-practice gate: verified ON by default on the deployed hub")
+    client.call_tool("hub_manage_mcp", {
+        "tool": "hub_update_mcp_settings",
+        "args": {"settings": {"enableMandatoryBPS": False}, "confirm": True}})
+    print("Best-practice gate: pinned OFF for the suite (best_practice_gating tests re-enable it)\n")
 
     _grps = [s.strip() for s in args.groups.split(",") if s.strip()] if args.groups else None
     _tsts = [s.strip() for s in args.tests.split(",") if s.strip()] if args.tests else None
