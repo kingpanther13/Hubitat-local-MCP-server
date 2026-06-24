@@ -373,6 +373,18 @@ class ToolBackupSpec extends ToolSpecBase {
         r.error.toLowerCase().contains('schedule')
     }
 
+    def "a schedule with a non-numeric hour fails as a structured error (no NumberFormatException leak)"() {
+        given:
+        enableWrite()
+
+        when:
+        def r = script.toolCreateHubBackup([confirm: true, schedule: [hour: 'abc', minute: 0]])
+
+        then:
+        r.success == false
+        r.error.toLowerCase().contains('integer') || r.error.toLowerCase().contains('schedule')
+    }
+
     // ---------- dispatch envelopes ----------
 
     def "hub_delete_backup via dispatch returns the success envelope"() {

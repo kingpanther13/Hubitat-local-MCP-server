@@ -517,8 +517,13 @@ private _setHubBackupSchedule(Map schedule) {
     if (!schedule.containsKey("hour") || !schedule.containsKey("minute")) {
         return [success: false, error: "schedule requires hour (0-23) and minute (0-59)"]
     }
-    def hour = schedule.hour as Integer
-    def minute = schedule.minute as Integer
+    Integer hour, minute
+    try {
+        hour = schedule.hour as Integer
+        minute = schedule.minute as Integer
+    } catch (Exception e) {
+        return [success: false, error: "hour and minute must be integers, got hour=${schedule.hour}, minute=${schedule.minute}"]
+    }
     if (hour == null || hour < 0 || hour > 23) return [success: false, error: "hour must be 0-23, got: ${schedule.hour}"]
     if (minute == null || minute < 0 || minute > 59) return [success: false, error: "minute must be 0-59, got: ${schedule.minute}"]
     def body = [
@@ -644,6 +649,16 @@ private _restoreUploadedBackup(Map args) {
     if (fileBytes == null || fileBytes.length == 0) {
         return [success: false, type: "hub-db", location: "hub_uploaded", error: "Fetched 0 bytes from backupUrl.",
                 note: "The URL returned an empty body; check it points at a real .lzf backup."]
+    }
+    // Cap the in-app multipart build: ByteArrayOutputStream is sandbox-blocked, so the body is
+    // assembled via a Byte list -- fine for a typical backup, but a several-MB file becomes a
+    // multi-million-element list that is slow/memory-heavy in the Groovy sandbox. Reject oversized
+    // backups and point them at the Hubitat UI restore (the browser path itself caps at 15 MB).
+    int maxUploadBytes = 8 * 1024 * 1024
+    if (fileBytes.length > maxUploadBytes) {
+        return [success: false, type: "hub-db", location: "hub_uploaded",
+                error: "Backup is ${(fileBytes.length / (1024 * 1024)) as int} MB, over the ${maxUploadBytes / (1024 * 1024)} MB in-app upload limit.",
+                note: "Restore a very large backup via the Hubitat UI (Settings -> Backup and Restore), not this tool."]
     }
     try {
         def up = _postMultipartBackup("/hub2/uploadBackup", "uploadFile", "uploaded.lzf", fileBytes)
