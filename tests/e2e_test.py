@@ -1211,9 +1211,11 @@ class TestRunner:
             ts = [(_iso_epoch_ms(r["date"]), r["date"]) for r in rows if r.get("date")]
             if not ts:
                 return None
-            newest = ts[0][0]
+            # Order-independent: derive newest by max(), not by relying on the API
+            # returning newest-first, and pick the newest timestamp strictly below it.
+            newest = max(ms for ms, _ in ts)
             older = [(ms, s) for (ms, s) in ts if ms < newest]
-            return older[0] if older else None
+            return max(older) if older else None
 
         hist = _read_history()
         assert hist.get("sinceMode") == "relative", f"hoursBack call should report sinceMode=relative: {hist}"
@@ -1284,8 +1286,11 @@ class TestRunner:
             f"epoch-ms since should report explicit mode: {res_ms}"
         assert _iso_epoch_ms(res_ms.get("since", "")) == bookmark_ms, \
             f"epoch-ms since should echo canonical ISO of the same instant: {res_ms}"
-        assert res_ms.get("count") == res.get("count"), \
-            f"epoch-ms and ISO bookmarks at the same instant should return the same set: {res_ms} vs {res}"
+        # Assert the strictly-after CONTRACT holds for the epoch-ms bookmark rather than
+        # equality of counts across the two calls -- the shared scaffold can take a new
+        # event between the ISO call and this one, so a raw count== would be a race.
+        assert all(_iso_epoch_ms(r["date"]) > bookmark_ms for r in res_ms.get("events", []) if r.get("date")), \
+            f"epoch-ms since returned an event at or before the bookmark: {res_ms}"
 
     @test("diagnostics")
     def test_radio_details_include_topology(self) -> None:

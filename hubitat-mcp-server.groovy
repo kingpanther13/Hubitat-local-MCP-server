@@ -5232,7 +5232,7 @@ Files stored at http://<HUB_IP>/local/<filename>
 **hub_list_device_events:**
 - Default: most-recent events for a device (deviceId + limit)
 - Add hoursBack for up to 7 days of relative history; omit deviceId for location-level events (mode/HSM/hub variable)
-- Add since for an absolute bookmark -- return only events AFTER an exact timestamp (ISO-8601 in the same format the tool emits in date/sinceTimestamp, e.g. 2026-06-23T10:00:00.000-0600, or epoch milliseconds). since takes precedence over hoursBack; a future since yields an empty list. Both since and hoursBack route to history mode
+- Add since for an absolute bookmark -- return only events AFTER an exact timestamp (ISO-8601 in the same format the tool emits in date/sinceTimestamp -- a numeric offset with no colon, e.g. 2026-06-23T10:00:00.000-0600; a trailing Z for UTC and a millis-less variant are also accepted -- or epoch milliseconds). since takes precedence over hoursBack; a future since yields an empty list. Both since and hoursBack route to history mode
 - Change-watching loop: record a returned event date, run your action, then pass that date back as since to get exactly the new events. The response echoes sinceMode ("explicit" when since drove it, "relative" for hoursBack) and the bounding field (since or hoursBack)
 - appId (mutually exclusive with deviceId) returns the events an installed app/rule emitted; rows are {name, value, description, date}
 - Use the attribute filter to reduce data volume''',

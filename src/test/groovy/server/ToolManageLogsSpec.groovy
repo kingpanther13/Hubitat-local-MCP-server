@@ -833,6 +833,22 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.since == '2009-02-13T22:00:00.000Z'
     }
 
+    def "hub_list_device_events: a millis-less ISO since (no .SSS) parses via the fallback format"() {
+        given: 'exercises the second probe format -- yyyy-MM-dd\'T\'HH:mm:ssZ -- which has no other spec'
+        def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')
+        def capturedSince = null
+        device.metaClass.eventsSince = { Date since, Map opts -> capturedSince = since; [] }
+        settingsMap.selectedDevices = [device]
+
+        when: 'since omits the milliseconds'
+        def result = script.toolGetDeviceHistory([deviceId: '42', since: '2009-02-13T22:00:00+0000'])
+
+        then: 'it resolves to the same instant as the with-millis form (22:00:00Z == epoch 1234562400000)'
+        capturedSince.time == 1234562400000L
+        result.sinceMode == 'explicit'
+        result.since == '2009-02-13T22:00:00+0000'
+    }
+
     def "hub_list_device_events: an epoch since passed as a digit STRING echoes canonical ISO (parity with the Number form)"() {
         given:
         def device = new TestDevice(id: 42, name: 'Kitchen Light', label: 'Kitchen Light')

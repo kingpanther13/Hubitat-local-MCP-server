@@ -1554,14 +1554,16 @@ def _resolveSinceWindow(args, hoursBack) {
     def parsed = _parseSinceArg(args.since)
     if (parsed == null) {
         throw new IllegalArgumentException("since is not a valid timestamp: '${args.since}'. " +
-            "Use the same ISO-8601 format this tool emits in 'date'/'sinceTimestamp' " +
-            "(yyyy-MM-dd'T'HH:mm:ss.SSSZ, e.g. 2026-06-23T10:00:00.000-0600), or epoch milliseconds (an integer).")
+            "Use the same ISO-8601 form this tool emits in 'date'/'sinceTimestamp' -- a NUMERIC " +
+            "offset with no colon, e.g. 2026-06-23T10:00:00.000-0600 (a trailing 'Z' for UTC and a " +
+            "millis-less variant are also accepted), or epoch milliseconds (an integer).")
     }
-    // Echo a real ISO bookmark String verbatim (the round-trip case); format any
-    // epoch-ms input -- Number OR all-digit String -- into canonical ISO so the echo
-    // is always a presentable timestamp, never raw digits.
+    // Echo a real ISO bookmark String verbatim (the round-trip case, trimmed so a
+    // space-padded input does not echo back contaminated); format any epoch-ms input
+    // -- Number OR all-digit String -- into canonical ISO so the echo is always a
+    // presentable timestamp, never raw digits.
     def echo = (args.since instanceof Number || args.since.toString().trim().isLong()) ?
-        parsed.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ") : args.since.toString()
+        parsed.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ") : args.since.toString().trim()
     return [parsed, "explicit", null, echo]
 }
 
@@ -1583,8 +1585,12 @@ def _parseSinceArg(since) {
     if (s.endsWith("Z")) s = s.substring(0, s.length() - 1) + "+0000"
     def formats = [
         "yyyy-MM-dd'T'HH:mm:ss.SSSZ",   // canonical round-trip: 2026-06-23T10:00:00.000-0600
-        "yyyy-MM-dd'T'HH:mm:ssZ"        // no millis, offset:    2026-06-23T10:00:00-0600
+        "yyyy-MM-dd'T'HH:mm:ssZ",       // no millis, offset:    2026-06-23T10:00:00-0600
     ]
+    // NOTE: Date.parse() is backed by a lenient SimpleDateFormat, so a structurally-valid
+    // but out-of-range field (e.g. month 13) parses to a rolled-over date rather than
+    // failing here -- a malformed bookmark shifts the window instead of erroring. Callers
+    // should round-trip the emitted 'date'/'sinceTimestamp' strings, which are always valid.
     for (fmt in formats) {
         // probe-parse: any exception means this format didn't match -- try the next
         try { return Date.parse(fmt, s) } catch (Exception ignored) {}
@@ -1640,6 +1646,9 @@ def toolGetDeviceHistory(args) {
             def evtDate = null
             try { evtDate = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", evt.date?.toString()) }
             catch (Exception ignored) { timeFilterUnparseable++ }
+            // Strictly-after (exclusive) -- uniform across relative and explicit windows so a
+            // returned `date` fed back as `since` never replays itself. At the exact-millisecond
+            // boundary this is a deliberate tightening from the prior inclusive behaviour.
             if (evtDate != null && !evtDate.after(sinceDate)) continue
             appResults << [
                 name: evt.name,
@@ -1650,7 +1659,7 @@ def toolGetDeviceHistory(args) {
             if (appResults.size() >= limit) break
         }
 
-        mcpLog("info", "monitoring", "Retrieved ${appResults.size()} app history events for app ${appIdStr} (${sinceMode} window since ${sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")}) from /installedapp/eventsJson")
+        mcpLog("info", "monitoring", "Retrieved ${appResults.size()} app history event${appResults.size() == 1 ? '' : 's'} for app ${appIdStr} (${sinceMode} window since ${sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")}) from /installedapp/eventsJson")
         def appResult = [
             source: "app",
             appId: appIdStr as Integer,
@@ -1723,7 +1732,7 @@ def toolGetDeviceHistory(args) {
             if (locResults.size() >= limit) break
         }
 
-        mcpLog("info", "monitoring", "Retrieved ${locResults.size()} location history events (${sinceMode} window since ${sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")}) from /logs/eventsJson")
+        mcpLog("info", "monitoring", "Retrieved ${locResults.size()} location history event${locResults.size() == 1 ? '' : 's'} (${sinceMode} window since ${sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")}) from /logs/eventsJson")
         def locResult = [
             source: "location",
             attributeFilter: attributeFilter,
@@ -1776,7 +1785,7 @@ def toolGetDeviceHistory(args) {
         results = results.findAll { it.name == attributeFilter }
     }
 
-    mcpLog("info", "monitoring", "Retrieved ${results.size()} history events for ${deviceLabel} (${sinceMode} window since ${sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")})")
+    mcpLog("info", "monitoring", "Retrieved ${results.size()} history event${results.size() == 1 ? '' : 's'} for ${deviceLabel} (${sinceMode} window since ${sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")})")
     def deviceResult = [
         source: "device",
         device: deviceLabel,
@@ -2808,14 +2817,14 @@ If no exact device match: suggest similar devices and get user confirmation befo
             name: "hub_list_device_events",
             description: """Get event history for a device, an APP (app events: events emitted by an app or rule -- automation events), or the location.
 
-Default: most-recent events for a device (deviceId + optional limit). Add hoursBack for a relative window, or since for an absolute bookmark (events after an exact timestamp -- since wins if both are given). appId returns an installed app's events instead. Omit deviceId/appId for location-level events.[[FLAT_TRIM]] attribute filters by event name. Higher limits (50+) may slow the hub. For change-watching loops: record a returned event `date`, then pass it back as `since` to get only the new events since that bookmark.[[/FLAT_TRIM]]""",
+Default: most-recent events for a device (deviceId + optional limit). Add hoursBack for a relative window, or since for an absolute bookmark (events after an exact timestamp -- since takes precedence if both are given). appId returns an installed app's events instead. Omit deviceId/appId for location-level events.[[FLAT_TRIM]] attribute filters by event name. Higher limits (50+) may slow the hub. For change-watching loops: record a returned event `date`, then pass it back as `since` to get only the new events since that bookmark.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
                     deviceId: [type: "string", description: "Device ID. Mutually exclusive with appId; omit both for location-level events (mode/HSM/hub variable)."],
                     appId: [type: "integer", description: "Installed-app ID for per-app events (what the app/rule emitted).[[FLAT_TRIM]] Rows: {name, value, description, date}.[[/FLAT_TRIM]] Mutually exclusive with deviceId."],
                     hoursBack: [type: "integer", description: "If set, return up to this many hours of history (max 168 = 7 days) instead of just the most recent events. Ignored when since is given."],
-                    since: [type: ["string", "integer"], description: "Absolute window start -- return only events AFTER this timestamp. ISO-8601 string in the same format this tool emits in `date`/`sinceTimestamp` (e.g. 2026-06-23T10:00:00.000-0600), or epoch milliseconds (integer). Takes precedence over hoursBack. A future timestamp yields an empty list. Routes to history mode like hoursBack."],
+                    since: [type: ["string", "integer"], description: "Absolute window start -- return only events AFTER this timestamp. ISO-8601 string in the same format this tool emits in `date`/`sinceTimestamp` -- a numeric offset with no colon, e.g. 2026-06-23T10:00:00.000-0600 (a trailing Z for UTC and a millis-less variant are also accepted) -- or epoch milliseconds (integer). Takes precedence over hoursBack. A future timestamp yields an empty list. Routes to history mode like hoursBack."],
                     attribute: [type: "string", description: "Event-name filter. Device: an attribute (e.g. 'switch').[[FLAT_TRIM]] Location: 'mode', 'hsmStatus', 'hsmAlert', or a hub-variable name.[[/FLAT_TRIM]]"],
                     limit: [type: "integer", description: "Max events to return. Recent mode default 10; history mode default 100 (max 500). Higher values may slow hub.", default: 10]
                 ]
