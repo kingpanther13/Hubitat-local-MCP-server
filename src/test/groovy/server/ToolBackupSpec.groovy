@@ -385,6 +385,23 @@ class ToolBackupSpec extends ToolSpecBase {
         r.error.toLowerCase().contains('integer') || r.error.toLowerCase().contains('schedule')
     }
 
+    def "a create that never confirms returns success:false and does NOT stamp the destructive-confirm gate"() {
+        given:
+        settingsMap.enableWrite = true            // Write master on, but NO prior backup stamp
+        stateMap.remove('lastBackupTimestamp')
+        // statusJson never reports completion -> the backup is unverified
+        hubGet.register('/hub/backup/statusJson') { params -> '{"backupInProgress":true,"cloudBackupInProgress":false}' }
+
+        when:
+        def r = script.toolCreateHubBackup([confirm: true])
+
+        then:
+        r.success == false
+        r.confirmed == false
+        stateMap.lastBackupTimestamp == null      // the 24h gate is NOT satisfied by an unverified backup
+        r.note.toLowerCase().contains('not')
+    }
+
     // ---------- dispatch envelopes ----------
 
     def "hub_delete_backup via dispatch returns the success envelope"() {

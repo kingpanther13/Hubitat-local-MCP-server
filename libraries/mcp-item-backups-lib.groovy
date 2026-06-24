@@ -466,7 +466,8 @@ def toolCreateHubBackup(args) {
         // A small-DB backup can finish before the first poll, so backupInProgress=false is
         // treated as completion rather than requiring an observed true->false transition.
         def confirmed = false
-        for (int i = 0; i < 12; i++) {
+        def statusUnreadable = false
+        for (int i = 0; i < 20; i++) {
             pauseExecution(3000)
             def statusText = null
             try { statusText = hubInternalGet("/hub/backup/statusJson", null, 15) } catch (Exception ignored) { }
@@ -476,22 +477,39 @@ def toolCreateHubBackup(args) {
                 confirmed = true
                 break
             }
-            if (parsed == null && i >= 2) break   // status endpoint unreadable; stop burning time
+            if (parsed == null && i >= 2) { statusUnreadable = true; break }   // status endpoint unreadable; stop burning time
+        }
+
+        if (!confirmed) {
+            // Do NOT satisfy the 24h destructive-confirm gate on an UNVERIFIED backup. Stamping
+            // state.lastBackupTimestamp here would let destructive ops proceed believing a recovery
+            // point exists when it may not (a rejected/in-progress/failed backup) -- a silent failure.
+            // Leave the gate unstamped and report failure so the caller blocks until a backup is real.
+            mcpLog("warn", "hub-admin", "Hub backup triggered but completion was NOT confirmed (${statusUnreadable ? '/hub/backup/statusJson unreadable' : 'still in progress after ~60s'}); destructive-confirm gate left unsatisfied")
+            return [
+                success: false,
+                confirmed: false,
+                scheduleUpdated: scheduleUpdated,
+                error: statusUnreadable
+                    ? "Hub backup was triggered but completion could not be confirmed (/hub/backup/statusJson was unreadable)."
+                    : "Hub backup was triggered but did not confirm complete within ~60s (it may still be running).",
+                note: "The 24h destructive-confirm gate was NOT satisfied -- do NOT run destructive ops yet. " +
+                      "A large backup can still be completing; verify in the Hubitat UI (Settings -> Backup and Restore), " +
+                      "or call hub_create_backup again once it finishes."
+            ]
         }
 
         def backupTime = now()
         state.lastBackupTimestamp = backupTime
-
-        mcpLog("info", "hub-admin", "Hub backup ${confirmed ? 'completed' : 'triggered (completion unconfirmed)'} at ${formatTimestamp(backupTime)}")
+        mcpLog("info", "hub-admin", "Hub backup completed at ${formatTimestamp(backupTime)}")
         return [
             success: true,
-            confirmed: confirmed,
+            confirmed: true,
             scheduleUpdated: scheduleUpdated,
-            message: confirmed ? "Hub backup created successfully"
-                               : "Hub backup triggered; completion could not be confirmed via /hub/backup/statusJson (best-effort).",
+            message: "Hub backup created successfully",
             backupTimestamp: formatTimestamp(backupTime),
             backupTimestampEpoch: backupTime,
-            note: "This backup is stored on the hub. You can download it from the Hubitat web UI at Settings → Backup and Restore."
+            note: "This backup is stored on the hub (Hubitat UI: Settings -> Backup and Restore)."
         ]
     } catch (Exception e) {
         mcpLogError("hub-admin", "Hub backup FAILED", e)
@@ -507,7 +525,18 @@ def toolCreateHubBackup(args) {
 // asynchttpGet completion sink for the backup trigger: the .lzf body is deliberately never
 // read into this app (see toolCreateHubBackup -- the whole point of the async trigger).
 def backupResponseSink(response, data) {
-    try { mcpLog("debug", "hub-admin", "backup async response status=${response?.status}") } catch (Exception ignored) { }
+    // The async /hub/backupDB response is the one place a rejected backup request surfaces. It
+    // arrives AFTER toolCreateHubBackup returns (so it can't gate that call -- statusJson confirmation
+    // does), but a non-2xx must NOT be swallowed at debug: log it loudly so a rejected backup leaves
+    // a trace instead of silently looking fine.
+    try {
+        def st = response?.status
+        if (st != null && !(st >= 200 && st < 300)) {
+            mcpLog("warn", "hub-admin", "Hub backup async request returned non-2xx status=${st}; the backup may have been rejected -- verify before relying on it")
+        } else {
+            mcpLog("debug", "hub-admin", "backup async response status=${st}")
+        }
+    } catch (Exception ignored) { }
 }
 
 // POST /hub2/updateBackupSchedule {localBackupFrequency,cloudBackupFrequency,hour,minute,cloudBackupPassword}.
