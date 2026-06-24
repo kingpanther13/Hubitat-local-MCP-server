@@ -669,7 +669,8 @@ private _restoreUploadedBackup(Map args) {
 }
 
 // Fetch raw bytes from an http(s) URL (the .lzf to upload). Binary fetch via httpGet with textParser off.
-private byte[] _fetchBytesFromUrl(String url) {
+// Non-private so the Spock harness can stub it (Groovy dispatches private calls directly, bypassing metaClass).
+def _fetchBytesFromUrl(String url) {
     byte[] out = null
     httpGet([uri: url, timeout: 120, textParser: false]) { resp ->
         def d = resp?.data
@@ -681,7 +682,8 @@ private byte[] _fetchBytesFromUrl(String url) {
 
 // Build a multipart/form-data body for a single binary file part and POST it. Returns the parsed
 // response Map (or a {success:<2xx>} fallback). Used only by _restoreUploadedBackup.
-private _postMultipartBackup(String path, String field, String fileName, byte[] fileBytes) {
+// Non-private so the Spock harness can stub it (Groovy dispatches private calls directly).
+def _postMultipartBackup(String path, String field, String fileName, byte[] fileBytes) {
     def boundary = "----mcpBackupBoundary${now()}"
     byte[] pre = ("--${boundary}\r\nContent-Disposition: form-data; name=\"${field}\"; filename=\"${fileName}\"\r\nContent-Type: application/octet-stream\r\n\r\n").toString().getBytes("UTF-8")
     byte[] post = ("\r\n--${boundary}--\r\n").toString().getBytes("UTF-8")

@@ -215,12 +215,17 @@ class ToolBackupSpec extends ToolSpecBase {
 
     // ---------- hub_restore_backup scope=hub_uploaded (upload-from-URL) ----------
 
-    def "scope=hub_uploaded fetches the URL, multipart-uploads it, then restores"() {
+    def "scope=hub_uploaded fetches the URL, uploads it, then restores"() {
         given:
         enableWrite()
-        def uploaded = [:]
-        script.metaClass.httpGet = { Map params, Closure cb -> cb.call([data: 'BACKUPBYTES'.getBytes('UTF-8')]) }
-        script.metaClass.httpPost = { Map params, Closure cb -> uploaded.path = params.path; cb.call([data: [success: true], status: 200]) }
+        // The fetch + multipart helpers do real HTTP I/O the harness can't exercise (and the path
+        // is unverifiable live anyway); mock them and assert the ORCHESTRATION (fetch -> upload ->
+        // restoreUploaded GET -> success).
+        def calls = [:]
+        script.metaClass._fetchBytesFromUrl = { String url -> calls.fetched = url; 'BACKUPBYTES'.getBytes('UTF-8') }
+        script.metaClass._postMultipartBackup = { String path, String field, String fileName, byte[] bytes ->
+            calls.uploaded = path; calls.bytes = bytes.length; return [success: true]
+        }
 
         when:
         def r = script.toolRestoreItemBackup([scope: 'hub_uploaded', backupUrl: 'https://host/b.lzf', confirm: true])
@@ -228,7 +233,9 @@ class ToolBackupSpec extends ToolSpecBase {
         then:
         r.success == true
         r.location == 'hub_uploaded'
-        uploaded.path == '/hub2/uploadBackup'
+        calls.fetched == 'https://host/b.lzf'
+        calls.uploaded == '/hub2/uploadBackup'
+        calls.bytes == 11
     }
 
     def "scope=hub_uploaded requires backupUrl"() {
