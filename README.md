@@ -1611,6 +1611,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v2.8.2** - feat: add absolute since bookmark filter to hub_list_device_events. PRs: [#314](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/314)
 - **v2.8.1** - feat: hub_set_system_settings — set hub timezone, units, location, name. PRs: [#315](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/315)
 - **v2.8.0** - feat: fold hub_set_rule to a flat self-gateway + trim RM tool/gateway prose. PRs: [#310](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/310)
 - **v2.7.10** - feat: full mode-management surface (hub_manage_mode + hub_set_mode_manager). PRs: [#313](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/313)
