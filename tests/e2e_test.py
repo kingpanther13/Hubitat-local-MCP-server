@@ -7817,19 +7817,12 @@ def main() -> None:
                 print(f"  [WARN] Backup failed: {exc}")
                 print("  Tests requiring backup may fail.\n")
 
-    # Issue #299 best-practice gate ships ON by default (settings.enableMandatoryBPS != false).
-    # 1) Prove it on the freshly-deployed hub: a keyless write MUST be blocked. 2) Then pin it OFF so
-    # the rest of the suite's keyless writes run -- the best_practice_gating tests flip it back on.
-    # hub_update_mcp_settings is gate-exempt, so the disable lands even with the gate active.
-    try:
-        client.call_tool("hub_call_device_command", {"deviceId": "BAT_E2E_bps_probe", "command": "on"})
-        gate_on = False
-    except McpError as exc:
-        gate_on = "Mandatory best-practice" in str(exc)
-        if not gate_on:
-            raise AssertionError(f"expected the default-ON gate to block a keyless write, got: {exc}") from None
-    assert gate_on, "FATAL: the best-practice gate is not ON by default on the deployed hub"
-    print("Best-practice gate: verified ON by default on the deployed hub")
+    # The issue #299 best-practice gate ships ON by default (settings.enableMandatoryBPS != false).
+    # Pin it OFF for the suite so the rest of the keyless writes run; the best_practice_gating tests
+    # flip it back on themselves. hub_update_mcp_settings is gate-exempt, so this lands whether the
+    # gate is currently on or off. (Default-ON is proven at the unit level by
+    # ExecuteToolMandatoryBpsGateSpec -- null/unset -> blocked. It is NOT asserted here because the
+    # e2e hub's setting persists across runs, so a freshly-deployed hub is not in the unset state.)
     client.call_tool("hub_manage_mcp", {
         "tool": "hub_update_mcp_settings",
         "args": {"settings": {"enableMandatoryBPS": False}, "confirm": True}})
