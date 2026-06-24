@@ -1,6 +1,29 @@
 library(name: "McpItemBackupsLib", namespace: "mcp", author: "kingpanther13", description: "Source-code backup tool implementations (hub_list_backups/hub_get_backup/hub_restore_backup) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
 def toolListItemBackups(args = null) {
+    args = args ?: [:]
+    // `scope` folds the WHOLE-HUB database backups (issue #259 item #1) into this source-backup list
+    // tool, so callers don't juggle two "list backups" tools. Default "source" keeps prior behavior.
+    def scope = (args.scope ?: "source").toString()
+    if (!(scope in ["source", "hub_local", "hub_cloud", "hub", "all"])) {
+        throw new IllegalArgumentException("scope must be one of: source, hub_local, hub_cloud, hub, all")
+    }
+    def hubSections = [:]
+    if (scope in ["hub_local", "hub_cloud", "hub", "all"]) {
+        def hb = _listHubBackups(scope in ["hub_local", "hub", "all"], scope in ["hub_cloud", "hub", "all"])
+        if (hb.local != null) hubSections.hubLocalBackups = hb.local
+        if (hb.cloud != null) hubSections.hubCloudBackups = hb.cloud
+        if (hb.errors) hubSections.hubBackupErrors = hb.errors
+    }
+    if (scope == "source") return _listSourceItemBackups(args)
+    if (!(scope in ["source", "all"])) {
+        return ([scope: scope] + hubSections + [note: "Whole-hub database backups. Restore via hub_restore_backup (scope=hub_local|hub_cloud); delete via hub_delete_backup."])
+    }
+    // scope == "all": source-code backups + the hub-DB sections in one response.
+    return ([scope: scope] + _listSourceItemBackups(args) + hubSections)
+}
+
+private _listSourceItemBackups(args) {
     def manifest = atomicState.itemBackupManifest ?: [:]
 
     if (manifest.isEmpty()) {
@@ -122,6 +145,18 @@ def toolGetItemBackup(args) {
 }
 
 def toolRestoreItemBackup(args) {
+    args = args ?: [:]
+    // `scope` folds WHOLE-HUB database restore (issue #259 item #1) into this tool. hub_local/hub_cloud
+    // REPLACE THE ENTIRE HUB DATABASE and REBOOT the hub -- far higher blast radius than a source
+    // re-paste -- so they are confirm-gated here too. Default "source" = app/driver/rule restore.
+    def scope = (args.scope ?: "source").toString()
+    if (scope in ["hub_local", "hub_cloud"]) {
+        requireDestructiveConfirm(args.confirm)
+        return _restoreHubBackup(scope, args)
+    }
+    if (scope != "source") {
+        throw new IllegalArgumentException("scope must be 'source' (default), 'hub_local', or 'hub_cloud'.")
+    }
     requireDestructiveConfirm(args.confirm)
 
     if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123', 'driver_456', 'library_42', or 'rm-rule_<id>_<ts>')")
@@ -345,6 +380,236 @@ def toolRestoreItemBackup(args) {
             message: "The backup has been preserved -- you can try again or restore manually.",
             directDownload: "http://<HUB_IP>/local/${entryCopy.fileName}"
         ]
+    }
+}
+
+// ==================== Hub-DB (whole-hub database) backup tools — issue #259 item #1 ====================
+// These manage the WHOLE-HUB database backup (settings/devices/automations/state), a DIFFERENT domain
+// from the source-code item backups above. Wire format reverse-engineered from resources/hub2-source
+// (vue-hub2.min.js): list = GET /hub2/localBackups (array) and GET /hub2/cloudBackups?force= ({backups:[]});
+// restore = GET /hub2/restoreLocalBackup?fileName= and GET /hub2/restoreCloudBackup?p=<password>&t=<ms>
+// (BOTH reboot the hub); delete = GET /hub2/deleteLocalBackup?fileName= and GET /hub2/deleteCloudBackup?path=;
+// schedule = POST /hub2/updateBackupSchedule. Upload/restore-uploaded are browser multipart .lzf uploads
+// (no headless MCP path) and are intentionally NOT implemented.
+
+def toolCreateHubBackup(args) {
+    args = args ?: [:]
+
+    // Folded-in SCHEDULE update (no separate tool): when a `schedule` object is supplied, set the
+    // hub's auto-backup schedule via /hub2/updateBackupSchedule. With scheduleOnly=true we ONLY set
+    // the schedule and skip creating a backup now; otherwise the create-now path also runs.
+    def scheduleUpdated = false
+    if (args.schedule != null) {
+        def sched = _setHubBackupSchedule(args.schedule)
+        if (!(sched instanceof Map && sched.success == true)) {
+            return [success: false, error: "Failed to update backup schedule: ${(sched instanceof Map) ? (sched.error ?: 'unknown') : 'unknown'}",
+                    note: "Nothing was changed. Provide hour (0-23), minute (0-59), and the localBackupFrequency/cloudBackupFrequency you want; retry."]
+        }
+        scheduleUpdated = true
+        if (args.scheduleOnly == true) {
+            return [success: true, scheduleUpdated: true,
+                    message: "Backup schedule updated; no immediate backup created (scheduleOnly=true).",
+                    note: "Run hub_create_backup again without scheduleOnly to also create a backup now."]
+        }
+    }
+
+    if (args.mock == true) {
+        // Test-hub lever (maintainer-directed): stamp ONLY the destructive-confirm gate record
+        // without performing any real backup -- the hub backup is a heavy operation the platform's
+        // load limiter punishes, and e2e needs the GATED tools tested, not the backup itself.
+        // Developer-mode-gated so a production client can't silently satisfy the gate with a lie.
+        if (settings.enableDeveloperMode != true) {
+            throw new IllegalArgumentException("hub_create_backup mock=true requires Developer Mode (it satisfies the destructive-confirm gate WITHOUT a real backup -- test environments only).")
+        }
+        def backupTime = now()
+        state.lastBackupTimestamp = backupTime
+        mcpLog("warn", "hub-admin", "MOCK backup recorded (no real backup performed; developer mode)")
+        return [
+            success: true,
+            mocked: true,
+            scheduleUpdated: scheduleUpdated,
+            message: "MOCK backup recorded: the destructive-confirm gate is satisfied but NO real backup was created.",
+            backupTimestamp: formatTimestamp(backupTime),
+            backupTimestampEpoch: backupTime,
+            note: "Test environments only. Create a real backup before relying on restore."
+        ]
+    }
+
+    mcpLog("info", "hub-admin", "Creating hub backup (async trigger; the backup file is never downloaded through this app)...")
+
+    try {
+        // GET /hub/backupDB?fileName=latest makes the hub CREATE a fresh backup and stream the
+        // .lzf back. The old implementation read that multi-MB binary through this app's
+        // execution just to confirm success -- a one-off load spike the platform's per-app
+        // limiter punishes with a STICKY device-dispatch block ~13 minutes later (verified A/B
+        // on fw 2.5.0.157: every slurping backup wedged the hub; async-triggered backups never
+        // did). So: fire the request asynchronously (the hub still creates the backup; the
+        // async client's truncated body is discarded) and confirm completion via the hub's own
+        // /hub/backup/statusJson instead of the binary response.
+        def asyncParams = [uri: hubBaseUri(), path: "/hub/backupDB", query: [fileName: "latest"], timeout: 300]
+        def cookie = getHubSecurityCookie()
+        if (cookie) asyncParams.headers = [Cookie: cookie]
+        asynchttpGet("backupResponseSink", asyncParams)
+
+        // Confirm via statusJson: wait for an in-progress backup to finish (small JSON reads).
+        // A small-DB backup can finish before the first poll, so backupInProgress=false is
+        // treated as completion rather than requiring an observed true->false transition.
+        def confirmed = false
+        for (int i = 0; i < 12; i++) {
+            pauseExecution(3000)
+            def statusText = null
+            try { statusText = hubInternalGet("/hub/backup/statusJson", null, 15) } catch (Exception ignored) { }
+            def parsed = null
+            try { parsed = statusText ? new groovy.json.JsonSlurper().parseText(statusText) : null } catch (Exception ignored) { }
+            if (parsed instanceof Map && parsed.backupInProgress == false && parsed.cloudBackupInProgress != true) {
+                confirmed = true
+                break
+            }
+            if (parsed == null && i >= 2) break   // status endpoint unreadable; stop burning time
+        }
+
+        def backupTime = now()
+        state.lastBackupTimestamp = backupTime
+
+        mcpLog("info", "hub-admin", "Hub backup ${confirmed ? 'completed' : 'triggered (completion unconfirmed)'} at ${formatTimestamp(backupTime)}")
+        return [
+            success: true,
+            confirmed: confirmed,
+            scheduleUpdated: scheduleUpdated,
+            message: confirmed ? "Hub backup created successfully"
+                               : "Hub backup triggered; completion could not be confirmed via /hub/backup/statusJson (best-effort).",
+            backupTimestamp: formatTimestamp(backupTime),
+            backupTimestampEpoch: backupTime,
+            note: "This backup is stored on the hub. You can download it from the Hubitat web UI at Settings → Backup and Restore."
+        ]
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "Hub backup FAILED", e)
+        return [
+            success: false,
+            error: "Backup failed: ${e.message}",
+            note: "The backup could not be created. Do NOT proceed with any Write master operations. " +
+                  "Check Hub Security credentials if Hub Security is enabled, or try creating a backup manually from the Hubitat web UI."
+        ]
+    }
+}
+
+// asynchttpGet completion sink for the backup trigger: the .lzf body is deliberately never
+// read into this app (see toolCreateHubBackup -- the whole point of the async trigger).
+def backupResponseSink(response, data) {
+    try { mcpLog("debug", "hub-admin", "backup async response status=${response?.status}") } catch (Exception ignored) { }
+}
+
+// POST /hub2/updateBackupSchedule {localBackupFrequency,cloudBackupFrequency,hour,minute,cloudBackupPassword}.
+// Returns [success:true, schedule:<echo>] or [success:false, error:...]. Called by toolCreateHubBackup.
+private _setHubBackupSchedule(Map schedule) {
+    if (schedule == null) return [success: false, error: "schedule object is required"]
+    if (!schedule.containsKey("hour") || !schedule.containsKey("minute")) {
+        return [success: false, error: "schedule requires hour (0-23) and minute (0-59)"]
+    }
+    def hour = schedule.hour as Integer
+    def minute = schedule.minute as Integer
+    if (hour == null || hour < 0 || hour > 23) return [success: false, error: "hour must be 0-23, got: ${schedule.hour}"]
+    if (minute == null || minute < 0 || minute > 59) return [success: false, error: "minute must be 0-59, got: ${schedule.minute}"]
+    def body = [
+        localBackupFrequency: schedule.localBackupFrequency,
+        cloudBackupFrequency: schedule.cloudBackupFrequency,
+        hour: hour,
+        minute: minute,
+        cloudBackupPassword: schedule.cloudBackupPassword ?: ""
+    ]
+    try {
+        def parsed = hubInternalPostJson("/hub2/updateBackupSchedule", groovy.json.JsonOutput.toJson(body))
+        if (parsed instanceof Map && parsed.success == true) {
+            return [success: true, schedule: body]
+        }
+        return [success: false, error: (parsed instanceof Map) ? (parsed.message ?: parsed.error ?: "hub reported failure") : "unexpected response"]
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "updateBackupSchedule failed", e)
+        return [success: false, error: e.message]
+    }
+}
+
+// Fetch + normalize the hub-DB backup lists (GET /hub2/localBackups, /hub2/cloudBackups). Used by
+// toolListItemBackups when scope includes hub-DB. Returns [local: [...], cloud: [...], errors: [...]].
+private _listHubBackups(boolean wantLocal, boolean wantCloud) {
+    def out = [local: null, cloud: null, errors: []]
+    if (wantLocal) {
+        try {
+            def raw = hubInternalGet("/hub2/localBackups")
+            def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : []
+            out.local = (parsed instanceof List) ? parsed.collect { [name: it.name, createTime: it.createTime, createTimeOrig: it.createTimeOrig, size: it.size] } : []
+        } catch (Exception e) { out.errors << "local: ${e.message}" }
+    }
+    if (wantCloud) {
+        try {
+            def raw = hubInternalGet("/hub2/cloudBackups", [force: false])
+            def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : [:]
+            def list = (parsed instanceof Map) ? (parsed.backups ?: []) : []
+            out.cloud = list.collect { [path: it.path, createTime: it.createTime, hubVersion: it.hubVersion, hubName: it.hubName] }
+        } catch (Exception e) { out.errors << "cloud: ${e.message}" }
+    }
+    return out
+}
+
+// Hub-DB restore (GET /hub2/restoreLocalBackup?fileName= | /hub2/restoreCloudBackup?p=&t=). BOTH reboot
+// the hub. Confirm-gated by the caller (toolRestoreItemBackup). location: "hub_local" | "hub_cloud".
+private _restoreHubBackup(String location, Map args) {
+    try {
+        def parsed
+        if (location == "hub_local") {
+            if (!args.fileName) throw new IllegalArgumentException("scope=hub_local restore requires fileName (from hub_list_backups scope=hub_local)")
+            def raw = hubInternalGet("/hub2/restoreLocalBackup", [fileName: args.fileName.toString()], 120)
+            parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+        } else {
+            if (!args.cloudBackupPassword) throw new IllegalArgumentException("scope=hub_cloud restore requires cloudBackupPassword (the encryption password set on the cloud backup)")
+            def raw = hubInternalGet("/hub2/restoreCloudBackup", [p: args.cloudBackupPassword.toString(), t: now()], 120)
+            parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+        }
+        if (parsed instanceof Map && parsed.success == true) {
+            return [success: true, type: "hub-db", location: location,
+                    message: "Hub-DB restore accepted — the hub is rebooting now and will be unreachable for several minutes.",
+                    note: "Re-check hub reachability after the reboot; the database has been replaced from the backup."]
+        }
+        return [success: false, type: "hub-db", location: location,
+                error: (parsed instanceof Map) ? (parsed.message ?: parsed.error ?: "hub reported failure") : "unexpected response",
+                note: "Nothing was restored. Verify the backup exists with hub_list_backups."]
+    } catch (IllegalArgumentException iae) {
+        throw iae
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "hub-DB restore failed", e)
+        return [success: false, type: "hub-db", location: location, error: e.message, note: "Nothing was restored."]
+    }
+}
+
+def toolDeleteHubBackup(args) {
+    args = args ?: [:]
+    requireDestructiveConfirm(args.confirm)
+    def location = args.location
+    if (!(location in ["local", "cloud"])) {
+        throw new IllegalArgumentException("location must be 'local' or 'cloud'. For 'local' pass fileName; for 'cloud' pass path (both from hub_list_backups).")
+    }
+    try {
+        def parsed
+        if (location == "local") {
+            if (!args.fileName) throw new IllegalArgumentException("location=local requires fileName (from hub_list_backups scope=hub_local)")
+            def raw = hubInternalGet("/hub2/deleteLocalBackup", [fileName: args.fileName.toString()])
+            parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+        } else {
+            if (!args.path) throw new IllegalArgumentException("location=cloud requires path (from hub_list_backups scope=hub_cloud)")
+            def raw = hubInternalGet("/hub2/deleteCloudBackup", [path: args.path.toString()])
+            parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+        }
+        if (parsed instanceof Map && parsed.success == true) {
+            return [success: true, location: location, message: "Hub-DB ${location} backup deleted."]
+        }
+        return [success: false, location: location,
+                error: (parsed instanceof Map) ? (parsed.message ?: parsed.error ?: "hub reported failure") : "unexpected response",
+                note: "Nothing was deleted. Verify the backup exists with hub_list_backups."]
+    } catch (IllegalArgumentException iae) {
+        throw iae
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "hub-DB backup delete failed", e)
+        return [success: false, location: location, error: e.message, note: "Nothing was deleted."]
     }
 }
 
