@@ -193,7 +193,7 @@ For complete safety protocols and tool-specific requirements, see [safety-guide.
 
 ## Diagnostics and Monitoring
 
-`hub_list_device_events` (via `hub_read_devices` / `hub_manage_devices`) - recent events for a device; add `hoursBack` for up to 7 days of device or location event history (omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events)
+`hub_list_device_events` (via `hub_read_devices` / `hub_manage_devices`) - recent events for a device; add `hoursBack` for a relative window (up to 7 days) or `since` for an absolute bookmark (events after an exact timestamp; round-trip a returned `date` for change-watching loops; response echoes `sinceMode` = `explicit`/`relative` and `since` or `hoursBack`) (omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events)
 
 The pure-read `hub_read_diagnostics` gateway (9 tools) surfaces the read-only diagnostics for safe access: `hub_get_logs`, `hub_get_performance_stats`, `hub_get_jobs`, `hub_get_debug_logs`, `hub_get_metrics`, `hub_get_memory_history`, `hub_get_device_health`, `hub_get_radio_details`, `hub_list_captured_states`. The write-bearing diagnostics live in `hub_manage_logs`, `hub_manage_diagnostics`, and `hub_manage_radio` below (reads multi-membered into those surfaces).
 
