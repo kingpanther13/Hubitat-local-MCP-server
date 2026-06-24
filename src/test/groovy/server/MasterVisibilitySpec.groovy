@@ -51,7 +51,7 @@ class MasterVisibilitySpec extends ToolSpecBase {
         settingsMap.useGateways = true
 
         expect:
-        script.getToolDefinitions().size() == 33
+        script.getToolDefinitions().size() == 34
     }
 
     @spock.lang.Unroll

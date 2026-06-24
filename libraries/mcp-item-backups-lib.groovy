@@ -715,20 +715,20 @@ def _getAllToolDefinitions_partItemBackups() {
         // ==================== Hub-DB (whole-hub) backup tools — issue #259 item #1 ====================
         [
             name: "hub_create_backup",
-            description: """Create a full hub-database backup (the whole-hub .lzf — settings, devices, automations, state). REQUIRED before any Write master operation (24h validity). Optionally set the AUTOMATIC-backup SCHEDULE in the same call via `schedule`; pass scheduleOnly=true to set the schedule WITHOUT creating a backup now.[[FLAT_TRIM]] A create-now requires Write master + confirm; a scheduleOnly call does not. This is the only write tool that doesn't require a prior backup.[[/FLAT_TRIM]]""",
+            description: """Create a full hub-database backup (whole-hub .lzf). REQUIRED before any Write master op (24h validity). Optionally set the automatic-backup schedule via `schedule` (scheduleOnly=true sets the schedule only). The only write tool needing no prior backup.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    confirm: [type: "boolean", description: "Must be true to create a backup now (not needed when scheduleOnly=true)."],
-                    mock: [type: "boolean", description: "Developer Mode only: stamp the 24h gate record; NO real backup (test envs)."],
-                    schedule: [type: "object", description: "Optional: set the hub's automatic-backup schedule (e.g. {hour:3, minute:30, localBackupFrequency:..., cloudBackupFrequency:..., cloudBackupPassword:...}).", properties: [
-                        hour: [type: "integer", description: "Hour of day 0-23 to run automatic backups"],
+                    confirm: [type: "boolean", description: "true to create a backup now (omit with scheduleOnly)."],
+                    mock: [type: "boolean", description: "Developer Mode only: stamp the 24h gate record; no real backup (test envs)."],
+                    schedule: [type: "object", description: "Optional: set the automatic-backup schedule.", properties: [
+                        hour: [type: "integer", description: "Hour 0-23"],
                         minute: [type: "integer", description: "Minute 0-59"],
-                        localBackupFrequency: [description: "How often to keep local backups (hub-defined value)"],
-                        cloudBackupFrequency: [description: "How often to push cloud backups (hub-defined value)"],
-                        cloudBackupPassword: [type: "string", description: "Encryption password for cloud backups"]
+                        localBackupFrequency: [description: "Local backup frequency (hub value)"],
+                        cloudBackupFrequency: [description: "Cloud backup frequency (hub value)"],
+                        cloudBackupPassword: [type: "string", description: "Cloud backup password"]
                     ]],
-                    scheduleOnly: [type: "boolean", description: "With schedule: only update the schedule; do NOT create a backup now (no confirm needed)."]
+                    scheduleOnly: [type: "boolean", description: "With schedule: set schedule only, no backup now."]
                 ],
                 required: ["confirm"]
             ],
@@ -750,14 +750,14 @@ def _getAllToolDefinitions_partItemBackups() {
         ],
         [
             name: "hub_delete_backup",
-            description: """⚠️ Delete a whole-hub database backup (local or cloud). DESTRUCTIVE — removes a recovery point; tell the user first. Find the target with hub_list_backups: scope=hub_local gives each backup's `name` (pass as fileName); scope=hub_cloud gives each backup's `path` (pass as path). Requires Write master + confirm + a recent backup.""",
+            description: """⚠️ Delete a whole-hub database backup (DESTRUCTIVE — removes a recovery point; tell the user first). location=local needs fileName, location=cloud needs path (both from hub_list_backups). Write master + confirm + a recent backup.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    location: [type: "string", enum: ["local", "cloud"], description: "Which backup store to delete from."],
-                    fileName: [type: "string", description: "location=local: the backup's `name` from hub_list_backups(scope=hub_local)."],
-                    path: [type: "string", description: "location=cloud: the backup's `path` from hub_list_backups(scope=hub_cloud)."],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms the user approved deleting this backup."]
+                    location: [type: "string", enum: ["local", "cloud"], description: "Which store to delete from."],
+                    fileName: [type: "string", description: "location=local: backup name from hub_list_backups."],
+                    path: [type: "string", description: "location=cloud: backup path from hub_list_backups."],
+                    confirm: [type: "boolean", description: "REQUIRED true. Confirms the delete."]
                 ],
                 required: ["location", "confirm"]
             ],
@@ -776,12 +776,12 @@ def _getAllToolDefinitions_partItemBackups() {
         // ==================== Source-code item backup tools ====================
         [
             name: "hub_list_backups",
-            description: "List backups. Default scope='source': auto-created source-code backups (apps, drivers, libraries, RM rules) the write tools snapshot before each modify/delete (File Manager, newest first, max 20) — each has a backupKey (e.g. 'app_123') for hub_get_backup/hub_restore_backup. scope='hub_local'/'hub_cloud'/'hub'/'all' also lists WHOLE-HUB database backups under hubLocalBackups/hubCloudBackups; a hub_local entry's `name` and a hub_cloud entry's `path` feed hub_restore_backup (scope=hub_local|hub_cloud) and hub_delete_backup. Read-only.",
+            description: "List backups: scope=source (default; auto-created code backups, each with a backupKey) | hub_local | hub_cloud | hub | all (whole-hub DB backups under hubLocalBackups/hubCloudBackups — name/path feed restore+delete). Read-only.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    scope: [type: "string", enum: ["source", "hub_local", "hub_cloud", "hub", "all"], description: "Which backups to list. 'source' (default)=code backups; 'hub_local'/'hub_cloud'=whole-hub DB backups; 'hub'=both DB locations; 'all'=code + DB."],
-                    cursor: [type: "string", description: "Opt-in pagination cursor (source backups only). Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
+                    scope: [type: "string", enum: ["source", "hub_local", "hub_cloud", "hub", "all"], description: "source (default) | hub_local | hub_cloud | hub | all."],
+                    cursor: [type: "string", description: "Opt-in pagination cursor (source only); pass \"\" for the first page, iterate nextCursor."]
                 ],
                 required: []
             ],
@@ -860,18 +860,16 @@ def _getAllToolDefinitions_partItemBackups() {
         ],
         [
             name: "hub_restore_backup",
-            description: """⚠️ Restore a backup. Tell the user first. Default scope='source': restore an app/driver/rule to a backed-up version (pass backupKey from hub_list_backups). If a CODE item was DELETED, use hub_create_app/hub_create_driver/hub_create_library instead; rule snapshots (incl. Visual Rules) DO recreate a deleted rule; library backups return a clear error directing you to hub_update_library.
-scope='hub_local'/'hub_cloud' RESTORE THE ENTIRE HUB DATABASE and REBOOT the hub (minutes of downtime, all current state replaced) — far higher blast radius than a code restore. hub_local needs fileName (from hub_list_backups scope=hub_local); hub_cloud needs cloudBackupPassword.
-scope='hub_uploaded' uploads an external .lzf from backupUrl (a backup from ANOTHER hub or an archived off-hub file) and restores it (also reboots) — OPEN-WORLD: the hub fetches backupUrl from the internet. Requires Write master + confirm.""",
+            description: """⚠️ Restore a backup — tell the user first; hub-DB scopes REBOOT the hub. scope=source (default): an app/driver/rule by backupKey (deleted code → hub_create_*; deleted rules DO recreate). scope=hub_local/hub_cloud: restore the WHOLE hub DB (hub_local→fileName; hub_cloud→cloudBackupPassword). scope=hub_uploaded: upload an external .lzf from backupUrl, then restore (open-world). Write master + confirm.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    scope: [type: "string", enum: ["source", "hub_local", "hub_cloud", "hub_uploaded"], description: "What to restore. 'source' (default)=code/rule backup by backupKey. 'hub_local'/'hub_cloud'=WHOLE-HUB database restore (wipes + reboots). 'hub_uploaded'=upload an external .lzf from backupUrl, then restore (reboots)."],
-                    backupKey: [type: "string", description: "scope=source: the backup key from hub_list_backups (e.g., 'app_123', 'driver_456', 'library_42')."],
-                    fileName: [type: "string", description: "scope=hub_local: the backup `name` from hub_list_backups(scope=hub_local)."],
-                    cloudBackupPassword: [type: "string", description: "scope=hub_cloud: the encryption password set on the cloud backup."],
-                    backupUrl: [type: "string", description: "scope=hub_uploaded: an http(s) URL to the .lzf backup to upload + restore (e.g. a backup from another hub). e.g. https://host/myhub-backup.lzf"],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms the user approved the restore (a hub-DB restore reboots the hub)."]
+                    scope: [type: "string", enum: ["source", "hub_local", "hub_cloud", "hub_uploaded"], description: "source (default) | hub_local | hub_cloud | hub_uploaded."],
+                    backupKey: [type: "string", description: "scope=source: backupKey from hub_list_backups (e.g. app_123)."],
+                    fileName: [type: "string", description: "scope=hub_local: backup name from hub_list_backups."],
+                    cloudBackupPassword: [type: "string", description: "scope=hub_cloud: cloud backup encryption password."],
+                    backupUrl: [type: "string", description: "scope=hub_uploaded: http(s) URL to the .lzf to upload+restore."],
+                    confirm: [type: "boolean", description: "REQUIRED true. Confirms the restore (hub-DB scopes reboot)."]
                 ],
                 required: ["confirm"]
             ],
