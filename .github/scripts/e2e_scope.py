@@ -31,7 +31,7 @@ FILE_GROUP_MAP = {
     "libraries/mcp-diagnostics-lib.groovy":     ["diagnostics", "system_tools"],
     "libraries/mcp-debug-logging-lib.groovy":   ["developer_mode", "diagnostics"],
     "libraries/mcp-system-lib.groovy":          ["system_tools", "infrastructure"],
-    "libraries/mcp-self-admin-lib.groovy":      ["developer_mode"],
+    "libraries/mcp-self-admin-lib.groovy":      ["developer_mode", "best_practice_gating"],
     "libraries/mcp-devices-lib.groovy":         ["devices", "poll_until_attribute", "device_swap", "device_replace"],
     "libraries/mcp-virtual-devices-lib.groovy": ["virtual_device_lifecycle", "devices"],
     "libraries/mcp-variables-lib.groovy":       ["hub_variables"],

@@ -20,6 +20,9 @@ def toolUpdateMcpSettings(args) {
     // (gateway vs flat; whether outputSchema is advertised) — same class as
     // enableCustomRuleEngine, no write-path or lockout risk; clients must reconnect
     // afterward to pick up the new tool surface.
+    // enableMandatoryBPS / enableReactiveBPS (issue #299) are allowlisted as ESCAPE HATCHES:
+    // hub_update_mcp_settings is itself exempt from the best-practice gate, so letting the AI
+    // self-disable the gate here is the documented un-lock path, not a footgun.
     // Excluded:
     //   enableWrite          — would footgun: could disable own write path mid-session
     //   enableDeveloperMode  — lockout protection (must remain UI-only to disable)
@@ -34,7 +37,9 @@ def toolUpdateMcpSettings(args) {
         "enableRead":             "bool",
         "enableCustomRuleEngine": "bool",
         "useGateways":            "bool",
-        "publishOutputSchemas":   "bool"
+        "publishOutputSchemas":   "bool",
+        "enableMandatoryBPS":     "bool",
+        "enableReactiveBPS":      "bool"
     ]
 
     // Validate, coerce, and stage each update. Validation is fully atomic — every key
@@ -502,7 +507,7 @@ def _getAllToolDefinitions_partSelfAdmin() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    settings: [type: "object", description: "Map of setting key → new value (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true}). Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, publishOutputSchemas — any other key is rejected.[[FLAT_TRIM]] Deliberately NOT allowlisted: enableWrite (would disable this tool's own write path mid-session), enableDeveloperMode (lockout protection — must stay UI-only to disable), selectedDevices (different wire format, has its own tool), disabled_tools/disabled_gateways (could self-disable this tool).[[/FLAT_TRIM]]"],
+                    settings: [type: "object", description: "Map of setting key → new value (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true}). Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, publishOutputSchemas, enableMandatoryBPS, enableReactiveBPS — any other key is rejected.[[FLAT_TRIM]] Deliberately NOT allowlisted: enableWrite (would disable this tool's own write path mid-session), enableDeveloperMode (lockout protection — must stay UI-only to disable), selectedDevices (different wire format, has its own tool), disabled_tools/disabled_gateways (could self-disable this tool).[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the operation"]
                 ],
                 required: ["settings", "confirm"]

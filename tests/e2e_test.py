@@ -6708,6 +6708,132 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             f"the self app must be planned LAST (deployed last so its recompile is the final act): {apps}"
 
     # -----------------------------------------------------------------------
+    # GROUP 10b: best-practice gate + reactive hints (issue #299, opt-in)
+    # Proves the FULL forced-read-key flow + reactive hints against the live hub so the
+    # feature does not need hand-testing. CRITICAL: every test that flips a toggle ON
+    # restores it OFF in finally -- a stuck enableMandatoryBPS would block every later
+    # write test in the suite. hub_update_mcp_settings is itself gate-exempt, so the
+    # restore (and self-disable) always works without the key.
+    # -----------------------------------------------------------------------
+
+    def _set_bps(self, **toggles) -> None:
+        """Flip the issue-#299 BPS toggles via the gate-exempt settings tool."""
+        res = self.client.call_tool("hub_manage_mcp", {
+            "tool": "hub_update_mcp_settings",
+            "args": {"settings": toggles, "confirm": True},
+        })
+        assert res.get("success") is True, f"failed to set BPS toggles {toggles}: {res}"
+
+    def _read_bps_key(self) -> str:
+        """Read the acknowledgment key from the guide section -- the ONLY place it is published."""
+        guide = self.client.call_tool("hub_get_tool_guide", {"section": "best_practice_reference"})
+        text = guide.get("content", "") if isinstance(guide, dict) else str(guide)
+        m = re.search(r"Acknowledgment key:\s*(\S+)", text)
+        return m.group(1) if m else ""
+
+    @test("best_practice_gating")
+    def test_bps_gate_blocks_then_unlocks(self) -> None:
+        """Gate ON -> a write is blocked (no key leak) until the AI reads the guide, extracts the
+        key, and passes it as bestPracticeKey -> the write then succeeds. The flagship #299 proof."""
+        var_name = f"{PREFIX}BPS_Unlock"
+        self._set_bps(enableMandatoryBPS=True)
+        try:
+            # 1. WRITE WITHOUT KEY -> blocked with a guide pointer; the key is NOT leaked.
+            key = self._read_bps_key()
+            assert key, "could not extract the acknowledgment key from the guide section"
+            try:
+                self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_create_variable",
+                    "args": {"name": var_name, "type": "String", "value": "v1", "confirm": True}})
+                raise AssertionError("gate ON but a write WITHOUT the key was not blocked")
+            except McpError as e:
+                msg = str(e)
+                assert "best_practice_reference" in msg, f"block message missing the guide pointer: {msg}"
+                assert "bestPracticeKey" in msg, f"block message missing the param name: {msg}"
+                assert key not in msg, f"block message LEAKED the acknowledgment key: {msg}"
+            # 2. WRITE WITH KEY -> succeeds (a real mutation past the gate).
+            self.created_variable_names.append(var_name)
+            created = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_create_variable",
+                "args": {"name": var_name, "type": "String", "value": "v1", "confirm": True,
+                         "bestPracticeKey": key}})
+            assert created.get("success") is True, f"write WITH the key did not succeed past the gate: {created}"
+            # cleanup the variable (gate still ON -> the delete also carries the key)
+            self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_delete_variable",
+                "args": {"name": var_name, "confirm": True, "bestPracticeKey": key}})
+            if var_name in self.created_variable_names:
+                self.created_variable_names.remove(var_name)
+        finally:
+            self._set_bps(enableMandatoryBPS=False)
+
+    @test("best_practice_gating")
+    def test_bps_gate_off_by_default_allows_write(self) -> None:
+        """Gate OFF -> a write WITHOUT any key succeeds (legacy behaviour preserved)."""
+        var_name = f"{PREFIX}BPS_Off"
+        self._set_bps(enableMandatoryBPS=False)
+        self.created_variable_names.append(var_name)
+        created = self.client.call_tool("hub_manage_variables", {
+            "tool": "hub_create_variable",
+            "args": {"name": var_name, "type": "String", "value": "v1", "confirm": True}})
+        assert created.get("success") is True, f"gate OFF but a keyless write failed: {created}"
+        self.client.call_tool("hub_manage_variables", {
+            "tool": "hub_delete_variable", "args": {"name": var_name, "confirm": True}})
+        if var_name in self.created_variable_names:
+            self.created_variable_names.remove(var_name)
+
+    @test("best_practice_gating")
+    def test_bps_gate_guide_reachable_when_gate_on(self) -> None:
+        """Gate ON -> hub_get_tool_guide stays reachable (the read escape hatch) and the section
+        actually carries the key, so the AI can always discover it. No lockout."""
+        self._set_bps(enableMandatoryBPS=True)
+        try:
+            guide = self.client.call_tool("hub_get_tool_guide", {"section": "best_practice_reference"})
+            assert guide.get("success") is True, f"guide read blocked under the gate: {guide}"
+            assert "Acknowledgment key" in guide.get("content", ""), \
+                f"guide section missing the acknowledgment-key line: {guide}"
+            assert self._read_bps_key(), "could not extract the key from the reachable guide"
+        finally:
+            self._set_bps(enableMandatoryBPS=False)
+
+    @test("best_practice_gating")
+    def test_bps_gate_self_disable_escape_hatch(self) -> None:
+        """Gate ON -> hub_update_mcp_settings can turn the gate OFF WITHOUT the key (the toggle-off
+        escape hatch). After that, a keyless write succeeds again."""
+        var_name = f"{PREFIX}BPS_SelfDisable"
+        self._set_bps(enableMandatoryBPS=True)
+        try:
+            # Disable the gate WITHOUT supplying the key -- proves the settings tool is exempt.
+            self._set_bps(enableMandatoryBPS=False)
+            self.created_variable_names.append(var_name)
+            created = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_create_variable",
+                "args": {"name": var_name, "type": "String", "value": "v1", "confirm": True}})
+            assert created.get("success") is True, f"keyless write failed after self-disable: {created}"
+            self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_delete_variable", "args": {"name": var_name, "confirm": True}})
+            if var_name in self.created_variable_names:
+                self.created_variable_names.remove(var_name)
+        finally:
+            self._set_bps(enableMandatoryBPS=False)
+
+    @test("best_practice_gating")
+    def test_reactive_bps_hint_on_write_error(self) -> None:
+        """Reactive ON -> a failed write (bogus device) carries a best-practice hint pointing at
+        the guide. Reactive OFF (restored) -> the bare error returns."""
+        self._set_bps(enableReactiveBPS=True)
+        try:
+            try:
+                self.client.call_tool("hub_call_device_command", {"deviceId": "99999", "command": "on"})
+                raise AssertionError("bogus device command should have errored")
+            except McpError as e:
+                msg = str(e)
+                assert "get_tool_guide" in msg, f"reactive hint missing the guide pointer: {msg}"
+                assert "best_practice_reference" in msg, f"reactive hint missing the guide section: {msg}"
+        finally:
+            self._set_bps(enableReactiveBPS=False)
+
+    # -----------------------------------------------------------------------
     # GROUP 11: hub_get_device_attribute poll mode (2 tests -- wall-clock coverage, I7)
     # These exercise the real pauseExecution + now() path that Spock unit tests
     # cannot reach because the test harness fixes now() to a constant.
