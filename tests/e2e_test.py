@@ -7817,12 +7817,26 @@ def main() -> None:
                 print(f"  [WARN] Backup failed: {exc}")
                 print("  Tests requiring backup may fail.\n")
 
-    # The issue #299 best-practice gate ships ON by default (settings.enableMandatoryBPS != false).
-    # Pin it OFF for the suite so the rest of the keyless writes run; the best_practice_gating tests
-    # flip it back on themselves. hub_update_mcp_settings is gate-exempt, so this lands whether the
-    # gate is currently on or off. (Default-ON is proven at the unit level by
-    # ExecuteToolMandatoryBpsGateSpec -- null/unset -> blocked. It is NOT asserted here because the
-    # e2e hub's setting persists across runs, so a freshly-deployed hub is not in the unset state.)
+    # Issue #299 best-practice gate ships ON by default (settings.enableMandatoryBPS != false).
+    # PROVE the default-ON behaviour on the live hub before the suite: turn the gate ON, confirm a
+    # keyless write is BLOCKED with the guide pointer (and no key leak), then pin it OFF so the rest
+    # of the suite's keyless writes run -- the best_practice_gating tests flip it back on themselves.
+    # hub_update_mcp_settings is gate-exempt, so both settings writes land regardless of gate state.
+    # (We set it ON explicitly because the e2e hub's setting persists across runs, so a freshly
+    # deployed hub is not in the unset state; the null/unset -> ON default is proven at the unit
+    # level by ExecuteToolMandatoryBpsGateSpec.)
+    client.call_tool("hub_manage_mcp", {
+        "tool": "hub_update_mcp_settings",
+        "args": {"settings": {"enableMandatoryBPS": True}, "confirm": True}})
+    try:
+        client.call_tool("hub_call_device_command", {"deviceId": "BAT_E2E_bps_probe", "command": "on"})
+        raise AssertionError("FATAL: best-practice gate is ON but a keyless write was not blocked")
+    except McpError as exc:
+        _m = str(exc)
+        assert "Mandatory best-practice" in _m, f"expected the gate block, got: {exc}"
+        assert "best_practice_reference" in _m, f"gate block should point at the guide section: {exc}"
+        assert "bps-ack-299" not in _m, f"gate block must not leak the key: {exc}"
+    print("Best-practice gate: default-ON behaviour verified on the live hub (keyless write blocked)")
     client.call_tool("hub_manage_mcp", {
         "tool": "hub_update_mcp_settings",
         "args": {"settings": {"enableMandatoryBPS": False}, "confirm": True}})
