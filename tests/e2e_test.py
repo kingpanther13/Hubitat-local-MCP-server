@@ -6825,13 +6825,15 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         best-practice content is actually returned and is tool-specific, not a generic page."""
         self._set_bps(enableMandatoryBPS=False)  # ensure the gate isn't masking the tool's own error
         try:
-            self.client.call_tool("hub_call_device_command", {"deviceId": "99999", "command": "on"})
+            # Gateway mode (the default): the sub-tool is routed via hub_manage_devices.
+            self.client.call_tool("hub_manage_devices", {
+                "tool": "hub_call_device_command", "args": {"deviceId": "99999", "command": "on"}})
             raise AssertionError("bogus device command should have errored")
         except McpError as e:
             msg = str(e)
             assert "device_authorization" in msg, f"reactive hint missing the device_authorization section: {msg}"
             assert "get_tool_guide" in msg, f"reactive hint missing the guide pointer: {msg}"
-            assert "hub_call_device_command" in msg, f"reactive hint should name the failing tool: {msg}"
+            assert "hub_call_device_command" in msg, f"reactive hint should name the failing sub-tool: {msg}"
             assert "best_practice_reference" not in msg, f"hint should be tool-specific, not the generic page: {msg}"
 
     @test("best_practice_gating")
@@ -6847,6 +6849,159 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             msg = str(e)
             assert "virtual_devices" in msg, f"reactive hint missing the virtual_devices section: {msg}"
             assert "get_tool_guide" in msg, f"reactive hint missing the guide pointer: {msg}"
+
+    # ---- GATEWAY-ROUTED reactive hints (gateway mode is the default; these prove the hint maps to
+    # the failing SUB-TOOL's section, resolved from args.tool, not the section-less gateway name --
+    # the path that fired NO hint before the fix). ----
+
+    @test("best_practice_gating")
+    def test_reactive_bps_gateway_visual_rule_links_to_visual_rule_reference(self) -> None:
+        """Sub-tool error routed THROUGH a gateway (hub_manage_rule_machine -> hub_delete_visual_rule) ->
+        the reactive hint maps to the SUB-TOOL's section (visual_rule_reference). A bogus appId is passed
+        so the call clears the gateway required-param pre-check (["appId","confirm"]) and the sub-tool
+        actually runs: it RETURNS [success:false] (bp_warning field) or, with no recent backup, THROWS
+        'BACKUP REQUIRED' -- both clean, both mapped to visual_rule_reference."""
+        self._set_bps(enableMandatoryBPS=False)
+        try:
+            res = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_delete_visual_rule", "args": {"appId": "999999999", "confirm": True}})
+            assert isinstance(res, dict) and res.get("success") is False, f"expected a failure, got: {res}"
+            blob = json.dumps(res)
+        except McpError as e:
+            blob = str(e)
+        assert "visual_rule_reference" in blob, f"gateway-routed hint missing visual_rule_reference: {blob[:300]}"
+
+    @test("best_practice_gating")
+    def test_reactive_bps_gateway_app_disabled_links_to_builtin_app_tools(self) -> None:
+        """Gateway-routed THROWN error: hub_set_app_disabled via hub_manage_native_rules_and_apps with a
+        non-numeric appId throws -> hint maps to the sub-tool's section (builtin_app_tools)."""
+        self._set_bps(enableMandatoryBPS=False)
+        try:
+            self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_app_disabled", "args": {"appId": "not-a-number", "disabled": True}})
+            raise AssertionError("hub_set_app_disabled with a non-numeric appId should have errored")
+        except McpError as e:
+            msg = str(e)
+            assert "builtin_app_tools" in msg, f"gateway-routed hint missing builtin_app_tools: {msg}"
+            assert "hub_set_app_disabled" in msg, f"hint should name the SUB-TOOL: {msg}"
+
+    @test("best_practice_gating")
+    def test_reactive_bps_gateway_returned_map_carries_bp_warning_field(self) -> None:
+        """Gateway-routed RETURNED-[success:false] path: hub_set_app_disabled via its gateway with a
+        numeric-but-nonexistent appId RETURNS a success:false Map (no throw); the bp_warning FIELD rides
+        the result and names the sub-tool's section (builtin_app_tools). Proves the returned-Map path."""
+        self._set_bps(enableMandatoryBPS=False)
+        res = self.client.call_tool("hub_manage_native_rules_and_apps", {
+            "tool": "hub_set_app_disabled", "args": {"appId": "999999999", "disabled": True}})
+        assert isinstance(res, dict), f"expected a returned result map, got: {res!r}"
+        assert res.get("success") is False, f"expected success:false for a nonexistent appId, got: {res}"
+        assert "bp_warning" in res, f"returned-error result missing the bp_warning field: {res}"
+        assert 'section="builtin_app_tools"' in res["bp_warning"], f"bp_warning wrong section: {res.get('bp_warning')}"
+        assert "hub_set_app_disabled" in res["bp_warning"], f"bp_warning should name the sub-tool: {res.get('bp_warning')}"
+
+    @test("best_practice_gating")
+    def test_reactive_bps_gateway_destructive_links_to_hub_admin_write(self) -> None:
+        """Gateway-routed destructive sub-tool: hub_delete_room via hub_manage_rooms with a bogus room
+        (confirm:true clears the self-citing SAFETY-CHECK; backup stamped in main()) -> hub_admin_write."""
+        self._set_bps(enableMandatoryBPS=False)
+        try:
+            self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_delete_room", "args": {"room": "BAT_E2E_no_such_room", "confirm": True}})
+            raise AssertionError("deleting a bogus room should have errored")
+        except McpError as e:
+            msg = str(e)
+            assert "hub_admin_write" in msg, f"gateway-routed hint missing hub_admin_write: {msg}"
+            assert "SAFETY CHECK FAILED" not in msg, f"self-citing confirm message slipped through: {msg}"
+
+    @test("best_practice_gating")
+    def test_reactive_bps_update_device_links_to_update_device(self) -> None:
+        """Gateway-routed: hub_update_device (via hub_manage_devices) on a bogus deviceId -> update_device."""
+        self._set_bps(enableMandatoryBPS=False)
+        try:
+            self.client.call_tool("hub_manage_devices", {
+                "tool": "hub_update_device", "args": {"deviceId": "999999999", "label": "BAT_E2E_x"}})
+            raise AssertionError("updating a bogus device should have errored")
+        except McpError as e:
+            msg = str(e)
+            assert "update_device" in msg, f"reactive hint missing update_device: {msg}"
+            assert "hub_update_device" in msg, f"hint should name the sub-tool: {msg}"
+
+    # ---- gate behaviour + guide CONTENT ----
+
+    @test("best_practice_gating")
+    def test_bps_gate_wrong_and_numeric_key_blocked(self) -> None:
+        """Gate ON: a wrong STRING key and a NUMERIC key both hit the same block; the key never leaks."""
+        self._set_bps(enableMandatoryBPS=True)
+        try:
+            key = self._read_bps_key()
+            assert key, "could not read the acknowledgment key from the guide"
+            for bad in ["not-the-key", 12345]:
+                try:
+                    self.client.call_tool("hub_manage_variables", {
+                        "tool": "hub_create_variable",
+                        "args": {"name": "BAT_E2E_BPS_WrongKey", "type": "String", "value": "v",
+                                 "confirm": True, "bestPracticeKey": bad}})
+                    raise AssertionError(f"gate ON but wrong key {bad!r} was not blocked")
+                except McpError as e:
+                    msg = str(e)
+                    assert "Mandatory best-practice" in msg, f"wrong key {bad!r} did not hit the gate: {msg}"
+                    assert key not in msg, f"block leaked the key for {bad!r}: {msg}"
+        finally:
+            self._set_bps(enableMandatoryBPS=False)
+
+    @test("best_practice_gating")
+    def test_bps_gate_message_not_double_coached(self) -> None:
+        """The gate's own missing-key refusal is returned as-is, NOT augmented with the reactive per-tool
+        suffix -- even though the failing tool (hub_call_device_command) HAS a section."""
+        self._set_bps(enableMandatoryBPS=True)
+        try:
+            try:
+                # Gateway mode: the gate fires on the sub-tool's re-entry through hub_manage_devices.
+                self.client.call_tool("hub_manage_devices", {
+                    "tool": "hub_call_device_command", "args": {"deviceId": "99999", "command": "on"}})
+                raise AssertionError("gate ON but keyless write not blocked")
+            except McpError as e:
+                msg = str(e)
+                assert "Mandatory best-practice" in msg, f"expected the gate block: {msg}"
+                assert "reference and best practices" not in msg, f"gate message was double-coached: {msg}"
+                assert 'section="device_authorization"' not in msg, f"gate leaked a per-tool reactive pointer: {msg}"
+        finally:
+            self._set_bps(enableMandatoryBPS=False)
+
+    @test("best_practice_gating")
+    def test_bps_gate_exempt_read_tool_keyless(self) -> None:
+        """Gate ON: a read-only tool (hub_list_devices via the hub_read_devices gateway) succeeds with NO
+        key -- reads skip the gate even routed through a gateway."""
+        self._set_bps(enableMandatoryBPS=True)
+        try:
+            res = self.client.call_tool("hub_read_devices", {"tool": "hub_list_devices", "args": {}})
+            blob = res if isinstance(res, str) else json.dumps(res)
+            assert "Mandatory best-practice" not in blob, f"read-only tool blocked under the gate: {blob[:200]}"
+        finally:
+            self._set_bps(enableMandatoryBPS=False)
+
+    @test("best_practice_gating")
+    def test_bps_reference_section_returns_best_practice_bullets(self) -> None:
+        """The best_practice_reference section serves the actual best-practice CONTENT (not just the key)."""
+        res = self.client.call_tool("hub_get_tool_guide", {"section": "best_practice_reference"})
+        content = res.get("content", "") if isinstance(res, dict) else str(res)
+        assert "Acknowledgment key" in content, f"missing the key line: {content[:200]!r}"
+        assert "native Rule Machine" in content, f"missing the native-RM best practice: {content[:400]!r}"
+        assert "hub_list_devices" in content, f"missing the device-resolution best practice: {content[:400]!r}"
+        assert "hub_create_backup" in content, f"missing the destructive-backup best practice: {content[:400]!r}"
+
+    @test("best_practice_gating")
+    def test_bps_every_reactive_section_returns_content(self) -> None:
+        """Every guide section the reactive hint can point at is reachable and returns real content
+        (a heading + substance), proving the best-practice content is actually served, not just named."""
+        sections = ["device_authorization", "update_device", "virtual_devices", "builtin_app_tools",
+                    "set_rule_reference", "visual_rule_reference", "rules", "hub_admin_write",
+                    "backup", "file_manager", "best_practice_reference"]
+        for sec in sections:
+            res = self.client.call_tool("hub_get_tool_guide", {"section": sec})
+            assert isinstance(res, dict) and res.get("success") is True, f"guide section {sec} not reachable: {res}"
+            content = res.get("content", "")
+            assert "##" in content and len(content) > 80, f"guide section {sec} returned trivial content: {content[:120]!r}"
 
     # -----------------------------------------------------------------------
     # GROUP 11: hub_get_device_attribute poll mode (2 tests -- wall-clock coverage, I7)
@@ -7829,7 +7984,9 @@ def main() -> None:
         "tool": "hub_update_mcp_settings",
         "args": {"settings": {"enableMandatoryBPS": True}, "confirm": True}})
     try:
-        client.call_tool("hub_call_device_command", {"deviceId": "BAT_E2E_bps_probe", "command": "on"})
+        # Gateway mode (the default): the gate fires on the sub-tool's re-entry through the gateway.
+        client.call_tool("hub_manage_devices", {
+            "tool": "hub_call_device_command", "args": {"deviceId": "BAT_E2E_bps_probe", "command": "on"}})
         raise AssertionError("FATAL: best-practice gate is ON but a keyless write was not blocked")
     except McpError as exc:
         _m = str(exc)

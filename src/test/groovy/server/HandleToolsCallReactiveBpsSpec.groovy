@@ -45,6 +45,48 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
         response.error.message.contains('hub_get_tool_guide(section="set_rule_reference")')
     }
 
+    def "reactive hint resolves the SUB-TOOL section for a gateway-routed error (not the gateway name)"() {
+        given: "a sub-tool error routed through its gateway -- handleToolsCall sees the gateway name"
+        settingsMap.useGateways = true
+        script.metaClass.requiredParamsByTool = { -> [:] }
+        script.metaClass.toolSetAppDisabled = { a -> throw new IllegalArgumentException("appId must be a positive integer") }
+
+        when:
+        def response = mcpDriver.callTool('hub_manage_native_rules_and_apps',
+            [tool: 'hub_set_app_disabled', args: [appId: 'x']])
+
+        then: "the hint maps to the SUB-TOOL's section (builtin_app_tools), since the gateway has none"
+        response.error.code == -32602
+        response.error.message.contains('hub_get_tool_guide(section="builtin_app_tools")')
+        response.error.message.contains('hub_set_app_disabled')
+    }
+
+    def "a gateway-ENVELOPE error (unknown sub-tool) gets NO hint -- the sub-tool never ran"() {
+        given: "a sub-tool that is not a member of the called gateway -> handleGateway rejects it"
+        settingsMap.useGateways = true
+
+        when:
+        def response = mcpDriver.callTool('hub_manage_devices', [tool: 'hub_delete_room', args: [room: 'x']])
+
+        then: "the gateway 'Unknown tool' refusal stands alone -- no resolved-sub-tool guide pointer"
+        response.error.code == -32602
+        response.error.message.contains('Unknown tool')
+        !response.error.message.contains('get_tool_guide')
+    }
+
+    def "malformed gateway arguments (a non-Map) do not crash the reactive-name resolution"() {
+        given: "a gateway call whose 'arguments' is a String, not an object"
+        settingsMap.useGateways = true
+
+        when: "the args.tool probe runs BEFORE handleToolsCall's try -- it must not throw on a String"
+        def response = script.handleToolsCall([id: 1, params: [name: 'hub_manage_devices', arguments: 'not-an-object']])
+
+        then: "the malformed call is reported through the handled JSON-RPC path, not an unhandled crash"
+        noExceptionThrown()
+        response != null
+        (response.error != null) || (response.result != null)
+    }
+
     def "a thrown error from a tool with NO dedicated section gets no hint"() {
         given: "hub_set_hsm is not in the tool->section map"
         script.metaClass.toolSetHsm = { m -> throw new IllegalArgumentException("HSM not configured") }
@@ -189,5 +231,12 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
     def "_reactiveBpsWarning returns null when the error already points at the guide (idempotent)"() {
         expect:
         script._reactiveBpsWarning('hub_call_device_command', [:], 'Device not found. See hub_get_tool_guide(...)') == null
+    }
+
+    def "_reactiveBpsWarning returns null for gateway-envelope errors (the sub-tool never ran)"() {
+        expect:
+        script._reactiveBpsWarning('hub_delete_room', [:], "Unknown tool 'hub_delete_room' in hub_manage_devices") == null
+        script._reactiveBpsWarning('hub_call_device_command', [:], "Missing required parameter: command") == null
+        script._reactiveBpsWarning('hub_set_native_app', [:], "Gateway arg 'args' was a String but not valid JSON.") == null
     }
 }

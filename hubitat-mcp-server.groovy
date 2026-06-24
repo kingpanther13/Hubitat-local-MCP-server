@@ -822,6 +822,13 @@ def handleToolsList(msg) {
 def handleToolsCall(msg) {
     def toolName = msg.params?.name
     def args = msg.params?.arguments ?: [:]
+    // For a gateway call (hub_manage_*/hub_read_*) the FAILING tool is args.tool, not the gateway
+    // name -- resolve it so the reactive best-practice hint (issue #299) maps to the right tool's
+    // guide section. A flat call has no gateway entry, so reactiveToolName stays the leaf name.
+    // `args instanceof Map` guards a malformed non-object `arguments` (e.g. a JSON string): probing
+    // .tool on a String here (before the try below) would throw and surface as a -32603 instead of
+    // the handled path -- fall back to the gateway name and let the try block report it cleanly.
+    def reactiveToolName = (getGatewayConfig().containsKey(toolName) && args instanceof Map && args.tool instanceof String) ? args.tool : toolName
 
     if (!toolName) {
         return jsonRpcError(msg.id, -32602, "Invalid params: tool name required")
@@ -852,7 +859,7 @@ def handleToolsCall(msg) {
             // (e.g. a future tool returns an immutable result Map), log and fall through with the
             // original result intact.
             try {
-                _applyReactiveBpsWarning(toolName, args, result)
+                _applyReactiveBpsWarning(reactiveToolName, args, result)
             } catch (Exception bpErr) {
                 mcpLog("warn", "server", "Reactive BPS hint failed for ${toolName}: ${bpErr.message}", null, [details: [tool: toolName]])
             }
@@ -933,7 +940,7 @@ def handleToolsCall(msg) {
         if (e.message) {
             // Same guard as the returned-error path: a hint failure must not lose the validation error.
             try {
-                def w = _reactiveBpsWarning(toolName, args, e.message)
+                def w = _reactiveBpsWarning(reactiveToolName, args, e.message)
                 if (w) msgText = "${e.message} ${w}"
             } catch (Exception bpErr) {
                 mcpLog("warn", "server", "Reactive BPS hint failed for ${toolName}: ${bpErr.message}", null, [details: [tool: toolName]])
@@ -5114,6 +5121,10 @@ def _reactiveBpsWarning(toolName, args, errorText) {
     def txt = (errorText ?: '').toString()
     if (txt.contains('get_tool_guide')) return null
     if (txt =~ /(?i)tools are disabled|Developer Mode tools are disabled|disabled in Advanced settings|^Mandatory best-practice/) return null
+    // Gateway-ENVELOPE errors: the sub-tool never ran (handleGateway rejected the call before
+    // dispatch), so the resolved sub-tool's section is irrelevant -- the caller must fix the
+    // gateway call, not read the tool guide. Stay quiet, same as the config refusals above.
+    if (txt =~ /Unknown tool|Unknown gateway|Cannot call a gateway|Gateway arg|Missing required parameter|useGateways is OFF/) return null
     def section = _guideSectionForTool(toolName)
     if (!section) return null
     return "See hub_get_tool_guide(section=\"${section}\") for ${toolName}'s reference and best practices."
