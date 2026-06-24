@@ -543,21 +543,45 @@ def backupResponseSink(response, data) {
 // Returns [success:true, schedule:<echo>] or [success:false, error:...]. Called by toolCreateHubBackup.
 private _setHubBackupSchedule(Map schedule) {
     if (schedule == null) return [success: false, error: "schedule object is required"]
-    if (!schedule.containsKey("hour") || !schedule.containsKey("minute")) {
-        return [success: false, error: "schedule requires hour (0-23) and minute (0-59)"]
+    // READ-MERGE from GET /hub2/backup/json so omitted fields keep their current value -- the
+    // POST is wholesale-shaped (it carries localBackupFrequency/cloudBackupFrequency/hour/minute),
+    // so sending a partial set would blank the rest. Field names differ across the two endpoints:
+    // read = databaseCleanupTimeHour/databaseCleanupJobMinute; write = hour/minute.
+    def cur = [:]
+    try {
+        def raw = hubInternalGet("/hub2/backup/json")
+        def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+        cur = (parsed instanceof Map) ? parsed : [:]
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "could not read current backup schedule", e)
+        return [success: false, error: "Could not read the current backup schedule (/hub2/backup/json): ${e.message}", note: "Nothing was changed."]
     }
+    def hourIn = schedule.containsKey("hour") ? schedule.hour : cur.databaseCleanupTimeHour
+    def minuteIn = schedule.containsKey("minute") ? schedule.minute : cur.databaseCleanupJobMinute
     Integer hour, minute
     try {
-        hour = schedule.hour as Integer
-        minute = schedule.minute as Integer
+        hour = hourIn as Integer
+        minute = minuteIn as Integer
     } catch (Exception e) {
-        return [success: false, error: "hour and minute must be integers, got hour=${schedule.hour}, minute=${schedule.minute}"]
+        return [success: false, error: "hour and minute must be integers, got hour=${hourIn}, minute=${minuteIn}"]
     }
-    if (hour == null || hour < 0 || hour > 23) return [success: false, error: "hour must be 0-23, got: ${schedule.hour}"]
-    if (minute == null || minute < 0 || minute > 59) return [success: false, error: "minute must be 0-59, got: ${schedule.minute}"]
+    if (hour == null || hour < 0 || hour > 23) return [success: false, error: "hour must be 0-23, got: ${hourIn}"]
+    if (minute == null || minute < 0 || minute > 59) return [success: false, error: "minute must be 0-59, got: ${minuteIn}"]
+    def localFreq = schedule.containsKey("localBackupFrequency") ? schedule.localBackupFrequency : cur.localBackupFrequency
+    def cloudFreq = schedule.containsKey("cloudBackupFrequency") ? schedule.cloudBackupFrequency : cur.cloudBackupFrequency
+    // The cloud backup PASSWORD is the one field /hub2/backup/json does NOT expose (it reads back
+    // null), so we cannot read-merge it. If cloud backup is enabled now OR would be after this change
+    // and the caller did not supply cloudBackupPassword, REFUSE -- a wholesale write would blank the
+    // password and silently disable cloud backups. (Pass cloudBackupFrequency=0 to turn cloud off.)
+    int cloudNow = ((cur.cloudBackupFrequency ?: 0) as Integer)
+    int cloudAfter = ((cloudFreq ?: 0) as Integer)
+    if ((cloudNow > 0 || cloudAfter > 0) && !schedule.containsKey("cloudBackupPassword")) {
+        return [success: false, error: "Cloud backup is enabled but cloudBackupPassword was not provided.",
+                note: "Changing the schedule replaces the cloud-backup password, which the hub does not expose for read-back. Pass cloudBackupPassword (the current cloud-backup encryption password) to keep cloud backups working, or pass cloudBackupFrequency=0 to turn cloud backup off."]
+    }
     def body = [
-        localBackupFrequency: schedule.localBackupFrequency,
-        cloudBackupFrequency: schedule.cloudBackupFrequency,
+        localBackupFrequency: localFreq,
+        cloudBackupFrequency: cloudFreq,
         hour: hour,
         minute: minute,
         cloudBackupPassword: schedule.cloudBackupPassword ?: ""
@@ -772,12 +796,12 @@ def _getAllToolDefinitions_partItemBackups() {
                 properties: [
                     confirm: [type: "boolean", description: "true to create a backup now (omit with scheduleOnly)."],
                     mock: [type: "boolean", description: "Developer Mode only: stamp the 24h gate record; no real backup (test envs)."],
-                    schedule: [type: "object", description: "Optional: set the automatic-backup schedule.", properties: [
-                        hour: [type: "integer", description: "Hour 0-23"],
-                        minute: [type: "integer", description: "Minute 0-59"],
-                        localBackupFrequency: [description: "Local backup frequency (hub value)"],
-                        cloudBackupFrequency: [description: "Cloud backup frequency (hub value)"],
-                        cloudBackupPassword: [type: "string", description: "Cloud backup password"]
+                    schedule: [type: "object", description: "Optional: set the automatic-backup schedule. Omitted fields keep their current value (read-merged from the hub). If cloud backup is enabled you MUST pass cloudBackupPassword (the hub doesn't expose it for read-back) or pass cloudBackupFrequency=0 to turn cloud backup off.", properties: [
+                        hour: [type: "integer", description: "Hour 0-23 (kept if omitted)"],
+                        minute: [type: "integer", description: "Minute 0-59 (kept if omitted)"],
+                        localBackupFrequency: [description: "Local backup frequency, hub value (kept if omitted)"],
+                        cloudBackupFrequency: [description: "Cloud backup frequency, hub value; 0 disables cloud backup (kept if omitted)"],
+                        cloudBackupPassword: [type: "string", description: "Cloud-backup encryption password. Required when cloud backup is/stays enabled."]
                     ]],
                     scheduleOnly: [type: "boolean", description: "With schedule: set schedule only, no backup now."]
                 ],

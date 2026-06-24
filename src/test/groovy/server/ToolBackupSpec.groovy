@@ -27,6 +27,8 @@ class ToolBackupSpec extends ToolSpecBase {
             hubGet.register(p) { params -> '{"success":true}' }
         }
         hubGet.register('/hub/backup/statusJson') { params -> '{"backupInProgress":false,"cloudBackupInProgress":false}' }
+        // current schedule (read-merge source); cloud DISABLED by default so schedule tests need no password
+        hubGet.register('/hub2/backup/json') { params -> '{"localBackupFrequency":1,"cloudBackupFrequency":0,"databaseCleanupTimeHour":3,"databaseCleanupJobMinute":0,"backupPassword":null}' }
         // schedule POST capture
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
             posted.path = path; posted.body = new JsonSlurper().parseText(body); return [success: true]
@@ -361,16 +363,33 @@ class ToolBackupSpec extends ToolSpecBase {
         !r.containsKey('backups')
     }
 
-    def "a schedule missing hour/minute fails as a structured error"() {
+    def "a schedule omitting hour/minute read-merges them from the current schedule"() {
         given:
         enableWrite()
 
         when:
-        def r = script.toolCreateHubBackup([confirm: true, schedule: [localBackupFrequency: 1]])
+        def r = script.toolCreateHubBackup([confirm: true, schedule: [localBackupFrequency: 2]])
+
+        then:
+        r.success == true
+        r.scheduleUpdated == true
+        posted.body.hour == 3                  // merged from /hub2/backup/json databaseCleanupTimeHour
+        posted.body.minute == 0                // merged from databaseCleanupJobMinute
+        posted.body.localBackupFrequency == 2  // caller override
+        posted.body.cloudBackupFrequency == 0  // merged from current (cloud disabled)
+    }
+
+    def "a schedule with cloud backup enabled but no cloudBackupPassword is refused (won't blank the password)"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/backup/json') { params -> '{"localBackupFrequency":1,"cloudBackupFrequency":7,"databaseCleanupTimeHour":3,"databaseCleanupJobMinute":0,"backupPassword":null}' }
+
+        when:
+        def r = script.toolCreateHubBackup([confirm: true, schedule: [hour: 4, minute: 0]])
 
         then:
         r.success == false
-        r.error.toLowerCase().contains('schedule')
+        r.error.toLowerCase().contains('cloud')
     }
 
     def "a schedule with a non-numeric hour fails as a structured error (no NumberFormatException leak)"() {
@@ -424,5 +443,28 @@ class ToolBackupSpec extends ToolSpecBase {
 
         then:
         mcpDriver.parseInner(resp).success == true
+    }
+
+    def "hub_delete_backup via dispatch surfaces a validation-error envelope for a bad location"() {
+        given:
+        enableWrite()
+
+        when:
+        def resp = mcpDriver.callTool('hub_delete_backup', [location: 'bogus', confirm: true])
+
+        then: 'an IllegalArgumentException maps to a -32602 (or isError) envelope, not a success'
+        resp.error?.code == -32602 || resp.result?.isError == true
+    }
+
+    def "scheduleOnly without a schedule object falls through to a normal create (scheduleOnly is a no-op)"() {
+        given:
+        enableWrite()
+
+        when:
+        def r = script.toolCreateHubBackup([confirm: true, scheduleOnly: true])
+
+        then:
+        r.success == true
+        r.scheduleUpdated == false
     }
 }
