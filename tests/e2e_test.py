@@ -5527,6 +5527,30 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             f"hub_list_modes response missing modes/currentMode: {list(result.keys()) if isinstance(result, dict) else type(result)}"
 
     @test("system_tools")
+    def test_hub_backup_reads(self) -> None:
+        # NON-DESTRUCTIVE coverage only for the hub-DB backup surface (issue #259 item #1).
+        # Per owner direction the destructive ops (restore/delete/upload/schedule) are NEVER
+        # exercised live -- a hub-DB restore wipes + reboots the e2e hub. Those paths are proven
+        # by Spock (ToolBackupSpec) against the mocked hub. Here we only prove the read scopes of
+        # hub_list_backups reach the hub and return the expected sections (empty lists are fine).
+        print("    [E2E-GAP] hub-DB restore/delete/upload/schedule are intentionally NOT e2e-tested "
+              "(destructive to the hub); ToolBackupSpec covers them against a mocked hub.")
+        loc = self.client.call_tool("hub_list_backups", {"scope": "hub_local"})
+        assert isinstance(loc, dict), f"hub_list_backups(scope=hub_local) returned {type(loc).__name__}"
+        assert "hubLocalBackups" in loc or "hubBackupErrors" in loc, \
+            f"scope=hub_local missing hubLocalBackups/hubBackupErrors: {sorted(loc.keys())}"
+
+        cloud = self.client.call_tool("hub_list_backups", {"scope": "hub_cloud"})
+        assert isinstance(cloud, dict), f"hub_list_backups(scope=hub_cloud) returned {type(cloud).__name__}"
+        assert "hubCloudBackups" in cloud or "hubBackupErrors" in cloud, \
+            f"scope=hub_cloud missing hubCloudBackups/hubBackupErrors: {sorted(cloud.keys())}"
+
+        # The default scope=source (code backups) still works unchanged.
+        src = self.client.call_tool("hub_list_backups", {})
+        assert isinstance(src, dict) and "backups" in src, \
+            f"default scope=source missing 'backups': {sorted(src.keys()) if isinstance(src, dict) else type(src).__name__}"
+
+    @test("system_tools")
     def test_mode_lifecycle(self) -> None:
         # FULL live coverage of the mode surface on the sacrificial e2e hub -- proves every
         # capability of hub_manage_mode / hub_list_modes / hub_set_mode_manager by e2e alone
