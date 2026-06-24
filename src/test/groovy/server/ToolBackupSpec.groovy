@@ -308,6 +308,71 @@ class ToolBackupSpec extends ToolSpecBase {
         thrown(IllegalArgumentException)
     }
 
+    // ---------- failure envelopes (structured, no throw) ----------
+
+    def "a failing hub-DB restore returns the structured error envelope (does NOT throw)"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/restoreLocalBackup') { params -> '{"success":false,"message":"relay down"}' }
+
+        when:
+        def r = script.toolRestoreItemBackup([scope: 'hub_local', fileName: 'x.lzf', confirm: true])
+
+        then:
+        r.success == false
+        r.error.contains('relay down')
+        r.note != null
+    }
+
+    def "a failing hub-DB delete returns the structured error envelope"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/deleteLocalBackup') { params -> '{"success":false,"message":"not found"}' }
+
+        when:
+        def r = script.toolDeleteHubBackup([location: 'local', fileName: 'x.lzf', confirm: true])
+
+        then:
+        r.success == false
+        r.error.contains('not found')
+        r.note != null
+    }
+
+    def "a list with a failing hub-DB source surfaces hubBackupErrors + partial (never silently complete)"() {
+        given:
+        hubGet.register('/hub2/cloudBackups') { params -> throw new RuntimeException('cloud unreachable') }
+
+        when:
+        def r = script.toolListItemBackups([scope: 'hub'])
+
+        then:
+        r.hubLocalBackups != null            // the local store still returned
+        r.hubBackupErrors.any { it.contains('cloud') }
+        r.partial == true
+    }
+
+    def "scope=hub lists BOTH DB stores and omits the source section"() {
+        when:
+        def r = script.toolListItemBackups([scope: 'hub'])
+
+        then:
+        r.hubLocalBackups != null
+        r.hubCloudBackups != null
+        !r.containsKey('backups')
+    }
+
+    def "a schedule missing hour/minute fails as a structured error"() {
+        given:
+        enableWrite()
+
+        when:
+        def r = script.toolCreateHubBackup([confirm: true, schedule: [localBackupFrequency: 1]])
+
+        then:
+        r.success == false
+        r.error.toLowerCase().contains('schedule')
+    }
+
     // ---------- dispatch envelopes ----------
 
     def "hub_delete_backup via dispatch returns the success envelope"() {

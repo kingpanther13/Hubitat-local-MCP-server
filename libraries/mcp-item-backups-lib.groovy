@@ -13,7 +13,7 @@ def toolListItemBackups(args = null) {
         def hb = _listHubBackups(scope in ["hub_local", "hub", "all"], scope in ["hub_cloud", "hub", "all"])
         if (hb.local != null) hubSections.hubLocalBackups = hb.local
         if (hb.cloud != null) hubSections.hubCloudBackups = hb.cloud
-        if (hb.errors) hubSections.hubBackupErrors = hb.errors
+        if (hb.errors) { hubSections.hubBackupErrors = hb.errors; hubSections.partial = true }
     }
     if (scope == "source") return _listSourceItemBackups(args)
     if (!(scope in ["source", "all"])) {
@@ -549,7 +549,7 @@ private _listHubBackups(boolean wantLocal, boolean wantCloud) {
             def raw = hubInternalGet("/hub2/localBackups")
             def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : []
             out.local = (parsed instanceof List) ? parsed.collect { [name: it.name, createTime: it.createTime, createTimeOrig: it.createTimeOrig, size: it.size] } : []
-        } catch (Exception e) { out.errors << "local: ${e.message}" }
+        } catch (Exception e) { mcpLogError("hub-admin", "list local hub backups failed", e); out.errors << "local: ${e.message}" }
     }
     if (wantCloud) {
         try {
@@ -557,7 +557,7 @@ private _listHubBackups(boolean wantLocal, boolean wantCloud) {
             def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : [:]
             def list = (parsed instanceof Map) ? (parsed.backups ?: []) : []
             out.cloud = list.collect { [path: it.path, createTime: it.createTime, hubVersion: it.hubVersion, hubName: it.hubName] }
-        } catch (Exception e) { out.errors << "cloud: ${e.message}" }
+        } catch (Exception e) { mcpLogError("hub-admin", "list cloud hub backups failed", e); out.errors << "cloud: ${e.message}" }
     }
     return out
 }
@@ -706,7 +706,12 @@ def _postMultipartBackup(String path, String field, String fileName, byte[] file
         if (d instanceof Map) { result = d }
         else {
             try { result = new groovy.json.JsonSlurper().parseText(d?.toString() ?: "{}") }
-            catch (Exception ig) { result = [success: (resp?.status in [200, 201, 202])] }
+            catch (Exception ig) {
+                // The caller REBOOTS the hub on success, so do NOT infer success from a 2xx alone --
+                // require the documented {success:true} body. An HTML/login/empty 2xx is a failure.
+                mcpLogError("hub-admin", "uploadBackup returned a non-JSON body (status=${resp?.status})", ig)
+                result = [success: false, message: "Upload returned an unexpected (non-JSON) response; not treated as success."]
+            }
         }
     }
     return result
