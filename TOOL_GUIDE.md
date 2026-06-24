@@ -4,7 +4,7 @@ Detailed reference for MCP Rule Server tools. Consult this when tool description
 
 ## Category Gateway Proxy (v0.8.0+)
 
-As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 33 items (13 core + 20 gateways) covering 108 total tools. Use `hub_search_tools` to find any tool by natural language query.
+As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 33 items (13 core + 21 gateways) covering 109 total tools. Use `hub_search_tools` to find any tool by natural language query.
 
 **How to use a gateway:**
 1. Call the gateway with no arguments to see full parameter schemas for all its tools
@@ -504,7 +504,9 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 - For single-device or single-app logs, pass `deviceId` or `appId` -- this is a server-side scope filter (mutually exclusive) and is much cheaper than post-filtering the full buffer
 
 **hub_list_device_events (windowed mode):**
-- Windowed mode activates when `hoursBack` is supplied: up to 7 days of history
+- Windowed mode activates when `hoursBack` OR `since` is supplied: up to 7 days of history
+- `hoursBack` is a relative window; `since` is an absolute bookmark -- return only events AFTER an exact timestamp. `since` accepts ISO-8601 in the same format the tool emits in `date`/`sinceTimestamp` -- a numeric offset with no colon, e.g. `2026-06-23T10:00:00.000-0600` (a trailing `Z` for UTC and a millis-less variant are also accepted), or epoch milliseconds. `since` takes precedence over `hoursBack`; a future `since` yields an empty list
+- **Change-watching loop**: record a returned event `date`, run your action, then pass that `date` back as `since` to get exactly the new events since that bookmark. The response echoes `sinceMode` (`"explicit"` when `since` drove the window, `"relative"` for `hoursBack`) plus the bounding field (`since` or `hoursBack`); `sinceTimestamp` is always the actual window start used
 - Use attribute filter to reduce data volume
 - **Location-scope mode**: omit `deviceId` to return location events instead of device events. Returns mode changes (`name: 'mode'`), HSM status/alerts (`'hsmStatus'`, `'hsmAlert'`), hub variable changes (name = the variable's name), and any `sendLocationEvent(...)` emissions from rules/apps. `attribute` filter applies to event name in the same way. Response includes `source: 'location'` and omits `device`/`deviceId`.
 

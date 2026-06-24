@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 108 MCP tools (33 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 109 MCP tools (34 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 108 tools total — 13 core tools are always visible, while the rest are organized behind 20 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 109 tools total — 13 core tools are always visible, while the rest are organized behind 20 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
 
 ## Requirements
 
@@ -267,9 +267,9 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (108 total — 33 on tools/list)
+### MCP Tools (109 total — 34 on tools/list)
 
-The server has 108 tools total. To keep the MCP `tools/list` manageable, **13 core tools** are always visible and the remaining tools are organized behind **20 domain-named gateways** (7 read-only `hub_read_*` gateways + 13 write-bearing `hub_manage_*` gateways). The AI sees 33 items on `tools/list` (13 + 20 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 109 tools total. To keep the MCP `tools/list` manageable, **13 core tools** are always visible and the remaining tools are organized behind **21 domain-named gateways** (7 read-only `hub_read_*` gateways + 13 write-bearing `hub_manage_*` gateways). The AI sees 34 items on `tools/list` (13 + 21 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
 #### Core Tools (13) — Always visible on tools/list
 
@@ -353,7 +353,7 @@ Call a gateway with no arguments to see full parameter schemas. Call with `tool=
 | `hub_list_devices` | List accessible devices (pagination, server-side labelFilter/capabilityFilter, format=ids, field projection; `filter='virtual'` lists only MCP-managed virtual devices) |
 | `hub_get_device` | Full device details: attributes, commands, capabilities |
 | `hub_get_device_attribute` | Get a specific attribute value. Pass exactly one of `expectedValue` or `expectedValues` to block-poll the attribute until it matches or times out — `timeoutMs` in MILLISECONDS (default 5000ms = 5 seconds, max 60000ms). `comparator` (eq/ne/gt/gte/lt/lte/between) and `stableForMs` (debounce) refine the match; a numeric comparator on a non-numeric attribute times out with `nonNumericAttribute: true`. For multi-device convergence pass `deviceIds` (a list, mutually exclusive with `deviceId`, max 20) with `mode` (all/any), returning a compact per-device array (`{deviceId, device, finalValue, matched}`) plus `convergedCount`. A device whose read throws mid-poll (e.g. removed) is flagged `readError: true` (per-device in multi-device mode) and degraded to unread without aborting the poll for the others. Polling BLOCKS the MCP request; use sparingly and prefer event-driven flows when available. |
-| `hub_list_device_events` | Recent events for a device. Add `hoursBack` for a time window (up to 7 days of device or location event history); omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events. |
+| `hub_list_device_events` | Recent events for a device. Add `hoursBack` for a relative window (up to 7 days) or `since` for an absolute bookmark (events after an exact timestamp; round-trip a returned `date`); the response echoes `sinceMode` (`explicit`/`relative`) and the bounding field (`since` or `hoursBack`). Omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events. |
 
 </details>
 
@@ -451,7 +451,7 @@ Monitoring tools are gated by the Read master (ON by default).
 | `hub_list_devices` | List accessible devices (pagination, server-side labelFilter/capabilityFilter, format=ids, field projection; `filter='virtual'` lists only MCP-managed virtual devices) (also in `hub_read_devices`) |
 | `hub_get_device` | Full device details: attributes, commands, capabilities (also in `hub_read_devices`) |
 | `hub_get_device_attribute` | Get a specific attribute value. Pass exactly one of `expectedValue` or `expectedValues` to block-poll the attribute until it matches or times out — `timeoutMs` in MILLISECONDS (default 5000ms = 5 seconds, max 60000ms). `comparator` (eq/ne/gt/gte/lt/lte/between) and `stableForMs` (debounce) refine the match; a numeric comparator on a non-numeric attribute times out with `nonNumericAttribute: true`. For multi-device convergence pass `deviceIds` (a list, mutually exclusive with `deviceId`, max 20) with `mode` (all/any), returning a compact per-device array (`{deviceId, device, finalValue, matched}`) plus `convergedCount`. Polling BLOCKS the MCP request; use sparingly and prefer event-driven flows when available. (also in `hub_read_devices`) |
-| `hub_list_device_events` | Recent events for a device. Add `hoursBack` for a time window (up to 7 days of device or location event history); omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events. (also in `hub_read_devices`) |
+| `hub_list_device_events` | Recent events for a device. Add `hoursBack` for a relative window (up to 7 days) or `since` for an absolute bookmark (events after an exact timestamp; round-trip a returned `date`); the response echoes `sinceMode` (`explicit`/`relative`) and the bounding field (`since` or `hoursBack`). Omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events. (also in `hub_read_devices`) |
 
 </details>
 
@@ -1611,6 +1611,8 @@ For easier bug reporting:
 
 ## Version History
 
+- **v2.8.3** - feat: hub-database backup management (list, restore, delete, schedule, upload). PRs: [#316](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/316)
+- **v2.8.2** - feat: add absolute since bookmark filter to hub_list_device_events. PRs: [#314](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/314)
 - **v2.8.1** - feat: hub_set_system_settings — set hub timezone, units, location, name. PRs: [#315](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/315)
 - **v2.8.0** - feat: fold hub_set_rule to a flat self-gateway + trim RM tool/gateway prose. PRs: [#310](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/310)
 - **v2.7.10** - feat: full mode-management surface (hub_manage_mode + hub_set_mode_manager). PRs: [#313](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/313)

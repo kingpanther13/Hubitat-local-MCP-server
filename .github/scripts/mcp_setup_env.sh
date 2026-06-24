@@ -86,12 +86,14 @@ else
   echo "  Backup gate stamped (REAL backup)."
 fi
 
-# Enable the one toggle the e2e suite needs that is not ON by default. Read/Write
-# are masters (default ON in the deployed PR app); enableCustomRuleEngine is the
-# only stable key this pre-deploy step sets, and it persists through the deploy.
-# (The issue #299 best-practice gate ships ON by default; it is pinned OFF POST-deploy by
-# the e2e runner -- this pre-deploy step runs against main, which does not know that key.)
-mcp_call '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"hub_manage_mcp","arguments":{"tool":"hub_update_mcp_settings","args":{"settings":{"enableCustomRuleEngine":true},"confirm":true}}}}' \
+# Enable the toggles the e2e suite needs. Read/Write are masters (default ON in the deployed PR
+# app). enableCustomRuleEngine is the custom_* engine key. useGateways pins GATEWAY MODE ON for the
+# e2e hub: the suite is meant to exercise the production gateway-routed surface (the catalog real
+# clients see), so we set it explicitly rather than relying on the null->on default in case a prior
+# run left it off. Both keys are long-standing and persist through the source swap into the PR app.
+# (The issue #299 best-practice gate ships ON by default; it is pinned OFF POST-deploy by the e2e
+# runner -- this pre-deploy step runs against main, which does not know that key.)
+mcp_call '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"hub_manage_mcp","arguments":{"tool":"hub_update_mcp_settings","args":{"settings":{"enableCustomRuleEngine":true,"useGateways":true},"confirm":true}}}}' \
   | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null
 
-echo "Test environment configured: enableCustomRuleEngine=true (Read/Write masters are ON by default in the deployed app)"
+echo "Test environment configured: enableCustomRuleEngine=true, useGateways=true (gateway mode ON; Read/Write masters default ON)"

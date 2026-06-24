@@ -1,6 +1,6 @@
 # Tool Reference
 
-Quick reference for all 108 MCP tools. The server exposes **33 items on `tools/list`**: 13 flat core tools + 20 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute. A tool MAY appear under more than one gateway (multi-membership); read-only tools inside a mixed `hub_manage_*` gateway are also surfaced under a pure-read `hub_read_*` gateway.
+Quick reference for all 109 MCP tools. The server exposes **34 items on `tools/list`**: 13 flat core tools + 21 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute. A tool MAY appear under more than one gateway (multi-membership); read-only tools inside a mixed `hub_manage_*` gateway are also surfaced under a pure-read `hub_read_*` gateway.
 
 For the most authoritative reference, call `hub_get_tool_guide` via MCP.
 
@@ -23,7 +23,7 @@ Opt-in cursor pagination is wired into the read-only list-returning tools below.
 
 ## Core Tools (13) — Always flat and visible on tools/list
 
-These 13 tools are never behind a gateway. Every other tool is reachable through one or more of the 20 gateways below.
+These 13 tools are never behind a gateway. Every other tool is reachable through one or more of the 21 gateways below.
 
 ### Virtual Device Tools (1)
 
@@ -51,7 +51,7 @@ These 13 tools are never behind a gateway. Every other tool is reachable through
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `hub_get_tool_guide` | Full tool reference from the MCP server itself. | None |
-| `hub_search_tools` | BM25 natural language search across all 108 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
+| `hub_search_tools` | BM25 natural language search across all 109 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
 
 ---
 
@@ -88,7 +88,7 @@ Read-only device access: list, view details, read attributes, and recent events.
 | `hub_list_devices` | List accessible devices. Pagination, `labelFilter` (substring), `capabilityFilter` (exact), `format='ids'` (flat ID array), `fields=[...]` (projection), `filter='virtual'` (only MCP-managed virtual devices, with their states). Use `detailed=false` first, paginate `detailed=true` (limit 20-30). | None |
 | `hub_get_device` | Full device details: attributes, commands, capabilities, room. | None |
 | `hub_get_device_attribute` | Get specific attribute value from a device. Pass exactly one of `expectedValue` or `expectedValues` (passing both is rejected) to block-poll the attribute until it matches or times out -- `timeoutMs` in MILLISECONDS (default 5000ms = 5 seconds, max 60000ms). `comparator` (default `eq`) selects the operator: `eq`/`ne` (set membership -- a multi-element `expectedValues` is OR for `eq` = matches ANY member, and for `ne` = matches NONE of them), `gt`/`gte`/`lt`/`lte` (numeric threshold via `expectedValue`), `between` (numeric inclusive range via `expectedValues` = exactly 2 bounds). `stableForMs` (default 0) requires the match to hold continuously that many ms before converging (debounce; must be < timeoutMs). For MULTI-DEVICE convergence pass `deviceIds` (a list, mutually exclusive with `deviceId`, max 20) with `mode` (`all` = converge when every device matches, default; `any` = on the first to match); the result is a compact per-device array (`devices: [{deviceId, device, finalValue, matched}, ...]`) plus `convergedCount`. Polling BLOCKS the MCP request; use sparingly and prefer event-driven flows. When polling a single device, returns `success`, `finalValue`, `elapsedMs`, `polledCount`, `timedOut`; adds `neverReported: true` if the attribute was null throughout, or `nonNumericAttribute: true` (with a `note`) if a numeric comparator was used on an attribute that reported a non-numeric value the whole window. Either path adds `readError: true` (success or timeout) if reading the device threw on any poll (e.g. removed mid-poll); in multi-device mode that flag is per-device under `devices[]`, and one device's read fault never aborts the poll for the others. Use after `hub_call_device_command` to verify a state change in a single round-trip. | None |
-| `hub_list_device_events` | Recent events for a device. Default 10, recommended max 50. Add `hoursBack` for a time window (up to 7 days of device or location event history); omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events. | None |
+| `hub_list_device_events` | Recent events for a device. Default 10, recommended max 50. Add `hoursBack` for a relative window (up to 7 days) or `since` for an absolute bookmark (events after an exact timestamp; round-trip a returned `date`; response echoes `sinceMode` = `explicit`/`relative` and `since` or `hoursBack`); omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events. | None |
 
 ### hub_read_diagnostics (9 tools)
 
@@ -160,7 +160,7 @@ Device control and property edits, plus the read tools (also surfaced under `hub
 | `hub_list_devices` | List accessible devices. Pagination, `labelFilter` (substring), `capabilityFilter` (exact), `format='ids'` (flat ID array), `fields=[...]` (projection), `filter='virtual'` (only MCP-managed virtual devices, with their states). Use `detailed=false` first, paginate `detailed=true` (limit 20-30). | None |
 | `hub_get_device` | Full device details: attributes, commands, capabilities, room. | None |
 | `hub_get_device_attribute` | Get specific attribute value from a device. Block-poll via `expectedValue`/`expectedValues` (exactly one) until match or `timeoutMs` (MILLISECONDS, default 5000ms, max 60000ms). `comparator` (eq/ne/gt/gte/lt/lte/between) + `stableForMs` (debounce) refine the match; a numeric comparator on a non-numeric attribute times out with `nonNumericAttribute: true`. For multi-device convergence pass `deviceIds` (list, mutually exclusive with `deviceId`, max 20) + `mode` (all/any), returning a compact per-device array + `convergedCount`. Use after `hub_call_device_command` to verify a state change in a single round-trip. | None |
-| `hub_list_device_events` | Recent events for a device. Default 10, recommended max 50. Add `hoursBack` for a time window (up to 7 days of device or location event history); omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events. | None |
+| `hub_list_device_events` | Recent events for a device. Default 10, recommended max 50. Add `hoursBack` for a relative window (up to 7 days) or `since` for an absolute bookmark (events after an exact timestamp; round-trip a returned `date`; response echoes `sinceMode` = `explicit`/`relative` and `since` or `hoursBack`); omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events. | None |
 
 ### hub_manage_custom_rules (8 tools)
 

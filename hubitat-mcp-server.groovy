@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 2.8.1 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 2.8.3 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -1167,16 +1167,31 @@ def getGatewayConfig() {
                 hub_list_hpm_packages: "package manager HPM tracked installed manifest version inventory community apps drivers drift orphan missing required"
             ]
         ],
+        hub_manage_backup: [
+            description: "Hub-database backup management plus source-code backup restore (issue #259 item #1): list/restore/delete local + cloud whole-hub backups, restore an uploaded external backup, and restore source-code backups. Creating a backup and setting the automatic-backup schedule is the core hub_create_backup tool (kept top-level as the pre-flight for destructive ops). Hub-DB restore/delete are destructive — a hub-DB restore REBOOTS the hub — and need confirm + a recent backup. The read tools (hub_list_backups/hub_get_backup) are also in hub_read_apps_code.",
+            tools: ["hub_list_backups", "hub_get_backup", "hub_restore_backup", "hub_delete_backup"],
+            summaries: [
+                hub_list_backups: "List backups. scope=source (code) | hub_local | hub_cloud | hub | all. Args: scope?, cursor?",
+                hub_get_backup: "Get source from a code backup. Args: backupKey",
+                hub_restore_backup: "Restore a code/rule backup (scope=source + backupKey) OR the whole hub DB (scope=hub_local + fileName | hub_cloud + cloudBackupPassword | hub_uploaded + backupUrl -- REBOOTS). Args: scope?, backupKey?/fileName?/cloudBackupPassword?/backupUrl?, confirm",
+                hub_delete_backup: "Delete a whole-hub DB backup. Args: location (local|cloud), fileName?/path?, confirm"
+            ],
+            searchHints: [
+                hub_list_backups: "list show backups code source whole hub database local cloud restore points",
+                hub_get_backup: "view read saved previous version revision source",
+                hub_restore_backup: "restore revert roll back code rule whole hub database disaster recovery migration upload reboot",
+                hub_delete_backup: "delete remove prune hub database backup local cloud free space recovery point"
+            ]
+        ],
         hub_manage_code: [
             description: "Install, update, and delete hub apps, drivers, libraries, and code bundles (install/delete/export). All operations modify hub code and require Write master. Read-only counterparts (hub_get_source, list_*) live in the hub_read_apps_code gateway.",
-            tools: ["hub_create_app", "hub_create_driver", "hub_update_app", "hub_update_driver", "hub_delete_item", "hub_restore_backup", "hub_create_library", "hub_update_library", "hub_install_bundle", "hub_delete_bundle", "hub_export_bundle"],
+            tools: ["hub_create_app", "hub_create_driver", "hub_update_app", "hub_update_driver", "hub_delete_item", "hub_create_library", "hub_update_library", "hub_install_bundle", "hub_delete_bundle", "hub_export_bundle"],
             summaries: [
                 hub_create_app: "Install new app code (source|sourceFile|importUrl), OR with installAsUserApp=<codeAppId> create a running instance from already-installed code (mutually exclusive). To save context prefer importUrl (hub fetches the source itself) or hub_write_file + sourceFile; inline source for stubs only. confirm=true",
                 hub_create_driver: "Install new driver. To save context prefer importUrl (hub fetches the source) or hub_write_file + sourceFile; inline source for stubs only. For 1: source|sourceFile|importUrl. For >1: USE BULK (single round-trip: installs=[{source|sourceFile|importUrl},...]). confirm=true",
                 hub_update_app: "Modify existing app code (CRITICAL), and/or enable OAuth on it. To save context prefer importUrl (hub fetches the source itself) or hub_write_file + sourceFile over inline source. Args: appId, source|sourceFile|importUrl|resave, oauth ({enabled,client_id?,client_secret?,refresh_secret?} -- enable/configure OAuth, returns the clientId/secret), confirm=true",
                 hub_update_driver: "Modify existing driver code (CRITICAL). For 1 driver: driverId+source|sourceFile|importUrl|resave. For >1 drivers: USE BULK (single round-trip: updates=[{driverId,sourceFile|importUrl},...]). To save context prefer importUrl (hub fetches) or hub_write_file + sourceFile over inline. confirm=true",
                 hub_delete_item: "Permanently delete an app/driver/library (DESTRUCTIVE, auto-backs up). Args: type (app|driver|library), id, confirm=true",
-                hub_restore_backup: "Restore app/driver to backed-up version. Args: backupKey, confirm=true",
                 hub_create_library: "Install new Groovy library (#include namespace.Name). To save context prefer importUrl (hub fetches the source) or hub_write_file + sourceFile; inline source for stubs only. Args: source|sourceFile|importUrl, confirm=true",
                 hub_update_library: "Modify existing library code. To save context prefer importUrl (hub fetches) or hub_write_file + sourceFile over inline. Args: libraryId, source|sourceFile|importUrl|resave, confirm=true",
                 hub_install_bundle: "Install a code bundle (.zip) from a URL the way HPM does (hub fetches+unpacks into Libraries/Apps/Drivers Code). Args: importUrl (zip), primary?, confirm=true",
@@ -1189,7 +1204,6 @@ def getGatewayConfig() {
                 hub_update_app: "modify change edit application groovy push deploy oauth enable client id secret access token endpoint",
                 hub_update_driver: "modify change edit device handler type groovy push deploy",
                 hub_delete_item: "remove uninstall application integration device handler driver type groovy library shared",
-                hub_restore_backup: "rollback revert undo previous version",
                 hub_create_library: "add new shared groovy library include namespace",
                 hub_update_library: "modify change edit groovy library shared code push deploy",
                 hub_install_bundle: "install bundle zip package hpm hubitat package manager uploadZipFromUrl library delivery deploy code",
@@ -1369,13 +1383,13 @@ def getGatewayConfig() {
                 hub_list_devices: "List devices with current states. Args: detailed?, filter (enabled/disabled/stale:N/virtual), labelFilter?, capabilityFilter?, format (summary/detailed/ids), fields?, limit?, cursor?",
                 hub_get_device: "Get one device's full detail (capabilities, attributes, commands). Args: deviceId",
                 hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
-                hub_list_device_events: "Recent device events, a time-windowed history (hoursBack, max 168), per-app events (appId), or location events (mode/HSM/hub-variable; omit deviceId/appId). Args: deviceId?, appId?, hoursBack?, attribute?, limit?"
+                hub_list_device_events: "Recent device events, a time-windowed history (hoursBack, max 168), an absolute bookmark (since -- events after an exact timestamp; round-trip a returned date), per-app events (appId), or location events (mode/HSM/hub-variable; omit deviceId/appId). Args: deviceId?, appId?, hoursBack?, since?, attribute?, limit?"
             ],
             searchHints: [
                 hub_list_devices: "show all devices switches lights sensors locks state inventory enumerate",
                 hub_get_device: "device detail capabilities attributes commands info inspect one",
                 hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed inclusion compare numeric range debounce stable multiple devices deviceIds any all converge across",
-                hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted"
+                hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted since bookmark timestamp after new events change watch"
             ]
         ],
         hub_read_rooms: [
@@ -1427,7 +1441,7 @@ def getGatewayConfig() {
                 hub_list_devices: "List devices with current states. Args: detailed?, filter, labelFilter?, capabilityFilter?, format, fields?, limit?, cursor?",
                 hub_get_device: "Get one device's full detail (capabilities, attributes, commands). Args: deviceId",
                 hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
-                hub_list_device_events: "Recent device events, a time-windowed history, per-app events (appId), or location events. Args: deviceId?, appId?, hoursBack?, attribute?, limit?"
+                hub_list_device_events: "Recent device events, a time-windowed history, an absolute bookmark (since), per-app events (appId), or location events. Args: deviceId?, appId?, hoursBack?, since?, attribute?, limit?"
             ],
             searchHints: [
                 hub_call_device_command: "send command control turn on off set level dim lock unlock device run",
@@ -1437,7 +1451,7 @@ def getGatewayConfig() {
                 hub_list_devices: "show all devices switches lights sensors locks state inventory",
                 hub_get_device: "device detail capabilities attributes commands info inspect one",
                 hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed compare numeric range debounce stable multiple devices deviceIds any all converge across",
-                hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted"
+                hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted since bookmark timestamp after new events change watch"
             ]
         ],
         hub_manage_rule_machine: [
@@ -1656,6 +1670,7 @@ def getOpenWorldToolNames() {
         + _openWorldToolNames_partSystem()
         + _openWorldToolNames_partCodeManagement()
         + _openWorldToolNames_partSelfAdmin()
+        + _openWorldToolNames_partItemBackups()
     ) as Set
 }
 
@@ -1706,7 +1721,8 @@ def getToolDisplayMeta() {
         hub_manage_variables: [title: "Manage Variables", summary: "Create, set, and delete hub variables and their connectors."],
         hub_manage_rooms: [title: "Manage Rooms", summary: "Create, rename, and delete rooms."],
         hub_manage_destructive_ops: [title: "Manage Destructive Ops", summary: "Reboot or shut down the hub, or permanently delete devices."],
-        hub_manage_code: [title: "Manage Code", summary: "Install, update, and delete apps, drivers, libraries, and code bundles; restore backups."],
+        hub_manage_backup: [title: "Manage Backups", summary: "List, restore, and delete hub-database backups, and restore code backups (create + schedule is the core hub_create_backup)."],
+        hub_manage_code: [title: "Manage Code", summary: "Install, update, and delete apps, drivers, libraries, and code bundles."],
         hub_manage_logs: [title: "Manage Logs", summary: "Read hub logs and performance stats; clear MCP debug logs and set log level."],
         hub_manage_diagnostics: [title: "Manage Diagnostics", summary: "Diagnostics plus maintenance actions: GC and state snapshots."],
         hub_manage_radio: [title: "Manage Radio", summary: "Configure and operate the Z-Wave, Zigbee, and Matter radios: repair, inclusion, exclusion, channels."],
@@ -2227,7 +2243,9 @@ def executeTool(toolName, args) {
             // the recent-N route below would otherwise silently drop appId.
             if (args.deviceId != null && args.appId != null)
                 throw new IllegalArgumentException("deviceId and appId are mutually exclusive. Pass deviceId for device events, appId for events emitted by an installed app/rule, or neither for location events.")
-            if (args.deviceId != null && args.hoursBack == null && args.attribute == null)
+            // since is an absolute window bookmark -- like hoursBack/attribute it
+            // routes to windowed history mode, not the recent-N path.
+            if (args.deviceId != null && args.hoursBack == null && args.attribute == null && args.since == null)
                 return toolGetDeviceEvents(args.deviceId, args.limit != null ? args.limit : 10)
             return toolGetDeviceHistory(args)
         case "hub_get_device_attribute":
@@ -2323,6 +2341,7 @@ def executeTool(toolName, args) {
 
         // Write master Tools
         case "hub_create_backup": return toolCreateHubBackup(args)
+        case "hub_delete_backup": return toolDeleteHubBackup(args)
         case "hub_reboot": return toolRebootHub(args)
         case "hub_shutdown": return toolShutdownHub(args)
 
@@ -2392,7 +2411,7 @@ def executeTool(toolName, args) {
         case "hub_set_rule_private_boolean": return toolSetRmRuleBoolean(args)
 
         // Native Rule Machine CRUD (hub admin-layer; backups flow through
-        // hub_list_backups (hub_read_apps_code) + hub_restore_backup (hub_manage_code))
+        // hub_list_backups (hub_read_apps_code) + hub_restore_backup (hub_manage_backup))
         case "hub_set_rule": return toolSetRule(args)
         case "hub_set_native_app": return toolSetNativeApp(args)
         case "hub_set_app_disabled": return toolSetAppDisabled(args)
@@ -2422,6 +2441,7 @@ def executeTool(toolName, args) {
         case "hub_read_rooms":
         case "hub_read_rules":
         case "hub_read_variables":
+        case "hub_manage_backup":
         case "hub_manage_code":
         case "hub_manage_custom_rules":
         case "hub_manage_destructive_ops":
@@ -5071,7 +5091,7 @@ private Map _rmForceDeleteApp(Integer appId) {
 
 
 def currentVersion() {
-    return "2.8.1"
+    return "2.8.3"
 }
 
 
@@ -5379,7 +5399,9 @@ Files stored at http://<HUB_IP>/local/<filename>
 
 **hub_list_device_events:**
 - Default: most-recent events for a device (deviceId + limit)
-- Add hoursBack for up to 7 days of history; omit deviceId for location-level events (mode/HSM/hub variable)
+- Add hoursBack for up to 7 days of relative history; omit deviceId for location-level events (mode/HSM/hub variable)
+- Add since for an absolute bookmark -- return only events AFTER an exact timestamp (ISO-8601 in the same format the tool emits in date/sinceTimestamp -- a numeric offset with no colon, e.g. 2026-06-23T10:00:00.000-0600; a trailing Z for UTC and a millis-less variant are also accepted -- or epoch milliseconds). since takes precedence over hoursBack; a future since yields an empty list. Both since and hoursBack route to history mode
+- Change-watching loop: record a returned event date, run your action, then pass that date back as since to get exactly the new events. The response echoes sinceMode ("explicit" when since drove it, "relative" for hoursBack) and the bounding field (since or hoursBack)
 - appId (mutually exclusive with deviceId) returns the events an installed app/rule emitted; rows are {name, value, description, date}
 - Use the attribute filter to reduce data volume''',
 
@@ -5452,7 +5474,7 @@ Native CRUD (hub admin-layer, additionally requires the Write master):
 
 For READING an RM rule's current state, use **hub_get_app_config** in the hub_read_apps_code gateway — it works on any installed app including RM rules and returns the same configPage shape that hub_set_rule expects to see.
 
-For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub_read_apps_code) + **hub_restore_backup** (in hub_manage_code) — RM rule snapshots have type="rm-rule" in those tools' output and hub_restore_backup auto-dispatches the rule-restore path.
+For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub_read_apps_code) + **hub_restore_backup** (in hub_manage_backup) — RM rule snapshots have type="rm-rule" in those tools' output and hub_restore_backup auto-dispatches the rule-restore path.
 
 **Safety model for native CRUD:**
 1. Every write is preceded by a full snapshot (configure/json + statusJson) saved to File Manager; the response's backup.backupKey is the restore handle.

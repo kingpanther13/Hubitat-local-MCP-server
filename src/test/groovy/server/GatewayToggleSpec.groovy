@@ -145,7 +145,7 @@ class GatewayToggleSpec extends ToolSpecBase {
             'hub_list_apps', 'hub_list_drivers', 'hub_get_source',
             'hub_list_backups', 'hub_get_backup',
             'hub_create_app', 'hub_create_driver', 'hub_update_app', 'hub_update_driver',
-            'hub_delete_item', 'hub_restore_backup',
+            'hub_delete_item', 'hub_restore_backup', 'hub_delete_backup',
             'hub_get_logs', 'hub_get_performance_stats', 'hub_get_jobs',
             'hub_get_debug_logs', 'hub_delete_debug_logs', 'hub_set_log_level',
             'hub_get_metrics', 'hub_get_memory_history', 'hub_call_gc',
@@ -164,6 +164,56 @@ class GatewayToggleSpec extends ToolSpecBase {
             // "Developer Mode tools are disabled" IAE -- that proves the dispatch case exists).
             'hub_update_package'
         ]
+    }
+
+    def "every gateway sub-tool has an executeTool dispatch case (derived from getGatewayConfig -- no silent gaps)"() {
+        // Root-cause guard for the @Unroll above: that list is hand-maintained, so a NEW gateway
+        // sub-tool added to getGatewayConfig() without a dispatch case (or merely omitted from the
+        // curated list) would slip through. This derives the sub-tool set straight from the config,
+        // so every gateway sub-tool is dispatch-checked automatically and forever.
+        given:
+        settingsMap.useGateways = false
+        settingsMap.enableCustomRuleEngine = true
+        def subTools = script.getGatewayConfig().values()*.tools.flatten().unique()
+
+        expect:
+        subTools.every { st ->
+            boolean reachedHandler = true
+            try {
+                script.executeTool(st, [:])
+            } catch (IllegalArgumentException e) {
+                // Tool-side validation IAE / dev-mode-disabled IAE both prove dispatch reached a
+                // handler. Only the executeTool default-case fallthrough is fatal.
+                reachedHandler = !e.message.startsWith("Unknown tool: ${st}")
+            } catch (Exception ignored) {
+                // Hub-side failures (null devices, etc.) also mean dispatch reached the handler.
+            }
+            assert reachedHandler, "executeTool fell through to default for gateway sub-tool '${st}' -- missing dispatch case"
+            reachedHandler
+        }
+    }
+
+    def "every gateway in getGatewayConfig routes through executeTool's dispatch (no missing gateway case)"() {
+        // executeTool routes gateway NAMES to handleGateway via a hand-maintained case list that is
+        // SEPARATE from getGatewayConfig(). A gateway added to the config without a matching case falls
+        // through to the Unknown-tool default on the REAL tools/call path -- a spec that calls
+        // handleGateway() directly misses it (that gap shipped hub_manage_backup with no case and only
+        // the full e2e lane caught it). Derive from the config so the two lists can't drift.
+        given:
+        settingsMap.useGateways = true
+
+        expect:
+        script.getGatewayConfig().keySet().every { gw ->
+            boolean routed = true
+            try {
+                script.executeTool(gw, [:])   // no sub-tool -> gateway catalog; must NOT hit the default
+            } catch (IllegalArgumentException e) {
+                routed = !e.message.startsWith("Unknown tool: ${gw}")
+            } catch (Exception ignored) {
+            }
+            assert routed, "executeTool has no gateway-routing case for '${gw}' -- it's in getGatewayConfig() but missing from the executeTool switch"
+            routed
+        }
     }
 
     def "useGateways=false: dispatch still works for a sub-tool called by its real name"() {

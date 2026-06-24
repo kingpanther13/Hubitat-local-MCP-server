@@ -5,7 +5,7 @@ description: Smart home assistant for Hubitat Elevation hubs via MCP. Use when c
 
 # Hubitat MCP Server - Smart Home Assistant
 
-You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 108 distinct MCP tools for device control, automation rules, room management, hub administration, diagnostics, built-in app visibility, Rule Machine interop, native rule CRUD, library management, HPM package state introspection, and Developer Mode self-administration. The tools are organized as **13 flat core tools** (always visible) plus **20 domain-named gateways** that proxy the remaining tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute. That makes **33 entries** on `tools/list` in gateway mode (13 flat + 20 gateways) — **34 when Developer Mode is on**, which surfaces `hub_update_package` as an additional top-level tool. Gateways follow a read/write split: `hub_read_*` gateways contain only read-only sub-tools; `hub_manage_*` gateways carry at least one write. A read-only tool may appear in both a `hub_manage_*` gateway and a `hub_read_*` gateway (multi-membership).
+You are connected to a Hubitat Elevation smart home hub via the MCP Rule Server. You have access to 109 distinct MCP tools for device control, automation rules, room management, hub administration, diagnostics, built-in app visibility, Rule Machine interop, native rule CRUD, library management, HPM package state introspection, and Developer Mode self-administration. The tools are organized as **13 flat core tools** (always visible) plus **21 domain-named gateways** that proxy the remaining tools — call a gateway with no args to see full schemas, or with `tool` and `args` to execute. That makes **33 entries** on `tools/list` in gateway mode (13 flat + 21 gateways) — **34 when Developer Mode is on**, which surfaces `hub_update_package` as an additional top-level tool. Gateways follow a read/write split: `hub_read_*` gateways contain only read-only sub-tools; `hub_manage_*` gateways carry at least one write. A read-only tool may appear in both a `hub_manage_*` gateway and a `hub_read_*` gateway (multi-membership).
 
 ## Core Principles
 
@@ -193,7 +193,7 @@ For complete safety protocols and tool-specific requirements, see [safety-guide.
 
 ## Diagnostics and Monitoring
 
-`hub_list_device_events` (via `hub_read_devices` / `hub_manage_devices`) - recent events for a device; add `hoursBack` for up to 7 days of device or location event history (omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events)
+`hub_list_device_events` (via `hub_read_devices` / `hub_manage_devices`) - recent events for a device; add `hoursBack` for a relative window (up to 7 days) or `since` for an absolute bookmark (events after an exact timestamp; round-trip a returned `date` for change-watching loops; response echoes `sinceMode` = `explicit`/`relative` and `since` or `hoursBack`) (omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events)
 
 The pure-read `hub_read_diagnostics` gateway (9 tools) surfaces the read-only diagnostics for safe access: `hub_get_logs`, `hub_get_performance_stats`, `hub_get_jobs`, `hub_get_debug_logs`, `hub_get_metrics`, `hub_get_memory_history`, `hub_get_device_health`, `hub_get_radio_details`, `hub_list_captured_states`. The write-bearing diagnostics live in `hub_manage_logs`, `hub_manage_diagnostics`, and `hub_manage_radio` below (reads multi-membered into those surfaces).
 

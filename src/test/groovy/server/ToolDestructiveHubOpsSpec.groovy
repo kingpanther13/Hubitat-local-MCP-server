@@ -104,19 +104,23 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         stateMap.lastBackupTimestamp != null
     }
 
-    def "hub_create_backup reports an honest unconfirmed trigger when statusJson is unreadable"() {
+    def "hub_create_backup does NOT satisfy the destructive-confirm gate when completion is unconfirmed"() {
         given:
         settingsMap.enableWrite = true
         asyncCalls.clear()
-        // No statusJson registration -> hubInternalGet throws/returns null -> never confirmed.
+        stateMap.remove('lastBackupTimestamp')
+        // No statusJson registration -> hubInternalGet returns null -> never confirmed. An unverified
+        // backup must report failure and leave the 24h gate UNSTAMPED (else destructive ops could run
+        // believing a recovery point exists when it may not -- a silent failure).
 
         when:
         def result = script.toolCreateHubBackup([confirm: true])
 
         then:
-        result.success == true
+        result.success == false
         result.confirmed == false
-        result.message.toLowerCase().contains('could not be confirmed')
+        stateMap.lastBackupTimestamp == null
+        result.error.toLowerCase().contains('could not be confirmed')
     }
 
     def "hub_create_backup mock=true stamps the gate record without any backup work (developer mode)"() {

@@ -135,7 +135,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_delete_item',
             'hub_create_library', 'hub_update_library', 'hub_install_bundle',
             'hub_delete_bundle', 'hub_export_bundle',
-            'hub_restore_backup',
+            'hub_restore_backup', 'hub_delete_backup',
             'hub_write_file', 'hub_delete_file',
             'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean',
             'hub_set_rule', 'hub_set_native_app', 'hub_clone_native_app',
@@ -326,7 +326,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_update_device', 'hub_delete_device',
             'hub_update_room', 'hub_delete_room',
             'hub_update_app', 'hub_update_driver', 'hub_update_library',
-            'hub_delete_item', 'hub_restore_backup',
+            'hub_delete_item', 'hub_restore_backup', 'hub_delete_backup',
             'hub_install_bundle', 'hub_delete_bundle', 'hub_export_bundle',
             'hub_write_file', 'hub_delete_file',
             'hub_set_rule_paused', 'hub_set_rule_private_boolean',
@@ -367,7 +367,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_get_info', 'hub_update_firmware', 'hub_update_package', 'hub_install_bundle',
             'hub_create_app', 'hub_create_driver', 'hub_create_library',
             'hub_update_app', 'hub_update_driver', 'hub_update_library',
-            'hub_get_device_health'
+            'hub_get_device_health', 'hub_restore_backup'
         ] as Set
     }
 
@@ -527,7 +527,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_delete_item',
             'hub_create_library', 'hub_update_library', 'hub_install_bundle',
             'hub_delete_bundle', 'hub_export_bundle',
-            'hub_restore_backup',
+            'hub_restore_backup', 'hub_delete_backup',
             'hub_write_file', 'hub_delete_file',
             'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean',
             'hub_set_rule', 'hub_set_native_app', 'hub_set_app_disabled', 'hub_clone_native_app',
@@ -579,7 +579,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         names.size() == (names as Set).size()
 
         and: 'no chunk dropped — the full surface is present (bump on intentional add/remove)'
-        names.size() == 108
+        names.size() == 109
 
         and: 'sentinels from the first and last chunks survive the concatenation chain'
         names.contains('hub_list_devices')   // first chunk

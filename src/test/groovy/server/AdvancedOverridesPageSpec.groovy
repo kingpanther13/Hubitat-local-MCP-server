@@ -31,7 +31,7 @@ class AdvancedOverridesPageSpec extends ToolSpecBase {
         def toolOptions = script.getAllToolDefinitions()*.name.findAll { !gwConfig.containsKey(it) }
 
         expect: "one option per gateway, and one option per leaf tool"
-        gwConfig.keySet().size() == 20
+        gwConfig.keySet().size() == 21
         toolOptions.size() > 50
         // gateway names are not offered as individual-tool disable options
         toolOptions.every { !gwConfig.containsKey(it) }
