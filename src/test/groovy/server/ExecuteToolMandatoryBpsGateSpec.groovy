@@ -150,8 +150,9 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
     // reaches the BPS gate. ----
 
     def "gate applies to a gateway-routed write sub-tool on re-entry (blocked without the key)"() {
-        given:
+        given: "useGateways pinned ON -- a gateway NAME is only dispatched to handleGateway when on"
         settingsMap.enableMandatoryBPS = true
+        settingsMap.useGateways = true
         script.metaClass.requiredParamsByTool = { -> [:] }
         script.metaClass.toolCreateVariable = { a -> [success: true, stubbed: true] }
 
@@ -166,6 +167,7 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
     def "gate passes a gateway-routed write when the key is in the inner args"() {
         given:
         settingsMap.enableMandatoryBPS = true
+        settingsMap.useGateways = true
         script.metaClass.requiredParamsByTool = { -> [:] }
         script.metaClass.toolCreateVariable = { a -> [success: true, stubbed: true] }
 
