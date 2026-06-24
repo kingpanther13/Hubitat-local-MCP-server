@@ -990,12 +990,12 @@ class TestRunner:
         names = {t.get("name") for t in tools}
         # hub_update_package is a Developer-Mode-only TOP-LEVEL tool (issue #250): it shows on
         # tools/list ONLY with Developer Mode on (this e2e hub has it on -- a documented precondition).
-        # The documented DEFAULT catalog is 33 (13 core + 20 gateways); exclude the dev-mode tool so
+        # The documented DEFAULT catalog is 34 (13 core + 21 gateways); exclude the dev-mode tool so
         # the count matches the default regardless of the toggle, then assert the dev-mode tool is
         # present on this dev-on hub.
         default_tools = [t for t in tools if t.get("name") != "hub_update_package"]
-        assert len(default_tools) == 33, \
-            f"Expected 33 default tools (13 core + 20 gateways), got {len(default_tools)}: {sorted(names)}"
+        assert len(default_tools) == 34, \
+            f"Expected 34 default tools (13 core + 21 gateways), got {len(default_tools)}: {sorted(names)}"
         assert "hub_update_package" in names, \
             "hub_update_package must be a top-level tool when Developer Mode is on (issue #250)"
 
@@ -4623,7 +4623,7 @@ class TestRunner:
         new_id = None
         try:
             try:
-                restored = self.client.call_tool("hub_manage_code", {
+                restored = self.client.call_tool("hub_manage_backup", {
                     "tool": "hub_restore_backup",
                     "args": {"backupKey": backup_key, "confirm": True},
                 })
@@ -5004,7 +5004,7 @@ def updateLegMarker() { return "UPDATE-LEG-MARKER-V1" }
             # holds the V1 source (backupItemSource keeps the pre-edit original for an
             # hour rather than re-snapshotting on the later legs), so hub_restore_backup
             # must bring V1 back and hand back a pre-restore backup key as the undo path.
-            restored = self.client.call_tool("hub_manage_code", {
+            restored = self.client.call_tool("hub_manage_backup", {
                 "tool": "hub_restore_backup",
                 "args": {"backupKey": f"app_{code_app_id}", "confirm": True},
             })
@@ -5647,6 +5647,30 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         has_modes = ("modes" in result if isinstance(result, dict) else isinstance(result, list))
         assert has_modes or "currentMode" in result, \
             f"hub_list_modes response missing modes/currentMode: {list(result.keys()) if isinstance(result, dict) else type(result)}"
+
+    @test("system_tools")
+    def test_hub_backup_reads(self) -> None:
+        # NON-DESTRUCTIVE coverage only for the hub-DB backup surface (issue #259 item #1).
+        # Per owner direction the destructive ops (restore/delete/upload/schedule) are NEVER
+        # exercised live -- a hub-DB restore wipes + reboots the e2e hub. Those paths are proven
+        # by Spock (ToolBackupSpec) against the mocked hub. Here we only prove the read scopes of
+        # hub_list_backups reach the hub and return the expected sections (empty lists are fine).
+        print("    [E2E-GAP] hub-DB restore/delete/upload/schedule are intentionally NOT e2e-tested "
+              "(destructive to the hub); ToolBackupSpec covers them against a mocked hub.")
+        loc = self.client.call_tool("hub_manage_backup", {"tool": "hub_list_backups", "args": {"scope": "hub_local"}})
+        assert isinstance(loc, dict), f"hub_list_backups(scope=hub_local) returned {type(loc).__name__}"
+        assert "hubLocalBackups" in loc or "hubBackupErrors" in loc, \
+            f"scope=hub_local missing hubLocalBackups/hubBackupErrors: {sorted(loc.keys())}"
+
+        cloud = self.client.call_tool("hub_manage_backup", {"tool": "hub_list_backups", "args": {"scope": "hub_cloud"}})
+        assert isinstance(cloud, dict), f"hub_list_backups(scope=hub_cloud) returned {type(cloud).__name__}"
+        assert "hubCloudBackups" in cloud or "hubBackupErrors" in cloud, \
+            f"scope=hub_cloud missing hubCloudBackups/hubBackupErrors: {sorted(cloud.keys())}"
+
+        # The default scope=source (code backups) still works unchanged.
+        src = self.client.call_tool("hub_manage_backup", {"tool": "hub_list_backups", "args": {}})
+        assert isinstance(src, dict) and "backups" in src, \
+            f"default scope=source missing 'backups': {sorted(src.keys()) if isinstance(src, dict) else type(src).__name__}"
 
     @test("system_tools")
     def test_mode_lifecycle(self) -> None:

@@ -522,96 +522,9 @@ def toolSetHsm(mode) {
     ]
 }
 
-def toolCreateHubBackup(args) {
-    // The Write master is enforced centrally in executeTool; this tool creates the
-    // backup itself, so it cannot require a pre-existing recent one (no requireDestructiveConfirm).
-    if (!args.confirm) {
-        throw new IllegalArgumentException("You must set confirm=true to create a backup.")
-    }
-
-    if (args.mock == true) {
-        // Test-hub lever (maintainer-directed): stamp ONLY the destructive-confirm gate record
-        // without performing any real backup -- the hub backup is a heavy operation the platform's
-        // load limiter punishes, and e2e needs the GATED tools tested, not the backup itself.
-        // Developer-mode-gated so a production client can't silently satisfy the gate with a lie.
-        if (settings.enableDeveloperMode != true) {
-            throw new IllegalArgumentException("hub_create_backup mock=true requires Developer Mode (it satisfies the destructive-confirm gate WITHOUT a real backup -- test environments only).")
-        }
-        def backupTime = now()
-        state.lastBackupTimestamp = backupTime
-        mcpLog("warn", "hub-admin", "MOCK backup recorded (no real backup performed; developer mode)")
-        return [
-            success: true,
-            mocked: true,
-            message: "MOCK backup recorded: the destructive-confirm gate is satisfied but NO real backup was created.",
-            backupTimestamp: formatTimestamp(backupTime),
-            backupTimestampEpoch: backupTime,
-            note: "Test environments only. Create a real backup before relying on restore."
-        ]
-    }
-
-    mcpLog("info", "hub-admin", "Creating hub backup (async trigger; the backup file is never downloaded through this app)...")
-
-    try {
-        // GET /hub/backupDB?fileName=latest makes the hub CREATE a fresh backup and stream the
-        // .lzf back. The old implementation read that multi-MB binary through this app's
-        // execution just to confirm success -- a one-off load spike the platform's per-app
-        // limiter punishes with a STICKY device-dispatch block ~13 minutes later (verified A/B
-        // on fw 2.5.0.157: every slurping backup wedged the hub; async-triggered backups never
-        // did). So: fire the request asynchronously (the hub still creates the backup; the
-        // async client's truncated body is discarded) and confirm completion via the hub's own
-        // /hub/backup/statusJson instead of the binary response.
-        def asyncParams = [uri: hubBaseUri(), path: "/hub/backupDB", query: [fileName: "latest"], timeout: 300]
-        def cookie = getHubSecurityCookie()
-        if (cookie) asyncParams.headers = [Cookie: cookie]
-        asynchttpGet("backupResponseSink", asyncParams)
-
-        // Confirm via statusJson: wait for an in-progress backup to finish (small JSON reads).
-        // A small-DB backup can finish before the first poll, so backupInProgress=false is
-        // treated as completion rather than requiring an observed true->false transition.
-        def confirmed = false
-        for (int i = 0; i < 12; i++) {
-            pauseExecution(3000)
-            def statusText = null
-            try { statusText = hubInternalGet("/hub/backup/statusJson", null, 15) } catch (Exception ignored) { }
-            def parsed = null
-            try { parsed = statusText ? new groovy.json.JsonSlurper().parseText(statusText) : null } catch (Exception ignored) { }
-            if (parsed instanceof Map && parsed.backupInProgress == false && parsed.cloudBackupInProgress != true) {
-                confirmed = true
-                break
-            }
-            if (parsed == null && i >= 2) break   // status endpoint unreadable; stop burning time
-        }
-
-        def backupTime = now()
-        state.lastBackupTimestamp = backupTime
-
-        mcpLog("info", "hub-admin", "Hub backup ${confirmed ? 'completed' : 'triggered (completion unconfirmed)'} at ${formatTimestamp(backupTime)}")
-        return [
-            success: true,
-            confirmed: confirmed,
-            message: confirmed ? "Hub backup created successfully"
-                               : "Hub backup triggered; completion could not be confirmed via /hub/backup/statusJson (best-effort).",
-            backupTimestamp: formatTimestamp(backupTime),
-            backupTimestampEpoch: backupTime,
-            note: "This backup is stored on the hub. You can download it from the Hubitat web UI at Settings → Backup and Restore."
-        ]
-    } catch (Exception e) {
-        mcpLogError("hub-admin", "Hub backup FAILED", e)
-        return [
-            success: false,
-            error: "Backup failed: ${e.message}",
-            note: "The backup could not be created. Do NOT proceed with any Write master operations. " +
-                  "Check Hub Security credentials if Hub Security is enabled, or try creating a backup manually from the Hubitat web UI."
-        ]
-    }
-}
-
-// asynchttpGet completion sink for the backup trigger: the .lzf body is deliberately never
-// read into this app (see toolCreateHubBackup -- the whole point of the async trigger).
-def backupResponseSink(response, data) {
-    try { mcpLog("debug", "hub-admin", "backup async response status=${response?.status}") } catch (Exception ignored) { }
-}
+// hub_create_backup (toolCreateHubBackup) + backupResponseSink moved to McpItemBackupsLib
+// (issue #259 item #1: the whole hub-DB backup domain — create/list/restore/delete/schedule/upload
+// — is consolidated there under the hub_manage_backup gateway).
 
 def toolRebootHub(args) {
     requireDestructiveConfirm(args.confirm)
@@ -1022,31 +935,6 @@ def _getAllToolDefinitions_partSystem() {
             ]
         ],
         [
-            name: "hub_create_backup",
-            description: """Create a full hub backup. REQUIRED before any Write master operation (24h validity).[[FLAT_TRIM]] Requires Write master + confirm. This is the only write tool that doesn't require a prior backup.[[/FLAT_TRIM]]""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    confirm: [type: "boolean", description: "Must be true to confirm you want to create a backup"],
-                    mock: [type: "boolean", description: "Developer Mode only: stamp the 24h gate record; NO real backup (test envs)."]
-                ],
-                required: ["confirm"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    success: [type: "boolean", description: "Whether the backup was created"],
-                    confirmed: [type: "boolean", description: "Whether completion was confirmed via the hub's backup status (false = best-effort trigger)"],
-                    mocked: [type: "boolean", description: "true when mock=true stamped the gate record without a real backup"],
-                    message: [type: "string", description: "Human-readable result"],
-                    backupTimestamp: [type: "string", description: "Formatted backup time"],
-                    backupTimestampEpoch: [type: "integer", description: "Backup time in epoch millis"],
-                    note: [type: "string", description: "Where to download the backup"]
-                ],
-                required: ["success"]
-            ]
-        ],
-        [
             name: "hub_reboot",
             description: """⚠️ DESTRUCTIVE: Reboots the hub (1-3 min downtime, all automations stop). To install a pending hub firmware update instead, use hub_update_firmware.
 
@@ -1174,7 +1062,6 @@ def _toolDisplayMeta_partSystem() {
         hub_set_hsm: [title: "Set HSM Arm Mode", summary: "Arm or disarm Hubitat Safety Monitor."],
         hub_set_system_settings: [title: "Set System Settings", summary: "Set hub name, time zone, latitude/longitude, zip code, or temperature scale."],
         // Hub utilities
-        hub_create_backup: [title: "Create Hub Backup", summary: "Create a full hub backup (required before destructive writes)."],
         hub_update_firmware: [title: "Update Hub Firmware", summary: "Install the hub's pending platform/firmware update (downloads, installs, and reboots the hub)."],
         // Destructive hub ops
         hub_reboot: [title: "Reboot Hub", summary: "Reboot the hub (1-3 minutes of downtime)."],
