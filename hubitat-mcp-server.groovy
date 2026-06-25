@@ -36,6 +36,7 @@ definition(
 // #include load path works end to end -- the marker is surfaced in hub_get_info. Throwaway
 // canary; removed once the split architecture is validated.
 #include mcp.McpSmokeTestLib
+#include mcp.McpSmokeTest2Lib
 
 // issue #209 modularization: room-management tool implementations live in the McpRoomsLib
 // library (libraries/mcp-rooms-lib.groovy), delivered to real hubs by the required HPM bundle

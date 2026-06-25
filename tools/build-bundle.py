@@ -54,6 +54,10 @@ LIBS = [
         "dest": f"{NAMESPACE}.McpSmokeTestLib.groovy",
     },
     {
+        "source": LIB_DIR / "mcp-smoke-test2-lib.groovy",
+        "dest": f"{NAMESPACE}.McpSmokeTest2Lib.groovy",
+    },
+    {
         "source": LIB_DIR / "mcp-rooms-lib.groovy",
         "dest": f"{NAMESPACE}.McpRoomsLib.groovy",
     },
