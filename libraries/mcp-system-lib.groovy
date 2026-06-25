@@ -148,6 +148,7 @@ def toolGetHubInfo(args = null) {
     // the library loaded. Throwaway canary; removed once the modularization split is validated.
     info.smokeTestMarker = mcpSmokeTestMarker()
     info.smokeTest2Marker = mcpSmokeTest2Marker()
+    info.canary3Marker = mcpCanary3Marker()
 
     // Last self-deploy outcome (issue #237): hub_update_app on the MCP server's own app can't return
     // its result on the call (success reloads the app; a big-file compile failure 504s), so it records
