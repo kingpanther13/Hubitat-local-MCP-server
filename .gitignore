@@ -55,3 +55,7 @@ tests/diag_*.py
 # Built HPM bundle output -- delivery is the bundle-artifacts branch (publish-bundle-artifact.yml);
 # nothing under bundles/ is committed.
 /bundles/
+
+# JVM crash/replay dumps (from local test OOM)
+replay_pid*.log
+hs_err_pid*.log
