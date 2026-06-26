@@ -627,9 +627,9 @@ Reads are gated by the Read master; create/update/delete by the Write master (wi
 
 | Tool | Description |
 |------|-------------|
-| `hub_update_mcp_settings` | Update one or more of the MCP rule app's own settings (toggles, log level, tuning params). Allowlist-gated. |
+| `hub_update_mcp_settings` | Update one or more of the MCP rule app's own settings (toggles, log level, tuning params, and the device-access scope `selectedDevices` — pass `{mode:"replace"/"add"/"remove", ids:[...], allowEmpty?}` or a bare array of device IDs as the replace shorthand; ids are validated against the hub; refuses to empty the scope unless `allowEmpty`). Allowlist-gated. |
 
-First gateway under the **Developer Mode** pattern — for LLM-agent and CI/CD pipelines that need to manage the MCP rule app's own configuration without manual UI intervention. Additional self-admin tools (device-access management, true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same toggle. Requires opt-in **Enable Developer Mode Tools** setting (default OFF). Each successful write is logged at WARN level for audit.
+The **Developer Mode** pattern — for LLM-agent and CI/CD pipelines that need to manage the MCP rule app's own configuration and device-access scope without manual UI intervention. Additional self-admin tools (true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same toggle. Requires opt-in **Enable Developer Mode Tools** setting (default OFF). Each successful write is logged at WARN level for audit.
 
 </details>
 

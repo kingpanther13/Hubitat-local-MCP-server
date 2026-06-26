@@ -6558,7 +6558,7 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                 print(f"  [WARN] throwaway library cleanup failed: {exc}")
 
     # -----------------------------------------------------------------------
-    # GROUP 10: developer_mode (11 tests — Section 12 of BAT-v2.md + review-fix coverage + #250 dry-run)
+    # GROUP 10: developer_mode (14 tests — Section 12 of BAT-v2.md + review-fix coverage + #250 dry-run + selectedDevices scope)
     # -----------------------------------------------------------------------
     # Preconditions (provided by .github/scripts/mcp_setup_env.sh in CI, or
     # set manually for local runs):
@@ -6852,6 +6852,97 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             f"expected exactly one self app (MCP Rule Server): {apps}"
         assert apps and apps[-1].get("isSelf") is True, \
             f"the self app must be planned LAST (deployed last so its recompile is the final act): {apps}"
+
+    @test("developer_mode")
+    def test_mcp_settings_device_scope_round_trip(self) -> None:
+        """hub_update_mcp_settings selectedDevices re-scopes device access; add+remove is a net no-op.
+
+        Reads the authorized set via hub_list_devices(scope='all') (mcpAuthorized flag), picks an
+        UNAUTHORIZED device, ADDs it (verifies it becomes authorized), then REMOVEs it -- restoring
+        the original scope EXACTLY. Validated against the live hub because it writes selectedDevices,
+        a self-admin write the Spock harness cannot exercise. The remove runs in a finally so a
+        mid-test failure never leaves the device authorized.
+        """
+        def _authorized_ids() -> set[str]:
+            r = self.client.call_tool("hub_list_devices", {"scope": "all"})
+            return {str(d["id"]) for d in (r.get("devices") or []) if d.get("mcpAuthorized")}
+        def _all_devices() -> list[dict]:
+            r = self.client.call_tool("hub_list_devices", {"scope": "all"})
+            return r.get("devices") or []
+        def _scope(mode: str, ids: list[str]) -> dict:
+            return self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings",
+                "args": {"settings": {"selectedDevices": {"mode": mode, "ids": ids}}, "confirm": True},
+            })
+
+        original = _authorized_ids()
+        # Pick a device that is NOT currently authorized so add+remove nets to no change.
+        unauth = next((str(d["id"]) for d in _all_devices()
+                       if not d.get("mcpAuthorized") and d.get("id") is not None), None)
+        if unauth is None:
+            # Environmental precondition, not a defect: if every hub device is already authorized
+            # there is no add candidate. Skip (harness-native) rather than red-fail the suite.
+            raise SkipTest("no unauthorized device available to exercise the selectedDevices scope")
+
+        added_ok = False
+        try:
+            add = _scope("add", [unauth])
+            assert add.get("success") is True, f"add did not succeed: {add}"
+            scope = add.get("selectedDevices") or {}
+            assert scope.get("mode") == "add", f"mode not echoed: {add}"
+            assert unauth in (scope.get("added") or []), f"added list missing the id: {add}"
+            assert unauth in (scope.get("authorizedDeviceIds") or []), f"resulting set missing the id: {add}"
+            added_ok = True
+            # The device now reads back as authorized.
+            assert unauth in _authorized_ids(), "device did not become mcpAuthorized after add"
+        finally:
+            # Always restore: remove the id we added so the scope returns to its original set.
+            if added_ok:
+                rem = _scope("remove", [unauth])
+                assert rem.get("success") is True, f"remove (restore) did not succeed: {rem}"
+                scope = rem.get("selectedDevices") or {}
+                assert unauth in (scope.get("removed") or []), f"removed list missing the id: {rem}"
+
+        # Net no-op: the authorized set matches what it was before the test.
+        assert _authorized_ids() == original, "device-access scope was not restored to its original set"
+
+    @test("developer_mode")
+    def test_mcp_settings_device_scope_unknown_id_rejected(self) -> None:
+        """hub_update_mcp_settings selectedDevices rejects an unknown device id atomically (nothing changed)."""
+        before = self.client.call_tool("hub_list_devices", {"scope": "all"})
+        before_auth = {str(d["id"]) for d in (before.get("devices") or []) if d.get("mcpAuthorized")}
+        try:
+            self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings",
+                "args": {"settings": {"selectedDevices": {"mode": "add", "ids": ["999999999"]}}, "confirm": True},
+            })
+            assert False, "Expected -32602 rejection for an unknown device id"
+        except McpError as e:
+            msg = str(e)
+            assert "999999999" in msg, f"error didn't name the offending id: {msg}"
+            assert "Unknown device" in msg, f"error didn't say 'Unknown device': {msg}"
+        after = self.client.call_tool("hub_list_devices", {"scope": "all"})
+        after_auth = {str(d["id"]) for d in (after.get("devices") or []) if d.get("mcpAuthorized")}
+        assert after_auth == before_auth, "scope changed despite an unknown-id rejection"
+
+    @test("developer_mode")
+    def test_mcp_settings_device_scope_empty_refused(self) -> None:
+        """hub_update_mcp_settings selectedDevices refuses to empty the scope without allowEmpty."""
+        before = self.client.call_tool("hub_list_devices", {"scope": "all"})
+        before_auth = {str(d["id"]) for d in (before.get("devices") or []) if d.get("mcpAuthorized")}
+        try:
+            self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings",
+                "args": {"settings": {"selectedDevices": {"mode": "replace", "ids": []}}, "confirm": True},
+            })
+            assert False, "Expected -32602 refusal to empty the scope"
+        except McpError as e:
+            msg = str(e)
+            assert "Refusing to empty" in msg, f"error didn't surface the lockout guard: {msg}"
+            assert "allowEmpty" in msg, f"error didn't mention allowEmpty: {msg}"
+        after = self.client.call_tool("hub_list_devices", {"scope": "all"})
+        after_auth = {str(d["id"]) for d in (after.get("devices") or []) if d.get("mcpAuthorized")}
+        assert after_auth == before_auth, "scope changed despite the lockout refusal"
 
     # -----------------------------------------------------------------------
     # GROUP 10b: best-practice gate + reactive hints (issue #299)
