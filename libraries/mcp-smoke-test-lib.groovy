@@ -114,7 +114,60 @@ def toolGetDashboard(args) {
                     ? "The list returned no dashboards -- a pinToken may be required (pass pinToken and retry)."
                     : "Use hub_list_dashboards to see valid ids."]
     }
+    // The child-app fallback list carries only id + name. When that's all we have (no tile config),
+    // read the dashboard's own app config for the full tile/device/navigation/pin shape -- stateless,
+    // no pinToken -- so the result is rich enough to round-trip back through hub_update_dashboard.
+    // (theme is not stored as a child-app setting, so it is the one field not recovered this way.)
+    if (!match.containsKey("showClockTile")) {
+        def full = _dashboardConfigFromApp(wantId)
+        if (full != null) {
+            full.id = wantId
+            if (!full.name) full.name = match.name
+            return full
+        }
+    }
     return match
+}
+
+// Read one Easy Dashboard's full config from its OWN app-config page (stateless, no pinToken):
+// /installedapp/configure/json/<id> exposes the child app's settings -- the tile toggles (as
+// "true"/"false" strings), navigationSelection, dashboardPin/hsmPin, and devicesPicked (a
+// {id:name} map whose keys are the device ids). Used to enrich a child-app-sourced get so the
+// shape matches _summarizeDashboard. theme is NOT a setting here (only the pinToken-gated
+// /dashboard/all carries it), so it is omitted. Returns null if the page can't be read.
+private Map _dashboardConfigFromApp(String id) {
+    try {
+        def raw = hubInternalGet("/installedapp/configure/json/${id}")
+        if (!raw) return null
+        def parsed = new groovy.json.JsonSlurper().parseText(raw)
+        def s = parsed?.settings
+        if (!(s instanceof Map)) return null
+        def out = [id: id, name: parsed?.app?.label]
+        ["showModeTile", "showClockTile", "showCalendarTile", "showHSMTile", "showEdit",
+         "showNavigation", "showTutorial"].each { k ->
+            if (s.containsKey(k)) out[k] = (s[k]?.toString() == "true")
+        }
+        if (s.containsKey("navigationSelection")) out.navigationSelection = _dashboardNavSelectionCsv(s.navigationSelection)
+        if (s.devicesPicked instanceof Map) out.deviceIds = s.devicesPicked.keySet().collect { it.toString() }
+        // app-config returns "" for an unset pin and the literal string "null" for an unset hsmPin.
+        if (s.dashboardPin && s.dashboardPin.toString() != "null") out.dashboardPin = s.dashboardPin
+        if (s.hsmPin && s.hsmPin.toString() != "null") out.hsmPin = s.hsmPin
+        return out
+    } catch (Exception e) {
+        mcpLogError("dashboard", "read dashboard config from app failed", e)
+        return null
+    }
+}
+
+// True if an Easy Dashboard with this id is still installed (child app of the Easy Dashboard
+// Parent). Used to confirm a delete by effect, since /dashboard/delete returns an unreliable
+// success flag. Falls back to the full list if child enumeration is unavailable.
+private boolean _dashboardPresent(String id) {
+    def viaApps = _listDashboardsViaChildApps()
+    if (viaApps != null) return viaApps.any { it.id?.toString() == id }
+    def listed = toolListDashboards([:])
+    def dashboards = (listed instanceof Map) ? (listed.dashboards ?: []) : []
+    return dashboards.any { it.id?.toString() == id }
 }
 
 def toolCreateDashboard(args) {
@@ -168,11 +221,15 @@ def toolDeleteDashboard(args) {
     try {
         def raw = hubInternalGet("/dashboard/delete", [id: dashId])
         def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
-        if (parsed instanceof Map && parsed.success == true) {
-            return [success: true, id: dashId, message: parsed.message ?: "Dashboard ${dashId} deleted."]
+        // /dashboard/delete returns {success:false,message:null} even when it DID delete the
+        // dashboard -- its success flag is unreliable -- so confirm by effect: the delete worked
+        // iff the dashboard is no longer present. Honor an explicit success:true as well.
+        boolean gone = !_dashboardPresent(dashId)
+        if ((parsed instanceof Map && parsed.success == true) || gone) {
+            return [success: true, id: dashId, message: "Dashboard ${dashId} deleted."]
         }
         return [success: false, id: dashId,
-                error: (parsed instanceof Map) ? (parsed.message ?: parsed.error ?: "hub reported failure") : "unexpected response",
+                error: (parsed instanceof Map) ? (parsed.message ?: parsed.error ?: "the dashboard is still present after the delete call") : "unexpected response",
                 note: "Nothing was deleted. Verify the id with hub_list_dashboards."]
     } catch (Exception e) {
         mcpLogError("dashboard", "delete dashboard failed", e)
@@ -182,40 +239,30 @@ def toolDeleteDashboard(args) {
 
 def toolCloneDashboard(args) {
     args = args ?: [:]
-    def dashId = _requireDashboardId(args.id, " to clone")
-    try {
-        // cloneAsEasy takes the source id as a PATH parameter, not a query param.
-        def raw = hubInternalGet("/dashboard/cloneAsEasy/${dashId}")
-        def parsed
-        try {
-            parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
-        } catch (Exception e) {
-            mcpLogError("dashboard", "clone dashboard ${dashId} response unparseable", e)
-            parsed = null
-        }
-        // Strict success: honor an explicit `success` flag; only infer from an echoed id when
-        // `success` is absent (the hub may return the new record under installedAppId OR a bare id --
-        // Codex P2). A list echo is NOT proof the clone was created.
-        boolean ok = (parsed instanceof Map) && (parsed.containsKey("success") ? (parsed.success == true) : ((parsed.installedAppId ?: parsed.id) != null))
-        if (ok) {
-            def out = [success: true, sourceId: dashId, message: parsed.message ?: "Dashboard ${dashId} cloned."]
-            def newId = parsed.installedAppId ?: parsed.id
-            if (newId != null) out.newId = newId.toString()
-            return out
-        }
-        if (parsed instanceof List) {
-            return [success: false, sourceId: dashId,
-                    error: "Clone returned the dashboard list instead of a status object; outcome unconfirmed.",
-                    note: "The clone may or may not have been created; verify with hub_list_dashboards.",
-                    dashboards: parsed.findAll { it != null }.collect { _summarizeDashboard(it) }]
-        }
-        return [success: false, sourceId: dashId,
-                error: (parsed instanceof Map) ? (parsed.message ?: parsed.error ?: "hub reported failure") : "unexpected response from /dashboard/cloneAsEasy",
-                note: "The clone may or may not have been created; verify with hub_list_dashboards."]
-    } catch (Exception e) {
-        mcpLogError("dashboard", "clone dashboard failed", e)
-        return [success: false, sourceId: dashId, error: e.message, note: "Nothing was cloned."]
+    def sourceId = _requireDashboardId(args.id, " to clone")
+    // The hub's /dashboard/cloneAsEasy endpoint does NOT work from the server -- it is session-bound
+    // (returns success:false and creates nothing even with a session cookie). So clone BY VALUE: read
+    // the source's config and create a copy. (theme is not in the source's app config, so unless the
+    // source list carried it, the copy uses the default theme.)
+    def src = toolGetDashboard([id: sourceId])
+    if (!(src instanceof Map) || src.success == false) {
+        return [success: false, sourceId: sourceId,
+                error: "Could not read the source dashboard to clone it" + ((src instanceof Map && src.error) ? ": ${src.error}" : "."),
+                note: "Verify the id with hub_list_dashboards."]
     }
+    def opts = [:]
+    ["showModeTile", "showClockTile", "showCalendarTile", "showHSMTile", "showEdit", "showNavigation",
+     "showTutorial", "theme", "navigationSelection", "dashboardPin", "hsmPin"].each { k ->
+        if (src.containsKey(k)) opts[k] = src[k]
+    }
+    def created = toolCreateDashboard([name: "${src.name ?: 'Dashboard'} (copy)", deviceIds: (src.deviceIds ?: []), options: opts])
+    if (created instanceof Map && created.success == true) {
+        return [success: true, sourceId: sourceId, newId: created.id,
+                message: "Cloned dashboard ${sourceId} by copying its config into a new dashboard${created.id ? ' (' + created.id + ')' : ''}."]
+    }
+    return [success: false, sourceId: sourceId,
+            error: (created instanceof Map) ? (created.error ?: "clone-by-copy failed") : "unexpected response",
+            note: "The copy may not have been created; verify with hub_list_dashboards."]
 }
 
 // ---- domain helpers (private to the dashboards library) ----
@@ -240,7 +287,10 @@ private Map _summarizeDashboard(raw) {
         if (raw.containsKey(k)) out[k] = raw[k]
     }
     if (raw.containsKey("navigationSelection")) out.navigationSelection = _dashboardNavSelectionCsv(raw.navigationSelection)
-    if (raw.containsKey("deviceIds")) out.deviceIds = raw.deviceIds
+    // /dashboard/all returns deviceIds as a JSON-array-as-STRING ("[8,1,9]"); normalize to a list of
+    // id strings so the shape round-trips back through hub_update_dashboard (and so a clone-by-value
+    // can re-send it) instead of being mis-split on its brackets.
+    if (raw.containsKey("deviceIds")) out.deviceIds = _normalizeDeviceIdList(raw.deviceIds)
     // Include the PINs when the hub returns them so a read-then-update round-trip preserves them
     // (the update sends "" for an absent pin, which would CLEAR the pin -- Codex P1). Many hub list
     // payloads omit pins; in that case they're simply absent here and the caller must re-supply them.
@@ -278,6 +328,21 @@ private String _dashboardDeviceCsv(deviceIds, boolean required) {
     return ids.join(",")
 }
 
+// Normalize a deviceIds value into a list of id strings. /dashboard/all hands back a
+// JSON-array-as-string ("[8,1,9]"); the child-app/app-config path gives a real collection. Both
+// become ["8","1","9"] so the read shape can be re-sent to a write tool unchanged.
+private List _normalizeDeviceIdList(raw) {
+    if (raw instanceof Collection) return raw.collect { it?.toString() }.findAll { it }
+    if (raw instanceof String) {
+        try {
+            def p = new groovy.json.JsonSlurper().parseText(raw)
+            if (p instanceof List) return p.collect { it?.toString() }.findAll { it }
+        } catch (Exception ignored) { }
+        return (raw.replaceAll(/[\[\]\s]/, "").split(",") as List).findAll { it }
+    }
+    return (raw != null) ? [raw.toString()] : []
+}
+
 // Build the shared /dashboard/create|update query map from args. Booleans serialize as the literal
 // strings "true"/"false" (the verified wire); theme defaults to "legacy" (empty == legacy). The id
 // param (update only) is added by the caller. deviceCsv is precomputed by the caller.
@@ -287,7 +352,7 @@ private String _dashboardDeviceCsv(deviceIds, boolean required) {
 // flat tools/list catalog under the hub's size cap); the top-level fallback keeps direct/programmatic
 // callers (and a caller that flattens the options) working too.
 private Map _buildDashboardConfigQuery(Map args, String deviceCsv) {
-    def boolStr = { v -> (v == true) ? "true" : "false" }
+    def boolStr = { v -> (v == true || v?.toString()?.toLowerCase() == "true") ? "true" : "false" }
     def opts = (args.options instanceof Map) ? args.options : [:]
     def opt = { String k -> opts.containsKey(k) ? opts[k] : args[k] }
     return [
@@ -311,7 +376,7 @@ private Map _buildDashboardConfigQuery(Map args, String deviceCsv) {
 // string; normalize to a CSV string.
 private String _dashboardNavSelectionCsv(navigationSelection) {
     if (navigationSelection == null) return ""
-    if (navigationSelection instanceof List) {
+    if (navigationSelection instanceof Collection) {
         return navigationSelection.collect { it?.toString()?.trim() }.findAll { it }.join(",")
     }
     return navigationSelection.toString()
@@ -321,7 +386,7 @@ private String _dashboardNavSelectionCsv(navigationSelection) {
 // known set is rejected so a typo isn't silently sent to the hub.
 private String _dashboardTheme(theme) {
     if (theme == null || !theme.toString().trim()) return "legacy"
-    def t = theme.toString().trim()
+    def t = theme.toString().trim().toLowerCase()
     if (!(t in ["legacy", "light", "dark", "auto"])) {
         throw new IllegalArgumentException("theme must be one of: legacy, light, dark, auto (got '${theme}').")
     }
@@ -371,174 +436,132 @@ private Map _dashboardWriteResult(raw, String op, String reqId) {
 // Tool DEFINITIONS (issue #209: schema lives with the impl). Concatenated into getAllToolDefinitions()
 // in the main app; gateway membership + dispatch cases stay in main.
 def _getAllToolDefinitions_partDashboards() {
+    // Shared per-dashboard output shape (field names are self-describing; navigationSelection is a CSV).
+    def dashFields = [
+        id: [type: "string"], name: [type: "string"],
+        showModeTile: [type: "boolean"], showClockTile: [type: "boolean"],
+        showCalendarTile: [type: "boolean"], showHSMTile: [type: "boolean"],
+        showEdit: [type: "boolean"], showNavigation: [type: "boolean"], showTutorial: [type: "boolean"],
+        navigationSelection: [type: "string"], theme: [type: "string"],
+        deviceIds: [type: "array"], dashboardPin: [type: "string"], hsmPin: [type: "string"]
+    ]
     return [
         [
             name: "hub_list_dashboards",
-            description: """List the hub's Easy Dashboards.[[FLAT_TRIM]] Read-only. Each entry has id, name, and tile/theme config. Use to discover dashboards or resolve a name to its id before the other dashboard tools. Some hubs gate this behind a pinToken: if an expected list comes back empty, pass pinToken and retry.[[/FLAT_TRIM]]""",
+            description: "List the hub's Easy Dashboards.[[FLAT_TRIM]] Read-only; each has id, name, and tile/theme config. Resolves the dashboard token automatically, so no pinToken is normally needed.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
-                    pinToken: [type: "string", description: "Optional pin token.[[FLAT_TRIM]] Only if the hub requires it (an empty result is the tell).[[/FLAT_TRIM]]"]
+                    pinToken: [type: "string", description: "Optional override."]
                 ]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
-                    dashboards: [type: "array", description: "Easy Dashboards on the hub", items: [type: "object", properties: [
-                        id: [type: "string", description: "Dashboard installedAppId — pass as id to the other dashboard tools"],
-                        name: [type: "string", description: "Dashboard name"],
-                        showModeTile: [description: "Whether the Mode tile is shown"],
-                        showClockTile: [description: "Whether the Clock tile is shown"],
-                        showCalendarTile: [description: "Whether the Calendar tile is shown"],
-                        showHSMTile: [description: "Whether the HSM tile is shown"],
-                        showEdit: [description: "Whether the Edit control is shown"],
-                        showNavigation: [description: "Whether navigation is shown"],
-                        showTutorial: [description: "Whether the tutorial is shown"],
-                        navigationSelection: [description: "Dashboard ids in the navigation menu (CSV)"],
-                        theme: [description: "Theme (legacy/light/dark/auto)"],
-                        deviceIds: [description: "Devices on the dashboard"],
-                        dashboardPin: [description: "Dashboard PIN (only when the hub exposes it)"],
-                        hsmPin: [description: "HSM PIN (only when the hub exposes it)"]
-                    ]]],
-                    count: [type: "integer", description: "Dashboards returned"],
-                    note: [type: "string", description: "Guidance, e.g. when the list is empty (pinToken may be required)"],
-                    success: [type: "boolean", description: "false only on a fetch/parse failure"],
-                    error: [type: "string", description: "Failure detail (present on success:false)"]
+                    dashboards: [type: "array", items: [type: "object", properties: dashFields]],
+                    count: [type: "integer"], note: [type: "string"],
+                    success: [type: "boolean"], error: [type: "string"]
                 ],
                 required: ["dashboards", "count"]
             ]
         ],
         [
             name: "hub_get_dashboard",
-            description: """Get a dashboard's full config by id.[[FLAT_TRIM]] Read-only. Returns name, tile toggles, navigation (CSV), theme, devices, and PINs when the hub exposes them. Lists then filters by id (no single-dashboard endpoint). Read it before hub_update_dashboard (a wholesale replace) and pass its output straight back. NOTE: the hub list often omits dashboardPin/hsmPin; if absent here, re-supply them on update or they are cleared.[[/FLAT_TRIM]]""",
+            description: "Get a dashboard's full config by id.[[FLAT_TRIM]] Read-only; returns tiles, navigation, devices, and PINs. Read before the wholesale hub_update_dashboard and pass its output straight back.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
-                    id: [type: "string", description: "Dashboard id.[[FLAT_TRIM]] The installedAppId, from hub_list_dashboards.[[/FLAT_TRIM]]"],
-                    pinToken: [type: "string", description: "Optional pin token.[[FLAT_TRIM]] Only if the hub requires it.[[/FLAT_TRIM]]"]
+                    id: [type: "string", description: "installedAppId."],
+                    pinToken: [type: "string", description: "Optional override."]
                 ],
                 required: ["id"]
             ],
             outputSchema: [
                 type: "object",
-                properties: [
-                    id: [type: "string", description: "Dashboard installedAppId"],
-                    name: [type: "string", description: "Dashboard name"],
-                    showModeTile: [description: "Whether the Mode tile is shown"],
-                    showClockTile: [description: "Whether the Clock tile is shown"],
-                    showCalendarTile: [description: "Whether the Calendar tile is shown"],
-                    showHSMTile: [description: "Whether the HSM tile is shown"],
-                    showEdit: [description: "Whether the Edit control is shown"],
-                    showNavigation: [description: "Whether navigation is shown"],
-                    showTutorial: [description: "Whether the tutorial is shown"],
-                    navigationSelection: [description: "Dashboard ids in the navigation menu (CSV)"],
-                    theme: [description: "Theme (legacy/light/dark/auto)"],
-                    deviceIds: [description: "Devices on the dashboard"],
-                    dashboardPin: [description: "Dashboard PIN (only when the hub exposes it)"],
-                    hsmPin: [description: "HSM PIN (only when the hub exposes it)"],
-                    success: [type: "boolean", description: "false only when the id was not found or the fetch failed"],
-                    error: [type: "string", description: "Failure detail (present on success:false)"],
-                    availableIds: [type: "array", description: "Valid dashboard ids (present when the id was not found)"],
-                    note: [type: "string", description: "Actionable guidance"]
+                properties: dashFields + [
+                    success: [type: "boolean"], error: [type: "string"],
+                    availableIds: [type: "array"], note: [type: "string"]
                 ]
             ]
         ],
         [
             name: "hub_create_dashboard",
-            description: """Create an Easy Dashboard.[[FLAT_TRIM]] Write op. Requires the Write master and >=1 device. Tell the user before adding UI surfaces to their hub. Tile toggles default off and theme defaults to legacy; see the options param for the full config.[[/FLAT_TRIM]]""",
+            description: "Create an Easy Dashboard.[[FLAT_TRIM]] Write op; needs >=1 device. Tiles default off, theme legacy.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     name: [type: "string", description: "Display name."],
-                    deviceIds: [type: "array", description: "Device ids, REQUIRED >=1.[[FLAT_TRIM]] E.g. [\"12\",\"34\"].[[/FLAT_TRIM]]", items: [type: "string"]],
-                    options: [type: "object", description: "Optional config.[[FLAT_TRIM]] All keys default off/empty. Bool keys show{Mode,Clock,Calendar,HSM}Tile/showEdit/showNavigation/showTutorial; navigationSelection (dashboard-id array); dashboardPin; hsmPin; theme (legacy|light|dark|auto).[[/FLAT_TRIM]]"]
+                    deviceIds: [type: "array", description: "Device ids, >=1.", items: [type: "string"]],
+                    options: [type: "object", description: "Optional config.[[FLAT_TRIM]] show{Mode,Clock,Calendar,HSM}Tile/showEdit/showNavigation/showTutorial (bool); navigationSelection; theme (legacy|light|dark|auto); dashboardPin; hsmPin.[[/FLAT_TRIM]]"]
                 ],
                 required: ["name", "deviceIds"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
-                    success: [type: "boolean", description: "Whether creation succeeded"],
-                    id: [type: "string", description: "New dashboard installedAppId (when the hub returns it)"],
-                    dashboard: [type: "object", description: "Created dashboard summary (when echoed by the hub)"],
-                    dashboards: [type: "array", description: "Dashboard list (present when the hub echoes the full list)"],
-                    message: [type: "string", description: "Human-readable result"],
-                    error: [type: "string", description: "Failure detail"],
-                    note: [type: "string", description: "Actionable guidance"]
+                    success: [type: "boolean"], id: [type: "string"], dashboard: [type: "object"],
+                    dashboards: [type: "array"], message: [type: "string"], error: [type: "string"], note: [type: "string"]
                 ],
                 required: ["success"]
             ]
         ],
         [
             name: "hub_update_dashboard",
-            description: """Update a dashboard; REPLACES config wholesale.[[FLAT_TRIM]] Write op. Requires the Write master. Pass the FULL desired config every call: there is no server-side read-merge, so any field you omit reverts to its default -- including dashboardPin/hsmPin, which an omitted value CLEARS. Read hub_get_dashboard first and re-send its config; if it didn't return the PINs (the hub list often omits them), re-supply them here.[[/FLAT_TRIM]]""",
+            description: "Replace a dashboard's config wholesale by id.[[FLAT_TRIM]] Write op; pass the FULL config (omitted fields, PINs included, revert). Read hub_get_dashboard first.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
-                    id: [type: "string", description: "Dashboard id.[[FLAT_TRIM]] The installedAppId, from hub_list_dashboards.[[/FLAT_TRIM]]"],
-                    name: [type: "string", description: "Display name, REQUIRED.[[FLAT_TRIM]] Wholesale replace.[[/FLAT_TRIM]]"],
-                    deviceIds: [type: "array", description: "Devices, REQUIRED >=1.[[FLAT_TRIM]] Full set; omitting one removes it.[[/FLAT_TRIM]]", items: [type: "string"]],
-                    options: [type: "object", description: "Optional config.[[FLAT_TRIM]] Same keys as hub_create_dashboard.options. Any omitted key reverts to its default.[[/FLAT_TRIM]]"]
+                    id: [type: "string", description: "installedAppId."],
+                    name: [type: "string", description: "Display name (required)."],
+                    deviceIds: [type: "array", description: "Full device id set, >=1.", items: [type: "string"]],
+                    options: [type: "object", description: "Same keys as hub_create_dashboard.options.[[FLAT_TRIM]] Any omitted key reverts to default.[[/FLAT_TRIM]]"]
                 ],
                 required: ["id", "name", "deviceIds"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
-                    success: [type: "boolean", description: "Whether the update succeeded"],
-                    id: [type: "string", description: "Updated dashboard installedAppId"],
-                    dashboard: [type: "object", description: "Updated dashboard summary (when echoed by the hub)"],
-                    dashboards: [type: "array", description: "Dashboard list (present when the hub echoes the full list)"],
-                    message: [type: "string", description: "Human-readable result"],
-                    error: [type: "string", description: "Failure detail"],
-                    note: [type: "string", description: "Actionable guidance"]
+                    success: [type: "boolean"], id: [type: "string"], dashboard: [type: "object"],
+                    dashboards: [type: "array"], message: [type: "string"], error: [type: "string"], note: [type: "string"]
                 ],
                 required: ["success"]
             ]
         ],
         [
             name: "hub_delete_dashboard",
-            description: """⚠️ DESTRUCTIVE: permanently delete a dashboard (devices NOT deleted). Tell the user first.[[FLAT_TRIM]] Irreversible. Write op. Requires the Write master, confirm=true, and a backup taken within the last 24h.[[/FLAT_TRIM]]""",
+            description: "⚠️ Permanently delete a dashboard by id (irreversible). Tell the user first.[[FLAT_TRIM]] Devices are NOT deleted. Write op; needs confirm=true + a backup within 24h.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
-                    id: [type: "string", description: "Dashboard id.[[FLAT_TRIM]] The installedAppId to delete, from hub_list_dashboards.[[/FLAT_TRIM]]"],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true.[[FLAT_TRIM]] Confirms a recent backup exists and the user approved the deletion.[[/FLAT_TRIM]]"]
+                    id: [type: "string", description: "installedAppId to delete."],
+                    confirm: [type: "boolean", description: "Must be true.[[FLAT_TRIM]] Confirms a recent backup + user approval.[[/FLAT_TRIM]]"]
                 ],
                 required: ["id", "confirm"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
-                    success: [type: "boolean", description: "Whether the delete succeeded"],
-                    id: [type: "string", description: "Deleted dashboard installedAppId"],
-                    message: [type: "string", description: "Human-readable result"],
-                    error: [type: "string", description: "Failure detail"],
-                    note: [type: "string", description: "Actionable guidance"]
+                    success: [type: "boolean"], id: [type: "string"],
+                    message: [type: "string"], error: [type: "string"], note: [type: "string"]
                 ],
                 required: ["success"]
             ]
         ],
         [
             name: "hub_clone_dashboard",
-            description: """Clone a dashboard into a new one.[[FLAT_TRIM]] Write op. Requires the Write master. Uses Hubitat's cloneAsEasy to duplicate the source's tiles and config; cheaper than rebuilding via hub_create_dashboard. Returns the new id when the hub provides it.[[/FLAT_TRIM]]""",
+            description: "Clone a dashboard into a copy by id.[[FLAT_TRIM]] Write op; copies the source's config into a new dashboard (theme may default).[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
-                    id: [type: "string", description: "Source dashboard id.[[FLAT_TRIM]] The installedAppId to clone, from hub_list_dashboards.[[/FLAT_TRIM]]"]
+                    id: [type: "string", description: "Source installedAppId."]
                 ],
                 required: ["id"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
-                    success: [type: "boolean", description: "Whether the clone succeeded"],
-                    sourceId: [type: "string", description: "The cloned source dashboard id"],
-                    newId: [type: "string", description: "The new clone's installedAppId (when the hub returns it)"],
-                    dashboards: [type: "array", description: "Dashboard list (present when the hub echoes the full list)"],
-                    message: [type: "string", description: "Human-readable result"],
-                    error: [type: "string", description: "Failure detail"],
-                    note: [type: "string", description: "Actionable guidance"]
+                    success: [type: "boolean"], sourceId: [type: "string"], newId: [type: "string"],
+                    message: [type: "string"], error: [type: "string"], note: [type: "string"]
                 ],
                 required: ["success"]
             ]

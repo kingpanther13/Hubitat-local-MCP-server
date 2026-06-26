@@ -2194,14 +2194,37 @@ class TestRunner:
         assert isinstance(got, dict), f"hub_get_dashboard returned non-dict: {got}"
         assert got.get("name") == dash_name, f"dashboard name mismatch: {got}"
 
-        # CLONE
+        # UPDATE (wholesale): flip a tile toggle and confirm it took -- the U in the CRUD cycle.
+        # hub_get_dashboard's full config (above) is what makes the wholesale round-trip possible.
+        new_clock = not bool(got.get("showClockTile"))
+        upd_devices = [str(x) for x in (got.get("deviceIds") or [switch_id])]
+        uw = self._soft_write(
+            lambda: self.client.call_tool("hub_manage_dashboard", {
+                "tool": "hub_update_dashboard",
+                "args": {"id": dash_id, "name": dash_name, "deviceIds": upd_devices,
+                         "options": {"showClockTile": new_clock}}}),
+            lambda: bool((self.client.call_tool("hub_manage_dashboard", {
+                "tool": "hub_get_dashboard", "args": {"id": dash_id}}) or {}).get("showClockTile")) == new_clock,
+            "update dashboard",
+        )
+        if uw["relayDropped"]:
+            assert uw["committed"], "showClockTile change not visible after a relay-504 update"
+        else:
+            assert isinstance(uw["response"], dict) and uw["response"].get("success"), \
+                f"hub_update_dashboard failed: {uw['response']}"
+            reread = self.client.call_tool("hub_manage_dashboard", {
+                "tool": "hub_get_dashboard", "args": {"id": dash_id}})
+            assert bool(reread.get("showClockTile")) == new_clock, \
+                f"hub_update_dashboard reported success but showClockTile didn't change: {reread}"
+
+        # CLONE (clone-by-value: copies the source config into a new dashboard named "<name> (copy)")
         clone = self.client.call_tool("hub_manage_dashboard", {
             "tool": "hub_clone_dashboard", "args": {"id": dash_id}})
         if isinstance(clone, dict) and clone.get("success"):
             clone_id = clone.get("newId")
             if not clone_id:
-                # Some firmware echoes the list instead of a new id -- recover by name.
-                clone_id = self._find_dashboard_id_by_name(dash_name)  # clone may share the name
+                # newId dropped on the relay -- recover by the copy's name.
+                clone_id = self._find_dashboard_id_by_name(f"{dash_name} (copy)")
             if clone_id and str(clone_id) != dash_id:
                 self.created_dashboard_ids.append(str(clone_id))
 

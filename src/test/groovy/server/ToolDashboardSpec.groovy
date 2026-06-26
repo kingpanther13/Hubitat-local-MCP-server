@@ -28,8 +28,6 @@ class ToolDashboardSpec extends ToolSpecBase {
         hubGet.register('/dashboard/create') { params -> '{"success":true,"installedAppId":777,"name":"New Dash"}' }
         hubGet.register('/dashboard/update') { params -> '{"success":true,"installedAppId":412,"name":"Living Room"}' }
         hubGet.register('/dashboard/delete') { params -> '{"success":true,"message":"deleted"}' }
-        // cloneAsEasy takes the id as a PATH param, so the mock path includes the id.
-        hubGet.register('/dashboard/cloneAsEasy/412') { params -> '{"success":true,"installedAppId":888,"name":"Living Room Copy"}' }
     }
 
     private void enableWrite() {
@@ -48,7 +46,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         r.dashboards[0].id == '412'
         r.dashboards[0].name == 'Living Room'
         r.dashboards[0].theme == 'dark'
-        r.dashboards[0].deviceIds == '12,34'
+        r.dashboards[0].deviceIds == ['12', '34']
     }
 
     def "list passes pinToken through to /dashboard/all when supplied"() {
@@ -463,18 +461,23 @@ class ToolDashboardSpec extends ToolSpecBase {
 
     // ---------- hub_clone_dashboard ----------
 
-    def "clone hits /dashboard/cloneAsEasy/<id> (path param) and surfaces the new id"() {
+    def "clone copies the source config into a new dashboard (clone-by-value, not the session-bound cloneAsEasy)"() {
         given:
         enableWrite()
 
         when:
         def r = script.toolCloneDashboard([id: '412'])
 
-        then:
+        then: 'reads the source (412) via the list, then creates a copy via /dashboard/create'
         r.success == true
         r.sourceId == '412'
-        r.newId == '888'
-        hubGet.calls.any { it.path == '/dashboard/cloneAsEasy/412' }
+        r.newId == '777'
+        def createCall = hubGet.calls.find { it.path == '/dashboard/create' }
+        createCall.params.name == 'Living Room (copy)'
+        createCall.params.deviceIds == '12,34'
+
+        and: 'it does NOT call the session-bound cloneAsEasy endpoint (which fails from the server)'
+        !hubGet.calls.any { it.path.startsWith('/dashboard/cloneAsEasy') }
     }
 
     def "clone without id throws"() {

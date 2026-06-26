@@ -558,7 +558,7 @@ def toolUpdatePackage(args) {
         // SHA-shaped ref with none is abbreviated, unpushed, or typo'd -- fail loudly instead of
         // installing the wrong bundle. (Branch/tag refs legitimately fall back to branches/main with a
         // freshness warning; only commit-SHA refs are guarded, since that's where a hallucinated value bites.)
-        if (entry.source == "manifest-current" && (ref?.toString()?.trim() ==~ /(?i)^[0-9a-f]{7,40}$/)) {
+        if (entry.source == "manifest-current" && ref != null && (ref.toString().trim() ==~ /(?i)^[0-9a-f]{7,40}$/)) {
             return [
                 success: false, aborted: true, abortReason: "no_bundle_artifact_for_ref", ref: ref,
                 bundle: (b?.name ?: b?.id), artifactUrlProbed: artifactUrl,

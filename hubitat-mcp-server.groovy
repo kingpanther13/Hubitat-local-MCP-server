@@ -1490,7 +1490,7 @@ def getGatewayConfig() {
             description: "Manage Hubitat Easy Dashboards: list, view, create, update, delete, and clone touch-friendly device dashboards (tile toggles, navigation, themes, optional PINs). Update REPLACES the config wholesale — read it first with hub_get_dashboard. Delete is destructive (confirm + recent backup). Reads are also in hub_read_dashboards.",
             tools: ["hub_list_dashboards", "hub_get_dashboard", "hub_create_dashboard", "hub_update_dashboard", "hub_delete_dashboard", "hub_clone_dashboard"],
             summaries: [
-                hub_list_dashboards: "List Easy Dashboards (id, name, tile/theme config). Args: pinToken? (only if the hub requires it)",
+                hub_list_dashboards: "List Easy Dashboards (id, name, tile/theme config). Args: pinToken? (optional; resolved automatically)",
                 hub_get_dashboard: "Get one Easy Dashboard's full config by id (list-then-filter). Args: id, pinToken?",
                 hub_create_dashboard: "Create an Easy Dashboard. Args: name, deviceIds (>=1), tile toggles?, navigationSelection?, theme?, pins?",
                 hub_update_dashboard: "Replace an Easy Dashboard's config wholesale (pass the FULL config). Args: id, name, deviceIds (>=1), tile toggles?, theme?",
@@ -1510,7 +1510,7 @@ def getGatewayConfig() {
             description: "Read-only Easy Dashboard inspection: list dashboards and view one dashboard's full config (tiles, navigation, theme, devices). All operations are read-only; create/update/delete/clone live in hub_manage_dashboard.",
             tools: ["hub_list_dashboards", "hub_get_dashboard"],
             summaries: [
-                hub_list_dashboards: "List Easy Dashboards (id, name, tile/theme config). Args: pinToken? (only if the hub requires it)",
+                hub_list_dashboards: "List Easy Dashboards (id, name, tile/theme config). Args: pinToken? (optional; resolved automatically)",
                 hub_get_dashboard: "Get one Easy Dashboard's full config by id (list-then-filter). Args: id, pinToken?"
             ],
             searchHints: [
