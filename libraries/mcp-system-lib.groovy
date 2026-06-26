@@ -149,6 +149,7 @@ def toolGetHubInfo(args = null) {
     info.smokeTestMarker = mcpSmokeTestMarker()
     info.smokeTest2Marker = mcpSmokeTest2Marker()
     info.canary3Marker = mcpCanary3Marker()
+    info.canary4Marker = mcpCanary4Marker()
 
     // Last self-deploy outcome (issue #237): hub_update_app on the MCP server's own app can't return
     // its result on the call (success reloads the app; a big-file compile failure 504s), so it records
