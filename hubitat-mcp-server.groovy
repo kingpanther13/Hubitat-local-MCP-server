@@ -30,14 +30,10 @@ definition(
 )
 
 // Easy Dashboard CRUD tools (hub_list_dashboards / get / create / update / delete / clone) are
-// implemented in the McpSmokeTestLib library (libraries/mcp-smoke-test-lib.groovy). The library
-// keeps the McpSmokeTestLib name on the hub for now: the dashboards code rides in this existing
-// (otherwise vestigial) library while we validate the binding end to end. 321/322's separate
-// McpDashboardsLib failed to bind for a not-yet-pinned reason -- NOT because new libraries can't
-// bind (the issue #209 split added ~18 that do). Gateway entries + dispatch cases stay in this
-// file; defs + impls + per-tool metadata live in the library. Renaming to a proper McpDashboardsLib
-// is the next step.
-#include mcp.McpSmokeTestLib
+// implemented in the McpDashboardsLib library (libraries/mcp-dashboards-lib.groovy), delivered to
+// real hubs via the required HPM bundle (issue #209 modularization). Gateway entries + dispatch
+// cases stay in this file; defs + impls + per-tool metadata live in the library.
+#include mcp.McpDashboardsLib
 
 // issue #209 modularization: room-management tool implementations live in the McpRoomsLib
 // library (libraries/mcp-rooms-lib.groovy), delivered to real hubs by the required HPM bundle
@@ -2466,7 +2462,7 @@ def executeTool(toolName, args) {
         case "hub_set_visual_rule": return toolSetVisualRule(args)
         case "hub_delete_visual_rule": return toolDeleteVisualRule(args)
 
-        // Easy Dashboard CRUD (classic /dashboard/* endpoints; impl in McpSmokeTestLib)
+        // Easy Dashboard CRUD (classic /dashboard/* endpoints; impl in McpDashboardsLib)
         case "hub_list_dashboards": return toolListDashboards(args)
         case "hub_get_dashboard": return toolGetDashboard(args)
         case "hub_create_dashboard": return toolCreateDashboard(args)

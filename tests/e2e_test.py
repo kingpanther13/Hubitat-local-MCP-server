@@ -7963,7 +7963,7 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         except Exception as exc:
             print(f"  [WARN] throwaway library sweep failed: {exc}")
 
-        # Layer 8: Easy Dashboards with the BAT_E2E_ prefix (issue #259; dashboards impls in McpSmokeTestLib).
+        # Layer 8: Easy Dashboards with the BAT_E2E_ prefix (issue #259; dashboards impls in McpDashboardsLib).
         # The create/clone/delete test deletes the original inline; this reclaims the clone
         # and any dashboard a crashed run stranded. Skips silently if the endpoint is gated.
         for dash_id in list(self.created_dashboard_ids):

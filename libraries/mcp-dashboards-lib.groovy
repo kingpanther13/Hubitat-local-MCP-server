@@ -1,4 +1,4 @@
-library(name: "McpSmokeTestLib", namespace: "mcp", author: "kingpanther13", description: "Easy Dashboard CRUD tool implementations for the MCP Rule Server (hub_list_dashboards/hub_get_dashboard/hub_create_dashboard/hub_update_dashboard/hub_delete_dashboard/hub_clone_dashboard). Easy Dashboards are classic child apps of the Easy Dashboard Parent, driven by GET /dashboard endpoints. NOTE: this library keeps the McpSmokeTestLib name on the hub for now -- the dashboards code rides in this existing, already-bound library slot while the binding is validated end to end; renaming to a properly-named McpDashboardsLib is the next step.")
+library(name: "McpDashboardsLib", namespace: "mcp", author: "kingpanther13", description: "Easy Dashboard CRUD tool implementations for the MCP Rule Server (hub_list_dashboards/hub_get_dashboard/hub_create_dashboard/hub_update_dashboard/hub_delete_dashboard/hub_clone_dashboard). Easy Dashboards are classic child apps of the Easy Dashboard Parent, driven by GET /dashboard endpoints.")
 
 def toolListDashboards(args = null) {
     args = args ?: [:]

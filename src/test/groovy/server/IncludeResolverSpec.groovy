@@ -188,7 +188,7 @@ class IncludeResolverSpec extends Specification {
         'McpAppClonerLib'       | 'toolCloneNativeApp'      | 'AppCloner'
         'McpDiscoveryLib'       | 'toolSearchTools'         | 'Discovery'
         'McpNativeRulesLib'     | 'toolSetRule'             | 'NativeRM'
-        'McpSmokeTestLib'       | 'toolListDashboards'      | 'Dashboards'
+        'McpDashboardsLib'      | 'toolListDashboards'      | 'Dashboards'
     }
 
     def "indexLibraries matches name/namespace even when a description ) appears BEFORE the keys"() {

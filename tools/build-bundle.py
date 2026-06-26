@@ -6,7 +6,7 @@ expects (the format proven in production by level99/Hubitat-VeSync, which
 migrated to bundles[] after the older libraries[] manifest array silently
 dropped libraries on HPM update):
 
-  mcp.McpSmokeTestLib.groovy   <- a library source, renamed to <namespace>.<name>.groovy
+  mcp.McpDashboardsLib.groovy  <- a library source, renamed to <namespace>.<name>.groovy
   mcp.McpRoomsLib.groovy       <- (one .groovy entry per library in LIBS)
   install.txt                  <- bundle install manifest
   update.txt                   <- bundle update manifest (identical content)
@@ -50,8 +50,8 @@ BUNDLE_NAME = "mcp_libraries"
 
 LIBS = [
     {
-        "source": LIB_DIR / "mcp-smoke-test-lib.groovy",
-        "dest": f"{NAMESPACE}.McpSmokeTestLib.groovy",
+        "source": LIB_DIR / "mcp-dashboards-lib.groovy",
+        "dest": f"{NAMESPACE}.McpDashboardsLib.groovy",
     },
     {
         "source": LIB_DIR / "mcp-rooms-lib.groovy",

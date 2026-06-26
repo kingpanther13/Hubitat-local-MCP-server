@@ -4,7 +4,7 @@ import support.ToolSpecBase
 
 /**
  * Spec for the Easy Dashboard CRUD surface added in issue #259 item #9 (implemented in the
- * McpSmokeTestLib library, which the dashboards tools reuse so the bundle re-import binds):
+ * McpDashboardsLib library):
  * hub_list_dashboards / hub_get_dashboard / hub_create_dashboard / hub_update_dashboard /
  * hub_delete_dashboard / hub_clone_dashboard. The GET /dashboard/* endpoints are stubbed via
  * hubGet.register (the mock keys on path; the query Map is recorded in hubGet.calls, not
