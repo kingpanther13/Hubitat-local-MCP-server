@@ -185,16 +185,26 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         ex.message.contains("'enableDeveloperMode'")
     }
 
-    def "rejects selectedDevices (different wire format, separate tool planned)"() {
+    def "accepts selectedDevices as an allowlisted key (the device-access scope routes to _validateMcpDeviceScope)"() {
+        // selectedDevices is now an ALLOWED settings key -- it routes to the device-scope path
+        // (atomic id validation + lockout guard + capability.* write), NOT the generic scalar
+        // coerce path, so it is NOT rejected as a disallowed key. Full device-scope behavior is
+        // covered by McpSettingsDeviceScopeSpec; this spec only pins that it isn't allowlist-rejected.
         given:
         enableDeveloperModeAndAdminWrite()
+        settingsMap.selectedDevices = []
+        // A real id present in the all-hub device list so atomic validation passes.
+        hubGet.register('/device/listWithCapabilities/json') { params ->
+            groovy.json.JsonOutput.toJson([[id: 81, label: 'D81', capabilities: ['Switch']]])
+        }
 
         when:
-        script.toolUpdateMcpSettings([settings: [selectedDevices: []], confirm: true])
+        def result = script.toolUpdateMcpSettings([settings: [selectedDevices: ['81']], confirm: true])
 
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains("'selectedDevices'")
+        then: 'NOT rejected as a disallowed key -- it applied via the device-scope path'
+        result.success == true
+        result.selectedDevices?.authorizedDeviceIds == ['81']
+        sharedAppStub.settingsStore['selectedDevices'] == [type: 'capability.*', value: ['81']]
     }
 
     def "rejects all-or-nothing — one bad key blocks the entire batch (no partial writes)"() {

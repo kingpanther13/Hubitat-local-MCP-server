@@ -14,7 +14,7 @@ def toolUpdateMcpSettings(args) {
         throw new IllegalArgumentException("settings must be a non-empty map of {settingName: newValue}")
     }
 
-    // Allowlist of settings that can be modified via this tool, with their Hubitat input
+    // Allowlist of SCALAR settings that can be modified via this tool, with their Hubitat input
     // type (matches the input "<key>", "<type>", ... declarations in the mainPage section).
     // useGateways and publishOutputSchemas are allowlisted: they only reshape tools/list
     // (gateway vs flat; whether outputSchema is advertised) — same class as
@@ -23,10 +23,12 @@ def toolUpdateMcpSettings(args) {
     // enableMandatoryBPS (issue #299) is allowlisted as an ESCAPE HATCH: hub_update_mcp_settings is
     // itself exempt from the best-practice gate, so letting the AI self-disable the (default-ON) gate
     // here is the documented un-lock path, not a footgun. (The reactive hint has no toggle -- always on.)
+    // selectedDevices is ALSO allowed but is NOT in this scalar map: it is the MCP device-access
+    // scope (a capability.* multi-select), so it routes to _validateMcpDeviceScope (atomic id
+    // validation + lockout guard + the capability.* List write) rather than the scalar coerce path.
     // Excluded:
     //   enableWrite          — would footgun: could disable own write path mid-session
     //   enableDeveloperMode  — lockout protection (must remain UI-only to disable)
-    //   selectedDevices      — capability multi-select, separate tool planned (Developer Mode follow-up)
     //   disabled_tools / disabled_gateways — could self-disable this tool; UI-only (Advanced page)
     def allowedSettings = [
         "mcpLogLevel":            "enum",
@@ -40,6 +42,8 @@ def toolUpdateMcpSettings(args) {
         "publishOutputSchemas":   "bool",
         "enableMandatoryBPS":     "bool"
     ]
+    // Allowed keys for the not-allowed error message = scalar allowlist + the special selectedDevices key.
+    def allowedKeyNames = ((allowedSettings.keySet() + ["selectedDevices"]) as List).sort()
 
     // Validate, coerce, and stage each update. Validation is fully atomic — every key
     // and every value is checked BEFORE any app.updateSetting() fires, so a single bad
@@ -53,10 +57,23 @@ def toolUpdateMcpSettings(args) {
     // "false", which is truthy in Groovy — silently flipping the toggle to enabled
     // when the caller meant disabled.
     def updates = [:]
+    boolean hasDeviceScope = false
+    def deviceScopeRaw = null
     args.settings.each { key, value ->
         def keyStr = key.toString()
+        if (keyStr == "selectedDevices") {
+            // Special-cased BECAUSE the device-access scope is not a scalar setting: it is a
+            // capability.* multi-select whose value must be written as a List
+            // (app.updateSetting("selectedDevices", [type:"capability.*", value:<List>])), which
+            // coerceSettingValue cannot produce, and it needs atomic id validation against the hub
+            // plus a lockout guard that the scalar keys have no analogue for. So defer its full
+            // validation to _validateMcpDeviceScope -- but capture it here so the scalar loop skips it.
+            hasDeviceScope = true
+            deviceScopeRaw = value
+            return  // continue the each-closure
+        }
         if (!allowedSettings.containsKey(keyStr)) {
-            throw new IllegalArgumentException("Setting '${keyStr}' is not allowed for self-modification via hub_update_mcp_settings. Allowed: ${allowedSettings.keySet().sort().join(', ')}")
+            throw new IllegalArgumentException("Setting '${keyStr}' is not allowed for self-modification via hub_update_mcp_settings. Allowed: ${allowedKeyNames.join(', ')}")
         }
         def coerced = coerceSettingValue(keyStr, value, allowedSettings[keyStr])
         // Per-key sub-validation that the apply step would otherwise discover too late.
@@ -69,11 +86,43 @@ def toolUpdateMcpSettings(args) {
         updates[keyStr] = coerced
     }
 
+    // selectedDevices is VALIDATED FIRST (still no write): _validateMcpDeviceScope does its own
+    // atomic id validation (one unknown id throws) and the lockout guard up front, so a bad device
+    // list rejects the whole batch before ANY write -- scalar or scope -- lands. A runtime fetch
+    // failure returns a [success:false] envelope (no throw); surface it as-is so nothing is written.
+    def deviceScopeResult = null
+    if (hasDeviceScope) {
+        deviceScopeResult = _validateMcpDeviceScope(deviceScopeRaw)
+        if (deviceScopeResult?.success != true) {
+            return deviceScopeResult
+        }
+    }
+
+    // ===== APPLY PHASE =====
+    // Reached only after ALL validation (scalar coerce/sub-validation + scope) has passed, so this
+    // is validate-everything-then-apply: nothing above this line writes hub state.
+    //
+    // NOT fully atomic: Hubitat exposes no rollback primitive, so once the apply phase begins, a
+    // later write throwing leaves earlier writes persisted (e.g. the scope write lands, then a scalar
+    // write throws -> the scope change stays). This is a narrow window BECAUSE all validation is
+    // already complete by here -- the remaining app.updateSetting calls write pre-validated, type-
+    // coerced values. The audit ordering below reflects this: the "applied" lines fire only AFTER all
+    // writes complete, so an audit can never over-claim success on a partially-applied batch.
+
     // Two-phase audit so post-mortem investigators can distinguish "validation accepted N
     // keys" (attempted) from "all N writes landed" (applied). Both fire at WARN.
     mcpLog("warn", "developer-mode", "hub_update_mcp_settings: attempted=${updates}")
+    if (hasDeviceScope) {
+        mcpLog("warn", "developer-mode", "hub_update_mcp_settings selectedDevices: attempted mode=${deviceScopeResult.mode} resulting=${deviceScopeResult.resultIds} added=${deviceScopeResult.added} removed=${deviceScopeResult.removed}")
+        // WRITE the device-access scope: re-scope the selectedDevices capability multi-select. The
+        // single-device wizard paths write [type:"capability.*", value:<id>]; the multi-select takes
+        // the SAME type with a List value. Ids are the String form the hub accepts. Done here (in the
+        // apply phase) rather than inside the validate helper so no write happens until every
+        // validation passed. The "applied" audit for this is deferred to AFTER the scalar loop below.
+        app.updateSetting("selectedDevices", [type: "capability.*", value: deviceScopeResult.resultIds])
+    }
 
-    // Apply each update via app.updateSetting() — the documented Hubitat sandbox API for
+    // Apply each scalar update via app.updateSetting() — the documented Hubitat sandbox API for
     // self-modifying app settings. mcpLogLevel needs special handling because the runtime
     // log threshold is cached in state.debugLogs.config (UI display reads from settings).
     //
@@ -90,14 +139,180 @@ def toolUpdateMcpSettings(args) {
         }
     }
 
+    // "applied" audits fire only now -- after EVERY write (scope + scalars) has completed -- so a
+    // scalar write that throws mid-loop can never leave a falsely-reassuring "applied" line behind.
     mcpLog("warn", "developer-mode", "hub_update_mcp_settings: applied=${updates}")
+    if (hasDeviceScope) {
+        mcpLog("warn", "developer-mode", "hub_update_mcp_settings selectedDevices: applied mode=${deviceScopeResult.mode} authorizedCount=${deviceScopeResult.resultIds.size()}")
+    }
 
-    def updateCount = updates.size()
+    def updateCount = updates.size() + (hasDeviceScope ? 1 : 0)
     def settingWord = updateCount == 1 ? "setting" : "settings"
-    return [
+    // The base "...may need to reconnect to refresh cached tool schemas..." advisory only applies
+    // when a scalar key that reshapes tools/list actually changed. Append it conditionally so a
+    // device-scope-only (or non-schema scalar) batch doesn't carry a spurious schema-reconnect
+    // note -- and so a combined scalar+scope batch doesn't double up (the device-scope message
+    // already carries its own device-visibility reconnect advisory).
+    // Keep this set in sync with any allowlisted setting that reshapes tools/list (the catalog or
+    // its advertised schemas). Only allowlisted keys can appear in `updates`, so enableWrite /
+    // enableDeveloperMode are intentionally omitted -- they are excluded from allowedSettings and
+    // can never land here.
+    def schemaAffectingKeys = ["enableRead", "enableCustomRuleEngine", "useGateways", "publishOutputSchemas"] as Set
+    def touchedSchemaKey = updates.keySet().any { schemaAffectingKeys.contains(it) }
+    def message = "Updated ${updateCount} ${settingWord}."
+    if (touchedSchemaKey) {
+        message += " MCP clients (Claude Code, etc.) may need to reconnect to refresh cached tool schemas if you toggled an enable* flag, useGateways, or publishOutputSchemas."
+    }
+    def result = [
         success: true,
         updated: updates,
-        message: "Updated ${updateCount} ${settingWord}. MCP clients (Claude Code, etc.) may need to reconnect to refresh cached tool schemas if you toggled an enable* flag, useGateways, or publishOutputSchemas."
+        message: message
+    ]
+    if (hasDeviceScope) {
+        // Fold the device-scope outcome under its own sub-key so a caller sees the resulting
+        // authorized set + added/removed diff (and the applied mode) alongside the scalar updates.
+        result.selectedDevices = [
+            mode: deviceScopeResult.mode,
+            authorizedDeviceIds: deviceScopeResult.authorizedDeviceIds,
+            authorizedCount: deviceScopeResult.authorizedCount,
+            added: deviceScopeResult.added,
+            removed: deviceScopeResult.removed
+        ]
+        result.message = result.message + " " + deviceScopeResult.message
+    }
+    return result
+}
+
+// VALIDATE + COMPUTE a device-access scope change to selectedDevices (no write). Used by
+// toolUpdateMcpSettings when the settings batch carries a selectedDevices key. selectedDevices is
+// one of the self-admin settings, but it routes here instead of the generic scalar coerce/allowlist
+// path BECAUSE its wire format is a capability.* multi-select (it needs a List write,
+// app.updateSetting("selectedDevices", [type:"capability.*", value:<List>]), which coerceSettingValue
+// cannot produce) and its safety semantics (atomic id validation against the hub + a self-lockout
+// guard) have no analogue among the scalar settings. NO dev-mode/confirm gate inside -- the caller
+// already gated those.
+//
+// This function ONLY validates + computes; it does NOT call app.updateSetting and does NOT emit the
+// "applied" audit. The caller performs the write in its apply phase, so nothing is written until
+// EVERY validation (scalar + scope) has passed (true all-validate-then-all-apply atomicity).
+//
+// Accepts the structured value {mode: "replace"|"add"|"remove" (default "replace"),
+// ids: [<id strings>] (required), allowEmpty: <bool, default false>}, OR a bare array shorthand
+// (selectedDevices: ["1","2"] == {mode:"replace", ids:["1","2"]}). replace sets the authorized set
+// to exactly ids; add unions; remove subtracts. All three are idempotent for fixed ids.
+//
+// Returns [success:true, mode, resultIds, added, removed, authorizedDeviceIds, authorizedCount,
+// message] on success; returns [success:false, error, note] for a runtime fetch failure; throws
+// IllegalArgumentException for caller-recoverable validation errors. Touches no hub state.
+private Map _validateMcpDeviceScope(scopeValue) {
+    // Accept a bare array (replace shorthand) or a structured {mode, ids, allowEmpty} object.
+    def mode = "replace"
+    def rawIds
+    def allowEmpty = false
+    if (scopeValue instanceof List) {
+        rawIds = scopeValue
+    } else if (scopeValue instanceof Map) {
+        mode = (scopeValue.mode == null) ? "replace" : scopeValue.mode.toString().trim()
+        rawIds = scopeValue.ids
+        allowEmpty = (scopeValue.allowEmpty == true)
+    } else {
+        throw new IllegalArgumentException("selectedDevices must be an array of device ID strings, or an object {mode, ids, allowEmpty}")
+    }
+
+    if (!(mode in ["replace", "add", "remove"])) {
+        throw new IllegalArgumentException("selectedDevices mode must be one of: replace, add, remove (got: '${mode}')")
+    }
+    if (rawIds == null || !(rawIds instanceof List)) {
+        throw new IllegalArgumentException("selectedDevices ids is required and must be an array of device ID strings")
+    }
+    // Normalize every requested id to its String form up front (the hub returns Long ids; MCP
+    // callers send strings/ints). Reject a non-scalar or blank-after-trim element before any hub call.
+    def requestedIds = []
+    rawIds.each { raw ->
+        if (raw == null || raw instanceof Map || raw instanceof List) {
+            throw new IllegalArgumentException("selectedDevices ids entries must be device ID strings or integers, got: ${raw}")
+        }
+        def s = raw.toString().trim()
+        if (!s) {
+            throw new IllegalArgumentException("selectedDevices ids entries must be non-empty device IDs")
+        }
+        if (!requestedIds.contains(s)) requestedIds << s
+    }
+
+    // ATOMIC validation: for replace/add, every requested id must resolve to a real hub device
+    // (validated against /device/listWithCapabilities/json -- the only view of every device,
+    // authorized or not). Validate ALL before any write so a single bad id can't leave a
+    // half-applied scope. remove does NOT validate membership BECAUSE removing an id that isn't
+    // present (or no longer exists on the hub) is a harmless no-op, and forcing an unknown-id read
+    // fetch there would block a legitimate cleanup of a since-deleted device.
+    if (mode in ["replace", "add"] && !requestedIds.isEmpty()) {
+        def raw
+        try {
+            def txt = hubInternalGet("/device/listWithCapabilities/json")
+            raw = new groovy.json.JsonSlurper().parseText(txt ?: "[]")
+        } catch (Exception e) {
+            mcpLog("warn", "developer-mode", "hub_update_mcp_settings selectedDevices: /device/listWithCapabilities/json fetch/parse failed: ${e.message}")
+            // isError:true so handleToolsCall hoists this onto the JSON-RPC envelope -- a failed
+            // validation that wrote nothing must reach the client AS an error, not a quiet result.
+            return [success: false, isError: true, error: "Failed to fetch the all-hub device list (/device/listWithCapabilities/json) to validate selectedDevices: ${e.message}", note: "Endpoint may be unavailable on this firmware; nothing was changed."]
+        }
+        if (!(raw instanceof List)) {
+            mcpLog("warn", "developer-mode", "hub_update_mcp_settings selectedDevices: /device/listWithCapabilities/json returned a non-array response")
+            return [success: false, isError: true, error: "Unexpected /device/listWithCapabilities/json response (expected a JSON array); cannot validate selectedDevices.", note: "Hub firmware may have changed the endpoint contract; nothing was changed."]
+        }
+        def hubDeviceIds = (raw.findAll { it instanceof Map }.collect { it.id?.toString() }.findAll { it != null }) as Set
+        def unknown = requestedIds.findAll { !hubDeviceIds.contains(it) }
+        if (!unknown.isEmpty()) {
+            throw new IllegalArgumentException("Unknown device id(s): ${unknown.join(', ')}. Use hub_list_devices(scope='all') to see valid ids. Nothing was changed.")
+        }
+    }
+
+    // Current authorized set = the ids on the selectedDevices input. Normally a
+    // List<DeviceWrapper>; tolerate raw String/Number ids defensively too. FAIL LOUD on an element
+    // that resolves to neither (no .id, not a scalar) -- silently dropping it would shrink the scope
+    // without telling anyone (this is the current-scope read, so it guards against corrupt stored
+    // state). Per the AGENTS.md error contract: surface, don't swallow.
+    def currentIds = (settings.selectedDevices ?: []).collect { dev ->
+        def id = (dev instanceof String || dev instanceof Number) ? dev.toString() : dev?.id?.toString()
+        if (id == null) {
+            throw new IllegalArgumentException("settings.selectedDevices contains an unrecognized element (neither a device with an id nor a String/Number id): ${dev}. Nothing was changed.")
+        }
+        id
+    } as List
+    def currentSet = currentIds as Set
+
+    // Compute the resulting set per mode. add uses a Set-backed union (LinkedHashSet) so the dedupe
+    // is O(n) instead of O(n*m) -- current ids first (insertion order), then the new requested ids.
+    def resultIds
+    switch (mode) {
+        case "replace": resultIds = new ArrayList(requestedIds); break
+        case "add":     def u = new LinkedHashSet(currentIds); u.addAll(requestedIds); resultIds = new ArrayList(u); break
+        case "remove":  resultIds = currentIds.findAll { !requestedIds.contains(it) }; break
+    }
+    def resultSet = resultIds as Set
+
+    // Self-lockout guard: an empty resulting set blinds the MCP server to every selected device
+    // (only MCP-managed virtual devices would remain reachable). Same footgun class as why
+    // enableWrite/enableDeveloperMode are excluded from the scalar allowlist -- require an explicit
+    // allowEmpty:true to proceed.
+    if (resultSet.isEmpty() && !allowEmpty) {
+        throw new IllegalArgumentException("Refusing to empty the MCP device-access scope: the resulting set is empty, which blinds the MCP server to every selected device. Pass selectedDevices.allowEmpty:true to confirm you intend to clear the scope.")
+    }
+
+    def added = (resultSet - currentSet) as List
+    def removed = (currentSet - resultSet) as List
+
+    // Proper singular/plural for the human-readable message (1 device vs 2 devices).
+    def dw = { n -> n == 1 ? "device" : "devices" }
+    return [
+        success: true,
+        mode: mode,
+        resultIds: resultIds,
+        authorizedDeviceIds: resultIds,
+        authorizedCount: resultIds.size(),
+        added: added,
+        removed: removed,
+        message: "MCP device-access scope updated (mode=${mode}): ${resultIds.size()} ${dw(resultIds.size())} authorized, ${added.size()} ${dw(added.size())} added, ${removed.size()} ${dw(removed.size())} removed. Device visibility changed -- MCP clients may need to reconnect to refresh which devices are exposed."
     ]
 }
 
@@ -502,11 +717,11 @@ def _getAllToolDefinitions_partSelfAdmin() {
     return [
         [
             name: "hub_update_mcp_settings",
-            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning) in place — self-administer the app without the Hubitat UI. Gated on enableDeveloperMode + the Write master + confirm=true + a recent backup; every successful write is logged at WARN for audit. Changing an enable* toggle, useGateways, or publishOutputSchemas reshapes tools/list, so MCP clients may need to reconnect to refresh cached schemas.",
+            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning, the device-access scope) in place — self-administer the app without the Hubitat UI. Gated on enableDeveloperMode + the Write master + confirm=true + a recent backup; every successful write is logged at WARN for audit. Changing an enable* toggle, useGateways, or publishOutputSchemas reshapes tools/list, and changing selectedDevices changes which devices are visible, so MCP clients may need to reconnect to refresh cached schemas / device visibility.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    settings: [type: "object", description: "Map of setting key → new value (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true}). Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, publishOutputSchemas, enableMandatoryBPS — any other key is rejected.[[FLAT_TRIM]] Deliberately NOT allowlisted: enableWrite (would disable this tool's own write path mid-session), enableDeveloperMode (lockout protection — must stay UI-only to disable), selectedDevices (different wire format, has its own tool), disabled_tools/disabled_gateways (could self-disable this tool).[[/FLAT_TRIM]]"],
+                    settings: [type: "object", description: "Map of setting key → new value (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true}). Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, publishOutputSchemas, enableMandatoryBPS, and selectedDevices — any other key is rejected.[[FLAT_TRIM]] selectedDevices is the MCP device-access scope. Pass {\"mode\":\"replace\"|\"add\"|\"remove\", \"ids\":[<device id strings>], \"allowEmpty\":<bool>} -- or a bare array as shorthand for replace ({\"selectedDevices\":[\"42\",\"108\"]} == {mode:\"replace\", ids:[\"42\",\"108\"]}). 'replace' sets the authorized set to exactly ids; 'add' unions ids with the current set (safest for \"grant one device\" -- no need to re-enumerate the whole list); 'remove' subtracts ids. For replace/add every id is validated against the full hub device list (discover ids via hub_list_devices(scope='all'), each carries an mcpAuthorized flag) -- one unknown id rejects the whole batch and nothing is written; 'remove' does not validate (removing an absent/since-deleted id is a no-op). Refuses to empty the scope unless allowEmpty:true. Deliberately NOT allowlisted: enableWrite (would disable this tool's own write path mid-session), enableDeveloperMode (lockout protection — must stay UI-only to disable), disabled_tools/disabled_gateways (could self-disable this tool).[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the operation"]
                 ],
                 required: ["settings", "confirm"]
@@ -514,11 +729,24 @@ def _getAllToolDefinitions_partSelfAdmin() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    success: [type: "boolean", description: "Whether the settings were updated"],
-                    updated: [type: "object", description: "Map of applied setting key → coerced new value"],
-                    message: [type: "string", description: "Human-readable result, including reconnect note"]
+                    success: [type: "boolean", description: "Whether the operation succeeded"],
+                    updated: [type: "object", description: "Map of applied scalar setting key → coerced new value (excludes selectedDevices, reported under its own key). Present on success; absent when `success: false` (a device-scope runtime fetch failure)"],
+                    selectedDevices: [
+                        type: "object",
+                        description: "Present only when the settings batch changed the device-access scope: the resulting set for selectedDevices",
+                        properties: [
+                            mode: [type: "string", description: "The mode applied (replace/add/remove)"],
+                            authorizedDeviceIds: [type: "array", items: [type: "string"], description: "The resulting authorized device ID set"],
+                            authorizedCount: [type: "integer", description: "Size of the resulting authorized set"],
+                            added: [type: "array", items: [type: "string"], description: "Device IDs newly added to the scope"],
+                            removed: [type: "array", items: [type: "string"], description: "Device IDs removed from the scope"]
+                        ]
+                    ],
+                    message: [type: "string", description: "Human-readable result, including reconnect note. Present on success; absent when `success: false`"],
+                    error: [type: "string", description: "Failure detail; present only on a runtime failure (e.g. the device-list fetch for selectedDevices failed)"],
+                    note: [type: "string", description: "Actionable guidance; present only on a runtime failure"]
                 ],
-                required: ["success", "updated", "message"]
+                required: ["success"]
             ]
         ],
         [
@@ -569,7 +797,9 @@ def _idempotentWriteToolNames_partSelfAdmin() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
     return [
-        // MCP self-admin + logging
+        // MCP self-admin + logging (selectedDevices (replace/add/remove), when carried in the
+        // settings batch, is idempotent too -- re-delivery converges on the same authorized set
+        // for all three modes)
         "hub_update_mcp_settings",
         // Developer Mode self-deploy (full repair to a ref converges; retrying
         // after a dropped response is its designed recovery path)
@@ -588,6 +818,13 @@ def _openWorldToolNames_partSelfAdmin() {
 def _developerModeOnlyToolNames_partSelfAdmin() {
     // Developer-Mode-only tools in this library (catalog-hidden until the toggle is on) --
     // contributed to the app's getDeveloperModeOnlyToolNames() aggregator.
+    //
+    // Invariant: exactly ONE self-admin tool stays catalog-VISIBLE (runtime-refused when the
+    // toggle is off) to serve as the hub_manage_mcp gateway anchor -- it keeps the gateway
+    // present on tools/list and gives the operator the "Developer Mode is off; enable it"
+    // discoverability surface. hub_update_mcp_settings is that anchor, so it is deliberately
+    // absent from this list. Every OTHER self-admin tool hides when the toggle is off (the
+    // anchor already provides discoverability), so they go here.
     return [
         "hub_update_package"
     ]
@@ -598,7 +835,7 @@ def _toolDisplayMeta_partSelfAdmin() {
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
     return [
         // MCP self-administration (Developer Mode)
-        hub_update_mcp_settings: [title: "Update MCP Settings", summary: "Update the MCP app's own settings (Developer Mode)."],
+        hub_update_mcp_settings: [title: "Update MCP Settings", summary: "Update the MCP app's own settings + device-access scope (Developer Mode)."],
         hub_update_package: [title: "Deploy MCP Package", summary: "Full repair-install of the MCP package at a git ref (Developer Mode)."]
     ]
 }

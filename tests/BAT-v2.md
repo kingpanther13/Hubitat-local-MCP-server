@@ -2457,7 +2457,7 @@ These operations are too destructive for automated testing. Test manually with e
 | 8. Comparison | T110-T116 | v0.7.7 vs v0.8.0 regression |
 | 9. Stress | T120-T122 | Many calls, rapid cycles, pagination |
 | 10. NL Discovery | T200-T301 | Conversational prompts — no tool names |
-| 12. Developer Mode | T219-T226 | Self-administration: hub_update_mcp_settings + hub_delete_variable |
+| 12. Developer Mode | T219-T226, T660-T662 | Self-administration: hub_update_mcp_settings (incl. selectedDevices device-access scope) + hub_delete_variable |
 | 13. Driver Code Lifecycle | T400-T406 | hub_create_driver (single + bulk), hub_update_driver (bulk), delete |
 | 14. Library Management | T500-T508 | Library CRUD: install, update, delete, hub_get_source |
 
@@ -2482,7 +2482,7 @@ All 109 distinct tools are covered by at least one test, excluding the destructi
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 259 test scenarios** (124 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 3 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 5 read-side convergence + 1 multi-device convergence) plus 13 excluded destructive operations documented for manual testing
+**Total: 262 test scenarios** (124 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 3 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 5 read-side convergence + 1 multi-device convergence + 3 MCP device-access scope) plus 13 excluded destructive operations documented for manual testing
 
 ---
 
@@ -2754,7 +2754,7 @@ This scenario validates that an agent landing on the wrong tool is efficiently r
 
 ## Section 12: Developer Mode Tests
 
-These tests exercise the Developer Mode self-administration surface — the `hub_manage_mcp` gateway and the `hub_delete_variable` op on `hub_manage_variables`. Both require opt-in toggles in the MCP rule app settings page (`enableDeveloperMode` for `hub_update_mcp_settings`, `enableHubAdminWrite` for both). Each successful Developer Mode write is logged at WARN level for audit.
+These tests exercise the Developer Mode self-administration surface — the `hub_manage_mcp` gateway (`hub_update_mcp_settings`, including its `selectedDevices` device-access scope key) and the `hub_delete_variable` op on `hub_manage_variables`. Both require opt-in toggles in the MCP rule app settings page (`enableDeveloperMode` for the `hub_manage_mcp` tools, `enableHubAdminWrite` for both). Each successful Developer Mode write is logged at WARN level for audit.
 
 **Pre-flight (manual one-time):**
 1. In the MCP rule app settings, enable **the Write master** (with confirmation), and create a hub backup.
@@ -2872,6 +2872,40 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 ```
 
 **Expected**: Gateway parameter validation returns an `isError: true` result with message `"Missing required parameter(s): confirm"` and a `parameters` description listing the schema (name, confirm, force). No JSON-RPC error code is set — the validation happens at the gateway layer before tool dispatch. The variable is preserved. AI relays the gate requirement and offers to retry with `confirm=true`.
+
+### T660 — hub_update_mcp_settings selectedDevices re-scopes the MCP server's device access (add then remove, net no-op)
+
+```json
+{
+  "setup_prompt": "Developer Mode is enabled, the Write master is enabled, recent backup exists. List every hub device with hub_list_devices(scope='all') and pick one device that is currently mcpAuthorized=false (NOT already in the MCP scope). Note the full set of currently-authorized device IDs.",
+  "test_prompt": "Add that unauthorized device to the MCP server's device-access scope with hub_update_mcp_settings({settings:{selectedDevices:{mode:'add', ids:['<id>']}}}), confirm it now reads back as authorized via hub_list_devices(scope='all'), then remove it again (mode:'remove') so the scope returns to exactly what it was.",
+  "teardown_prompt": "Verify via hub_list_devices(scope='all') that the authorized set matches the original noted set (the add+remove was a net no-op)."
+}
+```
+
+**Expected**: The add call is `hub_manage_mcp(tool='hub_update_mcp_settings', args={settings:{selectedDevices:{mode:'add', ids:['<id>']}}, confirm:true})` → `{success:true, selectedDevices:{mode:'add', authorizedDeviceIds:[...], authorizedCount:N+1, added:['<id>'], removed:[]}, ...}`. The device then shows `mcpAuthorized=true` in `hub_list_devices(scope='all')`. The remove call (`mode:'remove'`, same id) returns `{success:true, selectedDevices:{mode:'remove', added:[], removed:['<id>'], authorizedCount:N}, ...}`, and the device reads back `mcpAuthorized=false`. A WARN `[developer-mode] hub_update_mcp_settings selectedDevices: applied ...` audit line fires for each. Net effect: the authorized set is unchanged.
+
+### T661 — hub_update_mcp_settings selectedDevices rejects an unknown device id (atomic, nothing changed)
+
+```json
+{
+  "setup_prompt": "Developer Mode is enabled, the Write master is enabled, recent backup exists.",
+  "test_prompt": "Try to add device id 999999999 (which does not exist on this hub) to the MCP device-access scope via hub_update_mcp_settings({settings:{selectedDevices:{mode:'add', ids:['999999999']}}})."
+}
+```
+
+**Expected**: Tool returns an MCP error (`-32602`) with a message naming the offending id, e.g. `Unknown device id(s): 999999999. Use hub_list_devices(scope='all') to see valid ids. Nothing was changed.` The authorized scope is unchanged. AI surfaces the message and offers to look up valid ids via `hub_list_devices(scope='all')`.
+
+### T662 — hub_update_mcp_settings selectedDevices refuses to empty the scope without allowEmpty
+
+```json
+{
+  "setup_prompt": "Developer Mode is enabled, the Write master is enabled, recent backup exists. Note the currently-authorized device IDs.",
+  "test_prompt": "Use hub_update_mcp_settings({settings:{selectedDevices:{mode:'replace', ids:[]}}}) with an empty id list (do NOT pass allowEmpty). This should be refused."
+}
+```
+
+**Expected**: Tool returns an MCP error (`-32602`) explaining the self-lockout guard, e.g. `Refusing to empty the MCP device-access scope: ... Pass selectedDevices.allowEmpty:true to confirm you intend to clear the scope.` The scope is unchanged. AI explains that an empty scope blinds the server to every selected device and that `allowEmpty:true` is required to proceed.
 
 ---
 
