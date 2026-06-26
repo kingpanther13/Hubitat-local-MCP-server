@@ -189,6 +189,7 @@ private Boolean _dashboardPresent(String id) {
 
 def toolCreateDashboard(args) {
     args = args ?: [:]
+    // Create requires name + >=1 deviceId; tile toggles, theme, navigation, and pins are optional.
     if (!args.name?.toString()?.trim()) {
         throw new IllegalArgumentException("name is required (the dashboard's display name).")
     }
