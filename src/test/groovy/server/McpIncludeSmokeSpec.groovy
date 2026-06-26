@@ -4,15 +4,16 @@ import support.ToolSpecBase
 
 /**
  * The load-bearing #include proof (issue #209): the harness compiles hubitat-mcp-server.groovy
- * with `#include mcp.McpSmokeTestLib` resolved by support.IncludeResolver (the same path the hub
- * takes). If the include didn't resolve, mcpSmokeTestMarker() would not exist on the compiled app
- * and this would throw MissingMethodException -- exactly the "library failed to load" failure the
- * smoke test is meant to catch.
+ * with every `#include mcp.*` resolved by support.IncludeResolver (the same path the hub takes).
+ * If an include didn't resolve, the library's methods would not exist on the compiled app and a
+ * call would throw MissingMethodException -- exactly the "library failed to load" failure this
+ * smoke test is meant to catch. Asserting a method contributed by a real domain library (the Rooms
+ * module, the first extracted module) keeps this honest about the production #include chain.
  */
 class McpIncludeSmokeSpec extends ToolSpecBase {
 
-    def "the #include'd McpSmokeTestLib marker is inlined onto the compiled app"() {
-        expect:
-        script.mcpSmokeTestMarker() == 'smoke-ok-v1'
+    def "a method from an #include'd library is inlined onto the compiled app"() {
+        expect: 'toolListRooms (defined in McpRoomsLib, pulled in via #include) resolves on the app'
+        script.respondsTo('toolListRooms')
     }
 }

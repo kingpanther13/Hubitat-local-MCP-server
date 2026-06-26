@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 109 MCP tools (34 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 115 MCP tools (36 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 109 tools total — 13 core tools are always visible, while the rest are organized behind 20 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 115 tools total — 13 core tools are always visible, while the rest are organized behind 23 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
 
 ## Requirements
 
@@ -267,9 +267,9 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (109 total — 34 on tools/list)
+### MCP Tools (115 total — 36 on tools/list)
 
-The server has 109 tools total. To keep the MCP `tools/list` manageable, **13 core tools** are always visible and the remaining tools are organized behind **21 domain-named gateways** (7 read-only `hub_read_*` gateways + 13 write-bearing `hub_manage_*` gateways). The AI sees 34 items on `tools/list` (13 + 21 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 115 tools total. To keep the MCP `tools/list` manageable, **13 core tools** are always visible and the remaining tools are organized behind **23 domain-named gateways** (8 read-only `hub_read_*` gateways + 15 write-bearing `hub_manage_*` gateways). The AI sees 36 items on `tools/list` (13 + 23 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
 #### Core Tools (13) — Always visible on tools/list
 
@@ -318,11 +318,11 @@ The server has 109 tools total. To keep the MCP `tools/list` manageable, **13 co
 
 </details>
 
-#### Gateway Tools (19) — Each gateway proxies multiple tools
+#### Gateway Tools (23) — Each gateway proxies multiple tools
 
-Call a gateway with no arguments to see full parameter schemas. Call with `tool='<name>'` and `args={...}` to execute a specific tool. Gateways split into 7 read-only `hub_read_*` gateways (every sub-tool is read-only) and 12 write-bearing `hub_manage_*` gateways (mixed read+write or write-only). A tool may be listed in more than one gateway — reads inside a mixed `hub_manage_*` gateway are also surfaced in a `hub_read_*` gateway.
+Call a gateway with no arguments to see full parameter schemas. Call with `tool='<name>'` and `args={...}` to execute a specific tool. Gateways split into 8 read-only `hub_read_*` gateways (every sub-tool is read-only) and 15 write-bearing `hub_manage_*` gateways (mixed read+write or write-only). A tool may be listed in more than one gateway — reads inside a mixed `hub_manage_*` gateway are also surfaced in a `hub_read_*` gateway.
 
-##### Read-only gateways (7)
+##### Read-only gateways (8)
 
 <details>
 <summary><b>hub_read_apps_code</b> (11) — App/driver/library listing, source, backups, and HPM (read-only)</summary>
@@ -421,7 +421,17 @@ Monitoring tools are gated by the Read master (ON by default).
 
 </details>
 
-##### Write-bearing gateways (12)
+<details>
+<summary><b>hub_read_dashboards</b> (2) — Easy Dashboard reads (read-only)</summary>
+
+| Tool | Description |
+|------|-------------|
+| `hub_list_dashboards` | List Easy Dashboards (id, name, tile/theme config). Optional `pinToken` if the hub requires it |
+| `hub_get_dashboard` | Get one Easy Dashboard's full config by id (list-then-filter) |
+
+</details>
+
+##### Write-bearing gateways (15)
 
 <details>
 <summary><b>hub_manage_custom_rules</b> (8) — Custom rule administration</summary>
@@ -630,6 +640,22 @@ Reads are gated by the Read master; create/update/delete by the Write master (wi
 | `hub_update_mcp_settings` | Update one or more of the MCP rule app's own settings (toggles, log level, tuning params, and the device-access scope `selectedDevices` — pass `{mode:"replace"/"add"/"remove", ids:[...], allowEmpty?}` or a bare array of device IDs as the replace shorthand; ids are validated against the hub; refuses to empty the scope unless `allowEmpty`). Allowlist-gated. |
 
 The **Developer Mode** pattern — for LLM-agent and CI/CD pipelines that need to manage the MCP rule app's own configuration and device-access scope without manual UI intervention. Additional self-admin tools (true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same toggle. Requires opt-in **Enable Developer Mode Tools** setting (default OFF). Each successful write is logged at WARN level for audit.
+
+</details>
+
+<details>
+<summary><b>hub_manage_dashboard</b> (6) — Easy Dashboard CRUD</summary>
+
+| Tool | Description |
+|------|-------------|
+| `hub_list_dashboards` | List Easy Dashboards (id, name, tile/theme config). Optional `pinToken` if the hub requires it (also in `hub_read_dashboards`) |
+| `hub_get_dashboard` | Get one Easy Dashboard's full config by id (list-then-filter; also in `hub_read_dashboards`) |
+| `hub_create_dashboard` | Create an Easy Dashboard from `name` + `deviceIds` (≥1) plus tile toggles, navigation, theme, and PINs |
+| `hub_update_dashboard` | Replace an Easy Dashboard's config WHOLESALE by id (no server-side read-merge — pass the full desired config; read it first with `hub_get_dashboard`) |
+| `hub_delete_dashboard` | Permanently delete an Easy Dashboard by id (devices are not deleted; `confirm=true` + recent backup) |
+| `hub_clone_dashboard` | Clone an Easy Dashboard into a new one (Hubitat's cloneAsEasy) |
+
+Easy Dashboards are the hub's touch-friendly device dashboards (classic child apps of the Easy Dashboard Parent). The list endpoint may be `pinToken`-gated on some hubs (an unexpectedly-empty list is the tell).
 
 </details>
 

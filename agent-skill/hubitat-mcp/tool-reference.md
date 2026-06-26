@@ -1,6 +1,6 @@
 # Tool Reference
 
-Quick reference for all 109 MCP tools. The server exposes **34 items on `tools/list`**: 13 flat core tools + 21 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute. A tool MAY appear under more than one gateway (multi-membership); read-only tools inside a mixed `hub_manage_*` gateway are also surfaced under a pure-read `hub_read_*` gateway.
+Quick reference for all 115 MCP tools. The server exposes **36 items on `tools/list`**: 13 flat core tools + 23 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute. A tool MAY appear under more than one gateway (multi-membership); read-only tools inside a mixed `hub_manage_*` gateway are also surfaced under a pure-read `hub_read_*` gateway.
 
 For the most authoritative reference, call `hub_get_tool_guide` via MCP.
 
@@ -23,7 +23,7 @@ Opt-in cursor pagination is wired into the read-only list-returning tools below.
 
 ## Core Tools (13) — Always flat and visible on tools/list
 
-These 13 tools are never behind a gateway. Every other tool is reachable through one or more of the 21 gateways below.
+These 13 tools are never behind a gateway. Every other tool is reachable through one or more of the 23 gateways below.
 
 ### Virtual Device Tools (1)
 
@@ -51,15 +51,15 @@ These 13 tools are never behind a gateway. Every other tool is reachable through
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `hub_get_tool_guide` | Full tool reference from the MCP server itself. | None |
-| `hub_search_tools` | BM25 natural language search across all 109 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
+| `hub_search_tools` | BM25 natural language search across all 115 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
 
 ---
 
-## Gateway Tools (20) — Each proxies multiple tools
+## Gateway Tools — Each proxies multiple tools
 
 Call a gateway with no arguments to see full parameter schemas for all its tools. Call with `tool='<name>'` and `args={...}` to execute a specific tool.
 
-Seven gateways are pure-read (`hub_read_*`, every sub-tool read-only); twelve carry at least one write (`hub_manage_*`). A read-only tool that lives inside a mixed `hub_manage_*` gateway is also surfaced under a `hub_read_*` gateway (multi-membership; same tool, no duplication).
+Eight gateways are pure-read (`hub_read_*`, every sub-tool read-only); the rest carry at least one write (`hub_manage_*`). A read-only tool that lives inside a mixed `hub_manage_*` gateway is also surfaced under a `hub_read_*` gateway (multi-membership; same tool, no duplication).
 
 ### hub_read_apps_code (11 tools)
 
@@ -146,6 +146,15 @@ Read-only variable access: list, get value/metadata, and observe recent changes.
 | `hub_list_variables` | List all hub variables (with type/connector linkage) and rule-engine variables. | None |
 | `hub_get_variable` | Get a variable's value + metadata (type, deviceId, attribute). | None |
 | `hub_list_variable_changes` | Recent hub-variable changes since the MCP app last started. Filter by name, sinceMs, limit. | None |
+
+### hub_read_dashboards (2 tools)
+
+Read-only Easy Dashboard access: list dashboards and view one dashboard's full config. The read tools are also surfaced under `hub_manage_dashboard`.
+
+| Tool | Description | Access Gate |
+|------|-------------|-------------|
+| `hub_list_dashboards` | List Easy Dashboards (id, name, tile/theme config). Some hubs gate the underlying endpoint behind a `pinToken` — pass it if an expected list comes back empty. | Read master |
+| `hub_get_dashboard` | Get one Easy Dashboard's full config by id (list-then-filter; there is no single-dashboard read endpoint). | Read master |
 
 ### hub_manage_devices (8 tools)
 
@@ -329,6 +338,19 @@ Developer Mode self-administration: a tool that lets an LLM agent or CI/CD pipel
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `hub_update_mcp_settings` | Update one or more of the MCP rule app's own settings. Allowlisted: `mcpLogLevel`, `debugLogging`, `maxCapturedStates`, `loopGuardMax`, `loopGuardWindowSec`, `enableRead`, `enableCustomRuleEngine`, `useGateways`, `publishOutputSchemas`, `enableMandatoryBPS`, and `selectedDevices` (the device-access scope). For `selectedDevices`, pass `{mode:"replace"/"add"/"remove", ids:[...], allowEmpty?}` (or a bare array = replace): `replace` sets the authorized set to exactly `ids`, `add` unions (safest for granting one device), `remove` subtracts. For replace/add, ids are validated atomically against the full hub list (unknown id rejects the whole batch, nothing changed); `remove` does not validate (absent-id removal is a no-op). Refuses to empty the scope unless `allowEmpty=true`. Discover ids via `hub_list_devices(scope='all')`. After flipping any `enable*` toggle / `useGateways`, or changing `selectedDevices`, MCP clients may need to reconnect to refresh their cached tool schema / device visibility. | Developer Mode + Write master + confirm + recent backup |
+
+### hub_manage_dashboard (6 tools)
+
+Easy Dashboard CRUD — the touch-friendly device dashboards (classic child apps with tile toggles, navigation, themes, and optional PINs). The read tools are also surfaced under `hub_read_dashboards`.
+
+| Tool | Description | Access Gate |
+|------|-------------|-------------|
+| `hub_list_dashboards` | List Easy Dashboards (id, name, tile/theme config). Optional `pinToken` if the hub requires it. | Read master |
+| `hub_get_dashboard` | Get one Easy Dashboard's full config by id (list-then-filter). | Read master |
+| `hub_create_dashboard` | Create an Easy Dashboard from `name` + `deviceIds` (>=1) plus tile toggles, navigation, theme, and PINs. Booleans serialize to "true"/"false"; deviceIds to a CSV. | Write master |
+| `hub_update_dashboard` | Replace an Easy Dashboard's config WHOLESALE by id (no server-side read-merge — pass the full desired config every call; read it first with `hub_get_dashboard`). | Write master |
+| `hub_delete_dashboard` | Permanently delete an Easy Dashboard by id (devices are not deleted). | Write master + `confirm` + backup <24h |
+| `hub_clone_dashboard` | Clone an Easy Dashboard into a new one (Hubitat's cloneAsEasy). | Write master |
 
 ### hub_update_package (top-level, Developer Mode)
 

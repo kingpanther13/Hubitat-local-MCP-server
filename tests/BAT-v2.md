@@ -1,6 +1,6 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split (13 flat core + 21 gateways = 34 on tools/list, 109 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 115 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -1523,7 +1523,7 @@ Run these prompts on BOTH v0.7.7 (all 74 on tools/list) and v0.8.0 (11 flat + 19
 
 ## Section 9: Stress Tests
 
-### T120 — Many-gateway stress (7 of 21 gateways)
+### T120 — Many-gateway stress (7 of 23 gateways)
 
 ```json
 {
@@ -2466,19 +2466,19 @@ These operations are too destructive for automated testing. Test manually with e
 | Component | Count |
 |-----------|-------|
 | Flat core tools on `tools/list` | 13 |
-| Gateways on `tools/list` | 21 |
-| Total visible on `tools/list` | 34 |
-| Total distinct tools in codebase | 109 |
+| Gateways on `tools/list` | 23 |
+| Total visible on `tools/list` | 36 |
+| Total distinct tools in codebase | 115 |
 
-**7 read gateways**: `hub_read_apps_code` (11), `hub_read_devices` (4), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3)
+**8 read gateways**: `hub_read_apps_code` (11), `hub_read_devices` (4), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3), `hub_read_dashboards` (2)
 
-**14 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_destructive_ops` (4), `hub_manage_devices` (7), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
+**15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboard` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (7), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
 
 **13 flat core tools**: `hub_manage_virtual_device`, `hub_get_tool_guide`, `hub_report_issue`, `hub_search_tools`, `hub_get_info`, `hub_list_modes`, `hub_manage_mode`, `hub_set_mode_manager`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_set_system_settings`, `hub_update_firmware`, `hub_create_backup`
 
 ### Tool Coverage (non-destructive tools only)
 
-All 109 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 115 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
@@ -3180,13 +3180,13 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 
 ```json
 {
-  "setup_prompt": "the Write master enabled, recent backup exists. Identify the raw URL of a bundle .zip the hub can reach (e.g. this repo's bundles/mcp-libraries.zip on a public GitHub raw URL). The bundle ships the McpRoomsLib and McpSmokeTestLib libraries.",
+  "setup_prompt": "the Write master enabled, recent backup exists. Identify the raw URL of a bundle .zip the hub can reach (e.g. this repo's bundles/mcp-libraries.zip on a public GitHub raw URL). The bundle ships the McpRoomsLib and McpBundlesLib libraries.",
   "test_prompt": "Install the bundle from that .zip URL using hub_install_bundle (confirm=true), then verify the bundle's libraries are present with hub_list_libraries.",
-  "teardown_prompt": "Optionally delete a library if it was newly created (note: removing McpRoomsLib or McpSmokeTestLib would break the server's #include on next save, so leave them in place on the live server)."
+  "teardown_prompt": "Optionally delete a library if it was newly created (note: removing McpRoomsLib or McpBundlesLib would break the server's #include on next save, so leave them in place on the live server)."
 }
 ```
 
-**Expected**: AI calls `hub_manage_code(tool='hub_install_bundle', args={importUrl:'https://.../bundles/mcp-libraries.zip', confirm:true})`. Result: `{success:true, endpoint:'/bundle2/uploadZipFromUrl', message:'Bundle installed...'}` on firmware >= 2.3.8.108 (older firmware uses `/bundle/uploadZipFromUrl`). A follow-up `hub_list_libraries` shows `McpRoomsLib` and `McpSmokeTestLib` (namespace `mcp`). This mirrors how Hubitat Package Manager delivers a package's library files — bundle fetched + unpacked into Libraries Code server-side, no UI.
+**Expected**: AI calls `hub_manage_code(tool='hub_install_bundle', args={importUrl:'https://.../bundles/mcp-libraries.zip', confirm:true})`. Result: `{success:true, endpoint:'/bundle2/uploadZipFromUrl', message:'Bundle installed...'}` on firmware >= 2.3.8.108 (older firmware uses `/bundle/uploadZipFromUrl`). A follow-up `hub_list_libraries` shows `McpRoomsLib` and `McpBundlesLib` (namespace `mcp`). This mirrors how Hubitat Package Manager delivers a package's library files — bundle fetched + unpacked into Libraries Code server-side, no UI.
 
 ### T510 — hub_install_bundle refuses without confirm flag
 
@@ -3214,12 +3214,12 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 
 ```json
 {
-  "setup_prompt": "the Read master enabled. The MCP libraries bundle (mcp-libraries.zip) is installed -- it ships McpRoomsLib, McpBundlesLib, and McpSmokeTestLib.",
+  "setup_prompt": "the Read master enabled. The MCP libraries bundle (mcp-libraries.zip) is installed -- it ships McpRoomsLib, McpBundlesLib, and McpVisualRulesLib.",
   "test_prompt": "List the code bundles installed on the hub and tell me which libraries the mcp bundle contains."
 }
 ```
 
-**Expected**: AI calls `hub_read_apps_code(tool='hub_list_bundles')` (or the flat tool). Result includes a bundle with namespace `mcp` whose `contains.libraries` lists `McpRoomsLib` / `McpBundlesLib` / `McpSmokeTestLib`, each entry carrying an `id`. AI explains bundles are the Bundle-Manager containers HPM delivers code in — distinct from the Libraries Code entries (`hub_list_libraries`).
+**Expected**: AI calls `hub_read_apps_code(tool='hub_list_bundles')` (or the flat tool). Result includes a bundle with namespace `mcp` whose `contains.libraries` lists `McpRoomsLib` / `McpBundlesLib` / `McpVisualRulesLib`, each entry carrying an `id`. AI explains bundles are the Bundle-Manager containers HPM delivers code in — distinct from the Libraries Code entries (`hub_list_libraries`).
 
 ### T513 — hub_export_bundle saves a bundle .zip to the File Manager
 
@@ -4213,6 +4213,60 @@ The Visual Rules Builder tools live in the `hub_manage_rule_machine` gateway (th
 **Expected**: the first call does NOT delete anything: the RM rule's appId fails the VRB type-gate and returns `success=false` with the app's real type (e.g. `appType: 'Rule Machine'` / `'Rule-5.1'`) and a note redirecting to `hub_delete_native_app` — the RM rule still exists afterward (verify with `hub_list_rules`). The second call deletes the Visual Rule: `success=true`, `verified=true` (the app is confirmed gone), and `predeleteDefinition` carries the whenNodes/thenNodes so the rule could be recreated via `hub_set_visual_rule`. A follow-up `hub_get_visual_rule(appId=N)` returns `success=false` ("No installed app...") and list mode no longer contains the rule.
 
 **Failure modes**: the type-gate is bypassed and the RM rule is force-deleted (the exact failure the gate exists to prevent — automatic Fail). `predeleteDefinition` missing from the delete response (the recovery contract broken). `verified=false` with the app still present but reported as deleted. A nonexistent-appId delete returning anything other than the structured `success=false` "No installed app with appId N" envelope.
+
+---
+
+## Section 17: Easy Dashboard Tests (hub_manage_dashboard / hub_read_dashboards)
+
+Easy Dashboard CRUD (issue #259 item #9). The 6 tools live in the `hub_manage_dashboard` gateway; the two reads (`hub_list_dashboards`, `hub_get_dashboard`) are also surfaced in the pure-read `hub_read_dashboards` gateway. Reads require the Read master; create/update/clone require the Write master; delete additionally requires `confirm=true` + a hub backup within 24h. Easy Dashboards are classic child apps of the Easy Dashboard Parent, driven by `GET /dashboard/*` endpoints. The list endpoint may be pinToken-gated on some hubs (an unexpectedly-empty list is the tell).
+
+### Safety Rules for Section 17
+
+- Only create/edit/delete **BAT-prefixed** dashboards created within the same scenario — never touch existing dashboards
+- Dashboards only ever reference BAT-created virtual switches
+- Deleting a dashboard does NOT delete its devices
+
+### T720 — Create an Easy Dashboard, read it back, then delete it
+
+```json
+{
+  "setup_prompt": "The Write master is enabled and a hub backup was created within the last 24 hours (call hub_create_backup if unsure). Create a virtual switch named 'BAT Dash Switch' and note its device ID.",
+  "test_prompt": "Create an Easy Dashboard called 'BAT Dash Create' that shows the 'BAT Dash Switch' device and turns on the clock tile. Then show me that dashboard's configuration and confirm the clock tile is on and the switch is on it.",
+  "teardown_prompt": "Delete the Easy Dashboard 'BAT Dash Create'. Delete the virtual switch 'BAT Dash Switch'."
+}
+```
+
+**Expected**: the AI routes to `hub_manage_dashboard(tool=hub_create_dashboard)` with `name='BAT Dash Create'`, `deviceIds=[<id>]`, `showClockTile=true`, no `confirm` needed (create needs only the Write master). The response returns `success=true` and (when the hub provides it) the new dashboard `id`. A follow-up `hub_get_dashboard(id=N)` returns the dashboard with `showClockTile` truthy and the device present. The dashboard also appears in `hub_list_dashboards`.
+
+**Failure modes**: the AI sends `deviceIds` as an empty list (rejected -32602 — an Easy Dashboard needs ≥1 device). The booleans go over the wire as JSON booleans instead of the strings "true"/"false" (wire-format break — the dashboard's tile would not toggle). `hub_get_dashboard` called without an id (rejected -32602). The list comes back empty after a successful create (the read may be pinToken-gated — retry `hub_list_dashboards` with a pinToken).
+
+### T721 — Update replaces the config wholesale (read-first)
+
+```json
+{
+  "setup_prompt": "The Write master is enabled and a recent backup exists. Create a virtual switch 'BAT Dash UpSwitch' and an Easy Dashboard 'BAT Dash Update' showing that switch with the clock tile ON. Note the dashboard id.",
+  "test_prompt": "Rename the Easy Dashboard 'BAT Dash Update' to 'BAT Dash Renamed' and switch its theme to dark, keeping the same device. Then read it back and confirm the new name, the dark theme, the device still present, and the clock tile still ON.",
+  "teardown_prompt": "Delete the Easy Dashboard 'BAT Dash Renamed'. Delete the virtual switch 'BAT Dash UpSwitch'."
+}
+```
+
+**Expected**: because `hub_update_dashboard` replaces the config WHOLESALE (no server-side read-merge), the correct flow is `hub_get_dashboard` first to capture the full current config, then `hub_update_dashboard(id=N, name='BAT Dash Renamed', deviceIds=[<id>], theme='dark', showClockTile=true, ...)` carrying every field. The read-back shows the new name, `theme='dark'`, the device present, and the clock tile still on.
+
+**Failure modes**: the AI calls update with only `name` + `theme` and omits `deviceIds`/`showClockTile` (rejected -32602 for missing deviceIds; or, if a future caller bypassed the guard, the clock tile and devices would silently revert to defaults — the wholesale-replace trap the description warns about). update called without an `id` or without a `name` (both rejected -32602).
+
+### T722 — Clone an Easy Dashboard
+
+```json
+{
+  "setup_prompt": "The Write master is enabled and a recent backup exists. Create a virtual switch 'BAT Dash CloneSwitch' and an Easy Dashboard 'BAT Dash CloneSrc' showing that switch. Note the dashboard id.",
+  "test_prompt": "Make a copy of the Easy Dashboard 'BAT Dash CloneSrc'. Then list the Easy Dashboards and confirm a clone now exists alongside the original.",
+  "teardown_prompt": "Delete both the original 'BAT Dash CloneSrc' and the clone. Delete the virtual switch 'BAT Dash CloneSwitch'."
+}
+```
+
+**Expected**: the AI routes to `hub_manage_dashboard(tool=hub_clone_dashboard)` with the source `id`; the response returns `success=true`, `sourceId`, and (when the hub provides it) `newId`. `hub_list_dashboards` shows both the source and the clone.
+
+**Failure modes**: clone called without an `id` (rejected -32602). The clone is reported successful but never appears in the list (verify with `hub_list_dashboards` — the clone may need a pinToken to surface).
 
 ---
 

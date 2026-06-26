@@ -31,7 +31,6 @@ def productionFiles = [
     // No #include, so the resolver passes them through unchanged.
     new File(repoRoot, 'e2e-deadman-watchdog.groovy'),
     new File(repoRoot, 'e2e-deadman-watchdog-v2.groovy'),
-    new File(repoRoot, 'libraries/mcp-smoke-test-lib.groovy'),
 ]
 
 tasks.register('parse24', JavaExec) {

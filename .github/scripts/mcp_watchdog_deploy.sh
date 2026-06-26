@@ -232,6 +232,10 @@ else
   ANY_BUNDLE_DIFFERS="false"
   ANY_BUNDLE_INSTALLED="false"
   BUNDLE_INSTALL_UNCONFIRMED="false"
+  # Every install RPC issued this run, kept so the post-install poll can RE-ISSUE the exact
+  # same hub_install_bundle (same importUrl) ONCE if a library is slow to register -- a nudge,
+  # not a new install path (still bundle-only). Indexed by basename so the replay names each.
+  INSTALLED_BUNDLE_RPCS=()
   while IFS= read -r BASENAME; do
     [ -z "$BASENAME" ] && continue
     BUNDLE_PATH="$REPO_DIR/bundles/${BASENAME}"
@@ -297,6 +301,10 @@ else
     echo "Installing package bundle '${BASENAME}' from ${BUNDLE_URL} via hub_install_bundle ..."
     BUN_RPC=$(jq -nc --arg url "$BUNDLE_URL" \
       '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_install_bundle",arguments:{importUrl:$url,confirm:true}}}')
+    # Record this exact install RPC (tab-joined "basename\tRPC") so the post-install poll can
+    # re-issue it verbatim ONCE as an idempotent nudge for a slow registration -- same importUrl,
+    # same bundle, no new delivery path.
+    INSTALLED_BUNDLE_RPCS+=("${BASENAME}"$'\t'"${BUN_RPC}")
     # Read the RAW JSON-RPC response, not call_tool's collapsed text: call_tool returns empty
     # stdout for BOTH a relay-dropped envelope (install accepted, response lost) AND a JSON-RPC
     # / tool error (auth failure, missing hub_install_bundle tool, malformed request -- the
@@ -365,6 +373,12 @@ else
   #     each skip already ran `verify_includes_current probe` over the full
   #     #include set and only reached `continue` after it passed, so no second
   #     pass is needed.
+  #     When the install response was lost (BUNDLE_INSTALL_UNCONFIRMED), poll the
+  #     non-fatal probe FIRST -- a brand-new library can register slowly under a
+  #     loaded run (it lands after the old 120s window), so the poll now waits up
+  #     to ~5 min and re-issues the same bundle install ONCE if the first ~60s
+  #     still shows a library missing (a dropped install response can leave a slow
+  #     import un-nudged). Same URL, idempotent, still bundle-only.
   # -------------------------------------------------------------------------
   if [ "${#INCLUDES[@]}" -gt 0 ]; then
     if [ "$ANY_BUNDLE_INSTALLED" = "true" ]; then
@@ -373,14 +387,36 @@ else
         # import succeeds fast -- the library is current on the first probe). Poll the
         # non-fatal probe anyway so that on the off chance the hub is still writing the
         # library, a not-yet-landed read isn't mistaken for a failed install before the
-        # authoritative enforce gate.
-        echo "Install reported no success envelope -- polling until the #include'd libraries verify current ..."
-        for attempt in 1 2 3 4 5 6 7 8; do
+        # authoritative enforce gate. A NEW library under a loaded e2e run can register
+        # SLOWLY -- it has landed AFTER the old 120s (8x15s) window, so the enforce gate
+        # tripped while the import was still in flight. PATIENCE fixes that: poll up to
+        # ~5 min (20x15s). The install RESPONSE also routinely drops on the relay, and a
+        # dropped response can leave a slow/stuck import un-nudged -- so once the first
+        # poll round (~60s) still shows something missing, RE-ISSUE the same
+        # hub_install_bundle ONCE, same importUrl (idempotent: a re-import of an already
+        # current library is a no-op, and it nudges a stuck one). Still bundle-only; no
+        # per-library install. The authoritative enforce gate below is unchanged.
+        VERIFY_POLL_ATTEMPTS=20            # 20 x 15s ~= 5 min: covers a slow loaded-hub registration
+        VERIFY_REINSTALL_AFTER_ATTEMPT=4   # ~60s of polling before the single idempotent re-install nudge
+        BUNDLE_REINSTALL_DONE="false"
+        echo "Install reported no success envelope -- polling up to ${VERIFY_POLL_ATTEMPTS}x15s (~5 min) until the #include'd libraries verify current ..."
+        for attempt in $(seq 1 "$VERIFY_POLL_ATTEMPTS"); do
           if verify_includes_current probe; then
             echo "  libraries landed (probe clean) after attempt ${attempt}."
             break
           fi
-          echo "  probe attempt ${attempt}/8: not current yet -- waiting 15s ..."
+          # Single idempotent nudge: after the first poll round still shows a library missing,
+          # re-issue each install RPC verbatim ONCE (same bundle URL) to kick a stuck/slow import.
+          if [ "$BUNDLE_REINSTALL_DONE" != "true" ] && [ "$attempt" -ge "$VERIFY_REINSTALL_AFTER_ATTEMPT" ]; then
+            BUNDLE_REINSTALL_DONE="true"
+            echo "  still not current after ${attempt} attempts -- re-issuing hub_install_bundle ONCE (same URL, idempotent nudge for a slow/dropped import) ..."
+            for entry in "${INSTALLED_BUNDLE_RPCS[@]}"; do
+              RB_NAME="${entry%%$'\t'*}"; RB_RPC="${entry#*$'\t'}"
+              echo "    re-issuing install for '${RB_NAME}' ..."
+              mcp_call "$RB_RPC" >/dev/null 2>&1 || true
+            done
+          fi
+          echo "  probe attempt ${attempt}/${VERIFY_POLL_ATTEMPTS}: not current yet -- waiting 15s ..."
           sleep 15
         done
       fi

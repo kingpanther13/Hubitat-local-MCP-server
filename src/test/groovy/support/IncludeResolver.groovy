@@ -4,7 +4,7 @@ package support
  * Resolves Hubitat {@code #include namespace.Name} library directives the way the hub does at
  * parse time, so the CI lanes compile/parse what the hub actually runs (issue #209).
  *
- * On the hub, {@code #include mcp.McpSmokeTestLib} pastes the referenced library's body -- with
+ * On the hub, {@code #include mcp.McpRoomsLib} pastes the referenced library's body -- with
  * its {@code library(...)} declaration call stripped -- into the app before Groovy compiles it.
  * The {@code #include} line itself is NOT valid Groovy, so a raw parse of the app source fails;
  * this resolver removes each {@code #include} line and appends the matching library's stripped

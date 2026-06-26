@@ -36,10 +36,10 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
 
     private static final String APP_NO_INCLUDE =
         'definition(name: "MCP Rule Server", namespace: "mcp")\n\ndef foo() { return 1 }\n'
-    private static final String APP_WITH_SMOKE =
-        APP_NO_INCLUDE + '\n#include mcp.McpSmokeTestLib\n'
+    private static final String APP_WITH_INCLUDE =
+        APP_NO_INCLUDE + '\n#include mcp.McpRoomsLib\n'
     private static final String APP_WITH_DUPE =
-        APP_NO_INCLUDE + '\n#include mcp.McpSmokeTestLib\n#include   mcp.McpSmokeTestLib\n'
+        APP_NO_INCLUDE + '\n#include mcp.McpRoomsLib\n#include   mcp.McpRoomsLib\n'
 
     private static final String RAW = 'https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server'
 
@@ -87,7 +87,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
 
     def setup() {
         nextHttpStatus = 200
-        nextHttpBody = APP_WITH_SMOKE
+        nextHttpBody = APP_WITH_INCLUDE
         nextHttpThrow = null
         nextManifestStatus = 200
         nextManifestBody = MANIFEST_FULL
@@ -202,7 +202,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         result.success == true
         result.dryRun == true
         result.ref == 'feat/x'
-        result.includes == ['mcp.McpSmokeTestLib']
+        result.includes == ['mcp.McpRoomsLib']
 
         and: 'one bundle: no per-ref artifact in this stub world, so the plan falls back to the manifest-current branches/main zip'
         result.plannedBundles.size() == 1
@@ -221,6 +221,27 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         child.url.endsWith('/feat/x/hubitat-mcp-rule.groovy')
 
         and: 'no confirm/backup required and nothing written'
+        calls == []
+    }
+
+    def "aborts (no writes) on a SHA-shaped ref whose per-ref bundle artifact does not exist"() {
+        given: 'an abbreviated/typo SHA (hex) -- its per-ref artifact is absent in this stub world'
+        enableDev()
+        registerAppTypes()
+        def calls = []
+        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
+        script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
+
+        when:
+        def result = script.toolUpdatePackage([ref: '8cb66c6', dryRun: true])
+
+        then: 'it aborts instead of silently delivering MAIN libraries via the manifest-current branches/main zip'
+        result.success == false
+        result.aborted == true
+        result.abortReason == 'no_bundle_artifact_for_ref'
+        result.error.contains('8cb66c6')
+
+        and: 'nothing written'
         calls == []
     }
 
@@ -367,7 +388,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         given:
         enableDev()
         registerAppTypes()
-        nextHttpBody = APP_WITH_SMOKE          // has an #include
+        nextHttpBody = APP_WITH_INCLUDE        // has an #include
         nextManifestBody = MANIFEST_NO_BUNDLE  // but no bundle to deliver it
         def calls = []
         script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
@@ -586,7 +607,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         def result = script.toolUpdatePackage([ref: 'main', confirm: true])
 
         then:
-        result.includes == ['mcp.McpSmokeTestLib']
+        result.includes == ['mcp.McpRoomsLib']
         result.success == true
     }
 

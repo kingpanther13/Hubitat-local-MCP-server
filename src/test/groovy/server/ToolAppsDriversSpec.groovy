@@ -300,7 +300,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         given:
         enableRead()
         hubGet.register('/hub2/userLibraries') { params ->
-            '[{"id": 7, "name": "McpSmokeTestLib", "namespace": "mcp", "version": 1, "source": "library(...)"}, {"id": 9, "name": "OtherLib", "namespace": "foo", "version": 3, "source": "x"}]'
+            '[{"id": 7, "name": "McpRoomsLib", "namespace": "mcp", "version": 1, "source": "library(...)"}, {"id": 9, "name": "OtherLib", "namespace": "foo", "version": 3, "source": "x"}]'
         }
 
         when:
@@ -309,7 +309,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         then:
         result.source == 'hub_api'
         result.count == 2
-        result.libraries*.name == ['McpSmokeTestLib', 'OtherLib']
+        result.libraries*.name == ['McpRoomsLib', 'OtherLib']
         result.libraries*.id == ['7', '9']
         result.libraries[0].namespace == 'mcp'
         result.libraries[0].version == 1
@@ -340,7 +340,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         enableRead()
         hubGet.register('/hub2/userLibraries') { params ->
-            '[{"id": 7, "name": "McpSmokeTestLib", "namespace": "mcp", "version": 1, "source": "x"}]'
+            '[{"id": 7, "name": "McpRoomsLib", "namespace": "mcp", "version": 1, "source": "x"}]'
         }
 
         when:
@@ -352,7 +352,7 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         def inner = mcpDriver.parseInner(response)
         inner.source == 'hub_api'
         inner.count == 1
-        inner.libraries[0].name == 'McpSmokeTestLib'
+        inner.libraries[0].name == 'McpRoomsLib'
         inner.libraries[0].id == '7'
 
         where:

@@ -472,7 +472,7 @@ class WatchdogV2Spec extends Specification {
         script.metaClass.adminUpdateApp = { Map a -> [success: true] }
         script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '9',
                                           manifest: [app: [classId: '178', url: 'https://raw.example/main/app.groovy'],
-                                                     libraries: [[id: '119', namespace: 'mcp', name: 'McpSmokeTestLib']],
+                                                     libraries: [[id: '119', namespace: 'mcp', name: 'McpRoomsLib']],
                                                      bundles: [[namespace: 'mcp', name: 'mcp_libraries', url: 'https://raw.example/main/bundles/mcp-libraries.zip']]]] }
         script.metaClass.writeFlag = { Map fl -> true }
         // reconcile steps list bundles/libraries -- give them benign hub state
@@ -728,26 +728,26 @@ class WatchdogV2Spec extends Specification {
         given:
         def deletedBundles = []
         def deletedLibs = []
-        // Hub holds main's mcp_smoke_test bundle + the PR's mcp_libraries bundle; main's McpSmokeTestLib +
-        // the PR's McpRoomsLib + an unrelated 'other'-namespace library. The manifest's main sets list
-        // only mcp_smoke_test + McpSmokeTestLib, so the PR's bundle/library are the stale ones to drop.
+        // Hub holds main's mcp_libraries bundle + the PR's mcp_pr_extra bundle; main's McpRoomsLib +
+        // the PR's McpExtraLib + an unrelated 'other'-namespace library. The manifest's main sets list
+        // only mcp_libraries + McpRoomsLib, so the PR's bundle/library are the stale ones to drop.
         script.metaClass.hubGet = { String p, Map q -> null }
         script.metaClass.adminInstallBundle = { Map a -> [success: true] }
         script.metaClass.adminListBundles = { Map a -> [source: 'hub_api', bundles: [
-            [id: '1', name: 'mcp_smoke_test', namespace: 'mcp'],
-            [id: '2', name: 'mcp_libraries', namespace: 'mcp']]] }
+            [id: '1', name: 'mcp_libraries', namespace: 'mcp'],
+            [id: '2', name: 'mcp_pr_extra', namespace: 'mcp']]] }
         script.metaClass.adminDeleteBundle = { Map a -> deletedBundles << a.bundleId; [success: true, verified: true] }
         script.metaClass.adminListLibraries = { Map a -> [source: 'hub_api', libraries: [
-            [id: '10', name: 'McpSmokeTestLib', namespace: 'mcp'],
-            [id: '11', name: 'McpRoomsLib', namespace: 'mcp'],
+            [id: '10', name: 'McpRoomsLib', namespace: 'mcp'],
+            [id: '11', name: 'McpExtraLib', namespace: 'mcp'],
             [id: '12', name: 'Unrelated', namespace: 'other']]] }
         script.metaClass.adminDeleteItem = { Map a -> deletedLibs << a.id; [success: true] }
         script.metaClass.adminUpdateApp = { Map a -> [success: true] }
         Map written = null
         script.metaClass.readFlag = { -> [armed: true, deadline: '0', runId: '9', manifest: [
             app: [classId: '178', url: 'https://raw.example/main/app.groovy'],
-            libraries: [[namespace: 'mcp', name: 'McpSmokeTestLib', id: '10']],
-            bundles: [[namespace: 'mcp', name: 'mcp_smoke_test', url: 'https://raw.example/main/bundle.zip']]]] }
+            libraries: [[namespace: 'mcp', name: 'McpRoomsLib', id: '10']],
+            bundles: [[namespace: 'mcp', name: 'mcp_libraries', url: 'https://raw.example/main/bundle.zip']]]] }
         script.metaClass.writeFlag = { Map fl -> written = fl; true }
 
         when:
@@ -755,8 +755,8 @@ class WatchdogV2Spec extends Specification {
 
         then:
         written?.restoreResult == 'restored'
-        deletedBundles == ['2']     // PR bundle dropped; main's mcp_smoke_test kept
-        deletedLibs == ['11']       // PR library dropped; main's McpSmokeTestLib kept; 'other' namespace untouched
+        deletedBundles == ['2']     // PR bundle dropped; main's mcp_libraries kept
+        deletedLibs == ['11']       // PR library dropped; main's McpRoomsLib kept; 'other' namespace untouched
     }
 
     def "restorePackage skips bundle cleanup when the manifest has no main bundle set (older flag)"() {
@@ -787,16 +787,16 @@ class WatchdogV2Spec extends Specification {
         script.metaClass.hubGet = { String p, Map q -> null }
         script.metaClass.adminInstallBundle = { Map a -> [success: true] }
         script.metaClass.adminListBundles = { Map a -> [source: 'hub_api', bundles: [
-            [id: '1', name: 'mcp_smoke_test', namespace: 'mcp'],
-            [id: '2', name: 'mcp_libraries', namespace: 'mcp']]] }
+            [id: '1', name: 'mcp_libraries', namespace: 'mcp'],
+            [id: '2', name: 'mcp_pr_extra', namespace: 'mcp']]] }
         script.metaClass.adminDeleteBundle = { Map a -> [success: false, error: 'hub refused'] }   // delete FAILS
         script.metaClass.adminListLibraries = { Map a -> [source: 'hub_api', libraries: []] }
         script.metaClass.adminUpdateApp = { Map a -> [success: true] }
         Map written = null
         script.metaClass.readFlag = { -> [armed: true, deadline: '0', runId: '9', manifest: [
             app: [classId: '178', url: 'https://raw.example/main/app.groovy'],
-            libraries: [[namespace: 'mcp', name: 'McpSmokeTestLib', id: '10']],
-            bundles: [[namespace: 'mcp', name: 'mcp_smoke_test', url: 'https://raw.example/main/bundle.zip']]]] }
+            libraries: [[namespace: 'mcp', name: 'McpRoomsLib', id: '10']],
+            bundles: [[namespace: 'mcp', name: 'mcp_libraries', url: 'https://raw.example/main/bundle.zip']]]] }
         script.metaClass.writeFlag = { Map fl -> written = fl; true }
 
         when:
@@ -812,15 +812,15 @@ class WatchdogV2Spec extends Specification {
         script.metaClass.adminInstallBundle = { Map a -> [success: true] }
         script.metaClass.adminListBundles = { Map a -> [source: 'hub_api', bundles: []] }
         script.metaClass.adminListLibraries = { Map a -> [source: 'hub_api', libraries: [
-            [id: '10', name: 'McpSmokeTestLib', namespace: 'mcp'],
+            [id: '10', name: 'McpBundlesLib', namespace: 'mcp'],
             [id: '11', name: 'McpRoomsLib', namespace: 'mcp']]] }
         script.metaClass.adminDeleteItem = { Map a -> throw new RuntimeException('boom') }   // delete THROWS
         script.metaClass.adminUpdateApp = { Map a -> [success: true] }
         Map written = null
         script.metaClass.readFlag = { -> [armed: true, deadline: '0', runId: '9', manifest: [
             app: [classId: '178', url: 'https://raw.example/main/app.groovy'],
-            libraries: [[namespace: 'mcp', name: 'McpSmokeTestLib', id: '10']],
-            bundles: [[namespace: 'mcp', name: 'mcp_smoke_test', url: 'https://raw.example/main/bundle.zip']]]] }
+            libraries: [[namespace: 'mcp', name: 'McpBundlesLib', id: '10']],
+            bundles: [[namespace: 'mcp', name: 'mcp_libraries', url: 'https://raw.example/main/bundle.zip']]]] }
         script.metaClass.writeFlag = { Map fl -> written = fl; true }
 
         when:
@@ -862,7 +862,7 @@ class WatchdogV2Spec extends Specification {
         script.metaClass.readFlag = { -> [armed: true, deadline: '0', runId: '9', manifest: [
             app: [classId: '178', url: 'https://raw.example/main/app.groovy'],
             libraries: [],
-            bundles: [[namespace: 'mcp', name: 'mcp_smoke_test', url: 'https://raw.example/main/bundle.zip']]]] }
+            bundles: [[namespace: 'mcp', name: 'mcp_libraries', url: 'https://raw.example/main/bundle.zip']]]] }
         script.metaClass.writeFlag = { Map fl -> written = fl; true }
 
         when:

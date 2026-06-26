@@ -29,12 +29,13 @@ definition(
     singleInstance: true
 )
 
-// issue #209 modularization smoke test: pulls in mcpSmokeTestMarker() from the McpSmokeTestLib
-// library. The library is delivered to real hubs by the required HPM bundle (and is installable
-// on the fly via hub_update_package); CI installs it ahead of the app (the e2e library-install
-// step; the unit/parse lanes resolve the #include via support.IncludeResolver). Proves the
-// #include load path works end to end -- the marker is surfaced in hub_get_info. Throwaway
-// canary; removed once the split architecture is validated.
+// Easy Dashboard CRUD tools (hub_list_dashboards / get / create / update / delete / clone) are
+// implemented in the McpSmokeTestLib library (libraries/mcp-smoke-test-lib.groovy). The library
+// deliberately keeps the McpSmokeTestLib name on the hub: a bundle re-import reliably UPDATES an
+// existing library entity but fails to ADD a brand-new one, so reusing this (otherwise vestigial)
+// slot is what makes the dashboards methods bind. Gateway entries + dispatch cases stay in this
+// file; defs + impls + per-tool metadata live in the library. Rename to McpDashboardsLib deferred
+// until binding is proven.
 #include mcp.McpSmokeTestLib
 
 // issue #209 modularization: room-management tool implementations live in the McpRoomsLib
@@ -1483,6 +1484,38 @@ def getGatewayConfig() {
                 hub_set_visual_rule: "visual rules builder VRB create edit update make automation rule motion light contact alert schedule json primary engine if then else",
                 hub_delete_visual_rule: "visual rules builder VRB remove delete destroy automation rule"
             ]
+        ],
+        hub_manage_dashboard: [
+            description: "Manage Hubitat Easy Dashboards: list, view, create, update, delete, and clone touch-friendly device dashboards (tile toggles, navigation, themes, optional PINs). Update REPLACES the config wholesale — read it first with hub_get_dashboard. Delete is destructive (confirm + recent backup). Reads are also in hub_read_dashboards.",
+            tools: ["hub_list_dashboards", "hub_get_dashboard", "hub_create_dashboard", "hub_update_dashboard", "hub_delete_dashboard", "hub_clone_dashboard"],
+            summaries: [
+                hub_list_dashboards: "List Easy Dashboards (id, name, tile/theme config). Args: pinToken? (only if the hub requires it)",
+                hub_get_dashboard: "Get one Easy Dashboard's full config by id (list-then-filter). Args: id, pinToken?",
+                hub_create_dashboard: "Create an Easy Dashboard. Args: name, deviceIds (>=1), tile toggles?, navigationSelection?, theme?, pins?",
+                hub_update_dashboard: "Replace an Easy Dashboard's config wholesale (pass the FULL config). Args: id, name, deviceIds (>=1), tile toggles?, theme?",
+                hub_delete_dashboard: "Permanently delete an Easy Dashboard (DESTRUCTIVE). Args: id, confirm=true",
+                hub_clone_dashboard: "Clone an Easy Dashboard into a new one (cloneAsEasy). Args: id"
+            ],
+            searchHints: [
+                hub_list_dashboards: "list show easy dashboards dashboard tiles panels touch UI screen wall tablet",
+                hub_get_dashboard: "view read inspect easy dashboard tiles config layout one",
+                hub_create_dashboard: "add new easy dashboard tiles devices panel touch screen wall tablet build",
+                hub_update_dashboard: "edit modify change replace easy dashboard tiles devices theme navigation config",
+                hub_delete_dashboard: "remove delete destroy easy dashboard panel tiles",
+                hub_clone_dashboard: "copy duplicate clone easy dashboard template cloneAsEasy"
+            ]
+        ],
+        hub_read_dashboards: [
+            description: "Read-only Easy Dashboard inspection: list dashboards and view one dashboard's full config (tiles, navigation, theme, devices). All operations are read-only; create/update/delete/clone live in hub_manage_dashboard.",
+            tools: ["hub_list_dashboards", "hub_get_dashboard"],
+            summaries: [
+                hub_list_dashboards: "List Easy Dashboards (id, name, tile/theme config). Args: pinToken? (only if the hub requires it)",
+                hub_get_dashboard: "Get one Easy Dashboard's full config by id (list-then-filter). Args: id, pinToken?"
+            ],
+            searchHints: [
+                hub_list_dashboards: "list show easy dashboards dashboard tiles panels touch UI screen wall tablet read",
+                hub_get_dashboard: "view read inspect easy dashboard tiles config layout one read"
+            ]
         ]
     ]
 }
@@ -1600,6 +1633,7 @@ def getReadOnlyToolNames() {
         + _readOnlyToolNames_partCodeManagement()
         + _readOnlyToolNames_partHpm()
         + _readOnlyToolNames_partDiscovery()
+        + _readOnlyToolNames_partDashboards()
     ) as Set
 }
 
@@ -1645,6 +1679,7 @@ def getIdempotentWriteToolNames() {
         + _idempotentWriteToolNames_partCodeManagement()
         + _idempotentWriteToolNames_partSelfAdmin()
         + _idempotentWriteToolNames_partAppCloner()
+        + _idempotentWriteToolNames_partDashboards()
     ) as Set
 }
 
@@ -1706,7 +1741,8 @@ def getToolDisplayMeta() {
      _toolDisplayMeta_partHpm(),
      _toolDisplayMeta_partSelfAdmin(),
      _toolDisplayMeta_partAppCloner(),
-     _toolDisplayMeta_partDiscovery()].each { meta.putAll(it) }
+     _toolDisplayMeta_partDiscovery(),
+     _toolDisplayMeta_partDashboards()].each { meta.putAll(it) }
     meta.putAll([
         // Gateways
         hub_read_apps_code: [title: "Read Apps and Code", summary: "Read-only: apps, drivers, libraries, source code, backups, and HPM packages."],
@@ -1716,6 +1752,7 @@ def getToolDisplayMeta() {
         hub_read_rooms: [title: "Read Rooms", summary: "Read-only room queries: list rooms and room details."],
         hub_read_rules: [title: "Read Rules", summary: "Read-only rule introspection: custom rules, Rule Machine rules, Visual Rules, rule health."],
         hub_read_variables: [title: "Read Variables", summary: "Read-only hub-variable queries: list, get, recent changes."],
+        hub_read_dashboards: [title: "Read Dashboards", summary: "Read-only Easy Dashboard queries: list dashboards and view one dashboard's config."],
         hub_manage_custom_rules: [title: "Manage Custom Rules", summary: "Create, update, delete, test, export, import, and clone custom-engine rules."],
         hub_manage_devices: [title: "Manage Devices", summary: "Control devices and update device properties, plus device queries."],
         hub_manage_variables: [title: "Manage Variables", summary: "Create, set, and delete hub variables and their connectors."],
@@ -1729,7 +1766,8 @@ def getToolDisplayMeta() {
         hub_manage_files: [title: "Manage Files", summary: "List, read, write, and delete File Manager files."],
         hub_manage_rule_machine: [title: "Manage Rule Machine", summary: "Author, trigger, pause, inspect, and delete Visual Rules Builder and Rule Machine rules."],
         hub_manage_native_rules_and_apps: [title: "Manage Native Rules and Apps", summary: "Runtime control of Rule Machine rules plus create, edit, clone, export, import, and delete classic native apps."],
-        hub_manage_mcp: [title: "Manage MCP Server", summary: "Self-administer the MCP app's own settings (Developer Mode)."]
+        hub_manage_mcp: [title: "Manage MCP Server", summary: "Self-administer the MCP app's own settings (Developer Mode)."],
+        hub_manage_dashboard: [title: "Manage Dashboards", summary: "List, view, create, update, delete, and clone Easy Dashboards."]
     ])
     return meta
 }
@@ -2103,7 +2141,7 @@ def getAllToolDefinitions() {
     // McpBundlesLib / McpVisualRulesLib #include libraries (issue #209 modularization -- a
     // domain's tool DEFINITIONS live with its impl in the library; only the gateway membership
     // + dispatch case stay in this file).
-    return _getAllToolDefinitions_partNativeRM() + _getAllToolDefinitions_partRooms() + _getAllToolDefinitions_partBundles() + _getAllToolDefinitions_partVisualRules() + _getAllToolDefinitions_partDiscovery() + _getAllToolDefinitions_partAppCloner() + _getAllToolDefinitions_partSelfAdmin() + _getAllToolDefinitions_partHpm() + _getAllToolDefinitions_partCodeManagement() + _getAllToolDefinitions_partCustomRules() + _getAllToolDefinitions_partVariables() + _getAllToolDefinitions_partVirtualDevices() + _getAllToolDefinitions_partDevices() + _getAllToolDefinitions_partSystem() + _getAllToolDefinitions_partDiagnostics() + _getAllToolDefinitions_partDebugLogging() + _getAllToolDefinitions_partItemBackups() + _getAllToolDefinitions_partFiles()
+    return _getAllToolDefinitions_partNativeRM() + _getAllToolDefinitions_partRooms() + _getAllToolDefinitions_partBundles() + _getAllToolDefinitions_partVisualRules() + _getAllToolDefinitions_partDiscovery() + _getAllToolDefinitions_partAppCloner() + _getAllToolDefinitions_partSelfAdmin() + _getAllToolDefinitions_partHpm() + _getAllToolDefinitions_partCodeManagement() + _getAllToolDefinitions_partCustomRules() + _getAllToolDefinitions_partVariables() + _getAllToolDefinitions_partVirtualDevices() + _getAllToolDefinitions_partDevices() + _getAllToolDefinitions_partSystem() + _getAllToolDefinitions_partDiagnostics() + _getAllToolDefinitions_partDebugLogging() + _getAllToolDefinitions_partItemBackups() + _getAllToolDefinitions_partFiles() + _getAllToolDefinitions_partDashboards()
 }
 
 // Content fingerprint of the catalog's name -> required-params shape, used as
@@ -2427,6 +2465,14 @@ def executeTool(toolName, args) {
         case "hub_set_visual_rule": return toolSetVisualRule(args)
         case "hub_delete_visual_rule": return toolDeleteVisualRule(args)
 
+        // Easy Dashboard CRUD (classic /dashboard/* endpoints; impl in McpSmokeTestLib)
+        case "hub_list_dashboards": return toolListDashboards(args)
+        case "hub_get_dashboard": return toolGetDashboard(args)
+        case "hub_create_dashboard": return toolCreateDashboard(args)
+        case "hub_update_dashboard": return toolUpdateDashboard(args)
+        case "hub_delete_dashboard": return toolDeleteDashboard(args)
+        case "hub_clone_dashboard": return toolCloneDashboard(args)
+
         // Tool Guide
         case "hub_get_tool_guide": return toolGetToolGuide(args.section)
 
@@ -2441,6 +2487,7 @@ def executeTool(toolName, args) {
         case "hub_read_rooms":
         case "hub_read_rules":
         case "hub_read_variables":
+        case "hub_read_dashboards":
         case "hub_manage_backup":
         case "hub_manage_code":
         case "hub_manage_custom_rules":
@@ -2455,6 +2502,7 @@ def executeTool(toolName, args) {
         case "hub_manage_rooms":
         case "hub_manage_rule_machine":
         case "hub_manage_variables":
+        case "hub_manage_dashboard":
             // Flat-mode guard: gateways are not advertised on tools/list when useGateways=false,
             // so a gateway-name call here is almost certainly a stale/cached client. Returning
             // the gateway catalog would silently contradict the user's intent — fail loud with

@@ -34,9 +34,9 @@ class IncludeResolverSpec extends Specification {
     def "resolves a #include by namespace+name and inlines the library body with library() stripped"() {
         given:
         def libs = libsDir()
-        writeLib(libs, 'smoke.groovy',
-            'library(name: "McpSmokeTestLib", namespace: "mcp", author: "x", description: "y")\n\nString mcpSmokeTestMarker() { "smoke-ok-v1" }\n')
-        def src = "definition(name: 'X')\n#include mcp.McpSmokeTestLib\ndef foo() { 1 }\n"
+        writeLib(libs, 'sample.groovy',
+            'library(name: "SampleLib", namespace: "mcp", author: "x", description: "y")\n\nString sampleMarker() { "sample-ok" }\n')
+        def src = "definition(name: 'X')\n#include mcp.SampleLib\ndef foo() { 1 }\n"
 
         when:
         def out = IncludeResolver.resolve(src, libs)
@@ -45,7 +45,7 @@ class IncludeResolverSpec extends Specification {
         !out.contains('#include')
 
         and: 'the library body is inlined, sans its library() declaration'
-        out.contains('String mcpSmokeTestMarker()')
+        out.contains('String sampleMarker()')
         !out.contains('library(name:')
 
         and: 'the rest of the app is preserved'
@@ -100,22 +100,6 @@ class IncludeResolverSpec extends Specification {
         then:
         !stripped.contains('library(')
         stripped.contains('def m()')
-    }
-
-    def "resolving against the REAL repo libraries dir inlines the live McpSmokeTestLib marker"() {
-        given: 'the actual checked-in smoke library (sanity: keeps the resolver honest about the real file)'
-        def realLibs = new File('libraries')
-        // Fail with a clear message (not a confusing "no matching library") if cwd ever drifts.
-        assert realLibs.isDirectory(), "expected the repo 'libraries' dir relative to cwd ${new File('.').absolutePath} -- run from the repo root"
-        def src = "#include mcp.McpSmokeTestLib\n"
-
-        when:
-        def out = IncludeResolver.resolve(src, realLibs)
-
-        then:
-        out.contains('mcpSmokeTestMarker')
-        out.contains('smoke-ok-v1')
-        !out.contains('#include')
     }
 
     def "resolving against the REAL repo libraries dir inlines the live McpRoomsLib impls"() {
@@ -204,6 +188,7 @@ class IncludeResolverSpec extends Specification {
         'McpAppClonerLib'       | 'toolCloneNativeApp'      | 'AppCloner'
         'McpDiscoveryLib'       | 'toolSearchTools'         | 'Discovery'
         'McpNativeRulesLib'     | 'toolSetRule'             | 'NativeRM'
+        'McpSmokeTestLib'       | 'toolListDashboards'      | 'Dashboards'
     }
 
     def "indexLibraries matches name/namespace even when a description ) appears BEFORE the keys"() {

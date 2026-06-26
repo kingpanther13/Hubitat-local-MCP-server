@@ -551,6 +551,20 @@ def toolUpdatePackage(args) {
             entry.url = artifactUrl
             entry.source = "bundle-artifacts"
         }
+        // SHA guard: a SHA-shaped ref (hex) with NO per-ref artifact would fall back to the manifest's
+        // branches/main zip -- i.e. deliver MAIN's libraries, not this commit's (silently wrong, and
+        // exactly how an abbreviated/typo'd SHA loads the wrong bundle). A pushed commit ALWAYS has a
+        // per-SHA artifact (publish-bundle-artifact builds one per push, keyed by FULL sha), so a
+        // SHA-shaped ref with none is abbreviated, unpushed, or typo'd -- fail loudly instead of
+        // installing the wrong bundle. (Branch/tag refs legitimately fall back to branches/main with a
+        // freshness warning; only commit-SHA refs are guarded, since that's where a hallucinated value bites.)
+        if (entry.source == "manifest-current" && (ref?.toString()?.trim() ==~ /(?i)^[0-9a-f]{7,40}$/)) {
+            return [
+                success: false, aborted: true, abortReason: "no_bundle_artifact_for_ref", ref: ref,
+                bundle: (b?.name ?: b?.id), artifactUrlProbed: artifactUrl,
+                error: "No per-ref bundle artifact exists for ref '${ref}' (probed ${artifactUrl ?: 'n/a'}); the manifest's bundle points at branches/main, so installing it would deliver MAIN's libraries, not this ref's. Pass the FULL 40-char commit SHA of a PUSHED commit (not an abbreviation), or push the branch so its bundle artifact is built. Nothing was changed."
+            ]
+        }
         plannedBundles << entry
     }
 

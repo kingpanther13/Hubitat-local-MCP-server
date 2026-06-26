@@ -369,6 +369,7 @@ class TestRunner:
         self.created_device_dnis: list[str] = []
         self.created_rule_ids: list[str] = []
         self.created_native_app_ids: list[str] = []
+        self.created_dashboard_ids: list[str] = []
         # When set (the CI 'Run E2E tests' step only), per-test native-rule fixture deletes are SKIPPED
         # (see _delete_native + cleanup Layer 4) and the rules are reaped by the disarm step's force
         # sweep over WATCHDOG_URL, overlapping the restore-poll wait instead of adding to the test
@@ -990,12 +991,12 @@ class TestRunner:
         names = {t.get("name") for t in tools}
         # hub_update_package is a Developer-Mode-only TOP-LEVEL tool (issue #250): it shows on
         # tools/list ONLY with Developer Mode on (this e2e hub has it on -- a documented precondition).
-        # The documented DEFAULT catalog is 34 (13 core + 21 gateways); exclude the dev-mode tool so
+        # The documented DEFAULT catalog is 36 (13 core + 23 gateways); exclude the dev-mode tool so
         # the count matches the default regardless of the toggle, then assert the dev-mode tool is
         # present on this dev-on hub.
         default_tools = [t for t in tools if t.get("name") != "hub_update_package"]
-        assert len(default_tools) == 34, \
-            f"Expected 34 default tools (13 core + 21 gateways), got {len(default_tools)}: {sorted(names)}"
+        assert len(default_tools) == 36, \
+            f"Expected 36 default tools (13 core + 23 gateways), got {len(default_tools)}: {sorted(names)}"
         assert "hub_update_package" in names, \
             "hub_update_package must be a top-level tool when Developer Mode is on (issue #250)"
 
@@ -2114,6 +2115,115 @@ class TestRunner:
             for d in dev_list2
         )
         assert not still_there, f"{PREFIX}Switch_Test still present after deletion"
+
+    # -----------------------------------------------------------------------
+    # GROUP: dashboards -- Easy Dashboard CRUD (issue #259 item #9)
+    # -----------------------------------------------------------------------
+    # The Easy Dashboard endpoints (GET /dashboard/*) require the Easy Dashboard
+    # parent app to be installed, and the list endpoint may be pinToken-gated. A
+    # CREATE error FAILS the test (it genuinely verifies the tool works); only a
+    # pinToken-gated list (create succeeded but the dashboard isn't listable) skips,
+    # since that is a hub-provisioning gap the e2e hub does not control.
+
+    def _find_dashboard_id_by_name(self, name: str) -> str | None:
+        """Return the installedAppId of the BAT dashboard with this exact name, or None."""
+        try:
+            listed = self.client.call_tool("hub_manage_dashboard", {"tool": "hub_list_dashboards", "args": {}})
+        except Exception:
+            return None
+        if not isinstance(listed, dict):
+            return None
+        for d in listed.get("dashboards", []) or []:
+            if d.get("name") == name and d.get("id"):
+                return str(d["id"])
+        return None
+
+    def _dashboard_id_present(self, dash_id: str) -> bool:
+        """True iff a dashboard with this specific installedAppId is on the hub.
+
+        Verify-by-id (not by name): a same-named clone left on the hub would otherwise
+        mask a real delete of the original (Codex P2)."""
+        try:
+            listed = self.client.call_tool("hub_manage_dashboard", {"tool": "hub_list_dashboards", "args": {}})
+        except Exception:
+            return False
+        if not isinstance(listed, dict):
+            return False
+        return any(str(d.get("id")) == str(dash_id) for d in (listed.get("dashboards", []) or []))
+
+    @test("dashboards")
+    def test_dashboard_create_read_clone_delete(self) -> None:
+        switch_id = self.get_test_switch_id()
+        assert switch_id, "could not get a test switch for the dashboard"
+        dash_name = f"{PREFIX}Dashboard"
+
+        # CREATE
+        cw = self._soft_write(
+            lambda: self.client.call_tool("hub_manage_dashboard", {
+                "tool": "hub_create_dashboard",
+                "args": {"name": dash_name, "deviceIds": [str(switch_id)],
+                         "options": {"showClockTile": True, "theme": "dark"}},
+            }),
+            lambda: self._find_dashboard_id_by_name(dash_name),
+            "create dashboard",
+        )
+        if cw["relayDropped"]:
+            if not cw["committed"]:
+                raise SkipTest("create dashboard lost to relay 504 and did not commit")
+            dash_id = str(cw["evidence"])
+        else:
+            resp = cw["response"]
+            # A create error is a REAL failure -- fail, don't skip (a graceful skip hid genuine
+            # regressions). The previous "parent app may be missing" skip is gone: this e2e hub
+            # provisions the Easy Dashboard parent as a documented precondition.
+            assert isinstance(resp, dict), f"hub_create_dashboard returned non-dict: {resp}"
+            assert resp.get("success") is not False, f"hub_create_dashboard failed: {resp.get('error')}"
+            dash_id = self._find_dashboard_id_by_name(dash_name)
+            if not dash_id and resp.get("id"):
+                dash_id = str(resp["id"])
+        if not dash_id:
+            # Created (no error) but the list could not surface it -- almost certainly a
+            # pinToken-gated /dashboard/all on this hub (a hub-provisioning gap, not a tool bug).
+            # Document and skip the read-back/clone/delete portion only.
+            raise SkipTest("dashboard created but not listable (pinToken likely required for /dashboard/all)")
+        self.created_dashboard_ids.append(dash_id)
+
+        # READ back via hub_get_dashboard
+        got = self.client.call_tool("hub_manage_dashboard", {
+            "tool": "hub_get_dashboard", "args": {"id": dash_id}})
+        assert isinstance(got, dict), f"hub_get_dashboard returned non-dict: {got}"
+        assert got.get("name") == dash_name, f"dashboard name mismatch: {got}"
+
+        # CLONE
+        clone = self.client.call_tool("hub_manage_dashboard", {
+            "tool": "hub_clone_dashboard", "args": {"id": dash_id}})
+        if isinstance(clone, dict) and clone.get("success"):
+            clone_id = clone.get("newId")
+            if not clone_id:
+                # Some firmware echoes the list instead of a new id -- recover by name.
+                clone_id = self._find_dashboard_id_by_name(dash_name)  # clone may share the name
+            if clone_id and str(clone_id) != dash_id:
+                self.created_dashboard_ids.append(str(clone_id))
+
+        # DELETE the original (confirm-gated -- the suite ensured a recent backup at startup).
+        # Verify absence by the SPECIFIC dash_id, not by name: a same-named clone created just
+        # above would mask a failed delete of the original if we matched on name (Codex P2).
+        dw = self._soft_write(
+            lambda: self.client.call_tool("hub_manage_dashboard", {
+                "tool": "hub_delete_dashboard",
+                "args": {"id": dash_id, "confirm": True}}),
+            lambda: not self._dashboard_id_present(dash_id),
+            "delete dashboard",
+        )
+        if dw["relayDropped"]:
+            assert dw["committed"], "dashboard still present after a relay-504 delete (did not commit)"
+        else:
+            resp = dw["response"]
+            assert isinstance(resp, dict) and resp.get("success"), f"hub_delete_dashboard failed: {resp}"
+            assert not self._dashboard_id_present(dash_id), \
+                f"hub_delete_dashboard reported success but dashboard id {dash_id} is still on the hub"
+        if dash_id in self.created_dashboard_ids:
+            self.created_dashboard_ids.remove(dash_id)
 
     # -----------------------------------------------------------------------
     # GROUP 4: rule_crud (4 tests)
@@ -5889,17 +5999,6 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         result = self.client.call_tool("hub_get_info")
         assert result is not None, "hub_get_info returned None"
         assert isinstance(result, dict), f"hub_get_info returned {type(result)}"
-        # issue #209 load-bearing #include proof: the deployed app `#include mcp.McpSmokeTestLib`,
-        # so mcpSmokeTestMarker() must be callable and folded into the info output. By the time this
-        # test runs, the watchdog PR-install step has re-delivered McpSmokeTestLib via the package
-        # bundle .zip and resaved the app, so this marker rides on the BUNDLE-delivered library. If the
-        # include had not resolved on the hub, the app would not have compiled or this field would be
-        # missing -- either way this assertion catches a broken library load.
-        # Removed together with the smoke test once the modularization split is validated.
-        assert result.get("smokeTestMarker") == "smoke-ok-v1", (
-            "hub_get_info.smokeTestMarker missing/wrong -- the #include of McpSmokeTestLib did not "
-            f"resolve on the hub (got {result.get('smokeTestMarker')!r})"
-        )
         # Folded from test_hub_get_info_platform_update_and_safemode (the SAME default hub_get_info call):
         # #12/#13 -- platformUpdate + safeMode resolve from /hub2/hubData; the full alerts block stays out.
         assert "platformUpdate" in result, f"hub_get_info missing platformUpdate: {sorted(result)}"
@@ -6022,10 +6121,6 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         assert any(
             lib.get("name") == "McpRoomsLib" and lib.get("namespace") == "mcp" for lib in libs
         ), f"McpRoomsLib not found in hub libraries (got {lib_names})"
-        # McpSmokeTestLib is the throwaway #209 canary -- removed once the split is validated.
-        assert any(
-            lib.get("name") == "McpSmokeTestLib" and lib.get("namespace") == "mcp" for lib in libs
-        ), f"McpSmokeTestLib not found in hub libraries (got {lib_names})"
 
     def _get_hub_info_optin(self) -> dict:
         """hub_get_info with BOTH additive opt-in blocks in ONE call, shared by the two opt-in tests
@@ -7557,6 +7652,8 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         4. Native RM apps + Visual Rules (tracked + prefix sweeps)
         5. mcptest throwaway app + driver code classes (namespace+name)
         6. Rooms (prefix sweep)
+        7. Throwaway bundle + library (mcptest namespace)
+        8. Easy Dashboards (tracked + prefix sweep)
         """
         print("\n--- Cleanup ---")
 
@@ -7842,6 +7939,31 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                         print(f"  [WARN] throwaway library sweep delete failed for '{lib.get('name')}': {exc}")
         except Exception as exc:
             print(f"  [WARN] throwaway library sweep failed: {exc}")
+
+        # Layer 8: Easy Dashboards with the BAT_E2E_ prefix (issue #259; dashboards impls in McpSmokeTestLib).
+        # The create/clone/delete test deletes the original inline; this reclaims the clone
+        # and any dashboard a crashed run stranded. Skips silently if the endpoint is gated.
+        for dash_id in list(self.created_dashboard_ids):
+            try:
+                print(f"  Deleting tracked dashboard {dash_id}")
+                self.client.call_tool("hub_manage_dashboard", {
+                    "tool": "hub_delete_dashboard", "args": {"id": dash_id, "confirm": True}})
+            except Exception as exc:
+                print(f"  [WARN] Failed to delete dashboard {dash_id}: {exc}")
+        self.created_dashboard_ids.clear()
+        try:
+            dres = self.client.call_tool("hub_manage_dashboard", {"tool": "hub_list_dashboards", "args": {}})
+            for d in (dres.get("dashboards", []) if isinstance(dres, dict) else []):
+                dname = str(d.get("name") or "")
+                if PREFIX in dname and d.get("id"):
+                    try:
+                        print(f"  Sweep: deleting dashboard '{dname}' (id={d.get('id')})")
+                        self.client.call_tool("hub_manage_dashboard", {
+                            "tool": "hub_delete_dashboard", "args": {"id": str(d["id"]), "confirm": True}})
+                    except Exception as exc:
+                        print(f"  [WARN] Dashboard sweep delete failed for '{dname}': {exc}")
+        except Exception as exc:
+            print(f"  [WARN] Dashboard sweep failed: {exc}")
 
         print("--- Cleanup complete ---\n")
 
