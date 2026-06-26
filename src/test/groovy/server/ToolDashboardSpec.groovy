@@ -60,7 +60,10 @@ class ToolDashboardSpec extends ToolSpecBase {
         call.params.pinToken == 'tok-123'
     }
 
-    def "list with no pinToken does not send a pinToken param"() {
+    def "list omits pinToken when none is supplied and the page token can't be scraped"() {
+        // No pinToken arg: the tool scrapes globalDashboardPinToken from /dashboard/select via
+        // hubInternalGetRaw, which the harness doesn't mock -> it degrades to null, so no pinToken
+        // param is sent. (The scrape-succeeds path is covered below.)
         when:
         script.toolListDashboards([:])
 
@@ -82,16 +85,50 @@ class ToolDashboardSpec extends ToolSpecBase {
         r.note.toLowerCase().contains('pintoken')
     }
 
-    def "list returns a structured error (no throw) when the endpoint fails"() {
+    def "list degrades gracefully (no throw) when /dashboard/all fails and no child apps exist"() {
         given:
         hubGet.register('/dashboard/all') { params -> throw new RuntimeException('endpoint down') }
 
         when:
         def r = script.toolListDashboards([:])
 
-        then:
-        r.success == false
-        r.error.contains('endpoint down')
+        then: 'the failure is caught, the child-app fallback finds nothing, and an empty result + note is returned -- never throws'
+        r.dashboards == []
+        r.count == 0
+        r.note != null
+        r.success == null
+    }
+
+    def "list scrapes the page pinToken and forwards it to /dashboard/all when none is supplied"() {
+        given: 'the /dashboard/select page exposes globalDashboardPinToken (mock the raw fetch the harness lacks)'
+        script.metaClass.hubInternalGetRaw = { String p ->
+            p == '/dashboard/select' ? "<script>var globalDashboardPinToken = 'tok-scraped';</script>" : null
+        }
+
+        when:
+        script.toolListDashboards([:])
+
+        then: 'the scraped token is sent to /dashboard/all so the (otherwise pinToken-gated) list returns'
+        def call = hubGet.calls.find { it.path == '/dashboard/all' }
+        call.params.pinToken == 'tok-scraped'
+    }
+
+    def "list falls back to Easy Dashboard Parent child apps when /dashboard/all is empty"() {
+        given: 'no pinToken-backed list, but the apps tree has an Easy Dashboard Parent with one child'
+        hubGet.register('/dashboard/all') { params -> '[]' }
+        hubGet.register('/hub2/appsList') { params ->
+            '{"apps":[{"data":{"id":19,"name":"Easy Dashboards","type":"Easy Dashboard Parent"},' +
+            '"children":[{"data":{"id":38,"name":"Dashboard 1","type":"Easy Dashboard"},"children":[]}]}]}'
+        }
+
+        when:
+        def r = script.toolListDashboards([:])
+
+        then: 'the child apps under the Easy Dashboard Parent become dashboards (id + name), no pinToken needed'
+        r.source == 'child-apps'
+        r.count == 1
+        r.dashboards[0].id == '38'
+        r.dashboards[0].name == 'Dashboard 1'
         r.note != null
     }
 

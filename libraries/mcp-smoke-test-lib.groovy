@@ -1,36 +1,87 @@
-library(name: "McpSmokeTestLib", namespace: "mcp", author: "kingpanther13", description: "Easy Dashboard CRUD tool implementations for the MCP Rule Server (hub_list_dashboards/hub_get_dashboard/hub_create_dashboard/hub_update_dashboard/hub_delete_dashboard/hub_clone_dashboard). Easy Dashboards are classic child apps of the Easy Dashboard Parent, driven by GET /dashboard endpoints. NOTE: this library deliberately keeps the McpSmokeTestLib name on the hub so the bundle re-import UPDATES an existing library entity rather than adding a brand-new one (the add-a-new-library case fails to bind on the hub); renaming to McpDashboardsLib is deferred until binding is proven.")
+library(name: "McpSmokeTestLib", namespace: "mcp", author: "kingpanther13", description: "Easy Dashboard CRUD tool implementations for the MCP Rule Server (hub_list_dashboards/hub_get_dashboard/hub_create_dashboard/hub_update_dashboard/hub_delete_dashboard/hub_clone_dashboard). Easy Dashboards are classic child apps of the Easy Dashboard Parent, driven by GET /dashboard endpoints. NOTE: this library keeps the McpSmokeTestLib name on the hub for now -- the dashboards code rides in this existing, already-bound library slot while the binding is validated end to end; renaming to a properly-named McpDashboardsLib is the next step.")
 
 def toolListDashboards(args = null) {
     args = args ?: [:]
-    // GET /dashboard/all?pinToken=<token> -> array of dashboards. The pinToken's server-side
-    // auth is UNVERIFIED (the live UI fetches this with a token from the page); pass it through
-    // when supplied. Tolerate an empty/non-array body gracefully -- an empty array may mean a
-    // pinToken is required rather than that no dashboards exist.
+    // Easy Dashboards are listed via GET /dashboard/all, but that endpoint returns an EMPTY array
+    // unless it is given the dashboard pinToken the admin UI passes -- the page-global
+    // globalDashboardPinToken, rendered as a literal into the /dashboard/select page. So: use a
+    // caller-supplied pinToken if present, else scrape that page token server-side, then call
+    // /dashboard/all. If that STILL yields nothing (token unavailable, or a locked-down hub), fall
+    // back to enumerating the Easy Dashboard Parent's child apps -- needs no token (id + name only).
+    def token = (args.pinToken != null) ? args.pinToken.toString() : _fetchDashboardPinToken()
     def q = [:]
-    if (args.pinToken != null) q.pinToken = args.pinToken.toString()
-    def raw
+    if (token) q.pinToken = token
+    def parsed = null
     try {
-        raw = hubInternalGet("/dashboard/all", q)
-    } catch (Exception e) {
-        mcpLogError("dashboard", "list dashboards failed", e)
-        return [success: false, error: "Failed to list dashboards: ${e.message}",
-                note: "The Easy Dashboard endpoint /dashboard/all may require a pinToken, or the Easy Dashboard app may not be installed. See hub_get_tool_guide(section='dashboards') if available."]
-    }
-    def parsed
-    try {
+        def raw = hubInternalGet("/dashboard/all", q)
         parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : []
     } catch (Exception e) {
-        mcpLogError("dashboard", "list dashboards: unparseable response", e)
-        return [success: false, error: "The hub returned an unreadable response from /dashboard/all.",
-                note: "A pinToken may be required. Retry with pinToken set from the Easy Dashboard UI."]
+        mcpLogError("dashboard", "list dashboards via /dashboard/all failed", e)
+        parsed = null
     }
-    def list = (parsed instanceof List) ? parsed : []
-    def dashboards = list.findAll { it != null }.collect { _summarizeDashboard(it) }
-    def result = [dashboards: dashboards, count: dashboards.size()]
-    if (dashboards.isEmpty()) {
-        result.note = "No Easy Dashboards returned. If you expected dashboards, this endpoint may require a pinToken -- pass pinToken (from the Easy Dashboard UI) and retry."
+    // /dashboard/all aggregates BOTH Easy (version 2.x) and legacy (version 1.x) dashboards; this is
+    // the Easy Dashboard surface, so keep only 2.x. A null/absent version (e.g. a create/update echo)
+    // is kept. Matches the child-app fallback's Easy-only scope below.
+    def list = (parsed instanceof List) ? parsed.findAll { it != null && (it.version == null || it.version.toString().startsWith("2")) } : []
+    if (!list.isEmpty()) {
+        def dashboards = list.collect { _summarizeDashboard(it) }
+        return [dashboards: dashboards, count: dashboards.size(), source: "dashboard-all"]
     }
-    return result
+    // Fallback: enumerate Easy Dashboard child apps (no pinToken needed; id + name only).
+    def viaApps = _listDashboardsViaChildApps()
+    if (viaApps != null && !viaApps.isEmpty()) {
+        return [dashboards: viaApps, count: viaApps.size(), source: "child-apps",
+                note: "Listed from the Easy Dashboard Parent's child apps (/dashboard/all returned nothing -- pinToken unavailable). Each entry carries id + name only; call hub_get_dashboard for one dashboard's full config."]
+    }
+    return [dashboards: [], count: 0,
+            note: "No Easy Dashboards found: /dashboard/all returned empty (a pinToken may be required) and no Easy Dashboard Parent child apps were present. If you expected dashboards, pass pinToken (from the Easy Dashboard UI) and retry."]
+}
+
+// Scrape the dashboard pinToken the admin UI passes to /dashboard/all. The hub renders it as a
+// literal (globalDashboardPinToken = '...') into the /dashboard/select page, so fetch that page
+// server-side and extract it -- a caller then never has to supply pinToken on a normal hub.
+// Returns null if the page or the token can't be read; the caller then degrades to the child-app
+// enumeration. The token is used only server-side (never returned to the caller).
+private String _fetchDashboardPinToken() {
+    try {
+        def page = hubInternalGetRaw("/dashboard/select")
+        if (!page) return null
+        def matcher = (page =~ /globalDashboardPinToken\s*=\s*['"]([^'"]+)['"]/)
+        return matcher.find() ? matcher.group(1) : null
+    } catch (Exception e) {
+        mcpLogError("dashboard", "fetch dashboard pinToken failed", e)
+        return null
+    }
+}
+
+// Enumerate Easy Dashboards as the child apps of the "Easy Dashboard Parent" via /hub2/appsList
+// (no pinToken needed). Each child app IS one Easy Dashboard: its app id is the dashboard's
+// installedAppId and its label is the dashboard name. Returns [[id, name], ...], or null if the
+// apps list can't be read. Used only as a fallback when /dashboard/all yields nothing.
+private List _listDashboardsViaChildApps() {
+    try {
+        def raw = hubInternalGet("/hub2/appsList")
+        if (!raw) return null
+        def parsed = new groovy.json.JsonSlurper().parseText(raw)
+        def apps = parsed?.apps ?: []
+        def out = []
+        def walk
+        walk = { node ->
+            def d = node?.data ?: [:]
+            if (d.type == "Easy Dashboard Parent") {
+                (node?.children ?: []).each { c ->
+                    def cd = c?.data ?: [:]
+                    if (cd.id != null) out << [id: cd.id?.toString(), name: cd.name]
+                }
+            }
+            (node?.children ?: []).each { walk(it) }
+        }
+        apps.each { walk(it) }
+        return out
+    } catch (Exception e) {
+        mcpLogError("dashboard", "enumerate dashboards via child apps failed", e)
+        return null
+    }
 }
 
 // Dashboard ids (installedAppId) are always numeric; reject anything else so a malformed value can't

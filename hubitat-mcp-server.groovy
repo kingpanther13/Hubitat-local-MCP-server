@@ -31,11 +31,12 @@ definition(
 
 // Easy Dashboard CRUD tools (hub_list_dashboards / get / create / update / delete / clone) are
 // implemented in the McpSmokeTestLib library (libraries/mcp-smoke-test-lib.groovy). The library
-// deliberately keeps the McpSmokeTestLib name on the hub: a bundle re-import reliably UPDATES an
-// existing library entity but fails to ADD a brand-new one, so reusing this (otherwise vestigial)
-// slot is what makes the dashboards methods bind. Gateway entries + dispatch cases stay in this
-// file; defs + impls + per-tool metadata live in the library. Rename to McpDashboardsLib deferred
-// until binding is proven.
+// keeps the McpSmokeTestLib name on the hub for now: the dashboards code rides in this existing
+// (otherwise vestigial) library while we validate the binding end to end. 321/322's separate
+// McpDashboardsLib failed to bind for a not-yet-pinned reason -- NOT because new libraries can't
+// bind (the issue #209 split added ~18 that do). Gateway entries + dispatch cases stay in this
+// file; defs + impls + per-tool metadata live in the library. Renaming to a proper McpDashboardsLib
+// is the next step.
 #include mcp.McpSmokeTestLib
 
 // issue #209 modularization: room-management tool implementations live in the McpRoomsLib
