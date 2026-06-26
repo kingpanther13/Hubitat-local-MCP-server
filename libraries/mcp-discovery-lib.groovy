@@ -108,7 +108,11 @@ def toolSearchTools(args) {
     return [
         query: query,
         resultsCount: results.size(),
-        totalToolsSearched: visibleCorpus.size(),
+        // Count DISTINCT tools, not corpus rows: a tool in N gateways (the
+        // read/write split lists every read in both a hub_read_* and a
+        // hub_manage_* gateway) yields N corpus entries, so visibleCorpus.size()
+        // over-reports the tool count. results is deduped by name the same way.
+        totalToolsSearched: visibleCorpus.collect { it.name }.unique().size(),
         results: results
     ]
 }
@@ -276,7 +280,7 @@ def _getAllToolDefinitions_partDiscovery() {
                 properties: [
                     query: [type: "string", description: "Echoed search query"],
                     resultsCount: [type: "integer", description: "Number of ranked results returned"],
-                    totalToolsSearched: [type: "integer", description: "Size of the searched tool corpus"],
+                    totalToolsSearched: [type: "integer", description: "Number of distinct visible tools searched (a tool in multiple gateways is counted once)"],
                     results: [type: "array", description: "Ranked matching tools", items: [type: "object", properties: [
                         tool: [type: "string", description: "Tool name"],
                         title: [type: "string", description: "Friendly tool name (absent when served from a pre-title cached corpus)"],

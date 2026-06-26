@@ -113,6 +113,28 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         roomHit.relevance > 0
     }
 
+    def "totalToolsSearched counts DISTINCT tools, not multi-gateway corpus rows"() {
+        given: 'a clean cache so the corpus is freshly built'
+        searchEnabled()
+        atomicStateMap.remove('toolSearchCorpus')
+        atomicStateMap.remove('toolSearchTokens')
+
+        when:
+        def result = script.toolSearchTools([query: 'list device room variable rule file', maxResults: 5])
+        // Mirror the production visibility filter (getHiddenToolNames is the single
+        // source of truth toolSearchTools uses) so the expected counts match exactly.
+        def hidden = (script.getHiddenToolNames() ?: []) as Set
+        def visibleRows = atomicStateMap.toolSearchCorpus*.name.findAll { !hidden.contains(it) }
+        def visibleDistinct = visibleRows.unique(false)
+
+        then: 'the corpus genuinely carries multi-gateway duplicate rows (read/write split lists reads in both gateways)'
+        visibleRows.size() > visibleDistinct.size()
+
+        and: 'the reported count is the distinct tool count, never the inflated row count'
+        result.totalToolsSearched == visibleDistinct.size()
+        result.totalToolsSearched < visibleRows.size()
+    }
+
     def "updated() invalidates both BM25 atomicState entries and the gateway requiredParams memo in lockstep"() {
         given: 'populated caches and a no-op initialize so updated() does not hit platform APIs'
         atomicStateMap.toolSearchCorpus = [[name: 'x', description: 'd']]
