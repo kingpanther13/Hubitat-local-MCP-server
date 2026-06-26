@@ -1611,6 +1611,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v2.9.1** - feat: let hub_update_mcp_settings manage the MCP device-access scope (selectedDevices). PRs: [#318](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/318)
 - **v2.9.0** - feat: best-practice acknowledgment gate and reactive hints for write tools. PRs: [#317](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/317)
 - **v2.8.3** - feat: hub-database backup management (list, restore, delete, schedule, upload). PRs: [#316](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/316)
 - **v2.8.2** - feat: add absolute since bookmark filter to hub_list_device_events. PRs: [#314](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/314)
