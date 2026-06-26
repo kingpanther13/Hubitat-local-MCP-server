@@ -146,7 +146,6 @@ def toolGetHubInfo(args = null) {
     // `#include mcp.McpSmokeTestLib` at the top of the file. Its presence here -- returning
     // "smoke-ok-v1" rather than throwing MissingMethodException -- proves the include resolved and
     // the library loaded. Throwaway canary; removed once the modularization split is validated.
-    info.smokeTestMarker = mcpSmokeTestMarker()
     info.smokeTest2Marker = mcpSmokeTest2Marker()
     info.canary3Marker = mcpCanary3Marker()
     info.dashNameProbe = mcpDashNameProbe()
