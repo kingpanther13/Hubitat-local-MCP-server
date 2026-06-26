@@ -112,7 +112,7 @@ def toolSearchTools(args) {
         // read/write split lists every read in both a hub_read_* and a
         // hub_manage_* gateway) yields N corpus entries, so visibleCorpus.size()
         // over-reports the tool count. results is deduped by name the same way.
-        totalToolsSearched: visibleCorpus.collect { it.name }.unique().size(),
+        totalToolsSearched: visibleCorpus*.name.toSet().size(),
         results: results
     ]
 }
