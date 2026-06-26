@@ -98,6 +98,9 @@ class ToolSearchToolsSpec extends ToolSpecBase {
 
         and: 'results remain well-formed (deduped)'
         offResult.results*.tool == offResult.results*.tool.unique()
+
+        and: 'the reported count tracks the VISIBLE corpus -- it shrinks when custom_* tools are hidden, proving it is not counted over the full corpus'
+        offResult.totalToolsSearched < onResult.totalToolsSearched
     }
 
     def "a query semantically anchors to the right corpus entry (proves token<->corpus alignment)"() {
@@ -111,6 +114,47 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         def roomHit = result.results.find { it.tool.contains('room') }
         roomHit != null
         roomHit.relevance > 0
+    }
+
+    def "totalToolsSearched counts DISTINCT tools, not multi-gateway corpus rows"() {
+        given: 'a clean cache so the corpus is freshly built'
+        searchEnabled()
+        atomicStateMap.remove('toolSearchCorpus')
+        atomicStateMap.remove('toolSearchTokens')
+
+        when:
+        def result = script.toolSearchTools([query: 'list device room variable rule file', maxResults: 5])
+        // Mirror the production visibility filter (getHiddenToolNames is the single
+        // source of truth toolSearchTools uses) so the expected counts match exactly.
+        def hidden = (script.getHiddenToolNames() ?: []) as Set
+        def visibleRows = atomicStateMap.toolSearchCorpus*.name.findAll { !hidden.contains(it) }
+        // unique(false) is the NON-mutating overload -- bare unique() dedups visibleRows
+        // in place, which would collapse the visibleRows-vs-visibleDistinct check below.
+        def visibleDistinct = visibleRows.unique(false)
+
+        then: 'the corpus genuinely carries multi-gateway duplicate rows (read/write split lists reads in both gateways)'
+        visibleRows.size() > visibleDistinct.size()
+
+        and: 'the reported count is the distinct tool count, never the inflated row count'
+        result.totalToolsSearched == visibleDistinct.size()
+        result.totalToolsSearched < visibleRows.size()
+    }
+
+    def "disabling a multi-gateway tool drops totalToolsSearched by exactly one (count is post-dedup, not per-row)"() {
+        given: 'hub_get_device lives in BOTH hub_read_devices and hub_manage_devices -- two corpus rows'
+        searchEnabled()
+        atomicStateMap.remove('toolSearchCorpus')
+        atomicStateMap.remove('toolSearchTokens')
+        def before = script.toolSearchTools([query: 'device get attribute', maxResults: 25])
+        assert before.results*.tool.contains('hub_get_device')   // precondition: the multi-gateway tool is present
+
+        when: 'it is disabled by name, removing BOTH of its gateway rows from the visible corpus'
+        settingsMap.disabled_tools = ['hub_get_device']
+        def after = script.toolSearchTools([query: 'device get attribute', maxResults: 25])
+
+        then: 'the distinct count falls by exactly one -- counting rows would have dropped two'
+        before.totalToolsSearched - after.totalToolsSearched == 1
+        !after.results*.tool.contains('hub_get_device')
     }
 
     def "updated() invalidates both BM25 atomicState entries and the gateway requiredParams memo in lockstep"() {

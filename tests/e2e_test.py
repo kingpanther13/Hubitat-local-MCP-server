@@ -1106,6 +1106,36 @@ class TestRunner:
         assert rooms["title"] == "List Rooms", f"hub_list_rooms catalog title unexpected: {rooms['title']!r}"
 
     @test("infrastructure")
+    def test_search_tools_counts_distinct_not_gateway_rows(self) -> None:
+        # hub_search_tools builds its BM25 corpus with one row per (gateway, tool)
+        # membership, and the read/write split lists every read tool in BOTH a
+        # hub_read_* and a hub_manage_* gateway -- so multi-gateway tools occupy
+        # several corpus rows. totalToolsSearched must report DISTINCT tools, not
+        # corpus rows (regression: it reported the per-(gateway,tool) row count
+        # instead of the distinct tool count). results is already deduped by name.
+        result = self.client.call_tool("hub_search_tools", {
+            "query": "list get device room variable rule file log backup",
+            "maxResults": 500,
+        })
+        assert isinstance(result, dict), f"hub_search_tools returned non-dict: {type(result)}"
+        total = result.get("totalToolsSearched")
+        names = [r.get("tool") for r in result.get("results", [])]
+        assert isinstance(total, int) and total > 0, f"totalToolsSearched not a positive int: {total!r}"
+        assert len(names) == len(set(names)), \
+            f"hub_search_tools returned duplicate tool names: {sorted(n for n in set(names) if names.count(n) > 1)}"
+        assert result.get("resultsCount") == len(names), \
+            f"resultsCount != distinct results: {result.get('resultsCount')} vs {len(names)}"
+        assert len(names) <= total, \
+            f"more distinct results ({len(names)}) than tools searched ({total})"
+        # Heuristic regression ceiling: the distinct catalog sits comfortably below this,
+        # whereas the double-count regression inflated the value by every duplicate gateway
+        # membership (roughly a third again as large). The exact distinct-vs-rows pin lives
+        # in the Spock unit test; this only guards the live surface against re-inflation.
+        # Raise the ceiling if the real catalog ever grows past it.
+        assert total <= 120, \
+            f"totalToolsSearched={total} looks inflated by multi-gateway duplicate rows"
+
+    @test("infrastructure")
     def test_health_endpoint(self) -> None:
         data = self.client.get_health()
         assert data.get("status") == "ok", f"Health status != ok: {data.get('status')}"
