@@ -127,14 +127,22 @@ LIBS = [
     },
 ]
 
-# Fixed DOS-epoch timestamp + stored (uncompressed) entries make rebuilds
-# byte-identical, so builds of the same source compare equal byte-for-byte.
+# Deterministic build: a fixed DOS-epoch timestamp + a pinned deflate level make
+# rebuilds of the same source byte-identical, so the e2e can byte-compare the
+# published artifact against its own CI rebuild (cmp -s).
+# DEFLATE (not STORED) keeps the zip well under the hub's ~2MB
+# /bundle2/uploadZipFromUrl fetch cap: ~2MB of library source compresses to ~0.5MB.
+# A STORED bundle over ~2,000,000 bytes is rejected by the hub with the generic
+# "Cannot retrieve zip file" (the cap is on the fetched-file bytes, not the
+# uncompressed content -- verified live: identical content installs deflated and
+# fails stored).
 _FIXED_DT = (1980, 1, 1, 0, 0, 0)
+_DEFLATE_LEVEL = 9  # pinned so deflate output is reproducible build-to-build
 
 
 def _add(zf: zipfile.ZipFile, name: str, data: bytes) -> None:
     info = zipfile.ZipInfo(filename=name, date_time=_FIXED_DT)
-    info.compress_type = zipfile.ZIP_STORED
+    info.compress_type = zipfile.ZIP_DEFLATED  # level pinned on the ZipFile (_DEFLATE_LEVEL)
     info.external_attr = 0o644 << 16
     # ZipInfo defaults create_system from the running platform (0 on Windows,
     # 3 elsewhere) -- pin it so a zip built on Windows is byte-identical to the
@@ -155,7 +163,9 @@ def build() -> str:
     lib_lines = "\n".join(f"library {lib['dest']}" for lib in LIBS)
     manifest = f"{NAMESPACE}\n{BUNDLE_NAME}\n{lib_lines}\n"
 
-    with zipfile.ZipFile(OUTPUT_ZIP, "w") as zf:
+    with zipfile.ZipFile(
+        OUTPUT_ZIP, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=_DEFLATE_LEVEL
+    ) as zf:
         for lib in LIBS:
             # Read as text + normalize CRLF->LF so the committed ZIP is byte-identical
             # regardless of the builder's git core.autocrlf / platform.
