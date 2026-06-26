@@ -517,6 +517,8 @@ jobs:
 
       - name: Acquire test hub lease
         if: steps.gate.outputs.available == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}   # lets lease_acquire.sh reclaim a stranded lease whose holding ci-run has finished
         run: bash .github/scripts/lease_acquire.sh "ci-run-${{ github.run_id }}"
 
       - name: Pre-run hub status probe
