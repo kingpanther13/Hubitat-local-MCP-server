@@ -1589,6 +1589,7 @@ def getReadOnlyToolNames() {
     return ([
     ]
         + _readOnlyToolNames_partNativeRM()
+        + _readOnlyToolNames_partDashboards()
         + _readOnlyToolNames_partRooms()
         + _readOnlyToolNames_partBundles()
         + _readOnlyToolNames_partVisualRules()
@@ -1634,6 +1635,7 @@ def getIdempotentWriteToolNames() {
     return ([
     ]
         + _idempotentWriteToolNames_partNativeRM()
+        + _idempotentWriteToolNames_partDashboards()
         + _idempotentWriteToolNames_partRooms()
         + _idempotentWriteToolNames_partBundles()
         + _idempotentWriteToolNames_partVisualRules()
@@ -1692,7 +1694,7 @@ def getToolDisplayMeta() {
     // this file keeps only the gateway entries (gateway membership is cross-domain
     // and lives in getGatewayConfig).
     def meta = [:]
-    [_toolDisplayMeta_partNativeRM(),
+    [_toolDisplayMeta_partDashboards(), _toolDisplayMeta_partNativeRM(),
      _toolDisplayMeta_partRooms(),
      _toolDisplayMeta_partBundles(),
      _toolDisplayMeta_partVisualRules(),
@@ -2106,7 +2108,7 @@ def getAllToolDefinitions() {
     // McpBundlesLib / McpVisualRulesLib #include libraries (issue #209 modularization -- a
     // domain's tool DEFINITIONS live with its impl in the library; only the gateway membership
     // + dispatch case stay in this file).
-    return _getAllToolDefinitions_partNativeRM() + _getAllToolDefinitions_partRooms() + _getAllToolDefinitions_partBundles() + _getAllToolDefinitions_partVisualRules() + _getAllToolDefinitions_partDiscovery() + _getAllToolDefinitions_partAppCloner() + _getAllToolDefinitions_partSelfAdmin() + _getAllToolDefinitions_partHpm() + _getAllToolDefinitions_partCodeManagement() + _getAllToolDefinitions_partCustomRules() + _getAllToolDefinitions_partVariables() + _getAllToolDefinitions_partVirtualDevices() + _getAllToolDefinitions_partDevices() + _getAllToolDefinitions_partSystem() + _getAllToolDefinitions_partDiagnostics() + _getAllToolDefinitions_partDebugLogging() + _getAllToolDefinitions_partItemBackups() + _getAllToolDefinitions_partFiles()
+    return _getAllToolDefinitions_partNativeRM() + _getAllToolDefinitions_partRooms() + _getAllToolDefinitions_partBundles() + _getAllToolDefinitions_partVisualRules() + _getAllToolDefinitions_partDiscovery() + _getAllToolDefinitions_partAppCloner() + _getAllToolDefinitions_partSelfAdmin() + _getAllToolDefinitions_partHpm() + _getAllToolDefinitions_partCodeManagement() + _getAllToolDefinitions_partCustomRules() + _getAllToolDefinitions_partVariables() + _getAllToolDefinitions_partVirtualDevices() + _getAllToolDefinitions_partDevices() + _getAllToolDefinitions_partSystem() + _getAllToolDefinitions_partDiagnostics() + _getAllToolDefinitions_partDebugLogging() + _getAllToolDefinitions_partItemBackups() + _getAllToolDefinitions_partFiles() + _getAllToolDefinitions_partDashboards()
 }
 
 // Content fingerprint of the catalog's name -> required-params shape, used as

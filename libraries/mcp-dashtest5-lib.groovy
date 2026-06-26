@@ -322,7 +322,7 @@ private Map _dashboardWriteResult(raw, String op, String reqId) {
 
 // Tool DEFINITIONS (issue #209: schema lives with the impl). Concatenated into getAllToolDefinitions()
 // in the main app; gateway membership + dispatch cases stay in main.
-def _c5InertDefs() {
+def _getAllToolDefinitions_partDashboards() {
     return [
         [
             name: "hub_list_dashboards",
@@ -513,7 +513,7 @@ Write op (Write master). Hubitat's cloneAsEasy: duplicates the source's tiles an
     ]
 }
 
-def _c5InertReadOnly() {
+def _readOnlyToolNames_partDashboards() {
     // Read-only classification membership for this library's tools, contributed to the
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
@@ -522,7 +522,7 @@ def _c5InertReadOnly() {
     ]
 }
 
-def _c5InertIdem() {
+def _idempotentWriteToolNames_partDashboards() {
     // Retry-safe writes (MCP idempotentHint) -- contributed to the app's
     // getIdempotentWriteToolNames() aggregator; see the classification rules there.
     //   * hub_update_dashboard: wholesale replace -> same args, same end state (idempotent).
@@ -533,7 +533,7 @@ def _c5InertIdem() {
     ]
 }
 
-def _c5InertDisplay() {
+def _toolDisplayMeta_partDashboards() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
     return [
