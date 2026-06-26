@@ -58,10 +58,6 @@ LIBS = [
         "dest": f"{NAMESPACE}.McpCanary3Lib.groovy",
     },
     {
-        "source": LIB_DIR / "mcp-dashtest5-lib.groovy",
-        "dest": f"{NAMESPACE}.McpDashboardsLib.groovy",
-    },
-    {
         "source": LIB_DIR / "mcp-rooms-lib.groovy",
         "dest": f"{NAMESPACE}.McpRoomsLib.groovy",
     },
@@ -132,6 +128,10 @@ LIBS = [
     {
         "source": LIB_DIR / "mcp-native-rules-lib.groovy",
         "dest": f"{NAMESPACE}.McpNativeRulesLib.groovy",
+    },
+    {
+        "source": LIB_DIR / "mcp-dashtest5-lib.groovy",
+        "dest": f"{NAMESPACE}.McpDashboardsLib.groovy",
     },
 ]
 
