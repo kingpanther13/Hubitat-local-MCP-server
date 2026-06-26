@@ -2128,7 +2128,7 @@ class TestRunner:
     def _find_dashboard_id_by_name(self, name: str) -> str | None:
         """Return the installedAppId of the BAT dashboard with this exact name, or None."""
         try:
-            listed = self.client.call_tool("hub_manage_dashboard", {"tool": "hub_list_dashboards", "args": {}})
+            listed = self.client.call_tool("hub_manage_dashboards", {"tool": "hub_list_dashboards", "args": {}})
         except Exception:
             return None
         if not isinstance(listed, dict):
@@ -2144,7 +2144,7 @@ class TestRunner:
         Verify-by-id (not by name): a same-named clone left on the hub would otherwise
         mask a real delete of the original (Codex P2)."""
         try:
-            listed = self.client.call_tool("hub_manage_dashboard", {"tool": "hub_list_dashboards", "args": {}})
+            listed = self.client.call_tool("hub_manage_dashboards", {"tool": "hub_list_dashboards", "args": {}})
         except Exception:
             return False
         if not isinstance(listed, dict):
@@ -2159,7 +2159,7 @@ class TestRunner:
 
         # CREATE
         cw = self._soft_write(
-            lambda: self.client.call_tool("hub_manage_dashboard", {
+            lambda: self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_create_dashboard",
                 "args": {"name": dash_name, "deviceIds": [str(switch_id)],
                          "options": {"showClockTile": True, "theme": "dark"}},
@@ -2189,7 +2189,7 @@ class TestRunner:
         self.created_dashboard_ids.append(dash_id)
 
         # READ back via hub_get_dashboard
-        got = self.client.call_tool("hub_manage_dashboard", {
+        got = self.client.call_tool("hub_manage_dashboards", {
             "tool": "hub_get_dashboard", "args": {"id": dash_id}})
         assert isinstance(got, dict), f"hub_get_dashboard returned non-dict: {got}"
         assert got.get("name") == dash_name, f"dashboard name mismatch: {got}"
@@ -2199,11 +2199,11 @@ class TestRunner:
         new_clock = not bool(got.get("showClockTile"))
         upd_devices = [str(x) for x in (got.get("deviceIds") or [switch_id])]
         uw = self._soft_write(
-            lambda: self.client.call_tool("hub_manage_dashboard", {
+            lambda: self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_update_dashboard",
                 "args": {"id": dash_id, "name": dash_name, "deviceIds": upd_devices,
                          "options": {"showClockTile": new_clock}}}),
-            lambda: bool((self.client.call_tool("hub_manage_dashboard", {
+            lambda: bool((self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_get_dashboard", "args": {"id": dash_id}}) or {}).get("showClockTile")) == new_clock,
             "update dashboard",
         )
@@ -2212,13 +2212,13 @@ class TestRunner:
         else:
             assert isinstance(uw["response"], dict) and uw["response"].get("success"), \
                 f"hub_update_dashboard failed: {uw['response']}"
-            reread = self.client.call_tool("hub_manage_dashboard", {
+            reread = self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_get_dashboard", "args": {"id": dash_id}})
             assert bool(reread.get("showClockTile")) == new_clock, \
                 f"hub_update_dashboard reported success but showClockTile didn't change: {reread}"
 
         # CLONE (clone-by-value: copies the source config into a new dashboard named "<name> (copy)")
-        clone = self.client.call_tool("hub_manage_dashboard", {
+        clone = self.client.call_tool("hub_manage_dashboards", {
             "tool": "hub_clone_dashboard", "args": {"id": dash_id}})
         if isinstance(clone, dict) and clone.get("success"):
             clone_id = clone.get("newId")
@@ -2232,7 +2232,7 @@ class TestRunner:
         # Verify absence by the SPECIFIC dash_id, not by name: a same-named clone created just
         # above would mask a failed delete of the original if we matched on name (Codex P2).
         dw = self._soft_write(
-            lambda: self.client.call_tool("hub_manage_dashboard", {
+            lambda: self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_delete_dashboard",
                 "args": {"id": dash_id, "confirm": True}}),
             lambda: not self._dashboard_id_present(dash_id),
@@ -7969,19 +7969,19 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         for dash_id in list(self.created_dashboard_ids):
             try:
                 print(f"  Deleting tracked dashboard {dash_id}")
-                self.client.call_tool("hub_manage_dashboard", {
+                self.client.call_tool("hub_manage_dashboards", {
                     "tool": "hub_delete_dashboard", "args": {"id": dash_id, "confirm": True}})
             except Exception as exc:
                 print(f"  [WARN] Failed to delete dashboard {dash_id}: {exc}")
         self.created_dashboard_ids.clear()
         try:
-            dres = self.client.call_tool("hub_manage_dashboard", {"tool": "hub_list_dashboards", "args": {}})
+            dres = self.client.call_tool("hub_manage_dashboards", {"tool": "hub_list_dashboards", "args": {}})
             for d in (dres.get("dashboards", []) if isinstance(dres, dict) else []):
                 dname = str(d.get("name") or "")
                 if PREFIX in dname and d.get("id"):
                     try:
                         print(f"  Sweep: deleting dashboard '{dname}' (id={d.get('id')})")
-                        self.client.call_tool("hub_manage_dashboard", {
+                        self.client.call_tool("hub_manage_dashboards", {
                             "tool": "hub_delete_dashboard", "args": {"id": str(d["id"]), "confirm": True}})
                     except Exception as exc:
                         print(f"  [WARN] Dashboard sweep delete failed for '{dname}': {exc}")

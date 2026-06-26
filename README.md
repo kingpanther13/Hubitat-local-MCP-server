@@ -644,7 +644,7 @@ The **Developer Mode** pattern — for LLM-agent and CI/CD pipelines that need t
 </details>
 
 <details>
-<summary><b>hub_manage_dashboard</b> (6) — Easy Dashboard CRUD</summary>
+<summary><b>hub_manage_dashboards</b> (6) — Easy Dashboard CRUD</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -653,7 +653,7 @@ The **Developer Mode** pattern — for LLM-agent and CI/CD pipelines that need t
 | `hub_create_dashboard` | Create an Easy Dashboard from `name` + `deviceIds` (≥1) plus tile toggles, navigation, theme, and PINs |
 | `hub_update_dashboard` | Replace an Easy Dashboard's config WHOLESALE by id (no server-side read-merge — pass the full desired config; read it first with `hub_get_dashboard`) |
 | `hub_delete_dashboard` | Permanently delete an Easy Dashboard by id (devices are not deleted; `confirm=true` + recent backup) |
-| `hub_clone_dashboard` | Clone an Easy Dashboard into a new one (Hubitat's cloneAsEasy) |
+| `hub_clone_dashboard` | Clone an Easy Dashboard into a new one (clone-by-value) |
 
 Easy Dashboards are the hub's touch-friendly device dashboards (classic child apps of the Easy Dashboard Parent). The list endpoint may be `pinToken`-gated on some hubs (an unexpectedly-empty list is the tell).
 

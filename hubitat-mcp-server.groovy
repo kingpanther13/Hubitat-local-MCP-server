@@ -1482,7 +1482,7 @@ def getGatewayConfig() {
                 hub_delete_visual_rule: "visual rules builder VRB remove delete destroy automation rule"
             ]
         ],
-        hub_manage_dashboard: [
+        hub_manage_dashboards: [
             description: "Manage Hubitat Easy Dashboards: list, view, create, update, delete, and clone touch-friendly device dashboards (tile toggles, navigation, themes, optional PINs). Update REPLACES the config wholesale — read it first with hub_get_dashboard. Delete is destructive (confirm + recent backup). Reads are also in hub_read_dashboards.",
             tools: ["hub_list_dashboards", "hub_get_dashboard", "hub_create_dashboard", "hub_update_dashboard", "hub_delete_dashboard", "hub_clone_dashboard"],
             summaries: [
@@ -1491,7 +1491,7 @@ def getGatewayConfig() {
                 hub_create_dashboard: "Create an Easy Dashboard. Args: name, deviceIds (>=1), tile toggles?, navigationSelection?, theme?, pins?",
                 hub_update_dashboard: "Replace an Easy Dashboard's config wholesale (pass the FULL config). Args: id, name, deviceIds (>=1), tile toggles?, theme?",
                 hub_delete_dashboard: "Permanently delete an Easy Dashboard (DESTRUCTIVE). Args: id, confirm=true",
-                hub_clone_dashboard: "Clone an Easy Dashboard into a new one (cloneAsEasy). Args: id"
+                hub_clone_dashboard: "Clone an Easy Dashboard into a copy (clone-by-value). Args: id"
             ],
             searchHints: [
                 hub_list_dashboards: "list show easy dashboards dashboard tiles panels touch UI screen wall tablet",
@@ -1499,11 +1499,11 @@ def getGatewayConfig() {
                 hub_create_dashboard: "add new easy dashboard tiles devices panel touch screen wall tablet build",
                 hub_update_dashboard: "edit modify change replace easy dashboard tiles devices theme navigation config",
                 hub_delete_dashboard: "remove delete destroy easy dashboard panel tiles",
-                hub_clone_dashboard: "copy duplicate clone easy dashboard template cloneAsEasy"
+                hub_clone_dashboard: "copy duplicate clone easy dashboard template"
             ]
         ],
         hub_read_dashboards: [
-            description: "Read-only Easy Dashboard inspection: list dashboards and view one dashboard's full config (tiles, navigation, theme, devices). All operations are read-only; create/update/delete/clone live in hub_manage_dashboard.",
+            description: "Read-only Easy Dashboard inspection: list dashboards and view one dashboard's full config (tiles, navigation, theme, devices). All operations are read-only; create/update/delete/clone live in hub_manage_dashboards.",
             tools: ["hub_list_dashboards", "hub_get_dashboard"],
             summaries: [
                 hub_list_dashboards: "List Easy Dashboards (id, name, tile/theme config). Args: pinToken? (optional; resolved automatically)",
@@ -1764,7 +1764,7 @@ def getToolDisplayMeta() {
         hub_manage_rule_machine: [title: "Manage Rule Machine", summary: "Author, trigger, pause, inspect, and delete Visual Rules Builder and Rule Machine rules."],
         hub_manage_native_rules_and_apps: [title: "Manage Native Rules and Apps", summary: "Runtime control of Rule Machine rules plus create, edit, clone, export, import, and delete classic native apps."],
         hub_manage_mcp: [title: "Manage MCP Server", summary: "Self-administer the MCP app's own settings (Developer Mode)."],
-        hub_manage_dashboard: [title: "Manage Dashboards", summary: "List, view, create, update, delete, and clone Easy Dashboards."]
+        hub_manage_dashboards: [title: "Manage Dashboards", summary: "List, view, create, update, delete, and clone Easy Dashboards."]
     ])
     return meta
 }
@@ -2499,7 +2499,7 @@ def executeTool(toolName, args) {
         case "hub_manage_rooms":
         case "hub_manage_rule_machine":
         case "hub_manage_variables":
-        case "hub_manage_dashboard":
+        case "hub_manage_dashboards":
             // Flat-mode guard: gateways are not advertised on tools/list when useGateways=false,
             // so a gateway-name call here is almost certainly a stale/cached client. Returning
             // the gateway catalog would silently contradict the user's intent — fail loud with

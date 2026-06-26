@@ -184,7 +184,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_manage_native_rules_and_apps', // create/update/delete/run native rules
             'hub_manage_rule_machine',       // hub_call_rule, set_rule_paused, set_rule_private_boolean
             'hub_manage_mcp',           // hub_update_mcp_settings
-            'hub_manage_dashboard'      // create/update/delete/clone dashboards
+            'hub_manage_dashboards'      // create/update/delete/clone dashboards
         ]
         writeGateways.each { gwName ->
             def gw = tools.find { it.name == gwName }

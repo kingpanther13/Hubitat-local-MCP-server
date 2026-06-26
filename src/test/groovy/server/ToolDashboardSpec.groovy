@@ -9,7 +9,7 @@ import support.ToolSpecBase
  * hub_delete_dashboard / hub_clone_dashboard. The GET /dashboard/* endpoints are stubbed via
  * hubGet.register (the mock keys on path; the query Map is recorded in hubGet.calls, not
  * matched). Each tool gets a direct-call unit test AND a dispatch-envelope test; the gateway
- * tools are also routed THROUGH hub_manage_dashboard / hub_read_dashboards.
+ * tools are also routed THROUGH hub_manage_dashboards / hub_read_dashboards.
  *
  * enableWrite() sets the Write master + a recent backup so the destructive-confirm gate on
  * hub_delete_dashboard passes; the read/create/update/clone tools only need the Write master
@@ -20,8 +20,8 @@ class ToolDashboardSpec extends ToolSpecBase {
     private static final String LIST_JSON =
         '[{"installedAppId":412,"name":"Living Room","showModeTile":true,"showClockTile":false,' +
         '"showCalendarTile":false,"showHSMTile":false,"showEdit":true,"showNavigation":true,' +
-        '"showTutorial":false,"navigationSelection":"","theme":"dark","deviceIds":"12,34"},' +
-        '{"installedAppId":500,"name":"Garage","theme":"legacy","deviceIds":"99"}]'
+        '"showTutorial":false,"navigationSelection":"","theme":"dark","deviceIds":"[12,34]"},' +
+        '{"installedAppId":500,"name":"Garage","theme":"legacy","deviceIds":"[99]"}]'
 
     def setup() {
         hubGet.register('/dashboard/all') { params -> LIST_JSON }
@@ -83,24 +83,43 @@ class ToolDashboardSpec extends ToolSpecBase {
         r.note.toLowerCase().contains('pintoken')
     }
 
-    def "list degrades gracefully (no throw) when /dashboard/all fails and no child apps exist"() {
-        given:
+    def "list surfaces success:false (not a fake empty) when BOTH /dashboard/all and the child-app fallback fail"() {
+        given: 'both reads error -- /dashboard/all throws and /hub2/appsList is unmocked (also throws)'
         hubGet.register('/dashboard/all') { params -> throw new RuntimeException('endpoint down') }
 
         when:
         def r = script.toolListDashboards([:])
 
-        then: 'the failure is caught, the child-app fallback finds nothing, and an empty result + note is returned -- never throws'
-        r.dashboards == []
-        r.count == 0
-        r.note != null
-        r.success == null
+        then: 'a transient read failure is reported as an error, NEVER as "this hub has zero dashboards" (no throw)'
+        r.success == false
+        r.error != null
+        r.dashboards == null
+    }
+
+    def "list falls back to child apps with a non-pinToken note when /dashboard/all ERRORS but child apps read"() {
+        given: '/dashboard/all errors, but the child-app enumeration succeeds'
+        hubGet.register('/dashboard/all') { params -> throw new RuntimeException('endpoint down') }
+        hubGet.register('/hub2/appsList') { params ->
+            '{"apps":[{"data":{"id":19,"name":"Easy Dashboards","type":"Easy Dashboard Parent"},' +
+            '"children":[{"data":{"id":38,"name":"Dashboard 1","type":"Easy Dashboard"},"children":[]}]}]}'
+        }
+
+        when:
+        def r = script.toolListDashboards([:])
+
+        then: 'lists via child apps; the note must NOT misattribute the hub error to a missing pinToken'
+        r.source == 'child-apps'
+        r.count == 1
+        !r.note.toLowerCase().contains('pintoken')
+        r.note.toLowerCase().contains('errored')
     }
 
     def "list scrapes the page pinToken and forwards it to /dashboard/all when none is supplied"() {
         given: 'the /dashboard/select page exposes globalDashboardPinToken (mock the raw fetch the harness lacks)'
+        // hubInternalGetRaw returns the struct [status, location, data] (returnShape:'struct'), so the
+        // body lives under .data -- mock that real shape, not a bare String.
         script.metaClass.hubInternalGetRaw = { String p ->
-            p == '/dashboard/select' ? "<script>var globalDashboardPinToken = 'tok-scraped';</script>" : null
+            p == '/dashboard/select' ? [status: 200, location: null, data: "<script>var globalDashboardPinToken = 'tok-scraped';</script>"] : null
         }
 
         when:
@@ -156,6 +175,38 @@ class ToolDashboardSpec extends ToolSpecBase {
         then:
         r.success == false
         r.availableIds.containsAll(['412', '500'])
+    }
+
+    def "get rejects a non-numeric id (the URL-splice guard) with a validation error"() {
+        when:
+        script.toolGetDashboard([id: 'abc; rm'])
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
+    def "get enriches a child-app-sourced match from /installedapp/configure/json (tiles, devices, pins)"() {
+        given: 'the list is child-app-sourced (id+name only); the app-config page carries the full settings'
+        hubGet.register('/dashboard/all') { params -> '[]' }
+        hubGet.register('/hub2/appsList') { params ->
+            '{"apps":[{"data":{"id":19,"name":"Easy Dashboards","type":"Easy Dashboard Parent"},' +
+            '"children":[{"data":{"id":38,"name":"Dashboard 1","type":"Easy Dashboard"},"children":[]}]}]}'
+        }
+        hubGet.register('/installedapp/configure/json/38') { params ->
+            '{"app":{"label":"Dashboard 1"},"settings":{"showClockTile":"true","showModeTile":"false",' +
+            '"devicesPicked":{"8":"Lamp","1":"Fan"},"dashboardPin":"","hsmPin":"null"}}'
+        }
+
+        when:
+        def r = script.toolGetDashboard([id: '38'])
+
+        then: 'string tile toggles coerce to booleans, devicesPicked keys become deviceIds, unset pins are omitted'
+        r.id == '38'
+        r.showClockTile == true
+        r.showModeTile == false
+        r.deviceIds.sort() == ['1', '8']
+        !r.containsKey('dashboardPin')   // "" -> omitted
+        !r.containsKey('hsmPin')         // "null" -> omitted
     }
 
     def "get includes pins and a CSV navigationSelection when the hub exposes them (read-then-update round-trip)"() {
@@ -407,6 +458,21 @@ class ToolDashboardSpec extends ToolSpecBase {
         thrown(IllegalArgumentException)
     }
 
+    def "update preserves an existing PIN the caller didn't pass (wholesale replace must not clear it)"() {
+        given: 'the dashboard currently has a dashboardPin, and the caller updates WITHOUT supplying one'
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/412') { params ->
+            '{"app":{"label":"Living Room"},"settings":{"dashboardPin":"4242","hsmPin":"null"}}'
+        }
+
+        when: 'an unrelated edit (no pin in args)'
+        script.toolUpdateDashboard([id: '412', name: 'Living Room', deviceIds: ['12', '34'], options: [theme: 'dark']])
+
+        then: 'the current PIN is read back and re-sent, so it is not blanked'
+        def call = hubGet.calls.find { it.path == '/dashboard/update' }
+        call.params.dashboardPin == '4242'
+    }
+
     // ---------- hub_delete_dashboard ----------
 
     def "delete removes by id (confirm-gated)"() {
@@ -459,6 +525,38 @@ class ToolDashboardSpec extends ToolSpecBase {
         r.note != null
     }
 
+    def "delete succeeds by EFFECT when /dashboard/delete lies with success:false but the dashboard is gone"() {
+        given: 'the real-hub shape: delete returns success:false even though it deleted; child-app check shows 412 absent'
+        enableWrite()
+        hubGet.register('/dashboard/delete') { params -> '{"success":false,"message":null}' }
+        hubGet.register('/hub2/appsList') { params ->
+            '{"apps":[{"data":{"id":19,"name":"Easy Dashboards","type":"Easy Dashboard Parent"},' +
+            '"children":[{"data":{"id":99,"name":"Other","type":"Easy Dashboard"},"children":[]}]}]}'
+        }
+
+        when:
+        def r = script.toolDeleteDashboard([id: '412', confirm: true])
+
+        then: 'verify-by-effect: 412 is no longer present, so the delete is reported as success'
+        r.success == true
+        r.id == '412'
+    }
+
+    def "delete does NOT false-claim success when removal cannot be confirmed (both reads fail)"() {
+        given: 'delete lies with success:false AND both presence reads fail (/hub2/appsList unmocked + /dashboard/all throws)'
+        enableWrite()
+        hubGet.register('/dashboard/delete') { params -> '{"success":false,"message":null}' }
+        hubGet.register('/dashboard/all') { params -> throw new RuntimeException('endpoint down') }
+
+        when:
+        def r = script.toolDeleteDashboard([id: '412', confirm: true])
+
+        then: 'a destructive op is NOT reported as success without confirming evidence'
+        r.success == false
+        r.error.toLowerCase().contains('could not be confirmed')
+        r.note != null
+    }
+
     // ---------- hub_clone_dashboard ----------
 
     def "clone copies the source config into a new dashboard (clone-by-value, not the session-bound cloneAsEasy)"() {
@@ -478,6 +576,32 @@ class ToolDashboardSpec extends ToolSpecBase {
 
         and: 'it does NOT call the session-bound cloneAsEasy endpoint (which fails from the server)'
         !hubGet.calls.any { it.path.startsWith('/dashboard/cloneAsEasy') }
+    }
+
+    def "clone copies the source's full config (theme + tiles) by value into the create call"() {
+        given:
+        enableWrite()
+
+        when:
+        script.toolCloneDashboard([id: '412'])
+
+        then: 'the source 412 config (theme dark, showModeTile true) flows into /dashboard/create, not just name+devices'
+        def createCall = hubGet.calls.find { it.path == '/dashboard/create' }
+        createCall.params.theme == 'dark'
+        createCall.params.showModeTile == 'true'
+    }
+
+    def "clone returns a structured failure (not a caller-blaming -32602) when the source can't be read"() {
+        given: 'a source id that is not listable -> get returns success:false, so there is no device list to clone'
+        enableWrite()
+
+        when:
+        def r = script.toolCloneDashboard([id: '9999'])
+
+        then: 'clone surfaces a runtime failure rather than letting create throw IllegalArgumentException'
+        r.success == false
+        r.sourceId == '9999'
+        r.error.toLowerCase().contains('source')
     }
 
     def "clone without id throws"() {
@@ -566,9 +690,9 @@ class ToolDashboardSpec extends ToolSpecBase {
 
     // ---------- through the gateways (membership + routing) ----------
 
-    def "the hub_manage_dashboard gateway catalog lists every dashboard sub-tool (membership)"() {
+    def "the hub_manage_dashboards gateway catalog lists every dashboard sub-tool (membership)"() {
         when:
-        def cat = script.handleGateway('hub_manage_dashboard', null, null)
+        def cat = script.handleGateway('hub_manage_dashboards', null, null)
 
         then:
         cat.tools*.name.containsAll([
@@ -584,9 +708,9 @@ class ToolDashboardSpec extends ToolSpecBase {
         (cat.tools*.name as Set) == ['hub_list_dashboards', 'hub_get_dashboard'] as Set
     }
 
-    def "hub_list_dashboards routes THROUGH the hub_manage_dashboard gateway"() {
+    def "hub_list_dashboards routes THROUGH the hub_manage_dashboards gateway"() {
         when:
-        def r = script.handleGateway('hub_manage_dashboard', 'hub_list_dashboards', [:])
+        def r = script.handleGateway('hub_manage_dashboards', 'hub_list_dashboards', [:])
 
         then:
         r.count == 2
@@ -600,12 +724,12 @@ class ToolDashboardSpec extends ToolSpecBase {
         r.count == 2
     }
 
-    def "hub_delete_dashboard routes THROUGH the hub_manage_dashboard gateway"() {
+    def "hub_delete_dashboard routes THROUGH the hub_manage_dashboards gateway"() {
         given:
         enableWrite()
 
         when:
-        def r = script.handleGateway('hub_manage_dashboard', 'hub_delete_dashboard', [id: '412', confirm: true])
+        def r = script.handleGateway('hub_manage_dashboards', 'hub_delete_dashboard', [id: '412', confirm: true])
 
         then:
         r.success == true

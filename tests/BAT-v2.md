@@ -2472,7 +2472,7 @@ These operations are too destructive for automated testing. Test manually with e
 
 **8 read gateways**: `hub_read_apps_code` (11), `hub_read_devices` (4), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3), `hub_read_dashboards` (2)
 
-**15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboard` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (7), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
+**15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (7), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
 
 **13 flat core tools**: `hub_manage_virtual_device`, `hub_get_tool_guide`, `hub_report_issue`, `hub_search_tools`, `hub_get_info`, `hub_list_modes`, `hub_manage_mode`, `hub_set_mode_manager`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_set_system_settings`, `hub_update_firmware`, `hub_create_backup`
 
@@ -4216,9 +4216,9 @@ The Visual Rules Builder tools live in the `hub_manage_rule_machine` gateway (th
 
 ---
 
-## Section 17: Easy Dashboard Tests (hub_manage_dashboard / hub_read_dashboards)
+## Section 17: Easy Dashboard Tests (hub_manage_dashboards / hub_read_dashboards)
 
-Easy Dashboard CRUD (issue #259 item #9). The 6 tools live in the `hub_manage_dashboard` gateway; the two reads (`hub_list_dashboards`, `hub_get_dashboard`) are also surfaced in the pure-read `hub_read_dashboards` gateway. Reads require the Read master; create/update/clone require the Write master; delete additionally requires `confirm=true` + a hub backup within 24h. Easy Dashboards are classic child apps of the Easy Dashboard Parent, driven by `GET /dashboard/*` endpoints. The list endpoint may be pinToken-gated on some hubs (an unexpectedly-empty list is the tell).
+Easy Dashboard CRUD (issue #259 item #9). The 6 tools live in the `hub_manage_dashboards` gateway; the two reads (`hub_list_dashboards`, `hub_get_dashboard`) are also surfaced in the pure-read `hub_read_dashboards` gateway. Reads require the Read master; create/update/clone require the Write master; delete additionally requires `confirm=true` + a hub backup within 24h. Easy Dashboards are classic child apps of the Easy Dashboard Parent, driven by `GET /dashboard/*` endpoints. The list endpoint may be pinToken-gated on some hubs (an unexpectedly-empty list is the tell).
 
 ### Safety Rules for Section 17
 
@@ -4236,7 +4236,7 @@ Easy Dashboard CRUD (issue #259 item #9). The 6 tools live in the `hub_manage_da
 }
 ```
 
-**Expected**: the AI routes to `hub_manage_dashboard(tool=hub_create_dashboard)` with `name='BAT Dash Create'`, `deviceIds=[<id>]`, `showClockTile=true`, no `confirm` needed (create needs only the Write master). The response returns `success=true` and (when the hub provides it) the new dashboard `id`. A follow-up `hub_get_dashboard(id=N)` returns the dashboard with `showClockTile` truthy and the device present. The dashboard also appears in `hub_list_dashboards`.
+**Expected**: the AI routes to `hub_manage_dashboards(tool=hub_create_dashboard)` with `name='BAT Dash Create'`, `deviceIds=[<id>]`, `showClockTile=true`, no `confirm` needed (create needs only the Write master). The response returns `success=true` and (when the hub provides it) the new dashboard `id`. A follow-up `hub_get_dashboard(id=N)` returns the dashboard with `showClockTile` truthy and the device present. The dashboard also appears in `hub_list_dashboards`.
 
 **Failure modes**: the AI sends `deviceIds` as an empty list (rejected -32602 — an Easy Dashboard needs ≥1 device). The booleans go over the wire as JSON booleans instead of the strings "true"/"false" (wire-format break — the dashboard's tile would not toggle). `hub_get_dashboard` called without an id (rejected -32602). The list comes back empty after a successful create (the read may be pinToken-gated — retry `hub_list_dashboards` with a pinToken).
 
@@ -4264,7 +4264,7 @@ Easy Dashboard CRUD (issue #259 item #9). The 6 tools live in the `hub_manage_da
 }
 ```
 
-**Expected**: the AI routes to `hub_manage_dashboard(tool=hub_clone_dashboard)` with the source `id`; the response returns `success=true`, `sourceId`, and (when the hub provides it) `newId`. `hub_list_dashboards` shows both the source and the clone.
+**Expected**: the AI routes to `hub_manage_dashboards(tool=hub_clone_dashboard)` with the source `id`; the response returns `success=true`, `sourceId`, and (when the hub provides it) `newId`. `hub_list_dashboards` shows both the source and the clone.
 
 **Failure modes**: clone called without an `id` (rejected -32602). The clone is reported successful but never appears in the list (verify with `hub_list_dashboards` — the clone may need a pinToken to surface).
 

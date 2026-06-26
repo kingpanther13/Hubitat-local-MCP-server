@@ -149,7 +149,7 @@ Read-only variable access: list, get value/metadata, and observe recent changes.
 
 ### hub_read_dashboards (2 tools)
 
-Read-only Easy Dashboard access: list dashboards and view one dashboard's full config. The read tools are also surfaced under `hub_manage_dashboard`.
+Read-only Easy Dashboard access: list dashboards and view one dashboard's full config. The read tools are also surfaced under `hub_manage_dashboards`.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
@@ -339,7 +339,7 @@ Developer Mode self-administration: a tool that lets an LLM agent or CI/CD pipel
 |------|-------------|-------------|
 | `hub_update_mcp_settings` | Update one or more of the MCP rule app's own settings. Allowlisted: `mcpLogLevel`, `debugLogging`, `maxCapturedStates`, `loopGuardMax`, `loopGuardWindowSec`, `enableRead`, `enableCustomRuleEngine`, `useGateways`, `publishOutputSchemas`, `enableMandatoryBPS`, and `selectedDevices` (the device-access scope). For `selectedDevices`, pass `{mode:"replace"/"add"/"remove", ids:[...], allowEmpty?}` (or a bare array = replace): `replace` sets the authorized set to exactly `ids`, `add` unions (safest for granting one device), `remove` subtracts. For replace/add, ids are validated atomically against the full hub list (unknown id rejects the whole batch, nothing changed); `remove` does not validate (absent-id removal is a no-op). Refuses to empty the scope unless `allowEmpty=true`. Discover ids via `hub_list_devices(scope='all')`. After flipping any `enable*` toggle / `useGateways`, or changing `selectedDevices`, MCP clients may need to reconnect to refresh their cached tool schema / device visibility. | Developer Mode + Write master + confirm + recent backup |
 
-### hub_manage_dashboard (6 tools)
+### hub_manage_dashboards (6 tools)
 
 Easy Dashboard CRUD — the touch-friendly device dashboards (classic child apps with tile toggles, navigation, themes, and optional PINs). The read tools are also surfaced under `hub_read_dashboards`.
 
@@ -350,7 +350,7 @@ Easy Dashboard CRUD — the touch-friendly device dashboards (classic child apps
 | `hub_create_dashboard` | Create an Easy Dashboard from `name` + `deviceIds` (>=1) plus tile toggles, navigation, theme, and PINs. Booleans serialize to "true"/"false"; deviceIds to a CSV. | Write master |
 | `hub_update_dashboard` | Replace an Easy Dashboard's config WHOLESALE by id (no server-side read-merge — pass the full desired config every call; read it first with `hub_get_dashboard`). | Write master |
 | `hub_delete_dashboard` | Permanently delete an Easy Dashboard by id (devices are not deleted). | Write master + `confirm` + backup <24h |
-| `hub_clone_dashboard` | Clone an Easy Dashboard into a new one (Hubitat's cloneAsEasy). | Write master |
+| `hub_clone_dashboard` | Clone an Easy Dashboard into a new one (clone-by-value). | Write master |
 
 ### hub_update_package (top-level, Developer Mode)
 

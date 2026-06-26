@@ -12,12 +12,14 @@ def toolListDashboards(args = null) {
     def q = [:]
     if (token) q.pinToken = token
     def parsed = null
+    boolean allErrored = false   // true iff /dashboard/all threw (a hub error), NOT merely returned empty
     try {
         def raw = hubInternalGet("/dashboard/all", q)
         parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : []
     } catch (Exception e) {
         mcpLogError("dashboard", "list dashboards via /dashboard/all failed", e)
         parsed = null
+        allErrored = true
     }
     // /dashboard/all aggregates BOTH Easy (version 2.x) and legacy (version 1.x) dashboards; this is
     // the Easy Dashboard surface, so keep only 2.x. A null/absent version (e.g. a create/update echo)
@@ -30,8 +32,20 @@ def toolListDashboards(args = null) {
     // Fallback: enumerate Easy Dashboard child apps (no pinToken needed; id + name only).
     def viaApps = _listDashboardsViaChildApps()
     if (viaApps != null && !viaApps.isEmpty()) {
-        return [dashboards: viaApps, count: viaApps.size(), source: "child-apps",
-                note: "Listed from the Easy Dashboard Parent's child apps (/dashboard/all returned nothing -- pinToken unavailable). Each entry carries id + name only; call hub_get_dashboard for one dashboard's full config."]
+        // Don't misattribute a hub ERROR to a missing pinToken: only suggest pinToken when
+        // /dashboard/all actually returned empty (allErrored == false).
+        def note = allErrored
+            ? "/dashboard/all errored (logged); listed via the Easy Dashboard Parent's child apps instead. Each entry carries id + name only; call hub_get_dashboard for one dashboard's full config."
+            : "Listed from the Easy Dashboard Parent's child apps (/dashboard/all returned nothing -- a pinToken may be required). Each entry carries id + name only; call hub_get_dashboard for one dashboard's full config."
+        return [dashboards: viaApps, count: viaApps.size(), source: "child-apps", note: note]
+    }
+    // Both reads FAILED (not "genuinely empty"): surface a structured error so neither the caller nor
+    // hub_get_dashboard / hub_delete_dashboard / hub_clone_dashboard mistakes a transient hub failure
+    // for "this hub has zero dashboards" (which could drive a duplicate-create or a false delete-OK).
+    if (allErrored && viaApps == null) {
+        return [success: false,
+                error: "Could not list dashboards: both /dashboard/all and the child-app fallback failed to read.",
+                note: "Transient hub error (details logged). Retry; if it persists, check hub connectivity."]
     }
     return [dashboards: [], count: 0,
             note: "No Easy Dashboards found: /dashboard/all returned empty (a pinToken may be required) and no Easy Dashboard Parent child apps were present. If you expected dashboards, pass pinToken (from the Easy Dashboard UI) and retry."]
@@ -44,9 +58,10 @@ def toolListDashboards(args = null) {
 // enumeration. The token is used only server-side (never returned to the caller).
 private String _fetchDashboardPinToken() {
     try {
-        def page = hubInternalGetRaw("/dashboard/select")
-        if (!page) return null
-        def matcher = (page =~ /globalDashboardPinToken\s*=\s*['"]([^'"]+)['"]/)
+        // hubInternalGetRaw returns a struct [status, location, data]; the page body is .data.
+        def html = hubInternalGetRaw("/dashboard/select")?.data?.toString()
+        if (!html) return null
+        def matcher = (html =~ /globalDashboardPinToken\s*=\s*['"]([^'"]+)['"]/)
         return matcher.find() ? matcher.group(1) : null
     } catch (Exception e) {
         mcpLogError("dashboard", "fetch dashboard pinToken failed", e)
@@ -56,8 +71,9 @@ private String _fetchDashboardPinToken() {
 
 // Enumerate Easy Dashboards as the child apps of the "Easy Dashboard Parent" via /hub2/appsList
 // (no pinToken needed). Each child app IS one Easy Dashboard: its app id is the dashboard's
-// installedAppId and its label is the dashboard name. Returns [[id, name], ...], or null if the
-// apps list can't be read. Used only as a fallback when /dashboard/all yields nothing.
+// installedAppId and its label is the dashboard name. Returns a list of [id:..., name:...] maps,
+// or null if the apps list can't be read. Two callers: the listing fallback in toolListDashboards
+// when /dashboard/all yields nothing, AND _dashboardPresent (the delete's confirm-by-effect check).
 private List _listDashboardsViaChildApps() {
     try {
         def raw = hubInternalGet("/hub2/appsList")
@@ -159,15 +175,16 @@ private Map _dashboardConfigFromApp(String id) {
     }
 }
 
-// True if an Easy Dashboard with this id is still installed (child app of the Easy Dashboard
+// Whether an Easy Dashboard with this id is still installed (child app of the Easy Dashboard
 // Parent). Used to confirm a delete by effect, since /dashboard/delete returns an unreliable
-// success flag. Falls back to the full list if child enumeration is unavailable.
-private boolean _dashboardPresent(String id) {
+// success flag. TRI-STATE: true = present, false = confirmed absent, null = COULD NOT verify (both
+// reads failed) -- so the delete path never mistakes an unreadable hub for "confirmed gone".
+private Boolean _dashboardPresent(String id) {
     def viaApps = _listDashboardsViaChildApps()
     if (viaApps != null) return viaApps.any { it.id?.toString() == id }
     def listed = toolListDashboards([:])
-    def dashboards = (listed instanceof Map) ? (listed.dashboards ?: []) : []
-    return dashboards.any { it.id?.toString() == id }
+    if (!(listed instanceof Map) || listed.success == false) return null   // couldn't read either source
+    return (listed.dashboards ?: []).any { it.id?.toString() == id }
 }
 
 def toolCreateDashboard(args) {
@@ -201,7 +218,22 @@ def toolUpdateDashboard(args) {
     // wholesale update must carry the full device set too. Require it so a caller doesn't silently
     // blank the dashboard's devices.
     def deviceCsv = _dashboardDeviceCsv(args.deviceIds, true)
-    def q = _buildDashboardConfigQuery(args, deviceCsv)
+    // Update is WHOLESALE: an omitted dashboardPin/hsmPin would CLEAR an existing PIN. Preserve a PIN
+    // the caller didn't pass by reading the current value and re-injecting it, so an unrelated edit
+    // can't silently drop a security PIN. (theme is not recoverable from app-config -- see hub_get_dashboard.)
+    def argsForQuery = args
+    def hasField = { String k -> (args.options instanceof Map && args.options.containsKey(k)) || args.containsKey(k) }
+    if (!hasField("dashboardPin") || !hasField("hsmPin")) {
+        def cur = _dashboardConfigFromApp(updateId)
+        if (cur != null) {
+            def merged = [:] + (args.options instanceof Map ? args.options : [:])
+            if (!hasField("dashboardPin") && cur.containsKey("dashboardPin")) merged.dashboardPin = cur.dashboardPin
+            if (!hasField("hsmPin") && cur.containsKey("hsmPin")) merged.hsmPin = cur.hsmPin
+            argsForQuery = [:] + args
+            argsForQuery.options = merged
+        }
+    }
+    def q = _buildDashboardConfigQuery(argsForQuery, deviceCsv)
     q.id = updateId
     try {
         def raw = hubInternalGet("/dashboard/update", q)
@@ -224,12 +256,19 @@ def toolDeleteDashboard(args) {
         // /dashboard/delete returns {success:false,message:null} even when it DID delete the
         // dashboard -- its success flag is unreliable -- so confirm by effect: the delete worked
         // iff the dashboard is no longer present. Honor an explicit success:true as well.
-        boolean gone = !_dashboardPresent(dashId)
-        if ((parsed instanceof Map && parsed.success == true) || gone) {
+        def present = _dashboardPresent(dashId)
+        if ((parsed instanceof Map && parsed.success == true) || present == false) {
             return [success: true, id: dashId, message: "Dashboard ${dashId} deleted."]
         }
+        if (present == null) {
+            // The delete GET was sent, but we couldn't read the hub to confirm removal -- do NOT
+            // claim success on a destructive op without evidence.
+            return [success: false, id: dashId,
+                    error: "Delete request was sent, but removal could not be confirmed (the verification read failed).",
+                    note: "Verify with hub_list_dashboards before retrying."]
+        }
         return [success: false, id: dashId,
-                error: (parsed instanceof Map) ? (parsed.message ?: parsed.error ?: "the dashboard is still present after the delete call") : "unexpected response",
+                error: (parsed instanceof Map) ? (parsed.message ?: parsed.error ?: "the dashboard is still present after the delete call") : "the dashboard is still present after the delete call",
                 note: "Nothing was deleted. Verify the id with hub_list_dashboards."]
     } catch (Exception e) {
         mcpLogError("dashboard", "delete dashboard failed", e)
@@ -249,6 +288,14 @@ def toolCloneDashboard(args) {
         return [success: false, sourceId: sourceId,
                 error: "Could not read the source dashboard to clone it" + ((src instanceof Map && src.error) ? ": ${src.error}" : "."),
                 note: "Verify the id with hub_list_dashboards."]
+    }
+    // A real Easy Dashboard always has >=1 device; an empty deviceIds here means the source read came
+    // up short (id+name only, app-config unreadable), NOT bad caller input. Surface that as a runtime
+    // failure rather than letting toolCreateDashboard throw a caller-blaming IllegalArgumentException.
+    if (!(src.deviceIds)) {
+        return [success: false, sourceId: sourceId,
+                error: "Could read the source dashboard's id/name but not its device list, so it can't be cloned.",
+                note: "Retry; if it persists, read it with hub_get_dashboard and recreate via hub_create_dashboard."]
     }
     def opts = [:]
     ["showModeTile", "showClockTile", "showCalendarTile", "showHSMTile", "showEdit", "showNavigation",
@@ -287,9 +334,9 @@ private Map _summarizeDashboard(raw) {
         if (raw.containsKey(k)) out[k] = raw[k]
     }
     if (raw.containsKey("navigationSelection")) out.navigationSelection = _dashboardNavSelectionCsv(raw.navigationSelection)
-    // /dashboard/all returns deviceIds as a JSON-array-as-STRING ("[8,1,9]"); normalize to a list of
-    // id strings so the shape round-trips back through hub_update_dashboard (and so a clone-by-value
-    // can re-send it) instead of being mis-split on its brackets.
+    // /dashboard/all returns deviceIds as a JSON-array-as-STRING ("[8,1,9]", the live-hub shape);
+    // _normalizeDeviceIdList also tolerates a plain CSV. Normalize to a list of id strings so the shape
+    // round-trips back through hub_update_dashboard (and so a clone-by-value can re-send it).
     if (raw.containsKey("deviceIds")) out.deviceIds = _normalizeDeviceIdList(raw.deviceIds)
     // Include the PINs when the hub returns them so a read-then-update round-trip preserves them
     // (the update sends "" for an absent pin, which would CLEAR the pin -- Codex P1). Many hub list
