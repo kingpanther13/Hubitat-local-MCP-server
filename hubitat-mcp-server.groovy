@@ -122,7 +122,6 @@ definition(
 // primitives stay in this file (used by other libraries).
 #include mcp.McpNativeRulesLib
 #include mcp.McpCanary3Lib
-#include mcp.McpCanary4Lib
 #include mcp.McpDashboardsLib
 
 preferences {

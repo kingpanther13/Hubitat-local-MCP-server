@@ -62,10 +62,6 @@ LIBS = [
         "dest": f"{NAMESPACE}.McpCanary3Lib.groovy",
     },
     {
-        "source": LIB_DIR / "mcp-canary4-lib.groovy",
-        "dest": f"{NAMESPACE}.McpCanary4Lib.groovy",
-    },
-    {
         "source": LIB_DIR / "mcp-dashtest5-lib.groovy",
         "dest": f"{NAMESPACE}.McpDashboardsLib.groovy",
     },

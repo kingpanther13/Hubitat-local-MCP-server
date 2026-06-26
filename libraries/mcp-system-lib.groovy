@@ -149,7 +149,6 @@ def toolGetHubInfo(args = null) {
     info.smokeTestMarker = mcpSmokeTestMarker()
     info.smokeTest2Marker = mcpSmokeTest2Marker()
     info.canary3Marker = mcpCanary3Marker()
-    info.canary4Marker = mcpCanary4Marker()
     info.dashNameProbe = mcpDashNameProbe()
 
     // Last self-deploy outcome (issue #237): hub_update_app on the MCP server's own app can't return
