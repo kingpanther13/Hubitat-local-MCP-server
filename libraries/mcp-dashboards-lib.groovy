@@ -1,18 +1,14 @@
-library(name: "McpDashboardsLib", namespace: "mcp", author: "kingpanther13", description: "Easy Dashboard CRUD tool implementations for the MCP Rule Server (hub_list_dashboards/hub_get_dashboard/hub_create_dashboard/hub_update_dashboard/hub_delete_dashboard/hub_clone_dashboard). Easy Dashboards are classic child apps of the Easy Dashboard Parent, driven by GET /dashboard endpoints.")
+library(name: "McpDashboardsLib", namespace: "mcp", author: "kingpanther13", description: "Easy Dashboard CRUD tools (list/get/create/update/delete/clone) for the MCP Rule Server.")
 
 def toolListDashboards(args = null) {
     args = args ?: [:]
-    // Easy Dashboards are listed via GET /dashboard/all, but that endpoint returns an EMPTY array
-    // unless it is given the dashboard pinToken the admin UI passes -- the page-global
-    // globalDashboardPinToken, rendered as a literal into the /dashboard/select page. So: use a
-    // caller-supplied pinToken if present, else scrape that page token server-side, then call
-    // /dashboard/all. If that STILL yields nothing (token unavailable, or a locked-down hub), fall
-    // back to enumerating the Easy Dashboard Parent's child apps -- needs no token (id + name only).
+    // /dashboard/all returns [] unless given the page-global pinToken from /dashboard/select. Use a
+    // caller token if present, else scrape it; if still empty, fall back to child-app enumeration.
     def token = (args.pinToken != null) ? args.pinToken.toString() : _fetchDashboardPinToken()
     def q = [:]
     if (token) q.pinToken = token
     def parsed = null
-    boolean allErrored = false   // true iff /dashboard/all threw (a hub error), NOT merely returned empty
+    boolean allErrored = false   // true iff /dashboard/all threw (hub error), not merely empty
     try {
         def raw = hubInternalGet("/dashboard/all", q)
         parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : []
@@ -21,44 +17,35 @@ def toolListDashboards(args = null) {
         parsed = null
         allErrored = true
     }
-    // /dashboard/all aggregates BOTH Easy (version 2.x) and legacy (version 1.x) dashboards; this is
-    // the Easy Dashboard surface, so keep only 2.x. A null/absent version (e.g. a create/update echo)
-    // is kept. Matches the child-app fallback's Easy-only scope below.
+    // Keep only Easy (2.x) dashboards; a null/absent version (create/update echo) is kept.
     def list = (parsed instanceof List) ? parsed.findAll { it != null && (it.version == null || it.version.toString().startsWith("2")) } : []
     if (!list.isEmpty()) {
         def dashboards = list.collect { _summarizeDashboard(it) }
         return [dashboards: dashboards, count: dashboards.size(), source: "dashboard-all"]
     }
-    // Fallback: enumerate Easy Dashboard child apps (no pinToken needed; id + name only).
     def viaApps = _listDashboardsViaChildApps()
     if (viaApps != null && !viaApps.isEmpty()) {
-        // Don't misattribute a hub ERROR to a missing pinToken: only suggest pinToken when
-        // /dashboard/all actually returned empty (allErrored == false).
+        // Don't blame a missing pinToken for a hub ERROR: only mention pinToken when /dashboard/all was empty.
         def note = allErrored
-            ? "/dashboard/all errored (logged); listed via the Easy Dashboard Parent's child apps instead. Each entry carries id + name only; call hub_get_dashboard for one dashboard's full config."
-            : "Listed from the Easy Dashboard Parent's child apps (/dashboard/all returned nothing -- a pinToken may be required). Each entry carries id + name only; call hub_get_dashboard for one dashboard's full config."
+            ? "/dashboard/all errored (logged); listed via the Easy Dashboard Parent's child apps instead. Each entry carries id + name only; call hub_get_dashboard for full config."
+            : "Listed from the Easy Dashboard Parent's child apps (/dashboard/all returned nothing -- a pinToken may be required). Each entry carries id + name only; call hub_get_dashboard for full config."
         return [dashboards: viaApps, count: viaApps.size(), source: "child-apps", note: note]
     }
-    // Both reads FAILED (not "genuinely empty"): surface a structured error so neither the caller nor
-    // hub_get_dashboard / hub_delete_dashboard / hub_clone_dashboard mistakes a transient hub failure
-    // for "this hub has zero dashboards" (which could drive a duplicate-create or a false delete-OK).
+    // Both reads FAILED (not "genuinely empty"): surface an error so callers don't read it as "zero dashboards".
     if (allErrored && viaApps == null) {
         return [success: false,
                 error: "Could not list dashboards: both /dashboard/all and the child-app fallback failed to read.",
                 note: "Transient hub error (details logged). Retry; if it persists, check hub connectivity."]
     }
     return [dashboards: [], count: 0,
-            note: "No Easy Dashboards found: /dashboard/all returned empty (a pinToken may be required) and no Easy Dashboard Parent child apps were present. If you expected dashboards, pass pinToken (from the Easy Dashboard UI) and retry."]
+            note: "No Easy Dashboards found: /dashboard/all returned empty (a pinToken may be required) and no Easy Dashboard Parent child apps were present. If you expected dashboards, pass pinToken and retry."]
 }
 
-// Scrape the dashboard pinToken the admin UI passes to /dashboard/all. The hub renders it as a
-// literal (globalDashboardPinToken = '...') into the /dashboard/select page, so fetch that page
-// server-side and extract it -- a caller then never has to supply pinToken on a normal hub.
-// Returns null if the page or the token can't be read; the caller then degrades to the child-app
-// enumeration. The token is used only server-side (never returned to the caller).
+// Scrape globalDashboardPinToken from the /dashboard/select page so callers needn't supply pinToken.
+// Returns null if unreadable (caller then degrades to child-app enumeration). Server-side only.
 private String _fetchDashboardPinToken() {
     try {
-        // hubInternalGetRaw returns a struct [status, location, data]; the page body is .data.
+        // hubInternalGetRaw returns a struct [status, location, data]; the body is .data.
         def html = hubInternalGetRaw("/dashboard/select")?.data?.toString()
         if (!html) return null
         def matcher = (html =~ /globalDashboardPinToken\s*=\s*['"]([^'"]+)['"]/)
@@ -69,11 +56,8 @@ private String _fetchDashboardPinToken() {
     }
 }
 
-// Enumerate Easy Dashboards as the child apps of the "Easy Dashboard Parent" via /hub2/appsList
-// (no pinToken needed). Each child app IS one Easy Dashboard: its app id is the dashboard's
-// installedAppId and its label is the dashboard name. Returns a list of [id:..., name:...] maps,
-// or null if the apps list can't be read. Two callers: the listing fallback in toolListDashboards
-// when /dashboard/all yields nothing, AND _dashboardPresent (the delete's confirm-by-effect check).
+// Enumerate Easy Dashboards as child apps of the "Easy Dashboard Parent" via /hub2/appsList (no token).
+// Returns [id:..., name:...] maps, or null if unreadable. Callers: the list fallback AND _dashboardPresent.
 private List _listDashboardsViaChildApps() {
     try {
         def raw = hubInternalGet("/hub2/appsList")
@@ -100,8 +84,7 @@ private List _listDashboardsViaChildApps() {
     }
 }
 
-// Dashboard ids (installedAppId) are always numeric; reject anything else so a malformed value can't
-// be spliced into the /dashboard/<id> URL (Gemini security review). Shared by get/update/delete/clone.
+// Dashboard ids are numeric; reject anything else so a bad value can't be spliced into /dashboard/<id>.
 private String _requireDashboardId(rawId, String verbNote) {
     def s = rawId?.toString()?.trim()
     if (!s) {
@@ -116,7 +99,7 @@ private String _requireDashboardId(rawId, String verbNote) {
 def toolGetDashboard(args) {
     args = args ?: [:]
     def wantId = _requireDashboardId(args.id, "")
-    // No dedicated single-dashboard read endpoint exists; derive from the list and filter by id.
+    // No single-dashboard read endpoint; derive from the list and filter by id.
     def listed = toolListDashboards(args)
     if (listed instanceof Map && listed.success == false) {
         return listed
@@ -130,10 +113,7 @@ def toolGetDashboard(args) {
                     ? "The list returned no dashboards -- a pinToken may be required (pass pinToken and retry)."
                     : "Use hub_list_dashboards to see valid ids."]
     }
-    // The child-app fallback list carries only id + name. When that's all we have (no tile config),
-    // read the dashboard's own app config for the full tile/device/navigation/pin shape -- stateless,
-    // no pinToken -- so the result is rich enough to round-trip back through hub_update_dashboard.
-    // (theme is not stored as a child-app setting, so it is the one field not recovered this way.)
+    // Child-app list has only id+name; enrich from the app-config page for the full shape (no theme there).
     if (!match.containsKey("showClockTile")) {
         def full = _dashboardConfigFromApp(wantId)
         if (full != null) {
@@ -145,12 +125,8 @@ def toolGetDashboard(args) {
     return match
 }
 
-// Read one Easy Dashboard's full config from its OWN app-config page (stateless, no pinToken):
-// /installedapp/configure/json/<id> exposes the child app's settings -- the tile toggles (as
-// "true"/"false" strings), navigationSelection, dashboardPin/hsmPin, and devicesPicked (a
-// {id:name} map whose keys are the device ids). Used to enrich a child-app-sourced get so the
-// shape matches _summarizeDashboard. theme is NOT a setting here (only the pinToken-gated
-// /dashboard/all carries it), so it is omitted. Returns null if the page can't be read.
+// Read one dashboard's full config from /installedapp/configure/json/<id> (stateless, no token): tile
+// toggles (as "true"/"false"), navigationSelection, dashboardPin/hsmPin, devicesPicked ({id:name}). No theme.
 private Map _dashboardConfigFromApp(String id) {
     try {
         def raw = hubInternalGet("/installedapp/configure/json/${id}")
@@ -165,7 +141,7 @@ private Map _dashboardConfigFromApp(String id) {
         }
         if (s.containsKey("navigationSelection")) out.navigationSelection = _dashboardNavSelectionCsv(s.navigationSelection)
         if (s.devicesPicked instanceof Map) out.deviceIds = s.devicesPicked.keySet().collect { it.toString() }
-        // app-config returns "" for an unset pin and the literal string "null" for an unset hsmPin.
+        // app-config returns "" for an unset pin and the literal "null" for an unset hsmPin.
         if (s.dashboardPin && s.dashboardPin.toString() != "null") out.dashboardPin = s.dashboardPin
         if (s.hsmPin && s.hsmPin.toString() != "null") out.hsmPin = s.hsmPin
         return out
@@ -175,10 +151,8 @@ private Map _dashboardConfigFromApp(String id) {
     }
 }
 
-// Whether an Easy Dashboard with this id is still installed (child app of the Easy Dashboard
-// Parent). Used to confirm a delete by effect, since /dashboard/delete returns an unreliable
-// success flag. TRI-STATE: true = present, false = confirmed absent, null = COULD NOT verify (both
-// reads failed) -- so the delete path never mistakes an unreadable hub for "confirmed gone".
+// Confirms a delete by effect (since /dashboard/delete's success flag is unreliable). TRI-STATE:
+// true=present, false=confirmed absent, null=could not verify (so delete never false-claims "gone").
 private Boolean _dashboardPresent(String id) {
     def viaApps = _listDashboardsViaChildApps()
     if (viaApps != null) return viaApps.any { it.id?.toString() == id }
@@ -195,8 +169,7 @@ def toolCreateDashboard(args) {
     }
     def deviceCsv = _dashboardDeviceCsv(args.deviceIds, true)
     def q = _buildDashboardConfigQuery(args, deviceCsv)
-    // CREATE-ONLY: the Vue dashboard editor sends version=2.0 on create (and strips it on update) to
-    // create an Easy Dashboard rather than the legacy variant. Verified against vue-hub2.min.js.
+    // CREATE-ONLY: the Vue editor sends version=2.0 on create (stripped on update) for an Easy Dashboard.
     q.version = (args.version ?: "2.0").toString()
     try {
         def raw = hubInternalGet("/dashboard/create", q)
@@ -215,13 +188,10 @@ def toolUpdateDashboard(args) {
     if (!args.name?.toString()?.trim()) {
         throw new IllegalArgumentException("name is required. Update REPLACES the dashboard's config wholesale (there is no server-side read-merge), so pass the full desired config every time.")
     }
-    // deviceIds is required by the create endpoint (>=1 device); update shares the same shape, so a
-    // wholesale update must carry the full device set too. Require it so a caller doesn't silently
-    // blank the dashboard's devices.
+    // Update is wholesale + requires the full device set, so a caller can't silently blank devices.
     def deviceCsv = _dashboardDeviceCsv(args.deviceIds, true)
-    // Update is WHOLESALE: an omitted dashboardPin/hsmPin would CLEAR an existing PIN. Preserve a PIN
-    // the caller didn't pass by reading the current value and re-injecting it, so an unrelated edit
-    // can't silently drop a security PIN. (theme is not recoverable from app-config -- see hub_get_dashboard.)
+    // Wholesale replace would CLEAR an omitted dashboardPin/hsmPin: preserve an existing PIN the caller
+    // didn't pass by reading + re-injecting it. (theme isn't recoverable from app-config.)
     def argsForQuery = args
     def hasField = { String k -> (args.options instanceof Map && args.options.containsKey(k)) || args.containsKey(k) }
     if (!hasField("dashboardPin") || !hasField("hsmPin")) {
@@ -254,16 +224,13 @@ def toolDeleteDashboard(args) {
     try {
         def raw = hubInternalGet("/dashboard/delete", [id: dashId])
         def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
-        // /dashboard/delete returns {success:false,message:null} even when it DID delete the
-        // dashboard -- its success flag is unreliable -- so confirm by effect: the delete worked
-        // iff the dashboard is no longer present. Honor an explicit success:true as well.
+        // /dashboard/delete returns success:false even on a real delete, so confirm by effect.
         def present = _dashboardPresent(dashId)
         if ((parsed instanceof Map && parsed.success == true) || present == false) {
             return [success: true, id: dashId, message: "Dashboard ${dashId} deleted."]
         }
         if (present == null) {
-            // The delete GET was sent, but we couldn't read the hub to confirm removal -- do NOT
-            // claim success on a destructive op without evidence.
+            // Couldn't read the hub to confirm removal -- don't claim success on a destructive op.
             return [success: false, id: dashId,
                     error: "Delete request was sent, but removal could not be confirmed (the verification read failed).",
                     note: "Verify with hub_list_dashboards before retrying."]
@@ -280,19 +247,16 @@ def toolDeleteDashboard(args) {
 def toolCloneDashboard(args) {
     args = args ?: [:]
     def sourceId = _requireDashboardId(args.id, " to clone")
-    // The hub's /dashboard/cloneAsEasy endpoint does NOT work from the server -- it is session-bound
-    // (returns success:false and creates nothing even with a session cookie). So clone BY VALUE: read
-    // the source's config and create a copy. (theme is not in the source's app config, so unless the
-    // source list carried it, the copy uses the default theme.)
+    // /dashboard/cloneAsEasy is session-bound and fails from the server, so clone BY VALUE: read the
+    // source config and create a copy. (theme isn't in the app config, so the copy may use the default.)
     def src = toolGetDashboard([id: sourceId])
     if (!(src instanceof Map) || src.success == false) {
         return [success: false, sourceId: sourceId,
                 error: "Could not read the source dashboard to clone it" + ((src instanceof Map && src.error) ? ": ${src.error}" : "."),
                 note: "Verify the id with hub_list_dashboards."]
     }
-    // A real Easy Dashboard always has >=1 device; an empty deviceIds here means the source read came
-    // up short (id+name only, app-config unreadable), NOT bad caller input. Surface that as a runtime
-    // failure rather than letting toolCreateDashboard throw a caller-blaming IllegalArgumentException.
+    // Empty deviceIds here means the source read came up short (not bad caller input) -- a real Easy
+    // Dashboard always has >=1 device. Report a runtime failure, not a caller-blaming throw from create.
     if (!(src.deviceIds)) {
         return [success: false, sourceId: sourceId,
                 error: "Could read the source dashboard's id/name but not its device list, so it can't be cloned.",
@@ -313,46 +277,30 @@ def toolCloneDashboard(args) {
             note: "The copy may not have been created; verify with hub_list_dashboards."]
 }
 
-// ---- domain helpers (private to the dashboards library) ----
+// ---- domain helpers ----
 
-// Normalize one raw dashboard map from /dashboard/all into a stable summary shape. The hub keys
-// the dashboard by installedAppId; expose both id (the chaining key) and name.
+// Normalize one /dashboard/all record into a stable summary (id from installedAppId or a bare id echo).
 private Map _summarizeDashboard(raw) {
     if (!(raw instanceof Map)) return [raw: raw]
     def out = [
-        // The hub keys the dashboard by installedAppId, but a create/update response may instead
-        // echo the new record under a bare `id` -- accept either so the read shape always carries
-        // a chainable id (Codex P2).
         id: (raw.installedAppId ?: raw.id)?.toString(),
         name: raw.name
     ]
-    // Pass through the config fields the write tools accept, when present, so a caller can read a
-    // dashboard then re-send the same shape to hub_update_dashboard (which replaces wholesale).
-    // navigationSelection is normalized to a CSV string below so a round-trip back through update
-    // (which expects a CSV) doesn't re-send an array the hub would reject (Codex P1).
+    // Pass through config fields (when present) so a read can round-trip back through hub_update_dashboard.
     ["showModeTile", "showClockTile", "showCalendarTile", "showHSMTile", "showEdit",
      "showNavigation", "showTutorial", "theme"].each { k ->
         if (raw.containsKey(k)) out[k] = raw[k]
     }
     if (raw.containsKey("navigationSelection")) out.navigationSelection = _dashboardNavSelectionCsv(raw.navigationSelection)
-    // /dashboard/all returns deviceIds as a JSON-array-as-STRING ("[8,1,9]", the live-hub shape);
-    // _normalizeDeviceIdList also tolerates a plain CSV. Normalize to a list of id strings so the shape
-    // round-trips back through hub_update_dashboard (and so a clone-by-value can re-send it).
+    // /dashboard/all gives deviceIds as a JSON-array string ("[8,1,9]"); normalize to a list of id strings.
     if (raw.containsKey("deviceIds")) out.deviceIds = _normalizeDeviceIdList(raw.deviceIds)
-    // Include the PINs when the hub returns them so a read-then-update round-trip preserves them
-    // (the update sends "" for an absent pin, which would CLEAR the pin -- Codex P1). Many hub list
-    // payloads omit pins; in that case they're simply absent here and the caller must re-supply them.
     if (raw.containsKey("dashboardPin")) out.dashboardPin = raw.dashboardPin
     if (raw.containsKey("hsmPin")) out.hsmPin = raw.hsmPin
     return out
 }
 
-// Serialize deviceIds to the CSV the /dashboard/create|update endpoints want.
-// NORMALIZE SHAPE FIRST: a bare String "12" is NOT a collection of ids -- iterating it with .collect
-// would walk its characters ("1","2" -> "1,2"). So coerce to a list of id tokens: a Collection is used
-// as-is; a String is split on commas (a caller may pass "12,34"); anything else (a lone number) is
-// wrapped. Then validate each token is numeric so a bad value is a clean IllegalArgumentException
-// (-32602), not an opaque hub error. When `required` and the list is empty, throws (endpoint needs >=1).
+// Serialize deviceIds to CSV for /dashboard/create|update. Coerce shape first (a String "12" is not a
+// char collection): Collection as-is, String split on commas, else wrap; validate each token is numeric.
 private String _dashboardDeviceCsv(deviceIds, boolean required) {
     def tokens
     if (deviceIds == null) {
@@ -376,9 +324,7 @@ private String _dashboardDeviceCsv(deviceIds, boolean required) {
     return ids.join(",")
 }
 
-// Normalize a deviceIds value into a list of id strings. /dashboard/all hands back a
-// JSON-array-as-string ("[8,1,9]"); the child-app/app-config path gives a real collection. Both
-// become ["8","1","9"] so the read shape can be re-sent to a write tool unchanged.
+// Normalize a deviceIds value to a list of id strings: a JSON-array string ("[8,1,9]") or a real collection.
 private List _normalizeDeviceIdList(raw) {
     if (raw instanceof Collection) return raw.collect { it?.toString() }.findAll { it }
     if (raw instanceof String) {
@@ -391,14 +337,9 @@ private List _normalizeDeviceIdList(raw) {
     return (raw != null) ? [raw.toString()] : []
 }
 
-// Build the shared /dashboard/create|update query map from args. Booleans serialize as the literal
-// strings "true"/"false" (the verified wire); theme defaults to "legacy" (empty == legacy). The id
-// param (update only) is added by the caller. deviceCsv is precomputed by the caller.
-//
-// The tile toggles / nav / pins are read from an `options` sub-object FIRST, falling back to the
-// top-level arg of the same name. The schema advertises the compact `options` object (it keeps the
-// flat tools/list catalog under the hub's size cap); the top-level fallback keeps direct/programmatic
-// callers (and a caller that flattens the options) working too.
+// Build the /dashboard/create|update query. Booleans serialize as "true"/"false"; theme empty == legacy.
+// Tile/nav/pin values are read from an `options` sub-object first, else the top-level arg (keeps the flat
+// tools/list catalog small while supporting direct callers). The id param (update) is added by the caller.
 private Map _buildDashboardConfigQuery(Map args, String deviceCsv) {
     def boolStr = { v -> (v == true || v?.toString()?.toLowerCase() == "true") ? "true" : "false" }
     def opts = (args.options instanceof Map) ? args.options : [:]
@@ -420,8 +361,7 @@ private Map _buildDashboardConfigQuery(Map args, String deviceCsv) {
     ]
 }
 
-// navigationSelection is a CSV of dashboard ids (may be empty). Accept an array or a pre-joined
-// string; normalize to a CSV string.
+// navigationSelection: a CSV of dashboard ids. Accept an array or a pre-joined string; return a CSV.
 private String _dashboardNavSelectionCsv(navigationSelection) {
     if (navigationSelection == null) return ""
     if (navigationSelection instanceof Collection) {
@@ -430,8 +370,7 @@ private String _dashboardNavSelectionCsv(navigationSelection) {
     return navigationSelection.toString()
 }
 
-// theme: legacy|light|dark|auto; empty/unset == legacy (the verified default). A value outside the
-// known set is rejected so a typo isn't silently sent to the hub.
+// theme: legacy|light|dark|auto; empty == legacy. A value outside the set is rejected (catch a typo).
 private String _dashboardTheme(theme) {
     if (theme == null || !theme.toString().trim()) return "legacy"
     def t = theme.toString().trim().toLowerCase()
@@ -441,8 +380,8 @@ private String _dashboardTheme(theme) {
     return t
 }
 
-// Parse a create/update response into the structured write result. The endpoint returns JSON
-// (likely {success, ...} and/or the new/updated dashboard). On success echo the dashboard summary.
+// Parse a create/update response into a structured write result. Honor an explicit `success` flag; only
+// infer success from an echoed id when `success` is absent (a rejected write can echo an unchanged id).
 private Map _dashboardWriteResult(raw, String op, String reqId) {
     def parsed
     try {
@@ -451,10 +390,6 @@ private Map _dashboardWriteResult(raw, String op, String reqId) {
         parsed = null
     }
     if (parsed instanceof Map) {
-        // Strict success: honor an explicit `success` flag. Do NOT infer success from an echoed
-        // id -- a rejected write can still echo the unchanged record (success:false + an id). Only
-        // fall back to an echoed id when `success` is absent entirely; accept installedAppId OR a
-        // bare id (the create/clone path may return the new record under either -- Codex P2).
         def ok = parsed.containsKey("success") ? (parsed.success == true) : ((parsed.installedAppId ?: parsed.id) != null)
         if (ok) {
             def out = [success: true, message: parsed.message ?: "Dashboard ${op} succeeded."]
@@ -469,9 +404,7 @@ private Map _dashboardWriteResult(raw, String op, String reqId) {
                 note: "The dashboard may be unchanged; verify with hub_list_dashboards."]
     }
     if (parsed instanceof List) {
-        // The endpoint echoed the dashboard list rather than a status object. A list body is NOT proof
-        // the write applied (the hub can re-render the list on a no-op/rejection too), so do not assume
-        // success -- report inconclusive and tell the caller to verify.
+        // A list body is NOT proof the write applied (the hub can re-render the list on a no-op too).
         return [success: false,
                 error: "Dashboard ${op} returned the dashboard list instead of a status object; outcome unconfirmed.",
                 note: "The ${op} may or may not have applied; verify with hub_list_dashboards.",
@@ -481,10 +414,8 @@ private Map _dashboardWriteResult(raw, String op, String reqId) {
             note: "The ${op} may or may not have applied; verify with hub_list_dashboards."]
 }
 
-// Tool DEFINITIONS (issue #209: schema lives with the impl). Concatenated into getAllToolDefinitions()
-// in the main app; gateway membership + dispatch cases stay in main.
+// Tool DEFINITIONS (issue #209: schema lives with the impl); gateway membership + dispatch stay in main.
 def _getAllToolDefinitions_partDashboards() {
-    // Shared per-dashboard output shape (field names are self-describing; navigationSelection is a CSV).
     def dashFields = [
         id: [type: "string"], name: [type: "string"],
         showModeTile: [type: "boolean"], showClockTile: [type: "boolean"],
@@ -618,28 +549,22 @@ def _getAllToolDefinitions_partDashboards() {
 }
 
 def _readOnlyToolNames_partDashboards() {
-    // Read-only classification membership for this library's tools, contributed to the
-    // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
-    // the tool). A tool absent from every part list is write+destructive by default.
+    // Read-only tools, contributed to getReadOnlyToolNames(). Absent => write+destructive by default.
     return [
         "hub_list_dashboards", "hub_get_dashboard"
     ]
 }
 
 def _idempotentWriteToolNames_partDashboards() {
-    // Retry-safe writes (MCP idempotentHint) -- contributed to the app's
-    // getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    //   * hub_update_dashboard: wholesale replace -> same args, same end state (idempotent).
-    //   * hub_delete_dashboard: a repeat is a no-op once it's gone (idempotent).
-    //   * hub_create_dashboard / hub_clone_dashboard: each call makes ANOTHER dashboard (NOT idempotent).
+    // Retry-safe writes (idempotentHint): update = wholesale (same args -> same state); delete = no-op once gone.
+    // create/clone each make ANOTHER dashboard, so they are NOT idempotent.
     return [
         "hub_update_dashboard", "hub_delete_dashboard"
     ]
 }
 
 def _toolDisplayMeta_partDashboards() {
-    // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
-    // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
+    // Title + Advanced-menu summary per tool, merged into getToolDisplayMeta().
     return [
         hub_list_dashboards: [title: "List Dashboards", summary: "List Easy Dashboards with ids, names, and tile/theme config."],
         hub_get_dashboard: [title: "Get Dashboard", summary: "Get one Easy Dashboard's full config by id (list-then-filter)."],
