@@ -123,6 +123,7 @@ definition(
 #include mcp.McpNativeRulesLib
 #include mcp.McpCanary3Lib
 #include mcp.McpCanary4Lib
+#include mcp.McpDashboardsLib
 
 preferences {
     page(name: "mainPage")
