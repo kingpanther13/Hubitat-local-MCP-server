@@ -50,14 +50,6 @@ BUNDLE_NAME = "mcp_libraries"
 
 LIBS = [
     {
-        "source": LIB_DIR / "mcp-smoke-test2-lib.groovy",
-        "dest": f"{NAMESPACE}.McpSmokeTest2Lib.groovy",
-    },
-    {
-        "source": LIB_DIR / "mcp-canary3-lib.groovy",
-        "dest": f"{NAMESPACE}.McpCanary3Lib.groovy",
-    },
-    {
         "source": LIB_DIR / "mcp-rooms-lib.groovy",
         "dest": f"{NAMESPACE}.McpRoomsLib.groovy",
     },

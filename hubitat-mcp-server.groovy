@@ -35,7 +35,6 @@ definition(
 // step; the unit/parse lanes resolve the #include via support.IncludeResolver). Proves the
 // #include load path works end to end -- the marker is surfaced in hub_get_info. Throwaway
 // canary; removed once the split architecture is validated.
-#include mcp.McpSmokeTest2Lib
 
 // issue #209 modularization: room-management tool implementations live in the McpRoomsLib
 // library (libraries/mcp-rooms-lib.groovy), delivered to real hubs by the required HPM bundle
@@ -120,7 +119,6 @@ definition(
 // surface (hub_set_rule) + native-app CRUD. The shared classic-dynamicPage wizard
 // primitives stay in this file (used by other libraries).
 #include mcp.McpNativeRulesLib
-#include mcp.McpCanary3Lib
 #include mcp.McpDashboardsLib
 
 preferences {
