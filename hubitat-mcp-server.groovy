@@ -1120,6 +1120,38 @@ def getGatewayConfig() {
                 hub_update_room: "change name location area group"
             ]
         ],
+        hub_manage_dashboard: [
+            description: "Manage Hubitat Easy Dashboards (issue #259 item #9): list, view, create, update, delete, and clone the touch-friendly device dashboards. Easy Dashboards are classic child apps with tile toggles (mode/clock/calendar/HSM), navigation, themes, and optional PINs. Update REPLACES a dashboard's config wholesale — read it first with hub_get_dashboard. Delete is destructive (confirm + recent backup). Read-only views are also in hub_read_dashboards.",
+            tools: ["hub_list_dashboards", "hub_get_dashboard", "hub_create_dashboard", "hub_update_dashboard", "hub_delete_dashboard", "hub_clone_dashboard"],
+            summaries: [
+                hub_list_dashboards: "List Easy Dashboards (id, name, tile/theme config). Args: pinToken? (only if the hub requires it)",
+                hub_get_dashboard: "Get one Easy Dashboard's full config by id (list-then-filter). Args: id, pinToken?",
+                hub_create_dashboard: "Create an Easy Dashboard. Args: name, deviceIds (>=1), tile toggles?, navigationSelection?, theme?, pins?",
+                hub_update_dashboard: "Replace an Easy Dashboard's config wholesale (pass the FULL config). Args: id, name, deviceIds (>=1), tile toggles?, theme?",
+                hub_delete_dashboard: "Permanently delete an Easy Dashboard (DESTRUCTIVE). Args: id, confirm=true",
+                hub_clone_dashboard: "Clone an Easy Dashboard into a new one (cloneAsEasy). Args: id"
+            ],
+            searchHints: [
+                hub_list_dashboards: "list show easy dashboards dashboard tiles panels touch UI screen wall tablet",
+                hub_get_dashboard: "view read inspect easy dashboard tiles config layout one",
+                hub_create_dashboard: "add new easy dashboard tiles devices panel touch screen wall tablet build",
+                hub_update_dashboard: "edit modify change replace easy dashboard tiles devices theme navigation config",
+                hub_delete_dashboard: "remove delete destroy easy dashboard panel tiles",
+                hub_clone_dashboard: "copy duplicate clone easy dashboard template cloneAsEasy"
+            ]
+        ],
+        hub_read_dashboards: [
+            description: "Read-only Easy Dashboard inspection: list dashboards and view one dashboard's full config (tiles, navigation, theme, devices). All operations are read-only; create/update/delete/clone live in hub_manage_dashboard.",
+            tools: ["hub_list_dashboards", "hub_get_dashboard"],
+            summaries: [
+                hub_list_dashboards: "List Easy Dashboards (id, name, tile/theme config). Args: pinToken? (only if the hub requires it)",
+                hub_get_dashboard: "Get one Easy Dashboard's full config by id (list-then-filter). Args: id, pinToken?"
+            ],
+            searchHints: [
+                hub_list_dashboards: "list show easy dashboards dashboard tiles panels touch UI screen wall tablet read",
+                hub_get_dashboard: "view read inspect easy dashboard tiles config layout one read"
+            ]
+        ],
         // Option A: Virtual device tools moved to core tools/list (full inputSchema visible)
         // manage_hub_info dissolved — zwave/zigbee moved to hub_manage_diagnostics; the update-status read folded into hub_get_info (includeAppUpdate) and the firmware INSTALL is the core hub_update_firmware
         // hub_create_backup promoted to core; the old hub_call_zwave_repair was absorbed into hub_call_zwave (hub_manage_radio)
@@ -1720,6 +1752,7 @@ def getToolDisplayMeta() {
         hub_read_rooms: [title: "Read Rooms", summary: "Read-only room queries: list rooms and room details."],
         hub_read_rules: [title: "Read Rules", summary: "Read-only rule introspection: custom rules, Rule Machine rules, Visual Rules, rule health."],
         hub_read_variables: [title: "Read Variables", summary: "Read-only hub-variable queries: list, get, recent changes."],
+        hub_read_dashboards: [title: "Read Dashboards", summary: "Read-only Easy Dashboard queries: list dashboards and view one dashboard's config."],
         hub_manage_custom_rules: [title: "Manage Custom Rules", summary: "Create, update, delete, test, export, import, and clone custom-engine rules."],
         hub_manage_devices: [title: "Manage Devices", summary: "Control devices and update device properties, plus device queries."],
         hub_manage_variables: [title: "Manage Variables", summary: "Create, set, and delete hub variables and their connectors."],
@@ -1733,7 +1766,8 @@ def getToolDisplayMeta() {
         hub_manage_files: [title: "Manage Files", summary: "List, read, write, and delete File Manager files."],
         hub_manage_rule_machine: [title: "Manage Rule Machine", summary: "Author, trigger, pause, inspect, and delete Visual Rules Builder and Rule Machine rules."],
         hub_manage_native_rules_and_apps: [title: "Manage Native Rules and Apps", summary: "Runtime control of Rule Machine rules plus create, edit, clone, export, import, and delete classic native apps."],
-        hub_manage_mcp: [title: "Manage MCP Server", summary: "Self-administer the MCP app's own settings (Developer Mode)."]
+        hub_manage_mcp: [title: "Manage MCP Server", summary: "Self-administer the MCP app's own settings (Developer Mode)."],
+        hub_manage_dashboard: [title: "Manage Dashboards", summary: "List, view, create, update, delete, and clone Easy Dashboards."]
     ])
     return meta
 }
@@ -2431,6 +2465,14 @@ def executeTool(toolName, args) {
         case "hub_set_visual_rule": return toolSetVisualRule(args)
         case "hub_delete_visual_rule": return toolDeleteVisualRule(args)
 
+        // Easy Dashboard CRUD (classic /dashboard/* endpoints; impl in McpDashboardsLib)
+        case "hub_list_dashboards": return toolListDashboards(args)
+        case "hub_get_dashboard": return toolGetDashboard(args)
+        case "hub_create_dashboard": return toolCreateDashboard(args)
+        case "hub_update_dashboard": return toolUpdateDashboard(args)
+        case "hub_delete_dashboard": return toolDeleteDashboard(args)
+        case "hub_clone_dashboard": return toolCloneDashboard(args)
+
         // Tool Guide
         case "hub_get_tool_guide": return toolGetToolGuide(args.section)
 
@@ -2445,6 +2487,7 @@ def executeTool(toolName, args) {
         case "hub_read_rooms":
         case "hub_read_rules":
         case "hub_read_variables":
+        case "hub_read_dashboards":
         case "hub_manage_backup":
         case "hub_manage_code":
         case "hub_manage_custom_rules":
@@ -2459,6 +2502,7 @@ def executeTool(toolName, args) {
         case "hub_manage_rooms":
         case "hub_manage_rule_machine":
         case "hub_manage_variables":
+        case "hub_manage_dashboard":
             // Flat-mode guard: gateways are not advertised on tools/list when useGateways=false,
             // so a gateway-name call here is almost certainly a stale/cached client. Returning
             // the gateway catalog would silently contradict the user's intent — fail loud with
