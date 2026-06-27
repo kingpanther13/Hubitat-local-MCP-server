@@ -82,6 +82,28 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         !hubGet.calls.any { it.path.startsWith('/device/setShowOnHome') }
     }
 
+    def "toolUpdateDevice showOnHome falls back to /device/preference/save when the dedicated GET is absent"() {
+        given: 'the dedicated setShowOnHome endpoint 404s (older firmware) -- the GET throws'
+        def device = new TestDevice(id: 10, label: 'Porch Light')
+        childDevicesList << device
+        hubGet.register('/device/setShowOnHome?deviceId=10&show=true') { params -> throw new RuntimeException('Not Found (404)') }
+        def posted = null
+        script.metaClass.hubInternalPostJson = { String path, String jsonBody, int timeout = 420, boolean isRetry = false ->
+            posted = [path: path, body: jsonBody]; return [status: 200]
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', showOnHome: true])
+
+        then: 'the fallback POST carried the deviceId + showOnHome to /device/preference/save, and the change is recorded'
+        result.success == true
+        result.changes.find { it.property == 'showOnHome' }?.newValue == true
+        posted.path == '/device/preference/save'
+        def body = new groovy.json.JsonSlurper().parseText(posted.body)
+        body.deviceId == 10
+        body.showOnHome == true
+    }
+
     // ============================================================
     // hub_update_device : defaultCurrentState
     // ============================================================
@@ -166,6 +188,48 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         result.success == false
         result.errors.find { it.property == 'defaultCurrentState' }?.error?.contains('Enable Write Tools')
         !hubGet.calls.any { it.path.startsWith('/device/setDefaultCurrentState') }
+    }
+
+    def "toolUpdateDevice defaultCurrentState falls back to /device/preference/save when the dedicated GET is absent"() {
+        given: 'the dedicated setDefaultCurrentState endpoint 404s (older firmware) -- the GET throws'
+        def device = new TestDevice(id: 10, label: 'Thermostat')
+        childDevicesList << device
+        hubGet.register('/device/setDefaultCurrentState?id=10&currentState=temperature') { params -> throw new RuntimeException('Not Found (404)') }
+        def posted = null
+        script.metaClass.hubInternalPostJson = { String path, String jsonBody, int timeout = 420, boolean isRetry = false ->
+            posted = [path: path, body: jsonBody]; return [status: 200]
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', defaultCurrentState: 'temperature'])
+
+        then: 'the fallback POST carried the deviceId + defaultCurrentState to /device/preference/save, and the change is recorded'
+        result.success == true
+        result.changes.find { it.property == 'defaultCurrentState' }?.newValue == 'temperature'
+        posted.path == '/device/preference/save'
+        def body = new groovy.json.JsonSlurper().parseText(posted.body)
+        body.deviceId == 10
+        body.defaultCurrentState == 'temperature'
+    }
+
+    def "toolUpdateDevice defaultCurrentState does NOT fall back when the GET returns a 200 that is not true"() {
+        given: 'the dedicated endpoint EXISTS (200) but rejects the value (body != "true") -- no fallback'
+        def device = new TestDevice(id: 10, label: 'Thermostat')
+        childDevicesList << device
+        hubGet.register('/device/setDefaultCurrentState?id=10&currentState=bogus') { params -> 'false' }
+        def postCalled = false
+        script.metaClass.hubInternalPostJson = { String path, String jsonBody, int timeout = 420, boolean isRetry = false ->
+            postCalled = true; return [status: 200]
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', defaultCurrentState: 'bogus'])
+
+        then: 'an error is recorded for defaultCurrentState and the Preferences-pane fallback was NOT attempted'
+        result.success == false
+        result.changes.find { it.property == 'defaultCurrentState' } == null
+        result.errors.find { it.property == 'defaultCurrentState' }?.error?.contains('Hub did not accept')
+        postCalled == false
     }
 
     // ============================================================

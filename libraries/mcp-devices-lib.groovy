@@ -1801,6 +1801,13 @@ def toolGetDeviceHistory(args) {
     return deviceResult
 }
 
+// /device/preference/save expects a numeric deviceId in its JSON body (the Vue posts
+// this.device.id, a number). Coerce the string id to a Long; leave a non-numeric id as-is.
+def _prefSaveDeviceId(deviceId) {
+    try { return (deviceId != null) ? (deviceId.toString() as Long) : deviceId }
+    catch (Exception ignored) { return deviceId }
+}
+
 def toolUpdateDevice(args) {
     def deviceId = args.deviceId
     if (!deviceId) throw new IllegalArgumentException("deviceId is required")
@@ -2114,16 +2121,24 @@ def toolUpdateDevice(args) {
         }
     }
 
-    // Show-on-Home flag (internal API -- no SDK setter; Write master enforced centrally)
-    // Controls whether the device appears on the hub Home page and counts toward its
-    // quick status-bar summaries. Dedicated GET; does not touch other fields.
+    // Show-on-Home flag (internal API -- no SDK setter; Write master enforced centrally).
+    // Controls whether the device appears on the hub Home page and counts toward its quick
+    // status-bar summaries. Prefer the dedicated GET (clean, single-purpose) but fall back to
+    // the long-standing Preferences-pane save when it's absent: /device/setShowOnHome is newer
+    // firmware (~2.5.0.158+) and 404s on older hubs, whereas /device/preference/save carries
+    // showOnHome and has been around far longer. A partial body touches only the named field.
     if (args.showOnHome != null) {
         if (settings.enableWrite == false) {
             errors << [property: "showOnHome", error: "Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings"]
         } else {
             try {
                 def showVal = args.showOnHome ? "true" : "false"
-                hubInternalGet("/device/setShowOnHome?deviceId=${deviceId}&show=${showVal}")
+                try {
+                    hubInternalGet("/device/setShowOnHome?deviceId=${deviceId}&show=${showVal}")
+                } catch (Exception primaryErr) {
+                    mcpLog("debug", "device", "hub_update_device showOnHome: dedicated endpoint failed (${primaryErr.message}); falling back to /device/preference/save")
+                    hubInternalPostJson("/device/preference/save", groovy.json.JsonOutput.toJson([deviceId: _prefSaveDeviceId(deviceId), showOnHome: args.showOnHome]))
+                }
                 changes << [property: "showOnHome", newValue: args.showOnHome]
                 mcpLog("info", "device", "Device '${deviceLabel}' showOnHome -> ${args.showOnHome}")
             } catch (Exception e) {
@@ -2133,21 +2148,33 @@ def toolUpdateDevice(args) {
         }
     }
 
-    // Default Current State -- which Current-States attribute shows in the Status column
-    // on the Devices/Rooms pages (internal API; "" selects None). Dedicated GET.
+    // Default Current State -- which Current-States attribute shows in the Status column on the
+    // Devices/Rooms pages ("" selects None). Same firmware split as showOnHome: prefer the
+    // dedicated GET (returns `true`), fall back to /device/preference/save where it's absent.
     if (args.defaultCurrentState != null) {
         if (settings.enableWrite == false) {
             errors << [property: "defaultCurrentState", error: "Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings"]
         } else {
             try {
                 def csVal = args.defaultCurrentState.toString()
-                // The endpoint returns the literal `true` on success. A 200 carrying anything
-                // else (e.g. a login page, or `false` for an unknown attribute name) means the
-                // change did not take -- record an error, not a phantom change.
-                def result = hubInternalGet("/device/setDefaultCurrentState?id=${deviceId}&currentState=${java.net.URLEncoder.encode(csVal, 'UTF-8')}")
-                if (result?.toString()?.trim()?.toLowerCase() != "true") {
-                    errors << [property: "defaultCurrentState", error: "Hub did not accept defaultCurrentState='${csVal}' (returned '${result?.toString()?.take(120)}'). Use an attribute name from the device's current states."]
-                } else {
+                def applied = false
+                try {
+                    // The dedicated endpoint returns the literal `true` on success. A 200 carrying
+                    // anything else (e.g. `false` for an unknown attribute name) is a real rejection
+                    // -- record an error, do NOT fall back (the endpoint exists, the value is bad).
+                    def result = hubInternalGet("/device/setDefaultCurrentState?id=${deviceId}&currentState=${java.net.URLEncoder.encode(csVal, 'UTF-8')}")
+                    if (result?.toString()?.trim()?.toLowerCase() == "true") {
+                        applied = true
+                    } else {
+                        errors << [property: "defaultCurrentState", error: "Hub did not accept defaultCurrentState='${csVal}' (returned '${result?.toString()?.take(120)}'). Use an attribute name from the device's current states."]
+                    }
+                } catch (Exception primaryErr) {
+                    // Dedicated endpoint absent on older firmware (404) -- fall back to the Preferences-pane save.
+                    mcpLog("debug", "device", "hub_update_device defaultCurrentState: dedicated endpoint failed (${primaryErr.message}); falling back to /device/preference/save")
+                    hubInternalPostJson("/device/preference/save", groovy.json.JsonOutput.toJson([deviceId: _prefSaveDeviceId(deviceId), defaultCurrentState: csVal]))
+                    applied = true
+                }
+                if (applied) {
                     changes << [property: "defaultCurrentState", newValue: csVal]
                     mcpLog("info", "device", "Device '${deviceLabel}' defaultCurrentState -> '${csVal}'")
                 }

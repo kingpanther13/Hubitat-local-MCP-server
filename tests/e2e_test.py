@@ -1762,7 +1762,7 @@ class TestRunner:
             # through hub_delete_device. Best-effort: the confirm gate needs a recent backup,
             # so a failure here just leaves a labeled artifact for the --cleanup-only backstop.
             try:
-                self.client.call_tool("hub_manage_devices", {
+                self.client.call_tool("hub_manage_destructive_ops", {
                     "tool": "hub_delete_device", "args": {"deviceId": new_id, "confirm": True},
                 })
             except Exception as exc:
