@@ -3241,6 +3241,15 @@ private String _readRespText(resp) {
     return d.text  // Reader/InputStream -- may throw on a mid-stream read failure
 }
 
+// Redact secret query values from a path before it is written to a log line. The WiFi-join leg
+// (/hub/advanced/setWiFiNetworkInfo?ssid=...&psk=...) carries the network password in the URL, so a
+// raw debug log of the path would leak the PSK to the hub system log. Masks psk/password/psw values
+// only; the real request still uses the unredacted path.
+private String _redactSecretsInPath(String path) {
+    if (path == null) return path
+    return path.replaceAll(/(?i)(psk|password|psw)=[^&]*/, '$1=***')
+}
+
 /**
  * Shared core for the six hubInternal* variants: cookie attach, request, duck-typed body read
  * (read failures are re-thrown, never swallowed into a Reader.toString() junk string), and the
@@ -3291,7 +3300,8 @@ private _hubRequest(String method, String path, Map opts = [:]) {
         else httpPost(params, reader)
         // [hubrt] per-call diagnostic: every internal hub round-trip funnels through here, so one
         // debug line profiles a heavy RM wizard build (count + latency of each GET/POST). Debug-gated.
-        logDebug("[hubrt] ${method} ${path} (${now() - _hubRtT0}ms)")
+        // Path is secret-redacted so the WiFi-join leg's psk is never written to the hub log.
+        logDebug("[hubrt] ${method} ${_redactSecretsInPath(path)} (${now() - _hubRtT0}ms)")
     } catch (Exception e) {
         // hubInternalGetRaw path: a 3xx with followRedirects=false is the success case (read the
         // Location header), not an error.
@@ -3307,7 +3317,7 @@ private _hubRequest(String method, String path, Map opts = [:]) {
             }
         }
         if (shouldRetryWithFreshCookie(e, opts.isRetry)) {
-            mcpLog("debug", "hub-admin", "Retrying with fresh cookie after auth failure on ${method} ${path}")
+            mcpLog("debug", "hub-admin", "Retrying with fresh cookie after auth failure on ${method} ${_redactSecretsInPath(path)}")
             return _hubRequest(method, path, opts + [isRetry: true])
         }
         throw e

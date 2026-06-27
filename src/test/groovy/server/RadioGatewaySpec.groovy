@@ -3,6 +3,7 @@ package server
 import support.TestLocation
 import support.ToolSpecBase
 import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
 import spock.lang.Shared
 
 /**
@@ -480,6 +481,28 @@ class RadioGatewaySpec extends ToolSpecBase {
         posted.path == '/hub/zwave/deviceFirmware/start'
         posted.body.contains('fileName')
         posted.body.contains('fw.gbl')
+        res.success == true
+    }
+
+    def "hub_call_destructive_ops device_firmware_start passes target_index to startBody.target (decoupled from the target selector)"() {
+        given:
+        enableWrite()
+        def posted = [:]
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean retry = false ->
+            posted.path = path; posted.body = new JsonSlurper().parseText(body); [ok: true]
+        }
+
+        when:
+        // `target` here is the radio selector (zwave); target_index=7 is the FIRMWARE index, which must
+        // reach startBody.target — proving the renamed firmware-index arg is decoupled from the selector.
+        def res = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_start',
+            node_id: '5', file_name: 'fw.gbl', target_index: 7, confirm: true])
+
+        then:
+        posted.path == '/hub/zwave/deviceFirmware/start'
+        posted.body.target == 7        // the firmware target index, NOT the radio selector
+        posted.body.nodeId == '5'
+        posted.body.fileName == 'fw.gbl'
         res.success == true
     }
 

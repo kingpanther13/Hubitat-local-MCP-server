@@ -360,7 +360,7 @@ private _validateNetworkArgs(network) {
     def known = ["ipMode", "address", "netmask", "gateway", "nameserver", "useDNSFallover", "ethernetAutoneg", "wifiSsid", "wifiPassword"]
     def unknown = network.keySet().findAll { !(it in known) }
     if (unknown) throw new IllegalArgumentException("Unknown network field(s): ${unknown.join(', ')}. Valid: ${known.join(', ')}.")
-    if (!network.keySet().any { it in known }) {
+    if (network.isEmpty()) {
         throw new IllegalArgumentException("network is empty -- provide at least one of: ${known.join(', ')}.")
     }
     if (network.containsKey("ipMode")) {
@@ -373,6 +373,19 @@ private _validateNetworkArgs(network) {
             if (missing) throw new IllegalArgumentException("network.ipMode='static' requires ${missing.join(', ')} (address, netmask, gateway are all required for a static IP).")
         }
     }
+    // Reject shapes that validate field-by-field but map to NO executable leg (would silently
+    // return success:true/applied:[]). _applyNetworkConfig only acts on ipMode, ethernetAutoneg,
+    // and wifiSsid -- every other field is consumed only by one of those legs, so at least one of
+    // the three must be present, and the dependent fields must accompany the leg that reads them.
+    if (network.containsKey("wifiPassword") && !network.wifiSsid) {
+        throw new IllegalArgumentException("network.wifiPassword requires network.wifiSsid (a password alone joins no network).")
+    }
+    if ((network.containsKey("nameserver") || network.containsKey("useDNSFallover")) && !network.containsKey("ipMode")) {
+        throw new IllegalArgumentException("network.nameserver / network.useDNSFallover require network.ipMode (they are only applied as part of an IP-mode change).")
+    }
+    if (!network.containsKey("ipMode") && !network.containsKey("ethernetAutoneg") && !network.wifiSsid) {
+        throw new IllegalArgumentException("network forms no applicable change -- provide at least one of: ipMode, ethernetAutoneg, wifiSsid (the static fields address/netmask/gateway apply only with ipMode='static').")
+    }
 }
 
 // Apply the network config legs in order (ip mode -> ethernet autoneg -> wifi), appending each that
@@ -381,6 +394,9 @@ private _validateNetworkArgs(network) {
 // from resources/hub2-source/vue-hub2.min.js (ssid/psk for wifi; address/netmask/gateway/nameserver for
 // static; nameserver/useDNSFallover for dhcp).
 private _applyNetworkConfig(network, List applied) {
+    // CONTRACT: every leg here is a fire-and-return GET -- success == the GET returned 2xx. There is
+    // NO response-body inspection and NO state read-back to confirm the change actually took (the hub
+    // exposes no readable post-change value for these), matching the darkMode "200 empty body" setter.
     // IP mode: static or dhcp.
     if (network.containsKey("ipMode")) {
         def mode = network.ipMode?.toString()
@@ -1051,29 +1067,29 @@ def _getAllToolDefinitions_partSystem() {
         ],
         [
             name: "hub_set_system_settings",
-            description: """Set hub-GLOBAL settings: hub name, time zone, latitude/longitude, zip code, temperature scale (units), admin-UI dark mode, and network configuration (IP mode, Ethernet autoneg, WiFi). All optional — pass only what changes.[[FLAT_TRIM]] lat/long/timeZone/temperatureScale/zipCode are written together via one granular endpoint that read-merges current values, so omitted fields keep their value; darkMode and the network legs are each applied via separate setters (no read-back of the current value). ⚠️ Changing timeZone REBOOTS the hub (1-3 min downtime), and any network change can DISCONNECT the hub — both require confirm=true + a backup <24h; the other fields need only the Write master. Network legs apply in order (IP mode → Ethernet autoneg → WiFi) and are NOT atomic, so a mid-sequence failure leaves the earlier legs applied (see the `applied` array). Read back applied values with hub_get_info. Requires Write master.[[/FLAT_TRIM]]""",
+            description: """Set hub-GLOBAL settings: hub name, time zone, location, zip code, temperature scale, admin-UI dark mode, and network config. All optional — pass only what changes.[[FLAT_TRIM]] lat/long/timeZone/temperatureScale/zipCode are written together via one granular endpoint that read-merges current values, so omitted fields keep their value; darkMode and the network legs are each applied via separate setters (no read-back of the current value). ⚠️ Changing timeZone REBOOTS the hub (1-3 min downtime), and any network change can DISCONNECT the hub — both require confirm=true + a backup <24h; the other fields need only the Write master. Network legs apply in order (IP mode → Ethernet autoneg → WiFi) and are NOT atomic, so a mid-sequence failure leaves the earlier legs applied (see the `applied` array). Read back applied values with hub_get_info. Requires Write master.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
                     hubName: [type: "string", description: "New hub name."],
-                    timeZone: [type: "string", description: "IANA time zone ID, e.g. 'America/New_York'.[[FLAT_TRIM]] ⚠️ Changing this REBOOTS the hub — requires confirm=true + a recent backup.[[/FLAT_TRIM]]"],
-                    latitude: [type: "number", description: "Latitude in decimal degrees, e.g. 40.7128."],
-                    longitude: [type: "number", description: "Longitude in decimal degrees, e.g. -74.006."],
-                    zipCode: [type: "string", description: "Postal/zip code, e.g. '10001'."],
+                    timeZone: [type: "string", description: "IANA time zone ID.[[FLAT_TRIM]] e.g. 'America/New_York'. ⚠️ Changing this REBOOTS the hub — requires confirm=true + a recent backup.[[/FLAT_TRIM]]"],
+                    latitude: [type: "number", description: "Latitude in decimal degrees.[[FLAT_TRIM]] e.g. 40.7128.[[/FLAT_TRIM]]"],
+                    longitude: [type: "number", description: "Longitude in decimal degrees.[[FLAT_TRIM]] e.g. -74.006.[[/FLAT_TRIM]]"],
+                    zipCode: [type: "string", description: "Postal/zip code.[[FLAT_TRIM]] e.g. '10001'.[[/FLAT_TRIM]]"],
                     temperatureScale: [type: "string", enum: ["F", "C"], description: "Temperature scale: F or C."],
-                    darkMode: [type: "boolean", description: "Set the hub admin UI to dark mode (true) or light (false). Applied via /hub/applyDarkMode; no read-back of the current value."],
-                    network: [type: "object", description: "⚠️ Hub network configuration — can DISCONNECT the hub; requires confirm=true + a backup <24h.[[FLAT_TRIM]] All sub-fields optional; only the legs you provide are applied, in order (IP mode → Ethernet autoneg → WiFi), non-atomically. ipMode='static' requires address+netmask+gateway (nameserver optional); ipMode='dhcp' uses nameserver + useDNSFallover. ethernetAutoneg toggles Ethernet autonegotiation. wifiSsid (+ wifiPassword) joins a WiFi network.[[/FLAT_TRIM]]", properties: [
-                        ipMode: [type: "string", enum: ["dhcp", "static"], description: "'static' (then address+netmask+gateway required) or 'dhcp'."],
-                        address: [type: "string", description: "Static IP address, e.g. '192.168.1.50' (required for ipMode='static')."],
-                        netmask: [type: "string", description: "Static subnet mask, e.g. '255.255.255.0' (required for ipMode='static')."],
-                        gateway: [type: "string", description: "Static default gateway, e.g. '192.168.1.1' (required for ipMode='static')."],
-                        nameserver: [type: "string", description: "DNS nameserver(s) (optional, used by both static and dhcp)."],
-                        useDNSFallover: [type: "boolean", description: "DHCP only: enable DNS failover (default false)."],
-                        ethernetAutoneg: [type: "boolean", description: "Enable (true) or disable (false) Ethernet speed autonegotiation."],
+                    darkMode: [type: "boolean", description: "Hub admin UI dark mode (true) or light (false).[[FLAT_TRIM]] Applied via /hub/applyDarkMode; no read-back of the current value.[[/FLAT_TRIM]]"],
+                    network: [type: "object", description: "⚠️ Hub network config — can DISCONNECT the hub; needs confirm=true + a backup <24h.[[FLAT_TRIM]] All sub-fields optional; only the legs you provide are applied, in order (IP mode → Ethernet autoneg → WiFi), non-atomically. ipMode='static' requires address+netmask+gateway (nameserver optional); ipMode='dhcp' uses nameserver + useDNSFallover. ethernetAutoneg toggles Ethernet autonegotiation. wifiSsid (+ wifiPassword) joins a WiFi network.[[/FLAT_TRIM]]", properties: [
+                        ipMode: [type: "string", enum: ["dhcp", "static"], description: "'static' or 'dhcp'.[[FLAT_TRIM]] For 'static', address+netmask+gateway are required.[[/FLAT_TRIM]]"],
+                        address: [type: "string", description: "Static IP.[[FLAT_TRIM]] e.g. '192.168.1.50'; required when ipMode='static'.[[/FLAT_TRIM]]"],
+                        netmask: [type: "string", description: "Static subnet mask.[[FLAT_TRIM]] e.g. '255.255.255.0'; required when ipMode='static'.[[/FLAT_TRIM]]"],
+                        gateway: [type: "string", description: "Static default gateway.[[FLAT_TRIM]] e.g. '192.168.1.1'; required when ipMode='static'.[[/FLAT_TRIM]]"],
+                        nameserver: [type: "string", description: "DNS nameserver(s).[[FLAT_TRIM]] Optional; used by both static and dhcp.[[/FLAT_TRIM]]"],
+                        useDNSFallover: [type: "boolean", description: "DHCP-only DNS failover.[[FLAT_TRIM]] Enable DNS failover (default false).[[/FLAT_TRIM]]"],
+                        ethernetAutoneg: [type: "boolean", description: "Ethernet autonegotiation on/off.[[FLAT_TRIM]] Enable (true) or disable (false) Ethernet speed autonegotiation.[[/FLAT_TRIM]]"],
                         wifiSsid: [type: "string", description: "WiFi network name to join."],
-                        wifiPassword: [type: "string", description: "WiFi network password (psk); omit for an open network."]
+                        wifiPassword: [type: "string", description: "WiFi password (psk).[[FLAT_TRIM]] Omit for an open network.[[/FLAT_TRIM]]"]
                     ]],
-                    confirm: [type: "boolean", description: "Required to change timeZone (reboots the hub) OR network (can disconnect the hub).[[FLAT_TRIM]] Must be true; confirms a backup <24h + that the disruption is intended.[[/FLAT_TRIM]]"]
+                    confirm: [type: "boolean", description: "Required (must be true) for timeZone or network changes.[[FLAT_TRIM]] timeZone reboots the hub; network can disconnect it. Confirms a backup <24h + that the disruption is intended.[[/FLAT_TRIM]]"]
                 ]
             ],
             outputSchema: [

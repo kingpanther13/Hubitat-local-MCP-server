@@ -635,4 +635,136 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
         where:
         useGateways << [true, false]
     }
+
+    // ---------- WiFi URL-encoding ----------
+
+    def "WiFi ssid+psk are URL-encoded (space -> '+', symbols percent-encoded)"() {
+        given:
+        enableWrite()
+        // URLEncoder encodes a space as '+'; @ -> %40, & -> %26, = -> %3D.
+        hubGet.register('/hub/advanced/setWiFiNetworkInfo?ssid=My+Net&psk=p%40ss%26w%3Drd') { params -> "ok" }
+
+        when:
+        def result = script.toolSetSystemSettings([network: [wifiSsid: 'My Net', wifiPassword: 'p@ss&w=rd'], confirm: true])
+
+        then:
+        result.success == true
+        result.applied == ['network.wifi']
+        hubGet.calls.any { it.path == '/hub/advanced/setWiFiNetworkInfo?ssid=My+Net&psk=p%40ss%26w%3Drd' }
+    }
+
+    // ---------- ordered multi-leg apply ----------
+
+    def "an ordered multi-leg network apply records the legs in apply order"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/advanced/switchToDhcp?nameserver=&useDNSFallover=false') { params -> "ok" }
+        hubGet.register('/hub/advanced/network/ethernetMode/true') { params -> "ok" }
+        hubGet.register('/hub/advanced/setWiFiNetworkInfo?ssid=x&psk=') { params -> "ok" }
+
+        when:
+        def result = script.toolSetSystemSettings([network: [ipMode: 'dhcp', ethernetAutoneg: true, wifiSsid: 'x'], confirm: true])
+
+        then:
+        result.success == true
+        // exact order: IP mode -> Ethernet autoneg -> WiFi
+        result.applied == ['network.dhcp', 'network.ethernetAutoneg', 'network.wifi']
+    }
+
+    // ---------- truthy-string trap (mirrors the darkMode string test) ----------
+
+    def "useDNSFallover as the STRING 'false' wires useDNSFallover=false (not coerced truthy)"() {
+        given:
+        enableWrite()
+        // Groovy treats the String "false" as truthy; the tool coerces via equalsIgnoreCase, so the
+        // query must end useDNSFallover=false (a bare `network.useDNSFallover ?` would send true).
+        hubGet.register('/hub/advanced/switchToDhcp?nameserver=&useDNSFallover=false') { params -> "ok" }
+
+        when:
+        def result = script.toolSetSystemSettings([network: [ipMode: 'dhcp', useDNSFallover: 'false'], confirm: true])
+
+        then:
+        result.success == true
+        result.applied == ['network.dhcp']
+        hubGet.calls.any { it.path.endsWith('useDNSFallover=false') }
+    }
+
+    // ---------- network-only first-leg failure ----------
+
+    def "a network-only first-leg failure returns success=false with applied == []"() {
+        given:
+        enableWrite()
+        // The very first leg (IP mode) throws -> nothing committed.
+        hubGet.register('/hub/advanced/switchToDhcp?nameserver=&useDNSFallover=false') { params -> throw new RuntimeException('link down') }
+
+        when:
+        def result = script.toolSetSystemSettings([network: [ipMode: 'dhcp'], confirm: true])
+
+        then:
+        result.success == false
+        result.applied == []
+        result.error.toLowerCase().contains('dhcp')
+    }
+
+    // ---------- FIX 2: reject network shapes that apply zero legs ----------
+
+    def "network with wifiPassword but no wifiSsid is rejected (-> -32602) before any hub call"() {
+        given:
+        enableWrite()
+
+        when:
+        script.toolSetSystemSettings([network: [wifiPassword: 'secret'], confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('wifiSsid')
+        hubGet.calls.every { !it.path.startsWith('/hub/advanced/') }
+    }
+
+    def "network with #field but no ipMode is rejected (-> -32602) before any hub call"() {
+        given:
+        enableWrite()
+
+        when:
+        script.toolSetSystemSettings([network: [(field): value], confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('ipMode')
+        hubGet.calls.every { !it.path.startsWith('/hub/advanced/') }
+
+        where:
+        field            | value
+        'nameserver'     | '8.8.8.8'
+        'useDNSFallover' | true
+    }
+
+    def "network with only static fields (no ipMode) forms no leg and is rejected (-> -32602)"() {
+        given:
+        enableWrite()
+
+        when:
+        // address/netmask/gateway are consumed ONLY by ipMode='static'; without ipMode this no-ops.
+        script.toolSetSystemSettings([network: [address: '192.168.1.50', netmask: '255.255.255.0', gateway: '192.168.1.1'], confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('ipMode')
+        hubGet.calls.every { !it.path.startsWith('/hub/advanced/') }
+    }
+
+    // ---------- P1: WiFi PSK is redacted from the hub debug log ----------
+
+    def "the debug-log path redaction masks the WiFi psk value (no plaintext password in logs)"() {
+        expect:
+        // _redactSecretsInPath is the single seam every internal-HTTP log line passes the path through.
+        script._redactSecretsInPath('/hub/advanced/setWiFiNetworkInfo?ssid=My+Net&psk=secret123') ==
+            '/hub/advanced/setWiFiNetworkInfo?ssid=My+Net&psk=***'
+        // ssid (not secret) is preserved; the psk value is gone.
+        !script._redactSecretsInPath('/hub/advanced/setWiFiNetworkInfo?ssid=My+Net&psk=secret123').contains('secret123')
+        // also masks password=/psw= variants, leaves non-secret query values intact, null-safe.
+        script._redactSecretsInPath('/x?password=hunter2&keep=1') == '/x?password=***&keep=1'
+        script._redactSecretsInPath('/x?a=1&b=2') == '/x?a=1&b=2'
+        script._redactSecretsInPath(null) == null
+    }
 }

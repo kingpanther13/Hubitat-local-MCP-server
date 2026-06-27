@@ -1790,11 +1790,15 @@ private _destructiveNetworkOp(String action) {
         default: throw new IllegalArgumentException("Unknown action '${action}' for target 'network'. Valid: disconnect_wifi, disconnect_ethernet.")
     }
     try {
+        // Fire-and-return GET: success == the GET returned 2xx. There is NO response-body inspection
+        // or state read-back to confirm the link actually dropped, so the result reports the command
+        // was accepted, not a verified disconnected state.
         def resp = _radioGet(path)
         mcpLog("warn", "hub-admin", "DESTRUCTIVE: hub ${action} via MCP")
         return [success: true, target: "network", action: action,
-                message: "Hub ${action == 'disconnect_wifi' ? 'WiFi' : 'Ethernet'} link disconnected.",
+                message: "Hub ${action == 'disconnect_wifi' ? 'WiFi' : 'Ethernet'} disconnect command accepted.",
                 warning: "The hub may become unreachable over the disconnected interface until it is reconnected.",
+                note: "Command accepted (HTTP 2xx); there is no read-back to confirm the link dropped.",
                 response: resp]
     } catch (Exception e) {
         mcpLogError("hub-admin", "hub_call_destructive_ops network/${action} failed", e)
@@ -1812,14 +1816,18 @@ private _destructiveCloudOp(String action) {
         default: throw new IllegalArgumentException("Unknown action '${action}' for target 'cloud'. Valid: disable, enable.")
     }
     try {
+        // Fire-and-return GET: success == the GET returned 2xx. There is NO response-body inspection
+        // or state read-back to confirm the controller actually flipped, so the result reports the
+        // command was accepted, not a verified enabled/disabled state.
         def resp = _radioGet(path)
         mcpLog("warn", "hub-admin", "DESTRUCTIVE: cloud controller ${action} via MCP")
         def disabling = (action == "disable")
         return [success: true, target: "cloud", action: action,
-                message: "Hub cloud controller ${disabling ? 'DISABLED' : 'enabled'}.",
+                message: "Hub cloud controller ${disabling ? 'disable' : 'enable'} command accepted.",
                 warning: disabling
-                    ? "Cloud features are now OFF: Alexa/Google voice integrations, cloud dashboards, cloud firmware updates, and Hub Protect/subscription features will not work until re-enabled."
+                    ? "Cloud features are expected to go OFF: Alexa/Google voice integrations, cloud dashboards, cloud firmware updates, and Hub Protect/subscription features will not work until re-enabled."
                     : "Cloud features are being re-enabled; allow a short time for cloud services to reconnect.",
+                note: "Command accepted (HTTP 2xx); there is no read-back to confirm the controller's new state.",
                 response: resp]
     } catch (Exception e) {
         mcpLogError("hub-admin", "hub_call_destructive_ops cloud/${action} failed", e)
@@ -2438,21 +2446,21 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_call_destructive_ops",
-            description: """⚠️ DESTRUCTIVE hub operations selected by `target` — radio WIPE/FIRMWARE, network DISCONNECT, or cloud DISABLE. Each can sever connectivity, unpair devices, or brick hardware.
+            description: """⚠️ DESTRUCTIVE hub ops by `target`: radio WIPE/FIRMWARE, network DISCONNECT, or cloud DISABLE.[[FLAT_TRIM]] Each can sever connectivity, unpair devices, or brick hardware.[[/FLAT_TRIM]]
 
-Misfire-proof: you MUST pass an explicit target AND an explicit action AND confirm=true — there are no defaults.[[FLAT_TRIM]] target=zwave|zigbee|matter: reset wipes that radio's network/fabric (irreversible — unpairs ALL its devices); firmware flashes (device_firmware_start/abort = Z-Wave device OTA, needs node_id+file_name from hub_get_radio_details(include_firmware=true); zwave_chip_firmware = hub Z-Wave radio; zigbee_firmware = Zigbee radio to latest) can BRICK hardware if interrupted. target=network: disconnect_wifi / disconnect_ethernet drop that link (the hub may become unreachable over it). target=cloud: disable severs the cloud controller — Alexa/Google, cloud dashboards, cloud firmware updates, and Hub Protect/subscription features all stop until enable restores them.[[/FLAT_TRIM]]
+Misfire-proof: pass an explicit target AND action AND confirm=true — no defaults.[[FLAT_TRIM]] target=zwave|zigbee|matter: reset wipes that radio's network/fabric (irreversible — unpairs ALL its devices); firmware flashes (device_firmware_start/abort = Z-Wave device OTA, needs node_id+file_name from hub_get_radio_details(include_firmware=true); zwave_chip_firmware = hub Z-Wave radio; zigbee_firmware = Zigbee radio to latest) can BRICK hardware if interrupted. target=network: disconnect_wifi / disconnect_ethernet drop that link (the hub may become unreachable over it). target=cloud: disable severs the cloud controller — Alexa/Google, cloud dashboards, cloud firmware updates, and Hub Protect/subscription features all stop until enable restores them.[[/FLAT_TRIM]]
 
-PRE-FLIGHT: 1) Backup <24h old 2) Tell the user exactly what is affected (which radio/devices, which network link, or that cloud features will all stop) and that it is irreversible / can brick / disconnects 3) Get explicit confirmation 4) Set confirm=true. Do NOT power-cycle the hub or device during a firmware flash.
+PRE-FLIGHT: 1) Backup <24h old 2) Tell the user what is affected (irreversible / can brick / disconnects) 3) Get explicit confirmation 4) Set confirm=true.[[FLAT_TRIM]] Name exactly what is hit: which radio/devices, which network link, or that cloud features all stop. Do NOT power-cycle the hub or device during a firmware flash.[[/FLAT_TRIM]]
 Requires Write master.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    target: [type: "string", enum: ["zwave", "zigbee", "matter", "network", "cloud"], description: "REQUIRED: what to act on. zwave/zigbee/matter = a radio (reset + firmware); network = the hub's WiFi/Ethernet link; cloud = the hub cloud controller."],
+                    target: [type: "string", enum: ["zwave", "zigbee", "matter", "network", "cloud"], description: "REQUIRED: what to act on.[[FLAT_TRIM]] zwave/zigbee/matter = a radio (reset + firmware); network = the hub's WiFi/Ethernet link; cloud = the hub cloud controller.[[/FLAT_TRIM]]"],
                     action: [type: "string", enum: ["reset", "device_firmware_start", "device_firmware_abort", "zwave_chip_firmware", "zigbee_firmware", "disconnect_wifi", "disconnect_ethernet", "disable", "enable"], description: "REQUIRED: depends on target.[[FLAT_TRIM]] Radio targets: reset (wipe network/fabric — unpairs all devices) or a firmware flash action. target=network: disconnect_wifi | disconnect_ethernet. target=cloud: disable | enable.[[/FLAT_TRIM]]"],
-                    node_id: [description: "Z-Wave node id; required for device_firmware_start/abort."],
-                    file_name: [type: "string", description: "Firmware file name from hub_get_radio_details(include_firmware=true); required for device_firmware_start."],
-                    target_index: [description: "Optional Z-Wave firmware target index for device_firmware_start (defaults to node_id)."],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms backup was created and the user approved this destructive op."]
+                    node_id: [description: "Z-Wave node id.[[FLAT_TRIM]] Required for device_firmware_start/abort.[[/FLAT_TRIM]]"],
+                    file_name: [type: "string", description: "Firmware file name.[[FLAT_TRIM]] From hub_get_radio_details(include_firmware=true); required for device_firmware_start.[[/FLAT_TRIM]]"],
+                    target_index: [description: "Optional Z-Wave firmware target index.[[FLAT_TRIM]] For device_firmware_start; defaults to node_id.[[/FLAT_TRIM]]"],
+                    confirm: [type: "boolean", description: "REQUIRED: must be true.[[FLAT_TRIM]] Confirms backup was created and the user approved this destructive op.[[/FLAT_TRIM]]"]
                 ],
                 required: ["target", "action", "confirm"]
             ],
