@@ -1,12 +1,12 @@
 {
     "packageName": "MCP Rule Server",
     "author": "kingpanther13",
-    "version": "2.9.1",
+    "version": "3.0.0",
     "minimumHEVersion": "2.3.0",
-    "dateReleased": "2026-06-26",
+    "dateReleased": "2026-06-27",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/README.md",
     "communityLink": "",
-    "releaseNotes": "v2.9.1 - 2026-06-26\n- feat: let hub_update_mcp_settings manage the MCP device-access scope (selectedDevices) (#318)\n  - `hub_update_mcp_settings` can now manage the MCP server's device-access list (`selectedDevices`) — add, remove, or replace which devices the server is authorized to see and control, from an agent instead of the app's device-selection page (Developer Mode).\n\nv2.9.0 - 2026-06-24\n- feat: best-practice acknowledgment gate and reactive hints for write tools (#317)\n  - **Best-practice acknowledgment gate is now ON by default.** Write tools require the AI to first read the in-app best-practice guide (`hub_get_tool_guide`, section `best_practice_reference`) and pass the key it publishes. Turn it off in the new **Best-Practice Guidance** settings section (or via `hub_update_mcp_settings`) for clients that can't carry the extra context. Reads, the guide, and the settings tool are never gated, so the AI can never lock itself out.\n  - **Failed write tools now include a best-practice hint** pointing at that specific tool's guide section, in both flat and gateway mode, to help the AI recover from the failing tool's reference.",
+    "releaseNotes": "v3.0.0 - 2026-06-27\n- fix: report distinct tool count from hub_search_tools, not gateway-membership rows (#323)\n  - Fixed `hub_search_tools` reporting an inflated `totalToolsSearched` — it now counts each tool once instead of once per gateway it appears in.\n- ci: fail-fast bind-check in e2e deploy (#321)\n- feat: hub_manage_dashboards — Easy Dashboard CRUD (#259 item 9) (#324)\n  - Manage Hubitat Easy Dashboards from MCP: list, view, create, update, clone, and delete dashboards (deleting requires confirmation).\n  - HPM bundle is now compressed, so package updates download smaller and faster.",
     "apps": [
         {
             "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
