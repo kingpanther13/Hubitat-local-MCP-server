@@ -1079,15 +1079,15 @@ def _getAllToolDefinitions_partSystem() {
                     temperatureScale: [type: "string", enum: ["F", "C"], description: "Temperature scale: F or C."],
                     darkMode: [type: "boolean", description: "Hub admin UI dark mode (true) or light (false).[[FLAT_TRIM]] Applied via /hub/applyDarkMode; no read-back of the current value.[[/FLAT_TRIM]]"],
                     network: [type: "object", description: "⚠️ Hub network config — can DISCONNECT the hub; needs confirm=true + a backup <24h.[[FLAT_TRIM]] All sub-fields optional; only the legs you provide are applied, in order (IP mode → Ethernet autoneg → WiFi), non-atomically. ipMode='static' requires address+netmask+gateway (nameserver optional); ipMode='dhcp' uses nameserver + useDNSFallover. ethernetAutoneg toggles Ethernet autonegotiation. wifiSsid (+ wifiPassword) joins a WiFi network.[[/FLAT_TRIM]]", properties: [
-                        ipMode: [type: "string", enum: ["dhcp", "static"], description: "'static' or 'dhcp'.[[FLAT_TRIM]] For 'static', address+netmask+gateway are required.[[/FLAT_TRIM]]"],
-                        address: [type: "string", description: "Static IP.[[FLAT_TRIM]] e.g. '192.168.1.50'; required when ipMode='static'.[[/FLAT_TRIM]]"],
-                        netmask: [type: "string", description: "Static subnet mask.[[FLAT_TRIM]] e.g. '255.255.255.0'; required when ipMode='static'.[[/FLAT_TRIM]]"],
-                        gateway: [type: "string", description: "Static default gateway.[[FLAT_TRIM]] e.g. '192.168.1.1'; required when ipMode='static'.[[/FLAT_TRIM]]"],
-                        nameserver: [type: "string", description: "DNS nameserver(s).[[FLAT_TRIM]] Optional; used by both static and dhcp.[[/FLAT_TRIM]]"],
-                        useDNSFallover: [type: "boolean", description: "DHCP-only DNS failover.[[FLAT_TRIM]] Enable DNS failover (default false).[[/FLAT_TRIM]]"],
-                        ethernetAutoneg: [type: "boolean", description: "Ethernet autonegotiation on/off.[[FLAT_TRIM]] Enable (true) or disable (false) Ethernet speed autonegotiation.[[/FLAT_TRIM]]"],
-                        wifiSsid: [type: "string", description: "WiFi network name to join."],
-                        wifiPassword: [type: "string", description: "WiFi password (psk).[[FLAT_TRIM]] Omit for an open network.[[/FLAT_TRIM]]"]
+                        ipMode: [type: "string", enum: ["dhcp", "static"], description: "IP mode."],
+                        address: [type: "string", description: "Static IP address."],
+                        netmask: [type: "string", description: "Static subnet mask."],
+                        gateway: [type: "string", description: "Static gateway."],
+                        nameserver: [type: "string", description: "DNS nameserver(s)."],
+                        useDNSFallover: [type: "boolean", description: "DHCP DNS failover."],
+                        ethernetAutoneg: [type: "boolean", description: "Ethernet autonegotiation."],
+                        wifiSsid: [type: "string", description: "WiFi SSID to join."],
+                        wifiPassword: [type: "string", description: "WiFi password (psk)."]
                     ]],
                     confirm: [type: "boolean", description: "Required (must be true) for timeZone or network changes.[[FLAT_TRIM]] timeZone reboots the hub; network can disconnect it. Confirms a backup <24h + that the disruption is intended.[[/FLAT_TRIM]]"]
                 ]
