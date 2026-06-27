@@ -138,6 +138,36 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
+    def "toolUpdateDevice defaultCurrentState records an error when the hub body is not true"() {
+        given: 'the endpoint returns a non-true body (e.g. an unknown attribute name)'
+        def device = new TestDevice(id: 10, label: 'Thermostat')
+        childDevicesList << device
+        hubGet.register('/device/setDefaultCurrentState?id=10&currentState=bogus') { params -> 'false' }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', defaultCurrentState: 'bogus'])
+
+        then: 'no phantom change is recorded; an actionable error is returned instead'
+        result.success == false
+        result.changes.find { it.property == 'defaultCurrentState' } == null
+        result.errors.find { it.property == 'defaultCurrentState' }?.error?.contains('Hub did not accept')
+    }
+
+    def "toolUpdateDevice defaultCurrentState records a per-property error when the Write master is off"() {
+        given:
+        settingsMap.enableWrite = false
+        def device = new TestDevice(id: 10, label: 'Thermostat')
+        childDevicesList << device
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', defaultCurrentState: 'switch'])
+
+        then: 'no hub call was made; the error names the Write toggle'
+        result.success == false
+        result.errors.find { it.property == 'defaultCurrentState' }?.error?.contains('Enable Write Tools')
+        !hubGet.calls.any { it.path.startsWith('/device/setDefaultCurrentState') }
+    }
+
     // ============================================================
     // hub_update_device : tags (verify/restore path)
     // ============================================================
@@ -210,6 +240,63 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         then:
         result.success == false
         result.errors.find { it.property == 'tags' }?.error?.contains('read back as')
+    }
+
+    def "toolUpdateDevice tags empty list clears the tags and records an empty newValue"() {
+        given: 'the verify read shows tags cleared to ""'
+        def device = new TestDevice(id: 10, label: 'Office Lamp', name: 'Generic Switch')
+        childDevicesList << device
+        def reads = 0
+        def preModel = '{"device":{"id":10,"name":"Generic Switch","label":"Office Lamp","deviceNetworkId":"AB","tags":"kitchen","version":3,"controllerType":"LAN"}}'
+        def postModel = '{"device":{"id":10,"name":"Generic Switch","label":"Office Lamp","deviceNetworkId":"AB","tags":"","version":4,"controllerType":"LAN"}}'
+        hubGet.register('/device/fullJson/10') { params -> (++reads == 1) ? preModel : postModel }
+        def postedBody = null
+        script.metaClass.hubInternalPostFormRaw = { String path, String body -> postedBody = body; '' }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', tags: []])
+
+        then: 'the form carried an empty tags value and the change reports newValue == ""'
+        result.success == true
+        result.changes.find { it.property == 'tags' }?.newValue == ''
+        postedBody.contains('tags=&') || postedBody.endsWith('tags=')
+    }
+
+    def "toolUpdateDevice tags restores blanked label even when the tags read-back MISMATCHES"() {
+        given: 'the wholesale form blanked the label AND tags did not take'
+        def restored = [:]
+        def device = new TestDevice(id: 10, label: 'Office Lamp', name: 'Generic Switch')
+        device.metaClass.setLabel = { String v -> restored.label = v }
+        childDevicesList << device
+        def reads = 0
+        def preModel = '{"device":{"id":10,"name":"Generic Switch","label":"Office Lamp","deviceNetworkId":"AB","tags":"","version":3,"controllerType":"LAN"}}'
+        // Verify read: label blanked AND tags wrong (still empty, expected "kitchen").
+        def postModel = '{"device":{"id":10,"name":"Generic Switch","label":"","deviceNetworkId":"AB","tags":"","version":4,"controllerType":"LAN"}}'
+        hubGet.register('/device/fullJson/10') { params -> (++reads == 1) ? preModel : postModel }
+        script.metaClass.hubInternalPostFormRaw = { String path, String body -> '' }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', tags: ['kitchen']])
+
+        then: 'identity restore fired on the mismatch path AND the tags error is recorded'
+        result.success == false
+        restored.label == 'Office Lamp'
+        result.errors.find { it.property == 'tags' }?.error?.contains('read back as')
+    }
+
+    def "toolUpdateDevice tags records a per-property error when the Write master is off"() {
+        given:
+        settingsMap.enableWrite = false
+        def device = new TestDevice(id: 10, label: 'Office Lamp', name: 'Generic Switch')
+        childDevicesList << device
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', tags: ['kitchen']])
+
+        then: 'no hub call was made; the error names the Write toggle'
+        result.success == false
+        result.errors.find { it.property == 'tags' }?.error?.contains('Enable Write Tools')
+        !hubGet.calls.any { it.path.startsWith('/device/fullJson') }
     }
 
     @spock.lang.Unroll
@@ -309,6 +396,53 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         result.success == false
         result.error.contains('No such driver type')
         result.note.contains('hub_list_drivers')
+    }
+
+    def "toolCreateDevice returns a structured error (not a thrown error) when the create body is not JSON"() {
+        given: 'a 200 carrying an HTML/login body instead of JSON'
+        hubGet.register('/device/sysDriverByIdJson/500') { params -> '<html><body>Please log in</body></html>' }
+
+        when:
+        def result = script.toolCreateDevice([deviceTypeId: '500', confirm: true])
+
+        then: 'the non-JSON body is caught and returned as the structured runtime-error shape'
+        result.success == false
+        result.error.contains('Hub call failed')
+        result.note.contains('hub_list_drivers')
+    }
+
+    def "toolCreateDevice surfaces a non-fatal warning when the label apply fails"() {
+        given: 'create + read-back succeed, but updateLabel returns a non-true body'
+        hubGet.register('/device/sysDriverByIdJson/500') { params -> '{"success":true,"deviceId":777}' }
+        hubGet.register('/device/fullJson/777') { params ->
+            '{"device":{"id":777,"label":"My LAN Device","name":"Generic LAN Driver","deviceTypeName":"Generic LAN Driver","virtual":false,"capabilities":["Switch"]}}'
+        }
+        hubGet.register('/device/updateLabel?deviceId=777&label=Garage+Bridge') { params -> 'false' }
+
+        when:
+        def result = script.toolCreateDevice([deviceTypeId: '500', label: 'Garage Bridge', confirm: true])
+
+        then: 'success, but a warning fires and the response label reflects reality (not the requested label)'
+        result.success == true
+        result.deviceId == '777'
+        result.warnings != null
+        result.warnings.any { it.contains("label 'Garage Bridge' could not be applied") }
+        result.label == 'My LAN Device'
+    }
+
+    def "toolCreateDevice surfaces a warning when the post-create read-back returns no device"() {
+        given: 'create succeeds but the fullJson inspect returns nothing (info == null)'
+        hubGet.register('/device/sysDriverByIdJson/500') { params -> '{"success":true,"deviceId":777}' }
+        hubGet.register('/device/fullJson/777') { params -> '' }
+
+        when:
+        def result = script.toolCreateDevice([deviceTypeId: '500', confirm: true])
+
+        then: 'the radio-orphan-shell warning is not lost'
+        result.success == true
+        result.deviceId == '777'
+        result.warnings != null
+        result.warnings.any { it.contains('could not read it back to confirm type') }
     }
 
     @spock.lang.Unroll
@@ -446,6 +580,68 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         result.total == 0
         result.devices == []
         result.note.contains('No compatible-device records matched')
+    }
+
+    def "toolGetCompatibleDevices filters by deviceType"() {
+        given:
+        hubGet.register('/hub/compatibleDevices') { params -> COMPAT_JSON }
+
+        when:
+        def result = script.toolGetCompatibleDevices([deviceType: 'motion'])
+
+        then:
+        result.success == true
+        result.total == 1
+        result.devices[0].name == 'Multisensor 6'
+    }
+
+    def "toolGetCompatibleDevices query matches a non-name field (driverName)"() {
+        given:
+        hubGet.register('/hub/compatibleDevices') { params -> COMPAT_JSON }
+
+        when: 'query matches driverName, not the device name'
+        def result = script.toolGetCompatibleDevices([query: 'aeotec multisensor'])
+
+        then:
+        result.success == true
+        result.total == 1
+        result.devices[0].name == 'Multisensor 6'
+    }
+
+    def "toolGetCompatibleDevices query does not match the literal null when fields are absent"() {
+        given: 'a record with several null fields -- null must not interpolate as the string "null"'
+        hubGet.register('/hub/compatibleDevices') { params -> '[{"brand":"Acme","name":"Widget"}]' }
+
+        when:
+        def result = script.toolGetCompatibleDevices([query: 'null'])
+
+        then: 'no false match from a stringified null'
+        result.success == true
+        result.total == 0
+    }
+
+    def "toolGetCompatibleDevices returns success:false when the hub is unavailable"() {
+        given: 'the catalog fetch throws'
+        hubGet.register('/hub/compatibleDevices') { params -> throw new RuntimeException('connection refused') }
+
+        when:
+        def result = script.toolGetCompatibleDevices([brand: 'aeotec'])
+
+        then:
+        result.success == false
+        result.error.contains('Could not read /hub/compatibleDevices')
+    }
+
+    def "toolGetCompatibleDevices returns success:false and devices:[] on a non-List shape"() {
+        given: 'the endpoint returns an object, not the expected array'
+        hubGet.register('/hub/compatibleDevices') { params -> '{"unexpected":"shape"}' }
+
+        when:
+        def result = script.toolGetCompatibleDevices([brand: 'aeotec'])
+
+        then:
+        result.success == false
+        result.devices == []
     }
 
     @spock.lang.Unroll

@@ -1751,8 +1751,12 @@ class TestRunner:
         new_id = str(created.get("deviceId") or "")
         assert new_id, f"create from driver returned no deviceId: {created}"
         try:
-            dev = self.client.call_tool("hub_get_device", {"deviceId": new_id})
-            assert dev, f"created device {new_id} not readable back"
+            # A freshly created REAL device is NOT MCP-selected, so the scoped hub_get_device
+            # (selected/child devices only) can't resolve it. Confirm it exists via the
+            # scope='all' list (every hub device, sourced from /device/listWithCapabilities/json).
+            all_devs = self.client.call_tool("hub_list_devices", {"scope": "all"})
+            ids = {str(d.get("id")) for d in all_devs.get("devices", [])} if isinstance(all_devs, dict) else set()
+            assert new_id in ids, f"created device {new_id} not present in scope='all' listing"
         finally:
             # Created via the catalog path (a real device, not an MCP child) -- delete by id
             # through hub_delete_device. Best-effort: the confirm gate needs a recent backup,

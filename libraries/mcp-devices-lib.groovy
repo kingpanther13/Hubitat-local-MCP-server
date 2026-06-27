@@ -2141,9 +2141,16 @@ def toolUpdateDevice(args) {
         } else {
             try {
                 def csVal = args.defaultCurrentState.toString()
-                hubInternalGet("/device/setDefaultCurrentState?id=${deviceId}&currentState=${java.net.URLEncoder.encode(csVal, 'UTF-8')}")
-                changes << [property: "defaultCurrentState", newValue: csVal]
-                mcpLog("info", "device", "Device '${deviceLabel}' defaultCurrentState -> '${csVal}'")
+                // The endpoint returns the literal `true` on success. A 200 carrying anything
+                // else (e.g. a login page, or `false` for an unknown attribute name) means the
+                // change did not take -- record an error, not a phantom change.
+                def result = hubInternalGet("/device/setDefaultCurrentState?id=${deviceId}&currentState=${java.net.URLEncoder.encode(csVal, 'UTF-8')}")
+                if (result?.toString()?.trim()?.toLowerCase() != "true") {
+                    errors << [property: "defaultCurrentState", error: "Hub did not accept defaultCurrentState='${csVal}' (returned '${result?.toString()?.take(120)}'). Use an attribute name from the device's current states."]
+                } else {
+                    changes << [property: "defaultCurrentState", newValue: csVal]
+                    mcpLog("info", "device", "Device '${deviceLabel}' defaultCurrentState -> '${csVal}'")
+                }
             } catch (Exception e) {
                 mcpLog("debug", "device", "hub_update_device defaultCurrentState: error: ${e.message}")
                 errors << [property: "defaultCurrentState", error: e.message]
@@ -2191,14 +2198,19 @@ def toolUpdateDevice(args) {
                 // Verify: tags applied AND identity fields not blanked by the wholesale form
                 def vText = hubInternalGet("/device/fullJson/${deviceId}")
                 def vd = vText ? new groovy.json.JsonSlurper().parseText(vText)?.device : null
+                // Identity-restore runs FIRST, regardless of whether tags matched: the wholesale
+                // /device/update form blanks any field it omits, and that can happen on the
+                // tag-mismatch path too -- so restore label/name/DNI whenever the read-back shows
+                // them blanked, before branching on the tag result. A restore-setter failure is
+                // surfaced as an actionable error (not swallowed) so the user knows to re-set it.
+                if (oldLabel && !vd?.label) { try { device.setLabel(oldLabel) } catch (Exception re) { errors << [property: "label", error: "Tags processed but the device-edit form blanked the label and restoring it failed: ${re.message}. Verify and re-set the label."] } }
+                if (oldName && !vd?.name) { try { device.setName(oldName) } catch (Exception re) { errors << [property: "name", error: "Tags processed but the device-edit form blanked the name and restoring it failed: ${re.message}. Verify and re-set the name."] } }
+                if (oldDni && !vd?.deviceNetworkId) { try { device.setDeviceNetworkId(oldDni) } catch (Exception re) { errors << [property: "deviceNetworkId", error: "Tags processed but the device-edit form blanked the deviceNetworkId and restoring it failed: ${re.message}. Verify and re-set the deviceNetworkId."] } }
                 def gotTags = vd?.tags?.toString() ?: ""
                 if (gotTags != (tagsCsv ?: "")) {
                     errors << [property: "tags", error: "POST accepted but tags read back as '${gotTags}' (expected '${tagsCsv}'). Other fields were preserved."]
                 } else {
                     changes << [property: "tags", oldValue: d.tags, newValue: tagsCsv]
-                    if (oldLabel && !vd?.label) { try { device.setLabel(oldLabel) } catch (ignored) {} }
-                    if (oldName && !vd?.name) { try { device.setName(oldName) } catch (ignored) {} }
-                    if (oldDni && !vd?.deviceNetworkId) { try { device.setDeviceNetworkId(oldDni) } catch (ignored) {} }
                     mcpLog("info", "device", "Device '${deviceLabel}' tags -> '${tagsCsv}'")
                 }
             } catch (Exception e) {
@@ -2250,36 +2262,56 @@ def toolCreateDevice(args) {
     }
     typeId = typeId.toString().trim()
 
-    def respText
+    def resp
     try {
-        respText = hubInternalGet("/device/sysDriverByIdJson/${java.net.URLEncoder.encode(typeId, 'UTF-8')}", null, 30)
+        def respText = hubInternalGet("/device/sysDriverByIdJson/${java.net.URLEncoder.encode(typeId, 'UTF-8')}", null, 30)
+        // Parse INSIDE the try: a 200 carrying an HTML/login body (not JSON) makes parseText
+        // throw, and it must return the same structured runtime-error shape as a fetch failure
+        // rather than escaping as an unstructured tool error.
+        resp = respText ? new groovy.json.JsonSlurper().parseText(respText) : null
     } catch (Exception e) {
         return [success: false, error: "Hub call failed creating device from driver-type ${typeId}: ${e.message}",
                 note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
     }
-    def resp = respText ? new groovy.json.JsonSlurper().parseText(respText) : null
     if (resp?.success != true || resp?.deviceId == null) {
         return [success: false, error: resp?.errorMessage ?: "Hub did not create a device for driver-type ${typeId}",
                 note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
     }
     def newId = resp.deviceId.toString()
 
+    def warnings = []
+
     // Inspect what was created (driver type, radio-ness) and optionally apply a label.
     def info = null
     try {
         def t = hubInternalGet("/device/fullJson/${newId}")
         info = t ? new groovy.json.JsonSlurper().parseText(t)?.device : null
-    } catch (Exception ignored) {}
+    } catch (Exception e) {
+        mcpLog("warn", "device", "hub_create_device: could not read back device ${newId} to confirm type: ${e.message}")
+    }
+    // A null read-back is non-fatal but must not be fully silent: without the type we cannot
+    // tell whether this is a radio orphan shell, so the radio-shell warning would be lost.
+    if (info == null) {
+        warnings << "Created device ${newId} but could not read it back to confirm type -- if this is a radio driver it may be a non-functional orphan shell; verify with hub_get_device."
+    }
 
     def appliedLabel = null
     if (args?.label != null && args.label.toString().trim()) {
         try {
-            hubInternalGet("/device/updateLabel?deviceId=${newId}&label=${java.net.URLEncoder.encode(args.label.toString(), 'UTF-8')}")
-            appliedLabel = args.label.toString()
-        } catch (Exception ignored) {}
+            def labelResult = hubInternalGet("/device/updateLabel?deviceId=${newId}&label=${java.net.URLEncoder.encode(args.label.toString(), 'UTF-8')}")
+            if (labelResult?.toString()?.trim()?.toLowerCase() != "true") {
+                // Non-fatal: the device exists. Don't claim the label applied when it didn't.
+                warnings << "Device created but label '${args.label}' could not be applied (hub returned '${labelResult?.toString()?.take(120)}'). Set it with hub_update_device(label=...)."
+                mcpLog("warn", "device", "hub_create_device: label '${args.label}' not applied to ${newId} (hub returned '${labelResult?.toString()?.take(120)}')")
+            } else {
+                appliedLabel = args.label.toString()
+            }
+        } catch (Exception e) {
+            warnings << "Device created but label '${args.label}' could not be applied: ${e.message}. Set it with hub_update_device(label=...)."
+            mcpLog("warn", "device", "hub_create_device: label '${args.label}' apply to ${newId} threw: ${e.message}")
+        }
     }
 
-    def warnings = []
     def readable = (info?.deviceTypeReadableType ?: "").toString().toLowerCase()
     def ctype = (info?.controllerType ?: "").toString().toUpperCase()
     if (ctype in ["ZWV", "ZGB"] || readable.contains("z-wave") || readable.contains("zwave") || readable.contains("zigbee") || readable.contains("matter")) {
@@ -2327,14 +2359,21 @@ def toolGetCompatibleDevices(args) {
 
     def stripHtml = { s ->
         if (s == null) return null
-        s.toString().replaceAll(/(?s)<[^>]+>/, " ").replaceAll(/&nbsp;/, " ").replaceAll(/&amp;/, "&").replaceAll(/\s+/, " ").trim()
+        // Decode &amp; LAST (after &lt;/&gt;/&quot;/&#39;) so a single-encoded entity doesn't
+        // double-decode (e.g. "&amp;lt;" must not collapse to "<").
+        s.toString().replaceAll(/(?s)<[^>]+>/, " ")
+            .replaceAll(/&nbsp;/, " ")
+            .replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"').replace("&#39;", "'")
+            .replace("&amp;", "&")
+            .replaceAll(/\s+/, " ").trim()
     }
     def matched = list.findAll { r ->
         if (brandF && !((r?.brand ?: "").toString().toLowerCase().contains(brandF))) return false
         if (protoF && !((r?.protocol ?: "").toString().toLowerCase().contains(protoF))) return false
         if (typeF && !((r?.deviceType ?: "").toString().toLowerCase().contains(typeF))) return false
         if (q) {
-            def hay = "${r?.brand} ${r?.name} ${r?.productNumber} ${r?.deviceType} ${r?.driverName}".toLowerCase()
+            // ?: '' on each field so a null doesn't interpolate the literal "null" into the haystack.
+            def hay = "${r?.brand ?: ''} ${r?.name ?: ''} ${r?.productNumber ?: ''} ${r?.deviceType ?: ''} ${r?.driverName ?: ''}".toLowerCase()
             if (!hay.contains(q)) return false
         }
         return true

@@ -58,7 +58,8 @@ def toolListHubDrivers(args) {
         // Full instantiable driver-type catalog -- built-in "system" + "virtual" + user
         // drivers (the superset the device add/edit picker uses), vs the default "user"
         // path which lists only user-installed driver types. Each id is the deviceTypeId
-        // consumed by hub_create_device and hub_manage_virtual_device(customDriver).
+        // consumed by hub_create_device; hub_manage_virtual_device(customDriver) instead
+        // takes the entry's namespace + name (both are in the include='all' projection).
         try {
             def responseText = hubInternalGet("/device/drivers")
             def parsed = responseText ? new groovy.json.JsonSlurper().parseText(responseText) : null
@@ -2513,7 +2514,7 @@ Pass cursor to page through the list at 50 per page when the full response would
         ],
         [
             name: "hub_list_drivers",
-            description: "List device driver types on the hub. include='user' (default) lists user-installed drivers; include='all' returns the full catalog (system + virtual + user).[[FLAT_TRIM]] Each include='all' entry is tagged with a bucket, and its id is the driver-type id to pass to hub_create_device or hub_manage_virtual_device.[[/FLAT_TRIM]] Requires Read master.",
+            description: "List device driver types on the hub. include='user' (default) lists user-installed drivers; include='all' returns the full catalog (system + virtual + user).[[FLAT_TRIM]] Each include='all' entry is tagged with a bucket; its id is the driver-type id for hub_create_device, while hub_manage_virtual_device(customDriver) takes the entry's namespace + name (not the id).[[/FLAT_TRIM]] Requires Read master.",
             inputSchema: [
                 type: "object",
                 properties: [
