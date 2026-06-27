@@ -269,6 +269,33 @@ class ToolDashboardSpec extends ToolSpecBase {
         call.params.navigationSelection == '5,6'
     }
 
+    def "get normalizes a BRACKETED-STRING navigationSelection from app-config to CSV (the round-trip the hub corrupts otherwise)"() {
+        given: 'list is child-app-sourced; app-config returns navigationSelection as the hub PERSISTS it -- a JSON-array STRING "[1,2]", not an array (verified live on the hub)'
+        hubGet.register('/dashboard/all') { params -> '[]' }
+        hubGet.register('/hub2/appsList') { params ->
+            '{"apps":[{"data":{"id":19,"name":"Easy Dashboards","type":"Easy Dashboard Parent"},' +
+            '"children":[{"data":{"id":38,"name":"Nav Dash","type":"Easy Dashboard"},"children":[]}]}]}'
+        }
+        hubGet.register('/installedapp/configure/json/38') { params ->
+            '{"app":{"label":"Nav Dash"},"settings":{"showNavigation":"true","navigationSelection":"[1,2]",' +
+            '"devicesPicked":{"14":"Lamp"}}}'
+        }
+        enableWrite()
+
+        when: 'read the dashboard'
+        def got = script.toolGetDashboard([id: '38'])
+
+        then: 'the bracketed hub string is normalized to CSV -- NOT returned verbatim as "[1,2]" (which the hub misparses to index 0)'
+        got.navigationSelection == '1,2'
+
+        when: 'round-trip: feed the get output back through update'
+        script.toolUpdateDashboard([id: got.id, name: got.name, deviceIds: ['14'], navigationSelection: got.navigationSelection])
+
+        then: 'update sends a CSV the hub parses correctly, so nav survives the get->update round-trip'
+        def call = hubGet.calls.find { it.path == '/dashboard/update' }
+        call.params.navigationSelection == '1,2'
+    }
+
     // ---------- hub_create_dashboard ----------
 
     def "create serializes deviceIds as CSV and booleans as the strings true/false"() {
@@ -518,6 +545,37 @@ class ToolDashboardSpec extends ToolSpecBase {
         r.note != null
     }
 
+    def "update preserves an existing hsmPin the caller didn't pass (exercises the hsmPin preservation line)"() {
+        given: 'the config has a real hsmPin (not the "null" sentinel) and the caller updates without supplying one'
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/412') { params ->
+            '{"app":{"label":"Living Room"},"settings":{"dashboardPin":"","hsmPin":"7777"}}'
+        }
+
+        when: 'an unrelated edit (no hsmPin in args)'
+        script.toolUpdateDashboard([id: '412', name: 'Living Room', deviceIds: ['12', '34'], options: [theme: 'dark']])
+
+        then: 'the current hsmPin is read back and re-sent, not blanked'
+        def call = hubGet.calls.find { it.path == '/dashboard/update' }
+        call.params.hsmPin == '7777'
+    }
+
+    def "update applies the pin the caller DID pass while preserving the OMITTED one (mixed case)"() {
+        given: 'the config has both pins; the caller changes dashboardPin but omits hsmPin'
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/412') { params ->
+            '{"app":{"label":"Living Room"},"settings":{"dashboardPin":"4242","hsmPin":"7777"}}'
+        }
+
+        when:
+        script.toolUpdateDashboard([id: '412', name: 'Living Room', deviceIds: ['12', '34'], dashboardPin: '9999'])
+
+        then: 'the new dashboardPin is sent and the omitted hsmPin is preserved (not cleared)'
+        def call = hubGet.calls.find { it.path == '/dashboard/update' }
+        call.params.dashboardPin == '9999'
+        call.params.hsmPin == '7777'
+    }
+
     // ---------- hub_delete_dashboard ----------
 
     def "delete removes by id (confirm-gated)"() {
@@ -647,6 +705,25 @@ class ToolDashboardSpec extends ToolSpecBase {
         r.success == false
         r.sourceId == '9999'
         r.error.toLowerCase().contains('source')
+    }
+
+    def "clone surfaces a structured failure when the source reads PARTIAL (id+name, no device list)"() {
+        given: 'a child-app-sourced source whose enrichment fails -> get returns {id,name,partial:true} with NO deviceIds (src.success is not false, so the other guard is skipped)'
+        enableWrite()
+        hubGet.register('/dashboard/all') { params -> '[]' }
+        hubGet.register('/hub2/appsList') { params ->
+            '{"apps":[{"data":{"id":19,"name":"Easy Dashboards","type":"Easy Dashboard Parent"},' +
+            '"children":[{"data":{"id":38,"name":"Dashboard 1","type":"Easy Dashboard"},"children":[]}]}]}'
+        }
+        // /installedapp/configure/json/38 unmocked -> enrichment fails -> the get match is partial (no deviceIds)
+
+        when:
+        def r = script.toolCloneDashboard([id: '38'])
+
+        then: 'clone returns a runtime failure naming the device list -- NOT a caller-blaming -32602 thrown by create'
+        r.success == false
+        r.sourceId == '38'
+        r.error.toLowerCase().contains('device list')
     }
 
     def "clone without id throws"() {

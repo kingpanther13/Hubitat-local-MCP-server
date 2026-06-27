@@ -41,8 +41,12 @@ def toolListDashboards(args = null) {
                     : "Could not confirm the dashboard list: /dashboard/all returned nothing and the child-app fallback read failed.",
                 note: "Transient hub error (details logged). Retry; if it persists, check hub connectivity."]
     }
+    // viaApps == [] : the child-app read SUCCEEDED and found none. Branch the note on whether
+    // /dashboard/all errored vs returned empty -- don't blame a missing pinToken for a hub error.
     return [dashboards: [], count: 0,
-            note: "No Easy Dashboards found: /dashboard/all returned empty (a pinToken may be required) and no Easy Dashboard Parent child apps were present. If you expected dashboards, pass pinToken and retry."]
+            note: allErrored
+                ? "No Easy Dashboards found: /dashboard/all errored (logged) and the Easy Dashboard Parent has no child apps. Retry; if it persists, check hub connectivity."
+                : "No Easy Dashboards found: /dashboard/all returned empty (a pinToken may be required) and no Easy Dashboard Parent child apps were present. If you expected dashboards, pass pinToken and retry."]
 }
 
 // Scrape globalDashboardPinToken from the /dashboard/select page so callers needn't supply pinToken.
@@ -378,13 +382,22 @@ private Map _buildDashboardConfigQuery(Map args, String deviceCsv) {
     ]
 }
 
-// navigationSelection: a CSV of dashboard ids. Accept an array or a pre-joined string; return a CSV.
+// navigationSelection: a CSV of dashboard navigation indices. The hub PERSISTS + returns it as a
+// JSON-array STRING ("[1,2]", "[]"), but /dashboard/create+update parse it as a bare CSV of indices.
+// So feeding a read value back VERBATIM misparses (the hub reads "[1]" as 0), corrupting nav on a
+// get->update round-trip -- the exact workflow this tool advertises. Normalize every form to CSV:
+// an array, a bracketed hub string ("[1,2]"), or an already-CSV string all return "1,2".
 private String _dashboardNavSelectionCsv(navigationSelection) {
     if (navigationSelection == null) return ""
+    def items
     if (navigationSelection instanceof Collection) {
-        return navigationSelection.collect { it?.toString()?.trim() }.findAll { it }.join(",")
+        items = navigationSelection
+    } else {
+        def s = navigationSelection.toString().trim()
+        if (s.startsWith("[") && s.endsWith("]")) s = s.substring(1, s.length() - 1)
+        items = s.split(",")
     }
-    return navigationSelection.toString()
+    return items.collect { it?.toString()?.trim() }.findAll { it }.join(",")
 }
 
 // theme: legacy|light|dark|auto; empty == legacy. A value outside the set is rejected (catch a typo).
