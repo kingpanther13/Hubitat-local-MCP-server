@@ -244,6 +244,120 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
         result.applied == ['hubName']
     }
 
+    // ---------- darkMode (independent setter: GET /hub/applyDarkMode/<bool>) ----------
+
+    def "darkMode=true fires GET /hub/applyDarkMode/true and reports it applied"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/applyDarkMode/true') { params -> "" }   // HTTP 200 empty body
+
+        when:
+        def result = script.toolSetSystemSettings([darkMode: true])
+
+        then:
+        result.success == true
+        result.applied == ['darkMode']
+        hubGet.calls.any { it.path == '/hub/applyDarkMode/true' }
+        // darkMode-ONLY: no location read-merge, no /location/update POST
+        hubGet.calls.every { it.path != '/hub/details/json' }
+        posted.isEmpty()
+    }
+
+    def "darkMode=false fires GET /hub/applyDarkMode/false"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/applyDarkMode/false') { params -> "" }
+
+        when:
+        def result = script.toolSetSystemSettings([darkMode: false])
+
+        then:
+        result.success == true
+        result.applied == ['darkMode']
+        hubGet.calls.any { it.path == '/hub/applyDarkMode/false' }
+        posted.isEmpty()
+    }
+
+    def "a darkMode-only call is valid and makes NO /location/update POST"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/applyDarkMode/true') { params -> "" }
+
+        when:
+        def result = script.toolSetSystemSettings([darkMode: true])
+
+        then:
+        result.success == true
+        result.applied == ['darkMode']
+        posted.isEmpty()                                            // proves no POST /location/update
+        hubGet.calls.every { it.path != '/hub/details/json' }       // proves no read-merge GET
+    }
+
+    def "combined hubName + darkMode applies BOTH (location POST + dark-mode setter)"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/applyDarkMode/true') { params -> "" }
+
+        when:
+        def result = script.toolSetSystemSettings([hubName: 'Loft', darkMode: true])
+
+        then:
+        result.success == true
+        result.applied as Set == ['hubName', 'darkMode'] as Set
+        posted.path == '/location/update'
+        posted.body.name == 'Loft'
+        hubGet.calls.any { it.path == '/hub/applyDarkMode/true' }
+    }
+
+    def "darkMode-only with the STRING 'false' applies light mode (not coerced truthy)"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/applyDarkMode/false') { params -> "" }
+
+        when:
+        // Groovy treats the String "false" as truthy; the tool coerces via equalsIgnoreCase, so the
+        // wire value must be /false (a bare `args.darkMode ?` would wrongly send /true).
+        def result = script.toolSetSystemSettings([darkMode: 'false'])
+
+        then:
+        result.success == true
+        result.applied == ['darkMode']
+        hubGet.calls.any { it.path == '/hub/applyDarkMode/false' }
+    }
+
+    def "a darkMode endpoint failure returns the structured error mentioning dark mode; prior location change is in applied"() {
+        given:
+        enableWrite()
+        // The location leg succeeds (POST stubbed in setup), then the dark-mode endpoint 404s/throws
+        // (e.g. older firmware without /hub/applyDarkMode).
+        hubGet.register('/hub/applyDarkMode/true') { params -> throw new RuntimeException('404 Not Found') }
+
+        when:
+        def result = script.toolSetSystemSettings([hubName: 'Loft', darkMode: true])
+
+        then:
+        result.success == false
+        result.error.toLowerCase().contains('dark mode')
+        result.applied == ['hubName']          // the location change committed before the dark-mode leg
+        result.note != null
+        posted.path == '/location/update'      // the location leg DID run and succeed
+    }
+
+    def "a darkMode-only endpoint failure returns success=false with empty applied"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/applyDarkMode/true') { params -> throw new RuntimeException('404 Not Found') }
+
+        when:
+        def result = script.toolSetSystemSettings([darkMode: true])
+
+        then:
+        result.success == false
+        result.error.toLowerCase().contains('dark mode')
+        result.applied == []
+        posted.isEmpty()
+    }
+
     // ---------- error envelopes (no false-green) ----------
 
     def "a failing POST returns the structured error envelope (does NOT throw)"() {
@@ -307,6 +421,216 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
         def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.applied == ['hubName']
+
+        where:
+        useGateways << [true, false]
+    }
+
+    def "hub_set_system_settings darkMode via dispatch returns the success envelope (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+        hubGet.register('/hub/applyDarkMode/true') { params -> "" }
+
+        when:
+        def response = mcpDriver.callTool('hub_set_system_settings', [darkMode: true])
+
+        then:
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.applied == ['darkMode']
+        hubGet.calls.any { it.path == '/hub/applyDarkMode/true' }
+
+        where:
+        useGateways << [true, false]
+    }
+
+    // ---------- network config (independent confirm-gated legs; param names RE'd from vue-hub2.min.js) ----------
+
+    def "network DHCP fires GET /hub/advanced/switchToDhcp with nameserver+useDNSFallover and no /location/update POST"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/advanced/switchToDhcp?nameserver=8.8.8.8&useDNSFallover=true') { params -> "ok" }
+
+        when:
+        def result = script.toolSetSystemSettings([network: [ipMode: 'dhcp', nameserver: '8.8.8.8', useDNSFallover: true], confirm: true])
+
+        then:
+        result.success == true
+        result.applied == ['network.dhcp']
+        hubGet.calls.any { it.path == '/hub/advanced/switchToDhcp?nameserver=8.8.8.8&useDNSFallover=true' }
+        posted.isEmpty()   // network is its own leg, never /location/update
+    }
+
+    def "network static IP fires GET /hub/advanced/switchToStaticIp with address+netmask+gateway+nameserver"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/advanced/switchToStaticIp?address=192.168.1.50&netmask=255.255.255.0&gateway=192.168.1.1&nameserver=1.1.1.1') { params -> "ok" }
+
+        when:
+        def result = script.toolSetSystemSettings([network: [ipMode: 'static', address: '192.168.1.50',
+            netmask: '255.255.255.0', gateway: '192.168.1.1', nameserver: '1.1.1.1'], confirm: true])
+
+        then:
+        result.success == true
+        result.applied == ['network.staticIp']
+        hubGet.calls.any { it.path == '/hub/advanced/switchToStaticIp?address=192.168.1.50&netmask=255.255.255.0&gateway=192.168.1.1&nameserver=1.1.1.1' }
+    }
+
+    def "network ethernetAutoneg fires GET /hub/advanced/network/ethernetMode/<bool>"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/advanced/network/ethernetMode/false') { params -> "ok" }
+
+        when:
+        def result = script.toolSetSystemSettings([network: [ethernetAutoneg: false], confirm: true])
+
+        then:
+        result.success == true
+        result.applied == ['network.ethernetAutoneg']
+        hubGet.calls.any { it.path == '/hub/advanced/network/ethernetMode/false' }
+    }
+
+    def "network WiFi fires GET /hub/advanced/setWiFiNetworkInfo with ssid+psk (psk = wifiPassword)"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/advanced/setWiFiNetworkInfo?ssid=MyNet&psk=secret123') { params -> "ok" }
+
+        when:
+        def result = script.toolSetSystemSettings([network: [wifiSsid: 'MyNet', wifiPassword: 'secret123'], confirm: true])
+
+        then:
+        result.success == true
+        result.applied == ['network.wifi']
+        hubGet.calls.any { it.path == '/hub/advanced/setWiFiNetworkInfo?ssid=MyNet&psk=secret123' }
+    }
+
+    def "a network-only call makes NO /location/update POST"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/advanced/switchToDhcp?nameserver=&useDNSFallover=false') { params -> "ok" }
+
+        when:
+        def result = script.toolSetSystemSettings([network: [ipMode: 'dhcp'], confirm: true])
+
+        then:
+        result.success == true
+        result.applied == ['network.dhcp']
+        posted.isEmpty()
+        hubGet.calls.every { it.path != '/hub/details/json' }   // no location read-merge
+    }
+
+    def "network requires confirm (can disconnect the hub) and makes no hub call without it"() {
+        given:
+        settingsMap.enableWrite = true   // Write master on, but no backup/confirm
+
+        when:
+        script.toolSetSystemSettings([network: [ipMode: 'dhcp']])
+
+        then:
+        thrown(IllegalArgumentException)
+        posted.isEmpty()
+        hubGet.calls.every { !it.path.startsWith('/hub/advanced/') }
+    }
+
+    def "network static IP missing #missing is rejected (-> -32602) before any hub call"() {
+        given:
+        enableWrite()
+        def net = [ipMode: 'static', address: '192.168.1.50', netmask: '255.255.255.0', gateway: '192.168.1.1']
+        net.remove(missing)
+
+        when:
+        script.toolSetSystemSettings([network: net, confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains(missing)
+        hubGet.calls.every { !it.path.startsWith('/hub/advanced/') }
+
+        where:
+        missing << ['address', 'netmask', 'gateway']
+    }
+
+    def "network with an invalid ipMode is rejected (-> -32602)"() {
+        given:
+        enableWrite()
+
+        when:
+        script.toolSetSystemSettings([network: [ipMode: 'bogus'], confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('ipMode')
+    }
+
+    def "network with an unknown sub-field is rejected (-> -32602)"() {
+        given:
+        enableWrite()
+
+        when:
+        script.toolSetSystemSettings([network: [bogusKey: 'x'], confirm: true])
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
+    def "a network is not an object is rejected (-> -32602)"() {
+        given:
+        enableWrite()
+
+        when:
+        script.toolSetSystemSettings([network: 'not-a-map', confirm: true])
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
+    def "a network sub-op failure returns success=false with applied listing what succeeded (partial apply)"() {
+        given:
+        enableWrite()
+        // DHCP leg succeeds; the ethernet leg then throws -> partial apply.
+        hubGet.register('/hub/advanced/switchToDhcp?nameserver=&useDNSFallover=false') { params -> "ok" }
+        hubGet.register('/hub/advanced/network/ethernetMode/true') { params -> throw new RuntimeException('link down') }
+
+        when:
+        def result = script.toolSetSystemSettings([network: [ipMode: 'dhcp', ethernetAutoneg: true], confirm: true])
+
+        then:
+        result.success == false
+        result.error.toLowerCase().contains('autoneg')
+        result.applied == ['network.dhcp']   // the DHCP leg committed before the ethernet leg failed
+        result.note != null
+    }
+
+    def "combined location + network applies BOTH (one /location/update POST + the network leg)"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/advanced/switchToDhcp?nameserver=&useDNSFallover=false') { params -> "ok" }
+
+        when:
+        def result = script.toolSetSystemSettings([hubName: 'Loft', network: [ipMode: 'dhcp'], confirm: true])
+
+        then:
+        result.success == true
+        result.applied as Set == ['hubName', 'network.dhcp'] as Set
+        posted.path == '/location/update'
+        posted.body.name == 'Loft'
+        hubGet.calls.any { it.path == '/hub/advanced/switchToDhcp?nameserver=&useDNSFallover=false' }
+    }
+
+    def "network via dispatch returns the success envelope (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+        hubGet.register('/hub/advanced/switchToDhcp?nameserver=&useDNSFallover=false') { params -> "ok" }
+
+        when:
+        def response = mcpDriver.callTool('hub_set_system_settings', [network: [ipMode: 'dhcp'], confirm: true])
+
+        then:
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.applied == ['network.dhcp']
 
         where:
         useGateways << [true, false]

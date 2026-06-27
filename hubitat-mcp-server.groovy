@@ -1120,19 +1120,19 @@ def getGatewayConfig() {
         // manage_hub_info dissolved — zwave/zigbee moved to hub_manage_diagnostics; the update-status read folded into hub_get_info (includeAppUpdate) and the firmware INSTALL is the core hub_update_firmware
         // hub_create_backup promoted to core; the old hub_call_zwave_repair was absorbed into hub_call_zwave (hub_manage_radio)
         hub_manage_destructive_ops: [
-            description: "DESTRUCTIVE hub operations: reboot, shutdown, permanent device deletion, and radio network/fabric resets + firmware flashes. All operations are irreversible or cause significant downtime — confirm with user first.",
-            tools: ["hub_reboot", "hub_shutdown", "hub_delete_device", "hub_call_destructive_radio"],
+            description: "DESTRUCTIVE hub operations: reboot, shutdown, permanent device deletion, radio network/fabric resets + firmware flashes, network disconnects, and cloud-controller disable. All operations are irreversible or cause significant downtime — confirm with user first.",
+            tools: ["hub_reboot", "hub_shutdown", "hub_delete_device", "hub_call_destructive_ops"],
             summaries: [
                 hub_reboot: "Reboot the hub (DISRUPTIVE, 1-3 min downtime). To install a pending hub firmware update instead, use hub_update_firmware. Args: confirm=true",
                 hub_shutdown: "Power OFF the hub (EXTREME, requires physical restart). Args: confirm=true",
                 hub_delete_device: "Permanently delete any device (MOST DESTRUCTIVE, no undo). Args: deviceId, confirm=true",
-                hub_call_destructive_radio: "Reset a radio's network/fabric (unpairs ALL devices) or flash firmware (can brick hardware). Args: radio (zwave|zigbee|matter), action (reset|device_firmware_start|device_firmware_abort|zwave_chip_firmware|zigbee_firmware), confirm=true"
+                hub_call_destructive_ops: "Destructive ops by target: radio reset/firmware (target=zwave|zigbee|matter), network disconnect (target=network, disconnect_wifi|disconnect_ethernet), or cloud controller disable/enable (target=cloud). Args: target, action, confirm=true"
             ],
             searchHints: [
                 hub_reboot: "restart reset power cycle boot",
                 hub_shutdown: "power off turn off stop halt",
                 hub_delete_device: "remove ghost orphan zwave zigbee stuck failed pairing",
-                hub_call_destructive_radio: "reset wipe zwave zigbee matter network fabric exclude all firmware flash chip radio ota brick factory"
+                hub_call_destructive_ops: "reset wipe zwave zigbee matter network fabric exclude all firmware flash chip radio ota brick factory disconnect wifi ethernet cloud disable alexa google dashboard subscription"
             ]
         ],
         hub_read_apps_code: [
@@ -1253,7 +1253,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_radio: [
-            description: "Manage the Z-Wave, Zigbee, and Matter radios: configure (enable/disable, region, channel, power) and run lifecycle operations (repair, inclusion/exclusion, node maintenance, replace/remove, Zigbee reboot/rebuild/scan, Matter pair/window). Reads live in hub_get_radio_details (also in hub_read_diagnostics). DESTRUCTIVE resets + firmware flashes live in hub_manage_destructive_ops (hub_call_destructive_radio).",
+            description: "Manage the Z-Wave, Zigbee, and Matter radios: configure (enable/disable, region, channel, power) and run lifecycle operations (repair, inclusion/exclusion, node maintenance, replace/remove, Zigbee reboot/rebuild/scan, Matter pair/window). Reads live in hub_get_radio_details (also in hub_read_diagnostics). DESTRUCTIVE resets + firmware flashes live in hub_manage_destructive_ops (hub_call_destructive_ops).",
             tools: ["hub_get_radio_details", "hub_set_zwave", "hub_set_zigbee", "hub_call_zwave", "hub_call_zigbee", "hub_call_matter"],
             summaries: [
                 hub_get_radio_details: "Z-Wave/Zigbee/Matter radio info + read-only radio surface (topology, per-node state, status pollers, channel scan, SmartStart, firmware lists). Args: radio?, node_id?, include_topology/status/logs/channel_scan/smartstart/firmware?",
@@ -2390,7 +2390,7 @@ def executeTool(toolName, args) {
         case "hub_call_zwave": return toolCallZwave(args)
         case "hub_call_zigbee": return toolCallZigbee(args)
         case "hub_call_matter": return toolCallMatter(args)
-        case "hub_call_destructive_radio": return toolCallDestructiveRadio(args)
+        case "hub_call_destructive_ops": return toolCallDestructiveOps(args)
 
         // Device Admin
         case "hub_delete_device": return toolDeleteDevice(args)
@@ -5175,7 +5175,7 @@ def _guideSectionForTool(toolName) {
     if (t in ['hub_create_backup', 'hub_restore_backup']) return 'backup'
     if (t in ['hub_write_file', 'hub_delete_file']) return 'file_manager'
     if (t in ['hub_delete_device', 'hub_delete_room', 'hub_delete_item', 'hub_reboot', 'hub_shutdown',
-              'hub_update_firmware', 'hub_call_destructive_radio', 'hub_call_zwave', 'hub_call_zigbee',
+              'hub_update_firmware', 'hub_call_destructive_ops', 'hub_call_zwave', 'hub_call_zigbee',
               'hub_call_matter', 'hub_call_device_swap', 'hub_call_device_replace']) return 'hub_admin_write'
     if (t in ['hub_call_device_command', 'hub_get_device_attribute']) return 'device_authorization'
     return null
@@ -5273,7 +5273,7 @@ All Write master tools require these steps:
 
 **hub_call_zwave (action=repair_start)** - 5-30 min duration, Z-Wave devices may be unresponsive. Best during off-peak hours. exclusion_start and node_remove unpair/disrupt devices (confirm=true).
 
-**hub_call_destructive_radio** - IRREVERSIBLE. reset unpairs EVERY device on a radio; a firmware flash can brick hardware if interrupted. Backup <24h, explicit radio+action+confirm=true, never power-cycle during a flash.
+**hub_call_destructive_ops** - IRREVERSIBLE / DISRUPTIVE, by `target`. target=zwave|zigbee|matter: reset unpairs EVERY device on that radio; a firmware flash can brick hardware if interrupted. target=network: disconnect_wifi/disconnect_ethernet drop that link (the hub may go unreachable). target=cloud: disable severs Alexa/Google, cloud dashboards, cloud firmware updates, and subscription features until enable restores them. Backup <24h, explicit target+action+confirm=true, never power-cycle during a flash.
 
 **hub_delete_device** - MOST DESTRUCTIVE, NO UNDO. For ghost/orphaned devices, stale DB records, stuck virtual devices.
 - Use hub_get_device to verify correct device

@@ -160,7 +160,7 @@ Additional hub admin tools are accessed via gateways:
 
 ### Via `hub_manage_destructive_ops` gateway (4 tools)
 
-Destructive write operations (require the Write master + confirm + backup): `hub_reboot`, `hub_shutdown`, `hub_delete_device`, `hub_call_destructive_radio` (Z-Wave/Zigbee reset/wipe + radio firmware update via `action`)
+Destructive write operations (require the Write master + confirm + backup): `hub_reboot`, `hub_shutdown`, `hub_delete_device`, `hub_call_destructive_ops` (by `target`: radio reset/wipe + firmware for zwave/zigbee/matter, network disconnect_wifi/disconnect_ethernet, or cloud disable/enable)
 
 ### Via `hub_read_apps_code` gateway (9 tools — read-only)
 
@@ -188,7 +188,7 @@ For complete safety protocols and tool-specific requirements, see [safety-guide.
 - `hub_reboot` - 1-3 min downtime, automations stop
 - `hub_shutdown` - Powers off completely, needs manual restart
 - `hub_delete_device` - No undo, intended for ghost/orphaned devices only
-- `hub_call_destructive_radio` - Z-Wave/Zigbee reset/wipe + radio firmware update; orphans paired devices, no undo
+- `hub_call_destructive_ops` - by `target`: radio reset/wipe + firmware (orphans paired devices), network disconnect (WiFi/Ethernet), or cloud disable/enable (stops Alexa/Google, cloud dashboards, subscriptions); no undo
 - `hub_delete_item` (via `hub_manage_code`, `type`: "app"/"driver"/"library") - Auto-backs up source first
 
 ## Diagnostics and Monitoring
@@ -219,7 +219,7 @@ Via `hub_manage_radio` gateway (6 tools):
 - `hub_call_zigbee` - Zigbee radio operations via `action` (Write master)
 - `hub_call_matter` - Matter radio operations via `action` (Write master)
 
-(Destructive radio ops — reset/wipe, firmware — are `hub_call_destructive_radio` in `hub_manage_destructive_ops`. For per-rule diagnostics, use `hub_get_custom_rule` with `detailed=true`.)
+(Destructive radio ops — reset/wipe, firmware — are `hub_call_destructive_ops` (target=zwave|zigbee|matter) in `hub_manage_destructive_ops`, which also covers network disconnects and cloud-controller disable. For per-rule diagnostics, use `hub_get_custom_rule` with `detailed=true`.)
 
 ## File Manager
 

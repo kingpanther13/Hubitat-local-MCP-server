@@ -284,7 +284,7 @@ The server has 117 tools total. To keep the MCP `tools/list` manageable, **13 co
 | `hub_set_mode_manager` | Pick which Mode Manager runs (builtIn/legacy/app) + update its per-mode conditions |
 | `hub_get_hsm_status` | Get Home Security Monitor status |
 | `hub_set_hsm` | Change HSM arm mode |
-| `hub_set_system_settings` | Set hub-global settings: name, time zone, latitude/longitude, zip, temperature scale (timeZone change reboots the hub; needs `confirm`) |
+| `hub_set_system_settings` | Set hub-global settings: name, time zone, latitude/longitude, zip, temperature scale, admin-UI dark mode, and network config (static IP / DHCP / Ethernet autoneg / WiFi). A timeZone change reboots the hub and any network change can disconnect it; both need `confirm` |
 
 </details>
 
@@ -502,7 +502,7 @@ Monitoring tools are gated by the Read master (ON by default).
 | `hub_reboot` | Reboot the hub (1-3 min downtime) |
 | `hub_shutdown` | Power OFF the hub (requires physical restart) |
 | `hub_delete_device` | Permanently delete any device (**no undo**) |
-| `hub_call_destructive_radio` | Destructive radio operations — Z-Wave/Zigbee reset/wipe and radio firmware update (**no undo**) |
+| `hub_call_destructive_ops` | Destructive hub operations by `target`: radio reset/wipe + firmware (zwave/zigbee/matter), network disconnect (WiFi/Ethernet), or cloud-controller disable/enable (**no undo / disconnects**) |
 
 All operations are disruptive. These tools are gated by the Write master (ON by default) and enforce a **three-layer safety gate**: Write master enabled + hub backup within 24 hours + explicit `confirm=true`.
 
@@ -572,7 +572,7 @@ Read tools are gated by the Read master; clear/set-level writes by the Write mas
 | `hub_call_zigbee` | Zigbee radio operations via `action` |
 | `hub_call_matter` | Matter radio operations via `action` |
 
-Non-destructive radio operations. Destructive radio ops (reset/wipe, firmware update) live in `hub_manage_destructive_ops` as `hub_call_destructive_radio`. Read tools are gated by the Read master; writes by the Write master (both ON by default).
+Non-destructive radio operations. Destructive radio ops (reset/wipe, firmware update) — along with network disconnects and cloud-controller disable — live in `hub_manage_destructive_ops` as `hub_call_destructive_ops`. Read tools are gated by the Read master; writes by the Write master (both ON by default).
 
 </details>
 
