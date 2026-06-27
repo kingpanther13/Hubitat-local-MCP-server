@@ -28,8 +28,9 @@ publish-bundle-artifact.yml on every push (branches/<branch>/ + shas/<sha>/
 entries). packageManifest.json's `bundles[]` location points at branches/main/
 -- the same mechanism the e2e deploy installs and byte-verifies on every run.
 Nothing under bundles/ is committed (the output dir is gitignored). The build
-is deterministic (fixed DOS epoch, stored entries) so any two builds of the
-same library source are byte-identical and can be compared directly.
+is deterministic (fixed DOS epoch, pinned deflate level) so two builds of the
+same library source on the same zlib are byte-identical and can be compared
+directly (the e2e cmp-byte-verifies the published artifact against its own CI rebuild).
 
 Run:  python3 tools/build-bundle.py
 """
@@ -142,13 +143,16 @@ _DEFLATE_LEVEL = 9  # pinned so deflate output is reproducible build-to-build
 
 def _add(zf: zipfile.ZipFile, name: str, data: bytes) -> None:
     info = zipfile.ZipInfo(filename=name, date_time=_FIXED_DT)
-    info.compress_type = zipfile.ZIP_DEFLATED  # level pinned on the ZipFile (_DEFLATE_LEVEL)
+    info.compress_type = zipfile.ZIP_DEFLATED
     info.external_attr = 0o644 << 16
     # ZipInfo defaults create_system from the running platform (0 on Windows,
     # 3 elsewhere) -- pin it so a zip built on Windows is byte-identical to the
     # rebuild on any other machine (CI workflows, the e2e deploy).
     info.create_system = 3
-    zf.writestr(info, data)
+    # Pass the level HERE: a ZipFile(compresslevel=...) is IGNORED for a pre-built
+    # ZipInfo (CPython only copies it onto entries it builds from an arcname string),
+    # so the pin only takes effect when handed to writestr.
+    zf.writestr(info, data, compresslevel=_DEFLATE_LEVEL)
 
 
 def build() -> str:
@@ -163,9 +167,7 @@ def build() -> str:
     lib_lines = "\n".join(f"library {lib['dest']}" for lib in LIBS)
     manifest = f"{NAMESPACE}\n{BUNDLE_NAME}\n{lib_lines}\n"
 
-    with zipfile.ZipFile(
-        OUTPUT_ZIP, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=_DEFLATE_LEVEL
-    ) as zf:
+    with zipfile.ZipFile(OUTPUT_ZIP, "w") as zf:
         for lib in LIBS:
             # Read as text + normalize CRLF->LF so the committed ZIP is byte-identical
             # regardless of the builder's git core.autocrlf / platform.
