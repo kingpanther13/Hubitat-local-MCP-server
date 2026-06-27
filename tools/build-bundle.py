@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import sys
 import zipfile
+import zlib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -207,6 +208,19 @@ def verify(manifest: str) -> None:
         for lib in LIBS:
             if f"library {lib['dest']}" not in lines:
                 raise RuntimeError(f"missing library line for {lib['dest']}")
+        # Every entry must be DEFLATE at the pinned level. A ZipFile(compresslevel=...) arg is
+        # silently IGNORED for pre-built ZipInfo entries, so this guards that exact regression and
+        # keeps rebuilds byte-reproducible (the e2e cmp-compares the artifact against its CI rebuild).
+        for info in zf.infolist():
+            data = zf.read(info.filename)
+            co = zlib.compressobj(_DEFLATE_LEVEL, zlib.DEFLATED, -15)
+            expected = len(co.compress(data) + co.flush())
+            if info.compress_type != zipfile.ZIP_DEFLATED or info.compress_size != expected:
+                raise RuntimeError(
+                    f"{info.filename}: stored compress_size {info.compress_size} (type "
+                    f"{info.compress_type}) != level-{_DEFLATE_LEVEL} deflate {expected} -- the pinned "
+                    f"deflate level is not applied; rebuilds may not be byte-reproducible."
+                )
 
 
 def main() -> int:
