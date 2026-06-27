@@ -1653,6 +1653,137 @@ class TestRunner:
         except (McpToolError, McpError):
             pass  # expected — server may return JSON-RPC error or tool error
 
+    # ---- device edit surface (issue #259): show-on-home / status attribute / tags ----
+
+    @test("devices")
+    def test_update_device_show_on_home(self) -> None:
+        # Intent: hide a device from the hub Home page, then show it again. Driven on the
+        # persistent scaffold switch -- a Home-page flag toggle is idempotent and does not
+        # disturb the rule/poll fixtures that also read this device's state.
+        dev_id = self.get_test_switch_id()
+        hide = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "showOnHome": False})
+        assert hide.get("success") is True, f"hide-from-home failed: {hide}"
+        assert any(c.get("property") == "showOnHome" for c in (hide.get("changes") or [])), \
+            f"showOnHome change not recorded: {hide}"
+        # Restore so the device's Home visibility is unchanged across runs.
+        show = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "showOnHome": True})
+        assert show.get("success") is True, f"show-on-home restore failed: {show}"
+
+    @test("devices")
+    def test_update_device_default_current_state(self) -> None:
+        # Intent: choose which attribute appears in the Status column for a device.
+        dev_id = self.get_test_switch_id()
+        result = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "defaultCurrentState": "switch"})
+        assert result.get("success") is True, f"set default current state failed: {result}"
+        assert any(c.get("property") == "defaultCurrentState" for c in (result.get("changes") or [])), \
+            f"defaultCurrentState change not recorded: {result}"
+
+    @test("devices")
+    def test_update_device_tags(self) -> None:
+        # Intent: tag a device. The only path is the wholesale device-edit form, which the
+        # tool drives read-merge-then-repost; on a throwaway device so the tag set + the
+        # identity-field-preservation assertion are deterministic and self-cleaning.
+        dev_id = self._create_virtual_switch_device(f"{PREFIX}Tags_Edit")
+        assert dev_id, "failed to create the tag-edit throwaway switch"
+        # Track the DNI so the cleanup sweep reaps the device even if this test dies early.
+        tags_dni = ""
+        try:
+            vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": f"{PREFIX}Tags_Edit"})
+            for d in (vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])):
+                tags_dni = str(d.get("deviceNetworkId", d.get("dni", "")))
+                if tags_dni:
+                    self.created_device_dnis.append(tags_dni)
+                    break
+        except Exception:
+            pass
+        try:
+            result = self.client.call_tool("hub_update_device", {
+                "deviceId": dev_id, "tags": ["kitchen", "downstairs"],
+            })
+            assert result.get("success") is True, f"tag edit failed: {result}"
+            assert any(c.get("property") == "tags" for c in (result.get("changes") or [])), \
+                f"tags change not recorded: {result}"
+            # The wholesale form must not have blanked the label.
+            dev = self.client.call_tool("hub_get_device", {"deviceId": dev_id})
+            assert f"{PREFIX}Tags_Edit" in (dev.get("label") or dev.get("name") or ""), \
+                f"tag edit blanked the device label: {dev}"
+        finally:
+            if tags_dni:
+                try:
+                    self.client.call_tool("hub_manage_virtual_device", {
+                        "action": "delete", "deviceNetworkId": tags_dni, "confirm": True,
+                    })
+                    if tags_dni in self.created_device_dnis:
+                        self.created_device_dnis.remove(tags_dni)
+                except Exception as exc:
+                    print(f"    [WARN] tag-edit cleanup failed (sweep will retry): {exc}")
+
+    @test("devices")
+    def test_create_device_from_driver_type(self) -> None:
+        # Intent: create a device from a driver type (the "add device by driver" path).
+        # Resolve a built-in Virtual Switch driver-type id from the full driver catalog,
+        # create from it with confirm, then delete. Skips cleanly if no such type is found.
+        catalog = self.client.call_tool("hub_read_apps_code", {
+            "tool": "hub_list_drivers", "args": {"include": "all"},
+        })
+        drivers = catalog.get("drivers", []) if isinstance(catalog, dict) else []
+        type_id = None
+        for d in drivers:
+            if (d.get("name") or "") == "Virtual Switch":
+                type_id = str(d.get("id"))
+                break
+        if not type_id:
+            print("    no 'Virtual Switch' driver-type id in catalog -- skipping create-from-driver")
+            return
+        # Missing confirm must be refused before anything is created.
+        try:
+            self.client.call_tool("hub_manage_devices", {
+                "tool": "hub_create_device", "args": {"deviceTypeId": type_id},
+            })
+            raise AssertionError("hub_create_device created a device without confirm")
+        except (McpToolError, McpError):
+            pass
+        created = self.client.call_tool("hub_manage_devices", {
+            "tool": "hub_create_device",
+            "args": {"deviceTypeId": type_id, "label": f"{PREFIX}FromDriver", "confirm": True},
+        })
+        assert created.get("success") is True, f"create from driver failed: {created}"
+        new_id = str(created.get("deviceId") or "")
+        assert new_id, f"create from driver returned no deviceId: {created}"
+        try:
+            # A freshly created REAL device is NOT MCP-selected, so the scoped hub_get_device
+            # (selected/child devices only) can't resolve it. Confirm it exists via the
+            # scope='all' list (every hub device, sourced from /device/listWithCapabilities/json).
+            all_devs = self.client.call_tool("hub_list_devices", {"scope": "all"})
+            ids = {str(d.get("id")) for d in all_devs.get("devices", [])} if isinstance(all_devs, dict) else set()
+            assert new_id in ids, f"created device {new_id} not present in scope='all' listing"
+        finally:
+            # Created via the catalog path (a real device, not an MCP child) -- delete by id
+            # through hub_delete_device. Best-effort: the confirm gate needs a recent backup,
+            # so a failure here just leaves a labeled artifact for the --cleanup-only backstop.
+            try:
+                self.client.call_tool("hub_manage_destructive_ops", {
+                    "tool": "hub_delete_device", "args": {"deviceId": new_id, "confirm": True},
+                })
+            except Exception as exc:
+                print(f"    [WARN] create-from-driver cleanup failed (delete {new_id}): {exc}")
+
+    @test("devices")
+    def test_get_compatible_devices_lookup(self) -> None:
+        # Intent: look up pairing instructions for a brand in Hubitat's compatible-device
+        # catalog. Read-only reference -- these are NOT the user's installed devices.
+        result = self.client.call_tool("hub_read_devices", {
+            "tool": "hub_get_compatible_devices",
+            "args": {"query": "switch", "includeInstructions": True},
+        })
+        assert result.get("success") is True, f"compatible-devices lookup failed: {result}"
+        assert isinstance(result.get("devices"), list), f"no devices list: {result}"
+        if result.get("devices"):
+            row = result["devices"][0]
+            # includeInstructions=true projects the HTML-stripped instruction fields.
+            assert "joinInstructions" in row or "factoryResetInstructions" in row, \
+                f"includeInstructions row missing instruction fields: {row}"
+
     # -----------------------------------------------------------------------
     # GROUP 3: virtual_device_lifecycle (5 tests)
     # -----------------------------------------------------------------------

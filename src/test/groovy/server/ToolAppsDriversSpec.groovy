@@ -294,6 +294,94 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
+    // -------- toolListHubDrivers include=all (full driver-type catalog) --------
+
+    def "hub_list_drivers include=all classifies user/virtual/system buckets and skips dep + Hidden"() {
+        given:
+        enableRead()
+        hubGet.register('/device/drivers') { params ->
+            '''{"drivers":[
+                {"id":1,"name":"My Custom Driver","namespace":"acme","type":"usr","category":"User"},
+                {"id":2,"name":"Virtual Switch","namespace":"hubitat","type":"sys","category":"Switches"},
+                {"id":3,"name":"Generic Z-Wave Switch","namespace":"hubitat","type":"sys","category":"Switches"},
+                {"id":4,"name":"Some Dependency","namespace":"hubitat","type":"dep","category":"Lib"},
+                {"id":5,"name":"Internal Thing","namespace":"hubitat","type":"sys","category":"Hidden"}
+            ]}'''
+        }
+
+        when:
+        def result = script.toolListHubDrivers([include: 'all'])
+
+        then: 'dep + Hidden rows are dropped, the rest are bucketed'
+        result.source == 'hub_api'
+        result.include == 'all'
+        result.count == 3
+        result.drivers.find { it.name == 'My Custom Driver' }.bucket == 'user'
+        result.drivers.find { it.name == 'Virtual Switch' }.bucket == 'virtual'
+        result.drivers.find { it.name == 'Generic Z-Wave Switch' }.bucket == 'system'
+        !result.drivers.any { it.name == 'Some Dependency' }
+        !result.drivers.any { it.name == 'Internal Thing' }
+
+        and: 'each id is stringified for chaining into hub_create_device'
+        result.drivers.find { it.name == 'My Custom Driver' }.id == '1'
+    }
+
+    @spock.lang.Unroll
+    def "hub_list_drivers via dispatch include=all returns the bucketed catalog (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableRead()
+        hubGet.register('/device/drivers') { params ->
+            '{"drivers":[{"id":2,"name":"Virtual Switch","namespace":"hubitat","type":"sys","category":"Switches"}]}'
+        }
+
+        when:
+        def response = mcpDriver.callTool('hub_list_drivers', [include: 'all'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.source == 'hub_api'
+        inner.include == 'all'
+        inner.count == 1
+        inner.drivers[0].bucket == 'virtual'
+        inner.drivers[0].id == '2'
+
+        where:
+        useGateways << [true, false]
+    }
+
+    def "hub_list_drivers include=all reports the raw response when the shape is unexpected"() {
+        given:
+        enableRead()
+        hubGet.register('/device/drivers') { params -> '{"unexpected":"shape"}' }
+
+        when:
+        def result = script.toolListHubDrivers([include: 'all'])
+
+        then:
+        result.source == 'hub_api_raw'
+        result.drivers == []
+        result.count == 0
+        result.include == 'all'
+        result.note.contains('drivers')
+    }
+
+    def "hub_list_drivers include=user (default) still uses the userDeviceTypes endpoint"() {
+        given:
+        enableRead()
+        hubGet.register('/hub2/userDeviceTypes') { params -> '[{"id": 10, "name": "Generic Z-Wave Switch"}]' }
+
+        when:
+        def result = script.toolListHubDrivers([:])
+
+        then: 'the all-catalog endpoint was never touched'
+        result.include == 'user'
+        result.source == 'hub_api'
+        !hubGet.calls.any { it.path == '/device/drivers' }
+    }
+
     // -------- toolListLibraries --------
 
     def "hub_list_libraries returns library summaries (source omitted) from the hub API"() {

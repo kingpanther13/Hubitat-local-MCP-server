@@ -1,6 +1,6 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 115 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 117 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -333,6 +333,42 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Calls `hub_update_device` with `label` parameter. Verifies with `hub_get_device`.
 
+### T13b — hub_update_device (hide from Home page)
+
+```json
+{
+  "setup_prompt": "Create a virtual switch called 'BAT ShowOnHome Test'.",
+  "test_prompt": "Hide 'BAT ShowOnHome Test' from the hub Home page.",
+  "teardown_prompt": "Delete the virtual device 'BAT ShowOnHome Test'."
+}
+```
+
+**Expected**: Calls `hub_update_device` with `showOnHome=false`. Reports the device no longer shows on the Home page.
+
+### T13c — hub_update_device (default status attribute)
+
+```json
+{
+  "setup_prompt": "Create a virtual switch called 'BAT DefaultState Test'.",
+  "test_prompt": "Make 'switch' the attribute shown in the Status column for 'BAT DefaultState Test'.",
+  "teardown_prompt": "Delete the virtual device 'BAT DefaultState Test'."
+}
+```
+
+**Expected**: Calls `hub_update_device` with `defaultCurrentState="switch"`. Reports the status attribute was set.
+
+### T13d — hub_update_device (tags)
+
+```json
+{
+  "setup_prompt": "Create a virtual switch called 'BAT Tags Test'.",
+  "test_prompt": "Tag 'BAT Tags Test' with 'kitchen' and 'downstairs'.",
+  "teardown_prompt": "Delete the virtual device 'BAT Tags Test'."
+}
+```
+
+**Expected**: Calls `hub_update_device` with `tags=["kitchen","downstairs"]`. The wholesale device-edit form preserves the device's label/name; the response confirms the tags were applied (read back from the device).
+
 ### T14 — hub_get_info
 
 ```json
@@ -486,6 +522,38 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 ```
 
 **Expected** (conditional -- skip if no custom drivers installed): Calls `hub_manage_virtual_device` with `action="create"` and `customDriver={namespace, name}` from a real installed driver. Response includes `driverNamespace` matching the supplied namespace, `driverType` matching the supplied name, and `typeName` as a deprecated alias equal to `driverType`. Agent then calls `hub_manage_virtual_device(action="delete")` to clean up.
+
+### T19g — hub_list_drivers (full driver-type catalog)
+
+```json
+{
+  "test_prompt": "List the full catalog of device driver types installed on my hub, including the built-in ones."
+}
+```
+
+**Expected**: Calls `hub_list_drivers` with `include="all"`. Returns the superset catalog (system + virtual + user buckets), each entry carrying an `id` usable as a `deviceTypeId`. Read-only.
+
+### T19h — hub_create_device (from a driver type)
+
+```json
+{
+  "setup_prompt": "List the full driver-type catalog (include='all') and pick a built-in software/virtual driver type id (e.g. a 'Virtual Switch' type). If none is obvious, skip this test.",
+  "test_prompt": "Create a new device from that driver type, label it 'BAT Create From Driver'. Confirm the creation.",
+  "teardown_prompt": "Delete the device 'BAT Create From Driver'."
+}
+```
+
+**Expected** (conditional): Calls `hub_create_device` with the chosen `deviceTypeId`, `label="BAT Create From Driver"`, and `confirm=true`. Returns the new `deviceId`. If the picked driver is radio-type, the response carries a radio orphan-shell `warning`. Without `confirm` the call is rejected (`-32602`).
+
+### T19i — hub_get_compatible_devices (pairing instructions lookup)
+
+```json
+{
+  "test_prompt": "Look up the pairing instructions for Aeotec Z-Wave devices in Hubitat's compatible-device list."
+}
+```
+
+**Expected**: Calls `hub_get_compatible_devices` with `brand="Aeotec"` (and/or `protocol="Z-Wave"`) and `includeInstructions=true`. Returns matching catalog entries with HTML-stripped join/exclude/factory-reset instructions. Read-only reference — these are NOT the user's installed devices.
 
 ---
 
@@ -2447,7 +2515,7 @@ These operations are too destructive for automated testing. Test manually with e
 
 | Section | Tests | Purpose |
 |---------|-------|---------|
-| 1. Core Tools | T01-T19f | 11 flat core tools work directly |
+| 1. Core Tools | T01-T19i | 13 flat core tools work directly |
 | 2. Gateway Discovery | T20-T31, T35-T59 | LLM finds all proxied tools without hints |
 | 3. Gateway Behavior | T60-T65 | Catalog mode, skip-catalog, errors |
 | 4. Natural Language | T70-T79 | Casual prompts route correctly |
@@ -2468,7 +2536,7 @@ These operations are too destructive for automated testing. Test manually with e
 | Flat core tools on `tools/list` | 13 |
 | Gateways on `tools/list` | 23 |
 | Total visible on `tools/list` | 36 |
-| Total distinct tools in codebase | 115 |
+| Total distinct tools in codebase | 117 |
 
 **8 read gateways**: `hub_read_apps_code` (11), `hub_read_devices` (4), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3), `hub_read_dashboards` (2)
 
@@ -2478,7 +2546,7 @@ These operations are too destructive for automated testing. Test manually with e
 
 ### Tool Coverage (non-destructive tools only)
 
-All 115 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 117 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 

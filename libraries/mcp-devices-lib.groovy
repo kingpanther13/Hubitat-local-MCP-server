@@ -1801,6 +1801,13 @@ def toolGetDeviceHistory(args) {
     return deviceResult
 }
 
+// /device/preference/save expects a numeric deviceId in its JSON body (the Vue posts
+// this.device.id, a number). Coerce the string id to a Long; leave a non-numeric id as-is.
+def _prefSaveDeviceId(deviceId) {
+    try { return (deviceId != null) ? (deviceId.toString() as Long) : deviceId }
+    catch (Exception ignored) { return deviceId }
+}
+
 def toolUpdateDevice(args) {
     def deviceId = args.deviceId
     if (!deviceId) throw new IllegalArgumentException("deviceId is required")
@@ -1822,6 +1829,9 @@ def toolUpdateDevice(args) {
     if (args.preferences) requestedProps << "preferences(${args.preferences.size()})"
     if (args.room != null) requestedProps << "room"
     if (args.enabled != null) requestedProps << "enabled"
+    if (args.showOnHome != null) requestedProps << "showOnHome"
+    if (args.defaultCurrentState != null) requestedProps << "defaultCurrentState"
+    if (args.tags != null) requestedProps << "tags"
     mcpLog("debug", "device", "hub_update_device called for '${deviceLabel}' (ID: ${deviceId}), properties: ${requestedProps.join(', ')}")
 
     // Label (official API)
@@ -2111,12 +2121,138 @@ def toolUpdateDevice(args) {
         }
     }
 
+    // Show-on-Home flag (internal API -- no SDK setter; Write master enforced centrally).
+    // Controls whether the device appears on the hub Home page and counts toward its quick
+    // status-bar summaries. Prefer the dedicated GET (clean, single-purpose) but fall back to
+    // the long-standing Preferences-pane save when it's absent: /device/setShowOnHome is newer
+    // firmware (~2.5.0.158+) and 404s on older hubs, whereas /device/preference/save carries
+    // showOnHome and has been around far longer. A partial body touches only the named field.
+    if (args.showOnHome != null) {
+        if (settings.enableWrite == false) {
+            errors << [property: "showOnHome", error: "Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings"]
+        } else {
+            try {
+                def showVal = args.showOnHome ? "true" : "false"
+                try {
+                    hubInternalGet("/device/setShowOnHome?deviceId=${deviceId}&show=${showVal}")
+                } catch (Exception primaryErr) {
+                    mcpLog("debug", "device", "hub_update_device showOnHome: dedicated endpoint failed (${primaryErr.message}); falling back to /device/preference/save")
+                    hubInternalPostJson("/device/preference/save", groovy.json.JsonOutput.toJson([deviceId: _prefSaveDeviceId(deviceId), showOnHome: args.showOnHome]))
+                }
+                changes << [property: "showOnHome", newValue: args.showOnHome]
+                mcpLog("info", "device", "Device '${deviceLabel}' showOnHome -> ${args.showOnHome}")
+            } catch (Exception e) {
+                mcpLog("debug", "device", "hub_update_device showOnHome: error: ${e.message}")
+                errors << [property: "showOnHome", error: e.message]
+            }
+        }
+    }
+
+    // Default Current State -- which Current-States attribute shows in the Status column on the
+    // Devices/Rooms pages ("" selects None). Same firmware split as showOnHome: prefer the
+    // dedicated GET (returns `true`), fall back to /device/preference/save where it's absent.
+    if (args.defaultCurrentState != null) {
+        if (settings.enableWrite == false) {
+            errors << [property: "defaultCurrentState", error: "Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings"]
+        } else {
+            try {
+                def csVal = args.defaultCurrentState.toString()
+                def applied = false
+                try {
+                    // The dedicated endpoint returns the literal `true` on success. A 200 carrying
+                    // anything else (e.g. `false` for an unknown attribute name) is a real rejection
+                    // -- record an error, do NOT fall back (the endpoint exists, the value is bad).
+                    def result = hubInternalGet("/device/setDefaultCurrentState?id=${deviceId}&currentState=${java.net.URLEncoder.encode(csVal, 'UTF-8')}")
+                    if (result?.toString()?.trim()?.toLowerCase() == "true") {
+                        applied = true
+                    } else {
+                        errors << [property: "defaultCurrentState", error: "Hub did not accept defaultCurrentState='${csVal}' (returned '${result?.toString()?.take(120)}'). Use an attribute name from the device's current states."]
+                    }
+                } catch (Exception primaryErr) {
+                    // Dedicated endpoint absent on older firmware (404) -- fall back to the Preferences-pane save.
+                    mcpLog("debug", "device", "hub_update_device defaultCurrentState: dedicated endpoint failed (${primaryErr.message}); falling back to /device/preference/save")
+                    hubInternalPostJson("/device/preference/save", groovy.json.JsonOutput.toJson([deviceId: _prefSaveDeviceId(deviceId), defaultCurrentState: csVal]))
+                    applied = true
+                }
+                if (applied) {
+                    changes << [property: "defaultCurrentState", newValue: csVal]
+                    mcpLog("info", "device", "Device '${deviceLabel}' defaultCurrentState -> '${csVal}'")
+                }
+            } catch (Exception e) {
+                mcpLog("debug", "device", "hub_update_device defaultCurrentState: error: ${e.message}")
+                errors << [property: "defaultCurrentState", error: e.message]
+            }
+        }
+    }
+
+    // Tags (internal API -- no SDK setter and no dedicated endpoint; the ONLY path is the
+    // wholesale /device/update form, which BLANKS any field it omits. So read the full
+    // device-edit model, change only tags, re-POST the COMPLETE form, then verify the tags
+    // landed and the identity fields survived (restoring label/name/DNI via the SDK if the
+    // hub dropped them).
+    if (args.tags != null) {
+        if (settings.enableWrite == false) {
+            errors << [property: "tags", error: "Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings"]
+        } else {
+            try {
+                def tagsCsv = (args.tags instanceof List) ? args.tags.collect { it?.toString()?.trim() }.findAll { it }.join(",") : args.tags.toString()
+                def fjText = hubInternalGet("/device/fullJson/${deviceId}")
+                def full = fjText ? new groovy.json.JsonSlurper().parseText(fjText) : null
+                def d = full?.device
+                if (!d) throw new RuntimeException("Could not read the device model from /device/fullJson to preserve fields")
+                def oldLabel = d.label; def oldName = d.name; def oldDni = d.deviceNetworkId
+                def dashIds = (full.dashboards ?: []).findAll { it?.selected }.collect { it?.id }
+                // Faithful copy of the Vue device-edit form (deviceModel); omitting a field blanks it.
+                def model = [
+                    name: d.name, label: d.label, zigbeeId: d.zigbeeId,
+                    maxEvents: d.maxEvents, maxStates: d.maxStates, spammyThreshold: d.spammyThreshold,
+                    deviceNetworkId: d.deviceNetworkId, deviceTypeId: d.deviceTypeId,
+                    deviceTypeReadableType: d.deviceTypeReadableType, roomId: d.roomId,
+                    meshEnabled: d.meshEnabled, retryEnabled: d.retryEnabled, meshFullSync: d.meshFullSync,
+                    homeKitEnabled: full.homeKitEnabled, locationId: d.locationId, hubId: d.hubId,
+                    groupId: d.groupId, dashboardIds: dashIds, tags: tagsCsv,
+                    defaultIcon: (d.defaultIcon ?: d.icon), notes: (d.notes ?: "")
+                ]
+                if (d.id != null) { model.id = d.id; model.version = d.version; model.controllerType = d.controllerType }
+                def enc = { v ->
+                    if (v == true) return "on"
+                    if (v == null) return ""
+                    if (v instanceof List) return v.collect { it?.toString() }.join(",")
+                    return v.toString()
+                }
+                def body = model.collect { k, v -> "${java.net.URLEncoder.encode(k.toString(), 'UTF-8')}=${java.net.URLEncoder.encode(enc(v), 'UTF-8')}" }.join("&")
+                hubInternalPostFormRaw("/device/update", body)
+                // Verify: tags applied AND identity fields not blanked by the wholesale form
+                def vText = hubInternalGet("/device/fullJson/${deviceId}")
+                def vd = vText ? new groovy.json.JsonSlurper().parseText(vText)?.device : null
+                // Identity-restore runs FIRST, regardless of whether tags matched: the wholesale
+                // /device/update form blanks any field it omits, and that can happen on the
+                // tag-mismatch path too -- so restore label/name/DNI whenever the read-back shows
+                // them blanked, before branching on the tag result. A restore-setter failure is
+                // surfaced as an actionable error (not swallowed) so the user knows to re-set it.
+                if (oldLabel && !vd?.label) { try { device.setLabel(oldLabel) } catch (Exception re) { errors << [property: "label", error: "Tags processed but the device-edit form blanked the label and restoring it failed: ${re.message}. Verify and re-set the label."] } }
+                if (oldName && !vd?.name) { try { device.setName(oldName) } catch (Exception re) { errors << [property: "name", error: "Tags processed but the device-edit form blanked the name and restoring it failed: ${re.message}. Verify and re-set the name."] } }
+                if (oldDni && !vd?.deviceNetworkId) { try { device.setDeviceNetworkId(oldDni) } catch (Exception re) { errors << [property: "deviceNetworkId", error: "Tags processed but the device-edit form blanked the deviceNetworkId and restoring it failed: ${re.message}. Verify and re-set the deviceNetworkId."] } }
+                def gotTags = vd?.tags?.toString() ?: ""
+                if (gotTags != (tagsCsv ?: "")) {
+                    errors << [property: "tags", error: "POST accepted but tags read back as '${gotTags}' (expected '${tagsCsv}'). Other fields were preserved."]
+                } else {
+                    changes << [property: "tags", oldValue: d.tags, newValue: tagsCsv]
+                    mcpLog("info", "device", "Device '${deviceLabel}' tags -> '${tagsCsv}'")
+                }
+            } catch (Exception e) {
+                mcpLog("debug", "device", "hub_update_device tags: error: ${e.message}")
+                errors << [property: "tags", error: e.message]
+            }
+        }
+    }
+
     if (!changes && !errors) {
         return [
             success: true,
             device: deviceLabel,
             deviceId: deviceId,
-            message: "No properties were provided to update. Specify at least one property: label, name, deviceNetworkId, room, enabled, dataValues, or preferences."
+            message: "No properties were provided to update. Specify at least one property: label, name, deviceNetworkId, room, enabled, dataValues, preferences, showOnHome, defaultCurrentState, or tags."
         ]
     }
 
@@ -2135,6 +2271,167 @@ def toolUpdateDevice(args) {
             ? "Successfully updated ${changes.size()} ${changes.size() == 1 ? 'property' : 'properties'} on device '${deviceLabel}'."
             : "Updated ${changes.size()} ${changes.size() == 1 ? 'property' : 'properties'} with ${errors.size()} ${errors.size() == 1 ? 'error' : 'errors'} on device '${deviceLabel}'."
     ]
+}
+
+def toolCreateDevice(args) {
+    // Instantiate a device from a driver TYPE id (the hub's "add device by driver" path:
+    // GET /device/sysDriverByIdJson/<deviceTypeId> -> {success, deviceId, errorMessage}).
+    // This creates a real, non-radio-bound device -- useful for LAN/integration/cloud and
+    // software/component drivers that have no pairing flow. Radio drivers created this way
+    // are orphan shells (no node), so we warn. MCP-managed virtual devices have their own
+    // tool (hub_manage_virtual_device); this is the broader catalog path.
+    if (args?.confirm != true) {
+        throw new IllegalArgumentException("confirm=true is required to create a device.")
+    }
+    def typeId = args?.deviceTypeId
+    if (typeId == null || typeId.toString().trim() == "") {
+        throw new IllegalArgumentException("deviceTypeId is required -- the driver-type id from hub_list_drivers(include='all') (the 'id' field).")
+    }
+    typeId = typeId.toString().trim()
+
+    def resp
+    try {
+        def respText = hubInternalGet("/device/sysDriverByIdJson/${java.net.URLEncoder.encode(typeId, 'UTF-8')}", null, 30)
+        // Parse INSIDE the try: a 200 carrying an HTML/login body (not JSON) makes parseText
+        // throw, and it must return the same structured runtime-error shape as a fetch failure
+        // rather than escaping as an unstructured tool error.
+        resp = respText ? new groovy.json.JsonSlurper().parseText(respText) : null
+    } catch (Exception e) {
+        return [success: false, error: "Hub call failed creating device from driver-type ${typeId}: ${e.message}",
+                note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
+    }
+    if (resp?.success != true || resp?.deviceId == null) {
+        return [success: false, error: resp?.errorMessage ?: "Hub did not create a device for driver-type ${typeId}",
+                note: "Verify the deviceTypeId via hub_list_drivers(include='all')."]
+    }
+    def newId = resp.deviceId.toString()
+
+    def warnings = []
+
+    // Inspect what was created (driver type, radio-ness) and optionally apply a label.
+    def info = null
+    try {
+        def t = hubInternalGet("/device/fullJson/${newId}")
+        info = t ? new groovy.json.JsonSlurper().parseText(t)?.device : null
+    } catch (Exception e) {
+        mcpLog("warn", "device", "hub_create_device: could not read back device ${newId} to confirm type: ${e.message}")
+    }
+    // A null read-back is non-fatal but must not be fully silent: without the type we cannot
+    // tell whether this is a radio orphan shell, so the radio-shell warning would be lost.
+    if (info == null) {
+        warnings << "Created device ${newId} but could not read it back to confirm type -- if this is a radio driver it may be a non-functional orphan shell; verify with hub_get_device."
+    }
+
+    def appliedLabel = null
+    if (args?.label != null && args.label.toString().trim()) {
+        try {
+            def labelResult = hubInternalGet("/device/updateLabel?deviceId=${newId}&label=${java.net.URLEncoder.encode(args.label.toString(), 'UTF-8')}")
+            if (labelResult?.toString()?.trim()?.toLowerCase() != "true") {
+                // Non-fatal: the device exists. Don't claim the label applied when it didn't.
+                warnings << "Device created but label '${args.label}' could not be applied (hub returned '${labelResult?.toString()?.take(120)}'). Set it with hub_update_device(label=...)."
+                mcpLog("warn", "device", "hub_create_device: label '${args.label}' not applied to ${newId} (hub returned '${labelResult?.toString()?.take(120)}')")
+            } else {
+                appliedLabel = args.label.toString()
+            }
+        } catch (Exception e) {
+            warnings << "Device created but label '${args.label}' could not be applied: ${e.message}. Set it with hub_update_device(label=...)."
+            mcpLog("warn", "device", "hub_create_device: label '${args.label}' apply to ${newId} threw: ${e.message}")
+        }
+    }
+
+    def readable = (info?.deviceTypeReadableType ?: "").toString().toLowerCase()
+    def ctype = (info?.controllerType ?: "").toString().toUpperCase()
+    if (ctype in ["ZWV", "ZGB"] || readable.contains("z-wave") || readable.contains("zwave") || readable.contains("zigbee") || readable.contains("matter")) {
+        warnings << "This is a radio-type driver. Creating it here makes a non-functional orphan shell (no paired node). Add real Z-Wave/Zigbee/Matter devices by PAIRING (hub_call_zwave / hub_call_zigbee / hub_call_matter), then delete this shell with hub_delete_device."
+    }
+
+    mcpLog("info", "device", "hub_create_device: created device ${newId} from driver-type ${typeId}${appliedLabel ? " labeled '${appliedLabel}'" : ''}")
+    return [
+        success: true,
+        deviceId: newId,
+        label: appliedLabel ?: info?.label,
+        name: info?.displayName ?: info?.name,
+        deviceTypeId: typeId,
+        deviceTypeName: info?.deviceTypeName,
+        virtual: info?.virtual,
+        capabilities: info?.capabilities,
+        warnings: warnings ?: null,
+        message: "Created device ${newId} from driver-type ${typeId}${appliedLabel ? " labeled '${appliedLabel}'" : ''}." + (warnings ? " WARNING: see warnings." : ""),
+        note: "Set room/preferences/showOnHome with hub_update_device once the device is selectable, or delete it with hub_delete_device."
+    ]
+}
+
+def toolGetCompatibleDevices(args) {
+    // Hubitat's static "Compatible Devices" catalog (GET /hub/compatibleDevices): brands +
+    // models with pairing/exclude/factory-reset instructions and the Hubitat driver each
+    // maps to. ~1MB full, so this filters + paginates + projects -- never the whole blast.
+    def cursor = args?.cursor
+    def includeInstructions = (args?.includeInstructions == true)
+    def q = args?.query?.toString()?.toLowerCase()
+    def brandF = args?.brand?.toString()?.toLowerCase()
+    def protoF = args?.protocol?.toString()?.toLowerCase()
+    def typeF = args?.deviceType?.toString()?.toLowerCase()
+
+    def list
+    try {
+        def txt = hubInternalGet("/hub/compatibleDevices", null, 30)
+        list = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
+    } catch (Exception e) {
+        return [success: false, error: "Could not read /hub/compatibleDevices: ${e.message}",
+                note: "This is Hubitat's static compatibility catalog; it needs hub connectivity."]
+    }
+    if (!(list instanceof List)) {
+        return [success: false, error: "Unexpected response shape from /hub/compatibleDevices.", devices: []]
+    }
+
+    def stripHtml = { s ->
+        if (s == null) return null
+        // Decode &amp; LAST (after &lt;/&gt;/&quot;/&#39;) so a single-encoded entity doesn't
+        // double-decode (e.g. "&amp;lt;" must not collapse to "<").
+        s.toString().replaceAll(/(?s)<[^>]+>/, " ")
+            .replaceAll(/&nbsp;/, " ")
+            .replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"').replace("&#39;", "'")
+            .replace("&amp;", "&")
+            .replaceAll(/\s+/, " ").trim()
+    }
+    def matched = list.findAll { r ->
+        if (brandF && !((r?.brand ?: "").toString().toLowerCase().contains(brandF))) return false
+        if (protoF && !((r?.protocol ?: "").toString().toLowerCase().contains(protoF))) return false
+        if (typeF && !((r?.deviceType ?: "").toString().toLowerCase().contains(typeF))) return false
+        if (q) {
+            // ?: '' on each field so a null doesn't interpolate the literal "null" into the haystack.
+            def hay = "${r?.brand ?: ''} ${r?.name ?: ''} ${r?.productNumber ?: ''} ${r?.deviceType ?: ''} ${r?.driverName ?: ''}".toLowerCase()
+            if (!hay.contains(q)) return false
+        }
+        return true
+    }
+    def project = { r ->
+        def m = [brand: r?.brand, name: r?.name, deviceType: r?.deviceType, productNumber: r?.productNumber,
+                 protocol: r?.protocol, driverName: r?.driverName, deviceTypeId: r?.deviceTypeId, id: r?.id]
+        if (includeInstructions) {
+            m.joinInstructions = stripHtml(r?.joinInstructions)
+            m.excludeInstructions = stripHtml(r?.excludeInstructions)
+            m.factoryResetInstructions = stripHtml(r?.factoryResetInstructions)
+            m.additionalHardware = r?.additionalHardware
+            m.notes = r?.notes
+        } else {
+            m.hasInstructions = (r?.joinInstructions || r?.excludeInstructions || r?.factoryResetInstructions) ? true : false
+        }
+        return m
+    }
+
+    def pageSize = includeInstructions ? 12 : 40
+    def effCursor = (cursor == null) ? "" : cursor
+    def paged = _paginateList(matched, effCursor, pageSize, "hub_get_compatible_devices")
+    def result = [success: true, total: matched.size(), count: paged.page.size(),
+                  devices: paged.page.collect(project)]
+    if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
+    if (matched.isEmpty()) {
+        result.note = "No compatible-device records matched. Loosen the brand/protocol/deviceType/query filter."
+    } else if (paged.nextCursor != null) {
+        result.note = "Page of ${result.count} of ${result.total} matches. Iterate nextCursor, or narrow the filter. Set includeInstructions=true for pairing/reset steps."
+    }
+    return result
 }
 
 def toolDeleteDevice(args) {
@@ -2611,11 +2908,9 @@ def _getAllToolDefinitions_partDevices() {
 
 DEVICE AUTHORIZATION: Exact name match -> use directly. No exact match -> suggest similar, ASK USER before using. NEVER control unconfirmed devices (HVAC/locks risk). Report tool failures; don't silently fall back to existing devices.
 
-Use detailed=false for discovery; detailed=true with limit=20-30. Sequential calls only. scope='all' lists every hub device (not just MCP-authorized) with an mcpAuthorized flag.
+Use detailed=false for discovery; detailed=true with limit=20-30. Sequential calls only.[[FLAT_TRIM]] scope='all' lists every hub device (not just MCP-authorized) with an mcpAuthorized flag.
 
-[[FLAT_TRIM]]
-Summary mode returns currentStates; detailed mode replaces that with capabilities, attributes, and commands (field list in outputSchema). Server-side filtering (all applied before pagination) is configured via the filter / labelFilter / capabilityFilter params (documented on those params). format='ids' is the cheapest shape; fields=[...] projects named fields and skips expensive hub reads. To count a parent's children, group the response by parentDeviceId.
-[[/FLAT_TRIM]]
+Summary mode returns currentStates; detailed mode replaces that with capabilities, attributes, and commands (field list in outputSchema). Server-side filtering (all applied before pagination) is configured via the filter / labelFilter / capabilityFilter params (documented on those params). format='ids' is the cheapest shape; fields=[...] projects named fields and skips expensive hub reads. To count a parent's children, group the response by parentDeviceId.[[/FLAT_TRIM]]
 Call `hub_get_tool_guide(section='performance')` for response-shape details, filter/projection semantics, and field-name reference.""",
             inputSchema: [
                 type: "object",
@@ -2673,9 +2968,9 @@ Call `hub_get_tool_guide(section='performance')` for response-shape details, fil
         ],
         [
             name: "hub_get_device",
-            description: """Get one device's full detail: capabilities, all attributes with current values, and supported commands (with argument types). Use when you need a single device's complete profile — e.g. to discover which commands/attributes it supports before calling hub_call_device_command or hub_get_device_attribute. For a multi-device listing use hub_list_devices instead.
+            description: """Get one device's full detail: capabilities, all attributes with current values, and supported commands (with argument types).[[FLAT_TRIM]] Use when you need a single device's complete profile — e.g. to discover which commands/attributes it supports before calling hub_call_device_command or hub_get_device_attribute. For a multi-device listing use hub_list_devices instead.
 
-Only query devices the user has mentioned or that are relevant to their request. Do not probe random devices.""",
+Only query devices the user has mentioned or that are relevant to their request. Do not probe random devices.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2708,9 +3003,9 @@ Only query devices the user has mentioned or that are relevant to their request.
             name: "hub_get_device_attribute",
             description: """Get a device attribute's current value, or block-poll until it reaches an expected value.[[FLAT_TRIM]] Polls one device, or several at once via deviceIds.[[/FLAT_TRIM]]
 
-One-shot read by default (deviceId + attribute). Provide expectedValue and/or expectedValues to block-poll until currentValue matches, returning immediately on match or when timeoutMs elapses.[[FLAT_TRIM]] A single round-trip that replaces N client-side reads + sleeps (verify a command took effect, wait for a sensor threshold, detect Z-Wave inclusion finished). comparator controls the match: eq (default, in-set), ne (not in-set), gt/gte/lt/lte (numeric threshold via expectedValue), between (numeric inclusive range via expectedValues [low, high]). stableForMs requires the condition to hold continuously for that many ms before converging (debounce). For MULTI-DEVICE convergence pass deviceIds (a list, mutually exclusive with deviceId, max 20) instead of deviceId: the same condition is applied to every device and mode controls the aggregate -- "all" (default) converges when every device matches, "any" on the first to match; the result is a compact per-device array (not full device objects) plus convergedCount. Poll mode BLOCKS up to timeoutMs (default 5000ms, max 60000ms) and queues concurrent MCP requests; prefer event-driven flows where possible. First read fires immediately; subsequent reads are spaced by pollIntervalMs.[[/FLAT_TRIM]]
+One-shot read by default (deviceId + attribute). Provide expectedValue and/or expectedValues to block-poll until currentValue matches, returning immediately on match or when timeoutMs elapses.[[FLAT_TRIM]] A single round-trip that replaces N client-side reads + sleeps (verify a command took effect, wait for a sensor threshold, detect Z-Wave inclusion finished). comparator controls the match: eq (default, in-set), ne (not in-set), gt/gte/lt/lte (numeric threshold via expectedValue), between (numeric inclusive range via expectedValues [low, high]). stableForMs requires the condition to hold continuously for that many ms before converging (debounce). For MULTI-DEVICE convergence pass deviceIds (a list, mutually exclusive with deviceId, max 20) instead of deviceId: the same condition is applied to every device and mode controls the aggregate -- "all" (default) converges when every device matches, "any" on the first to match; the result is a compact per-device array (not full device objects) plus convergedCount. Poll mode BLOCKS up to timeoutMs (default 5000ms, max 60000ms) and queues concurrent MCP requests; prefer event-driven flows where possible. First read fires immediately; subsequent reads are spaced by pollIntervalMs.
 
-Only query devices the user has mentioned or that are relevant to their request.""",
+Only query devices the user has mentioned or that are relevant to their request.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2760,9 +3055,9 @@ Only query devices the user has mentioned or that are relevant to their request.
         ],
         [
             name: "hub_call_device_command",
-            description: """Send a command (e.g. on, off, setLevel) to a device. Use to actuate or control a device; for read-only checks use hub_get_device_attribute instead. Returns a `state` snapshot (per-attribute value + freshness timestamp) read AS OF the command. To get the CONFIRMED resulting state, pass `waitFor` to block-poll until the attribute converges; without it, confirm separately via hub_get_device_attribute.
+            description: """Send a command (e.g. on, off, setLevel) to a device. Use to actuate or control a device; for read-only checks use hub_get_device_attribute instead.
 [[FLAT_TRIM]]
-The snapshot is an immediate read taken in the same request that fires the command, so it shows the PRE-effect value -- even for virtual/local devices -- because the hub commits the change after this request returns; the per-attribute timestamp is the freshness signal. With `waitFor`, the `state` snapshot reflects the converged value and a `waitFor` result block reports convergence.
+Returns a `state` snapshot (per-attribute value + freshness timestamp) read AS OF the command. To get the CONFIRMED resulting state, pass `waitFor` to block-poll until the attribute converges; without it, confirm separately via hub_get_device_attribute. The snapshot is an immediate read taken in the same request that fires the command, so it shows the PRE-effect value -- even for virtual/local devices -- because the hub commits the change after this request returns; the per-attribute timestamp is the freshness signal. With `waitFor`, the `state` snapshot reflects the converged value and a `waitFor` result block reports convergence.
 [[/FLAT_TRIM]]
 If no exact device match: suggest similar devices and get user confirmation before sending any command.""",
             inputSchema: [
@@ -2770,7 +3065,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
                 properties: [
                     deviceId: [type: "string", description: "Device ID from hub_list_devices - must be confirmed by user if not an exact match"],
                     command: [type: "string", description: "Command name, e.g. \"setLevel\". Must be one of the device's supported commands (see hub_get_device)."],
-                    parameters: [type: "array", description: "Ordered command arguments as an array of strings, in the order the command declares them, e.g. [\"75\"] for setLevel or [\"#FF0000\"] for setColor. Omit for no-arg commands like on/off.[[FLAT_TRIM]] Each element is a string; numbers and JSON-object values are passed as strings (e.g. [\"{\\\"hue\\\":0,\\\"saturation\\\":100,\\\"level\\\":50}\"]) and coerced hub-side.[[/FLAT_TRIM]]", items: [type: "string"]],
+                    parameters: [type: "array", description: "Ordered command arguments as an array of strings, in the order the command declares them, e.g. [\"75\"] for setLevel or [\"#FF0000\"] for setColor.[[FLAT_TRIM]] Omit for no-arg commands like on/off. Each element is a string; numbers and JSON-object values are passed as strings (e.g. [\"{\\\"hue\\\":0,\\\"saturation\\\":100,\\\"level\\\":50}\"]) and coerced hub-side.[[/FLAT_TRIM]]", items: [type: "string"]],
                     waitFor: [type: "object", description: "Optional: after firing the command, block-poll the device until an attribute reaches an expected value, so the response confirms the RESULTING state (and the `state` snapshot reflects the converged value). Omit for a fire-and-forget command with only the immediate pre-effect snapshot.[[FLAT_TRIM]] comparator (eq/ne/gt/gte/lt/lte/between) and stableForMs (debounce) work as on hub_get_device_attribute. BLOCKS the request up to timeoutMs and queues concurrent MCP calls; reuses the hub_get_device_attribute poll engine.[[/FLAT_TRIM]]", properties: [
                         attribute: [type: "string", description: "Attribute to poll until it converges, e.g. \"switch\". Must be a supported attribute of the device."],
                         expectedValue: [type: "string", description: "Awaited value: eq/ne in-set, or gt/gte/lt/lte numeric threshold."],
@@ -2819,7 +3114,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
             name: "hub_list_device_events",
             description: """Get event history for a device, an APP (app events: events emitted by an app or rule -- automation events), or the location.
 
-Default: most-recent events for a device (deviceId + optional limit). Add hoursBack for a relative window, or since for an absolute bookmark (events after an exact timestamp -- since takes precedence if both are given). appId returns an installed app's events instead. Omit deviceId/appId for location-level events.[[FLAT_TRIM]] attribute filters by event name. Higher limits (50+) may slow the hub. For change-watching loops: record a returned event `date`, then pass it back as `since` to get only the new events since that bookmark.[[/FLAT_TRIM]]""",
+Default: most-recent events for a device (deviceId + optional limit).[[FLAT_TRIM]] Add hoursBack for a relative window, or since for an absolute bookmark (events after an exact timestamp -- since takes precedence if both are given). appId returns an installed app's events instead. Omit deviceId/appId for location-level events. attribute filters by event name. Higher limits (50+) may slow the hub. For change-watching loops: record a returned event `date`, then pass it back as `since` to get only the new events since that bookmark.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2859,9 +3154,9 @@ Default: most-recent events for a device (deviceId + optional limit). Add hoursB
         ],
         [
             name: "hub_update_device",
-            description: """Update device properties: label, name, deviceNetworkId, room, enabled, dataValues, preferences.
+            description: """Update device properties: label, name, deviceNetworkId, room, enabled, dataValues, preferences, showOnHome, defaultCurrentState, tags.
 
-Only modify devices user explicitly requested. Room/enabled require Write master. Call `hub_get_tool_guide(section='update_device')` for preferences format.""",
+Only modify devices user explicitly requested. Writes require Write master. Call `hub_get_tool_guide(section='update_device')` for preferences format.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2873,7 +3168,10 @@ Only modify devices user explicitly requested. Room/enabled require Write master
                     enabled: [type: "boolean", description: "Set to true to enable or false to disable the device"],
                     dataValues: [type: "object", description: "Key-value pairs to set in the device's Data section. Example: {\"firmware\": \"1.2.3\", \"model\": \"ABC\"}",
                         additionalProperties: [type: "string"]],
-                    preferences: [type: "object", description: "Device preferences to update. Each value must be an object with 'type' and 'value'. Example: {\"pollInterval\": {\"type\": \"number\", \"value\": 30}}"]
+                    preferences: [type: "object", description: "Device preferences to update. Each value must be an object with 'type' and 'value'. Example: {\"pollInterval\": {\"type\": \"number\", \"value\": 30}}"],
+                    showOnHome: [type: "boolean", description: "Show this device on the hub Home page[[FLAT_TRIM]] and count it in the quick status-bar summaries (climate/lights/locks/etc.)[[/FLAT_TRIM]]."],
+                    defaultCurrentState: [type: "string", description: "Which attribute appears in the Status column on the Devices/Rooms pages.[[FLAT_TRIM]] Use an attribute name from the device's current states (e.g. 'switch', 'temperature'); empty string selects None.[[/FLAT_TRIM]]"],
+                    tags: [type: "array", description: "Free-form device tags; REPLACES the full set ([] clears all).[[FLAT_TRIM]] Applied via the device-edit form, which preserves all other device fields.[[/FLAT_TRIM]]", items: [type: "string"]]
                 ],
                 required: ["deviceId"]
             ],
@@ -3008,6 +3306,65 @@ First call list_options=true to read the hub's compatible replacement candidates
                 required: ["success"]
             ]
         ],
+        [
+            name: "hub_create_device",
+            description: """Create a device from a driver TYPE id (the 'id' from hub_list_drivers(include='all')). Requires Write master + confirm.[[FLAT_TRIM]] For built-in LAN/integration/cloud and software/component drivers with no pairing flow. NOT for Z-Wave/Zigbee/Matter hardware -- pair those with hub_call_zwave/zigbee/matter (a radio driver created here is a non-functional orphan shell; the response warns). For MCP-managed virtual devices use hub_manage_virtual_device.[[/FLAT_TRIM]]""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    deviceTypeId: [type: "string", description: "Driver-type id to instantiate (the 'id' from hub_list_drivers(include='all'))."],
+                    label: [type: "string", description: "Optional display label for the new device."],
+                    confirm: [type: "boolean", description: "REQUIRED: must be true to create the device."]
+                ],
+                required: ["deviceTypeId", "confirm"]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "Whether the device was created"],
+                    deviceId: [type: "string", description: "New device id"],
+                    label: [type: "string", description: "Applied/current label"],
+                    name: [type: "string", description: "Device name (driver default)"],
+                    deviceTypeId: [type: "string", description: "Driver-type id used"],
+                    deviceTypeName: [type: "string", description: "Driver type name"],
+                    virtual: [type: "boolean", description: "Whether the hub flagged the new device virtual"],
+                    capabilities: [type: "array", description: "Capability names", items: [type: "string"]],
+                    warnings: [type: "array", description: "Non-fatal warnings (e.g. radio-driver orphan-shell)", items: [type: "string"]],
+                    message: [type: "string", description: "Human-readable result"],
+                    error: [type: "string", description: "Failure reason (success=false)"],
+                    note: [type: "string", description: "Next-step guidance"]
+                ],
+                required: ["success"]
+            ]
+        ],
+        [
+            name: "hub_get_compatible_devices",
+            description: """Search Hubitat's official compatible-devices catalog: brands/models with pairing/exclusion/factory-reset instructions and the Hubitat driver each maps to. Read-only reference -- NOT your installed devices.[[FLAT_TRIM]] Requires Read master. Filter by brand, protocol (Zigbee|Z-Wave|Matter|LAN|...), deviceType, or a free-text query; paginated (cursor). Summaries by default; set includeInstructions=true (with a narrow filter) for the HTML-stripped step-by-step instructions.[[/FLAT_TRIM]]""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    query: [type: "string", description: "Free-text match across brand, name, product number, device type, and driver name."],
+                    brand: [type: "string", description: "Filter by brand (substring, case-insensitive)[[FLAT_TRIM]], e.g. 'Aeotec'[[/FLAT_TRIM]]."],
+                    protocol: [type: "string", description: "Filter by protocol (substring)[[FLAT_TRIM]], e.g. 'Zigbee', 'Z-Wave', 'Matter', 'LAN'[[/FLAT_TRIM]]."],
+                    deviceType: [type: "string", description: "Filter by device type (substring)[[FLAT_TRIM]], e.g. 'Dimmer', 'Water Sensor'[[/FLAT_TRIM]]."],
+                    includeInstructions: [type: "boolean", description: "Include join/exclude/factory-reset instructions (HTML stripped) + notes. Default false (summaries).[[FLAT_TRIM]] Use with a narrow filter; pages are smaller in this mode.[[/FLAT_TRIM]]"],
+                    cursor: [type: "string", description: "Pagination cursor. Pass \"\" (or omit) for the first page; iterate nextCursor.[[FLAT_TRIM]] Page size 40 (summary) / 12 (with instructions).[[/FLAT_TRIM]]"]
+                ]
+            ],
+            outputSchema: [
+                type: "object",
+                properties: [
+                    success: [type: "boolean", description: "True on a successful read"],
+                    devices: [type: "array", description: "Matched catalog entries (projected; instructions only when includeInstructions=true)", items: [type: "object"]],
+                    count: [type: "integer", description: "Entries on this page"],
+                    total: [type: "integer", description: "Total entries matched by the filter"],
+                    nextCursor: [type: "string", description: "Present when more results remain"],
+                    note: [type: "string", description: "Pagination / filtering guidance"],
+                    error: [type: "string", description: "Failure reason (success=false)"]
+                ],
+                required: ["success"]
+            ]
+        ],
     ]
 }
 
@@ -3017,7 +3374,9 @@ def _readOnlyToolNames_partDevices() {
     // the tool). A tool absent from every part list is write+destructive by default.
     return [
         // Device introspection
-        "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events"
+        "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events",
+        // Compatible-devices catalog (static reference read)
+        "hub_get_compatible_devices"
     ]
 }
 
@@ -3042,7 +3401,9 @@ def _toolDisplayMeta_partDevices() {
         hub_call_device_command: [title: "Send Device Command", summary: "Send a command like on, off, or setLevel to a device."],
         hub_call_device_swap: [title: "Swap Device", summary: "Replace a device across all apps and rules that reference it, in one operation."],
         hub_call_device_replace: [title: "Replace Device Hardware", summary: "Re-point a device to replacement hardware, keeping its id and all references."],
-        hub_update_device: [title: "Update Device Properties", summary: "Update a device's label, room, or preferences."],
+        hub_update_device: [title: "Update Device Properties", summary: "Update a device's label, room, preferences, show-on-home, status attribute, or tags."],
+        hub_create_device: [title: "Create Device From Driver", summary: "Create a device from a driver-type id (LAN/integration/software drivers; not radio hardware)."],
+        hub_get_compatible_devices: [title: "Search Compatible Devices", summary: "Search Hubitat's compatible-device catalog for models and pairing/reset instructions."],
         hub_delete_device: [title: "Delete Device", summary: "Permanently delete a device from the hub (no undo)."]
     ]
 }

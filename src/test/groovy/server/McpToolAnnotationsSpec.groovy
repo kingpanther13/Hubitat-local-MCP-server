@@ -84,6 +84,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_get_logs', 'hub_list_device_events', 'hub_get_performance_stats',
             'hub_get_radio_details', 'hub_get_device_health', 'hub_get_metrics',
             'hub_list_apps', 'hub_get_source', 'hub_list_backups', 'hub_get_backup',
+            'hub_get_compatible_devices',
             'hub_list_rooms', 'hub_get_room',
             'hub_list_files', 'hub_read_file',
             'hub_get_app_config',
@@ -129,7 +130,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_reboot', 'hub_shutdown', 'hub_delete_device',
             'hub_set_zwave', 'hub_set_zigbee',
             'hub_call_zwave', 'hub_call_zigbee', 'hub_call_matter', 'hub_call_destructive_radio',
-            'hub_manage_virtual_device', 'hub_update_device',
+            'hub_manage_virtual_device', 'hub_update_device', 'hub_create_device',
             'hub_create_room', 'hub_delete_room', 'hub_update_room',
             'hub_create_app', 'hub_create_driver', 'hub_update_app', 'hub_update_driver',
             'hub_delete_item',
@@ -349,6 +350,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_call_zwave', 'hub_call_zigbee', 'hub_call_matter', 'hub_call_destructive_radio',
             'hub_manage_virtual_device', 'hub_manage_mode',
             'hub_set_system_settings',
+            'hub_create_device',
             'hub_create_room',
             'hub_create_app', 'hub_create_driver', 'hub_create_library',
             'hub_call_rule', 'hub_set_rule', 'hub_set_native_app',
@@ -486,6 +488,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
 
         def expectedReadOnly = [
             'hub_list_devices', 'hub_get_device', 'hub_get_device_attribute', 'hub_list_device_events',
+            'hub_get_compatible_devices',
             'hub_get_custom_rule', 'hub_test_custom_rule',
             'hub_get_info', 'hub_list_modes', 'hub_get_hsm_status',
             'hub_list_variables', 'hub_get_variable', 'hub_list_variable_changes',
@@ -525,7 +528,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_call_gc',
             'hub_set_zwave', 'hub_set_zigbee',
             'hub_call_zwave', 'hub_call_zigbee', 'hub_call_matter', 'hub_call_destructive_radio',
-            'hub_manage_virtual_device', 'hub_update_device',
+            'hub_manage_virtual_device', 'hub_update_device', 'hub_create_device',
             'hub_create_room', 'hub_delete_room', 'hub_update_room',
             'hub_create_app', 'hub_create_driver', 'hub_update_app', 'hub_update_driver',
             'hub_delete_item',
@@ -584,7 +587,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         names.size() == (names as Set).size()
 
         and: 'no chunk dropped — the full surface is present (bump on intentional add/remove)'
-        names.size() == 115
+        names.size() == 117
 
         and: 'sentinels from the first and last chunks survive the concatenation chain'
         names.contains('hub_list_devices')   // first chunk

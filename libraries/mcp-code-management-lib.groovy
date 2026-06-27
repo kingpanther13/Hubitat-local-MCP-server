@@ -52,33 +52,72 @@ def toolListHubApps(args) {
 def toolListHubDrivers(args) {
 
     def cursor = args?.cursor
+    def include = (args?.include ?: "user").toString().toLowerCase()
     def result = [:]
-    try {
-        def responseText = hubInternalGet("/hub2/userDeviceTypes")
-        if (responseText) {
-            try {
-                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
-                result.drivers = parsed
-                result.count = parsed instanceof List ? parsed.size() : 0
+    if (include == "all") {
+        // Full instantiable driver-type catalog -- built-in "system" + "virtual" + user
+        // drivers (the superset the device add/edit picker uses), vs the default "user"
+        // path which lists only user-installed driver types. Each id is the deviceTypeId
+        // consumed by hub_create_device; hub_manage_virtual_device(customDriver) instead
+        // takes the entry's namespace + name (both are in the include='all' projection).
+        try {
+            def responseText = hubInternalGet("/device/drivers")
+            def parsed = responseText ? new groovy.json.JsonSlurper().parseText(responseText) : null
+            if (parsed?.drivers instanceof List) {
+                def projected = []
+                parsed.drivers.each { d ->
+                    if (d?.type == "dep" || d?.category == "Hidden") return
+                    def nm = d?.name?.toString() ?: ""
+                    def bucket = (d?.type == "usr") ? "user" : (nm.startsWith("Virtual") ? "virtual" : "system")
+                    projected << [id: d?.id?.toString(), name: nm, namespace: d?.namespace, bucket: bucket]
+                }
+                result.drivers = projected
+                result.count = projected.size()
                 result.source = "hub_api"
-            } catch (Exception parseErr) {
-                // Response was not JSON - return what we can. drivers=[] keeps the
-                // cursor block + downstream shape consistent.
+            } else {
                 result.drivers = []
+                result.count = 0
                 result.rawResponse = responseText?.take(2000)
                 result.source = "hub_api_raw"
-                result.note = "Response was not JSON. This endpoint may return HTML on your firmware version."
+                result.note = "Response was not the expected {drivers:[...]} shape; /device/drivers may differ on your firmware version."
             }
-        } else {
+        } catch (Exception e) {
+            mcpLog("warn", "hub-admin", "hub_list_drivers include=all API call failed: ${e.message}")
             result.drivers = []
-            result.note = "Empty response from hub API"
+            result.count = 0
+            result.source = "unavailable"
+            result.note = "Hub internal API unavailable (${e.message}). This may require Hub Security credentials or a firmware update."
         }
-    } catch (Exception e) {
-        mcpLog("warn", "hub-admin", "hub_list_drivers API call failed: ${e.message}")
-        result.drivers = []
-        result.count = 0
-        result.source = "unavailable"
-        result.note = "Hub internal API unavailable (${e.message}). This may require Hub Security credentials or a firmware update."
+        result.include = "all"
+    } else {
+        try {
+            def responseText = hubInternalGet("/hub2/userDeviceTypes")
+            if (responseText) {
+                try {
+                    def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                    result.drivers = parsed
+                    result.count = parsed instanceof List ? parsed.size() : 0
+                    result.source = "hub_api"
+                } catch (Exception parseErr) {
+                    // Response was not JSON - return what we can. drivers=[] keeps the
+                    // cursor block + downstream shape consistent.
+                    result.drivers = []
+                    result.rawResponse = responseText?.take(2000)
+                    result.source = "hub_api_raw"
+                    result.note = "Response was not JSON. This endpoint may return HTML on your firmware version."
+                }
+            } else {
+                result.drivers = []
+                result.note = "Empty response from hub API"
+            }
+        } catch (Exception e) {
+            mcpLog("warn", "hub-admin", "hub_list_drivers API call failed: ${e.message}")
+            result.drivers = []
+            result.count = 0
+            result.source = "unavailable"
+            result.note = "Hub internal API unavailable (${e.message}). This may require Hub Security credentials or a firmware update."
+        }
+        result.include = "user"
     }
 
     if (cursor != null && result.drivers instanceof List) {
@@ -2475,18 +2514,20 @@ Pass cursor to page through the list at 50 per page when the full response would
         ],
         [
             name: "hub_list_drivers",
-            description: "List all installed drivers on the hub. Requires Read master.",
+            description: "List device driver types on the hub. include='user' (default) lists user-installed drivers; include='all' returns the full catalog (system + virtual + user).[[FLAT_TRIM]] Each include='all' entry is tagged with a bucket; its id is the driver-type id for hub_create_device, while hub_manage_virtual_device(customDriver) takes the entry's namespace + name (not the id).[[/FLAT_TRIM]] Requires Read master.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
+                    include: [type: "string", enum: ["user", "all"], description: "Scope: 'user' (default) = user-installed drivers only; 'all' = full catalog (system + virtual + user)[[FLAT_TRIM]], each entry tagged bucket=system|virtual|user[[/FLAT_TRIM]]."],
+                    cursor: [type: "string", description: "Opt-in pagination cursor.[[FLAT_TRIM]] Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50).[[/FLAT_TRIM]]"]
                 ]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
-                    drivers: [type: "array", description: "Installed driver entries as returned by the hub", items: [type: "object"]],
+                    drivers: [type: "array", description: "Driver entries. For include='user', the raw hub entries; for include='all', {id, name, namespace, bucket} per driver type.", items: [type: "object"]],
                     count: [type: "integer", description: "Drivers returned"],
+                    include: [type: "string", description: "Scope applied: user | all"],
                     source: [type: "string", description: "hub_api / hub_api_raw / unavailable"],
                     note: [type: "string", description: "Status note when the hub API was unavailable or returned a non-JSON shape"],
                     rawResponse: [type: "string", description: "Raw body when response was not JSON"],
