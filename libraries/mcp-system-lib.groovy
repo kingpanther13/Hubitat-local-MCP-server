@@ -142,11 +142,6 @@ def toolGetHubInfo(args = null) {
     info.writeEnabled = settings.enableWrite != false
     info.customRuleEngineEnabled = settings.enableCustomRuleEngine == true
     info.developerModeEnabled = settings.enableDeveloperMode ?: false
-    // issue #209 #include smoke test: this method is supplied by the McpSmokeTestLib library via
-    // `#include mcp.McpSmokeTestLib` at the top of the file. Its presence here -- returning
-    // "smoke-ok-v1" rather than throwing MissingMethodException -- proves the include resolved and
-    // the library loaded. Throwaway canary; removed once the modularization split is validated.
-    info.smokeTestMarker = mcpSmokeTestMarker()
 
     // Last self-deploy outcome (issue #237): hub_update_app on the MCP server's own app can't return
     // its result on the call (success reloads the app; a big-file compile failure 504s), so it records
@@ -779,7 +774,6 @@ def _getAllToolDefinitions_partSystem() {
                     writeEnabled: [type: "boolean", description: "Write master toggle state (default ON)"],
                     customRuleEngineEnabled: [type: "boolean", description: "Custom rule engine toggle state"],
                     developerModeEnabled: [type: "boolean", description: "Developer Mode toggle state"],
-                    smokeTestMarker: [type: "string", description: "issue #209 #include canary -- 'smoke-ok-v1' from the McpSmokeTestLib library; throwaway, removed after the modularization split is validated"],
                     lastSelfDeploy: [type: "object", description: "issue #237: outcome of the last hub_update_app self-update (the MCP server updating its own app). Recovers the result that can't return on the deploy call (success reloads the app; a big-file compile failure 504s). Keys: success (bool), error (hub's verbatim message or null), sourceMode, importUrl, sourceLength, at (epoch ms), ageMs (ms since `at`, computed at read). PERSISTS in atomicState across app reloads -- it is NOT cleared on update, so a read can return a STALE record from an earlier deploy; check ageMs (or baseline `at` across your own deploy) for freshness before trusting it. Absent until the first self-update."],
                     name: [type: "string", description: "Hub name (Read master only)"],
                     localIP: [type: "string", description: "Hub local IP (Read master only)"],

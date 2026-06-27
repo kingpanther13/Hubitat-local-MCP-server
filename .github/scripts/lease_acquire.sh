@@ -17,9 +17,11 @@
 #         LEASE_POLL_INTERVAL_S       — seconds between polls while waiting (default 30).
 #
 # Exits 0 on successful claim. While the lease is read as held and not expired, this WAITS
-# (polling) and claims it automatically the moment it frees or the holder's TTL lapses — so a
-# run blocked by a manual hub session that GitHub's `concurrency` group can't see (a human
-# holding the lease by hand) starts on its own instead of needing a re-run. Cross-PR CI queueing
+# (polling) and claims it the moment it frees, the holder's TTL lapses, OR the holding CI run is
+# found to have finished — a stranded lease from a hard-killed cancellation (GitHub can force-kill
+# a cancelled job's `if: always()` release step) is reclaimed at once instead of waiting out its
+# 30-min TTL. A run blocked by a manual hub session that GitHub's `concurrency` group can't see (a
+# human holding the lease by hand) still starts on its own instead of needing a re-run. Cross-PR CI queueing
 # is GitHub native concurrency's job now (the hub-e2e-serialized group), not the lease's. A brief
 # read failure or a malformed/corrupt lease value mid-wait is polled through, never treated as
 # free. Exits 1 if the lease is STILL held after LEASE_WAIT_TIMEOUT_S, if the endpoint stays
@@ -95,6 +97,27 @@ set_lease_value() {
   mcp_call "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"hub_manage_variables\",\"arguments\":{\"tool\":\"hub_set_variable\",\"args\":{\"name\":\"_TEST_HUB_LEASED_BY\",\"value\":${value_json}}}}}" >/dev/null
 }
 
+# True (exit 0) ONLY when the lease holder is a GitHub Actions run that has already FINISHED, so
+# its lease is stranded and reclaimable NOW rather than after the full 30-min TTL. This is the
+# safety net for a cancelled run: GitHub sends SIGINT->SIGTERM->kill within ~10s and hard-caps
+# cleanup at 5 min, so a cancelled job's `if: always()` lease-release can be force-killed before
+# it runs, leaving the lease held until its TTL. Fail-CLOSED: a holder that isn't a `ci-run-<N>`
+# id (a human hold), an unparseable id, no gh CLI / token, an API error, or a run still
+# in_progress/queued all return 1 (NOT dead) so the caller keeps WAITING -- never steal a live
+# run's hub, which would double-book it. Only a confirmed status=="completed" reclaims.
+holder_run_dead() {
+  local holder="$1" run_id status
+  case "$holder" in
+    ci-run-*) run_id="${holder#ci-run-}" ;;
+    *) return 1 ;;
+  esac
+  printf '%s' "$run_id" | grep -qE '^[0-9]+$' || return 1
+  command -v gh >/dev/null 2>&1 || return 1
+  [ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ] || return 1
+  status="$(gh run view "$run_id" ${GITHUB_REPOSITORY:+--repo "$GITHUB_REPOSITORY"} --json status --jq '.status' 2>/dev/null)" || return 1
+  [ "$status" = "completed" ]
+}
+
 # Wait (polling) until the lease is free, expired, or already ours — or until the
 # wait budget runs out. The job's own timeout-minutes bounds the total, and because
 # we claim only AFTER this wait, the lease TTL below starts at acquisition.
@@ -166,6 +189,12 @@ while :; do
   fi
   if [ "$CURRENT_UNTIL" -le "$NOW_MS" ]; then
     break  # holder's TTL lapsed -> reclaimable
+  fi
+  if holder_run_dead "$CURRENT_BY"; then
+    # Held within its TTL, but the holding CI run has already finished -> its release step never
+    # cleared the lease (likely a hard-killed cancellation). Reclaim now instead of waiting it out.
+    echo "::notice::Lease holder '$CURRENT_BY' is a finished CI run (stranded lease); reclaiming now instead of waiting out its ${LEASE_DURATION_MIN}-min TTL."
+    break
   fi
 
   # Held by someone else and still valid — wait for it.

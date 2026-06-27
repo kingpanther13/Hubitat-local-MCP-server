@@ -153,7 +153,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
 
         then: 'gateways whose every sub-tool is in getReadOnlyToolNames()'
         ['hub_read_apps_code', 'hub_read_devices', 'hub_read_diagnostics', 'hub_read_files',
-         'hub_read_rooms', 'hub_read_rules', 'hub_read_variables'].each { gwName ->
+         'hub_read_rooms', 'hub_read_rules', 'hub_read_variables', 'hub_read_dashboards'].each { gwName ->
             def gw = tools.find { it.name == gwName }
             assert gw != null : "${gwName} missing from gateway-mode catalog"
             assert gw.annotations.readOnlyHint == true : "${gwName} should be read-only"
@@ -183,7 +183,8 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_manage_files',              // hub_write_file, hub_delete_file
             'hub_manage_native_rules_and_apps', // create/update/delete/run native rules
             'hub_manage_rule_machine',       // hub_call_rule, set_rule_paused, set_rule_private_boolean
-            'hub_manage_mcp'            // hub_update_mcp_settings
+            'hub_manage_mcp',           // hub_update_mcp_settings
+            'hub_manage_dashboards'      // create/update/delete/clone dashboards
         ]
         writeGateways.each { gwName ->
             def gw = tools.find { it.name == gwName }
@@ -334,7 +335,8 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_export_native_app',
             'hub_delete_visual_rule',
             'hub_set_zwave', 'hub_set_zigbee',
-            'hub_update_package'
+            'hub_update_package',
+            'hub_update_dashboard', 'hub_delete_dashboard'
         ] as Set
 
         def expectedNonIdempotent = [
@@ -351,7 +353,8 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_create_app', 'hub_create_driver', 'hub_create_library',
             'hub_call_rule', 'hub_set_rule', 'hub_set_native_app',
             'hub_clone_native_app', 'hub_import_native_app', 'hub_delete_native_app',
-            'hub_set_visual_rule'
+            'hub_set_visual_rule',
+            'hub_create_dashboard', 'hub_clone_dashboard'
         ] as Set
 
         then:
@@ -500,6 +503,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_list_app_pages',
             'hub_list_hpm_packages',
             'hub_list_rules', 'hub_get_rule_health', 'hub_list_rule_local_variables', 'hub_get_visual_rule',
+            'hub_list_dashboards', 'hub_get_dashboard',
             'hub_get_tool_guide'
             // hub_search_tools is in getReadOnlyToolNames() but suppressed in flat mode.
         ] as Set
@@ -532,7 +536,8 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean',
             'hub_set_rule', 'hub_set_native_app', 'hub_set_app_disabled', 'hub_clone_native_app',
             'hub_import_native_app', 'hub_delete_native_app', 'hub_export_native_app',
-            'hub_set_visual_rule', 'hub_delete_visual_rule'
+            'hub_set_visual_rule', 'hub_delete_visual_rule',
+            'hub_create_dashboard', 'hub_update_dashboard', 'hub_delete_dashboard', 'hub_clone_dashboard'
         ] as Set
 
         then:
@@ -579,7 +584,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         names.size() == (names as Set).size()
 
         and: 'no chunk dropped — the full surface is present (bump on intentional add/remove)'
-        names.size() == 109
+        names.size() == 115
 
         and: 'sentinels from the first and last chunks survive the concatenation chain'
         names.contains('hub_list_devices')   // first chunk

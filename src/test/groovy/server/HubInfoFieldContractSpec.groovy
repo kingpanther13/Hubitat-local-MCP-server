@@ -95,17 +95,6 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
         !result.containsKey('lastSelfDeploy')
     }
 
-    def "getHubInfo surfaces the #include'd smoke-test marker (issue #209)"() {
-        given:
-        sharedLocation.hub = new TestHub()
-
-        when:
-        def result = script.toolGetHubInfo()
-
-        then: 'the McpSmokeTestLib marker, pulled in via #include and folded into the info output'
-        result.smokeTestMarker == 'smoke-ok-v1'
-    }
-
     def "getHubInfo includes both fields as false when toggles are off"() {
         given:
         settingsMap.enableCustomRuleEngine = false

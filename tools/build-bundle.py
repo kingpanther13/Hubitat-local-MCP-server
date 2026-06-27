@@ -6,7 +6,7 @@ expects (the format proven in production by level99/Hubitat-VeSync, which
 migrated to bundles[] after the older libraries[] manifest array silently
 dropped libraries on HPM update):
 
-  mcp.McpSmokeTestLib.groovy   <- a library source, renamed to <namespace>.<name>.groovy
+  mcp.McpDashboardsLib.groovy  <- a library source, renamed to <namespace>.<name>.groovy
   mcp.McpRoomsLib.groovy       <- (one .groovy entry per library in LIBS)
   install.txt                  <- bundle install manifest
   update.txt                   <- bundle update manifest (identical content)
@@ -28,8 +28,9 @@ publish-bundle-artifact.yml on every push (branches/<branch>/ + shas/<sha>/
 entries). packageManifest.json's `bundles[]` location points at branches/main/
 -- the same mechanism the e2e deploy installs and byte-verifies on every run.
 Nothing under bundles/ is committed (the output dir is gitignored). The build
-is deterministic (fixed DOS epoch, stored entries) so any two builds of the
-same library source are byte-identical and can be compared directly.
+is deterministic (fixed DOS epoch, pinned deflate level) so two builds of the
+same library source on the same zlib are byte-identical and can be compared
+directly (the e2e cmp-byte-verifies the published artifact against its own CI rebuild).
 
 Run:  python3 tools/build-bundle.py
 """
@@ -38,6 +39,7 @@ from __future__ import annotations
 
 import sys
 import zipfile
+import zlib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -50,8 +52,8 @@ BUNDLE_NAME = "mcp_libraries"
 
 LIBS = [
     {
-        "source": LIB_DIR / "mcp-smoke-test-lib.groovy",
-        "dest": f"{NAMESPACE}.McpSmokeTestLib.groovy",
+        "source": LIB_DIR / "mcp-dashboards-lib.groovy",
+        "dest": f"{NAMESPACE}.McpDashboardsLib.groovy",
     },
     {
         "source": LIB_DIR / "mcp-rooms-lib.groovy",
@@ -127,20 +129,31 @@ LIBS = [
     },
 ]
 
-# Fixed DOS-epoch timestamp + stored (uncompressed) entries make rebuilds
-# byte-identical, so builds of the same source compare equal byte-for-byte.
+# Deterministic build: a fixed DOS-epoch timestamp + a pinned deflate level make
+# rebuilds of the same source byte-identical, so the e2e can byte-compare the
+# published artifact against its own CI rebuild (cmp -s).
+# DEFLATE (not STORED) keeps the zip well under the hub's ~2MB
+# /bundle2/uploadZipFromUrl fetch cap: ~2MB of library source compresses to ~0.5MB.
+# A STORED bundle over ~2,000,000 bytes is rejected by the hub with the generic
+# "Cannot retrieve zip file" (the cap is on the fetched-file bytes, not the
+# uncompressed content -- verified live: identical content installs deflated and
+# fails stored).
 _FIXED_DT = (1980, 1, 1, 0, 0, 0)
+_DEFLATE_LEVEL = 9  # pinned so deflate output is reproducible build-to-build
 
 
 def _add(zf: zipfile.ZipFile, name: str, data: bytes) -> None:
     info = zipfile.ZipInfo(filename=name, date_time=_FIXED_DT)
-    info.compress_type = zipfile.ZIP_STORED
+    info.compress_type = zipfile.ZIP_DEFLATED
     info.external_attr = 0o644 << 16
     # ZipInfo defaults create_system from the running platform (0 on Windows,
     # 3 elsewhere) -- pin it so a zip built on Windows is byte-identical to the
     # rebuild on any other machine (CI workflows, the e2e deploy).
     info.create_system = 3
-    zf.writestr(info, data)
+    # Pass the level HERE: a ZipFile(compresslevel=...) is IGNORED for a pre-built
+    # ZipInfo (CPython only copies it onto entries it builds from an arcname string),
+    # so the pin only takes effect when handed to writestr.
+    zf.writestr(info, data, compresslevel=_DEFLATE_LEVEL)
 
 
 def build() -> str:
@@ -195,6 +208,19 @@ def verify(manifest: str) -> None:
         for lib in LIBS:
             if f"library {lib['dest']}" not in lines:
                 raise RuntimeError(f"missing library line for {lib['dest']}")
+        # Every entry must be DEFLATE at the pinned level. A ZipFile(compresslevel=...) arg is
+        # silently IGNORED for pre-built ZipInfo entries, so this guards that exact regression and
+        # keeps rebuilds byte-reproducible (the e2e cmp-compares the artifact against its CI rebuild).
+        for info in zf.infolist():
+            data = zf.read(info.filename)
+            co = zlib.compressobj(_DEFLATE_LEVEL, zlib.DEFLATED, -15)
+            expected = len(co.compress(data) + co.flush())
+            if info.compress_type != zipfile.ZIP_DEFLATED or info.compress_size != expected:
+                raise RuntimeError(
+                    f"{info.filename}: stored compress_size {info.compress_size} (type "
+                    f"{info.compress_type}) != level-{_DEFLATE_LEVEL} deflate {expected} -- the pinned "
+                    f"deflate level is not applied; rebuilds may not be byte-reproducible."
+                )
 
 
 def main() -> int:

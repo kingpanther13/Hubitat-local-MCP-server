@@ -43,7 +43,7 @@ class MasterVisibilitySpec extends ToolSpecBase {
         !(tools*.name.contains("hub_manage_destructive_ops"))
     }
 
-    def "both masters ON (default) -- full catalog of 33 in the default config"() {
+    def "both masters ON (default) -- full catalog of 36 in the default config"() {
         given:
         settingsMap.remove('enableRead')
         settingsMap.remove('enableWrite')
@@ -51,7 +51,7 @@ class MasterVisibilitySpec extends ToolSpecBase {
         settingsMap.useGateways = true
 
         expect:
-        script.getToolDefinitions().size() == 34
+        script.getToolDefinitions().size() == 36
     }
 
     @spock.lang.Unroll

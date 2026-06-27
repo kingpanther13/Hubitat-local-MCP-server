@@ -1924,7 +1924,7 @@ def _getAllToolDefinitions_partDiagnostics() {
     return [
         [
             name: "hub_get_logs",
-            description: "Get Hubitat system logs, most recent first. Filter pipeline (in order): scope (deviceId/appId, server-side) -> level -> source -> pattern -> patterns -> time window (since/until) -> limit. Default 100 entries, max 500. Requires Read master.",
+            description: """Get Hubitat system logs, most recent first. Default 100 entries, max 500. Requires Read master.[[FLAT_TRIM]] Filter pipeline (in order): scope (deviceId/appId, server-side) -> level -> source -> pattern -> patterns -> time window (since/until) -> limit.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2115,7 +2115,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_get_device_health",
-            description: "Hub network diagnostics + device-staleness checks. Stale check covers only devices authorized for MCP access (the app's selected device list) with no activity in staleHours;[[FLAT_TRIM]] MCP-managed virtual/child devices (from hub_create_virtual_device) are a SEPARATE population and are NOT included here — list those via hub_list_devices(filter='virtual').[[/FLAT_TRIM]] Network diagnostics (any combination, all read-only): pingHosts ICMP-pings LAN IPs; traceroute runs the hub's route trace to one IPv4; speedtest runs the hub's ~10s WAN download test.[[FLAT_TRIM]] Any of these may be combined in a single call. Pass cursor (opaque string from a prior nextCursor) to page the staleDevices list at 100 per page when the full response would be too large.[[/FLAT_TRIM]]",
+            description: "Hub network diagnostics + device-staleness checks. Stale check covers only devices authorized for MCP access (the app's selected device list) with no activity in staleHours.[[FLAT_TRIM]] MCP-managed virtual/child devices (from hub_manage_virtual_device) are a SEPARATE population and are NOT included here — list those via hub_list_devices(filter='virtual'). Network diagnostics (any combination, all read-only): pingHosts ICMP-pings LAN IPs; traceroute runs the hub's route trace to one IPv4; speedtest runs the hub's ~10s WAN download test. Pass cursor (opaque string from a prior nextCursor) to page the staleDevices list at 100 per page when the full response would be too large.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2178,7 +2178,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_get_radio_details",
-            description: "Get Z-Wave/Zigbee/Matter radio info and the read-only side of the radio surface: details (firmware, home/PAN ID, channel, device nodes), mesh topology, per-node state, lifecycle status pollers, channel scan, SmartStart entries, and firmware-eligible devices. Omit radio for Z-Wave+Zigbee, or pass 'matter' for fabric/commissioned-device details. The include_* flags and node_id attach extra read blocks under named result keys.[[FLAT_TRIM]] Pair this with the write tools in hub_manage_radio (hub_set_zwave / hub_set_zigbee / hub_call_zwave / hub_call_zigbee / hub_call_matter) and the destructive resets/firmware in hub_call_destructive_radio.[[/FLAT_TRIM]] Requires Read master.",
+            description: """Get Z-Wave/Zigbee/Matter radio info and the read-only radio surface. Omit radio for Z-Wave+Zigbee, or pass 'matter' for fabric details. The include_* flags and node_id attach extra read blocks. Requires Read master.[[FLAT_TRIM]] Covers details (firmware, home/PAN ID, channel, device nodes), mesh topology, per-node state, lifecycle status pollers, channel scan, SmartStart entries, and firmware-eligible devices. Pair with the write tools in hub_manage_radio (hub_set_zwave / hub_set_zigbee / hub_call_zwave / hub_call_zigbee / hub_call_matter) and the destructive resets/firmware in hub_call_destructive_radio.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2387,7 +2387,7 @@ def _getAllToolDefinitions_partDiagnostics() {
             name: "hub_call_destructive_radio",
             description: """⚠️ DESTRUCTIVE radio operations — network/fabric WIPE or FIRMWARE FLASH. Reset unpairs EVERY device on a radio (irreversible); a firmware flash can BRICK hardware if interrupted.
 
-Misfire-proof: you MUST pass an explicit radio AND an explicit action AND confirm=true — there are no defaults. reset (radio=zwave|zigbee|matter) wipes that radio's network/fabric. Firmware: device_firmware_start/abort (Z-Wave device OTA, needs node_id+file_name from hub_get_radio_details(include_firmware=true)), zwave_chip_firmware (hub Z-Wave radio), zigbee_firmware (Zigbee radio to latest).
+Misfire-proof: you MUST pass an explicit radio AND an explicit action AND confirm=true — there are no defaults. reset (radio=zwave|zigbee|matter) wipes that radio's network/fabric.[[FLAT_TRIM]] Firmware: device_firmware_start/abort (Z-Wave device OTA, needs node_id+file_name from hub_get_radio_details(include_firmware=true)), zwave_chip_firmware (hub Z-Wave radio), zigbee_firmware (Zigbee radio to latest).[[/FLAT_TRIM]]
 
 PRE-FLIGHT: 1) Backup <24h old 2) Tell the user exactly which radio/devices are affected and that reset is irreversible / firmware can brick 3) Get explicit confirmation 4) Set confirm=true. Do NOT power-cycle the hub or device during a flash.
 Requires Write master.""",

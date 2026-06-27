@@ -517,6 +517,8 @@ jobs:
 
       - name: Acquire test hub lease
         if: steps.gate.outputs.available == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}   # lets lease_acquire.sh reclaim a stranded lease whose holding ci-run has finished
         run: bash .github/scripts/lease_acquire.sh "ci-run-${{ github.run_id }}"
 
       - name: Pre-run hub status probe
@@ -687,7 +689,7 @@ jobs:
       # e2e suite so a tool failure can't skip the suite; the cleanup/restore steps
       # below all use `if: always()`, so the hub is restored regardless. The full
       # write path (real library + #include + compile equivalence) is validated by the
-      # watchdog PR-install step above plus the smokeTestMarker / hub_list_libraries
+      # watchdog PR-install step above plus the hub_list_libraries (McpRoomsLib present)
       # assertions in tests/e2e_test.py.
       - name: Validate hub_update_package dev tool (dryRun)
         id: pkg_validate

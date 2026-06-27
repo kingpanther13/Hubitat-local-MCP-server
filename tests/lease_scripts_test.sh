@@ -100,6 +100,48 @@ rel_check "-32603 read -> keep"     '{"error":{"code":-32603,"message":"Internal
 rel_check "504 read-fail -> keep"   '__FAIL__'                ci-run-7  KEEP
 rm -rf "$STUBDIR"
 
+# ---------- acquire-side dead-holder reclaim guard ----------
+# holder_run_dead() gates a DESTRUCTIVE reclaim, so it must be FAIL-CLOSED: return 0 (reclaim) ONLY
+# for a ci-run-<N> holder whose gh run status is exactly "completed". A live run (in_progress/queued),
+# a human hold, an unparseable id, a missing token, or a gh API error must return 1 (keep waiting) --
+# stealing a LIVE run's hub would double-book the single shared test hub (the same bug class above).
+# Extracted from the shipped script (re-extracted each run, can't drift) and run with a gh stub.
+eval "$(sed -n '/^holder_run_dead()/,/^}/p' "$SRC")"
+type holder_run_dead >/dev/null 2>&1 || { echo "could not load holder_run_dead from $SRC"; exit 1; }
+
+GHDIR="$(mktemp -d)"
+cat > "$GHDIR/gh" <<'STUB'
+#!/usr/bin/env bash
+[ "${GH_CANNED:-}" = "__FAIL__" ] && exit 1   # simulate a gh API error (non-zero exit)
+printf '%s' "${GH_CANNED:-}"                   # else echo the canned `gh run view ... --jq .status`
+exit 0
+STUB
+chmod +x "$GHDIR/gh"
+
+hrd_check() {  # hrd_check <name> <holder> <gh-status> <DEAD|ALIVE> [notoken]
+  local name="$1" holder="$2" canned="$3" want="$4" tok="t" got
+  [ "${5:-}" = "notoken" ] && tok=""
+  if ( PATH="$GHDIR:$PATH" GH_CANNED="$canned" GH_TOKEN="$tok" GITHUB_TOKEN="$tok" \
+       GITHUB_REPOSITORY="o/r" holder_run_dead "$holder" ) 2>/dev/null; then got=DEAD; else got=ALIVE; fi
+  if [ "$got" = "$want" ]; then
+    printf '  ok    %-30s -> %s\n' "$name" "$got"
+  else
+    printf '  FAIL  %-30s -> got %s, want %s\n' "$name" "$got" "$want"
+    fail=1
+  fi
+}
+
+echo
+echo "acquire dead-holder reclaim (holder_run_dead):"
+hrd_check "ci-run completed -> reclaim" ci-run-7   completed   DEAD
+hrd_check "ci-run in_progress -> wait"  ci-run-7   in_progress ALIVE
+hrd_check "ci-run queued -> wait"       ci-run-7   queued      ALIVE
+hrd_check "human hold -> wait"          human-hold completed   ALIVE
+hrd_check "unparseable id -> wait"      ci-run-abc completed   ALIVE
+hrd_check "gh API error -> wait"        ci-run-7   __FAIL__    ALIVE
+hrd_check "no token -> wait"            ci-run-7   completed   ALIVE notoken
+rm -rf "$GHDIR"
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "lease scripts guard: PASS"

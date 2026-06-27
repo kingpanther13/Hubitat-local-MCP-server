@@ -159,6 +159,8 @@ class GatewayToggleSpec extends ToolSpecBase {
             'hub_list_rules', 'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean',
             'hub_set_rule', 'hub_set_native_app', 'hub_delete_native_app', 'hub_get_rule_health',
             'hub_get_visual_rule', 'hub_set_visual_rule', 'hub_delete_visual_rule',
+            'hub_list_dashboards', 'hub_get_dashboard', 'hub_create_dashboard',
+            'hub_update_dashboard', 'hub_delete_dashboard', 'hub_clone_dashboard',
             'hub_update_mcp_settings',
             // Dev-mode-only: executeTool still routes it (the catch tolerates the
             // "Developer Mode tools are disabled" IAE -- that proves the dispatch case exists).
