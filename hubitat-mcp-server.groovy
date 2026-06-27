@@ -1140,7 +1140,7 @@ def getGatewayConfig() {
             tools: ["hub_list_apps", "hub_list_drivers", "hub_get_source", "hub_list_libraries", "hub_list_bundles", "hub_list_backups", "hub_get_backup", "hub_list_device_dependents", "hub_get_app_config", "hub_list_app_pages", "hub_list_hpm_packages"],
             summaries: [
                 hub_list_apps: "List installed apps. scope='types' (installed app code library) or 'instances' (running apps with parent/child tree). Args: scope, filter?, includeHidden?, cursor?",
-                hub_list_drivers: "List all installed drivers on the hub",
+                hub_list_drivers: "List device driver types. include='user' (default) = user-installed; include='all' = full catalog (system+virtual+user), each id usable with hub_create_device. Args: include?, cursor?",
                 hub_get_source: "Get app/driver/library Groovy source with chunked reading. Args: type (app|driver|library), id, offset?, length?",
                 hub_list_libraries: "List installed Groovy libraries (id, name, namespace, version). Pair with hub_get_source(type='library', id) to read source. Args: cursor?",
                 hub_list_bundles: "List installed code bundles (the Bundle-Manager containers HPM delivers code in; distinct from Libraries Code). Returns id, name, namespace, private, and a contains summary. Find a bundle id for hub_delete_bundle/hub_export_bundle. Args: cursor?",
@@ -1153,7 +1153,7 @@ def getGatewayConfig() {
             ],
             searchHints: [
                 hub_list_apps: "show installed applications integrations apps list code types running instances builtin user parent child tree",
-                hub_list_drivers: "show installed device handlers types",
+                hub_list_drivers: "show installed device handlers types driver catalog built-in system virtual user deviceTypeId include all create device",
                 hub_get_source: "view read application driver library groovy code namespace include",
                 hub_list_libraries: "list show installed groovy libraries code namespace include shared modules discover library id",
                 hub_list_bundles: "list show installed bundles bundle manager hpm package zip containers code delivery discover bundle id apps drivers libraries",
@@ -1375,19 +1375,21 @@ def getGatewayConfig() {
             ]
         ],
         hub_read_devices: [
-            description: "Read-only device inspection: list devices with current states, get one device's full detail, read or block-poll a single attribute, and read device/location event history. All operations are read-only; device commands and updates live in hub_manage_devices.",
-            tools: ["hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events"],
+            description: "Read-only device inspection: list devices with current states, get one device's full detail, read or block-poll a single attribute, read device/location event history, and search Hubitat's compatible-device catalog (models + pairing/reset instructions). All operations are read-only; device commands and updates live in hub_manage_devices.",
+            tools: ["hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events", "hub_get_compatible_devices"],
             summaries: [
                 hub_list_devices: "List devices with current states. Args: detailed?, filter (enabled/disabled/stale:N/virtual), labelFilter?, capabilityFilter?, format (summary/detailed/ids), fields?, limit?, cursor?",
                 hub_get_device: "Get one device's full detail (capabilities, attributes, commands). Args: deviceId",
                 hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
-                hub_list_device_events: "Recent device events, a time-windowed history (hoursBack, max 168), an absolute bookmark (since -- events after an exact timestamp; round-trip a returned date), per-app events (appId), or location events (mode/HSM/hub-variable; omit deviceId/appId). Args: deviceId?, appId?, hoursBack?, since?, attribute?, limit?"
+                hub_list_device_events: "Recent device events, a time-windowed history (hoursBack, max 168), an absolute bookmark (since -- events after an exact timestamp; round-trip a returned date), per-app events (appId), or location events (mode/HSM/hub-variable; omit deviceId/appId). Args: deviceId?, appId?, hoursBack?, since?, attribute?, limit?",
+                hub_get_compatible_devices: "Search Hubitat's compatible-device catalog (brands/models + pairing/exclude/factory-reset instructions). Args: query?, brand?, protocol?, deviceType?, includeInstructions?, cursor?"
             ],
             searchHints: [
                 hub_list_devices: "show all devices switches lights sensors locks state inventory enumerate",
                 hub_get_device: "device detail capabilities attributes commands info inspect one",
                 hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed inclusion compare numeric range debounce stable multiple devices deviceIds any all converge across",
-                hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted since bookmark timestamp after new events change watch"
+                hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted since bookmark timestamp after new events change watch",
+                hub_get_compatible_devices: "compatible devices catalog supported hardware brands models pairing join exclude factory reset instructions how to pair driver protocol zigbee zwave matter lan"
             ]
         ],
         hub_read_rooms: [
@@ -1429,13 +1431,14 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_devices: [
-            description: "Control and inspect devices: send commands, update a device, and swap/replace a device across all referencing apps, plus read-only inspection (list/get/attribute/events). Device reads are also in hub_read_devices.",
-            tools: ["hub_call_device_command", "hub_call_device_swap", "hub_call_device_replace", "hub_update_device", "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events"],
+            description: "Control and inspect devices: send commands, update a device, create a device from a driver type, and swap/replace a device across all referencing apps, plus read-only inspection (list/get/attribute/events). Device reads are also in hub_read_devices.",
+            tools: ["hub_call_device_command", "hub_call_device_swap", "hub_call_device_replace", "hub_update_device", "hub_create_device", "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events"],
             summaries: [
                 hub_call_device_command: "Send a command to a device (verify state after). Args: deviceId, command, parameters?, waitFor?",
                 hub_call_device_swap: "Replace a device across ALL apps/rules that reference it (built-in Swap Device tool). Args: from_device_id, to_device_id, confirm",
                 hub_call_device_replace: "Replace a dead device's hardware while KEEPING its id + all app/rule references (re-points to new_device_id; list_options=true reads compatible candidates). Args: old_device_id, new_device_id?, list_options?, confirm",
-                hub_update_device: "Update a device's properties: label, name, room, deviceNetworkId, enabled (enable/disable), dataValues, preferences. Args: deviceId, label?, name?, room?, deviceNetworkId?, enabled?, dataValues?, preferences?",
+                hub_update_device: "Update a device's properties: label, name, room, deviceNetworkId, enabled, dataValues, preferences, showOnHome, defaultCurrentState (Status-column attribute), tags. Args: deviceId, label?, name?, room?, deviceNetworkId?, enabled?, dataValues?, preferences?, showOnHome?, defaultCurrentState?, tags?",
+                hub_create_device: "Create a device from a driver-type id (hub_list_drivers include='all'); for LAN/integration/software drivers, NOT radio hardware (pair those). Args: deviceTypeId, label?, confirm",
                 hub_list_devices: "List devices with current states. Args: detailed?, filter, labelFilter?, capabilityFilter?, format, fields?, limit?, cursor?",
                 hub_get_device: "Get one device's full detail (capabilities, attributes, commands). Args: deviceId",
                 hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
@@ -1445,7 +1448,8 @@ def getGatewayConfig() {
                 hub_call_device_command: "send command control turn on off set level dim lock unlock device run",
                 hub_call_device_swap: "swap replace device migrate references substitute rewire apps rules everywhere retire failing hardware",
                 hub_call_device_replace: "replace device hardware failed dead broken re-point preserve keep id references rules dashboard compatible replacement candidates getReplacementOptions",
-                hub_update_device: "rename relabel move room device edit",
+                hub_update_device: "rename relabel move room device edit show on home status attribute default current state tags label preferences",
+                hub_create_device: "create add device from driver type instantiate lan integration cloud software component install new deviceTypeId driverId",
                 hub_list_devices: "show all devices switches lights sensors locks state inventory",
                 hub_get_device: "device detail capabilities attributes commands info inspect one",
                 hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed compare numeric range debounce stable multiple devices deviceIds any all converge across",
@@ -2394,6 +2398,8 @@ def executeTool(toolName, args) {
         // Virtual Device Management
         case "hub_manage_virtual_device": return toolManageVirtualDevice(args)
         case "hub_update_device": return toolUpdateDevice(args)
+        case "hub_create_device": return toolCreateDevice(args)
+        case "hub_get_compatible_devices": return toolGetCompatibleDevices(args)
 
         // Room Management
         case "hub_list_rooms": return toolListRooms(args)
@@ -5322,13 +5328,22 @@ MCP-managed virtual devices:
 | preferences | No |
 | room | Yes |
 | enabled | Yes |
+| showOnHome | Yes |
+| defaultCurrentState | Yes |
+| tags | Yes |
 
 **Preferences format:**
 {"pollInterval": {"type": "number", "value": 30}, "debugLogging": {"type": "bool", "value": true}}
 
 **Valid preference types:** bool, number, string, enum, decimal, text
 
-**Room assignment:** Use exact room name (case-sensitive)''',
+**Room assignment:** Use exact room name (case-sensitive)
+
+**showOnHome:** boolean — show the device on the hub Home page and count it in the quick status-bar summaries.
+
+**defaultCurrentState:** the attribute shown in the Status column on the Devices/Rooms pages. Use an attribute name from the device's current states (e.g. "switch", "temperature"); "" selects None.
+
+**tags:** array of strings; REPLACES the full tag set ([] clears all). Applied via the wholesale device-edit form, which preserves the device's other fields.''',
 
         rules: '''## Rule Structure Reference
 

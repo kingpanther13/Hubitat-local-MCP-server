@@ -1,6 +1,6 @@
 # Tool Reference
 
-Quick reference for all 115 MCP tools. The server exposes **36 items on `tools/list`**: 13 flat core tools + 23 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute. A tool MAY appear under more than one gateway (multi-membership); read-only tools inside a mixed `hub_manage_*` gateway are also surfaced under a pure-read `hub_read_*` gateway.
+Quick reference for all 117 MCP tools. The server exposes **36 items on `tools/list`**: 13 flat core tools + 23 gateway tools. Each gateway proxies additional tools — call with no args for full schemas, or with `tool` and `args` to execute. A tool MAY appear under more than one gateway (multi-membership); read-only tools inside a mixed `hub_manage_*` gateway are also surfaced under a pure-read `hub_read_*` gateway.
 
 For the most authoritative reference, call `hub_get_tool_guide` via MCP.
 
@@ -51,7 +51,7 @@ These 13 tools are never behind a gateway. Every other tool is reachable through
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `hub_get_tool_guide` | Full tool reference from the MCP server itself. | None |
-| `hub_search_tools` | BM25 natural language search across all 115 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
+| `hub_search_tools` | BM25 natural language search across all 117 tools — returns matching tools ranked by relevance, with gateway attribution so the AI knows how to call each. | None |
 
 ---
 
@@ -68,7 +68,7 @@ Read-only access to apps, drivers, libraries, code bundles, backups, installed-a
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `hub_list_apps` | List apps. `scope='types'` enumerates installable app types; `scope='instances'` enumerates all installed apps (built-in + user) with parent/child tree, filterable by `all`/`builtin`/`user`/`disabled`/`parents`/`children`. Optional `cursor` opt-in pagination. | Read master |
-| `hub_list_drivers` | List installed user drivers. | Read master |
+| `hub_list_drivers` | List device driver types. `include='user'` (default) lists user-installed drivers; `include='all'` returns the full catalog (system + virtual + user buckets), each `id` usable as a `deviceTypeId` for `hub_create_device`. | Read master |
 | `hub_list_libraries` | List installed Groovy libraries (id, name, namespace, version). Source is omitted to keep the list lean — read it via `hub_get_source(type='library', id)`. Optional `cursor` opt-in pagination. | Read master |
 | `hub_list_bundles` | List installed code bundles (Bundle-Manager containers HPM delivers code in; distinct from Libraries Code). Returns id, name, namespace, private, and a contains summary. Find a bundle id for `hub_delete_bundle`/`hub_export_bundle`. Optional `cursor` opt-in pagination. | Read master |
 | `hub_get_source` | Get Groovy source code for an app, driver, or library (`type`: "app", "driver", "library"; `id`). Chunked-read support via `offset`/`length`. Large files auto-saved to File Manager. | Read master |
@@ -79,9 +79,9 @@ Read-only access to apps, drivers, libraries, code bundles, backups, installed-a
 | `hub_list_app_pages` | List known page names for a multi-page app (HPM, Room Lighting, etc.). Returns curated directory + live primary page. Use before hub_get_app_config on multi-page apps. | Read master |
 | `hub_list_hpm_packages` | List all HPM-tracked packages with full component inventory (apps, drivers, files). **Pass `includeDrift=true`** to also cross-reference HPM-tracked state against the hub; results nest under a `drift` key. Requires the Read master and HPM installed; auto-discovers HPM's installed-app ID unless `hpmAppId` is supplied. See `hub_get_tool_guide` for the full drift response shape. | Read master |
 
-### hub_read_devices (4 tools)
+### hub_read_devices (5 tools)
 
-Read-only device access: list, view details, read attributes, and recent events.
+Read-only device access: list, view details, read attributes, recent events, and the compatible-device catalog.
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
@@ -89,6 +89,7 @@ Read-only device access: list, view details, read attributes, and recent events.
 | `hub_get_device` | Full device details: attributes, commands, capabilities, room. | None |
 | `hub_get_device_attribute` | Get specific attribute value from a device. Pass exactly one of `expectedValue` or `expectedValues` (passing both is rejected) to block-poll the attribute until it matches or times out -- `timeoutMs` in MILLISECONDS (default 5000ms = 5 seconds, max 60000ms). `comparator` (default `eq`) selects the operator: `eq`/`ne` (set membership -- a multi-element `expectedValues` is OR for `eq` = matches ANY member, and for `ne` = matches NONE of them), `gt`/`gte`/`lt`/`lte` (numeric threshold via `expectedValue`), `between` (numeric inclusive range via `expectedValues` = exactly 2 bounds). `stableForMs` (default 0) requires the match to hold continuously that many ms before converging (debounce; must be < timeoutMs). For MULTI-DEVICE convergence pass `deviceIds` (a list, mutually exclusive with `deviceId`, max 20) with `mode` (`all` = converge when every device matches, default; `any` = on the first to match); the result is a compact per-device array (`devices: [{deviceId, device, finalValue, matched}, ...]`) plus `convergedCount`. Polling BLOCKS the MCP request; use sparingly and prefer event-driven flows. When polling a single device, returns `success`, `finalValue`, `elapsedMs`, `polledCount`, `timedOut`; adds `neverReported: true` if the attribute was null throughout, or `nonNumericAttribute: true` (with a `note`) if a numeric comparator was used on an attribute that reported a non-numeric value the whole window. Either path adds `readError: true` (success or timeout) if reading the device threw on any poll (e.g. removed mid-poll); in multi-device mode that flag is per-device under `devices[]`, and one device's read fault never aborts the poll for the others. Use after `hub_call_device_command` to verify a state change in a single round-trip. | None |
 | `hub_list_device_events` | Recent events for a device. Default 10, recommended max 50. Add `hoursBack` for a relative window (up to 7 days) or `since` for an absolute bookmark (events after an exact timestamp; round-trip a returned `date`; response echoes `sinceMode` = `explicit`/`relative` and `since` or `hoursBack`); omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events. | None |
+| `hub_get_compatible_devices` | Search Hubitat's official compatible-device catalog (brands/models + their Hubitat driver). Filter by `query`/`brand`/`protocol`/`deviceType`; paginated (`cursor`). Set `includeInstructions=true` for HTML-stripped join/exclude/factory-reset steps. Reference only -- NOT your installed devices. | Read master |
 
 ### hub_read_diagnostics (9 tools)
 
@@ -156,16 +157,17 @@ Read-only Easy Dashboard access: list dashboards and view one dashboard's full c
 | `hub_list_dashboards` | List Easy Dashboards (id, name, tile/theme config). Some hubs gate the underlying endpoint behind a `pinToken` — pass it if an expected list comes back empty. | Read master |
 | `hub_get_dashboard` | Get one Easy Dashboard's full config by id (list-then-filter; there is no single-dashboard read endpoint). | Read master |
 
-### hub_manage_devices (8 tools)
+### hub_manage_devices (9 tools)
 
-Device control and property edits, plus the read tools (also surfaced under `hub_read_devices`).
+Device control, property edits, and device creation, plus the read tools (also surfaced under `hub_read_devices`).
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `hub_call_device_command` | Send a command to a device (on, off, setLevel, etc.). Returns an immediate (PRE-effect) `state` snapshot ({attr: {value, timestamp}}); pass `waitFor` to block-poll an attribute to its expected value and get the CONFIRMED resulting state. `waitFor` supports `comparator` (eq/ne/gt/gte/lt/lte/between) and `stableForMs` (debounce), same as `hub_get_device_attribute`; a bad `waitFor` spec is rejected before the command fires. | None |
 | `hub_call_device_swap` | Replace `from_device_id` with `to_device_id` across ALL apps/rules that reference it (the hub's built-in Swap Device tool). Only capability-compatible replacements are accepted; an incompatible target returns the compatible options. Preview the blast radius with `hub_list_device_dependents` first. | `confirm` + backup <24h |
 | `hub_call_device_replace` | Replace a dead/failing device's hardware while KEEPING its device id and ALL app/rule references — re-points `old_device_id` onto `new_device_id`'s node (the new hardware adopts the OLD id). Distinct from `hub_call_device_swap`, which instead moves references onto the new device's id. Call with `list_options=true` first to read the hub's compatible `new_device_id` candidates (read-only, no confirm). | `confirm` + backup <24h (apply path) |
-| `hub_update_device` | Update device properties (label, name, room, preferences, enabled). | Varies by property |
+| `hub_update_device` | Update device properties (label, name, room, preferences, enabled, showOnHome, defaultCurrentState, tags). | Varies by property |
+| `hub_create_device` | Create a device from a driver-type id (`deviceTypeId` from `hub_list_drivers(include='all')`); for LAN/integration/software drivers, NOT radio hardware (pair those). Requires `confirm=true`. | Write master + `confirm` |
 | `hub_list_devices` | List accessible devices. Pagination, `labelFilter` (substring), `capabilityFilter` (exact), `format='ids'` (flat ID array), `fields=[...]` (projection), `filter='virtual'` (only MCP-managed virtual devices, with their states). Use `detailed=false` first, paginate `detailed=true` (limit 20-30). | None |
 | `hub_get_device` | Full device details: attributes, commands, capabilities, room. | None |
 | `hub_get_device_attribute` | Get specific attribute value from a device. Block-poll via `expectedValue`/`expectedValues` (exactly one) until match or `timeoutMs` (MILLISECONDS, default 5000ms, max 60000ms). `comparator` (eq/ne/gt/gte/lt/lte/between) + `stableForMs` (debounce) refine the match; a numeric comparator on a non-numeric attribute times out with `nonNumericAttribute: true`. For multi-device convergence pass `deviceIds` (list, mutually exclusive with `deviceId`, max 20) + `mode` (all/any), returning a compact per-device array + `convergedCount`. Use after `hub_call_device_command` to verify a state change in a single round-trip. | None |
