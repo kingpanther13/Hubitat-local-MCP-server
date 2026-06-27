@@ -31,10 +31,14 @@ def toolListDashboards(args = null) {
             : "Listed from the Easy Dashboard Parent's child apps (/dashboard/all returned nothing -- a pinToken may be required). Each entry carries id + name only; call hub_get_dashboard for full config."
         return [dashboards: viaApps, count: viaApps.size(), source: "child-apps", note: note]
     }
-    // Both reads FAILED (not "genuinely empty"): surface an error so callers don't read it as "zero dashboards".
-    if (allErrored && viaApps == null) {
+    // The child-app fallback READ FAILED (null), vs read-OK-but-empty ([]). Combined with /dashboard/all
+    // yielding nothing, we genuinely can't tell -- DON'T claim a confident "zero dashboards"/"no child
+    // apps present". Only viaApps == [] means the read succeeded and there truly are none.
+    if (viaApps == null) {
         return [success: false,
-                error: "Could not list dashboards: both /dashboard/all and the child-app fallback failed to read.",
+                error: allErrored
+                    ? "Could not list dashboards: both /dashboard/all and the child-app fallback failed to read."
+                    : "Could not confirm the dashboard list: /dashboard/all returned nothing and the child-app fallback read failed.",
                 note: "Transient hub error (details logged). Retry; if it persists, check hub connectivity."]
     }
     return [dashboards: [], count: 0,
@@ -121,6 +125,9 @@ def toolGetDashboard(args) {
             if (!full.name) full.name = match.name
             return full
         }
+        // Enrichment read FAILED: return id + name but flag it as partial, so a caller doesn't mistake
+        // "config unreadable" for "a dashboard whose tile/device/pin fields are all empty/default".
+        return match + [partial: true, note: "Only id + name could be read (the dashboard's config page was unreadable); tile/device/pin fields are unavailable, not defaulted. Retry hub_get_dashboard."]
     }
     return match
 }
@@ -193,6 +200,7 @@ def toolUpdateDashboard(args) {
     // Wholesale replace would CLEAR an omitted dashboardPin/hsmPin: preserve an existing PIN the caller
     // didn't pass by reading + re-injecting it. (theme isn't recoverable from app-config.)
     def argsForQuery = args
+    boolean pinPreserveFailed = false
     def hasField = { String k -> (args.options instanceof Map && args.options.containsKey(k)) || args.containsKey(k) }
     if (!hasField("dashboardPin") || !hasField("hsmPin")) {
         def cur = _dashboardConfigFromApp(updateId)
@@ -202,13 +210,22 @@ def toolUpdateDashboard(args) {
             if (!hasField("hsmPin") && cur.containsKey("hsmPin")) merged.hsmPin = cur.hsmPin
             argsForQuery = [:] + args
             argsForQuery.options = merged
+        } else {
+            // Couldn't read the current config to preserve an omitted PIN -- the wholesale update will
+            // CLEAR it. Flag it so the clear isn't silent (the caller can re-set the PIN if needed).
+            pinPreserveFailed = true
         }
     }
     def q = _buildDashboardConfigQuery(argsForQuery, deviceCsv)
     q.id = updateId
     try {
         def raw = hubInternalGet("/dashboard/update", q)
-        return _dashboardWriteResult(raw, "update", updateId)
+        def result = _dashboardWriteResult(raw, "update", updateId)
+        if (pinPreserveFailed && result instanceof Map && result.success == true) {
+            result.pinPreserveFailed = true
+            result.note = "Update applied, but the current config couldn't be read to preserve an omitted PIN -- if this dashboard had a dashboardPin/hsmPin it was cleared; re-set it with another update if needed."
+        }
+        return result
     } catch (IllegalArgumentException iae) {
         throw iae
     } catch (Exception e) {

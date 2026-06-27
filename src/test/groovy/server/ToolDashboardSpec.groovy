@@ -70,17 +70,31 @@ class ToolDashboardSpec extends ToolSpecBase {
         !call.params.containsKey('pinToken')
     }
 
-    def "list tolerates an empty array and notes a pinToken may be required"() {
-        given:
+    def "list tolerates a genuinely-empty hub (/dashboard/all empty + child read OK but no dashboards)"() {
+        given: 'both reads succeed; /dashboard/all is empty and the apps tree has no Easy Dashboard Parent'
+        hubGet.register('/dashboard/all') { params -> '[]' }
+        hubGet.register('/hub2/appsList') { params -> '{"apps":[]}' }
+
+        when:
+        def r = script.toolListDashboards([:])
+
+        then: 'a CONFIRMED-empty hub reports count:0 and suggests a pinToken'
+        r.count == 0
+        r.dashboards == []
+        r.note.toLowerCase().contains('pintoken')
+    }
+
+    def "list surfaces success:false when /dashboard/all is empty but the child-app READ fails (not a fake 'zero')"() {
+        given: '/dashboard/all returns empty, but the child-app fallback read errors (/hub2/appsList unmocked -> throws)'
         hubGet.register('/dashboard/all') { params -> '[]' }
 
         when:
         def r = script.toolListDashboards([:])
 
-        then:
-        r.count == 0
-        r.dashboards == []
-        r.note.toLowerCase().contains('pintoken')
+        then: 'a FAILED child-app read is NOT reported as count:0 / "no child apps present"'
+        r.success == false
+        r.error != null
+        r.dashboards == null
     }
 
     def "list surfaces success:false (not a fake empty) when BOTH /dashboard/all and the child-app fallback fail"() {
@@ -207,6 +221,24 @@ class ToolDashboardSpec extends ToolSpecBase {
         r.deviceIds.sort() == ['1', '8']
         !r.containsKey('dashboardPin')   // "" -> omitted
         !r.containsKey('hsmPin')         // "null" -> omitted
+    }
+
+    def "get flags partial when a child-app match can't be enriched (config read fails)"() {
+        given: 'list is child-app-sourced (id+name only) and the app-config enrichment read fails (unmocked -> throws)'
+        hubGet.register('/dashboard/all') { params -> '[]' }
+        hubGet.register('/hub2/appsList') { params ->
+            '{"apps":[{"data":{"id":19,"name":"Easy Dashboards","type":"Easy Dashboard Parent"},' +
+            '"children":[{"data":{"id":38,"name":"Dashboard 1","type":"Easy Dashboard"},"children":[]}]}]}'
+        }
+
+        when:
+        def r = script.toolGetDashboard([id: '38'])
+
+        then: 'returns id+name but FLAGS partial -- a caller must not read it as a complete (all-default) config'
+        r.id == '38'
+        r.name == 'Dashboard 1'
+        r.partial == true
+        r.note != null
     }
 
     def "get includes pins and a CSV navigationSelection when the hub exposes them (read-then-update round-trip)"() {
@@ -471,6 +503,19 @@ class ToolDashboardSpec extends ToolSpecBase {
         then: 'the current PIN is read back and re-sent, so it is not blanked'
         def call = hubGet.calls.find { it.path == '/dashboard/update' }
         call.params.dashboardPin == '4242'
+    }
+
+    def "update flags pinPreserveFailed when it can't read the config to preserve an omitted PIN"() {
+        given: 'the caller omits the PIN and the preservation read fails (/installedapp/configure/json/412 unmocked -> throws)'
+        enableWrite()
+
+        when:
+        def r = script.toolUpdateDashboard([id: '412', name: 'Living Room', deviceIds: ['12', '34'], options: [theme: 'dark']])
+
+        then: 'the update applies but FLAGS that an omitted PIN may have been cleared -- the clear is not silent'
+        r.success == true
+        r.pinPreserveFailed == true
+        r.note != null
     }
 
     // ---------- hub_delete_dashboard ----------
