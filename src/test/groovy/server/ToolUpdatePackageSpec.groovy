@@ -245,6 +245,25 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         calls == []
     }
 
+    def "a full SHA WITH a published per-ref artifact uses the shas/<sha>/ zip (the guard's accept path, NOT rejected)"() {
+        given: 'a full 40-char SHA whose per-ref artifact exists (the complement of the abbreviated-SHA reject above)'
+        enableDev()
+        registerAppTypes()
+        script.metaClass.toolInstallBundle = { a -> [success: true] }
+        script.metaClass.toolUpdateAppCode = { a -> [success: true] }
+        script.metaClass._bundleArtifactExists = { String u -> true }
+        def fullSha = 'a' * 40   // 40 hex chars -> keyPath shas/<sha>
+
+        when:
+        def result = script.toolUpdatePackage([ref: fullSha, confirm: true])
+
+        then: 'the SHA is NOT rejected -- the bundle resolves to its per-SHA artifact, not manifest-current'
+        result.success == true
+        result.aborted != true
+        result.bundles[0].source == 'bundle-artifacts'
+        result.bundles[0].url == "${RAW}/bundle-artifacts/shas/${fullSha}/mcp-libraries.zip".toString()
+    }
+
     def "baseUrl override drives URL construction and strips a trailing slash"() {
         given:
         enableDev()
