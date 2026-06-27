@@ -1,12 +1,12 @@
 {
     "packageName": "MCP Rule Server",
     "author": "kingpanther13",
-    "version": "3.0.0",
+    "version": "3.0.1",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-06-27",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/README.md",
     "communityLink": "",
-    "releaseNotes": "v3.0.0 - 2026-06-27\n- fix: report distinct tool count from hub_search_tools, not gateway-membership rows (#323)\n  - Fixed `hub_search_tools` reporting an inflated `totalToolsSearched` — it now counts each tool once instead of once per gateway it appears in.\n- ci: fail-fast bind-check in e2e deploy (#321)\n- feat: hub_manage_dashboards — Easy Dashboard CRUD (#259 item 9) (#324)\n  - Manage Hubitat Easy Dashboards from MCP: list, view, create, update, clone, and delete dashboards (deleting requires confirmation).\n  - HPM bundle is now compressed, so package updates download smaller and faster.",
+    "releaseNotes": "v3.0.1 - 2026-06-27\n- feat: device-edit properties, full driver catalog, create-from-driver, and compatible-devices lookup (#327)\n  - Device updates can now set **Show on Home page**, the **Status-column attribute** (default current state), and **device tags**.\n  - **List drivers** can now return the full driver-type catalog (built-in, virtual, and user), not just user-installed drivers.\n  - New: **create a device from a driver type** — for LAN/integration/software drivers that have no pairing flow.\n  - New: **search Hubitat's compatible-device catalog** for supported models and their pairing / exclusion / factory-reset instructions.\n\nv3.0.0 - 2026-06-27\n- fix: report distinct tool count from hub_search_tools, not gateway-membership rows (#323)\n  - Fixed `hub_search_tools` reporting an inflated `totalToolsSearched` — it now counts each tool once instead of once per gateway it appears in.\n- ci: fail-fast bind-check in e2e deploy (#321)\n- feat: hub_manage_dashboards — Easy Dashboard CRUD (#259 item 9) (#324)\n  - Manage Hubitat Easy Dashboards from MCP: list, view, create, update, clone, and delete dashboards (deleting requires confirmation).\n  - HPM bundle is now compressed, so package updates download smaller and faster.",
     "apps": [
         {
             "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",

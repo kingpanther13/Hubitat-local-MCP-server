@@ -1637,6 +1637,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v3.0.1** - feat: device-edit properties, full driver catalog, create-from-driver, and compatible-devices lookup. PRs: [#327](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/327)
 - **v3.0.0** - fix: report distinct tool count from hub_search_tools, not gateway-membership rows; ci: fail-fast bind-check in e2e deploy; feat: hub_manage_dashboards — Easy Dashboard CRUD (#259 item 9). PRs: [#323](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/323), [#321](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/321), [#324](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/324)
 - **v2.9.1** - feat: let hub_update_mcp_settings manage the MCP device-access scope (selectedDevices). PRs: [#318](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/318)
 - **v2.9.0** - feat: best-practice acknowledgment gate and reactive hints for write tools. PRs: [#317](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/317)
