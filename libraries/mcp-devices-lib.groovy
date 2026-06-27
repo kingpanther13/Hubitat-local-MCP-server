@@ -2842,11 +2842,9 @@ def _getAllToolDefinitions_partDevices() {
 
 DEVICE AUTHORIZATION: Exact name match -> use directly. No exact match -> suggest similar, ASK USER before using. NEVER control unconfirmed devices (HVAC/locks risk). Report tool failures; don't silently fall back to existing devices.
 
-Use detailed=false for discovery; detailed=true with limit=20-30. Sequential calls only. scope='all' lists every hub device (not just MCP-authorized) with an mcpAuthorized flag.
+Use detailed=false for discovery; detailed=true with limit=20-30. Sequential calls only.[[FLAT_TRIM]] scope='all' lists every hub device (not just MCP-authorized) with an mcpAuthorized flag.
 
-[[FLAT_TRIM]]
-Summary mode returns currentStates; detailed mode replaces that with capabilities, attributes, and commands (field list in outputSchema). Server-side filtering (all applied before pagination) is configured via the filter / labelFilter / capabilityFilter params (documented on those params). format='ids' is the cheapest shape; fields=[...] projects named fields and skips expensive hub reads. To count a parent's children, group the response by parentDeviceId.
-[[/FLAT_TRIM]]
+Summary mode returns currentStates; detailed mode replaces that with capabilities, attributes, and commands (field list in outputSchema). Server-side filtering (all applied before pagination) is configured via the filter / labelFilter / capabilityFilter params (documented on those params). format='ids' is the cheapest shape; fields=[...] projects named fields and skips expensive hub reads. To count a parent's children, group the response by parentDeviceId.[[/FLAT_TRIM]]
 Call `hub_get_tool_guide(section='performance')` for response-shape details, filter/projection semantics, and field-name reference.""",
             inputSchema: [
                 type: "object",
@@ -2904,9 +2902,9 @@ Call `hub_get_tool_guide(section='performance')` for response-shape details, fil
         ],
         [
             name: "hub_get_device",
-            description: """Get one device's full detail: capabilities, all attributes with current values, and supported commands (with argument types). Use when you need a single device's complete profile — e.g. to discover which commands/attributes it supports before calling hub_call_device_command or hub_get_device_attribute. For a multi-device listing use hub_list_devices instead.
+            description: """Get one device's full detail: capabilities, all attributes with current values, and supported commands (with argument types).[[FLAT_TRIM]] Use when you need a single device's complete profile — e.g. to discover which commands/attributes it supports before calling hub_call_device_command or hub_get_device_attribute. For a multi-device listing use hub_list_devices instead.
 
-Only query devices the user has mentioned or that are relevant to their request. Do not probe random devices.""",
+Only query devices the user has mentioned or that are relevant to their request. Do not probe random devices.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2939,9 +2937,9 @@ Only query devices the user has mentioned or that are relevant to their request.
             name: "hub_get_device_attribute",
             description: """Get a device attribute's current value, or block-poll until it reaches an expected value.[[FLAT_TRIM]] Polls one device, or several at once via deviceIds.[[/FLAT_TRIM]]
 
-One-shot read by default (deviceId + attribute). Provide expectedValue and/or expectedValues to block-poll until currentValue matches, returning immediately on match or when timeoutMs elapses.[[FLAT_TRIM]] A single round-trip that replaces N client-side reads + sleeps (verify a command took effect, wait for a sensor threshold, detect Z-Wave inclusion finished). comparator controls the match: eq (default, in-set), ne (not in-set), gt/gte/lt/lte (numeric threshold via expectedValue), between (numeric inclusive range via expectedValues [low, high]). stableForMs requires the condition to hold continuously for that many ms before converging (debounce). For MULTI-DEVICE convergence pass deviceIds (a list, mutually exclusive with deviceId, max 20) instead of deviceId: the same condition is applied to every device and mode controls the aggregate -- "all" (default) converges when every device matches, "any" on the first to match; the result is a compact per-device array (not full device objects) plus convergedCount. Poll mode BLOCKS up to timeoutMs (default 5000ms, max 60000ms) and queues concurrent MCP requests; prefer event-driven flows where possible. First read fires immediately; subsequent reads are spaced by pollIntervalMs.[[/FLAT_TRIM]]
+One-shot read by default (deviceId + attribute). Provide expectedValue and/or expectedValues to block-poll until currentValue matches, returning immediately on match or when timeoutMs elapses.[[FLAT_TRIM]] A single round-trip that replaces N client-side reads + sleeps (verify a command took effect, wait for a sensor threshold, detect Z-Wave inclusion finished). comparator controls the match: eq (default, in-set), ne (not in-set), gt/gte/lt/lte (numeric threshold via expectedValue), between (numeric inclusive range via expectedValues [low, high]). stableForMs requires the condition to hold continuously for that many ms before converging (debounce). For MULTI-DEVICE convergence pass deviceIds (a list, mutually exclusive with deviceId, max 20) instead of deviceId: the same condition is applied to every device and mode controls the aggregate -- "all" (default) converges when every device matches, "any" on the first to match; the result is a compact per-device array (not full device objects) plus convergedCount. Poll mode BLOCKS up to timeoutMs (default 5000ms, max 60000ms) and queues concurrent MCP requests; prefer event-driven flows where possible. First read fires immediately; subsequent reads are spaced by pollIntervalMs.
 
-Only query devices the user has mentioned or that are relevant to their request.""",
+Only query devices the user has mentioned or that are relevant to their request.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2991,9 +2989,9 @@ Only query devices the user has mentioned or that are relevant to their request.
         ],
         [
             name: "hub_call_device_command",
-            description: """Send a command (e.g. on, off, setLevel) to a device. Use to actuate or control a device; for read-only checks use hub_get_device_attribute instead. Returns a `state` snapshot (per-attribute value + freshness timestamp) read AS OF the command. To get the CONFIRMED resulting state, pass `waitFor` to block-poll until the attribute converges; without it, confirm separately via hub_get_device_attribute.
+            description: """Send a command (e.g. on, off, setLevel) to a device. Use to actuate or control a device; for read-only checks use hub_get_device_attribute instead.
 [[FLAT_TRIM]]
-The snapshot is an immediate read taken in the same request that fires the command, so it shows the PRE-effect value -- even for virtual/local devices -- because the hub commits the change after this request returns; the per-attribute timestamp is the freshness signal. With `waitFor`, the `state` snapshot reflects the converged value and a `waitFor` result block reports convergence.
+Returns a `state` snapshot (per-attribute value + freshness timestamp) read AS OF the command. To get the CONFIRMED resulting state, pass `waitFor` to block-poll until the attribute converges; without it, confirm separately via hub_get_device_attribute. The snapshot is an immediate read taken in the same request that fires the command, so it shows the PRE-effect value -- even for virtual/local devices -- because the hub commits the change after this request returns; the per-attribute timestamp is the freshness signal. With `waitFor`, the `state` snapshot reflects the converged value and a `waitFor` result block reports convergence.
 [[/FLAT_TRIM]]
 If no exact device match: suggest similar devices and get user confirmation before sending any command.""",
             inputSchema: [
@@ -3001,7 +2999,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
                 properties: [
                     deviceId: [type: "string", description: "Device ID from hub_list_devices - must be confirmed by user if not an exact match"],
                     command: [type: "string", description: "Command name, e.g. \"setLevel\". Must be one of the device's supported commands (see hub_get_device)."],
-                    parameters: [type: "array", description: "Ordered command arguments as an array of strings, in the order the command declares them, e.g. [\"75\"] for setLevel or [\"#FF0000\"] for setColor. Omit for no-arg commands like on/off.[[FLAT_TRIM]] Each element is a string; numbers and JSON-object values are passed as strings (e.g. [\"{\\\"hue\\\":0,\\\"saturation\\\":100,\\\"level\\\":50}\"]) and coerced hub-side.[[/FLAT_TRIM]]", items: [type: "string"]],
+                    parameters: [type: "array", description: "Ordered command arguments as an array of strings, in the order the command declares them, e.g. [\"75\"] for setLevel or [\"#FF0000\"] for setColor.[[FLAT_TRIM]] Omit for no-arg commands like on/off. Each element is a string; numbers and JSON-object values are passed as strings (e.g. [\"{\\\"hue\\\":0,\\\"saturation\\\":100,\\\"level\\\":50}\"]) and coerced hub-side.[[/FLAT_TRIM]]", items: [type: "string"]],
                     waitFor: [type: "object", description: "Optional: after firing the command, block-poll the device until an attribute reaches an expected value, so the response confirms the RESULTING state (and the `state` snapshot reflects the converged value). Omit for a fire-and-forget command with only the immediate pre-effect snapshot.[[FLAT_TRIM]] comparator (eq/ne/gt/gte/lt/lte/between) and stableForMs (debounce) work as on hub_get_device_attribute. BLOCKS the request up to timeoutMs and queues concurrent MCP calls; reuses the hub_get_device_attribute poll engine.[[/FLAT_TRIM]]", properties: [
                         attribute: [type: "string", description: "Attribute to poll until it converges, e.g. \"switch\". Must be a supported attribute of the device."],
                         expectedValue: [type: "string", description: "Awaited value: eq/ne in-set, or gt/gte/lt/lte numeric threshold."],
@@ -3050,7 +3048,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
             name: "hub_list_device_events",
             description: """Get event history for a device, an APP (app events: events emitted by an app or rule -- automation events), or the location.
 
-Default: most-recent events for a device (deviceId + optional limit). Add hoursBack for a relative window, or since for an absolute bookmark (events after an exact timestamp -- since takes precedence if both are given). appId returns an installed app's events instead. Omit deviceId/appId for location-level events.[[FLAT_TRIM]] attribute filters by event name. Higher limits (50+) may slow the hub. For change-watching loops: record a returned event `date`, then pass it back as `since` to get only the new events since that bookmark.[[/FLAT_TRIM]]""",
+Default: most-recent events for a device (deviceId + optional limit).[[FLAT_TRIM]] Add hoursBack for a relative window, or since for an absolute bookmark (events after an exact timestamp -- since takes precedence if both are given). appId returns an installed app's events instead. Omit deviceId/appId for location-level events. attribute filters by event name. Higher limits (50+) may slow the hub. For change-watching loops: record a returned event `date`, then pass it back as `since` to get only the new events since that bookmark.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3275,7 +3273,7 @@ First call list_options=true to read the hub's compatible replacement candidates
         ],
         [
             name: "hub_get_compatible_devices",
-            description: """Search Hubitat's official compatible-devices catalog: brands/models with pairing/exclusion/factory-reset instructions and the Hubitat driver each maps to. Read-only reference -- NOT your installed devices. Requires Read master.[[FLAT_TRIM]] Filter by brand, protocol (Zigbee|Z-Wave|Matter|LAN|...), deviceType, or a free-text query; paginated (cursor). Summaries by default; set includeInstructions=true (with a narrow filter) for the HTML-stripped step-by-step instructions.[[/FLAT_TRIM]]""",
+            description: """Search Hubitat's official compatible-devices catalog: brands/models with pairing/exclusion/factory-reset instructions and the Hubitat driver each maps to. Read-only reference -- NOT your installed devices.[[FLAT_TRIM]] Requires Read master. Filter by brand, protocol (Zigbee|Z-Wave|Matter|LAN|...), deviceType, or a free-text query; paginated (cursor). Summaries by default; set includeInstructions=true (with a narrow filter) for the HTML-stripped step-by-step instructions.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
