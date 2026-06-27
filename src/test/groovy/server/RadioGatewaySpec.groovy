@@ -3,6 +3,7 @@ package server
 import support.TestLocation
 import support.ToolSpecBase
 import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
 import spock.lang.Shared
 
 /**
@@ -75,13 +76,20 @@ class RadioGatewaySpec extends ToolSpecBase {
         g['hub_read_diagnostics'].tools.contains('hub_get_radio_details')
     }
 
-    def "the destructive radio tool lives ONLY in hub_manage_destructive_ops, not hub_manage_radio"() {
+    def "the destructive ops tool lives ONLY in hub_manage_destructive_ops, not hub_manage_radio"() {
         when:
         def g = gw()
 
         then:
-        g['hub_manage_destructive_ops'].tools.contains('hub_call_destructive_radio')
-        !g['hub_manage_radio'].tools.contains('hub_call_destructive_radio')
+        g['hub_manage_destructive_ops'].tools.contains('hub_call_destructive_ops')
+        !g['hub_manage_radio'].tools.contains('hub_call_destructive_ops')
+    }
+
+    def "the old hub_call_destructive_radio name is fully gone (hard rename, no alias)"() {
+        expect:
+        !allNames().contains('hub_call_destructive_radio')
+        allNames().contains('hub_call_destructive_ops')
+        !gw()['hub_manage_destructive_ops'].tools.contains('hub_call_destructive_radio')
     }
 
     def "hub_call_zwave_repair is absorbed into hub_call_zwave (old tool gone, new tool present)"() {
@@ -96,7 +104,7 @@ class RadioGatewaySpec extends ToolSpecBase {
 
         expect:
         ['hub_set_zwave', 'hub_call_zwave', 'hub_set_zigbee', 'hub_call_zigbee',
-         'hub_call_matter', 'hub_call_destructive_radio'].each { t ->
+         'hub_call_matter', 'hub_call_destructive_ops'].each { t ->
             assert names.count { it == t } == 1 : "${t} should be defined exactly once"
         }
     }
@@ -111,7 +119,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         then:
         readOnly.contains('hub_get_radio_details')
         !readOnly.contains('hub_set_zwave')
-        !readOnly.contains('hub_call_destructive_radio')
+        !readOnly.contains('hub_call_destructive_ops')
 
         and: 'set_* config writes are idempotent; call_* operations are not'
         idempotent.contains('hub_set_zwave')
@@ -119,7 +127,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         !idempotent.contains('hub_call_zwave')
         !idempotent.contains('hub_call_zigbee')
         !idempotent.contains('hub_call_matter')
-        !idempotent.contains('hub_call_destructive_radio')
+        !idempotent.contains('hub_call_destructive_ops')
     }
 
     def "all radio tools are closed-world (radio is the closed system)"() {
@@ -128,7 +136,7 @@ class RadioGatewaySpec extends ToolSpecBase {
 
         then:
         ['hub_set_zwave', 'hub_call_zwave', 'hub_set_zigbee', 'hub_call_zigbee',
-         'hub_call_matter', 'hub_call_destructive_radio', 'hub_get_radio_details'].each { t ->
+         'hub_call_matter', 'hub_call_destructive_ops', 'hub_get_radio_details'].each { t ->
             assert !openWorld.contains(t) : "${t} should be closed-world (openWorld=false)"
         }
     }
@@ -141,7 +149,7 @@ class RadioGatewaySpec extends ToolSpecBase {
 
         then:
         ['hub_set_zwave', 'hub_call_zwave', 'hub_set_zigbee', 'hub_call_zigbee',
-         'hub_call_matter', 'hub_call_destructive_radio', 'hub_manage_radio'].each { t ->
+         'hub_call_matter', 'hub_call_destructive_ops', 'hub_manage_radio'].each { t ->
             assert meta[t]?.title : "${t} needs a display-meta title"
         }
     }
@@ -211,16 +219,16 @@ class RadioGatewaySpec extends ToolSpecBase {
         e.message.contains('SAFETY CHECK FAILED')
     }
 
-    def "hub_call_destructive_radio requires confirm before anything else"() {
-        when: script.toolCallDestructiveRadio([radio: 'zwave', action: 'reset'])
+    def "hub_call_destructive_ops requires confirm before anything else"() {
+        when: script.toolCallDestructiveOps([target: 'zwave', action: 'reset'])
         then:
         def e = thrown(IllegalArgumentException)
         e.message.contains('SAFETY CHECK FAILED')
     }
 
-    def "hub_call_destructive_radio rejects a firmware action on the wrong radio"() {
+    def "hub_call_destructive_ops rejects a firmware action on the wrong radio"() {
         given: enableWrite()   // sets Write master + a recent backup so requireDestructiveConfirm passes
-        when: script.toolCallDestructiveRadio([radio: 'zigbee', action: 'device_firmware_start', confirm: true, node_id: '5', file_name: 'fw.bin'])
+        when: script.toolCallDestructiveOps([target: 'zigbee', action: 'device_firmware_start', confirm: true, node_id: '5', file_name: 'fw.bin'])
         then: thrown(IllegalArgumentException)   // device_firmware_start is Z-Wave only
     }
 
@@ -257,16 +265,102 @@ class RadioGatewaySpec extends ToolSpecBase {
         r.warning?.toLowerCase()?.contains('unresponsive')
     }
 
-    def "hub_call_destructive_radio reset zwave hits /hub/zwave/resetJson with an irreversible warning"() {
+    def "hub_call_destructive_ops reset zwave hits /hub/zwave/resetJson with an irreversible warning"() {
         given:
         enableWrite()   // recent backup so requireDestructiveConfirm passes
         hubGet.register('/hub/zwave/resetJson') { p -> 'reset done' }
         when:
-        def r = script.toolCallDestructiveRadio([radio: 'zwave', action: 'reset', confirm: true])
+        def r = script.toolCallDestructiveOps([target: 'zwave', action: 'reset', confirm: true])
         then:
         r.success == true
-        r.radio == 'zwave'
+        r.target == 'zwave'
         r.warning?.toLowerCase()?.contains('irreversible')
+    }
+
+    // ---- target=network (disconnect) + target=cloud (disable/enable) ----
+
+    def "hub_call_destructive_ops network disconnect_wifi hits /hub/advanced/disconnectWiFi"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/advanced/disconnectWiFi') { p -> 'ok' }
+        when:
+        def r = script.toolCallDestructiveOps([target: 'network', action: 'disconnect_wifi', confirm: true])
+        then:
+        r.success == true
+        r.target == 'network'
+        r.action == 'disconnect_wifi'
+        hubGet.calls.any { it.path == '/hub/advanced/disconnectWiFi' }
+    }
+
+    def "hub_call_destructive_ops network disconnect_ethernet hits /hub/advanced/disconnectEthernet"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/advanced/disconnectEthernet') { p -> 'ok' }
+        when:
+        def r = script.toolCallDestructiveOps([target: 'network', action: 'disconnect_ethernet', confirm: true])
+        then:
+        r.success == true
+        r.target == 'network'
+        hubGet.calls.any { it.path == '/hub/advanced/disconnectEthernet' }
+    }
+
+    def "hub_call_destructive_ops cloud disable hits /hub/advanced/disableCloudController and warns about cloud features"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/advanced/disableCloudController') { p -> 'ok' }
+        when:
+        def r = script.toolCallDestructiveOps([target: 'cloud', action: 'disable', confirm: true])
+        then:
+        r.success == true
+        r.target == 'cloud'
+        r.action == 'disable'
+        hubGet.calls.any { it.path == '/hub/advanced/disableCloudController' }
+        r.warning?.toLowerCase()?.contains('alexa')
+    }
+
+    def "hub_call_destructive_ops cloud enable hits /hub/advanced/enableCloudController"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/advanced/enableCloudController') { p -> 'ok' }
+        when:
+        def r = script.toolCallDestructiveOps([target: 'cloud', action: 'enable', confirm: true])
+        then:
+        r.success == true
+        r.target == 'cloud'
+        r.action == 'enable'
+        hubGet.calls.any { it.path == '/hub/advanced/enableCloudController' }
+    }
+
+    def "hub_call_destructive_ops network/cloud are confirm-gated (throw before any hub call)"() {
+        when: script.toolCallDestructiveOps([target: 'network', action: 'disconnect_wifi'])
+        then:
+        def e1 = thrown(IllegalArgumentException)
+        e1.message.contains('SAFETY CHECK FAILED')
+
+        when: script.toolCallDestructiveOps([target: 'cloud', action: 'disable'])
+        then:
+        def e2 = thrown(IllegalArgumentException)
+        e2.message.contains('SAFETY CHECK FAILED')
+    }
+
+    def "hub_call_destructive_ops rejects an unknown action for network/cloud targets"() {
+        given: enableWrite()
+        when: script.toolCallDestructiveOps([target: 'network', action: 'bogus', confirm: true])
+        then: thrown(IllegalArgumentException)
+
+        when: script.toolCallDestructiveOps([target: 'cloud', action: 'bogus', confirm: true])
+        then: thrown(IllegalArgumentException)
+    }
+
+    def "dispatch: hub_call_destructive_ops cloud disable routes through executeTool"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/advanced/disableCloudController') { p -> 'ok' }
+        when:
+        def r = script.executeTool('hub_call_destructive_ops', [target: 'cloud', action: 'disable', confirm: true])
+        then:
+        r.success == true
+        r.action == 'disable'
     }
 
     def "dispatch: hub_call_matter pair routes through executeTool and commissions by setup code"() {
@@ -299,7 +393,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         enableWrite()
         // /hub/zwave/resetJson not registered -> throws -> success:false.
         when:
-        def r = script.toolCallDestructiveRadio([radio: 'zwave', action: 'reset', confirm: true])
+        def r = script.toolCallDestructiveOps([target: 'zwave', action: 'reset', confirm: true])
 
         then:
         r.success == false
@@ -372,7 +466,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         posted.body.contains('ABCD-1234')
     }
 
-    def "hub_call_destructive_radio device_firmware_start POSTs fileName to the firmware endpoint"() {
+    def "hub_call_destructive_ops device_firmware_start POSTs fileName to the firmware endpoint"() {
         given:
         enableWrite()
         def posted = [:]
@@ -381,12 +475,34 @@ class RadioGatewaySpec extends ToolSpecBase {
         }
 
         when:
-        def res = script.toolCallDestructiveRadio([radio: 'zwave', action: 'device_firmware_start', node_id: '5', file_name: 'fw.gbl', confirm: true])
+        def res = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_start', node_id: '5', file_name: 'fw.gbl', confirm: true])
 
         then:
         posted.path == '/hub/zwave/deviceFirmware/start'
         posted.body.contains('fileName')
         posted.body.contains('fw.gbl')
+        res.success == true
+    }
+
+    def "hub_call_destructive_ops device_firmware_start passes target_index to startBody.target (decoupled from the target selector)"() {
+        given:
+        enableWrite()
+        def posted = [:]
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean retry = false ->
+            posted.path = path; posted.body = new JsonSlurper().parseText(body); [ok: true]
+        }
+
+        when:
+        // `target` here is the radio selector (zwave); target_index=7 is the FIRMWARE index, which must
+        // reach startBody.target — proving the renamed firmware-index arg is decoupled from the selector.
+        def res = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_start',
+            node_id: '5', file_name: 'fw.gbl', target_index: 7, confirm: true])
+
+        then:
+        posted.path == '/hub/zwave/deviceFirmware/start'
+        posted.body.target == 7        // the firmware target index, NOT the radio selector
+        posted.body.nodeId == '5'
+        posted.body.fileName == 'fw.gbl'
         res.success == true
     }
 

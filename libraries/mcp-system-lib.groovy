@@ -219,8 +219,9 @@ def toolGetHubInfo(args = null) {
     return info
 }
 
-// hub_set_system_settings: write the hub-GLOBAL location/identity settings. All params optional; pass
-// only what changes. Wire format verified live (read /hub/details/json + the Settings page's POST):
+// hub_set_system_settings: write the hub-GLOBAL location/identity settings + the admin-UI dark mode +
+// the hub network configuration. All params optional; pass only what changes. Wire format verified live
+// (read /hub/details/json + the Settings page's POST):
 //   READ current state:  GET /hub/details/json -> {hubName,timeZone,latitude,longitude,zipCode,
 //                         tempScale,dateFormat,timeFormat,ttsCurrent,mdnsName,...}
 //   WRITE (wholesale):    POST /location/update with the FULL payload {name,timeZone,latitude,longitude,
@@ -228,12 +229,32 @@ def toolGetHubInfo(args = null) {
 //                         omitted fields, so we READ-MERGE: build the payload from the current values and
 //                         override only the provided args (clock/dateFormat/voice/mdnsName -- not settable
 //                         here -- are always carried through). hubName is the payload's `name` field, so
-//                         every setting goes through this ONE atomic POST.
-// A timeZone change REBOOTS the hub, so it is confirm-gated (requireDestructiveConfirm). Arg validation
-// throws (-> -32602); hub-call failures return the structured runtime-error envelope -- never thrown.
+//                         every location setting goes through this ONE atomic POST.
+//   DARK MODE (separate): GET /hub/applyDarkMode/<true|false> -- HTTP 200 empty body, setter-only with NO
+//                         server read-back (/hub/details/json has no dark/theme key), like
+//                         /device/setShowOnHome. Applied on its own leg, never via /location/update; a
+//                         darkMode-only call makes no /location/update POST.
+//   NETWORK (separate):   the Settings -> Network page's GET endpoints (param names RE'd from
+//                         resources/hub2-source/vue-hub2.min.js, confirmed live on fw 2.5.0.159):
+//                         DHCP    GET /hub/advanced/switchToDhcp?nameserver=<>&useDNSFallover=<true|false>
+//                         STATIC  GET /hub/advanced/switchToStaticIp?address=<>&netmask=<>&gateway=<>&nameserver=<>
+//                         ETH     GET /hub/advanced/network/ethernetMode/<true|false>  (autoneg on/off)
+//                         WIFI    GET /hub/advanced/setWiFiNetworkInfo?ssid=<>&psk=<>
+//                         Each network leg can DISCONNECT the hub, so the whole network object is
+//                         confirm-gated. Legs apply in order (ip mode -> ethernet autoneg -> wifi); each
+//                         that succeeds is appended to `applied`. A sub-op failure returns the structured
+//                         error with `applied` listing what already succeeded -- partial-apply is possible
+//                         (these are independent GETs, not one atomic POST).
+// A timeZone change REBOOTS the hub, and any network change can disconnect it, so both are confirm-gated
+// (requireDestructiveConfirm). Arg validation throws (-> -32602); hub-call failures return the structured
+// runtime-error envelope -- never thrown.
 def toolSetSystemSettings(args) {
     args = args ?: [:]
-    def settable = ["hubName", "timeZone", "latitude", "longitude", "zipCode", "temperatureScale"]
+    // locationFields go through the wholesale /location/update read-merge POST below; darkMode is an
+    // INDEPENDENT setter (GET /hub/applyDarkMode/<bool>, HTTP 200 empty, no read-back -- same shape as
+    // /device/setShowOnHome) so it is excluded from that POST and applied on its own leg.
+    def locationFields = ["hubName", "timeZone", "latitude", "longitude", "zipCode", "temperatureScale"]
+    def settable = locationFields + ["darkMode", "network"]
     if (!settable.any { args.containsKey(it) }) {
         throw new IllegalArgumentException("Provide at least one field to change: ${settable.join(', ')}. All are optional; pass only what changes.")
     }
@@ -243,56 +264,198 @@ def toolSetSystemSettings(args) {
     _validateCoordinate("latitude", args, -90, 90)
     _validateCoordinate("longitude", args, -180, 180)
 
-    // A timeZone change reboots the hub -- confirm-gate it.
-    if (args.containsKey("timeZone")) {
+    // Validate the network object's shape up front (-> -32602) so a malformed request never reaches the hub.
+    if (args.containsKey("network")) _validateNetworkArgs(args.network)
+
+    // A timeZone change reboots the hub, and any network change can disconnect it -- confirm-gate both.
+    if (args.containsKey("timeZone") || args.containsKey("network")) {
         requireDestructiveConfirm(args.confirm)
     }
 
-    def cur
-    try {
-        def raw = hubInternalGet("/hub/details/json")
-        cur = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
-    } catch (Exception e) {
-        mcpLogError("hub-admin", "hub_set_system_settings could not read current settings", e)
-        return [success: false, error: "Could not read current hub settings (/hub/details/json): ${e.message}",
-                applied: [], note: "Nothing was changed. Verify the hub is reachable and retry."]
-    }
-    if (!(cur instanceof Map)) {
-        return [success: false, error: "Unexpected /hub/details/json response; cannot safely merge.",
-                applied: [], note: "Nothing was changed."]
+    def applied = []
+
+    // The wholesale /location/update leg runs ONLY when a location field was provided -- a darkMode-only
+    // call must NOT POST /location/update.
+    if (locationFields.any { args.containsKey(it) }) {
+        def cur
+        try {
+            def raw = hubInternalGet("/hub/details/json")
+            cur = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_set_system_settings could not read current settings", e)
+            return [success: false, error: "Could not read current hub settings (/hub/details/json): ${e.message}",
+                    applied: [], note: "Nothing was changed. Verify the hub is reachable and retry."]
+        }
+        if (!(cur instanceof Map)) {
+            return [success: false, error: "Unexpected /hub/details/json response; cannot safely merge.",
+                    applied: [], note: "Nothing was changed."]
+        }
+
+        // Read-merge the FULL wholesale payload from the current values, overriding only the provided args
+        // (the POST blanks omitted fields). clock/dateFormat/voice/mdnsName are preserved as-is.
+        def payload = [
+            name:             args.containsKey("hubName")          ? args.hubName          : cur.hubName,
+            timeZone:         args.containsKey("timeZone")         ? args.timeZone         : cur.timeZone,
+            latitude:         args.containsKey("latitude")         ? args.latitude         : cur.latitude,
+            longitude:        args.containsKey("longitude")        ? args.longitude        : cur.longitude,
+            clock:            cur.timeFormat,
+            dateFormat:       cur.dateFormat,
+            zipCode:          args.containsKey("zipCode")          ? args.zipCode          : cur.zipCode,
+            temperatureScale: args.containsKey("temperatureScale") ? args.temperatureScale : cur.tempScale,
+            voice:            cur.ttsCurrent,
+            mdnsName:         cur.mdnsName,
+        ]
+
+        def parsed
+        try {
+            parsed = hubInternalPostJson("/location/update", groovy.json.JsonOutput.toJson(payload))
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_set_system_settings /location/update failed", e)
+            return [success: false, error: "Failed to apply hub settings: ${e.message}",
+                    applied: [], note: "Nothing was changed (the update is one atomic POST). Read current values with hub_get_info."]
+        }
+        if (!(parsed instanceof Map && parsed.success == true)) {
+            def err = (parsed instanceof Map) ? (parsed.message ?: parsed.error) : null
+            return [success: false, error: err ?: "/location/update did not report success", applied: [],
+                    note: "Nothing was changed. Read current values with hub_get_info."]
+        }
+        applied.addAll(locationFields.findAll { args.containsKey(it) })
     }
 
-    // Read-merge the FULL wholesale payload from the current values, overriding only the provided args
-    // (the POST blanks omitted fields). clock/dateFormat/voice/mdnsName are preserved as-is.
-    def payload = [
-        name:             args.containsKey("hubName")          ? args.hubName          : cur.hubName,
-        timeZone:         args.containsKey("timeZone")         ? args.timeZone         : cur.timeZone,
-        latitude:         args.containsKey("latitude")         ? args.latitude         : cur.latitude,
-        longitude:        args.containsKey("longitude")        ? args.longitude        : cur.longitude,
-        clock:            cur.timeFormat,
-        dateFormat:       cur.dateFormat,
-        zipCode:          args.containsKey("zipCode")          ? args.zipCode          : cur.zipCode,
-        temperatureScale: args.containsKey("temperatureScale") ? args.temperatureScale : cur.tempScale,
-        voice:            cur.ttsCurrent,
-        mdnsName:         cur.mdnsName,
-    ]
+    // dark mode is an INDEPENDENT setter (GET /hub/applyDarkMode/<bool>, HTTP 200 empty body, no
+    // read-back of the current value -- like /device/setShowOnHome). Coerce via the string compare on
+    // purpose: Groovy treats the String "false" as truthy, so `args.darkMode ? ...` would be wrong.
+    if (args.containsKey("darkMode")) {
+        try {
+            def dmOn = "${args.darkMode}".equalsIgnoreCase("true")
+            hubInternalGet("/hub/applyDarkMode/${dmOn ? 'true' : 'false'}")
+            applied << "darkMode"
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_set_system_settings /hub/applyDarkMode failed", e)
+            return [success: false, error: "Failed to apply dark mode: ${e.message}", applied: applied,
+                    note: (applied ? "Already applied: ${applied}. " : "") + "Dark mode was not changed."]
+        }
+    }
 
-    def parsed
-    try {
-        parsed = hubInternalPostJson("/location/update", groovy.json.JsonOutput.toJson(payload))
-    } catch (Exception e) {
-        mcpLogError("hub-admin", "hub_set_system_settings /location/update failed", e)
-        return [success: false, error: "Failed to apply hub settings: ${e.message}",
-                applied: [], note: "Nothing was changed (the update is one atomic POST). Read current values with hub_get_info."]
+    // Network config -- each present piece is its own GET (Settings -> Network page). Applied in order;
+    // a sub-op failure short-circuits and returns the structured error with `applied` carrying what
+    // already committed (these are independent GETs, NOT one atomic POST -- partial-apply is possible).
+    if (args.containsKey("network")) {
+        def netResult = _applyNetworkConfig(args.network, applied)
+        if (netResult != null) return netResult   // non-null == a sub-op failed; success path returns null
     }
-    if (!(parsed instanceof Map && parsed.success == true)) {
-        def err = (parsed instanceof Map) ? (parsed.message ?: parsed.error) : null
-        return [success: false, error: err ?: "/location/update did not report success", applied: [],
-                note: "Nothing was changed. Read current values with hub_get_info."]
-    }
-    return [success: true, applied: settable.findAll { args.containsKey(it) },
+
+    return [success: true, applied: applied,
             note: "Read back the current values with hub_get_info." +
-                  (args.containsKey("timeZone") ? " A timeZone change reboots the hub (1-3 min downtime)." : "")]
+                  (args.containsKey("timeZone") ? " A timeZone change reboots the hub (1-3 min downtime)." : "") +
+                  (args.containsKey("network") ? " A network change can briefly disconnect the hub." : "")]
+}
+
+// Validate the network arg shape BEFORE any hub call (-> -32602). Static IP requires address+netmask+
+// gateway together; ipMode is dhcp|static when present. Leaves the actual application to _applyNetworkConfig.
+private _validateNetworkArgs(network) {
+    if (!(network instanceof Map)) {
+        throw new IllegalArgumentException("network must be an object, e.g. {ipMode:'static', address, netmask, gateway, nameserver} or {ipMode:'dhcp'} or {ethernetAutoneg:true} or {wifiSsid, wifiPassword}.")
+    }
+    def known = ["ipMode", "address", "netmask", "gateway", "nameserver", "useDNSFallover", "ethernetAutoneg", "wifiSsid", "wifiPassword"]
+    def unknown = network.keySet().findAll { !(it in known) }
+    if (unknown) throw new IllegalArgumentException("Unknown network field(s): ${unknown.join(', ')}. Valid: ${known.join(', ')}.")
+    if (network.isEmpty()) {
+        throw new IllegalArgumentException("network is empty -- provide at least one of: ${known.join(', ')}.")
+    }
+    if (network.containsKey("ipMode")) {
+        def mode = network.ipMode?.toString()
+        if (!(mode in ["dhcp", "static"])) {
+            throw new IllegalArgumentException("network.ipMode must be 'dhcp' or 'static', got: ${network.ipMode}")
+        }
+        if (mode == "static") {
+            def missing = ["address", "netmask", "gateway"].findAll { !network[it] }
+            if (missing) throw new IllegalArgumentException("network.ipMode='static' requires ${missing.join(', ')} (address, netmask, gateway are all required for a static IP).")
+        }
+    }
+    // Reject shapes that validate field-by-field but map to NO executable leg (would silently
+    // return success:true/applied:[]). _applyNetworkConfig only acts on ipMode, ethernetAutoneg,
+    // and wifiSsid -- every other field is consumed only by one of those legs, so at least one of
+    // the three must be present, and the dependent fields must accompany the leg that reads them.
+    if (network.containsKey("wifiPassword") && !network.wifiSsid) {
+        throw new IllegalArgumentException("network.wifiPassword requires network.wifiSsid (a password alone joins no network).")
+    }
+    if ((network.containsKey("nameserver") || network.containsKey("useDNSFallover")) && !network.containsKey("ipMode")) {
+        throw new IllegalArgumentException("network.nameserver / network.useDNSFallover require network.ipMode (they are only applied as part of an IP-mode change).")
+    }
+    if (!network.containsKey("ipMode") && !network.containsKey("ethernetAutoneg") && !network.wifiSsid) {
+        throw new IllegalArgumentException("network forms no applicable change -- provide at least one of: ipMode, ethernetAutoneg, wifiSsid (the static fields address/netmask/gateway apply only with ipMode='static').")
+    }
+}
+
+// Apply the network config legs in order (ip mode -> ethernet autoneg -> wifi), appending each that
+// succeeds to `applied`. Returns null on full success; on a sub-op failure returns the structured
+// {success:false, error, applied} envelope (applied carries what already committed). Param names RE'd
+// from resources/hub2-source/vue-hub2.min.js (ssid/psk for wifi; address/netmask/gateway/nameserver for
+// static; nameserver/useDNSFallover for dhcp).
+private _applyNetworkConfig(network, List applied) {
+    // CONTRACT: every leg here is a fire-and-return GET -- success == the GET returned 2xx. There is
+    // NO response-body inspection and NO state read-back to confirm the change actually took (the hub
+    // exposes no readable post-change value for these), matching the darkMode "200 empty body" setter.
+    // IP mode: static or dhcp.
+    if (network.containsKey("ipMode")) {
+        def mode = network.ipMode?.toString()
+        try {
+            if (mode == "static") {
+                def q = [
+                    "address=${_urlEnc(network.address)}",
+                    "netmask=${_urlEnc(network.netmask)}",
+                    "gateway=${_urlEnc(network.gateway)}",
+                    "nameserver=${_urlEnc(network.nameserver ?: '')}"
+                ].join("&")
+                hubInternalGet("/hub/advanced/switchToStaticIp?${q}")
+                applied << "network.staticIp"
+            } else {   // dhcp (validated)
+                def fallover = network.containsKey("useDNSFallover") ? ("${network.useDNSFallover}".equalsIgnoreCase("true")) : false
+                def q = "nameserver=${_urlEnc(network.nameserver ?: '')}&useDNSFallover=${fallover}"
+                hubInternalGet("/hub/advanced/switchToDhcp?${q}")
+                applied << "network.dhcp"
+            }
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_set_system_settings switch IP mode (${mode}) failed", e)
+            return [success: false, error: "Failed to apply network IP mode '${mode}': ${e.message}", applied: applied,
+                    note: (applied ? "Already applied: ${applied}. " : "") + "The hub network was left partially changed; verify connectivity."]
+        }
+    }
+
+    // Ethernet autonegotiation on/off.
+    if (network.containsKey("ethernetAutoneg")) {
+        def on = "${network.ethernetAutoneg}".equalsIgnoreCase("true")
+        try {
+            hubInternalGet("/hub/advanced/network/ethernetMode/${on ? 'true' : 'false'}")
+            applied << "network.ethernetAutoneg"
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_set_system_settings ethernetMode failed", e)
+            return [success: false, error: "Failed to set Ethernet autoneg: ${e.message}", applied: applied,
+                    note: (applied ? "Already applied: ${applied}. " : "") + "The hub network was left partially changed; verify connectivity."]
+        }
+    }
+
+    // WiFi join (ssid/psk -- RE'd param names).
+    if (network.wifiSsid) {
+        try {
+            def q = "ssid=${_urlEnc(network.wifiSsid)}&psk=${_urlEnc(network.wifiPassword ?: '')}"
+            hubInternalGet("/hub/advanced/setWiFiNetworkInfo?${q}")
+            applied << "network.wifi"
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_set_system_settings setWiFiNetworkInfo failed", e)
+            return [success: false, error: "Failed to set WiFi network: ${e.message}", applied: applied,
+                    note: (applied ? "Already applied: ${applied}. " : "") + "The hub network was left partially changed; verify connectivity."]
+        }
+    }
+
+    return null
+}
+
+// URL-encode a network query value (UTF-8). Centralizes the encode so a value with spaces or symbols
+// (a WiFi SSID/password, a nameserver list) is wired correctly.
+private String _urlEnc(v) {
+    return java.net.URLEncoder.encode(v?.toString() ?: "", "UTF-8")
 }
 
 // Validate an optional lat/long arg: coerce a string to a number and bound the range (-> -32602 on a
@@ -904,24 +1067,36 @@ def _getAllToolDefinitions_partSystem() {
         ],
         [
             name: "hub_set_system_settings",
-            description: """Set hub-GLOBAL location settings: hub name, time zone, latitude/longitude, zip code, temperature scale. All optional — pass only what changes.[[FLAT_TRIM]] lat/long/timeZone/temperatureScale/zipCode are written together via one granular endpoint that read-merges current values, so omitted fields keep their value. ⚠️ Changing timeZone REBOOTS the hub (1-3 min downtime) — it requires confirm=true + a backup <24h; the other fields need only the Write master. Read back applied values with hub_get_info. Requires Write master.[[/FLAT_TRIM]]""",
+            description: """Set hub-GLOBAL settings: hub name, time zone, location, zip code, temperature scale, admin-UI dark mode, and network config. All optional — pass only what changes.[[FLAT_TRIM]] lat/long/timeZone/temperatureScale/zipCode are written together via one granular endpoint that read-merges current values, so omitted fields keep their value; darkMode and the network legs are each applied via separate setters (no read-back of the current value). ⚠️ Changing timeZone REBOOTS the hub (1-3 min downtime), and any network change can DISCONNECT the hub — both require confirm=true + a backup <24h; the other fields need only the Write master. Network legs apply in order (IP mode → Ethernet autoneg → WiFi) and are NOT atomic, so a mid-sequence failure leaves the earlier legs applied (see the `applied` array). Read back applied values with hub_get_info. Requires Write master.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
                     hubName: [type: "string", description: "New hub name."],
-                    timeZone: [type: "string", description: "IANA time zone ID, e.g. 'America/New_York'.[[FLAT_TRIM]] ⚠️ Changing this REBOOTS the hub — requires confirm=true + a recent backup.[[/FLAT_TRIM]]"],
-                    latitude: [type: "number", description: "Latitude in decimal degrees, e.g. 40.7128."],
-                    longitude: [type: "number", description: "Longitude in decimal degrees, e.g. -74.006."],
-                    zipCode: [type: "string", description: "Postal/zip code, e.g. '10001'."],
+                    timeZone: [type: "string", description: "IANA time zone ID.[[FLAT_TRIM]] e.g. 'America/New_York'. ⚠️ Changing this REBOOTS the hub — requires confirm=true + a recent backup.[[/FLAT_TRIM]]"],
+                    latitude: [type: "number", description: "Latitude in decimal degrees.[[FLAT_TRIM]] e.g. 40.7128.[[/FLAT_TRIM]]"],
+                    longitude: [type: "number", description: "Longitude in decimal degrees.[[FLAT_TRIM]] e.g. -74.006.[[/FLAT_TRIM]]"],
+                    zipCode: [type: "string", description: "Postal/zip code.[[FLAT_TRIM]] e.g. '10001'.[[/FLAT_TRIM]]"],
                     temperatureScale: [type: "string", enum: ["F", "C"], description: "Temperature scale: F or C."],
-                    confirm: [type: "boolean", description: "Required only to change timeZone (reboots the hub).[[FLAT_TRIM]] Must be true; confirms a backup <24h + that the reboot is intended.[[/FLAT_TRIM]]"]
+                    darkMode: [type: "boolean", description: "Hub admin UI dark mode (true) or light (false).[[FLAT_TRIM]] Applied via /hub/applyDarkMode; no read-back of the current value.[[/FLAT_TRIM]]"],
+                    network: [type: "object", description: "⚠️ Hub network config — can DISCONNECT the hub; needs confirm=true + a backup <24h.[[FLAT_TRIM]] All sub-fields optional; only the legs you provide are applied, in order (IP mode → Ethernet autoneg → WiFi), non-atomically. ipMode='static' requires address+netmask+gateway (nameserver optional); ipMode='dhcp' uses nameserver + useDNSFallover. ethernetAutoneg toggles Ethernet autonegotiation. wifiSsid (+ wifiPassword) joins a WiFi network.[[/FLAT_TRIM]]", properties: [
+                        ipMode: [type: "string", enum: ["dhcp", "static"], description: "IP mode."],
+                        address: [type: "string", description: "Static IP address."],
+                        netmask: [type: "string", description: "Static subnet mask."],
+                        gateway: [type: "string", description: "Static gateway."],
+                        nameserver: [type: "string", description: "DNS nameserver(s)."],
+                        useDNSFallover: [type: "boolean", description: "DHCP DNS failover."],
+                        ethernetAutoneg: [type: "boolean", description: "Ethernet autonegotiation."],
+                        wifiSsid: [type: "string", description: "WiFi SSID to join."],
+                        wifiPassword: [type: "string", description: "WiFi password (psk)."]
+                    ]],
+                    confirm: [type: "boolean", description: "Required (must be true) for timeZone or network changes.[[FLAT_TRIM]] timeZone reboots the hub; network can disconnect it. Confirms a backup <24h + that the disruption is intended.[[/FLAT_TRIM]]"]
                 ]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
                     success: [type: "boolean", description: "Whether the settings were applied"],
-                    applied: [type: "array", description: "The fields that were changed", items: [type: "string"]],
+                    applied: [type: "array", description: "The fields that were changed; may include darkMode and the network legs (network.staticIp / network.dhcp / network.ethernetAutoneg / network.wifi)", items: [type: "string"]],
                     error: [type: "string", description: "Failure reason (success=false)"],
                     note: [type: "string", description: "Guidance / recovery; how to read back values"]
                 ],
@@ -1054,7 +1229,7 @@ def _toolDisplayMeta_partSystem() {
         hub_set_mode_manager: [title: "Set Mode Manager", summary: "Pick the Mode Manager and update its per-mode conditions."],
         hub_get_hsm_status: [title: "Get HSM Status", summary: "Get the current Hubitat Safety Monitor arm status."],
         hub_set_hsm: [title: "Set HSM Arm Mode", summary: "Arm or disarm Hubitat Safety Monitor."],
-        hub_set_system_settings: [title: "Set System Settings", summary: "Set hub name, time zone, latitude/longitude, zip code, or temperature scale."],
+        hub_set_system_settings: [title: "Set System Settings", summary: "Set hub name, time zone, location, zip, temperature scale, admin-UI dark mode, or network config."],
         // Hub utilities
         hub_update_firmware: [title: "Update Hub Firmware", summary: "Install the hub's pending platform/firmware update (downloads, installs, and reboots the hub)."],
         // Destructive hub ops

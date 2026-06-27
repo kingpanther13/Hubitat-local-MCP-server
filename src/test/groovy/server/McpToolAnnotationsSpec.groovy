@@ -129,7 +129,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_create_backup', 'hub_call_gc',
             'hub_reboot', 'hub_shutdown', 'hub_delete_device',
             'hub_set_zwave', 'hub_set_zigbee',
-            'hub_call_zwave', 'hub_call_zigbee', 'hub_call_matter', 'hub_call_destructive_radio',
+            'hub_call_zwave', 'hub_call_zigbee', 'hub_call_matter', 'hub_call_destructive_ops',
             'hub_manage_virtual_device', 'hub_update_device', 'hub_create_device',
             'hub_create_room', 'hub_delete_room', 'hub_update_room',
             'hub_create_app', 'hub_create_driver', 'hub_update_app', 'hub_update_driver',
@@ -175,7 +175,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_manage_custom_rules', // hub_delete_custom_rule + others
             'hub_manage_variables',      // set/create/delete + others
             'hub_manage_rooms',              // create/delete/rename + others
-            'hub_manage_destructive_ops',// reboot/shutdown/hub_delete_device/hub_call_destructive_radio
+            'hub_manage_destructive_ops',// reboot/shutdown/hub_delete_device/hub_call_destructive_ops
             'hub_manage_code',          // install/update/delete code
             'hub_manage_devices',            // hub_call_device_command, hub_call_device_swap, hub_update_device
             'hub_manage_logs',               // hub_delete_debug_logs, hub_set_log_level
@@ -347,7 +347,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_create_variable',
             'hub_create_backup',
             'hub_reboot', 'hub_shutdown', 'hub_update_firmware', 'hub_call_gc',
-            'hub_call_zwave', 'hub_call_zigbee', 'hub_call_matter', 'hub_call_destructive_radio',
+            'hub_call_zwave', 'hub_call_zigbee', 'hub_call_matter', 'hub_call_destructive_ops',
             'hub_manage_virtual_device', 'hub_manage_mode',
             'hub_set_system_settings',
             'hub_create_device',
@@ -527,7 +527,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_reboot', 'hub_shutdown', 'hub_update_firmware', 'hub_delete_device',
             'hub_call_gc',
             'hub_set_zwave', 'hub_set_zigbee',
-            'hub_call_zwave', 'hub_call_zigbee', 'hub_call_matter', 'hub_call_destructive_radio',
+            'hub_call_zwave', 'hub_call_zigbee', 'hub_call_matter', 'hub_call_destructive_ops',
             'hub_manage_virtual_device', 'hub_update_device', 'hub_create_device',
             'hub_create_room', 'hub_delete_room', 'hub_update_room',
             'hub_create_app', 'hub_create_driver', 'hub_update_app', 'hub_update_driver',

@@ -125,7 +125,7 @@ Manage gateways (`hub_manage_*`, contain at least one write):
 | `hub_manage_custom_rules` | 8 | Custom-engine rule get/create/update/delete/test/export/import/clone |
 | `hub_manage_variables` | 8 | Hub connector and rule engine variables (CRUD + connector + history) |
 | `hub_manage_rooms` | 5 | Room CRUD |
-| `hub_manage_destructive_ops` | 4 | Hub reboot, shutdown, device deletion, destructive radio ops (reset/wipe + radio firmware via `hub_call_destructive_radio`) (write) |
+| `hub_manage_destructive_ops` | 4 | Hub reboot, shutdown, device deletion, and destructive ops by target via `hub_call_destructive_ops` (radio reset/wipe + firmware, network disconnect, cloud-controller disable/enable) (write) |
 | `hub_manage_code` | 11 | Install/update apps+drivers+libraries, install/delete/export HPM-style bundles, delete item (app/driver/library), restore backup (write) |
 | `hub_manage_devices` | 7 | Device command/swap/update (writes) + list/get devices, attributes, events (reads) |
 | `hub_manage_logs` | 6 | Logs, performance stats, hub jobs, debug tools (read + clear/set-level write) |

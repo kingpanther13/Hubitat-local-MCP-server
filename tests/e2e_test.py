@@ -1555,17 +1555,20 @@ class TestRunner:
             "hub_set_zigbee(ping_device)")
 
     @test("diagnostics")
-    def test_call_destructive_radio_requires_confirm(self) -> None:
-        # hub_call_destructive_radio is confirm-gated and MUST NOT be executed for real here (a reset
-        # wipes a radio's network; a firmware flash can brick hardware). Assert the safety gate:
-        # calling reset WITHOUT confirm is refused. confirm is a REQUIRED schema param, so the refusal
+    def test_call_destructive_ops_requires_confirm(self) -> None:
+        # hub_call_destructive_ops is confirm-gated and MUST NOT be executed for real here. The radio
+        # reset wipes a network and a firmware flash can brick hardware; the network target
+        # (disconnect_wifi/disconnect_ethernet) and the cloud target (disable) would sever the test
+        # hub's own connectivity / cloud MCP endpoint -- so NONE of those live actions are exercised
+        # here (they are manual-only; see tests/BAT-v2.md). Assert only the safety gate: calling the
+        # radio reset WITHOUT confirm is refused. confirm is a REQUIRED schema param, so the refusal
         # surfaces as an isError envelope ("Missing required parameter: confirm") returned as a dict by
-        # call_tool, OR a raised McpError/-32602 -- accept either. The radio is never actually reset.
+        # call_tool, OR a raised McpError/-32602 -- accept either. Nothing is ever actually reset.
         refused = False
         detail = None
         try:
             detail = self.client.call_tool(
-                "hub_call_destructive_radio", {"radio": "zwave", "action": "reset"})
+                "hub_call_destructive_ops", {"target": "zwave", "action": "reset"})
             blob = (detail if isinstance(detail, str) else json.dumps(detail)).lower()
             refused = (isinstance(detail, dict) and bool(detail.get("isError"))) \
                 or "confirm" in blob or "required parameter" in blob or "safety check" in blob
@@ -1574,7 +1577,7 @@ class TestRunner:
             refused = any(s in detail.lower()
                           for s in ("confirm", "safety check", "required parameter"))
         assert refused, \
-            f"hub_call_destructive_radio reset without confirm must be refused by the safety gate, got: {detail}"
+            f"hub_call_destructive_ops reset without confirm must be refused by the safety gate, got: {detail}"
 
     @test("native_apps")
     def test_set_app_disabled_roundtrip(self) -> None:
@@ -6247,6 +6250,52 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         after = self.client.call_tool("hub_get_info")
         assert after.get("timeZone") == cur_tz, \
             f"timeZone changed despite the confirm-gate rejection: before={cur_tz!r} after={after.get('timeZone')!r}"
+
+    @test("system_tools")
+    def test_set_system_settings_dark_mode(self) -> None:
+        # hub_set_system_settings(darkMode) sets the admin-UI theme via an INDEPENDENT setter
+        # (GET /hub/applyDarkMode/<bool>, HTTP 200 empty, no read-back -- /hub/details/json has no
+        # dark/theme key). FIRMWARE-TOLERANT: /hub/applyDarkMode may not exist on older firmware
+        # (it 404s, the same way /device/setShowOnHome did on 2.5.0.157). The tool then returns a
+        # structured {success:false, error:"Failed to apply dark mode: ..."} envelope (NOT isError,
+        # so call_tool hands it back as a dict). Treat a genuine endpoint-absent failure as a CLEAN
+        # SKIP, distinct from a flaky relay 504 (which the runner retries). Sets dark then reverts to
+        # light so the hub theme is left as we found it.
+        def _dark_call(on: bool) -> Any:
+            args = {"darkMode": on}
+            try:
+                return self.client.call_tool("hub_set_system_settings", args)
+            except McpToolError as exc:
+                msg = str(exc)
+                if "excessive hub load" in msg and self._clear_load_throttle(f"darkMode={on}: {exc}"):
+                    return self.client.call_tool("hub_set_system_settings", args)
+                # A darkMode failure can also surface as an isError-raised McpToolError; a
+                # firmware-absent endpoint is a clean skip, a relay 504 a retryable failure.
+                if "dark mode" in msg.lower():
+                    raise SkipTest(
+                        f"/hub/applyDarkMode appears absent on this firmware (skip): {msg}"
+                    ) from exc
+                raise
+
+        # Set dark mode ON.
+        on_res = _dark_call(True)
+        if isinstance(on_res, dict) and on_res.get("success") is False:
+            # The tool ran but the endpoint rejected the apply -- firmware without /hub/applyDarkMode.
+            raise SkipTest(
+                f"/hub/applyDarkMode not supported on this firmware (skip): {on_res.get('error')}"
+            )
+        assert isinstance(on_res, dict) and on_res.get("success") is True, \
+            f"darkMode=true did not succeed: {on_res}"
+        assert "darkMode" in (on_res.get("applied") or []), \
+            f"applied did not include darkMode: {on_res}"
+
+        # Revert to light mode so the hub is left as found (best-effort: a revert failure after a
+        # successful ON is still a real regression, so assert it too).
+        off_res = _dark_call(False)
+        assert isinstance(off_res, dict) and off_res.get("success") is True, \
+            f"darkMode=false (revert) did not succeed: {off_res}"
+        assert "darkMode" in (off_res.get("applied") or []), \
+            f"revert applied did not include darkMode: {off_res}"
 
     @test("system_tools")
     def test_list_libraries(self) -> None:

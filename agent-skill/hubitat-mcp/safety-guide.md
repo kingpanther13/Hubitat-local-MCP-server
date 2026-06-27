@@ -73,12 +73,14 @@ ALL destructive write tools (`confirm`+backup tier) require these steps in order
 - **Best run**: During off-peak hours when automations aren't critical
 - **Only when**: User reports Z-Wave issues and explicitly requests the operation
 
-#### hub_call_destructive_radio (via hub_manage_destructive_ops)
-- **DESTRUCTIVE - NO UNDO**: Z-Wave/Zigbee radio reset/wipe and radio firmware update, selected by `action`
+#### hub_call_destructive_ops (via hub_manage_destructive_ops)
+- **DESTRUCTIVE - NO UNDO / can disconnect**: selected by `target` + `action`
+  - `target=zwave|zigbee|matter`: radio reset/wipe (orphans every device paired to it) and radio firmware update (can brick hardware if interrupted)
+  - `target=network`: `disconnect_wifi` / `disconnect_ethernet` drop that link (the hub may become unreachable over it)
+  - `target=cloud`: `disable` severs Alexa/Google, cloud dashboards, cloud firmware updates, and subscription features; `enable` restores them
 - **Three-layer gate**: Write master + hub backup within 24h + explicit `confirm=true`
-- **Effects**: Resetting/wiping a radio orphans every device paired to it; firmware update interrupts the radio
-- **Pre-flight**: Warn the user that paired devices will need to be re-included before proceeding
-- **Only when**: User explicitly requests the radio reset/wipe or firmware update
+- **Pre-flight**: Warn the user about the exact impact (re-include paired devices, lost connectivity, or stopped cloud features) before proceeding; never power-cycle during a firmware flash
+- **Only when**: User explicitly requests the operation
 
 #### hub_delete_device (via hub_manage_destructive_ops)
 - **THE MOST DESTRUCTIVE TOOL - NO UNDO**

@@ -152,11 +152,14 @@ All destructive write tools (the `confirm`+backup tier) require these steps:
 - For Z-Wave/Zigbee: Warn user to do proper exclusion first to avoid ghost nodes
 - All device details logged to MCP debug logs for audit
 
-**hub_call_destructive_radio** (via `hub_manage_destructive_ops`)
-- Destructive radio operations selected by `action`: Z-Wave/Zigbee reset/wipe and radio firmware update — NO UNDO
+**hub_call_destructive_ops** (via `hub_manage_destructive_ops`)
+- Destructive hub operations selected by `target` + `action` — NO UNDO / can disconnect:
+  - `target=zwave|zigbee|matter`: `reset` wipes that radio's network/fabric (orphans all its paired devices); firmware flashes (`device_firmware_start`/`device_firmware_abort`, `zwave_chip_firmware`, `zigbee_firmware`) can brick hardware if interrupted
+  - `target=network`: `disconnect_wifi` / `disconnect_ethernet` drop that link — the hub may become unreachable over it
+  - `target=cloud`: `disable` severs the cloud controller (Alexa/Google, cloud dashboards, cloud firmware updates, Hub Protect/subscriptions all stop); `enable` restores it
 - Three-layer safety gate: Write master + hub backup within 24h + explicit `confirm=true`
-- Resetting a radio orphans all of its paired devices; warn the user before proceeding
-- Only use when user explicitly requests the operation
+- Warn the user about the exact impact before proceeding; only use when the user explicitly requests the operation
+- Do NOT power-cycle the hub or device during a firmware flash
 
 **hub_call_zwave** (via `hub_manage_radio`)
 - Z-Wave radio operations selected by `action` — network repair is one action

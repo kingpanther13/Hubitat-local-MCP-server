@@ -419,6 +419,40 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Recognizes that changing the time zone REBOOTS the hub, so it warns the user and calls `hub_set_system_settings` with `timeZone: "America/Denver"` and `confirm: true` (after ensuring a recent backup). Without `confirm` the call is rejected with a `-32602` confirm-gate error and nothing changes.
 
+### T14f — turn on the hub's dark mode
+
+```json
+{
+  "test_prompt": "Switch my hub's admin UI to dark mode."
+}
+```
+
+**Expected**: Calls `hub_set_system_settings` with `darkMode: true` (an independent setter — `GET /hub/applyDarkMode/true`; no location field is touched, so no `/location/update` POST is made). Reports success and that `darkMode` was applied. Does NOT require `confirm`. There is no read-back of the theme, so it can't be confirmed via `hub_get_info`; verify visually in the hub admin UI. On firmware that lacks the endpoint the call returns `success:false` with a "Failed to apply dark mode" error and nothing else changes.
+
+### T14g — configure the hub network (⚠️ MANUAL ONLY — can disconnect the hub)
+
+> **DO NOT run on the e2e/CI test hub.** A network change can sever the hub's own connectivity (and the cloud MCP endpoint the tests ride). Exercise only on a hub you can physically reach to recover.
+
+```json
+{
+  "test_prompt": "Give my hub a static IP of 192.168.1.50, netmask 255.255.255.0, gateway 192.168.1.1."
+}
+```
+
+**Expected**: Recognizes a network change can disconnect the hub, so it warns the user, ensures a recent backup, and calls `hub_set_system_settings` with `network: {ipMode:"static", address:"192.168.1.50", netmask:"255.255.255.0", gateway:"192.168.1.1"}` and `confirm: true`. Without `confirm` the call is rejected by the destructive gate and nothing changes. On success `applied` includes `network.staticIp`. Other valid network shapes (each its own leg, applied in order, non-atomic): `{ipMode:"dhcp", useDNSFallover:true}` → `network.dhcp`; `{ethernetAutoneg:false}` → `network.ethernetAutoneg`; `{wifiSsid:"Net", wifiPassword:"…"}` → `network.wifi`. A static IP without address/netmask/gateway is rejected with `-32602` before any hub call.
+
+### T14h — destructive network/cloud ops (⚠️ MANUAL ONLY — disconnects / disables cloud)
+
+> **DO NOT run on the e2e/CI test hub.** `target=network` disconnects a link; `target=cloud` `disable` severs Alexa/Google, cloud dashboards, cloud firmware updates, and subscription features (and the cloud MCP endpoint). Exercise only on a hub you can recover by hand.
+
+```json
+{
+  "test_prompt": "Disable my hub's cloud controller."
+}
+```
+
+**Expected**: Warns that disabling the cloud controller stops Alexa/Google, cloud dashboards, cloud firmware updates, and subscription features, ensures a recent backup, then calls `hub_call_destructive_ops` with `target: "cloud"`, `action: "disable"`, `confirm: true`. Re-enable with `target:"cloud", action:"enable"`. The network variants are `target:"network", action:"disconnect_wifi"` (→ `GET /hub/advanced/disconnectWiFi`) and `action:"disconnect_ethernet"` (→ `/hub/advanced/disconnectEthernet`). All require `confirm: true`; without it the destructive gate rejects the call and nothing changes.
+
 ### T15 — hub_list_modes
 
 ```json
@@ -2471,7 +2505,10 @@ These operations are too destructive for automated testing. Test manually with e
 | Shutdown hub | `hub_shutdown` | hub_manage_destructive_ops | Requires physical restart |
 | Z-Wave repair | `hub_call_zwave` (repair action) | hub_manage_radio | 5-30 min, devices unresponsive |
 | Delete real device | `hub_delete_device` | hub_manage_destructive_ops | Permanent, no undo |
-| Destructive radio op (reset/wipe, firmware) | `hub_call_destructive_radio` | hub_manage_destructive_ops | Orphans paired devices, no undo |
+| Destructive radio op (reset/wipe, firmware) | `hub_call_destructive_ops` (target=zwave\|zigbee\|matter) | hub_manage_destructive_ops | Orphans paired devices, no undo |
+| Network disconnect (WiFi/Ethernet) | `hub_call_destructive_ops` (target=network, disconnect_wifi\|disconnect_ethernet) | hub_manage_destructive_ops | Can make the hub unreachable over that link |
+| Cloud controller disable/enable | `hub_call_destructive_ops` (target=cloud, disable\|enable) | hub_manage_destructive_ops | Disabling severs Alexa/Google, cloud dashboards, cloud firmware updates, subscriptions |
+| Network config (static IP / DHCP / Ethernet autoneg / WiFi) | `hub_set_system_settings` (network=...) | core | Can disconnect the hub; confirm-gated |
 | Install app | `hub_create_app` | hub_manage_code | Modifies hub code |
 | Install driver | `hub_create_driver` | hub_manage_code | Modifies hub code |
 | Update app code | `hub_update_app` | hub_manage_code | Modifies production code |

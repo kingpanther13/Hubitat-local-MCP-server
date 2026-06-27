@@ -41,7 +41,7 @@ These 13 tools are never behind a gateway. Every other tool is reachable through
 | `hub_set_mode_manager` | Pick which Mode Manager runs (builtIn/legacy/app) + update its per-mode conditions. | None |
 | `hub_get_hsm_status` | Get Home Security Monitor status. | None |
 | `hub_set_hsm` | Change HSM arm mode. | None |
-| `hub_set_system_settings` | Set hub-global settings: name, time zone, latitude/longitude, zip, temperature scale. All params optional; a timeZone change reboots the hub. | Write master; `confirm` for timeZone |
+| `hub_set_system_settings` | Set hub-global settings: name, time zone, latitude/longitude, zip, temperature scale, admin-UI dark mode, and network config (static IP / DHCP / Ethernet autoneg / WiFi). All params optional; a timeZone change reboots the hub and any network change can disconnect it. | Write master; `confirm` for timeZone or network |
 | `hub_create_backup` | Create full hub database backup. | Write master |
 | `hub_update_firmware` | Install the hub's pending platform/firmware update (downloads, installs, reboots). Version/update checks fold into `hub_get_info`. | Write master |
 | `hub_report_issue` | Generate comprehensive diagnostic report. | None |
@@ -219,14 +219,14 @@ Manage hub rooms: list, view details, create, delete, and rename.
 
 ### hub_manage_destructive_ops (4 tools)
 
-Destructive hub operations: reboot, shutdown, device deletion, and destructive radio operations.
+Destructive hub operations: reboot, shutdown, device deletion, and destructive ops by target (radio, network, cloud).
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|
 | `hub_reboot` | Reboot hub (1-3 min downtime). | Write master |
 | `hub_shutdown` | Power off hub (needs manual restart). | Write master |
 | `hub_delete_device` | Permanently delete a device. **NO UNDO.** For ghost/orphaned devices only. | Write master |
-| `hub_call_destructive_radio` | Destructive radio operations selected by `action`: Z-Wave/Zigbee reset/wipe and radio firmware update. **NO UNDO** — orphans paired devices. | Write master + confirm + recent backup |
+| `hub_call_destructive_ops` | Destructive hub operations by `target` + `action`: radio reset/wipe + firmware (target=zwave\|zigbee\|matter, orphans paired devices), network disconnect (target=network, disconnect_wifi\|disconnect_ethernet), or cloud-controller disable/enable (target=cloud, stops Alexa/Google + cloud dashboards + subscriptions). **NO UNDO / disconnects.** | Write master + confirm + recent backup |
 
 ### hub_manage_code (11 tools)
 
@@ -275,7 +275,7 @@ Performance monitoring, health checks, diagnostics, radio info, memory / GC, and
 
 ### hub_manage_radio (6 tools)
 
-Z-Wave, Zigbee, and Matter radio administration: radio info, configuration, and non-destructive radio operations (incl. Z-Wave network repair). Destructive radio ops live in `hub_manage_destructive_ops` as `hub_call_destructive_radio`.
+Z-Wave, Zigbee, and Matter radio administration: radio info, configuration, and non-destructive radio operations (incl. Z-Wave network repair). Destructive radio ops live in `hub_manage_destructive_ops` as `hub_call_destructive_ops` (target=zwave|zigbee|matter).
 
 | Tool | Description | Access Gate |
 |------|-------------|-------------|

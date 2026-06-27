@@ -152,7 +152,7 @@ class GatewayToggleSpec extends ToolSpecBase {
             'hub_get_device_health',
             'hub_get_radio_details',
             'hub_set_zwave', 'hub_set_zigbee',
-            'hub_call_zwave', 'hub_call_zigbee', 'hub_call_matter', 'hub_call_destructive_radio',
+            'hub_call_zwave', 'hub_call_zigbee', 'hub_call_matter', 'hub_call_destructive_ops',
             'hub_list_captured_states', 'hub_delete_captured_state',
             'hub_list_files', 'hub_read_file', 'hub_write_file', 'hub_delete_file',
             'hub_list_device_dependents', 'hub_get_app_config', 'hub_list_app_pages',

@@ -1705,17 +1705,23 @@ def toolCallMatter(args) {
     }
 }
 
-// hub_call_destructive_radio: the single confirm-gated destructive radio tool.
-// Wipes a radio's network/fabric (unpairs everything) or flashes firmware (can
-// brick hardware). Misfire-proof: explicit radio + explicit action, no defaults,
-// confirm=true required for every path.
-def toolCallDestructiveRadio(args) {
+// hub_call_destructive_ops: the single confirm-gated destructive-operations tool. Covers radio
+// network/fabric wipes + firmware flashes (target=zwave|zigbee|matter), network disconnects
+// (target=network), and cloud-controller disable/enable (target=cloud). Misfire-proof: explicit target
+// + explicit action, no defaults, confirm=true required for every path.
+def toolCallDestructiveOps(args) {
     requireDestructiveConfirm(args.confirm)
-    def radio = args.radio?.toString()
+    def target = args.target?.toString()
     def action = args.action?.toString()
-    if (!radio) throw new IllegalArgumentException("radio is required: zwave, zigbee, or matter.")
-    if (!action) throw new IllegalArgumentException("action is required: reset, or a firmware action (device_firmware_start, device_firmware_abort, zwave_chip_firmware, zigbee_firmware).")
+    if (!target) throw new IllegalArgumentException("target is required: zwave, zigbee, matter, network, or cloud.")
+    if (!action) throw new IllegalArgumentException("action is required (depends on target): radio reset/firmware actions, network disconnect_wifi/disconnect_ethernet, or cloud disable/enable.")
 
+    // Network + cloud targets are not radio ops -- route them to their own handlers (still confirm-gated above).
+    if (target == "network") return _destructiveNetworkOp(action)
+    if (target == "cloud") return _destructiveCloudOp(action)
+
+    // --- Radio targets (zwave | zigbee | matter) ---
+    def radio = target
     try {
         def resp
         // --- Network/fabric wipe (unpairs all devices) ---
@@ -1725,11 +1731,11 @@ def toolCallDestructiveRadio(args) {
                 case "zwave": path = "/hub/zwave/resetJson"; break
                 case "zigbee": path = "/hub/zigbee/reset"; break
                 case "matter": path = "/hub/matter/reset"; break
-                default: throw new IllegalArgumentException("radio must be zwave, zigbee, or matter for reset.")
+                default: throw new IllegalArgumentException("target must be zwave, zigbee, or matter for reset.")
             }
             resp = _radioGet(path)
             mcpLog("warn", "hub-admin", "DESTRUCTIVE: ${radio} radio reset via MCP")
-            return [success: true, radio: radio, action: action,
+            return [success: true, target: radio, action: action,
                     message: "${radio} radio/fabric reset. ALL ${radio} devices have been unpaired.",
                     warning: "This is irreversible. Every ${radio} device must be re-paired.",
                     lastBackup: formatTimestamp(state.lastBackupTimestamp), response: resp]
@@ -1740,9 +1746,9 @@ def toolCallDestructiveRadio(args) {
             case "device_firmware_start":
                 if (radio != "zwave") throw new IllegalArgumentException("device_firmware_start is Z-Wave only.")
                 if (args.node_id == null || !args.file_name) throw new IllegalArgumentException("device_firmware_start requires node_id and file_name (from hub_get_radio_details(include_firmware=true)).")
-                def startBody = [nodeId: args.node_id, target: (args.target != null ? args.target : args.node_id), fileName: args.file_name.toString()]
+                def startBody = [nodeId: args.node_id, target: (args.target_index != null ? args.target_index : args.node_id), fileName: args.file_name.toString()]
                 resp = _radioPost("/hub/zwave/deviceFirmware/start", groovy.json.JsonOutput.toJson(startBody))
-                return [success: true, radio: radio, action: action,
+                return [success: true, target: radio, action: action,
                         message: "Z-Wave device firmware update started for node ${args.node_id}.",
                         warning: "Do NOT power-cycle the device or hub during the flash; interruption can brick the device.",
                         note: "Poll hub_get_radio_details(node_id=${args.node_id}). Abort with action='device_firmware_abort'.", response: resp]
@@ -1750,27 +1756,82 @@ def toolCallDestructiveRadio(args) {
                 if (radio != "zwave") throw new IllegalArgumentException("device_firmware_abort is Z-Wave only.")
                 if (args.node_id == null) throw new IllegalArgumentException("device_firmware_abort requires node_id.")
                 resp = _radioPost("/hub/zwave/deviceFirmware/abort", groovy.json.JsonOutput.toJson([nodeId: args.node_id]))
-                return [success: true, radio: radio, action: action, message: "Z-Wave device firmware update aborted for node ${args.node_id}.", response: resp]
+                return [success: true, target: radio, action: action, message: "Z-Wave device firmware update aborted for node ${args.node_id}.", response: resp]
             case "zwave_chip_firmware":
                 if (radio != "zwave") throw new IllegalArgumentException("zwave_chip_firmware is Z-Wave only.")
                 resp = _radioGet("/hub/zwave/startUpdateHubFirmware")
-                return [success: true, radio: radio, action: action,
+                return [success: true, target: radio, action: action,
                         message: "Z-Wave chip (hub radio) firmware update started.",
                         warning: "Do NOT power-cycle the hub during the flash; interruption can brick the radio.", response: resp]
             case "zigbee_firmware":
                 if (radio != "zigbee") throw new IllegalArgumentException("zigbee_firmware is Zigbee only.")
                 resp = _radioGet("/hub/zigbee/updateFirmware/latest")
-                return [success: true, radio: radio, action: action,
+                return [success: true, target: radio, action: action,
                         message: "Zigbee radio firmware update to latest started.",
                         warning: "Do NOT power-cycle the hub during the flash; interruption can brick the radio.", response: resp]
             default:
-                throw new IllegalArgumentException("Unknown action '${action}'. Valid: reset, device_firmware_start, device_firmware_abort, zwave_chip_firmware, zigbee_firmware.")
+                throw new IllegalArgumentException("Unknown action '${action}' for target '${radio}'. Valid: reset, device_firmware_start, device_firmware_abort, zwave_chip_firmware, zigbee_firmware.")
         }
     } catch (IllegalArgumentException iae) {
         throw iae
     } catch (Exception e) {
-        mcpLogError("hub-admin", "hub_call_destructive_radio ${radio}/${action} failed", e)
-        return [success: false, radio: radio, action: action, error: "Destructive radio op '${action}' on ${radio} failed: ${e.message}", note: "Check Hub Security credentials."]
+        mcpLogError("hub-admin", "hub_call_destructive_ops ${radio}/${action} failed", e)
+        return [success: false, target: radio, action: action, error: "Destructive radio op '${action}' on ${radio} failed: ${e.message}", note: "Check Hub Security credentials."]
+    }
+}
+
+// target=network: disconnect the hub's WiFi or Ethernet link. GET endpoints RE'd from
+// resources/hub2-source/vue-hub2.min.js. Confirm-gated by the caller; a structured error on failure.
+private _destructiveNetworkOp(String action) {
+    def path
+    switch (action) {
+        case "disconnect_wifi": path = "/hub/advanced/disconnectWiFi"; break
+        case "disconnect_ethernet": path = "/hub/advanced/disconnectEthernet"; break
+        default: throw new IllegalArgumentException("Unknown action '${action}' for target 'network'. Valid: disconnect_wifi, disconnect_ethernet.")
+    }
+    try {
+        // Fire-and-return GET: success == the GET returned 2xx. There is NO response-body inspection
+        // or state read-back to confirm the link actually dropped, so the result reports the command
+        // was accepted, not a verified disconnected state.
+        def resp = _radioGet(path)
+        mcpLog("warn", "hub-admin", "DESTRUCTIVE: hub ${action} via MCP")
+        return [success: true, target: "network", action: action,
+                message: "Hub ${action == 'disconnect_wifi' ? 'WiFi' : 'Ethernet'} disconnect command accepted.",
+                warning: "The hub may become unreachable over the disconnected interface until it is reconnected.",
+                note: "Command accepted (HTTP 2xx); there is no read-back to confirm the link dropped.",
+                response: resp]
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "hub_call_destructive_ops network/${action} failed", e)
+        return [success: false, target: "network", action: action, error: "Network op '${action}' failed: ${e.message}", note: "The hub may already be unreachable over this interface. Check Hub Security credentials."]
+    }
+}
+
+// target=cloud: disable or enable the hub's cloud controller. Disabling severs Alexa/Google, cloud
+// dashboards, firmware updates, and subscription features. GET endpoints RE'd from vue-hub2.min.js.
+private _destructiveCloudOp(String action) {
+    def path
+    switch (action) {
+        case "disable": path = "/hub/advanced/disableCloudController"; break
+        case "enable": path = "/hub/advanced/enableCloudController"; break
+        default: throw new IllegalArgumentException("Unknown action '${action}' for target 'cloud'. Valid: disable, enable.")
+    }
+    try {
+        // Fire-and-return GET: success == the GET returned 2xx. There is NO response-body inspection
+        // or state read-back to confirm the controller actually flipped, so the result reports the
+        // command was accepted, not a verified enabled/disabled state.
+        def resp = _radioGet(path)
+        mcpLog("warn", "hub-admin", "DESTRUCTIVE: cloud controller ${action} via MCP")
+        def disabling = (action == "disable")
+        return [success: true, target: "cloud", action: action,
+                message: "Hub cloud controller ${disabling ? 'disable' : 'enable'} command accepted.",
+                warning: disabling
+                    ? "Cloud features are expected to go OFF: Alexa/Google voice integrations, cloud dashboards, cloud firmware updates, and Hub Protect/subscription features will not work until re-enabled."
+                    : "Cloud features are being re-enabled; allow a short time for cloud services to reconnect.",
+                note: "Command accepted (HTTP 2xx); there is no read-back to confirm the controller's new state.",
+                response: resp]
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "hub_call_destructive_ops cloud/${action} failed", e)
+        return [success: false, target: "cloud", action: action, error: "Cloud op '${action}' failed: ${e.message}", note: "Check Hub Security credentials."]
     }
 }
 
@@ -2178,7 +2239,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_get_radio_details",
-            description: """Get Z-Wave/Zigbee/Matter radio info and the read-only radio surface. Omit radio for Z-Wave+Zigbee, or pass 'matter' for fabric details. The include_* flags and node_id attach extra read blocks. Requires Read master.[[FLAT_TRIM]] Covers details (firmware, home/PAN ID, channel, device nodes), mesh topology, per-node state, lifecycle status pollers, channel scan, SmartStart entries, and firmware-eligible devices. Pair with the write tools in hub_manage_radio (hub_set_zwave / hub_set_zigbee / hub_call_zwave / hub_call_zigbee / hub_call_matter) and the destructive resets/firmware in hub_call_destructive_radio.[[/FLAT_TRIM]]""",
+            description: """Get Z-Wave/Zigbee/Matter radio info and the read-only radio surface. Omit radio for Z-Wave+Zigbee, or pass 'matter' for fabric details. The include_* flags and node_id attach extra read blocks. Requires Read master.[[FLAT_TRIM]] Covers details (firmware, home/PAN ID, channel, device nodes), mesh topology, per-node state, lifecycle status pollers, channel scan, SmartStart entries, and firmware-eligible devices. Pair with the write tools in hub_manage_radio (hub_set_zwave / hub_set_zigbee / hub_call_zwave / hub_call_zigbee / hub_call_matter) and the destructive resets/firmware in hub_call_destructive_ops.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2189,7 +2250,7 @@ def _getAllToolDefinitions_partDiagnostics() {
                     include_logs: [type: "boolean", description: "Attach Matter chip-tool logs ({text}, ANSI) under result.matterLogs. Default false."],
                     include_channel_scan: [type: "boolean", description: "Attach Zigbee channel energy-scan results under result.channelScan (run a fresh scan with hub_call_zigbee action='channel_scan' first). Default false."],
                     include_smartstart: [type: "boolean", description: "Attach the Z-Wave SmartStart provisioning list under result.smartStart (each entry's nodeDSK feeds hub_call_zwave action='smartstart_delete'). Default false."],
-                    include_firmware: [type: "boolean", description: "Attach firmware-eligible Z-Wave devices + available files under result.firmware ({devices:[{nodeId,label}], files}). Feeds hub_call_destructive_radio firmware actions. Default false."]
+                    include_firmware: [type: "boolean", description: "Attach firmware-eligible Z-Wave devices + available files under result.firmware ({devices:[{nodeId,label}], files}). Feeds hub_call_destructive_ops firmware actions. Default false."]
                 ]
             ],
             outputSchema: [
@@ -2240,7 +2301,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_set_zwave",
-            description: "Configure the Z-Wave radio (idempotent): enable/disable the radio, or set the region and long-range channel. Read current values with hub_get_radio_details(radio='zwave').[[FLAT_TRIM]] Config updates preserve the radio's other current settings (a region change keeps enabled/secureJoin). Disabling strands every Z-Wave device, so it is confirm-gated. For repair/inclusion/exclusion/maintenance use hub_call_zwave; for reset/firmware use hub_call_destructive_radio.[[/FLAT_TRIM]] Requires Write master.",
+            description: "Configure the Z-Wave radio (idempotent): enable/disable the radio, or set the region and long-range channel. Read current values with hub_get_radio_details(radio='zwave').[[FLAT_TRIM]] Config updates preserve the radio's other current settings (a region change keeps enabled/secureJoin). Disabling strands every Z-Wave device, so it is confirm-gated. For repair/inclusion/exclusion/maintenance use hub_call_zwave; for reset/firmware use hub_call_destructive_ops.[[/FLAT_TRIM]] Requires Write master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2268,7 +2329,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_set_zigbee",
-            description: "Configure the Zigbee radio (idempotent): enable/disable, channel + power, radio settings (rebuild-on-reboot / inactive-device ping), or per-device keep-alive ping. One operation per call. Read current values with hub_get_radio_details(radio='zigbee').[[FLAT_TRIM]] Channel changes can drop devices that do not follow (they may need re-pairing). Disabling strands every Zigbee device, so it is confirm-gated. Settings merge over current values (an unspecified flag is preserved). For reboot/rebuild/channel-scan use hub_call_zigbee; for reset/firmware use hub_call_destructive_radio.[[/FLAT_TRIM]] Requires Write master.",
+            description: "Configure the Zigbee radio (idempotent): enable/disable, channel + power, radio settings (rebuild-on-reboot / inactive-device ping), or per-device keep-alive ping. One operation per call. Read current values with hub_get_radio_details(radio='zigbee').[[FLAT_TRIM]] Channel changes can drop devices that do not follow (they may need re-pairing). Disabling strands every Zigbee device, so it is confirm-gated. Settings merge over current values (an unspecified flag is preserved). For reboot/rebuild/channel-scan use hub_call_zigbee; for reset/firmware use hub_call_destructive_ops.[[/FLAT_TRIM]] Requires Write master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2302,7 +2363,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_call_zwave",
-            description: "Z-Wave network lifecycle operations (NOT idempotent): repair, device inclusion (join + S2 grants), exclusion, per-node maintenance, node replace/remove, antenna test, and SmartStart delete. Pick the operation with action.[[FLAT_TRIM]] node_id is required for per-node actions. exclusion_start and node_remove unpair/disrupt devices and require confirm=true. Repair takes 5-30 min and devices may be briefly unresponsive. Poll progress with hub_get_radio_details(include_status=true). For enable/disable/region/channel use hub_set_zwave; for reset/firmware use hub_call_destructive_radio.[[/FLAT_TRIM]] Requires Write master.",
+            description: "Z-Wave network lifecycle operations (NOT idempotent): repair, device inclusion (join + S2 grants), exclusion, per-node maintenance, node replace/remove, antenna test, and SmartStart delete. Pick the operation with action.[[FLAT_TRIM]] node_id is required for per-node actions. exclusion_start and node_remove unpair/disrupt devices and require confirm=true. Repair takes 5-30 min and devices may be briefly unresponsive. Poll progress with hub_get_radio_details(include_status=true). For enable/disable/region/channel use hub_set_zwave; for reset/firmware use hub_call_destructive_ops.[[/FLAT_TRIM]] Requires Write master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2333,7 +2394,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_call_zigbee",
-            description: "Zigbee radio operations (NOT idempotent): reboot the radio, rebuild the mesh network, or trigger a channel energy scan. Pick the operation with action.[[FLAT_TRIM]] Rebuild takes time and Zigbee devices may be briefly unresponsive; read scan results with hub_get_radio_details(include_channel_scan=true). For enable/disable/channel/power use hub_set_zigbee; for reset/firmware use hub_call_destructive_radio.[[/FLAT_TRIM]] Requires Write master.",
+            description: "Zigbee radio operations (NOT idempotent): reboot the radio, rebuild the mesh network, or trigger a channel energy scan. Pick the operation with action.[[FLAT_TRIM]] Rebuild takes time and Zigbee devices may be briefly unresponsive; read scan results with hub_get_radio_details(include_channel_scan=true). For enable/disable/channel/power use hub_set_zigbee; for reset/firmware use hub_call_destructive_ops.[[/FLAT_TRIM]] Requires Write master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2357,7 +2418,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_call_matter",
-            description: "Matter operations (NOT idempotent): enable/disable the Matter radio, pair (commission) a device by setup code, or open a pairing/share window for a commissioned node. Pick the operation with action.[[FLAT_TRIM]] Enable/disable requires a HUB REBOOT to take effect (reboot via hub_reboot). Poll commissioning with hub_get_radio_details(radio='matter', include_status=true). Matter requires a C-8/C-8 Pro on supported firmware. For reset use hub_call_destructive_radio.[[/FLAT_TRIM]] Requires Write master.",
+            description: "Matter operations (NOT idempotent): enable/disable the Matter radio, pair (commission) a device by setup code, or open a pairing/share window for a commissioned node. Pick the operation with action.[[FLAT_TRIM]] Enable/disable requires a HUB REBOOT to take effect (reboot via hub_reboot). Poll commissioning with hub_get_radio_details(radio='matter', include_status=true). Matter requires a C-8/C-8 Pro on supported firmware. For reset use hub_call_destructive_ops.[[/FLAT_TRIM]] Requires Write master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2384,34 +2445,34 @@ def _getAllToolDefinitions_partDiagnostics() {
             ]
         ],
         [
-            name: "hub_call_destructive_radio",
-            description: """⚠️ DESTRUCTIVE radio operations — network/fabric WIPE or FIRMWARE FLASH. Reset unpairs EVERY device on a radio (irreversible); a firmware flash can BRICK hardware if interrupted.
+            name: "hub_call_destructive_ops",
+            description: """⚠️ DESTRUCTIVE hub ops by `target`: radio WIPE/FIRMWARE, network DISCONNECT, or cloud DISABLE.[[FLAT_TRIM]] Each can sever connectivity, unpair devices, or brick hardware.[[/FLAT_TRIM]]
 
-Misfire-proof: you MUST pass an explicit radio AND an explicit action AND confirm=true — there are no defaults. reset (radio=zwave|zigbee|matter) wipes that radio's network/fabric.[[FLAT_TRIM]] Firmware: device_firmware_start/abort (Z-Wave device OTA, needs node_id+file_name from hub_get_radio_details(include_firmware=true)), zwave_chip_firmware (hub Z-Wave radio), zigbee_firmware (Zigbee radio to latest).[[/FLAT_TRIM]]
+Misfire-proof: pass an explicit target AND action AND confirm=true — no defaults.[[FLAT_TRIM]] target=zwave|zigbee|matter: reset wipes that radio's network/fabric (irreversible — unpairs ALL its devices); firmware flashes (device_firmware_start/abort = Z-Wave device OTA, needs node_id+file_name from hub_get_radio_details(include_firmware=true); zwave_chip_firmware = hub Z-Wave radio; zigbee_firmware = Zigbee radio to latest) can BRICK hardware if interrupted. target=network: disconnect_wifi / disconnect_ethernet drop that link (the hub may become unreachable over it). target=cloud: disable severs the cloud controller — Alexa/Google, cloud dashboards, cloud firmware updates, and Hub Protect/subscription features all stop until enable restores them.[[/FLAT_TRIM]]
 
-PRE-FLIGHT: 1) Backup <24h old 2) Tell the user exactly which radio/devices are affected and that reset is irreversible / firmware can brick 3) Get explicit confirmation 4) Set confirm=true. Do NOT power-cycle the hub or device during a flash.
+PRE-FLIGHT: 1) Backup <24h old 2) Tell the user what is affected (irreversible / can brick / disconnects) 3) Get explicit confirmation 4) Set confirm=true.[[FLAT_TRIM]] Name exactly what is hit: which radio/devices, which network link, or that cloud features all stop. Do NOT power-cycle the hub or device during a firmware flash.[[/FLAT_TRIM]]
 Requires Write master.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    radio: [type: "string", enum: ["zwave", "zigbee", "matter"], description: "REQUIRED: which radio. reset works for all three; firmware actions are radio-specific (device_firmware_*/zwave_chip_firmware=zwave, zigbee_firmware=zigbee)."],
-                    action: [type: "string", enum: ["reset", "device_firmware_start", "device_firmware_abort", "zwave_chip_firmware", "zigbee_firmware"], description: "REQUIRED: reset (wipe network/fabric — unpairs all devices), or a firmware flash action."],
-                    node_id: [description: "Z-Wave node id; required for device_firmware_start/abort."],
-                    file_name: [type: "string", description: "Firmware file name from hub_get_radio_details(include_firmware=true); required for device_firmware_start."],
-                    target: [description: "Optional Z-Wave firmware target index for device_firmware_start (defaults to node_id)."],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms backup was created and the user approved this destructive radio op."]
+                    target: [type: "string", enum: ["zwave", "zigbee", "matter", "network", "cloud"], description: "REQUIRED: what to act on.[[FLAT_TRIM]] zwave/zigbee/matter = a radio (reset + firmware); network = the hub's WiFi/Ethernet link; cloud = the hub cloud controller.[[/FLAT_TRIM]]"],
+                    action: [type: "string", enum: ["reset", "device_firmware_start", "device_firmware_abort", "zwave_chip_firmware", "zigbee_firmware", "disconnect_wifi", "disconnect_ethernet", "disable", "enable"], description: "REQUIRED: depends on target.[[FLAT_TRIM]] Radio targets: reset (wipe network/fabric — unpairs all devices) or a firmware flash action. target=network: disconnect_wifi | disconnect_ethernet. target=cloud: disable | enable.[[/FLAT_TRIM]]"],
+                    node_id: [description: "Z-Wave node id.[[FLAT_TRIM]] Required for device_firmware_start/abort.[[/FLAT_TRIM]]"],
+                    file_name: [type: "string", description: "Firmware file name.[[FLAT_TRIM]] From hub_get_radio_details(include_firmware=true); required for device_firmware_start.[[/FLAT_TRIM]]"],
+                    target_index: [description: "Optional Z-Wave firmware target index.[[FLAT_TRIM]] For device_firmware_start; defaults to node_id.[[/FLAT_TRIM]]"],
+                    confirm: [type: "boolean", description: "REQUIRED: must be true.[[FLAT_TRIM]] Confirms backup was created and the user approved this destructive op.[[/FLAT_TRIM]]"]
                 ],
-                required: ["radio", "action", "confirm"]
+                required: ["target", "action", "confirm"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
                     success: [type: "boolean", description: "Whether the operation was accepted"],
-                    radio: [type: "string", description: "Echo of the requested radio"],
+                    target: [type: "string", description: "Echo of the requested target"],
                     action: [type: "string", description: "Echo of the requested action"],
                     message: [type: "string", description: "Human-readable result"],
-                    warning: [type: "string", description: "Irreversibility / brick warning"],
-                    lastBackup: [type: "string", description: "Formatted last-backup timestamp; present for reset"],
+                    warning: [type: "string", description: "Irreversibility / brick / disconnect warning"],
+                    lastBackup: [type: "string", description: "Formatted last-backup timestamp; present for radio reset"],
                     note: [type: "string", description: "Follow-up guidance"],
                     error: [type: "string", description: "Present on failure"],
                     response: [description: "Hub response body"]
@@ -2526,7 +2587,7 @@ def _toolDisplayMeta_partDiagnostics() {
         hub_call_zwave: [title: "Z-Wave Operations", summary: "Z-Wave repair, inclusion, exclusion, node maintenance, replace/remove, antenna test, SmartStart delete."],
         hub_call_zigbee: [title: "Zigbee Operations", summary: "Reboot the Zigbee radio, rebuild the network, or trigger a channel scan."],
         hub_call_matter: [title: "Matter Operations", summary: "Enable/disable Matter, pair a device by setup code, or open a pairing window."],
-        hub_call_destructive_radio: [title: "Destructive Radio Ops", summary: "Reset a radio's network/fabric or flash device/chip/radio firmware (irreversible)."],
+        hub_call_destructive_ops: [title: "Destructive Hub Ops", summary: "Reset a radio, flash firmware, disconnect WiFi/Ethernet, or disable the cloud controller (irreversible)."],
         hub_list_captured_states: [title: "List Captured States", summary: "List saved device state snapshots."],
         hub_delete_captured_state: [title: "Delete Captured State", summary: "Delete one or all captured device state snapshots."]
     ]
