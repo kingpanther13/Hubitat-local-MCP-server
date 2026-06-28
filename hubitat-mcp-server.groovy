@@ -5336,6 +5336,25 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 - rebuild_network takes time; Zigbee devices may be briefly unresponsive during the rebuild.
 - Read channel_scan results with hub_get_radio_details(include_channel_scan=true).
 - For enable/disable, channel, or power use hub_set_zigbee (idempotent config); for radio reset or firmware flash use hub_call_destructive_ops.
+
+
+### hub_update_app (modify existing app code, and/or enable/configure OAuth)
+
+- **Self-update guard rationale:** the tool refuses to overwrite the MCP server's own app source or OAuth unless Developer Mode is on because a bad self-update bricks the MCP loop — the server app's own OAuth backs the live `/mcp` token.
+- **`triggerUpdated`:** OPTIONAL post-save lifecycle refresh. Set it to the running instance appId to fire `updated()` so subscriptions/schedules re-initialize. UI Save does NOT fire `updated()`, so this is opt-in only.
+- **`oauth` param shape:** `{enabled (bool, default true), client_id?, client_secret?, refresh_secret? (bool, regenerate the secret)}`. Omit `client_id`/`client_secret` to preserve current values; if they are unreadable the tool refuses (`success:false`) rather than blanking them. Resulting credentials return under `result.oauth`.
+
+### hub_create_app (install new app code, then instantiate a running instance)
+
+**installAsUserApp second-step mode** (pass the `codeAppId` from a prior code-install `hub_create_app` call to instantiate already-installed code AND commit the install; mutually exclusive with the code-install args):
+- Submits the config page's Done, firing `installed()`/`initialize()` so the instance's schedules and event subscriptions register.
+- Works for apps whose first page installs with defaults.
+- A required first-page input with no default blocks the auto-Done (same behavior as the Hubitat UI) -- in that case the install cannot be auto-committed.
+
+
+### hub_update_app / hub_update_driver — expectedVersion (optimistic-lock guard)
+
+`expectedVersion` aborts the write with `conflict:true` on a version mismatch. Stringified integers are coerced; an explicit null is rejected. In bulk driver updates, put `expectedVersion` inside each `updates[]` entry.
 ''',
 
         virtual_devices: '''## Virtual Device Types
@@ -5656,7 +5675,35 @@ For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub
   hub_set_rule(appId=974, addTrigger={capability: "Switch", deviceIds: [8, 9], state: "on"}, confirm=true)
   hub_set_rule(appId=974, addAction={capability: "switch", action: "off", deviceIds: [10]}, confirm=true)
   hub_get_rule_health(appId=974) → verify ok=true, no configPageError or brokenMarkers
-  hub_delete_native_app(appId=974, force=true, confirm=true) → {backup: {backupKey: "rm-rule_974_..."}}''',
+  hub_delete_native_app(appId=974, force=true, confirm=true) → {backup: {backupKey: "rm-rule_974_..."}}
+
+### hub_get_app_config (deferred internals: embeddedActions wire-format + includeSettings key encoding)
+
+- **embeddedActions in RM 5.1**: the clickable wizard buttons (e.g. RM's Create/Edit/Delete Trigger) are exposed by the hub as `<div class='submitOnChange'>` elements, NOT as schema inputs. The `embeddedActions` field surfaces each button's `name` plus its `stateAttribute` so that `hub_set_rule` can drive the button.
+- **includeSettings raw-key encoding example**: large apps' raw app-internal settings keys use app-specific encoding — e.g. Room Lighting encodes per-device-per-scene keys as `dm~<deviceId>~<scene>`. (Set `includeSettings=true` only for power-user inspection; large apps can have 500-1000 such keys.)
+
+### hub_list_apps (scope='instances' filter — category meanings)
+
+The `filter` enum values select which category of instances to return (scope='instances' only):
+- **all** (default) — every instance
+- **builtin** — Hubitat native apps
+- **user** — custom Groovy apps
+- **disabled** — paused apps
+- **parents** — apps with children, e.g. Rule Machine, Room Lighting
+- **children** — individual rules, scenes
+
+### hub_list_drivers (list device driver TYPES on the hub)
+
+`include='user'` (default) lists user-installed drivers only; `include='all'` returns the full catalog (system + virtual + user), where each entry is `{id, name, namespace, bucket}` per driver type.
+
+- For `include='all'`, each entry is tagged `bucket=system|virtual|user`.
+- For an `include='all'` entry, its **id** is the driver-type id to pass to `hub_create_device`, while `hub_manage_virtual_device(customDriver={namespace, name})` takes that same entry's **namespace + name** (not the id).
+
+
+### hub_list_app_pages (curated page-name directory)
+
+Curated sub-page directories by app type: HPM — prefOptions (main menu), prefPkgUninstall (full installed-package list), prefPkgModify (modifiable subset), prefPkgInstall (install flow), prefPkgMatchUp (match-up flow); Rule Machine rules — mainPage only (rules are single-page); Room Lighting — mainPage; Mode Manager — mainPage. Unknown app types return the live primary page only.
+''',
 
         set_rule_reference: '''## `hub_set_rule` capability reference
 

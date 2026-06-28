@@ -2477,7 +2477,7 @@ Requires the Read master. Pass cursor to page at 50/page when the full response 
                 type: "object",
                 properties: [
                     scope: [type: "string", enum: ["instances", "types"], description: "What to list. 'instances' (default) = running app instances with parent/child tree; 'types' = installed app code library / available app types.", default: "instances"],
-                    filter: [type: "string", enum: ["all", "builtin", "user", "disabled", "parents", "children"], description: "scope='instances' only: category filter.[[FLAT_TRIM]] all (default) | builtin (Hubitat native) | user (custom Groovy) | disabled (paused) | parents (apps with children, e.g. Rule Machine, Room Lighting) | children (individual rules, scenes).[[/FLAT_TRIM]]"],
+                    filter: [type: "string", enum: ["all", "builtin", "user", "disabled", "parents", "children"], description: "scope='instances' only: category filter."],
                     includeHidden: [type: "boolean", description: "scope='instances' only: include hidden apps (typically Hubitat internal). Default: false", default: false],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded (subject to 120KB guard); pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
@@ -2510,11 +2510,11 @@ Requires the Read master. Pass cursor to page at 50/page when the full response 
         ],
         [
             name: "hub_list_drivers",
-            description: "List device driver types on the hub. include='user' (default) lists user-installed drivers; include='all' returns the full catalog (system + virtual + user).[[FLAT_TRIM]] For an include='all' entry, its id is the driver-type id for hub_create_device, while hub_manage_virtual_device(customDriver) takes the entry's namespace + name (not the id).[[/FLAT_TRIM]] Requires Read master.",
+            description: "List device driver types on the hub. include='user' (default) lists user-installed drivers; include='all' returns the full catalog (system + virtual + user). Requires Read master.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    include: [type: "string", enum: ["user", "all"], description: "Scope: 'user' (default) = user-installed drivers only; 'all' = full catalog (system + virtual + user)[[FLAT_TRIM]], each entry tagged bucket=system|virtual|user[[/FLAT_TRIM]]."],
+                    include: [type: "string", enum: ["user", "all"], description: "Scope: 'user' (default) = user-installed drivers only; 'all' = full catalog (system + virtual + user)."],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
             ],
@@ -2615,7 +2615,7 @@ Verifies the install compiled -- returns success=false with the error if it didn
                     source: [type: "string", description: "Inline Groovy source. Stubs only -- fills agent transcript. For non-trivial apps prefer sourceFile or importUrl."],
                     sourceFile: [type: "string", description: "File Manager filename (upload first via curl, see the tool guide; bypasses agent transcript)."],
                     importUrl: [type: "string", description: "URL the hub fetches directly. Mirrors the editor's Import Code from Website + Save. http:// or https://. Mutually exclusive with source/sourceFile."],
-                    installAsUserApp: [type: "integer", description: "Second-step mode: instantiate already-installed code (pass the codeAppId from a prior hub_create_app call) AND commit the install.[[FLAT_TRIM]] Submits the config page's Done, firing installed()/initialize() so schedules/subscriptions register. Works for apps whose first page installs with defaults; a required first-page input with no default blocks the auto-Done (same as the UI).[[/FLAT_TRIM]] Mutually exclusive with code-install args."],
+                    installAsUserApp: [type: "integer", description: "Second-step mode: instantiate already-installed code (pass the codeAppId from a prior hub_create_app call) AND commit the install. Mutually exclusive with code-install args."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["confirm"]
@@ -2706,7 +2706,7 @@ Supply the new code via exactly one of source / sourceFile / importUrl, or resav
 
 Auto-backs up before modifying. Requires Write master + confirm + backup <24h.
 
-Self-update guard: refuses to overwrite the MCP server's own app source or OAuth unless Developer Mode is on.[[FLAT_TRIM]] A bad self-update bricks the MCP loop (its OAuth backs the live /mcp token).[[/FLAT_TRIM]]""",
+Self-update guard: refuses to overwrite the MCP server's own app source or OAuth unless Developer Mode is on.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2716,8 +2716,8 @@ Self-update guard: refuses to overwrite the MCP server's own app source or OAuth
                     importUrl: [type: "string", description: "URL the hub fetches directly (http:// or https://)."],
                     resave: [type: "boolean", description: "Re-save the current source code without changes. Runs entirely on-hub."],
                     expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard. Aborts with conflict:true on version mismatch."],
-                    triggerUpdated: [type: "integer", description: "OPTIONAL post-save lifecycle refresh. Set to the running instance appId; fires updated() so subscriptions/schedules re-initialize.[[FLAT_TRIM]] UI Save does NOT fire updated(), so this is opt-in only.[[/FLAT_TRIM]]"],
-                    oauth: [type: "object", description: "OPTIONAL: enable/configure OAuth on this app (apps only).[[FLAT_TRIM]] {enabled (bool, default true), client_id?, client_secret?, refresh_secret? (bool, regenerate the secret)}. Omit client_id/client_secret to preserve current values; if unreadable it refuses (success:false) rather than blank them. Resulting credentials return under result.oauth.[[/FLAT_TRIM]]"],
+                    triggerUpdated: [type: "integer", description: "OPTIONAL post-save lifecycle refresh. Set to the running instance appId; fires updated() so subscriptions/schedules re-initialize."],
+                    oauth: [type: "object", description: "OPTIONAL: enable/configure OAuth on this app (apps only)."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["appId", "confirm"]
@@ -2920,7 +2920,7 @@ Auto-backs up before modifying. Requires Write master + confirm + backup <24h.""
             name: "hub_get_app_config",
             description: """Read an installed app's configuration — the structured data the Hubitat Web UI shows on each app's settings page. Works for Rule Machine rules, Room Lighting, Basic Rules, Button Controllers, Hubitat Package Manager, Mode Manager, and any other legacy SmartApp.
 
-Returns the app's identity (label, type, parent, disabled state) and its current config page: sections, inputs (name, type, title, description, options, current value), and `embeddedActions` — clickable wizard buttons (e.g. RM's Create/Edit/Delete Trigger) that hub_set_rule can drive.[[FLAT_TRIM]] (RM 5.1 exposes these as <div class='submitOnChange'> elements, not schema inputs; the field surfaces each button's name + stateAttribute so hub_set_rule can drive it.)[[/FLAT_TRIM]] Multi-page apps (e.g. RM 5.1) expose sub-pages — pass pageName to navigate into them. Read-only.
+Returns the app's identity (label, type, parent, disabled state) and its current config page: sections, inputs (name, type, title, description, options, current value), and `embeddedActions` — clickable wizard buttons (e.g. RM's Create/Edit/Delete Trigger) that hub_set_rule can drive. Multi-page apps (e.g. RM 5.1) expose sub-pages — pass pageName to navigate into them. Read-only.
 
 Get appId from hub_list_apps (scope='instances') or hub_list_rules — for RM rules use hub_list_rules, NOT hub_get_custom_rule (which only handles MCP-native rules). Requires Read master.""",
             inputSchema: [
@@ -2928,7 +2928,7 @@ Get appId from hub_list_apps (scope='instances') or hub_list_rules — for RM ru
                 properties: [
                     appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_apps (scope='instances'), hub_list_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."],
                     pageName: [type: "string", description: "Optional sub-page name for multi-page apps; main page when omitted. Call hub_list_app_pages to discover available names."],
-                    includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map (default false). Large apps can have 500-1000 app-encoded keys[[FLAT_TRIM]] (e.g. Room Lighting's dm~<deviceId>~<scene>)[[/FLAT_TRIM]]; set true only for power-user inspection.", default: false],
+                    includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map (default false). Large apps can have 500-1000 app-encoded keys; set true only for power-user inspection.", default: false],
                     summary: [type: "boolean", description: "Fast identity-only read: returns the thin app record (id, name, type, disabled, user), no config page; pageName/includeSettings ignored.", default: false]
                 ],
                 required: ["appId"]
