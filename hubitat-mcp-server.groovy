@@ -5889,6 +5889,59 @@ The `filter` enum values select which category of instances to return (scope='in
 ### hub_list_app_pages (curated page-name directory)
 
 Curated sub-page directories by app type: HPM — prefOptions (main menu), prefPkgUninstall (full installed-package list), prefPkgModify (modifiable subset), prefPkgInstall (install flow), prefPkgMatchUp (match-up flow); Rule Machine rules — mainPage only (rules are single-page); Room Lighting — mainPage; Mode Manager — mainPage. Unknown app types return the live primary page only.
+
+
+### hub_call_rule
+
+`action` selects which Rule Machine verb to invoke (default `rule`):
+
+- **`rule`** → `runRule`: re-evaluate the rule's conditions, then run the matching true/false action set.
+- **`actions`** → `runRuleAct`: run the action list directly, skipping condition evaluation.
+- **`stop`**: halt the rule's in-progress actions.
+- **`start`**: re-enable a stopped rule (also resets its private boolean).
+
+`stop`/`start` toggle the stopRule UI button, not RMUtils (RMUtils has no startRule verb).
+
+### hub_set_native_app
+
+This is the generic upsert tool for ANY classic SmartApp. It is separate from the MCP custom rule engine (`hub_*_custom_rule`), and Rule Machine RULES belong in `hub_set_rule` (use this tool only for non-RM classic apps).
+
+**Create path (admin-layer shell).** A new app's shell is created via the hub's admin-layer `createchild` endpoint, which bypasses the SmartApp parent-type check that blocks third-party `addChildApp('hubitat', ...)` calls. The new app then appears under Apps / Automations exactly as if created via the native UI. The creatable `appType` enum is driven by `_appTypeRegistry()` — add new creatable types there.
+
+**`name`** — the label for the new app; it is shown in the hub's app list.
+
+**Button Rules.** A Button Rule cannot be created standalone and is NOT an `appType` value — create it via the `buttonRule` parameter (`buttonRule={controllerId, buttonNumber, event}`). It routes through the controller's add-button flow and returns `buttonRuleId` with the Button trigger auto-seeded; author its actions via `hub_set_rule(appId=buttonRuleId, addAction=...)`. The controller must already have a button device assigned.
+
+**RM authoring shortcuts and `walkStep` are EDIT-only here.** `walkStep` and the RM authoring shortcuts also work on this tool, but ONLY on EDIT (appId present) for RM-wire-format classic apps; the CREATE arm (no appId) honors NONE of them and rejects rather than silently dropping them. `walkStep` has the same shape as `hub_set_rule`'s `walkStep` — see `hub_get_tool_guide(section='set_rule_reference')`. For Rule Machine RULES use `hub_set_rule`.
+
+### hub_get_rule_health
+
+Rule Machine, Visual Rules Builder, and the other supported classic apps (Button Controller, Basic Rule) share RM's configPage protocol.
+
+`ruleFormat` says which engine answered: `rm` / `vrb-graph` / `vrb-classic` / `basic-rule` / `button-controller` / `classic-app`.
+
+The report surfaces the compiled-state broken verdict, validationErrors, config-page render errors, RM `*BROKEN*` / `**Broken Trigger|Action|Condition**` markers, multiple-flag corruption, structural IF/Repeat imbalance, and a compiled-vs-HTML cross-check (the full key list plus `brokenMarkerCounts` lives in the tool's outputSchema).
+
+**`source` parameter — which source(s) to read:**
+- `auto` (default): the preferred compiled-state verdict plus the RM HTML render detections + a cross-check.
+- `ruleBuilderJson`: the compiled-state verdict only.
+- `configPage`: the legacy RM HTML render scan only.
+
+### hub_list_rule_local_variables
+
+List a Rule Machine rule's LOCAL variables (per-rule, distinct from hub globals). Requires the Read master.
+
+- Hub globals are covered by `hub_list_variables`; locals are created via `hub_set_rule` `addLocalVariable` / `removeLocalVariable`.
+- Reads `state.allLocalVars` from the rule's `statusJson` appState; returns each local's name, type, and current value.
+- Pure read -- no wizard, no mutation.
+- Use to confirm a local exists (and its type) before targeting it with the `setLocalVariable` action or `removeLocalVariable` shortcut.
+
+### hub_delete_native_app
+
+The `force` flag selects which hub admin-layer endpoint performs the delete:
+
+- **force=false (default)** — soft delete via `/installedapp/delete`. The hub refuses if the app has child apps or devices; the response includes `hubMessage` explaining why.
+- **force=true** — hard delete via `/installedapp/forcedelete/quiet` — the same path the hub UI uses internally for its own "Delete" buttons. No child safety checks.
 ''',
 
         set_rule_reference: '''## `hub_set_rule` capability reference
