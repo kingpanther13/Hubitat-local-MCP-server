@@ -5292,7 +5292,51 @@ All Write master tools require these steps:
 
 **hub_delete_room** - Devices become unassigned (not deleted). List affected devices first.
 
-**hub_delete_item (type=app|driver|library)** - Remove app instances via Hubitat UI first (apps). Change devices to different driver first (drivers). For libraries, check that no apps/drivers reference the library via #include namespace.Name before deleting -- deletion breaks any code that still includes it. Auto-backs up before deletion.''',
+**hub_delete_item (type=app|driver|library)** - Remove app instances via Hubitat UI first (apps). Change devices to different driver first (drivers). For libraries, check that no apps/drivers reference the library via #include namespace.Name before deleting -- deletion breaks any code that still includes it. Auto-backs up before deletion.
+
+### hub_call_zwave (Z-Wave lifecycle action grouping + routing)
+
+- Action groups: repair_start/repair_cancel + repair_node (network rebuild); inclusion_start/inclusion_stop + grant_keys/grant_code (S2 pairing); exclusion_start/exclusion_stop; node_refresh/node_rediscover/node_reinitialize + refresh_stats (per-node maintenance); node_replace + node_replace_stop; node_remove (failed-node removal); antenna_test_start/antenna_test_continue; smartstart_delete.
+- S2 pairing payloads: grant_keys takes the granted security classes, e.g. {S2AccessControl:true, S2Authenticated:true, S2Unauthenticated:false, S0Unauthenticated:false}; grant_code (DSK confirmation) takes e.g. {accept:true, securityCode:'12345'}.
+- Poll repair/operation progress with hub_get_radio_details(include_status=true). (repair_start duration/disruption and off-peak guidance: see the repair_start note above.)
+- Related radio tools: enable/disable, region, and long-range channel via hub_set_zwave; radio reset (unpairs every device) and Z-Wave firmware flashes via hub_call_destructive_ops.
+
+### hub_set_zigbee (configure the Zigbee radio: enable/disable, channel/power, radio settings, per-device ping)
+
+- Idempotent config, one operation per call; read current values first with hub_get_radio_details(radio='zigbee'). Disabling the radio strands every Zigbee device and is confirm-gated (confirm=true + backup <24h).
+- **Channel changes** can drop devices that do not follow the new channel (they may need re-pairing); a channel/power update returns a `warning` describing the disruption.
+- **Radio settings** (rebuild_on_reboot / ping_inactive) MERGE over current values -- an unspecified flag is preserved, so pass only the flag you intend to change.
+- **Sibling tools:** for reboot / rebuild-network / channel-scan use hub_call_zigbee; for radio reset or firmware flash use hub_call_destructive_ops.
+
+### hub_call_destructive_ops — firmware-flash action reference
+
+The radio firmware-flash `action` values (the bullet above summarizes these as "a firmware flash"; an interrupted flash can brick hardware — never power-cycle during one):
+- `device_firmware_start` — Z-Wave device firmware OTA. Requires `node_id` + `file_name` (`file_name` comes from hub_get_radio_details(include_firmware=true)); optional `target_index` defaults to `node_id`.
+- `device_firmware_abort` — abort an in-progress Z-Wave device flash. Requires `node_id`.
+- `zwave_chip_firmware` — flash the hub's own Z-Wave radio chip (no extra args).
+- `zigbee_firmware` — update the Zigbee radio to the latest firmware (no extra args).
+
+(Matter supports only `reset`, no firmware flash.)
+
+### hub_call_matter (Matter radio: enable/disable, pair, open pairing window)
+
+- After `action=pair` (the 11- or 21-digit Matter setup code), poll commissioning progress with hub_get_radio_details(radio='matter', include_status=true).
+- Matter requires a C-8 / C-8 Pro hub on supported firmware; the failure note repeats this.
+- `action=open_pairing_window` opens a share window for a commissioned node_id; the response carries the setup code to add that device to another fabric.
+- To RESET the Matter fabric (wipes commissioning, unpairs every Matter device) use hub_call_destructive_ops(target='matter', action='reset').
+
+### hub_set_zwave (configure the Z-Wave radio: enable/disable, region, long-range channel)
+
+- Config updates preserve the radio's other current settings: a region or long-range-channel change keeps the current `enabled` and `secureJoin` values. The hub's zwaveDetails update is a full-replacement endpoint (it takes the complete param set, not a partial patch), so the tool reads current state first and overrides only what you changed.
+- Disabling the radio strands every Z-Wave device, so it is confirm-gated (confirm=true plus a hub backup <24h).
+- Scope routing: for repair / inclusion (join + S2 grants) / exclusion / per-node maintenance use hub_call_zwave; for radio reset or firmware flash use hub_call_destructive_ops.
+
+### hub_call_zigbee (non-idempotent Zigbee radio ops)
+- Actions: radio_reboot (restart the Zigbee chip), rebuild_network (rebuild the mesh), channel_scan (trigger an energy scan). No confirm gate, but the Write master applies.
+- rebuild_network takes time; Zigbee devices may be briefly unresponsive during the rebuild.
+- Read channel_scan results with hub_get_radio_details(include_channel_scan=true).
+- For enable/disable, channel, or power use hub_set_zigbee (idempotent config); for radio reset or firmware flash use hub_call_destructive_ops.
+''',
 
         virtual_devices: '''## Virtual Device Types
 
@@ -5473,7 +5517,61 @@ Files stored at http://<HUB_IP>/local/<filename>
 - Add since for an absolute bookmark -- return only events AFTER an exact timestamp (ISO-8601 in the same format the tool emits in date/sinceTimestamp -- a numeric offset with no colon, e.g. 2026-06-23T10:00:00.000-0600; a trailing Z for UTC and a millis-less variant are also accepted -- or epoch milliseconds). since takes precedence over hoursBack; a future since yields an empty list. Both since and hoursBack route to history mode
 - Change-watching loop: record a returned event date, run your action, then pass that date back as since to get exactly the new events. The response echoes sinceMode ("explicit" when since drove it, "relative" for hoursBack) and the bounding field (since or hoursBack)
 - appId (mutually exclusive with deviceId) returns the events an installed app/rule emitted; rows are {name, value, description, date}
-- Use the attribute filter to reduce data volume''',
+- Use the attribute filter to reduce data volume
+
+### hub_get_logs (filter pipeline, regex, and time-window reference)
+
+- Filter pipeline order: scope (deviceId/appId, server-side) -> level -> source -> pattern -> patterns -> time window (since/until) -> limit.
+- `pattern` / `patterns`: the regex matches the log message field ONLY (use `source` for app/device-name substring matching); it is compiled once and throws on invalid regex syntax. A pathological regex like `(.*)*` may hang the matcher -- prefer simple alternation (`error|fail`) or anchored prefixes.
+- `pattern` and `patterns` are compatible: when both are supplied, both apply simultaneously.
+- `patternMode` is case-insensitive ('ANY' and 'any' both work).
+- `since`/`until` relative offsets are subtracted from now; the max relative offset is 30d and a larger offset throws -- use an ISO-8601 timestamp for longer ranges.
+- Timestamps without a TZ marker (e.g. '2024-01-15T10:30:00' or '2024-01-15 10:30:00.000') are parsed as UTC. '0m' / '0d' is a degenerate `since` that filters out everything older than now (useful for test harnesses, rarely otherwise).
+- `until` defaults to now (no upper bound); pair it with `since` for a window, e.g. since='2h', until='1h' means '1 to 2 hours ago'.
+- `cursor`: filters + limit apply first, then the cursor pages within the filtered result (page size 100).
+
+### hub_get_radio_details (read-only Z-Wave/Zigbee/Matter radio surface)
+
+- Covers radio details (firmware, home/PAN ID, channel, device nodes), mesh topology, per-node state, lifecycle status pollers, channel scan, SmartStart entries, and firmware-eligible devices.
+- Pairs with the write tools in hub_manage_radio (hub_set_zwave / hub_set_zigbee / hub_call_zwave / hub_call_zigbee / hub_call_matter) and the destructive resets/firmware in hub_call_destructive_ops.
+- include_topology shape (Z-Wave/Zigbee only): Z-Wave returns nodes+connectors plus the raw route table; Zigbee returns children+neighbors+routes.
+- node_id result location: Z-Wave node state lands under result.nodeState (plain text; 'Done' when idle); Matter commissioning status (radio='matter') lands under result.matterPairStatus.
+- include_status (result.status) contents: Z-Wave repair stage, heal-running flag, exclusion status, join discovery, antenna-test progress, node-replace status/info, and Zigbee network status (panId/extendedPanId/networkState). Matter commissioning status is per-node instead: radio='matter' + node_id.
+- include_channel_scan: run a fresh scan with hub_call_zigbee action='channel_scan' first, then read result.channelScan.
+- include_smartstart: each entry's nodeDSK feeds hub_call_zwave action='smartstart_delete'.
+- include_firmware: shape {devices:[{nodeId,label}], files}; feeds hub_call_destructive_ops firmware actions.
+
+### hub_get_device_health (device-staleness check + LAN/WAN network probes)
+- Stale check covers only devices authorized for MCP access (the app's selected device list). MCP-managed virtual/child devices (from hub_manage_virtual_device) are a SEPARATE population NOT included here -- list those via hub_list_devices(filter='virtual').
+- pingHosts/traceroute/speedtest are independent read-only network probes, runnable in any combination; each param documents its own mechanics and result location.
+- pingHosts: each entry is sent through hubitat.helper.NetworkUtils.ping() and reported under pingResults with reachable/rttAvg/packetLoss. Hostnames are not resolved -- pass IPs only.
+- traceroute: hostnames are rejected -- pass an IP (dotted-quad).
+- speedtest: fixed 10 MB Hubitat S3 blob, no caller input; a few seconds on a fast link, up to ~90s on slow ones.
+
+### hub_get_metrics (hub metrics + the hub's own health alerts)
+- `current` snapshot fields: timestamp, timestampEpoch, freeMemoryKB, internalTempC, databaseSizeKB, uptimeSeconds, uptimeFormatted. `current` also carries locally-derived warning notes when thresholds are crossed: memoryWarning (<50 MB free), temperatureWarning (>70 °C), databaseWarning (>500 MB) — with softer memoryNote/temperatureNote variants below those thresholds.
+- `trends`: recent history points {timestamp, freeMemoryKB, internalTempC, databaseSizeKB, uptimeSeconds}. `trendPoints` chooses how many (default 10, max 50). `trendPointsAvailable` = total rows on file; `historyFile` = the CSV name in File Manager (mcp-performance-history.csv).
+- Trend history is sparse/stale: the hub never auto-samples, so points exist only from earlier recordSnapshot=true calls and reset if that CSV is cleared. Call recordSnapshot=true periodically to build a trend — it appends one row to the performance-history CSV (rolling 500-row window) and is the tool's ONLY write side-effect (default false = read-only).
+- `healthAlerts`: the hub's own active health alerts pulled from /hub2/hubData — {safeMode, active (currently-firing alert flags such as hubLowMemory / hubLargeDatabase / zwaveOffline / localBackupFailed / weakZigbee), details (full alert-flag map + the hub's message strings)}. Covers radio offline, backup failures, low memory, DB bloat, weak mesh, and safeMode. Complements the locally-derived warnings on `current` (and may differ in threshold from them). null if /hub2/hubData was unreadable.
+
+**hub_get_memory_history:**
+- Free OS memory and CPU-load history (the platform's own timestamped ring buffer; each entry has freeMemoryKB and cpuLoad5min)
+- limit caps the most-recent entries returned (default 100); limit=0 returns all (the hub may hold thousands of rows)
+- Cursor mode pages within the limit-filtered entries; with limit=0 + cursor it pages the FULL ring buffer (every history row, not just a limit-filtered window). Pass "" for the first page and iterate nextCursor (page size 100)
+
+### hub_get_performance_stats (per-device/app metrics it reports)
+
+- Reports per device/app: method call counts, % busy, state size, events, states, hub actions, and pending events.
+- The `sortBy` enum maps onto these columns: `pct` = % busy (default), `count` = method call count, `stateSize` = state size, `totalMs` = total ms, `name` = device/app name.
+
+**hub_list_captured_states (list saved device-state snapshots):**
+- Storage limit is configurable (default 20; `maxCapturedStates` setting). When the store is full, the oldest snapshot is auto-deleted to make room for a new capture.
+- The response reports `maxLimit` (the retention cap) and, when near/at the cap, a `warning` field: "Approaching limit" within 4 slots of the cap, "At maximum capacity" once full (the next capture will evict the oldest).
+
+**hub_call_gc (force JVM garbage collection):**
+- Returns free memory before and after GC in KB (`beforeFreeMemoryKB`, `afterFreeMemoryKB`).
+- Reports the reclaimed amount as `deltaKB` plus a `memoryReclaimed` boolean (true when free memory increased); both are present only when both readings succeeded.
+''',
 
         builtin_app_tools: '''## Installed-App & Native-Rule Tools
 

@@ -1985,7 +1985,7 @@ def _getAllToolDefinitions_partDiagnostics() {
     return [
         [
             name: "hub_get_logs",
-            description: """Get Hubitat system logs, most recent first. Requires Read master.[[FLAT_TRIM]] Filter pipeline (in order): scope (deviceId/appId, server-side) -> level -> source -> pattern -> patterns -> time window (since/until) -> limit.[[/FLAT_TRIM]]""",
+            description: """Get Hubitat system logs, most recent first. Requires Read master.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1994,12 +1994,12 @@ def _getAllToolDefinitions_partDiagnostics() {
                     deviceId: [type: "string", description: "Scope to a single device's log entries (server-side filter, mutually exclusive with appId)"],
                     appId: [type: "string", description: "Scope to a single app's log entries (server-side filter, mutually exclusive with deviceId)"],
                     limit: [type: "integer", description: "Max entries to return. Default: 100, max: 500.", default: 100],
-                    pattern: [type: "string", description: "Case-insensitive regex applied to the log message field only -- use source for app/device-name substring matching.[[FLAT_TRIM]] Compiled once; throws on invalid regex syntax. Pathological regex like (.*)*  may hang the matcher; prefer simple alternation (error|fail) or anchored prefixes.[[/FLAT_TRIM]]"],
-                    patterns: [type: "array", items: [type: "string"], description: "Multiple regex patterns, same matching rules and caveats as `pattern`[[FLAT_TRIM]] (message-field only; throws on invalid regex)[[/FLAT_TRIM]]. Combine via patternMode.[[FLAT_TRIM]] Compatible with `pattern` (both apply).[[/FLAT_TRIM]]"],
-                    patternMode: [type: "string", description: "How patterns array is combined: 'any' (default) = OR; 'all' = AND.[[FLAT_TRIM]] Case-insensitive ('ANY' and 'any' both work).[[/FLAT_TRIM]]", enum: ["any", "all"]],
-                    since: [type: "string", description: "Return only entries at or after this time. Accepts ISO-8601 timestamp (e.g. '2024-01-15T10:30:00Z') or relative offset (e.g. '30m', '2h', '1d', '7d').[[FLAT_TRIM]] Relative offset is subtracted from now.[[/FLAT_TRIM]] Max relative offset: 30d[[FLAT_TRIM]] (throws if exceeded -- use ISO-8601 for longer ranges)[[/FLAT_TRIM]].[[FLAT_TRIM]] Timestamps without a TZ marker (e.g. '2024-01-15T10:30:00' or '2024-01-15 10:30:00.000') are parsed as UTC. Use '0m' / '0d' as a degenerate since to filter out everything older than now -- useful for testing harnesses but rarely otherwise.[[/FLAT_TRIM]]"],
-                    until: [type: "string", description: "Return only entries at or before this time. Same format as since[[FLAT_TRIM]] (relative offsets are subtracted from now, same as since; max 30d)[[/FLAT_TRIM]]. Default: now (no upper bound).[[FLAT_TRIM]] Use since='2h', until='1h' to mean '1 to 2 hours ago'.[[/FLAT_TRIM]]"],
-                    cursor: [type: "string", description: "Opt-in pagination cursor.[[FLAT_TRIM]] Filters + limit apply first; cursor pages within the filtered result.[[/FLAT_TRIM]] Pass \"\" for the first page, iterate nextCursor (page size 100)."]
+                    pattern: [type: "string", description: "Case-insensitive regex applied to the log message field only -- use source for app/device-name substring matching."],
+                    patterns: [type: "array", items: [type: "string"], description: "Multiple regex patterns, same matching rules and caveats as `pattern`. Combine via patternMode."],
+                    patternMode: [type: "string", description: "How patterns array is combined: 'any' (default) = OR; 'all' = AND.", enum: ["any", "all"]],
+                    since: [type: "string", description: "Return only entries at or after this time. Accepts ISO-8601 timestamp (e.g. '2024-01-15T10:30:00Z') or relative offset (e.g. '30m', '2h', '1d', '7d'). Max relative offset: 30d."],
+                    until: [type: "string", description: "Return only entries at or before this time. Same format as since. Default: now (no upper bound)."],
+                    cursor: [type: "string", description: "Opt-in pagination cursor. Pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ]
             ],
             outputSchema: [
@@ -2031,7 +2031,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         // ==================== MONITORING TOOLS ====================
         [
             name: "hub_get_performance_stats",
-            description: "Get device and/or app performance stats from the hub's logs page.[[FLAT_TRIM]] Shows method call counts, % busy, state size, events, states, hub actions, and pending events per device/app.[[/FLAT_TRIM]] Requires Read master.",
+            description: "Get device and/or app performance stats from the hub's logs page. Requires Read master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2103,7 +2103,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_get_metrics",
-            description: "Retrieve hub metrics (memory, temp, DB size) with CSV trend history. The trend reflects ONLY previously-recorded snapshots — the hub does not auto-sample, so it is sparse/stale (and resets if the CSV is cleared) unless recordSnapshot=true is called periodically.[[FLAT_TRIM]] Also folds in the hub's own health alerts under healthAlerts (radio offline, backup failures, low memory, DB bloat, weak mesh, safeMode) from /hub2/hubData.[[/FLAT_TRIM]] Requires Read master.",
+            description: "Retrieve hub metrics (memory, temp, DB size) with CSV trend history. The trend reflects ONLY previously-recorded snapshots — the hub does not auto-sample, so it is sparse/stale (and resets if the CSV is cleared) unless recordSnapshot=true is called periodically. Requires Read master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2144,7 +2144,7 @@ def _getAllToolDefinitions_partDiagnostics() {
                 type: "object",
                 properties: [
                     limit: [type: "integer", description: "Max entries to return (most recent); 0 for all. Hub may have thousands of entries.", default: 100],
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Pages within the limit-filtered entries.[[FLAT_TRIM]] limit=0 + cursor pages the full ring buffer.[[/FLAT_TRIM]] Pass \"\" for the first page, iterate nextCursor (page size 100)."]
+                    cursor: [type: "string", description: "Opt-in pagination cursor. Pages within the limit-filtered entries. Pass \"\" for the first page, iterate nextCursor (page size 100)."]
                 ]
             ],
             outputSchema: [
@@ -2176,16 +2176,16 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_get_device_health",
-            description: "Hub network diagnostics + device-staleness checks. Stale check covers only devices authorized for MCP access (the app's selected device list) with no activity in staleHours.[[FLAT_TRIM]] MCP-managed virtual/child devices (from hub_manage_virtual_device) are a SEPARATE population NOT included here — list those via hub_list_devices(filter='virtual'). pingHosts/traceroute/speedtest are independent read-only network probes, runnable in any combination (mechanics + result location in each param).[[/FLAT_TRIM]]",
+            description: "Hub network diagnostics + device-staleness checks. Stale check covers only devices authorized for MCP access (the app's selected device list) with no activity in staleHours.",
             inputSchema: [
                 type: "object",
                 properties: [
                     staleHours: [type: "integer", description: "Flag devices with no activity in this many hours. Default: 24.", default: 24],
                     includeHealthy: [type: "boolean", description: "Include healthy devices in the response (can be large). Default: false.", default: false],
-                    pingHosts: [type: "array", items: [type: "string"], description: "Optional IPv4 addresses to ICMP-ping (max 5 per call).[[FLAT_TRIM]] Each entry is sent through hubitat.helper.NetworkUtils.ping() and reported under pingResults with reachable/rttAvg/packetLoss. Hostnames are not resolved — pass IPs only.[[/FLAT_TRIM]]"],
+                    pingHosts: [type: "array", items: [type: "string"], description: "Optional IPv4 addresses to ICMP-ping (max 5 per call)."],
                     pingCount: [type: "integer", description: "Packets to send per host (1-5). Default: 3.", default: 3],
-                    traceroute: [type: "string", description: "Optional single IPv4 dotted-quad host (e.g. '8.8.8.8') to traceroute; plain-text route table returned under traceroute.output.[[FLAT_TRIM]] Hostnames are rejected — pass an IP.[[/FLAT_TRIM]]"],
-                    speedtest: [type: "boolean", description: "If true, run the hub's WAN download speedtest; plain-text wget log with the measured speed returned under speedtest.output.[[FLAT_TRIM]] Fixed 10 MB Hubitat S3 blob, no caller input; a few seconds on a fast link, up to ~90s on slow ones.[[/FLAT_TRIM]] Default: false."],
+                    traceroute: [type: "string", description: "Optional single IPv4 dotted-quad host (e.g. '8.8.8.8') to traceroute; plain-text route table returned under traceroute.output."],
+                    speedtest: [type: "boolean", description: "If true, run the hub's WAN download speedtest; plain-text wget log with the measured speed returned under speedtest.output. Default: false."],
                     identifyHub: [type: "boolean", description: "Blink hub LED to identify hub. Default: false.", default: false],
                     cursor: [type: "string", description: "Opt-in pagination cursor for the staleDevices array. Omit to get all stale devices in one response (subject to the universal response-size guard). Pass nextCursor from a prior call to fetch the next page (page size 100). unknownDevices and healthyDevices are always returned in full alongside the page."]
                 ]
@@ -2239,18 +2239,18 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_get_radio_details",
-            description: """Get Z-Wave/Zigbee/Matter radio info and the read-only radio surface. The include_* flags and node_id attach extra read blocks. Requires Read master.[[FLAT_TRIM]] Covers details (firmware, home/PAN ID, channel, device nodes), mesh topology, per-node state, lifecycle status pollers, channel scan, SmartStart entries, and firmware-eligible devices. Pair with the write tools in hub_manage_radio (hub_set_zwave / hub_set_zigbee / hub_call_zwave / hub_call_zigbee / hub_call_matter) and the destructive resets/firmware in hub_call_destructive_ops.[[/FLAT_TRIM]]""",
+            description: """Get Z-Wave/Zigbee/Matter radio info and the read-only radio surface. The include_* flags and node_id attach extra read blocks. Requires Read master.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     radio: [type: "string", enum: ["zwave", "zigbee", "matter"], description: "Which radio to query. Omit to return both Z-Wave and Zigbee; pass 'matter' for the Matter fabric and commissioned-device list."],
-                    include_topology: [type: "boolean", description: "Also include the mesh route/topology map[[FLAT_TRIM]] (Z-Wave nodes+connectors and raw route table; Zigbee children+neighbors+routes)[[/FLAT_TRIM]]. Z-Wave/Zigbee only. Default false."],
-                    node_id: [type: "string", description: "Per-node status for this id: Z-Wave node state, or Matter commissioning status when radio='matter'.[[FLAT_TRIM]] Under result.nodeState (plain text; 'Done' when idle) or result.matterPairStatus.[[/FLAT_TRIM]]"],
-                    include_status: [type: "boolean", description: "Attach lifecycle status pollers under result.status[[FLAT_TRIM]]: Z-Wave repair stage, heal-running flag, exclusion status, join discovery, antenna-test progress, node-replace status/info, and Zigbee network status (panId/extendedPanId/networkState). (Matter commissioning status is per-node: radio='matter' + node_id.)[[/FLAT_TRIM]] Default false."],
+                    include_topology: [type: "boolean", description: "Also include the mesh route/topology map. Z-Wave/Zigbee only. Default false."],
+                    node_id: [type: "string", description: "Per-node status for this id: Z-Wave node state, or Matter commissioning status when radio='matter'."],
+                    include_status: [type: "boolean", description: "Attach lifecycle status pollers under result.status Default false."],
                     include_logs: [type: "boolean", description: "Attach Matter chip-tool logs ({text}, ANSI) under result.matterLogs. Default false."],
-                    include_channel_scan: [type: "boolean", description: "Attach Zigbee channel energy-scan results under result.channelScan.[[FLAT_TRIM]] Run a fresh scan with hub_call_zigbee action='channel_scan' first.[[/FLAT_TRIM]] Default false."],
-                    include_smartstart: [type: "boolean", description: "Attach the Z-Wave SmartStart provisioning list under result.smartStart.[[FLAT_TRIM]] Each entry's nodeDSK feeds hub_call_zwave action='smartstart_delete'.[[/FLAT_TRIM]] Default false."],
-                    include_firmware: [type: "boolean", description: "Attach firmware-eligible Z-Wave devices + available files under result.firmware.[[FLAT_TRIM]] Shape {devices:[{nodeId,label}], files}; feeds hub_call_destructive_ops firmware actions.[[/FLAT_TRIM]] Default false."]
+                    include_channel_scan: [type: "boolean", description: "Attach Zigbee channel energy-scan results under result.channelScan. Default false."],
+                    include_smartstart: [type: "boolean", description: "Attach the Z-Wave SmartStart provisioning list under result.smartStart. Default false."],
+                    include_firmware: [type: "boolean", description: "Attach firmware-eligible Z-Wave devices + available files under result.firmware. Default false."]
                 ]
             ],
             outputSchema: [
@@ -2281,7 +2281,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_call_gc",
-            description: "Force JVM garbage collection to reclaim memory. Non-destructive but may cause a brief pause.[[FLAT_TRIM]] Returns before/after free memory (KB) and the delta.[[/FLAT_TRIM]] Requires the Write master.",
+            description: "Force JVM garbage collection to reclaim memory. Non-destructive but may cause a brief pause. Requires the Write master.",
             inputSchema: [
                 type: "object",
                 properties: [:]
@@ -2301,7 +2301,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_set_zwave",
-            description: "Configure the Z-Wave radio (idempotent): enable/disable it, or set region and long-range channel. Read current values with hub_get_radio_details(radio='zwave').[[FLAT_TRIM]] Config updates preserve other current settings (a region change keeps enabled/secureJoin). Disabling strands every Z-Wave device (confirm-gated). For repair/inclusion/exclusion/maintenance use hub_call_zwave; for reset/firmware use hub_call_destructive_ops.[[/FLAT_TRIM]] Requires Write master.",
+            description: "Configure the Z-Wave radio (idempotent): enable/disable it, or set region and long-range channel. Read current values with hub_get_radio_details(radio='zwave'). Requires Write master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2329,7 +2329,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_set_zigbee",
-            description: "Configure the Zigbee radio (idempotent): enable/disable, channel + power, radio settings (rebuild-on-reboot / inactive-device ping), or per-device keep-alive ping. One operation per call. Read current values with hub_get_radio_details(radio='zigbee').[[FLAT_TRIM]] Channel changes can drop devices that do not follow (they may need re-pairing). Disabling strands every Zigbee device, so it is confirm-gated. Settings merge over current values (an unspecified flag is preserved). For reboot/rebuild/channel-scan use hub_call_zigbee; for reset/firmware use hub_call_destructive_ops.[[/FLAT_TRIM]] Requires Write master.",
+            description: "Configure the Zigbee radio (idempotent): enable/disable, channel + power, radio settings (rebuild-on-reboot / inactive-device ping), or per-device keep-alive ping. One operation per call. Read current values with hub_get_radio_details(radio='zigbee'). Requires Write master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2338,7 +2338,7 @@ def _getAllToolDefinitions_partDiagnostics() {
                     power_level: [description: "Zigbee transmit power level (hub-dependent dBm scale). Set together with channel."],
                     rebuild_on_reboot: [type: "boolean", description: "Radio setting: rebuild the Zigbee network on each hub reboot."],
                     ping_inactive: [type: "boolean", description: "Radio setting: keep-alive ping inactive Zigbee devices."],
-                    ping_device: [type: "object", description: "Toggle keep-alive ping for ONE device: {device_id, enabled}.[[FLAT_TRIM]] device_id is the Zigbee device id.[[/FLAT_TRIM]]"],
+                    ping_device: [type: "object", description: "Toggle keep-alive ping for ONE device: {device_id, enabled}."],
                     confirm: [type: "boolean", description: "Required true to DISABLE the radio (backup <24h also enforced). Not needed for the other changes."]
                 ]
             ],
@@ -2363,14 +2363,14 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_call_zwave",
-            description: "Z-Wave network lifecycle operations (NOT idempotent): repair, device inclusion (join + S2 grants), exclusion, per-node maintenance, node replace/remove, antenna test, and SmartStart delete. Pick the operation with action.[[FLAT_TRIM]] exclusion_start and node_remove unpair/disrupt devices (confirm-gated). Repair takes 5-30 min and devices may be briefly unresponsive. Poll progress with hub_get_radio_details(include_status=true). For enable/disable/region/channel use hub_set_zwave; for reset/firmware use hub_call_destructive_ops.[[/FLAT_TRIM]] Requires Write master.",
+            description: "Z-Wave network lifecycle operations (NOT idempotent): repair, device inclusion (join + S2 grants), exclusion, per-node maintenance, node replace/remove, antenna test, and SmartStart delete. Pick the operation with action. Requires Write master.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    action: [type: "string", enum: ["repair_start", "repair_cancel", "repair_node", "inclusion_start", "inclusion_stop", "grant_keys", "grant_code", "exclusion_start", "exclusion_stop", "node_refresh", "node_rediscover", "node_reinitialize", "refresh_stats", "node_replace", "node_replace_stop", "node_remove", "antenna_test_start", "antenna_test_continue", "smartstart_delete"], description: "The Z-Wave operation.[[FLAT_TRIM]] repair_start/cancel + repair_node (network rebuild); inclusion_start/stop + grant_keys/grant_code (S2 pairing); exclusion_start/stop; node_refresh/rediscover/reinitialize + refresh_stats (maintenance); node_replace + node_replace_stop; node_remove (failed-node removal); antenna_test_start/continue; smartstart_delete.[[/FLAT_TRIM]]"],
+                    action: [type: "string", enum: ["repair_start", "repair_cancel", "repair_node", "inclusion_start", "inclusion_stop", "grant_keys", "grant_code", "exclusion_start", "exclusion_stop", "node_refresh", "node_rediscover", "node_reinitialize", "refresh_stats", "node_replace", "node_replace_stop", "node_remove", "antenna_test_start", "antenna_test_continue", "smartstart_delete"], description: "The Z-Wave operation."],
                     node_id: [type: "string", description: "Z-Wave node id; required for repair_node, node_refresh/rediscover/reinitialize, node_remove, node_replace, antenna_test_start."],
-                    security_keys: [type: "object", description: "grant_keys only: S2 grant booleans.[[FLAT_TRIM]] Example: {S2AccessControl:true, S2Authenticated:true, S2Unauthenticated:false, S0Unauthenticated:false}.[[/FLAT_TRIM]]"],
-                    security_code: [type: "object", description: "grant_code only: S2 DSK / security code.[[FLAT_TRIM]] Example: {accept:true, securityCode:'12345'}.[[/FLAT_TRIM]]"],
+                    security_keys: [type: "object", description: "grant_keys only: S2 grant booleans."],
+                    security_code: [type: "object", description: "grant_code only: S2 DSK / security code."],
                     node_dsk: [type: "string", description: "smartstart_delete only: the DSK from hub_get_radio_details(include_smartstart=true)."],
                     confirm: [type: "boolean", description: "Required true for exclusion_start and node_remove (backup <24h also enforced)."]
                 ],
@@ -2394,7 +2394,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_call_zigbee",
-            description: "Zigbee radio operations (NOT idempotent): reboot, rebuild the mesh network, or run a channel energy scan; select with action.[[FLAT_TRIM]] Rebuild takes time and Zigbee devices may be briefly unresponsive; read scan results with hub_get_radio_details(include_channel_scan=true). For enable/disable/channel/power use hub_set_zigbee; for reset/firmware use hub_call_destructive_ops.[[/FLAT_TRIM]] Requires Write master.",
+            description: "Zigbee radio operations (NOT idempotent): reboot, rebuild the mesh network, or run a channel energy scan; select with action. Requires Write master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2418,7 +2418,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_call_matter",
-            description: "Matter radio operations (NOT idempotent): enable/disable, pair (commission) a device, or open a pairing/share window — select with action.[[FLAT_TRIM]] Enable/disable requires a HUB REBOOT to take effect (reboot via hub_reboot). Poll commissioning with hub_get_radio_details(radio='matter', include_status=true). Matter requires a C-8/C-8 Pro on supported firmware. For reset use hub_call_destructive_ops.[[/FLAT_TRIM]] Requires Write master.",
+            description: "Matter radio operations (NOT idempotent): enable/disable, pair (commission) a device, or open a pairing/share window — select with action. Requires Write master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2446,19 +2446,19 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_call_destructive_ops",
-            description: """⚠️ DESTRUCTIVE hub ops by `target` + `action` (no defaults — both required): radio WIPE/FIRMWARE, network DISCONNECT, or cloud DISABLE.[[FLAT_TRIM]] Each can sever connectivity, unpair devices, or brick hardware. See the action param and hub_get_tool_guide for per-target/action effects.[[/FLAT_TRIM]]
+            description: """⚠️ DESTRUCTIVE hub ops by `target` + `action` (no defaults — both required): radio WIPE/FIRMWARE, network DISCONNECT, or cloud DISABLE.
 
-PRE-FLIGHT: 1) Backup <24h old 2) Tell the user what is affected (irreversible / can brick / disconnects) 3) Get explicit confirmation 4) Set confirm=true.[[FLAT_TRIM]] Name exactly what is hit: which radio/devices, which network link, or that cloud features all stop. Do NOT power-cycle the hub or device during a firmware flash.[[/FLAT_TRIM]]
+PRE-FLIGHT: 1) Backup <24h old 2) Tell the user what is affected (irreversible / can brick / disconnects) 3) Get explicit confirmation 4) Set confirm=true.
 Requires Write master.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    target: [type: "string", enum: ["zwave", "zigbee", "matter", "network", "cloud"], description: "REQUIRED: what to act on.[[FLAT_TRIM]] zwave/zigbee/matter = a radio (reset + firmware); network = the hub's WiFi/Ethernet link; cloud = the hub cloud controller.[[/FLAT_TRIM]]"],
-                    action: [type: "string", enum: ["reset", "device_firmware_start", "device_firmware_abort", "zwave_chip_firmware", "zigbee_firmware", "disconnect_wifi", "disconnect_ethernet", "disable", "enable"], description: "REQUIRED: depends on target.[[FLAT_TRIM]] Radio targets: reset (wipe network/fabric — unpairs all devices), or a firmware flash — device_firmware_start/abort = Z-Wave device OTA (needs node_id+file_name), zwave_chip_firmware = hub Z-Wave radio, zigbee_firmware = Zigbee radio to latest; an interrupted flash can brick hardware. target=network: disconnect_wifi | disconnect_ethernet. target=cloud: disable | enable.[[/FLAT_TRIM]]"],
-                    node_id: [description: "Z-Wave node id.[[FLAT_TRIM]] Required for device_firmware_start/abort.[[/FLAT_TRIM]]"],
-                    file_name: [type: "string", description: "Firmware file name.[[FLAT_TRIM]] From hub_get_radio_details(include_firmware=true); required for device_firmware_start.[[/FLAT_TRIM]]"],
-                    target_index: [description: "Optional Z-Wave firmware target index.[[FLAT_TRIM]] For device_firmware_start; defaults to node_id.[[/FLAT_TRIM]]"],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true.[[FLAT_TRIM]] Confirms backup was created and the user approved this destructive op.[[/FLAT_TRIM]]"]
+                    target: [type: "string", enum: ["zwave", "zigbee", "matter", "network", "cloud"], description: "REQUIRED: what to act on."],
+                    action: [type: "string", enum: ["reset", "device_firmware_start", "device_firmware_abort", "zwave_chip_firmware", "zigbee_firmware", "disconnect_wifi", "disconnect_ethernet", "disable", "enable"], description: "REQUIRED: depends on target."],
+                    node_id: [description: "Z-Wave node id."],
+                    file_name: [type: "string", description: "Firmware file name."],
+                    target_index: [description: "Optional Z-Wave firmware target index."],
+                    confirm: [type: "boolean", description: "REQUIRED: must be true."]
                 ],
                 required: ["target", "action", "confirm"]
             ],
@@ -2481,7 +2481,7 @@ Requires Write master.""",
         // Captured State Management
         [
             name: "hub_list_captured_states",
-            description: "List saved device-state snapshots: point-in-time device-attribute captures, kept to restore or compare state later.[[FLAT_TRIM]] Each entry includes a stateId for hub_delete_captured_state. Storage limit configurable (default 20); oldest auto-deleted when full.[[/FLAT_TRIM]]",
+            description: "List saved device-state snapshots: point-in-time device-attribute captures, kept to restore or compare state later.",
             inputSchema: [
                 type: "object",
                 properties: [
