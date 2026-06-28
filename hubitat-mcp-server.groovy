@@ -5395,6 +5395,88 @@ Creates a device from a driver TYPE id (the `id` from `hub_list_drivers(include=
 - For built-in LAN/integration/cloud and software/component drivers with no pairing flow.
 - NOT for Z-Wave/Zigbee/Matter hardware -- pair those with `hub_call_zwave`/`zigbee`/`matter`. A radio driver created here is a non-functional orphan shell; the response warns.
 - For MCP-managed virtual devices use `hub_manage_virtual_device` instead.
+
+
+### hub_get_info
+
+Read-only diagnostics tool. Beyond the default payload (model, firmware, uptime, memory, temperature, DB size, MCP stats, security/toggle settings), it always returns two extra fields and supports two optional deep-dive flags. Use it for health checks, version lookups, or when triaging hub performance.
+
+**Always returned (regardless of the flags below):**
+- `platformUpdate` — the pending hub FIRMWARE/platform update (see the hub_update_firmware entry above, which installs it).
+- `safeMode` — whether the hub is running in Safe Mode (from /hub2/hubData; absent if /hub2/hubData was unreadable).
+
+**`includeHealthAlerts=true`** (default false): returns the hub's full health-alerts block from /hub2/hubData — every /hub2/hubData alert flag plus the hub's message strings, under `healthAlerts`. Covers radio offline, backup failures, low memory, DB bloat, and weak mesh. `platformUpdate` and `safeMode` are returned whether or not this flag is set.
+
+**`includeAppUpdate=true`** (default false): also checks GitHub for a newer MCP (Rule) Server APP version, returned under `appUpdate`. The check is ASYNCHRONOUS — the first call may return `latestVersion: 'unknown (check in progress)'`; call again in a few seconds. This is DISTINCT from `platformUpdate` (the hub's own firmware). To INSTALL a pending hub firmware update, use hub_update_firmware.
+
+**PII / Read master gating:** Location/PII fields (name, local IP, timezone, coordinates, zip code) are returned ONLY when the Read master is enabled; otherwise they are omitted.
+
+### hub_list_modes
+
+- Use it to get valid mode names + ids (hub-specific, e.g. Day/Night/Away) before activating/renaming/deleting a mode.
+
+### hub_manage_mode
+
+Create, rename, delete, or activate a hub location mode — the full mode-management surface in one tool. Modes (Day/Night/Away/…) are hub-wide states that apps and rules trigger on. Read the current modes + ids with `hub_list_modes` first.
+
+**Actions:** `create` | `rename` | `delete` | `activate` a location mode.
+
+- **delete** is irreversible and breaks any app/rule referencing that mode, so it requires `confirm=true` + a recent backup. The `confirm` flag (must be `true` for `action=delete`) confirms a backup <24h AND that breaking those mode references is intended.
+- **create / rename / activate** do NOT require confirm.
+- **icon** (OPTIONAL, for create/rename) — a Font Awesome name, e.g. `fa-moon`, `fa-sun`.
+
+### hub_set_mode_manager
+
+Configure the hub's Mode Manager — select which manager runs and/or set its per-mode conditions. Mode Manager is the automation that changes the location mode automatically.
+
+**`manager`** — which Mode Manager to activate:
+- `builtIn` — the Integrated Mode Manager
+- `legacy` — the legacy Mode Manager app
+- `app` — a 3rd-party mode-manager app, valid only when one is installed
+
+**`conditions`** (OPTIONAL) — per-mode automation conditions to set. Replaces the Integrated Mode Manager's per-mode condition set (`POST /modes/easyModeManager/json`). Same shape as `hub_list_modes.modeManager.easyConditions` (keyed by mode id). Read the current shape from `hub_list_modes.modeManager.easyConditions` first, then modify-then-write (read-modify-write that block).
+
+Read state back with `hub_list_modes`.
+
+### hub_get_hsm_status
+
+Use this to check the security-system state or to confirm a change made via hub_set_hsm.
+
+### hub_set_system_settings
+
+Set hub-GLOBAL settings: hub name, time zone, location (latitude/longitude), zip code, temperature scale, admin-UI dark mode, and network config. All fields optional — pass only what changes.
+
+**Write model:**
+- `latitude`, `longitude`, `timeZone`, `zipCode`, `temperatureScale` (plus `hubName`) are written together via ONE granular endpoint that read-merges the current values, so omitted fields keep their current value.
+- `darkMode` and the network legs are each applied via SEPARATE setters, with NO read-back of the current value. `darkMode` is applied via `/hub/applyDarkMode`.
+- Read back applied values with `hub_get_info`.
+
+**Safety gating:**
+- Changing `timeZone` REBOOTS the hub (1-3 min downtime).
+- Any `network` change can DISCONNECT the hub.
+- `timeZone` and `network` changes therefore require `confirm=true` plus a backup <24h. All other fields need only the Write master (no confirm). The `confirm` parameter (must be `true`) confirms a backup <24h exists and that the disruption is intended.
+
+**Network config (`network` object):**
+- All sub-fields optional; only the legs you provide are applied, in order — IP mode → Ethernet autoneg → WiFi — and the sequence is NOT atomic, so a mid-sequence failure leaves the earlier legs applied (see the `applied` array in the response).
+- `ipMode='static'` requires `address` + `netmask` + `gateway` (`nameserver` optional).
+- `ipMode='dhcp'` uses `nameserver` + `useDNSFallover`.
+- `ethernetAutoneg` toggles Ethernet autonegotiation.
+- `wifiSsid` (+ `wifiPassword`) joins a WiFi network.
+
+**Parameter examples / formats:**
+- `timeZone` — IANA time zone ID, e.g. `America/New_York`. Changing it reboots the hub — requires `confirm=true` + a recent backup.
+- `latitude` — decimal degrees, e.g. `40.7128`.
+- `longitude` — decimal degrees, e.g. `-74.006`.
+- `zipCode` — postal/zip code, e.g. `10001`.
+- `temperatureScale` — `F` or `C`.
+
+### hub_update_firmware
+
+Uses the hub's own cloud-update path (`/hub/cloud/checkForUpdate` + `/hub/cloud/updatePlatform`).
+
+On apply, the `available` field returns the checkForUpdate payload verbatim: `version`, `upgrade`, `status`, `releaseNotesUrl`, `beta`, `hubCount`, and the hub owner's `accountEmails`.
+
+Poll install progress with `statusOnly=true` (`status` is IDLE when none is running); the endpoint goes dark during the reboot, then confirm the new `firmwareVersion` via `hub_get_info`.
 ''',
 
         virtual_devices: '''## Virtual Device Types
