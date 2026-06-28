@@ -5355,6 +5355,46 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 ### hub_update_app / hub_update_driver — expectedVersion (optimistic-lock guard)
 
 `expectedVersion` aborts the write with `conflict:true` on a version mismatch. Stringified integers are coerced; an explicit null is rejected. In bulk driver updates, put `expectedVersion` inside each `updates[]` entry.
+
+
+### hub_call_device_command
+
+**Response `state` snapshot.** Returns a `state` snapshot (per-attribute value + freshness timestamp) read AS OF the command. To get the CONFIRMED resulting state, pass `waitFor` to block-poll until the attribute converges; without it, confirm separately via hub_get_device_attribute. The snapshot is an immediate read taken in the same request that fires the command, so it shows the PRE-effect value -- even for virtual/local devices -- because the hub commits the change after this request returns; the per-attribute timestamp is the freshness signal. With `waitFor`, the `state` snapshot reflects the converged value and a `waitFor` result block reports convergence.
+
+**`parameters` arg.** Omit for no-arg commands like on/off. Each element is a string; numbers and JSON-object values are passed as strings (e.g. `["{\"hue\":0,\"saturation\":100,\"level\":50}"]`) and coerced hub-side.
+
+**`waitFor` arg.** comparator (eq/ne/gt/gte/lt/lte/between) and stableForMs (debounce) work as on hub_get_device_attribute. BLOCKS the request up to timeoutMs and queues concurrent MCP calls; reuses the hub_get_device_attribute poll engine.
+
+### hub_call_device_swap
+
+Drives the hub's built-in Swap Device tool; use to migrate device references to new hardware or swap out a failing device without editing each automation.
+
+The hub only offers compatible replacement devices: an incompatible to_device_id fails with a structured error listing the compatible options.
+
+### hub_call_device_replace
+
+DESTRUCTIVE. Re-points `old_device_id` onto `new_device_id`'s node; the new hardware adopts the OLD id, so the old device's rules and dashboard tiles stay intact. Use when a Z-Wave/Zigbee device died and you paired a compatible replacement.
+
+Differs from `hub_call_device_swap`, which instead migrates references onto the NEW device's id.
+
+**Two-step flow:**
+1. Call with `list_options=true` first to read the hub's compatible replacement candidates for `old_device_id` (read-only, no confirm).
+2. Pick one as `new_device_id`, then call again with `confirm=true`.
+
+**Apply-path pre-flight** (in addition to the standard destructive checklist above — backup <24h, user approval, `confirm=true`): a compatible `new_device_id`.
+
+**Parameters:**
+- `old_device_id` — the device to replace; its id is preserved. Comes from `hub_list_devices`.
+- `new_device_id` — the compatible replacement device; its hardware is adopted under the old id. Required to apply; omit when `list_options=true`.
+- `confirm` — required to apply (omit for `list_options`); must be true. Confirms a backup <24h + user approval (see the standard destructive checklist above).
+
+### hub_create_device
+
+Creates a device from a driver TYPE id (the `id` from `hub_list_drivers(include='all')`). Requires the Write master + `confirm=true`. Scope and routing:
+
+- For built-in LAN/integration/cloud and software/component drivers with no pairing flow.
+- NOT for Z-Wave/Zigbee/Matter hardware -- pair those with `hub_call_zwave`/`zigbee`/`matter`. A radio driver created here is a non-functional orphan shell; the response warns.
+- For MCP-managed virtual devices use `hub_manage_virtual_device` instead.
 ''',
 
         virtual_devices: '''## Virtual Device Types
@@ -5416,7 +5456,12 @@ MCP-managed virtual devices:
 
 **defaultCurrentState:** the attribute shown in the Status column on the Devices/Rooms pages. Use an attribute name from the device's current states (e.g. "switch", "temperature"); "" selects None.
 
-**tags:** array of strings; REPLACES the full tag set ([] clears all). Applied via the wholesale device-edit form, which preserves the device's other fields.''',
+**tags:** array of strings; REPLACES the full tag set ([] clears all). Applied via the wholesale device-edit form, which preserves the device's other fields.
+
+### hub_update_device
+
+**showOnHome:** the quick status-bar summaries this device count feeds are the per-category counts (climate / lights / locks / etc.).
+''',
 
         rules: '''## Rule Structure Reference
 
@@ -5590,6 +5635,65 @@ Files stored at http://<HUB_IP>/local/<filename>
 **hub_call_gc (force JVM garbage collection):**
 - Returns free memory before and after GC in KB (`beforeFreeMemoryKB`, `afterFreeMemoryKB`).
 - Reports the reclaimed amount as `deltaKB` plus a `memoryReclaimed` boolean (true when free memory increased); both are present only when both readings succeeded.
+
+
+### hub_list_devices
+
+**Response shapes & general behaviour.** Summary mode returns `currentStates`; detailed mode replaces that with `capabilities`, `attributes`, and `commands` (full field list in the tool's `outputSchema`). `scope='all'` lists every hub device (not just MCP-authorized ones), each tagged with an `mcpAuthorized` flag (true/false). To count a parent's children, group the response by `parentDeviceId`.
+
+**Filter ordering.** Server-side filtering via the `filter` / `labelFilter` / `capabilityFilter` params is all applied *before* pagination (each is documented on its own parameter). Effective order: `filter` -> `labelFilter` -> `capabilityFilter` -> pagination.
+
+- **filter** -- `stale:<hours>` example: `stale:24` = no activity in the last 24 hours; never-reported devices count as stale. `virtual` returns a *different* population and shape from the other filters, including driver namespace/type.
+- **labelFilter** -- applied after `filter`, before pagination.
+- **capabilityFilter** -- applied after `labelFilter`, before pagination. When `count=0`, the response includes `capabilityFilterMatchedKnownCapability` to distinguish "no devices have this capability" from a typo.
+- **format** -- `'detailed'` is the same as `detailed=true`; `detailed=true` overrides `format='summary'`.
+- **fields** -- valid names: `id`, `name`, `label`, `room`, `disabled`, `deviceNetworkId`, `lastActivity`, `parentDeviceId`, `mcpManaged`, `currentStates`, `capabilities`, `attributes`, `commands`. Omitted or empty = all default fields for the active format. Ignored when `format='ids'`. `id` is always included regardless of projection (use `format='ids'` for id-only results). Including `capabilities`, `attributes`, or `commands` auto-promotes the response to detailed mode (those fields require detailed-mode device introspection).
+- **cursor** -- `nextCursor` is returned alongside `nextOffset`.
+- **scope** -- `'all'` returns EVERY device on the hub, each tagged `mcpAuthorized` true/false. Use it to find a device that exists on the hub but can't be controlled -- `mcpAuthorized=false` means it must be added to this app's device list in the hub UI. `scope='all'` records are lightweight (id/label/capabilities/mcpAuthorized only; no attributes/commands/currentStates) and support format `'summary'` or `'ids'`; `capabilityFilter` / `labelFilter` / pagination still apply.
+
+### hub_get_device
+
+Use when you need a single device's complete profile — e.g. to discover which commands/attributes it supports before calling hub_call_device_command or hub_get_device_attribute. For a multi-device listing use hub_list_devices instead.
+
+Only query devices the user has mentioned or that are relevant to their request. Do not probe random devices.
+
+### hub_get_device_attribute
+
+Get a device attribute's current value, or block-poll until it reaches an expected value. Polls one device, or several at once via deviceIds.
+
+One-shot read by default (deviceId + attribute). Provide expectedValue and/or expectedValues to block-poll until currentValue matches, returning immediately on match or when timeoutMs elapses.
+
+A single round-trip that replaces N client-side reads + sleeps (verify a command took effect, wait for a sensor threshold, detect Z-Wave inclusion finished). comparator controls the match: eq (default, in-set), ne (not in-set), gt/gte/lt/lte (numeric threshold via expectedValue), between (numeric inclusive range via expectedValues [low, high]). stableForMs requires the condition to hold continuously for that many ms before converging (debounce). For MULTI-DEVICE convergence pass deviceIds (a list, mutually exclusive with deviceId, max 20) instead of deviceId: the same condition is applied to every device and mode controls the aggregate -- "all" (default) converges when every device matches, "any" on the first to match; the result is a compact per-device array (not full device objects) plus convergedCount. Poll mode BLOCKS up to timeoutMs (default 5000ms, max 60000ms) and queues concurrent MCP requests; prefer event-driven flows where possible. First read fires immediately; subsequent reads are spaced by pollIntervalMs.
+
+Only query devices the user has mentioned or that are relevant to their request.
+
+**Parameters:**
+
+- **deviceId** (Device ID from hub_list_devices): Required for single-device mode; omit when using deviceIds. Provide exactly ONE of deviceId or deviceIds, not both.
+- **deviceIds** (multi-device poll): Mutually exclusive with deviceId. The same condition (attribute + comparator + expectedValue(s) + stableForMs) is applied to every device; mode controls the aggregate (any/all). Max 20 devices, no duplicates. The result is a compact per-device array (deviceId/device/finalValue/matched, plus per-device neverReported/nonNumericAttribute on timeout) plus convergedCount -- not full device objects.
+- **mode** (multi-device aggregate): Used with deviceIds. all (default) converges when EVERY device matches; any on the first to match. Rejected if passed with a single deviceId. Also drives stableForMs (the whole any/all condition must hold for the window).
+- **attribute** (attribute name): The same attribute is read on every device in multi-device mode.
+- **expectedValue**: For eq/ne it is one of the in-set values; for gt/gte/lt/lte it is the single numeric threshold (e.g. "72"). Provide exactly ONE of expectedValue or expectedValues, not both.
+- **expectedValues**: For eq/ne it is the value set (OR semantics -- match any member); for between it is exactly two numeric bounds [low, high]. Provide exactly ONE of expectedValue or expectedValues, not both.
+- **comparator** (default eq, value in the expected set): ne = NOT in the set. gt/gte/lt/lte = numeric compare against expectedValue. between = numeric inclusive low<=value<=high from expectedValues (exactly 2). Numeric comparators never match a null/non-numeric value (keep polling).
+- **stableForMs** (debounce, default 0 = first match): Must be < timeoutMs. A value that flaps out of the condition restarts the window.
+- **pollIntervalMs** (poll mode re-check interval, default 200): (hub_call_device_command's waitFor defaults to 250 instead: a post-command poll follows a write, so wider spacing reduces read contention.)
+
+### hub_list_device_events
+- Higher limits (50+) may slow the hub; default limit applies otherwise.
+
+- `attribute` filters by event name. For a device it is an attribute (e.g. `switch`); for location-level events it accepts one of `mode`, `hsmStatus`, `hsmAlert`, or a hub-variable name.
+
+### hub_get_compatible_devices
+
+- Requires the Read master.
+- Filter by brand, protocol (Zigbee|Z-Wave|Matter|LAN|...), deviceType, or a free-text query; paginated (cursor).
+- Summaries by default; set `includeInstructions=true` (with a narrow filter) for the HTML-stripped step-by-step instructions.
+- `brand` filter is a brand substring, e.g. 'Aeotec'.
+- `protocol` filter is a protocol substring, e.g. 'Zigbee', 'Z-Wave', 'Matter', 'LAN'.
+- `deviceType` filter is a device-type substring, e.g. 'Dimmer', 'Water Sensor'.
+- `includeInstructions`: use with a narrow filter; pages are smaller in this mode.
+- `cursor` page size: 40 (summary) / 12 (with instructions).
 ''',
 
         builtin_app_tools: '''## Installed-App & Native-Rule Tools

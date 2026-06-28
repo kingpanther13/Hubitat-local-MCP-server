@@ -479,9 +479,9 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         def listDevicesGw = gwAll.find { it.name == 'hub_list_devices' }.description as String
         def createNativeGw = gwAll.find { it.name == 'hub_set_rule' }.description as String
 
-        then: 'hub_list_devices flat-mode strips its wrapped sentinel prose; gateway keeps it'
+        then: 'hub_list_devices: the deferred prose migrated OUT of the tool def (flat AND gateway) to the served performance guide; the flat guide-pointer survives (#296)'
         !listDevicesFlat.contains('Server-side filtering (all applied before pagination)')
-        listDevicesGw.contains('Server-side filtering (all applied before pagination)')
+        !listDevicesGw.contains('Server-side filtering (all applied before pagination)')
 
         and: 'hub_set_rule fat schema (gateway mode + probe source) carries the deduped partial-success contract + the create-reference pointer'
         // hub_set_rule is now a flat self-gateway: in flat mode it is the thin
@@ -532,9 +532,9 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         !flatFieldsDesc.contains('auto-promotes the response to detailed mode')
         flatFieldsDesc.contains("hub_get_tool_guide(section='performance')")
 
-        and: 'gateway-mode keeps the full enumeration; marker tokens stripped'
-        gwFieldsDesc.contains('mcpManaged')
-        gwFieldsDesc.contains('auto-promotes the response to detailed mode')
+        and: 'gateway-mode ALSO drops the enumeration -- migrated to the served performance guide (#296); no marker tokens either way'
+        !gwFieldsDesc.contains('mcpManaged')
+        !gwFieldsDesc.contains('auto-promotes the response to detailed mode')
         !gwFieldsDesc.contains(OPEN_MARKER)
         !gwFieldsDesc.contains(CLOSE_MARKER)
     }
