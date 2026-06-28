@@ -708,25 +708,18 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         secondDev.description.contains('List all devices')
     }
 
-    def "flat-mode in-place FLAT_TRIM strip does not leak into a subsequent getAllToolDefinitions() call"() {
-        // getToolDefinitions(useGateways=false) strips the [[FLAT_TRIM]] block IN PLACE on
-        // its fresh maps. Because each getAllToolDefinitions() rebuilds, the next caller
-        // must still see the un-stripped FLAT_TRIM content. hub_list_devices carries one.
+    def "leaf tool definitions carry no [[FLAT_TRIM]] markers -- deferred content lives in the served guide (#296)"() {
+        // #296 migrated every leaf tool's deferred ([[FLAT_TRIM]]) content into the served
+        // getToolGuideSections() guide, so both the flat and full def paths are marker-free.
+        // (The one surviving FLAT_TRIM -- hub_set_rule's setVariable.fromDevice in its
+        // probe-built fat self-gateway schema -- is NOT part of getAllToolDefinitions().)
+        // The stripFlatTrim helper's strip/non-mutation behaviour is covered by its own spec;
+        // this guards against a leaf tool re-introducing FLAT_TRIM instead of using the guide.
         given:
-        settingsMap.useGateways = false
+        def markers = { defs -> defs.sum { groovy.json.JsonOutput.toJson(it).count('[[FLAT_TRIM]]') } ?: 0 }
 
-        when: 'run the flat-mode strip path (mutates its own fresh copy in place)'
-        def flat = script.getToolDefinitions()
-        def flatDev = flat.find { it.name == 'hub_list_devices' }
-
-        and: 'a fresh full-definition call afterwards'
-        def freshDev = script.getAllToolDefinitions().find { it.name == 'hub_list_devices' }
-
-        then: 'flat copy had the FLAT_TRIM markers removed'
-        !flatDev.description.contains('[[FLAT_TRIM]]')
-
-        and: 'the fresh copy still carries the original FLAT_TRIM markers + wrapped content'
-        freshDev.description.contains('[[FLAT_TRIM]]')
-        freshDev.description.contains('Summary mode returns currentStates')
+        expect: 'no [[FLAT_TRIM]] markers leak into the full or flat def paths'
+        markers(script.getAllToolDefinitions()) == 0
+        markers(script.getToolDefinitions()) == 0
     }
 }
