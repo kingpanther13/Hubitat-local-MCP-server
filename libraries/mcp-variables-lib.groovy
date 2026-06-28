@@ -897,7 +897,7 @@ def _getAllToolDefinitions_partVariables() {
         ],
         [
             name: "hub_get_variable",
-            description: "Get one variable's current value by name. Searches the hub-variable namespace first, then falls back to rule-engine variables[[FLAT_TRIM]]; the returned source field says which matched. For hub variables it also returns metadata (type, plus deviceId/attribute when a connector is linked)[[/FLAT_TRIM]]. Use hub_list_variables to enumerate; use this when you already know the name.",
+            description: "Get one variable's current value by name. Searches the hub-variable namespace first, then falls back to rule-engine variables. Use hub_list_variables to enumerate; use this when you already know the name.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -942,14 +942,14 @@ def _getAllToolDefinitions_partVariables() {
         ],
         [
             name: "hub_create_variable",
-            description: "Create a new hub variable (global variable visible to apps and Rule Machine), one at a time or several in one call. Single form: name + type + value.[[FLAT_TRIM]] Bulk form: variables=[{name,type,value}, ...] -- mutually exclusive with the single form. Use this before hub_set_variable for a name that doesn't exist yet -- Hubitat's setGlobalVar cannot create, only update. Drives the Settings -> Hub Variables wizard, since creation isn't exposed via the public app API. Name must not contain any of these characters: ' \" \\ ~ [ : ] < >. A String variable's initial value must be non-empty (an empty String reports success but never persists). Bulk items are created sequentially; each succeeds or fails independently and the result reports per-item status. To also expose the variable to device-only apps, follow up with hub_create_connector.[[/FLAT_TRIM]]",
+            description: "Create a new hub variable (global variable visible to apps and Rule Machine), one at a time or several in one call. Single form: name + type + value.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    name: [type: "string", description: "New variable name, e.g. \"vacationMode\". Omit when using variables.[[FLAT_TRIM]] Must not contain: ' \" \\ ~ [ : ] < >.[[/FLAT_TRIM]]"],
+                    name: [type: "string", description: "New variable name, e.g. \"vacationMode\". Omit when using variables."],
                     type: [type: "string", enum: ["Number", "Decimal", "String", "Boolean", "DateTime"], description: "Variable type. Omit when using variables."],
                     value: [description: "Initial value, must match the type. Omit when using variables."],
-                    variables: [type: "array", description: "Bulk form: several variables in one call.[[FLAT_TRIM]] Mutually exclusive with name/type/value.[[/FLAT_TRIM]]", items: [
+                    variables: [type: "array", description: "Bulk form: several variables in one call.", items: [
                         type: "object",
                         properties: [
                             name: [type: "string", description: "New variable name (same character rules as the single form)"],
@@ -986,7 +986,7 @@ def _getAllToolDefinitions_partVariables() {
         ],
         [
             name: "hub_delete_variable",
-            description: "Permanently delete a variable (DESTRUCTIVE — no undo). Auto-detects whether the target is a hub variable (drives Settings → Hub Variables wizard; also deletes the connector device if one exists) or a rule_engine variable (rewrites state). Throws if the name resolves to neither.\n\nGated on the Write master + confirm=true + a recent backup. [[FLAT_TRIM]]Useful for sweeping orphaned BAT_E2E_* artifacts after CI runs, removing stale lease variables, or general cleanup.[[/FLAT_TRIM]]\n\n**Reference safety:** the tool scans every child rule app for serialized references to this variable name (in triggers/conditions/actions) and refuses by default if any are found[[FLAT_TRIM]] — deletion would silently break those rules (null lookups → false conditions, literal `%varname%` left in substitutions)[[/FLAT_TRIM]]. To proceed anyway, pass `force=true` after acknowledging the breakage. The response includes a `brokenConsumers` field listing the affected rules when force=true.",
+            description: "Permanently delete a variable (DESTRUCTIVE — no undo). Auto-detects whether the target is a hub variable (drives Settings → Hub Variables wizard; also deletes the connector device if one exists) or a rule_engine variable (rewrites state). Throws if the name resolves to neither.\n\nGated on the Write master + confirm=true + a recent backup. \n\n**Reference safety:** the tool scans every child rule app for serialized references to this variable name (in triggers/conditions/actions) and refuses by default if any are found. To proceed anyway, pass `force=true` after acknowledging the breakage. The response includes a `brokenConsumers` field listing the affected rules when force=true.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1016,7 +1016,7 @@ def _getAllToolDefinitions_partVariables() {
         ],
         [
             name: "hub_create_connector",
-            description: "Create a virtual-device connector for an existing hub variable so apps that only consume devices can read/write it.[[FLAT_TRIM]] For Number/Decimal vars, Hubitat shows a connector-type chooser (Dimmer/Variable/etc.); pass connectorType to pick, default 'Variable'. For String/Boolean/DateTime vars, the chooser is skipped.[[/FLAT_TRIM]] No-op if a connector already exists.",
+            description: "Create a virtual-device connector for an existing hub variable so apps that only consume devices can read/write it. No-op if a connector already exists.",
             inputSchema: [
                 type: "object",
                 properties: [

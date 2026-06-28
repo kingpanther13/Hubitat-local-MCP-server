@@ -6283,5 +6283,43 @@ hub_set_visual_rule(name="Hallway motion light", confirm=true, definition={
 })
 
 Then verify with hub_get_visual_rule(appId=<returned appId>) — the response echoes the persisted definition. Pause/resume with hub_set_visual_rule(appId=N, paused=true|false, confirm=true).'''
+    ,
+        variables: '''## Hub Variables
+
+Reference for the hub-variable tools (hub_get_variable, hub_create_variable, hub_delete_variable, hub_create_connector). Per-tool details below.
+
+### hub_get_variable
+
+The returned `source` field says which one matched (the hub-variable namespace is searched first, then rule-engine variables). For hub variables it also returns metadata: `type`, plus `deviceId`/`attribute` when a connector is linked.
+
+### hub_create_variable
+
+Create a new hub variable (global variable visible to apps and Rule Machine), one at a time or several in one call. Single form: name + type + value.
+
+**Bulk form:**
+- `variables=[{name,type,value}, ...]` — mutually exclusive with the single form (i.e. mutually exclusive with `name`/`type`/`value`).
+- Bulk items are created sequentially; each succeeds or fails independently and the result reports per-item status.
+
+**Why create first (vs hub_set_variable):**
+- Use this before `hub_set_variable` for a name that doesn't exist yet — Hubitat's `setGlobalVar` cannot create, only update.
+- Drives the Settings → Hub Variables wizard, since creation isn't exposed via the public app API.
+
+**Constraints:**
+- Name must not contain any of these characters: `' " \\ ~ [ : ] < >`. (This applies to the single-form `name` and to each bulk item's `name`.)
+- A String variable's initial value must be non-empty (an empty String reports success but never persists).
+
+**Expose to device-only apps:**
+- To also expose the variable to device-only apps, follow up with `hub_create_connector`.
+
+### hub_delete_variable
+
+Useful for sweeping orphaned `BAT_E2E_*` artifacts after CI runs, removing stale lease variables, or general cleanup.
+
+**Why the reference-safety refusal matters:** the tool refuses by default when a child rule app references the variable because deletion would silently break those rules — null lookups → false conditions, and a literal `%varname%` left in substitutions. Pass `force=true` to proceed anyway after acknowledging the breakage.
+
+### hub_create_connector
+
+For Number/Decimal vars, Hubitat shows a connector-type chooser (Dimmer/Variable/etc.); pass `connectorType` to pick, default `Variable`. For String/Boolean/DateTime vars, the chooser is skipped.
+'''
     ]
 }

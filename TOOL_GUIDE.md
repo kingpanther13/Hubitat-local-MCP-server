@@ -972,3 +972,7 @@ The `hub_manage_mcp` gateway exposes self-administration tools that let an LLM a
 ### hub_manage_variables — `hub_delete_variable`
 
 The `hub_delete_variable` op (DESTRUCTIVE, no undo) removes a rule_engine variable. Useful for sweeping orphaned `BAT_E2E_*` artifacts after CI runs, removing stale lease variables, or general cleanup. Connector-namespace deletion is not yet supported via MCP — use the Settings → Hub Variables UI for those.
+
+## Hub Variables
+
+Reference for the hub-variable tools (per-tool details migrated from tool descriptions).
