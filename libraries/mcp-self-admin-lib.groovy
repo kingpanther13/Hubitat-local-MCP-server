@@ -735,7 +735,7 @@ def _getAllToolDefinitions_partSelfAdmin() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    settings: [type: "object", description: "Map of setting key → new value (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true}). Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, publishOutputSchemas, enableMandatoryBPS, and selectedDevices — any other key is rejected.[[FLAT_TRIM]] selectedDevices is the MCP device-access scope. Pass {\"mode\":\"replace\"|\"add\"|\"remove\", \"ids\":[<device id strings>], \"allowEmpty\":<bool>} -- or a bare array as shorthand for replace ({\"selectedDevices\":[\"42\",\"108\"]} == {mode:\"replace\", ids:[\"42\",\"108\"]}). 'replace' sets the authorized set to exactly ids; 'add' unions ids with the current set (safest for \"grant one device\" -- no need to re-enumerate the whole list); 'remove' subtracts ids. For replace/add every id is validated against the full hub device list (discover ids via hub_list_devices(scope='all'), each carries an mcpAuthorized flag) -- one unknown id rejects the whole batch and nothing is written; 'remove' does not validate (removing an absent/since-deleted id is a no-op). Refuses to empty the scope unless allowEmpty:true. Deliberately NOT allowlisted: enableWrite (would disable this tool's own write path mid-session), enableDeveloperMode (lockout protection — must stay UI-only to disable), disabled_tools/disabled_gateways (could self-disable this tool).[[/FLAT_TRIM]]"],
+                    settings: [type: "object", description: "Map of setting key → new value (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true}). Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, publishOutputSchemas, enableMandatoryBPS, and selectedDevices — any other key is rejected."],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the operation"]
                 ],
                 required: ["settings", "confirm"]
@@ -765,11 +765,7 @@ def _getAllToolDefinitions_partSelfAdmin() {
         ],
         [
             name: "hub_update_package",
-            description: """Developer Mode self-deploy: full HPM-repair of the MCP package at a git ref in one call -- OVERRIDES whatever is installed, the same way Hubitat Package Manager's Repair does, but anchored to packageManifest.json AT `ref` so an UNMERGED PR installs (HPM repair only reads the published manifest).[[FLAT_TRIM]]
-
-Deploys every declared library bundle + app from the manifest at `ref`, saving the running self app LAST (its recompile can drop the response, #237). Does NOT touch app instances, undeclared drivers, or anything outside this package's manifest.
-
-Brick-safe: if ANYTHING before the self app save fails (app/manifest fetch, an unresolved app class, a bundle install, a non-self app), it aborts BEFORE touching the self app -- the running server is left exactly as-is and still updatable via hub_update_app, the always-available escape hatch. Self-modification is gated by this tool's own enableDeveloperMode check (it deploys by Apps Code CLASS id, so hub_update_app's instance-id self-update guard does not fire here).[[/FLAT_TRIM]]
+            description: """Developer Mode self-deploy: full HPM-repair of the MCP package at a git ref in one call -- OVERRIDES whatever is installed, the same way Hubitat Package Manager's Repair does, but anchored to packageManifest.json AT `ref` so an UNMERGED PR installs (HPM repair only reads the published manifest).
 
 Gated on enableDeveloperMode (the tool is hidden from tools/list when Developer Mode is off) + the Write master + confirm=true + a recent backup. Use dryRun=true to fetch + parse + plan with ZERO writes (no confirm/backup needed) and see exactly which bundles and apps would deploy.""",
             inputSchema: [

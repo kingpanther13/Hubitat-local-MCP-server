@@ -294,15 +294,15 @@ def _getAllToolDefinitions_partVirtualDevices() {
             name: "hub_manage_virtual_device",
             description: """Create or delete MCP-managed virtual devices. Requires Write master + confirm.
 
-action="create": Provide EITHER deviceType (built-in virtual types, see enum) OR customDriver={namespace, name} (user-installed driver), plus deviceLabel and optional deviceNetworkId. The two are mutually exclusive.[[FLAT_TRIM]] Supplying both (including a blank/whitespace deviceType alongside customDriver) is an error. Create response shape: {success, message, tips, device: {id, name, label, deviceNetworkId, driverNamespace, driverType, typeName (deprecated alias for driverType -- prefer driverType), capabilities, commands, attributes}}. Built-in deviceType not-found surfaces as a platform error (isError); customDriver not-found surfaces as an input error (-32602) with a hub_list_drivers hint.[[/FLAT_TRIM]]
-action="delete": Provide deviceNetworkId of device to delete. Use hub_list_devices(filter='virtual') to find DNIs.[[FLAT_TRIM]] Delete response: {success, deviceId, deviceNetworkId, deviceLabel, message}.[[/FLAT_TRIM]]""",
+action="create": Provide EITHER deviceType (built-in virtual types, see enum) OR customDriver={namespace, name} (user-installed driver), plus deviceLabel and optional deviceNetworkId. The two are mutually exclusive.
+action="delete": Provide deviceNetworkId of device to delete. Use hub_list_devices(filter='virtual') to find DNIs.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     action: [type: "string", description: "Operation to perform", enum: ["create", "delete"]],
                     deviceType: [type: "string", description: "Built-in virtual device driver type (for create). Mutually exclusive with customDriver -- provide exactly one.",
                         enum: getSupportedVirtualDeviceTypes()],
-                    customDriver: [type: "object", description: "Alternative to deviceType: a user-installed custom driver (mutually exclusive with deviceType).[[FLAT_TRIM]] Both fields required. Use hub_list_drivers to find available drivers.[[/FLAT_TRIM]]",
+                    customDriver: [type: "object", description: "Alternative to deviceType: a user-installed custom driver (mutually exclusive with deviceType).",
                         properties: [
                             namespace: [type: "string", description: "Driver namespace (e.g., 'level99-vesync')."],
                             name: [type: "string", description: "Driver type name as registered on the hub (e.g., 'Levoit Classic 200S Humidifier')."]

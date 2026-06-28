@@ -5477,6 +5477,28 @@ Uses the hub's own cloud-update path (`/hub/cloud/checkForUpdate` + `/hub/cloud/
 On apply, the `available` field returns the checkForUpdate payload verbatim: `version`, `upgrade`, `status`, `releaseNotesUrl`, `beta`, `hubCount`, and the hub owner's `accountEmails`.
 
 Poll install progress with `statusOnly=true` (`status` is IDLE when none is running); the endpoint goes dark during the reboot, then confirm the new `firmwareVersion` via `hub_get_info`.
+
+
+### hub_update_mcp_settings
+
+**`selectedDevices` — the MCP device-access scope.** Pass `{"mode":"replace"|"add"|"remove", "ids":[<device id strings>], "allowEmpty":<bool>}` -- or a bare array as shorthand for replace (`{"selectedDevices":["42","108"]}` == `{mode:"replace", ids:["42","108"]}`).
+
+- `replace` sets the authorized set to exactly `ids`.
+- `add` unions `ids` with the current set (safest for "grant one device" -- no need to re-enumerate the whole list).
+- `remove` subtracts `ids`.
+
+For replace/add every id is validated against the full hub device list (discover ids via `hub_list_devices(scope='all')`, each carries an `mcpAuthorized` flag) -- one unknown id rejects the whole batch and nothing is written; `remove` does not validate (removing an absent/since-deleted id is a no-op). Refuses to empty the scope unless `allowEmpty:true`.
+
+**Deliberately NOT allowlisted:**
+- `enableWrite` -- would disable this tool's own write path mid-session.
+- `enableDeveloperMode` -- lockout protection; must stay UI-only to disable.
+- `disabled_tools` / `disabled_gateways` -- could self-disable this tool.
+
+### hub_update_package
+
+Deploys every declared library bundle + app from the manifest at `ref`, saving the running self app LAST (its recompile can drop the response, #237). Does NOT touch app instances, undeclared drivers, or anything outside this package's manifest.
+
+**Brick-safe:** if ANYTHING before the self app save fails (app/manifest fetch, an unresolved app class, a bundle install, a non-self app), it aborts BEFORE touching the self app -- the running server is left exactly as-is and still updatable via hub_update_app, the always-available escape hatch. Self-modification is gated by this tool's own enableDeveloperMode check (it deploys by Apps Code CLASS id, so hub_update_app's instance-id self-update guard does not fire here).
 ''',
 
         virtual_devices: '''## Virtual Device Types
@@ -5510,7 +5532,24 @@ Use `customDriver={namespace, name}` instead of `deviceType` to instantiate any 
 MCP-managed virtual devices:
 - Auto-accessible to all MCP tools without manual selection
 - Appear in Hubitat UI for Maker API, Dashboard, Rule Machine
-- Use hub_manage_virtual_device(action="delete") to remove (not hub_delete_device)''',
+- Use hub_manage_virtual_device(action="delete") to remove (not hub_delete_device)
+
+### hub_manage_virtual_device
+
+**action="create" — `deviceType` vs `customDriver`:** Supplying both is an error, including a blank/whitespace `deviceType` supplied alongside `customDriver`.
+
+**action="create" response shape:**
+`{success, message, tips, device: {id, name, label, deviceNetworkId, driverNamespace, driverType, typeName (deprecated alias for driverType -- prefer driverType), capabilities, commands, attributes}}`
+
+**action="create" error surfaces:**
+- Built-in `deviceType` not-found surfaces as a platform error (`isError`).
+- `customDriver` not-found surfaces as an input error (`-32602`) with a `hub_list_drivers` hint.
+
+**`customDriver` object:** Both fields (`namespace`, `name`) are required.
+
+**action="delete" response shape:**
+`{success, deviceId, deviceNetworkId, deviceLabel, message}`
+''',
 
         update_device: '''## hub_update_device Properties
 
@@ -5983,6 +6022,29 @@ The `force` flag selects which hub admin-layer endpoint performs the delete:
 
 - **force=false (default)** — soft delete via `/installedapp/delete`. The hub refuses if the app has child apps or devices; the response includes `hubMessage` explaining why.
 - **force=true** — hard delete via `/installedapp/forcedelete/quiet` — the same path the hub UI uses internally for its own "Delete" buttons. No child safety checks.
+
+
+### hub_list_hpm_packages
+
+**Component inventory detail (per app/driver component):**
+- `heID` (Hubitat's internal code ID) is null when the component was never installed OR was removed outside HPM.
+- Per-component `version` is present only if the manifest author included one -- many manifests do not.
+- **heID normalization, recorded via a per-entry `_warning` field on the component:**
+  - An empty/whitespace-only heID string -> heID is cleared to null and a `_warning` field is added to that entry (e.g. `"empty heID string '' normalized to null"`).
+  - A whitespace-padded heID (e.g. `' 142 '`) -> trimmed, heID stays non-null, and `_warning` records the normalization.
+  - A non-scalar heID (not a Number or String) -> cleared to null with a `_warning`.
+
+**Response fields (beyond `packages[]`):**
+- `count` -- packages returned.
+- `hpmAppId` -- HPM's installed-app ID, echoed so callers can cache it and skip discovery.
+- `skippedMalformed` -- manifest URLs whose top-level value was not a Map (the package is skipped).
+- per-package `skippedAppCount` / `skippedDriverCount` / `skippedFileCount` -- non-Map component entries skipped; each field is omitted when 0.
+
+**Errors (all surface as JSON-RPC error -32602):**
+- Multiple HPM instances -> `IllegalArgumentException` listing up to 10 instance IDs with `"and N more (total M)"`.
+- `hpmAppId` pointing at a non-HPM app -> `IllegalArgumentException` disclosing the actual app type.
+
+**Drift mode (`includeDrift=true`):** off by default; enabling it adds 1-2 hub calls.
 ''',
 
         set_rule_reference: '''## `hub_set_rule` capability reference
@@ -6282,7 +6344,18 @@ hub_set_visual_rule(name="Hallway motion light", confirm=true, definition={
   "elseNodes": []
 })
 
-Then verify with hub_get_visual_rule(appId=<returned appId>) — the response echoes the persisted definition. Pause/resume with hub_set_visual_rule(appId=N, paused=true|false, confirm=true).'''
+Then verify with hub_get_visual_rule(appId=<returned appId>) — the response echoes the persisted definition. Pause/resume with hub_set_visual_rule(appId=N, paused=true|false, confirm=true).
+
+### hub_get_visual_rule
+
+VRB rules are much easier to author than Rule Machine (each rule is one clean JSON definition rather than Rule Machine's classic wizard/settings[] protocol).
+
+### hub_set_visual_rule
+
+Editing an existing rule (`appId` supplied):
+- The `definition` you pass replaces the rule **wholesale** (a full replacement of the whole rule, not a partial patch).
+- Passing `name` together with `appId` renames the rule.
+'''
     ,
         variables: '''## Hub Variables
 
