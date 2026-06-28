@@ -5604,7 +5604,48 @@ NOTE: this section describes the LEGACY custom MCP rule engine (the custom_* too
 - capture_state: Capture device states for later restore — {deviceIds, stateId? (optional, default "default")}
 - restore_state: Restore previously captured states — {stateId? (optional, default "default")}
 - send_notification: Send a notification to a device — {deviceId, message}
-- variable_math: Arithmetic on variables — {variableName, operation: add|subtract|multiply|divide|modulo|set, operand, scope: local|global}''',
+- variable_math: Arithmetic on variables — {variableName, operation: add|subtract|multiply|divide|modulo|set, operand, scope: local|global}
+
+### hub_create_custom_rule
+
+Creates a new automation rule in the LEGACY custom MCP rule engine (the `custom_*` tools described by the Rule Structure Reference above). The custom MCP rule engine is now considered legacy: existing custom rules continue to fire and this engine will receive bug fixes if reported, but new feature work goes to native Rule Machine. THIS tool creates MCP-managed sandbox rules that fire as installed apps but are NOT visible in Hubitat's RM UI; only use when explicitly asked for that or for backward compatibility with existing `custom_*` rules.
+
+At least one trigger and at least one action are required. The per-type fields for every trigger, condition, and action are in the Triggers / Conditions / Actions reference above. Concrete shape examples for the array members:
+- `triggers` member: `{"type":"time","time":"sunset"}`
+- `conditions` member: `{"type":"mode","mode":"Night"}`
+- `actions` member: `{"type":"device_command","deviceId":"42","command":"on"}`
+
+### hub_update_custom_rule
+
+Updates an existing MCP custom-engine rule in place; only the fields you supply change (use `enabled=true/false` to enable/disable).
+
+- Replacing `triggers`/`conditions`/`actions` overwrites that whole array -- it is **not** a merge. If you only want to tweak part of a rule, get the current rule via `hub_get_custom_rule` first, then send back the full modified array.
+- For the trigger/condition/action structure, see the Triggers / Conditions / Actions reference above in this same section (Rule Structure Reference).
+- Verify changes after updating.
+- **Read-only mode (Custom Rule Engine toggle OFF):** only the `enabled` field is accepted. Structural changes (`triggers`, `conditions`, `actions`, `name`) require the toggle to be ON.
+
+### hub_test_custom_rule
+
+Use this to validate a rule's logic after creating or updating it. Returns per-condition results, `wouldEvaluate`, and the list of actions that would have run. Applies only to MCP custom rules; for native Rule Machine use `hub_manage_native_rules_and_apps`.
+
+### hub_export_custom_rule
+
+Returns the full rule data plus a device manifest listing all referenced devices, and writes a `.json` file to the File Manager (pass `saveAs` for the filename; defaults to a generated name).
+
+### hub_import_custom_rule
+
+Use this to restore a backup or copy a rule between hubs. Import creates a NEW rule with a fresh ruleId; it does not overwrite an existing rule.
+
+- **deviceMapping (optional)** remaps the exported device IDs onto this hub's devices, e.g. `{"old_id": "new_id"}`. Unmapped IDs are kept as-is, so verify device references after import.
+- Verify the rule after creation.
+
+### hub_clone_custom_rule
+
+Duplicates an existing MCP custom-engine rule into a new, independent rule with its own ruleId (same triggers/conditions/actions and device references as the source).
+
+- The clone starts **DISABLED** so you can review and adjust it before activating via `hub_update_custom_rule(enabled=true)`.
+- Use this to base a new rule on an existing one.
+''',
 
         backup: '''## Backup System
 

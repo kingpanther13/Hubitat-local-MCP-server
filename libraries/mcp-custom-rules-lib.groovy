@@ -819,9 +819,7 @@ def _getAllToolDefinitions_partCustomRules() {
         [
             name: "hub_create_custom_rule",
             description: """*** LEGACY (MCP sandbox engine): for "create a Rule Machine rule" / "Hubitat rule" / anything the user wants visible in Hubitat's RM UI, use hub_manage_rule_machine hub_set_rule instead. ***
-[[FLAT_TRIM]]
-The custom MCP rule engine is now considered legacy. Existing custom rules continue to fire and this engine will receive bug fixes if reported, but new feature work goes to native Rule Machine. THIS tool creates MCP-managed sandbox rules that fire as installed apps but are NOT visible in Hubitat's RM UI; only use when explicitly asked for that or for backward compatibility with existing custom_* rules.
-[[/FLAT_TRIM]]
+
 Create a new automation rule (MCP sandbox engine). Call `hub_get_tool_guide(section='rules')` for the trigger/condition/action type lists, per-type fields, structure, syntax, and examples.
 
 Verify rule after creation.""",
@@ -832,10 +830,10 @@ Verify rule after creation.""",
                     description: [type: "string", description: "Optional human-readable rule description"],
                     enabled: [type: "boolean", description: "Enable rule immediately on creation", default: true],
                     testRule: [type: "boolean", description: "Mark as test rule - will NOT be backed up on deletion. Use for temporary/experimental rules.", default: false],
-                    triggers: [type: "array", items: [type: "object", properties: [type: [type: "string", enum: ["device_event", "button_event", "time", "sunrise", "sunset", "sun", "periodic", "mode_change", "hsm_change"]]]], description: "Trigger objects (at least one required), each a {type, ...} object — the `type` enum lists the kinds (sunrise/sunset/sun are shortcuts for a time trigger).[[FLAT_TRIM]] Per-type fields + examples: hub_get_tool_guide(section='rules'). e.g. {\"type\":\"time\",\"time\":\"sunset\"}.[[/FLAT_TRIM]]"],
-                    conditions: [type: "array", items: [type: "object", properties: [type: [type: "string", enum: ["device_state", "device_was", "time_range", "mode", "variable", "days_of_week", "sun_position", "hsm_status", "presence", "lock", "thermostat_mode", "thermostat_state", "illuminance", "power"]]]], description: "Optional condition objects gating the actions, each {type, ...}.[[FLAT_TRIM]] Per-type fields: hub_get_tool_guide(section='rules'). e.g. {\"type\":\"mode\",\"mode\":\"Night\"}.[[/FLAT_TRIM]]"],
+                    triggers: [type: "array", items: [type: "object", properties: [type: [type: "string", enum: ["device_event", "button_event", "time", "sunrise", "sunset", "sun", "periodic", "mode_change", "hsm_change"]]]], description: "Trigger objects (at least one required), each a {type, ...} object — the `type` enum lists the kinds (sunrise/sunset/sun are shortcuts for a time trigger)."],
+                    conditions: [type: "array", items: [type: "object", properties: [type: [type: "string", enum: ["device_state", "device_was", "time_range", "mode", "variable", "days_of_week", "sun_position", "hsm_status", "presence", "lock", "thermostat_mode", "thermostat_state", "illuminance", "power"]]]], description: "Optional condition objects gating the actions, each {type, ...}."],
                     conditionLogic: [type: "string", enum: ["all", "any"], description: "How to combine multiple conditions: 'all' = AND, 'any' = OR.", default: "all"],
-                    actions: [type: "array", items: [type: "object", properties: [type: [type: "string", enum: ["device_command", "toggle_device", "activate_scene", "set_variable", "set_local_variable", "set_mode", "set_hsm", "delay", "if_then_else", "cancel_delayed", "repeat", "stop", "log", "set_level", "set_color", "set_color_temperature", "lock", "unlock", "capture_state", "restore_state", "send_notification", "set_thermostat", "http_request", "speak", "comment", "set_valve", "set_fan_speed", "set_shade", "variable_math"]]]], description: "Action objects to run when triggered (at least one required), each {type, ...}.[[FLAT_TRIM]] Per-type fields: hub_get_tool_guide(section='rules'). e.g. {\"type\":\"device_command\",\"deviceId\":\"42\",\"command\":\"on\"}.[[/FLAT_TRIM]]"]
+                    actions: [type: "array", items: [type: "object", properties: [type: [type: "string", enum: ["device_command", "toggle_device", "activate_scene", "set_variable", "set_local_variable", "set_mode", "set_hsm", "delay", "if_then_else", "cancel_delayed", "repeat", "stop", "log", "set_level", "set_color", "set_color_temperature", "lock", "unlock", "capture_state", "restore_state", "send_notification", "set_thermostat", "http_request", "speak", "comment", "set_valve", "set_fan_speed", "set_shade", "variable_math"]]]], description: "Action objects to run when triggered (at least one required), each {type, ...}."]
                 ],
                 required: ["name", "triggers", "actions"]
             ],
@@ -856,7 +854,7 @@ Verify rule after creation.""",
         ],
         [
             name: "hub_update_custom_rule",
-            description: "Update an existing MCP custom-engine rule in place; only the fields you supply are changed. Use enabled=true/false to enable or disable.[[FLAT_TRIM]] Replacing triggers/conditions/actions overwrites that whole array (it is not a merge) -- get the current rule via hub_get_custom_rule first if you only want to tweak part of it, and see hub_get_tool_guide(section='rules') for trigger/condition/action structure. Verify changes after. NOTE: when the Custom Rule Engine toggle is OFF (read-only mode), only the 'enabled' field is accepted -- structural changes (triggers/conditions/actions/name) require the toggle to be ON.[[/FLAT_TRIM]]",
+            description: "Update an existing MCP custom-engine rule in place; only the fields you supply are changed. Use enabled=true/false to enable or disable.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -907,7 +905,7 @@ Verify rule after creation.""",
         // enable_rule and disable_rule merged into hub_update_custom_rule (use enabled=true/false)
         [
             name: "hub_test_custom_rule",
-            description: "Dry-run an MCP custom-engine rule: evaluate its conditions against current device/hub state and report whether it would fire, WITHOUT executing any actions (no devices change, no side effects).[[FLAT_TRIM]] Use this to validate a rule's logic after creating or updating it. Returns per-condition results, wouldEvaluate, and the list of actions that would have run. Applies only to MCP custom rules; for native Rule Machine use hub_manage_native_rules_and_apps.[[/FLAT_TRIM]]",
+            description: "Dry-run an MCP custom-engine rule: evaluate its conditions against current device/hub state and report whether it would fire, WITHOUT executing any actions (no devices change, no side effects).",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -931,7 +929,7 @@ Verify rule after creation.""",
         // Rule Export/Import/Clone Tools
         [
             name: "hub_export_custom_rule",
-            description: "Export a custom rule to JSON and save it to the hub File Manager for backup or sharing.[[FLAT_TRIM]] Returns the full rule data plus a device manifest listing all referenced devices, and writes a .json file to the File Manager (pass saveAs for the filename; defaults to a generated name).[[/FLAT_TRIM]]",
+            description: "Export a custom rule to JSON and save it to the hub File Manager for backup or sharing.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -969,7 +967,7 @@ Verify rule after creation.""",
         ],
         [
             name: "hub_import_custom_rule",
-            description: """Import a custom rule from exported JSON (produced by hub_export_custom_rule), creating a NEW rule with a fresh ruleId (it does not overwrite an existing rule).[[FLAT_TRIM]] Use this to restore a backup or copy a rule between hubs. Optional deviceMapping remaps the exported device IDs onto this hub's devices; unmapped IDs are kept as-is, so verify device references after import. Verify the rule after creation.[[/FLAT_TRIM]]""",
+            description: """Import a custom rule from exported JSON (produced by hub_export_custom_rule), creating a NEW rule with a fresh ruleId (it does not overwrite an existing rule).""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -999,7 +997,7 @@ Verify rule after creation.""",
         ],
         [
             name: "hub_clone_custom_rule",
-            description: "Duplicate an existing MCP custom-engine rule into a new, independent rule with its own ruleId (same triggers/conditions/actions and device references as the source).[[FLAT_TRIM]] The clone starts DISABLED so you can review and adjust it before activating via hub_update_custom_rule(enabled=true). Use this to base a new rule on an existing one.[[/FLAT_TRIM]]",
+            description: "Duplicate an existing MCP custom-engine rule into a new, independent rule with its own ruleId (same triggers/conditions/actions and device references as the source).",
             inputSchema: [
                 type: "object",
                 properties: [
