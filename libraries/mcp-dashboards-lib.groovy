@@ -457,7 +457,7 @@ def _getAllToolDefinitions_partDashboards() {
     return [
         [
             name: "hub_list_dashboards",
-            description: "List the hub's Easy Dashboards.[[FLAT_TRIM]] Read-only; each has id, name, and tile/theme config. Resolves the dashboard token automatically, so no pinToken is normally needed.[[/FLAT_TRIM]]",
+            description: "List the hub's Easy Dashboards.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -476,7 +476,7 @@ def _getAllToolDefinitions_partDashboards() {
         ],
         [
             name: "hub_get_dashboard",
-            description: "Get a dashboard's full config by id.[[FLAT_TRIM]] Read-only; returns tiles, navigation, devices, and PINs. Read before the wholesale hub_update_dashboard and pass its output straight back.[[/FLAT_TRIM]]",
+            description: "Get a dashboard's full config by id.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -495,13 +495,13 @@ def _getAllToolDefinitions_partDashboards() {
         ],
         [
             name: "hub_create_dashboard",
-            description: "Create an Easy Dashboard.[[FLAT_TRIM]] Write op; needs >=1 device. Tiles default off, theme legacy.[[/FLAT_TRIM]]",
+            description: "Create an Easy Dashboard.",
             inputSchema: [
                 type: "object",
                 properties: [
                     name: [type: "string", description: "Display name."],
                     deviceIds: [type: "array", description: "Device ids, >=1.", items: [type: "string"]],
-                    options: [type: "object", description: "Optional config.[[FLAT_TRIM]] show{Mode,Clock,Calendar,HSM}Tile/showEdit/showNavigation/showTutorial (bool); navigationSelection; theme (legacy|light|dark|auto); dashboardPin; hsmPin.[[/FLAT_TRIM]]"]
+                    options: [type: "object", description: "Optional config."]
                 ],
                 required: ["name", "deviceIds"]
             ],
@@ -516,14 +516,14 @@ def _getAllToolDefinitions_partDashboards() {
         ],
         [
             name: "hub_update_dashboard",
-            description: "Replace a dashboard's config wholesale by id.[[FLAT_TRIM]] Write op; pass the FULL config (omitted fields, PINs included, revert). Read hub_get_dashboard first.[[/FLAT_TRIM]]",
+            description: "Replace a dashboard's config wholesale by id.",
             inputSchema: [
                 type: "object",
                 properties: [
                     id: [type: "string", description: "installedAppId."],
                     name: [type: "string", description: "Display name (required)."],
                     deviceIds: [type: "array", description: "Full device id set, >=1.", items: [type: "string"]],
-                    options: [type: "object", description: "Same keys as hub_create_dashboard.options.[[FLAT_TRIM]] Any omitted key reverts to default.[[/FLAT_TRIM]]"]
+                    options: [type: "object", description: "Same keys as hub_create_dashboard.options."]
                 ],
                 required: ["id", "name", "deviceIds"]
             ],
@@ -538,12 +538,12 @@ def _getAllToolDefinitions_partDashboards() {
         ],
         [
             name: "hub_delete_dashboard",
-            description: "⚠️ Permanently delete a dashboard by id (irreversible). Tell the user first.[[FLAT_TRIM]] Devices are NOT deleted. Write op; needs confirm=true + a backup within 24h.[[/FLAT_TRIM]]",
+            description: "⚠️ Permanently delete a dashboard by id (irreversible). Tell the user first.",
             inputSchema: [
                 type: "object",
                 properties: [
                     id: [type: "string", description: "installedAppId to delete."],
-                    confirm: [type: "boolean", description: "Must be true.[[FLAT_TRIM]] Confirms a recent backup + user approval.[[/FLAT_TRIM]]"]
+                    confirm: [type: "boolean", description: "Must be true."]
                 ],
                 required: ["id", "confirm"]
             ],
@@ -558,7 +558,7 @@ def _getAllToolDefinitions_partDashboards() {
         ],
         [
             name: "hub_clone_dashboard",
-            description: "Clone a dashboard into a copy by id.[[FLAT_TRIM]] Write op; copies the source's config into a new dashboard (theme may default).[[/FLAT_TRIM]]",
+            description: "Clone a dashboard into a copy by id.",
             inputSchema: [
                 type: "object",
                 properties: [

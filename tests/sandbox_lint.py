@@ -1402,6 +1402,7 @@ def check_tool_guide_pointers(src_override: str | None = None,
         "set_rule_create_reference": "`hub_set_rule` create reference",
         "visual_rule_reference": "Visual Rules Builder reference",
         "variables": "Hub Variables",
+        "dashboards": "Dashboards",
     }
     for key in section_keys:
         hint = key_to_heading_hint.get(key)

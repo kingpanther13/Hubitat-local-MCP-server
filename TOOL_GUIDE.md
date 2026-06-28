@@ -976,3 +976,7 @@ The `hub_delete_variable` op (DESTRUCTIVE, no undo) removes a rule_engine variab
 ## Hub Variables
 
 Reference for the hub-variable tools (per-tool details migrated from tool descriptions).
+
+## Dashboards
+
+Reference for the dashboard tools (per-tool details migrated from tool descriptions).

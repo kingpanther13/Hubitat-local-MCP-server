@@ -6321,5 +6321,48 @@ Useful for sweeping orphaned `BAT_E2E_*` artifacts after CI runs, removing stale
 
 For Number/Decimal vars, Hubitat shows a connector-type chooser (Dimmer/Variable/etc.); pass `connectorType` to pick, default `Variable`. For String/Boolean/DateTime vars, the chooser is skipped.
 '''
+    ,
+        dashboards: '''## Dashboards
+
+Reference for the dashboard tools (hub_list_dashboards, hub_get_dashboard, hub_create_dashboard, hub_update_dashboard, hub_delete_dashboard, hub_clone_dashboard). Per-tool details below.
+
+### hub_list_dashboards
+
+Read-only; each dashboard entry has id, name, and tile/theme config. Resolves the dashboard token automatically, so no pinToken is normally needed.
+
+### hub_get_dashboard
+
+Read-only; returns tiles, navigation, devices, and PINs. Read before the wholesale `hub_update_dashboard` and pass its output straight back.
+
+### hub_create_dashboard
+
+Write op; needs >=1 device. Tiles default off; theme defaults to `legacy`.
+
+**`options` (optional config object):**
+- `showModeTile`, `showClockTile`, `showCalendarTile`, `showHSMTile` (bool)
+- `showEdit`, `showNavigation`, `showTutorial` (bool)
+- `navigationSelection`
+- `theme` — one of `legacy` | `light` | `dark` | `auto`
+- `dashboardPin`
+- `hsmPin`
+
+### hub_update_dashboard
+
+Replace a dashboard's config wholesale by id.
+
+- **Write op.** Pass the FULL config — this is a wholesale replace, not a partial patch. Any field you omit (PINs included) reverts to its default.
+- **Read `hub_get_dashboard` first** and pass its output straight back, so nothing already configured (tiles, navigation, devices, PINs) is silently dropped.
+- `options`: same keys as `hub_create_dashboard.options`. Any omitted key reverts to its default.
+
+### hub_delete_dashboard
+
+Devices are NOT deleted. Write op; needs `confirm=true` + a backup within 24h.
+
+- `confirm` (param) — Confirms a recent backup + user approval.
+
+### hub_clone_dashboard
+
+Write op. Copies the source dashboard's config into a new dashboard (theme may default).
+'''
     ]
 }
