@@ -170,6 +170,18 @@ class Issue257FoldsSpec extends ToolSpecBase {
         !result.traceroute.containsKey("error")
     }
 
+    def "the traceroute rename is hard -- the old 'traceroute' param key is inert, no alias (#296)"() {
+        given: 'no traceroute endpoint is registered, so an actual fetch would throw an unstubbed hubInternalGet'
+        settingsMap.enableRead = true
+        settingsMap.selectedDevices = []
+
+        when: 'a stale client passes the PRE-#296 key (traceroute) instead of tracerouteHost'
+        def result = script.toolDeviceHealthCheck([traceroute: "1.2.3.4"])
+
+        then: 'the rename shipped without an alias: the old key is ignored and no traceroute runs (had it aliased, the unstubbed fetch would have thrown)'
+        result.traceroute == null
+    }
+
     def "traceroute rejects a non-IPv4 host with IllegalArgumentException"() {
         given:
         settingsMap.enableRead = true

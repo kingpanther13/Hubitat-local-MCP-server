@@ -1297,21 +1297,21 @@ def adminInstallBundle(args) {
     if (!(lower.startsWith("http://") || lower.startsWith("https://"))) {
         throw new IllegalArgumentException("importUrl scheme must be http or https (got '${importUrl.take(40)}')")
     }
-    boolean installer = (args.installer == true)
+    boolean primary = (args.primary == true)
 
     String fw = null
     try { fw = location?.hub?.firmwareVersionString?.toString() } catch (Exception ignored) { }
     boolean modern = _firmwareAtLeast(fw, "2.3.8.108")
     String endpoint = modern ? "/bundle2/uploadZipFromUrl" : "/bundle/uploadZipFromUrl"
 
-    mcpAdminLog "Installing bundle (endpoint ${endpoint}, fw ${fw}, installer ${installer}, url ${importUrl})"
+    mcpAdminLog "Installing bundle (endpoint ${endpoint}, fw ${fw}, primary ${primary}, url ${importUrl})"
     try {
         def respBody
         if (modern) {
             // bundle2 is a GET with the url/pwd/private query (server 13577). `private` quoted (keyword).
-            respBody = hubGet("/bundle2/uploadZipFromUrl", [url: importUrl, pwd: "", "private": installer.toString()], 300)
+            respBody = hubGet("/bundle2/uploadZipFromUrl", [url: importUrl, pwd: "", "private": primary.toString()], 300)
         } else {
-            def body = groovy.json.JsonOutput.toJson([url: importUrl, installer: installer, pwd: ""])
+            def body = groovy.json.JsonOutput.toJson([url: importUrl, installer: primary, pwd: ""])
             def resp = hubPostJson("/bundle/uploadZipFromUrl", body)
             respBody = resp?.data
         }
@@ -1323,7 +1323,7 @@ def adminInstallBundle(args) {
         }
         mcpAdminLog "Bundle installed successfully from ${importUrl}"
         return [success: true, message: "Bundle installed from ${importUrl}. Its libraries/apps/drivers are now in Code.",
-                endpoint: endpoint, installer: installer]
+                endpoint: endpoint, primary: primary]
     } catch (Exception e) {
         log.error "adminInstallBundle: ${e.message}"
         return [success: false, error: "Bundle install failed: ${e.message ?: e.toString()}", endpoint: endpoint]
@@ -1806,7 +1806,7 @@ def getAdminToolDefinitions() {
          inputSchema: [type: "object", properties: [level: [type: "string"], limit: [type: "integer"]]]],
         [name: "hub_list_app_instances", description: "Every running app INSTANCE (flattened /hub2/appsList with parentId) -- the full app inventory. DISTINCT from hub_list_apps (Apps Code CLASSES, which resolve_class_id depends on). Read-only."],
         [name: "hub_install_bundle", description: "Install a code bundle .zip from a URL the hub fetches itself (HPM-style). confirm:true required.",
-         inputSchema: [type: "object", properties: [importUrl: [type: "string"], installer: [type: "boolean"], confirm: [type: "boolean"]], required: ["importUrl", "confirm"]]],
+         inputSchema: [type: "object", properties: [importUrl: [type: "string"], primary: [type: "boolean"], confirm: [type: "boolean"]], required: ["importUrl", "confirm"]]],
         [name: "hub_list_bundles", description: "List installed code bundle containers (id/name/namespace). Read-only.",
          inputSchema: [type: "object", properties: [:]]],
         [name: "hub_delete_bundle", description: "Delete a code bundle container by id (verified by re-list). confirm:true required.",

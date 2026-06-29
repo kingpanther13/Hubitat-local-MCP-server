@@ -385,7 +385,7 @@ Then call `hub_create_library` or `hub_update_library` with `sourceFile: 'mylib.
 Note: `hub_get_source` (type=library; read-only, Read master) lives in `hub_read_apps_code` and serves apps, drivers, and libraries via its `type` discriminator. The write operations (`hub_create_library`, `hub_update_library`, `hub_delete_item` with type=library) live in `hub_manage_code` (Write master).
 
 #### Bundles (`hub_install_bundle`)
-A bundle is a `.zip` that Hubitat Package Manager (HPM) fetches and unpacks into the hub's Libraries/Apps/Drivers Code in one shot — it is how an installed package actually delivers its library files to the hub. `hub_install_bundle` performs that exact server-side install (`importUrl` -> the hub's `/bundle2/uploadZipFromUrl`, falling back to `/bundle/uploadZipFromUrl` on firmware older than 2.3.8.108), so a package's bundle can be installed and verified the HPM way without driving the HPM UI. Requires `confirm: true` and a recent backup. `primary: true` marks the bundle as the installer's primary copy (matches HPM's "private" flag). Unlike `hub_create_library` (single library from inline/File-Manager source), this installs whatever the zip contains, in HPM's install order.
+A bundle is a `.zip` that Hubitat Package Manager (HPM) fetches and unpacks into the hub's Libraries/Apps/Drivers Code in one shot — it is how an installed package actually delivers its library files to the hub. `hub_install_bundle` performs that exact server-side install (`importUrl` -> the hub's `/bundle2/uploadZipFromUrl`, falling back to `/bundle/uploadZipFromUrl` on firmware older than 2.3.8.108), so a package's bundle can be installed and verified the HPM way without driving the HPM UI. Requires `confirm: true` and a recent backup. `installer: true` marks the bundle as the installer's primary copy (matches HPM's "private" flag). Unlike `hub_create_library` (single library from inline/File-Manager source), this installs whatever the zip contains, in HPM's install order.
 
 ### After Installation
 - Apps: Add via Apps > Add User App in Hubitat web UI
@@ -597,7 +597,7 @@ Two surfaces under one gateway: RMUtils-based runtime control for RM rules (RM-o
   - `action="rule"` (default, full evaluation): runs triggers + conditions + actions as if the rule fired
   - `action="actions"`: runs only the actions, bypassing conditions (useful for manual override)
   - `action="stop"`: stops running actions (cancels in-flight delays)
-- **`hub_set_rule_paused`** — reversible toggle (`value=true` pauses / `false` resumes); paused rules don't fire on triggers
+- **`hub_set_rule_paused`** — reversible toggle (`paused=true` pauses / `false` resumes); paused rules don't fire on triggers
 - **`hub_set_rule_private_boolean`** — set an RM rule's private boolean (true or false only; string values must be lowercase `"true"`/`"false"`). RM rules can use "Private Boolean" in conditions — this lets MCP flip that flag from outside.
 
 **Admin-layer CRUD (7 tools, generic across all classic SmartApps):**
@@ -975,16 +975,116 @@ The `hub_delete_variable` op (DESTRUCTIVE, no undo) removes a rule_engine variab
 
 ## Hub Variables
 
-Reference for the hub-variable tools (per-tool details migrated from tool descriptions).
+Reference for the hub-variable tools (hub_get_variable, hub_create_variable, hub_delete_variable, hub_create_connector). Per-tool details below.
+
+### hub_get_variable
+
+The returned `source` field says which one matched (the hub-variable namespace is searched first, then rule-engine variables). For hub variables it also returns metadata: `type`, plus `deviceId`/`attribute` when a connector is linked.
+
+### hub_create_variable
+
+Create a new hub variable (global variable visible to apps and Rule Machine), one at a time or several in one call. Single form: name + type + value.
+
+**Bulk form:**
+- `variables=[{name,type,value}, ...]` — mutually exclusive with the single form (i.e. mutually exclusive with `name`/`type`/`value`).
+- Bulk items are created sequentially; each succeeds or fails independently and the result reports per-item status.
+
+**Why create first (vs hub_set_variable):**
+- Use this before `hub_set_variable` for a name that doesn't exist yet — Hubitat's `setGlobalVar` cannot create, only update.
+- Drives the Settings → Hub Variables wizard, since creation isn't exposed via the public app API.
+
+**Constraints:**
+- Name must not contain any of these characters: `' " \ ~ [ : ] < >`. (This applies to the single-form `name` and to each bulk item's `name`.)
+- A String variable's initial value must be non-empty (an empty String reports success but never persists).
+
+**Expose to device-only apps:**
+- To also expose the variable to device-only apps, follow up with `hub_create_connector`.
+
+### hub_delete_variable
+
+Useful for sweeping orphaned `BAT_E2E_*` artifacts after CI runs, removing stale lease variables, or general cleanup.
+
+**Why the reference-safety refusal matters:** the tool refuses by default when a child rule app references the variable because deletion would silently break those rules — null lookups → false conditions, and a literal `%varname%` left in substitutions. Pass `force=true` to proceed anyway after acknowledging the breakage.
+
+### hub_list_variable_changes
+
+Audit/debug what changed a hub variable and when, without polling hub_get_variable. This buffer caps at 200 entries and clears on hub restart. For the hub's authoritative, complete, restart-surviving change log, call hub_list_device_events with no deviceId (location-event mode).
+
+### hub_create_connector
+
+For Number/Decimal vars, Hubitat shows a connector-type chooser (Dimmer/Variable/etc.); pass `connectorType` to pick, default `Variable`. For String/Boolean/DateTime vars, the chooser is skipped. The full Number/Decimal `connectorType` set is: Dimmer, Variable, Volume, ColorTemp, Humidity, Illuminance.
 
 ## Dashboards
 
-Reference for the dashboard tools (per-tool details migrated from tool descriptions).
+Reference for the dashboard tools (hub_list_dashboards, hub_get_dashboard, hub_create_dashboard, hub_update_dashboard, hub_delete_dashboard, hub_clone_dashboard). Per-tool details below.
+
+### hub_list_dashboards
+
+Read-only; each dashboard entry has id, name, and tile/theme config. Resolves the dashboard token automatically, so no pinToken is normally needed.
+
+### hub_get_dashboard
+
+Read-only; returns tiles, navigation, devices, and PINs. Read before the wholesale `hub_update_dashboard` and pass its output straight back.
+
+### hub_create_dashboard
+
+Write op; needs >=1 device. Tiles default off; theme defaults to `legacy`.
+
+**`options` (optional config object):**
+- `showModeTile`, `showClockTile`, `showCalendarTile`, `showHSMTile` (bool)
+- `showEdit`, `showNavigation`, `showTutorial` (bool)
+- `navigationSelection`
+- `theme` — one of `legacy` | `light` | `dark` | `auto`
+- `dashboardPin`
+- `hsmPin`
+
+### hub_update_dashboard
+
+Replace a dashboard's config wholesale by id.
+
+- **Write op.** Pass the FULL config — this is a wholesale replace, not a partial patch. Any field you omit (PINs included) reverts to its default.
+- **Read `hub_get_dashboard` first** and pass its output straight back, so nothing already configured (tiles, navigation, devices, PINs) is silently dropped.
+- `options`: same keys as `hub_create_dashboard.options`. Any omitted key reverts to its default.
+
+### hub_delete_dashboard
+
+Devices are NOT deleted. Write op; needs `confirm=true` + a backup within 24h.
+
+- `confirm` (param) — Confirms a recent backup + user approval.
+
+### hub_clone_dashboard
+
+Write op. Copies the source dashboard's config into a new dashboard (theme may default).
 
 ## Bundles
 
-Reference for the bundle tools (per-tool details migrated from tool descriptions).
+Reference for the bundle tools (hub_install_bundle, hub_list_bundles, hub_delete_bundle, hub_export_bundle). A bundle is a packaged .zip of apps, drivers, and/or libraries.
+
+### hub_install_bundle
+
+- **Verify the install** afterward with hub_list_libraries / hub_get_source.
+- **Endpoint routing:** uses /bundle2/uploadZipFromUrl on firmware >= 2.3.8.108, else the legacy /bundle/uploadZipFromUrl (the chosen path is also surfaced in the result's `endpoint` field).
+
+### hub_list_bundles
+
+Each entry: id, name, namespace, a private flag, and a `contains` summary of the apps/drivers/libraries the bundle delivers.
+
+### hub_export_bundle
+
+`saveAs` filename sanitization: `.zip` is appended if missing, and non-filename characters are replaced with `_`. The result returns the final `fileName`.
 
 ## Rooms
 
-Reference for the room tools (per-tool details migrated from tool descriptions).
+Reference for the room tools (hub_list_rooms, hub_get_room, hub_create_room, hub_update_room, hub_delete_room). hub_delete_room's destructive behaviour is under "Destructive Write Tools".
+
+### hub_get_room
+
+A device the MCP server cannot reach is returned with `accessible=false` and no `currentStates` (label "(device not accessible via MCP)").
+
+### hub_create_room
+
+To move EXISTING devices into an existing room, set each device's room via hub_update_device -- do NOT create a room for that.
+
+### hub_update_room
+
+Renaming a room preserves device assignments, but may require updating automations/dashboards that reference the room by name.

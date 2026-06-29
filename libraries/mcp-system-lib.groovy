@@ -897,7 +897,7 @@ def _getAllToolDefinitions_partSystem() {
         // System Tools
         [
             name: "hub_get_info",
-            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, memory, temperature, DB size, MCP stats, and security/toggle settings.",
+            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, memory, temperature, DB size, MCP stats, and security/toggle settings. See hub_get_tool_guide(section='hub_admin_write') for the optional deep-dive flags and PII gating.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -988,7 +988,7 @@ def _getAllToolDefinitions_partSystem() {
                     name: [type: "string", description: "New mode name (create), or the new name (rename)."],
                     mode: [type: "string", description: "Target for rename/delete/activate: id or name (from hub_list_modes)."],
                     icon: [type: "string", description: "OPTIONAL icon for create/rename, e.g. fa-moon."],
-                    confirm: [type: "boolean", description: "REQUIRED for action=delete: true + a backup <24h (hub_create_backup).[[FLAT_TRIM]] Confirms a backup <24h + that breaking mode references is intended.[[/FLAT_TRIM]]"]
+                    confirm: [type: "boolean", description: "REQUIRED for action=delete: true + a backup <24h (hub_create_backup). Confirms a backup <24h + that breaking mode references is intended."]
                 ],
                 required: ["action"]
             ],
@@ -1014,7 +1014,7 @@ def _getAllToolDefinitions_partSystem() {
                 type: "object",
                 properties: [
                     manager: [type: "string", enum: ["builtIn", "legacy", "app"], description: "Which Mode Manager to activate."],
-                    conditions: [type: "object", description: "OPTIONAL per-mode conditions keyed by mode id; REPLACES the whole set, so read-modify-write from hub_list_modes. See hub_get_tool_guide."]
+                    conditions: [type: "object", description: "OPTIONAL per-mode conditions keyed by mode id; REPLACES the whole set, so read-modify-write from hub_list_modes. See hub_get_tool_guide(section='hub_admin_write')."]
                 ]
             ],
             outputSchema: [
@@ -1032,7 +1032,7 @@ def _getAllToolDefinitions_partSystem() {
         ],
         [
             name: "hub_get_hsm_status",
-            description: "Get the current HSM (Hubitat Safety Monitor) armed status, any active alert, and the valid HSM arm commands.",
+            description: "Get the current HSM (Hubitat Safety Monitor) armed status, any active alert, and the valid HSM arm commands. See hub_get_tool_guide(section='hub_admin_write').",
             inputSchema: [type: "object", properties: [:]],
             outputSchema: [
                 type: "object",
@@ -1067,7 +1067,7 @@ def _getAllToolDefinitions_partSystem() {
         ],
         [
             name: "hub_set_system_settings",
-            description: """Set hub-GLOBAL settings: hub name, time zone, location, zip code, temperature scale, admin-UI dark mode, and network config. All optional — pass only what changes.""",
+            description: """Set hub-GLOBAL settings: hub name, time zone, location, zip code, temperature scale, admin-UI dark mode, and network config. All optional — pass only what changes. See hub_get_tool_guide(section='hub_admin_write') for the per-field write model and reboot caveats.""",
             inputSchema: [
                 type: "object",
                 properties: [

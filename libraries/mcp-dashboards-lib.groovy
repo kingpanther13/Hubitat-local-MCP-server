@@ -461,7 +461,7 @@ def _getAllToolDefinitions_partDashboards() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    pinToken: [type: "string", description: "Optional pin token.[[FLAT_TRIM]] Auto-resolved when omitted.[[/FLAT_TRIM]]"]
+                    pinToken: [type: "string", description: "Optional pin token. Auto-resolved when omitted."]
                 ]
             ],
             outputSchema: [
@@ -481,7 +481,7 @@ def _getAllToolDefinitions_partDashboards() {
                 type: "object",
                 properties: [
                     dashboardId: [type: "string", description: "installedAppId."],
-                    pinToken: [type: "string", description: "Optional pin token.[[FLAT_TRIM]] Auto-resolved when omitted.[[/FLAT_TRIM]]"]
+                    pinToken: [type: "string", description: "Optional pin token. Auto-resolved when omitted."]
                 ],
                 required: ["dashboardId"]
             ],
@@ -516,7 +516,7 @@ def _getAllToolDefinitions_partDashboards() {
         ],
         [
             name: "hub_update_dashboard",
-            description: "Wholesale replace by id; read hub_get_dashboard first and pass its full config back.[[FLAT_TRIM]] Omitted fields revert to default.[[/FLAT_TRIM]]",
+            description: "Wholesale replace by id; read hub_get_dashboard first and pass its full config back. Omitted fields revert to default.",
             inputSchema: [
                 type: "object",
                 properties: [

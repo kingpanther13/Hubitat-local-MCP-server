@@ -5265,7 +5265,11 @@ pointer to THAT tool's own guide section -- follow it for the failing tool's ref
 - Destructive writes: create a backup with hub_create_backup within 24h and pass confirm=true;
   destructive tools refuse otherwise.''',
 
-        hub_admin_write: '''## Destructive Write Tools - Pre-Flight Checklist
+        hub_admin_write: '''## Admin, System & Destructive Write Tools
+
+This section covers the hub-admin and system tools (hub info, location modes, HSM status, system settings) AND the destructive write tools. The read-only / non-destructive entries below (e.g. hub_get_info, hub_list_modes, hub_get_hsm_status, the create/rename/activate mode actions) need no confirm; only the destructive writes require the pre-flight checklist.
+
+### Destructive Write Tools - Pre-Flight Checklist
 
 All Write master tools require these steps:
 1. Backup check: Ensure hub_create_backup was called within the last 24 hours

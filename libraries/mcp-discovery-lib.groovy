@@ -249,7 +249,7 @@ def _getAllToolDefinitions_partDiscovery() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    section: [type: "string", description: "REQUIRED for efficiency: pass one section key (see enum). Omit only to fetch the full guide / discover the available keys.", enum: ["device_authorization", "best_practice_reference", "hub_admin_write", "virtual_devices", "update_device", "rules", "backup", "file_manager", "performance", "builtin_app_tools", "set_rule_reference", "set_rule_create_reference", "visual_rule_reference"]]
+                    section: [type: "string", description: "REQUIRED for efficiency: pass one section key (see enum). Omit only to fetch the full guide / discover the available keys.", enum: ["device_authorization", "best_practice_reference", "hub_admin_write", "virtual_devices", "update_device", "rules", "backup", "file_manager", "performance", "builtin_app_tools", "set_rule_reference", "set_rule_create_reference", "visual_rule_reference", "variables", "dashboards", "bundles", "rooms"]]
                 ]
             ],
             outputSchema: [
