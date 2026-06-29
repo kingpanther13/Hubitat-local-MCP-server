@@ -452,7 +452,7 @@ def _getAllToolDefinitions_partDebugLogging() {
         // Debug Logging Tools
         [
             name: "hub_get_debug_logs",
-            description: "Read the MCP debug-log system (stored in app state). mode='logs' (default) returns stored entries with level/component/ruleId filters + pagination; mode='status' returns the logging system's status: current log level, per-severity entry counts, and capacity.",
+            description: "Read the MCP debug-log system (stored in app state). mode='logs' (default) returns stored entries; mode='status' returns logging-system status.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -461,7 +461,7 @@ def _getAllToolDefinitions_partDebugLogging() {
                     level: [type: "string", enum: ["debug", "info", "warn", "error", "all"], description: "logs mode: filter by log level (default: all)"],
                     component: [type: "string", description: "logs mode: filter by component (e.g., 'server', 'rule')"],
                     ruleId: [type: "string", description: "logs mode: filter by specific rule ID"],
-                    cursor: [type: "string", description: "logs mode: opt-in pagination cursor. Filters and limit apply first; cursor pages within the filtered result. Pass \"\" for the first page, iterate nextCursor (page size 100)."]
+                    cursor: [type: "string", description: "logs mode: opt-in pagination cursor.[[FLAT_TRIM]] Filters and limit apply first; cursor pages within the filtered result. Pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
                 ]
             ],
             outputSchema: [
@@ -494,7 +494,7 @@ def _getAllToolDefinitions_partDebugLogging() {
         ],
         [
             name: "hub_delete_debug_logs",
-            description: "Clear all entries from the MCP debug-log buffer (the in-app state log read by hub_get_debug_logs). Use to reset that buffer before reproducing an issue or to free space. Does NOT touch Hubitat system logs (hub_get_logs) or captured device states (hub_delete_captured_state). Cannot be undone.",
+            description: "Clear all entries from the MCP debug-log buffer (the in-app state log read by hub_get_debug_logs).[[FLAT_TRIM]] Use to reset that buffer before reproducing an issue or to free space. Does NOT touch Hubitat system logs (hub_get_logs) or captured device states (hub_delete_captured_state).[[/FLAT_TRIM]] Cannot be undone.",
             inputSchema: [type: "object", properties: [:]],
             outputSchema: [
                 type: "object",
@@ -507,7 +507,7 @@ def _getAllToolDefinitions_partDebugLogging() {
         ],
         [
             name: "hub_set_log_level",
-            description: "Set the minimum log level threshold. Logs below this level won't be stored. Levels in order: debug < info < warn < error",
+            description: "Set the minimum log level threshold. Logs below this level won't be stored.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -527,7 +527,7 @@ def _getAllToolDefinitions_partDebugLogging() {
         ],
         [
             name: "hub_report_issue",
-            description: "File a bug, report a bug, open an issue, open a github issue, request a feature/enhancement, or flag agent-behavior issues against this MCP server. Does NOT submit the issue itself: it gathers context (scoped recent logs, hub/version info) and returns a prefilled GitHub issue link (template + title) plus the report body for the user to open and post.",
+            description: "File or report a bug, open a GitHub issue, request a feature/enhancement, or flag agent-behavior issues against this MCP server. Does NOT submit the issue itself: it gathers context (scoped recent logs, hub/version info) and returns a prefilled GitHub issue link (template + title) plus the report body for the user to open and post.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -537,8 +537,8 @@ def _getAllToolDefinitions_partDebugLogging() {
                     stepsToReproduce: [type: "string"],
                     issueType: [type: "string", enum: ["bug", "enhancement", "agent_behavior"], description: "Default bug."],
                     failingTool: [type: "string", description: "MCP tool that failed; scopes logs + titles issue."],
-                    ruleId: [type: "string", description: "Legacy custom MCP rule-engine rule id; scopes logs to it. A native Rule Machine rule goes in nativeAppId, not here."],
-                    nativeAppId: [type: "string", description: "Native Rule Machine app id; scopes logs to that app. A legacy custom MCP rule goes in ruleId."],
+                    ruleId: [type: "string", description: "Legacy custom MCP rule-engine rule id; scopes logs to it.[[FLAT_TRIM]] A native Rule Machine rule goes in nativeAppId, not here.[[/FLAT_TRIM]]"],
+                    nativeAppId: [type: "string", description: "Native Rule Machine app id; scopes logs to that app.[[FLAT_TRIM]] A legacy custom MCP rule goes in ruleId.[[/FLAT_TRIM]]"],
                     llmClient: [type: "string", description: "Claude / ChatGPT / Gemini / etc."],
                     privacyMode: [type: "string", enum: ["private", "public"], description: "'public' placeholders hub name, suppresses raw logs."],
                     includeRawLogs: [type: "boolean", description: "Default: true private, false public."],
