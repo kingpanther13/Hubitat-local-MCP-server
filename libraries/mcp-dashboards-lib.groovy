@@ -461,7 +461,7 @@ def _getAllToolDefinitions_partDashboards() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    pinToken: [type: "string", description: "Optional pin token; auto-resolved when omitted."]
+                    pinToken: [type: "string", description: "Optional pin token.[[FLAT_TRIM]] Auto-resolved when omitted.[[/FLAT_TRIM]]"]
                 ]
             ],
             outputSchema: [
@@ -481,7 +481,7 @@ def _getAllToolDefinitions_partDashboards() {
                 type: "object",
                 properties: [
                     dashboardId: [type: "string", description: "installedAppId."],
-                    pinToken: [type: "string", description: "Optional pin token; auto-resolved when omitted."]
+                    pinToken: [type: "string", description: "Optional pin token.[[FLAT_TRIM]] Auto-resolved when omitted.[[/FLAT_TRIM]]"]
                 ],
                 required: ["dashboardId"]
             ],
@@ -516,12 +516,12 @@ def _getAllToolDefinitions_partDashboards() {
         ],
         [
             name: "hub_update_dashboard",
-            description: "Wholesale replace by id; read hub_get_dashboard first and pass its full config back (omitted fields revert to default).",
+            description: "Wholesale replace by id; read hub_get_dashboard first and pass its full config back.[[FLAT_TRIM]] Omitted fields revert to default.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     dashboardId: [type: "string", description: "installedAppId."],
-                    name: [type: "string", description: "Display name (required)."],
+                    name: [type: "string", description: "Display name."],
                     deviceIds: [type: "array", description: "Full device id set, >=1.", items: [type: "string"]],
                     options: [type: "object", description: "Same keys as hub_create_dashboard.options."]
                 ],
