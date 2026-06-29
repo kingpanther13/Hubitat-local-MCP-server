@@ -33,6 +33,9 @@ class TestDevice {
     // Default null so callers that don't set it fall through to the device.name fallback.
     String typeName = null
 
+    // The device's disabled flag. Default null = unset (the device exposes no explicit value).
+    Boolean disabled = null
+
     // Device data values -- backing store for getDataValue/updateDataValue.
     // toolCreateVirtualDevice persists mcpDriverNamespace here; toolListVirtualDevices reads it back.
     Map dataValues = [:]

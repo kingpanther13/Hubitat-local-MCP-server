@@ -3012,6 +3012,18 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 
 **Expected**: Tool returns an MCP error (`-32602`) explaining the self-lockout guard, e.g. `Refusing to empty the MCP device-access scope: ... Pass selectedDevices.allowEmpty:true to confirm you intend to clear the scope.` The scope is unchanged. AI explains that an empty scope blinds the server to every selected device and that `allowEmpty:true` is required to proceed.
 
+### T663 — bypassDeviceAllowlist lets device tools reach a device OUTSIDE the allowlist
+
+```json
+{
+  "setup_prompt": "Developer Mode is enabled, the Write master is enabled, recent backup exists, and bypassDeviceAllowlist is OFF (the default). List every hub device with hub_list_devices(scope='all') and pick one that is currently mcpAuthorized=false (NOT in the MCP scope). Confirm hub_get_device on that id returns 'Device not found'.",
+  "test_prompt": "Turn on the device-allowlist bypass with hub_update_mcp_settings({settings:{bypassDeviceAllowlist:true}}), then read that same unauthorized device with hub_get_device(deviceId='<id>') and report whether it is now reachable.",
+  "teardown_prompt": "Turn the bypass back OFF with hub_update_mcp_settings({settings:{bypassDeviceAllowlist:false}}) and confirm hub_get_device on that id returns 'Device not found' again."
+}
+```
+
+**Expected**: With the toggle OFF the unlisted device is not reachable (`hub_get_device` → `-32602 Device not found`). The flip call is `hub_manage_mcp(tool='hub_update_mcp_settings', args={settings:{bypassDeviceAllowlist:true}, confirm:true})` → `{success:true, updated:{bypassDeviceAllowlist:true}, ...}` with a WARN `[developer-mode]` audit line. With the bypass ON, `hub_get_device(deviceId='<id>')` now resolves the device through the hub's id-keyed `/device/fullJson` fallback (returns its id/label/room/capabilities). The AI notes that the bypass removes the device-selection security boundary and that the same parity applies to `hub_get_device_attribute`, `hub_call_device_command` (incl. `waitFor`), `hub_update_device`, and `hub_list_device_events` — but NOT to `hub_list_devices`, device swap/replace/delete, or device-health. Teardown restores `bypassDeviceAllowlist:false`, after which the device is unreachable again.
+
 ---
 
 ## Section 12b: Permission Masters & Per-tool Overrides (#113 / #114)

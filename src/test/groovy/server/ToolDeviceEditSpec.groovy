@@ -35,6 +35,8 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         def device = new TestDevice(id: 10, label: 'Porch Light')
         childDevicesList << device
         hubGet.register('/device/setShowOnHome?deviceId=10&show=false') { params -> '' }
+        // Read-back confirms the flag landed (showOnHome:false as requested).
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Porch Light","showOnHome":false}}' }
 
         when:
         def result = script.toolUpdateDevice([deviceId: '10', showOnHome: false])
@@ -45,6 +47,58 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         hubGet.calls.any { it.path == '/device/setShowOnHome?deviceId=10&show=false' }
     }
 
+    // ============================================================
+    // hub_update_device : enabled read-back (listed path)
+    // ============================================================
+
+    def "toolUpdateDevice enabled read-back MISMATCH records a per-property error (not a change)"() {
+        given: 'the /device/disable POST is a no-op; the FRESH fullJson re-read still shows the device enabled (disabled:false) so the requested disable did not land'
+        def device = new TestDevice(id: 10, name: 'Sw', label: 'Switch')
+        childDevicesList << device
+        script.metaClass.hubInternalPost = { String path, Map body = null, int t = 30, boolean r = false -> '' }
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Switch","disabled":false}}' }
+
+        when: 'request disable; the re-fetch reports enabled -> mismatch'
+        def result = script.toolUpdateDevice([deviceId: '10', enabled: false])
+
+        then: 'a per-property read-back error, NOT a recorded change'
+        result.success == false
+        result.errors.find { it.property == 'enabled' }?.error?.contains('read back as')
+        !(result.changes.find { it.property == 'enabled' })
+    }
+
+    def "toolUpdateDevice enabled read-back HAPPY PATH records the change when the re-fetch shows the flip"() {
+        given: 'the FRESH fullJson re-read shows the device now disabled -- the flip landed'
+        def device = new TestDevice(id: 10, name: 'Sw', label: 'Switch')
+        childDevicesList << device
+        script.metaClass.hubInternalPost = { String path, Map body = null, int t = 30, boolean r = false -> '' }
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Switch","disabled":true}}' }
+
+        when: 'request disable; the re-fetch confirms disabled'
+        def result = script.toolUpdateDevice([deviceId: '10', enabled: false])
+
+        then: 'the change is recorded with no error'
+        result.success == true
+        result.changes.find { it.property == 'enabled' }?.newValue == false
+        !(result.errors?.find { it.property == 'enabled' })
+    }
+
+    def "toolUpdateDevice enabled read-back records a could-not-confirm error when the re-fetch fails"() {
+        given: 'the /device/disable POST is accepted but the read-back fullJson fetch yields nothing'
+        def device = new TestDevice(id: 10, name: 'Sw', label: 'Switch')
+        childDevicesList << device
+        script.metaClass.hubInternalPost = { String path, Map body = null, int t = 30, boolean r = false -> '' }
+        hubGet.register('/device/fullJson/10') { params -> '' }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', enabled: false])
+
+        then: 'a distinct could-not-confirm error, NOT a recorded change'
+        result.success == false
+        result.errors.find { it.property == 'enabled' }?.error?.contains('could not confirm the change')
+        !(result.changes.find { it.property == 'enabled' })
+    }
+
     @spock.lang.Unroll
     def "via dispatch: hub_update_device showOnHome=true succeeds (useGateways=#useGateways)"() {
         given:
@@ -52,6 +106,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         def device = new TestDevice(id: 10, label: 'Porch Light')
         childDevicesList << device
         hubGet.register('/device/setShowOnHome?deviceId=10&show=true') { params -> '' }
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Porch Light","showOnHome":true}}' }
 
         when:
         def response = mcpDriver.callTool('hub_update_device', [deviceId: '10', showOnHome: true])
@@ -87,6 +142,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         def device = new TestDevice(id: 10, label: 'Porch Light')
         childDevicesList << device
         hubGet.register('/device/setShowOnHome?deviceId=10&show=true') { params -> throw new RuntimeException('Not Found (404)') }
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Porch Light","showOnHome":true}}' }
         def posted = null
         script.metaClass.hubInternalPostJson = { String path, String jsonBody, int timeout = 420, boolean isRetry = false ->
             posted = [path: path, body: jsonBody]; return [status: 200]
@@ -104,6 +160,38 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         body.showOnHome == true
     }
 
+    def "toolUpdateDevice showOnHome read-back MISMATCH records a per-property error (not a change)"() {
+        given: 'the POST is a no-op; the FRESH fullJson re-read still shows showOnHome:true so the requested false did not land'
+        def device = new TestDevice(id: 10, label: 'Porch Light')
+        childDevicesList << device
+        hubGet.register('/device/setShowOnHome?deviceId=10&show=false') { params -> '' }
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Porch Light","showOnHome":true}}' }
+
+        when: 'request showOnHome=false; the re-fetch reports true -> mismatch'
+        def result = script.toolUpdateDevice([deviceId: '10', showOnHome: false])
+
+        then: 'a per-property read-back error, NOT a recorded change'
+        result.success == false
+        result.errors.find { it.property == 'showOnHome' }?.error?.contains('read back as')
+        !(result.changes.find { it.property == 'showOnHome' })
+    }
+
+    def "toolUpdateDevice showOnHome read-back records a could-not-confirm error when the re-fetch fails"() {
+        given: 'the POST is accepted but the read-back fullJson fetch yields nothing'
+        def device = new TestDevice(id: 10, label: 'Porch Light')
+        childDevicesList << device
+        hubGet.register('/device/setShowOnHome?deviceId=10&show=true') { params -> '' }
+        hubGet.register('/device/fullJson/10') { params -> '' }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', showOnHome: true])
+
+        then: 'a distinct could-not-confirm error, NOT a recorded change'
+        result.success == false
+        result.errors.find { it.property == 'showOnHome' }?.error?.contains('could not confirm the change')
+        !(result.changes.find { it.property == 'showOnHome' })
+    }
+
     // ============================================================
     // hub_update_device : defaultCurrentState
     // ============================================================
@@ -113,6 +201,8 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         def device = new TestDevice(id: 10, label: 'Thermostat')
         childDevicesList << device
         hubGet.register('/device/setDefaultCurrentState?id=10&currentState=temperature') { params -> 'true' }
+        // Read-back confirms the attribute landed.
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Thermostat","defaultCurrentState":"temperature"}}' }
 
         when:
         def result = script.toolUpdateDevice([deviceId: '10', defaultCurrentState: 'temperature'])
@@ -128,6 +218,8 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         def device = new TestDevice(id: 10, label: 'Thermostat')
         childDevicesList << device
         hubGet.register('/device/setDefaultCurrentState?id=10&currentState=') { params -> 'true' }
+        // Read-back: None reads back as null (the empty-string request is a clear).
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Thermostat","defaultCurrentState":null}}' }
 
         when:
         def result = script.toolUpdateDevice([deviceId: '10', defaultCurrentState: ''])
@@ -145,6 +237,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         def device = new TestDevice(id: 10, label: 'Thermostat')
         childDevicesList << device
         hubGet.register('/device/setDefaultCurrentState?id=10&currentState=switch') { params -> 'true' }
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Thermostat","defaultCurrentState":"switch"}}' }
 
         when:
         def response = mcpDriver.callTool('hub_update_device', [deviceId: '10', defaultCurrentState: 'switch'])
@@ -195,6 +288,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         def device = new TestDevice(id: 10, label: 'Thermostat')
         childDevicesList << device
         hubGet.register('/device/setDefaultCurrentState?id=10&currentState=temperature') { params -> throw new RuntimeException('Not Found (404)') }
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Thermostat","defaultCurrentState":"temperature"}}' }
         def posted = null
         script.metaClass.hubInternalPostJson = { String path, String jsonBody, int timeout = 420, boolean isRetry = false ->
             posted = [path: path, body: jsonBody]; return [status: 200]
@@ -230,6 +324,109 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         result.changes.find { it.property == 'defaultCurrentState' } == null
         result.errors.find { it.property == 'defaultCurrentState' }?.error?.contains('Hub did not accept')
         postCalled == false
+    }
+
+    def "toolUpdateDevice defaultCurrentState read-back MISMATCH records a per-property error (not a change)"() {
+        given: 'the dedicated GET returns true, but the FRESH fullJson re-read shows a DIFFERENT attribute -- the value did not actually land'
+        def device = new TestDevice(id: 10, label: 'Thermostat')
+        childDevicesList << device
+        hubGet.register('/device/setDefaultCurrentState?id=10&currentState=temperature') { params -> 'true' }
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Thermostat","defaultCurrentState":"humidity"}}' }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', defaultCurrentState: 'temperature'])
+
+        then: 'a per-property read-back error naming the mismatch, NOT a recorded change'
+        result.success == false
+        result.errors.find { it.property == 'defaultCurrentState' }?.error?.contains('read back as')
+        !(result.changes.find { it.property == 'defaultCurrentState' })
+    }
+
+    def "toolUpdateDevice defaultCurrentState read-back records a could-not-confirm error when the re-fetch fails"() {
+        given: 'the dedicated GET returns true but the confirming fullJson fetch yields nothing'
+        def device = new TestDevice(id: 10, label: 'Thermostat')
+        childDevicesList << device
+        hubGet.register('/device/setDefaultCurrentState?id=10&currentState=switch') { params -> 'true' }
+        hubGet.register('/device/fullJson/10') { params -> '' }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', defaultCurrentState: 'switch'])
+
+        then: 'a distinct could-not-confirm error, NOT a recorded change'
+        result.success == false
+        result.errors.find { it.property == 'defaultCurrentState' }?.error?.contains('could not confirm the change')
+        !(result.changes.find { it.property == 'defaultCurrentState' })
+    }
+
+    // ============================================================
+    // hub_update_device : preferences (read-back, listed path)
+    // ============================================================
+
+    def "toolUpdateDevice preferences read-back HAPPY PATH confirms via fullJson settings and records the change"() {
+        given: 'updateSetting applies the pref; the FRESH fullJson read shows it in the settings array'
+        def device = new TestDevice(id: 10, label: 'Sensor')
+        device.metaClass.updateSetting = { String k, v -> }
+        childDevicesList << device
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Sensor","settings":[{"name":"tempOffset","type":"number","value":"3"}]}}' }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', preferences: [tempOffset: [type: 'number', value: 3]]])
+
+        then: 'the confirmed value is recorded as a change, no error'
+        result.success == true
+        result.changes.find { it.property == 'preference.tempOffset' } != null
+        !(result.errors?.find { it.property == 'preference.tempOffset' })
+    }
+
+    def "toolUpdateDevice preferences read-back MISMATCH records a 'read back as' error (no false success on a silent no-op)"() {
+        given: 'updateSetting is a silent no-op; the pref never appears in fullJson settings'
+        def device = new TestDevice(id: 10, label: 'Sensor')
+        device.metaClass.updateSetting = { String k, v -> }
+        childDevicesList << device
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Sensor","settings":[]}}' }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', preferences: [tempOffset: [type: 'number', value: 3]]])
+
+        then: 'the unconfirmed write is a structured error, NOT a false change'
+        result.success == false
+        result.errors.find { it.property == 'preference.tempOffset' }?.error?.contains('read back as')
+        !(result.changes.find { it.property == 'preference.tempOffset' })
+    }
+
+    def "toolUpdateDevice preferences read-back FETCH-NULL records the distinct could-not-confirm error"() {
+        given: 'the confirming fullJson re-fetch returns no device'
+        def device = new TestDevice(id: 10, label: 'Sensor')
+        device.metaClass.updateSetting = { String k, v -> }
+        childDevicesList << device
+        hubGet.register('/device/fullJson/10') { params -> '{"device":null}' }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', preferences: [tempOffset: [type: 'number', value: 3]]])
+
+        then: 'a failed read-back fetch is a DISTINCT error, never a recorded change'
+        result.success == false
+        result.errors.find { it.property == 'preference.tempOffset' }?.error?.contains('could not confirm the preference -- the read-back fetch failed')
+        !(result.changes.find { it.property == 'preference.tempOffset' })
+    }
+
+    // ============================================================
+    // hub_update_device : room newValue canonical name (listed path)
+    // ============================================================
+
+    def "toolUpdateDevice room records the CANONICAL room name (hub casing) as newValue, not the caller's raw casing"() {
+        given: 'the device is already in room "Foyer"; the caller passes the lowercase "foyer"'
+        def device = new TestDevice(id: 10, label: 'Lamp', roomName: 'Foyer')
+        childDevicesList << device
+        // deviceIds contains 10 so the assign short-circuits "already in room" and the verify confirms.
+        script.metaClass.getRooms = { -> [[id: 7, name: 'Foyer', deviceIds: [10]]] }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', room: 'foyer'])
+
+        then: 'newValue is the canonical "Foyer" (matched-room casing), not the raw "foyer"'
+        result.success == true
+        result.changes.find { it.property == 'room' }?.newValue == 'Foyer'
     }
 
     // ============================================================
@@ -413,6 +610,37 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         hubGet.calls.any { it.path == '/device/updateLabel?deviceId=777&label=Garage+Bridge' }
     }
 
+    @spock.lang.Unroll
+    def "toolCreateDevice label apply: a failed updateLabel (#scenario) falls back to the wholesale /device/update form and applies the label"() {
+        given: 'the dedicated updateLabel setter fails (non-true body or a 404 throw, as on fw 2.5.0.157), but the /device/update fallback applies the label'
+        def fjLabel = 'My LAN Device'
+        hubGet.register('/device/sysDriverByIdJson/500') { params -> '{"success":true,"deviceId":777}' }
+        hubGet.register('/device/fullJson/777') { params ->
+            groovy.json.JsonOutput.toJson([device: [id: 777, label: fjLabel, name: 'Generic LAN Driver', deviceTypeName: 'Generic LAN Driver', virtual: false, capabilities: ['Switch']]])
+        }
+        hubGet.register('/device/updateLabel?deviceId=777&label=Garage+Bridge') { params ->
+            if (scenario == 'throws') throw new RuntimeException('status code: 404, reason phrase: Not Found')
+            return 'false'
+        }
+        // The wholesale form applies the label; the read-back then reflects it.
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 420, boolean r = false ->
+            if (body.contains('label=Garage+Bridge')) fjLabel = 'Garage Bridge'
+            return [status: 200]
+        }
+
+        when:
+        def result = script.toolCreateDevice([deviceTypeId: '500', label: 'Garage Bridge', confirm: true])
+
+        then: 'the fallback applied the label -- no warning, and the response label reflects the applied value'
+        result.success == true
+        result.deviceId == '777'
+        result.label == 'Garage Bridge'
+        result.warnings == null
+
+        where:
+        scenario << ['non-true', 'throws']
+    }
+
     def "toolCreateDevice warns when the driver looks radio-type"() {
         given:
         hubGet.register('/device/sysDriverByIdJson/12') { params -> '{"success":true,"deviceId":88}' }
@@ -475,13 +703,16 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         result.note.contains('hub_list_drivers')
     }
 
-    def "toolCreateDevice surfaces a non-fatal warning when the label apply fails"() {
-        given: 'create + read-back succeed, but updateLabel returns a non-true body'
+    def "toolCreateDevice surfaces a non-fatal warning when BOTH updateLabel AND the wholesale fallback fail"() {
+        given: 'updateLabel returns a non-true body AND the /device/update fallback read-back never reflects the label'
+        def fjLabel = 'My LAN Device'   // the hub applies the label on neither path
         hubGet.register('/device/sysDriverByIdJson/500') { params -> '{"success":true,"deviceId":777}' }
         hubGet.register('/device/fullJson/777') { params ->
-            '{"device":{"id":777,"label":"My LAN Device","name":"Generic LAN Driver","deviceTypeName":"Generic LAN Driver","virtual":false,"capabilities":["Switch"]}}'
+            groovy.json.JsonOutput.toJson([device: [id: 777, label: fjLabel, name: 'Generic LAN Driver', deviceTypeName: 'Generic LAN Driver', virtual: false, capabilities: ['Switch']]])
         }
         hubGet.register('/device/updateLabel?deviceId=777&label=Garage+Bridge') { params -> 'false' }
+        // The form POST is 'accepted' but a no-op, so the read-back still shows the original label.
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 420, boolean r = false -> [status: 200] }
 
         when:
         def result = script.toolCreateDevice([deviceTypeId: '500', label: 'Garage Bridge', confirm: true])

@@ -7272,6 +7272,138 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         after_auth = {str(d["id"]) for d in (after.get("devices") or []) if d.get("mcpAuthorized")}
         assert after_auth == before_auth, "scope changed despite the lockout refusal"
 
+    @test("developer_mode")
+    def test_bypass_device_allowlist_reaches_unlisted_device(self) -> None:
+        """bypassDeviceAllowlist ON lets hub_get_device reach a device OUTSIDE the allowlist.
+
+        Picks an UNAUTHORIZED device (scope='all', mcpAuthorized=false), confirms hub_get_device
+        404s for it while the toggle is OFF, flips bypassDeviceAllowlist ON via hub_update_mcp_settings,
+        confirms hub_get_device now resolves it through the id-keyed /device/fullJson fallback, then
+        restores the toggle OFF in a finally (and re-confirms the boundary is back). Validated live
+        because the bypass routes to real hub endpoints the Spock harness only mocks.
+        """
+        all_devs = self.client.call_tool("hub_list_devices", {"scope": "all"}).get("devices") or []
+        unauth = next((str(d["id"]) for d in all_devs
+                       if not d.get("mcpAuthorized") and d.get("id") is not None), None)
+        if unauth is None:
+            raise SkipTest("no unauthorized device available to exercise the allowlist bypass")
+
+        # ---- #1 live proof (LISTED path): the normal allowlisted enabled read-back now confirms via
+        # a FRESH /device/fullJson re-read (_confirmDisabledFlip), NOT the request-cached Groovy device
+        # handle -- a cached handle does not reflect a same-request /device/disable POST and would
+        # mis-report a real flip as a "read back as enabled" error. Toggle an authorized mcp-managed
+        # virtual device's enabled and confirm SUCCESS + a recorded change (reversible; restored).
+        auth = next((str(d["id"]) for d in all_devs
+                     if d.get("mcpAuthorized") and d.get("mcpManaged") and d.get("id") is not None), None)
+        if auth is not None:
+            a_orig_disabled = bool((self.client.call_tool("hub_get_device", {"deviceId": auth})).get("disabled"))
+            try:
+                a_flip = self.client.call_tool("hub_update_device", {"deviceId": auth, "enabled": a_orig_disabled})
+                assert a_flip.get("success") is True, \
+                    f"listed enabled flip did not succeed (stale-cache regression on the read-back?): {a_flip}"
+                assert any(c.get("property") == "enabled" for c in (a_flip.get("changes") or [])), \
+                    f"listed enabled change not recorded -- the fresh read-back may be misreporting a real flip: {a_flip}"
+            finally:
+                self.client.call_tool("hub_update_device", {"deviceId": auth, "enabled": not a_orig_disabled})
+
+        def _set_bypass(value: bool) -> dict:
+            return self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings",
+                "args": {"settings": {"bypassDeviceAllowlist": value}, "confirm": True},
+            })
+
+        # Toggle OFF (baseline): the unlisted device is not reachable.
+        try:
+            self.client.call_tool("hub_get_device", {"deviceId": unauth})
+            assert False, "expected hub_get_device to 404 for an unlisted device with bypass OFF"
+        except McpError:
+            pass
+
+        # Events are also allowlist-gated, so they must 404 with the toggle OFF too.
+        try:
+            self.client.call_tool("hub_list_device_events", {"deviceId": unauth})
+            assert False, "expected hub_list_device_events to 404 for an unlisted device with bypass OFF"
+        except McpError:
+            pass
+
+        flipped = False
+        try:
+            on = _set_bypass(True)
+            assert on.get("success") is True, f"enabling bypass did not succeed: {on}"
+            assert on.get("updated") == {"bypassDeviceAllowlist": True}, f"updated field mismatch: {on}"
+            flipped = True
+            # The previously-unreachable device now resolves through the fullJson fallback.
+            dev = self.client.call_tool("hub_get_device", {"deviceId": unauth})
+            assert str(dev.get("id")) == unauth, f"bypass did not reach the unlisted device: {dev}"
+            assert dev.get("label") or dev.get("name"), f"resolved device missing label/name: {dev}"
+            # And its event history now reads through /device/eventsJson (shape: {device, events, count}).
+            evs = self.client.call_tool("hub_list_device_events", {"deviceId": unauth, "limit": 5})
+            assert isinstance(evs, dict) and "events" in evs and "count" in evs, \
+                f"bypass events did not return the expected shape: {evs}"
+            assert isinstance(evs.get("events"), list), f"events should be a list: {evs}"
+
+            # ---- WRITE bypass endpoints (live proof; spec-stubs masked the updateRoom name bug) ----
+            # All reversible / no-op so an arbitrary unlisted device is left exactly as found.
+            orig_label = dev.get("label") or dev.get("name")
+            cmd_names = [c.get("name") for c in (dev.get("commands") or []) if isinstance(c, dict)]
+            orig_room = dev.get("room")
+
+            # (a) label rename via /device/updateLabel, then restore the original (reversible write).
+            if orig_label:
+                up = self.client.call_tool("hub_update_device", {"deviceId": unauth, "label": f"{orig_label} _BWTEST"})
+                assert up.get("success") is True, f"bypass label rename did not succeed: {up}"
+                assert any(c.get("property") == "label" for c in (up.get("changes") or [])), \
+                    f"bypass label change not recorded: {up}"
+                restore = self.client.call_tool("hub_update_device", {"deviceId": unauth, "label": orig_label})
+                assert restore.get("success") is True, f"bypass label restore did not succeed: {restore}"
+
+            # (b) a non-destructive command via /device/runmethod (only if the device exposes refresh).
+            if "refresh" in cmd_names:
+                rm = self.client.call_tool("hub_call_device_command", {"deviceId": unauth, "command": "refresh", "parameters": []})
+                assert isinstance(rm, dict) and rm.get("success") is True, f"bypass runmethod refresh did not succeed: {rm}"
+
+            # (c) room assign via /device/updateRoom, re-assigning to the SAME room (a no-op move that
+            # proves the NAME-keyed endpoint returns true without relocating the device).
+            if orig_room:
+                rr = self.client.call_tool("hub_update_device", {"deviceId": unauth, "room": orig_room})
+                assert rr.get("success") is True, f"bypass same-room re-assign did not succeed: {rr}"
+                assert any(c.get("property") == "room" for c in (rr.get("changes") or [])), \
+                    f"bypass room change not recorded: {rr}"
+
+            # (d) preferences via /device/preference/save -- the ARRAY-shape + read-back leg (the
+            # B-PREF bug: a flat key is a silent {success:true} no-op). logEnable is a near-universal
+            # driver pref; BOTH outcomes prove the live contract -- if the device HAS it the change
+            # lands (array shape works), and if it LACKS it the read-back guard fires a structured
+            # "read back as" error so the no-op can never masquerade as success.
+            pref_res = self.client.call_tool("hub_update_device", {"deviceId": unauth, "preferences": {"logEnable": True}})
+            pref_changed = any(c.get("property") == "preference.logEnable" for c in (pref_res.get("changes") or []))
+            if pref_changed:
+                assert pref_res.get("success") is True, f"pref change recorded but result not success: {pref_res}"
+                # restore to the Hubitat default (logging off)
+                self.client.call_tool("hub_update_device", {"deviceId": unauth, "preferences": {"logEnable": False}})
+            else:
+                err = next((e for e in (pref_res.get("errors") or []) if e.get("property") == "preference.logEnable"), None)
+                assert err and "read back as" in (err.get("error") or ""), \
+                    f"a pref no-op must surface the read-back guard error, not a false success: {pref_res}"
+            # NOTE: the `enabled` read-back (_confirmDisabledFlip, the same helper on the bypass and
+            # listed write legs) is proven live by the LISTED-device toggle near the top of this test
+            # on a controlled mcp-managed virtual device. It is NOT re-exercised on the arbitrary
+            # unlisted device here: that device is not guaranteed to be disable-able and the hub
+            # returns a 500 on /device/disable for some device types -- which the bypass leg correctly
+            # surfaces as a structured enabled error, but which would make this assertion device-
+            # dependent. Bypass reachability for writes is already proven by (a)-(d) above.
+        finally:
+            if flipped:
+                off = _set_bypass(False)
+                assert off.get("success") is True, f"restoring bypass OFF did not succeed: {off}"
+
+        # Boundary restored: the device is unreachable again.
+        try:
+            self.client.call_tool("hub_get_device", {"deviceId": unauth})
+            assert False, "device still reachable after restoring bypass OFF"
+        except McpError:
+            pass
+
     # -----------------------------------------------------------------------
     # GROUP 10b: best-practice gate + reactive hints (issue #299)
     # Proves the FULL forced-read-key flow + reactive hints against the live hub so the feature
