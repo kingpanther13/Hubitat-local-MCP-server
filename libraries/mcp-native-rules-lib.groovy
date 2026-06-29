@@ -85,7 +85,7 @@ def _getAllToolDefinitions_partNativeRM() {
         ],
         [
             name: "hub_set_rule_private_boolean",
-            description: "Set a Rule Machine rule's private boolean to true or false (strict: accepts Boolean or lowercase string 'true'/'false' only). Requires the Write master. Call `hub_get_tool_guide(section='builtin_app_tools')` for the master/permission pattern.",
+            description: "Set a Rule Machine rule's private boolean to true or false (strict: accepts Boolean or lowercase string 'true'/'false' only). Requires the Write master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -114,23 +114,21 @@ def _getAllToolDefinitions_partNativeRM() {
         // get added to _appTypeRegistry().
         [
             name: "hub_set_native_app",
-            description: """Create OR edit a classic native automation app on the hub — one generic upsert tool for any classic SmartApp instance (Room Lighting, Button Controller, Notifier, Group, Scene, Visual Rule, etc.), addressed by appId. For Rule Machine RULES use hub_set_rule.
-
-Omit appId to CREATE a new app of `appType` (provide name). Provide appId to EDIT an existing app: write its config-page inputs via `settings`, and/or click a page-transition button via `button`. Discover input names and buttons via hub_get_app_config first.
+            description: """Create OR edit a classic native automation app on the hub — one generic upsert tool for any classic SmartApp instance (Room Lighting, Button Controller, Notifier, Group, Scene, Visual Rule, etc.): omit appId to CREATE (appType + name), provide appId to EDIT via settings/button. For Rule Machine RULES use hub_set_rule.
 
 Requires the Write master + confirm=true + recent hub backup.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     appId: [type: "integer", description: "Installed-app id of an existing classic app (from hub_list_apps with scope='instances'). OMIT to CREATE a new app of `appType` (then `name` is required); PROVIDE to EDIT an existing app's settings/button."],
-                    appType: [type: "string", enum: ["rule_machine", "button_controller", "groups_scenes", "notifier", "basic_rule"], description: "Native app class to CREATE (appId omitted). Default: rule_machine. Only these five can be CREATED; other classic apps (Room Lighting, Scenes, Visual Rule) are EDIT/DELETE-only via appId — they have no create path here (Visual Rules: use hub_set_visual_rule)."],
+                    appType: [type: "string", enum: ["rule_machine", "button_controller", "groups_scenes", "notifier", "basic_rule"], description: "Native app class to CREATE (appId omitted). Default: rule_machine. Visual Rules: use hub_set_visual_rule (not this enum).[[FLAT_TRIM]] These five are the only CREATE-able classic types; other classic apps (Room Lighting, Scenes) are EDIT/DELETE-only via appId — they have no create path here.[[/FLAT_TRIM]]"],
                     name: [type: "string", description: "Label for the new app. Required on CREATE (when appId is omitted); ignored when appId is provided."],
                     settings: [type: "object", description: "Map {inputName: value} to write to the app's current config page: scalars for bool/enum/text/number inputs, List of device IDs for capability.* multi-device inputs. Discover input names via hub_get_app_config."],
                     button: [type: "string", description: "Page-transition button name to click (discover via hub_get_app_config)."],
                     pageName: [type: "string", description: "Optional sub-page for schema introspection + settings POST."],
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click."],
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
-                    walkStep: [type: "object", description: "Generic classic-dynamicPage walker for stateful multi-page classic apps -- introspect/write/click/navigate/done one step per call, or operation='drive' with steps=[...] to run the whole sequence in one call. EDIT-only (requires appId; rejected on create)."],
+                    walkStep: [type: "object", description: "Advanced multi-page classic-app walker — EDIT-only (requires appId; rejected on create).[[FLAT_TRIM]] Generic classic-dynamicPage walker for stateful apps: introspect/write/click/navigate/done one step per call, or operation='drive' with steps=[...] to run the whole sequence in one call. Same shape as hub_set_rule's walkStep.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "Must be true. Safety gate for Write master operations."]
                 ],
                 required: ["confirm"]
@@ -166,7 +164,7 @@ Requires the Write master + confirm=true + recent hub backup.""",
         ],
         [
             name: "hub_set_rule",
-            description: """Create OR edit a Hubitat Rule Machine rule (RM 5.1) — one upsert tool. Omit appId to CREATE (name required; optionally bundle addTriggers/addActions/addRequiredExpression to populate in the same call). Provide appId to EDIT. In trigger/action/condition specs use `capability` NOT `type`. RM-only — for NON-RM classic apps (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule) use hub_set_native_app; not the legacy custom engine (hub_*_custom_rule). Requires the Write master + confirm=true + recent backup; every edit-write snapshots first (backup.backupKey for hub_restore_backup in hub_manage_code).
+            description: """Create OR edit a Hubitat Rule Machine rule (RM 5.1) — one upsert tool. Omit appId to CREATE (name required; optionally bundle addTriggers/addActions/addRequiredExpression to populate in the same call). Provide appId to EDIT. In trigger/action/condition specs use `capability` NOT `type`. RM-only — for NON-RM classic apps (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule) use hub_set_native_app; not the legacy custom engine (hub_*_custom_rule). Requires the Write master + confirm=true + recent backup; every edit-write snapshots first (backup.backupKey for hub_restore_backup in hub_manage_backup).
 
 Shortcuts, each orchestrating the full RM 5.1 wizard in one call: addTrigger, addAction, addRequiredExpression/replaceRequiredExpression, bulk addTriggers/addActions/replaceActions, removeAction/clearActions/moveAction/removeTrigger/modifyTrigger, addLocalVariable/removeLocalVariable, patches (atomic multi-op). For a capability the shortcuts don't cover, walkStep drives one wizard page at a time (or write inputs via settings + click via button).
 
@@ -340,7 +338,7 @@ Deep reference (per-capability field specs, extended condition shapes, periodic 
         ],
         [
             name: "hub_get_rule_health",
-            description: """Inspect a rule's current state and return a structured health report -- detect broken rules without curl. Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule). Run after every mutation; hub_set_rule attaches it as `health` on every response. ok=false means at least one issue was found; the issues list explains what.""",
+            description: """Inspect a rule's current state and return a structured health report.[[FLAT_TRIM]] Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule).[[/FLAT_TRIM]] Run after every mutation; hub_set_rule attaches it as `health` on every response. ok=false means at least one issue was found; the issues list explains what.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -395,9 +393,9 @@ Deep reference (per-capability field specs, extended condition shapes, periodic 
         ],
         [
             name: "hub_delete_native_app",
-            description: """Delete any classic native automation app (RM rule, Room Lighting instance, Button Controller / Button Rule, Basic Rule, Notifier, Group, Scene, etc.). Same endpoint family across all of them. force=false (default) soft-deletes (hub refuses if the app has child apps/devices); force=true hard-deletes with no child safety checks.
+            description: """Delete any classic native automation app (RM rule, Room Lighting instance, Button Controller / Button Rule, Basic Rule, Notifier, Group, Scene, etc.). Same endpoint family across all of them.[[FLAT_TRIM]] force=false (default) soft-deletes (hub refuses if the app has child apps/devices); force=true hard-deletes with no child safety checks.[[/FLAT_TRIM]]
 
-BEFORE DELETE: full snapshot saved to File Manager. Response includes backup.backupKey; call hub_restore_backup (in hub_manage_code) with that key to recreate the app with all its settings re-applied.
+BEFORE DELETE: full snapshot saved to File Manager (backup.backupKey).[[FLAT_TRIM]] Call hub_restore_backup (in hub_manage_backup) with that key to recreate the app with all its settings re-applied.[[/FLAT_TRIM]]
 
 Requires Write master + confirm=true + recent hub backup.""",
             inputSchema: [
