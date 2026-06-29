@@ -1153,8 +1153,8 @@ def toolDeviceHealthCheck(args) {
 
     // Optional WAN/route network diagnostics, both read-only (GET, no hub mutation).
     Map tracerouteResult = null
-    if (args?.traceroute != null) {
-        def host = args.traceroute.toString().trim()
+    if (args?.tracerouteHost != null) {
+        def host = args.tracerouteHost.toString().trim()
         // Same dotted-quad IPv4 validation runPingChecks uses; hostnames are rejected
         // (the hub's traceroute endpoint takes a literal IPv4 in the path).
         if (!(host ==~ /^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)$/)) {
@@ -2103,7 +2103,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_get_metrics",
-            description: "Retrieve hub metrics (memory, temp, DB size) with CSV trend history. The trend reflects ONLY previously-recorded snapshots — the hub does not auto-sample, so it is sparse/stale (and resets if the CSV is cleared) unless recordSnapshot=true is called periodically. Requires Read master.",
+            description: "Retrieve hub metrics (memory, temp, DB size) with CSV trend history. Trend history is sparse/stale — the hub never auto-samples, so points exist only from earlier recordSnapshot=true calls. Requires Read master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2184,7 +2184,7 @@ def _getAllToolDefinitions_partDiagnostics() {
                     includeHealthy: [type: "boolean", description: "Include healthy devices in the response (can be large). Default: false.", default: false],
                     pingHosts: [type: "array", items: [type: "string"], description: "Optional IPv4 addresses to ICMP-ping (max 5 per call)."],
                     pingCount: [type: "integer", description: "Packets to send per host (1-5). Default: 3.", default: 3],
-                    traceroute: [type: "string", description: "Optional single IPv4 dotted-quad host (e.g. '8.8.8.8') to traceroute; plain-text route table returned under traceroute.output."],
+                    tracerouteHost: [type: "string", description: "Optional single IPv4 dotted-quad host (e.g. '8.8.8.8') to traceroute; plain-text route table returned under traceroute.output."],
                     speedtest: [type: "boolean", description: "If true, run the hub's WAN download speedtest; plain-text wget log with the measured speed returned under speedtest.output. Default: false."],
                     identifyHub: [type: "boolean", description: "Blink hub LED to identify hub. Default: false.", default: false],
                     cursor: [type: "string", description: "Opt-in pagination cursor for the staleDevices array. Omit to get all stale devices in one response (subject to the universal response-size guard). Pass nextCursor from a prior call to fetch the next page (page size 100). unknownDevices and healthyDevices are always returned in full alongside the page."]
@@ -2246,7 +2246,7 @@ def _getAllToolDefinitions_partDiagnostics() {
                     radio: [type: "string", enum: ["zwave", "zigbee", "matter"], description: "Which radio to query. Omit to return both Z-Wave and Zigbee; pass 'matter' for the Matter fabric and commissioned-device list."],
                     include_topology: [type: "boolean", description: "Also include the mesh route/topology map. Z-Wave/Zigbee only. Default false."],
                     node_id: [type: "string", description: "Per-node status for this id: Z-Wave node state, or Matter commissioning status when radio='matter'."],
-                    include_status: [type: "boolean", description: "Attach lifecycle status pollers under result.status Default false."],
+                    include_status: [type: "boolean", description: "Attach lifecycle status pollers under result.status. Default false."],
                     include_logs: [type: "boolean", description: "Attach Matter chip-tool logs ({text}, ANSI) under result.matterLogs. Default false."],
                     include_channel_scan: [type: "boolean", description: "Attach Zigbee channel energy-scan results under result.channelScan. Default false."],
                     include_smartstart: [type: "boolean", description: "Attach the Z-Wave SmartStart provisioning list under result.smartStart. Default false."],
@@ -2307,7 +2307,7 @@ def _getAllToolDefinitions_partDiagnostics() {
                 properties: [
                     enabled: [type: "boolean", description: "Enable (true) or disable (false) the Z-Wave radio."],
                     region: [type: "string", description: "Z-Wave RF region (e.g. 'US', 'EU'). Must match a region your hub hardware supports."],
-                    long_range_channel: [description: "Z-Wave Long Range channel: 255=Auto, 0=Channel A, 1=Channel B (US_LR hubs)."],
+                    long_range_channel: [type: "integer", enum: [0, 1, 255], description: "Z-Wave Long Range channel: 255=Auto, 0=Channel A, 1=Channel B (US_LR hubs)."],
                     confirm: [type: "boolean", description: "Required true to DISABLE the radio (backup <24h also enforced). Not needed for enable or config-only changes."]
                 ]
             ],
@@ -2369,8 +2369,8 @@ def _getAllToolDefinitions_partDiagnostics() {
                 properties: [
                     action: [type: "string", enum: ["repair_start", "repair_cancel", "repair_node", "inclusion_start", "inclusion_stop", "grant_keys", "grant_code", "exclusion_start", "exclusion_stop", "node_refresh", "node_rediscover", "node_reinitialize", "refresh_stats", "node_replace", "node_replace_stop", "node_remove", "antenna_test_start", "antenna_test_continue", "smartstart_delete"], description: "The Z-Wave operation."],
                     node_id: [type: "string", description: "Z-Wave node id; required for repair_node, node_refresh/rediscover/reinitialize, node_remove, node_replace, antenna_test_start."],
-                    security_keys: [type: "object", description: "grant_keys only: S2 grant booleans."],
-                    security_code: [type: "object", description: "grant_code only: S2 DSK / security code."],
+                    security_keys: [type: "object", description: "grant_keys only: S2 grant booleans, e.g. {S2Authenticated:true}."],
+                    security_code: [type: "object", description: "grant_code only: S2 DSK, e.g. {accept:true, securityCode:'12345'}."],
                     node_dsk: [type: "string", description: "smartstart_delete only: the DSK from hub_get_radio_details(include_smartstart=true)."],
                     confirm: [type: "boolean", description: "Required true for exclusion_start and node_remove (backup <24h also enforced)."]
                 ],
@@ -2456,7 +2456,7 @@ Requires Write master.""",
                     target: [type: "string", enum: ["zwave", "zigbee", "matter", "network", "cloud"], description: "REQUIRED: what to act on."],
                     action: [type: "string", enum: ["reset", "device_firmware_start", "device_firmware_abort", "zwave_chip_firmware", "zigbee_firmware", "disconnect_wifi", "disconnect_ethernet", "disable", "enable"], description: "REQUIRED: depends on target."],
                     node_id: [description: "Z-Wave node id."],
-                    file_name: [type: "string", description: "Firmware file name."],
+                    file_name: [type: "string", description: "Firmware file name; required for action=device_firmware_start."],
                     target_index: [description: "Optional Z-Wave firmware target index."],
                     confirm: [type: "boolean", description: "REQUIRED: must be true."]
                 ],

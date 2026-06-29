@@ -161,7 +161,7 @@ class Issue257FoldsSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolDeviceHealthCheck([traceroute: "1.2.3.4"])
+        def result = script.toolDeviceHealthCheck([tracerouteHost: "1.2.3.4"])
 
         then:
         result.traceroute.host == "1.2.3.4"
@@ -175,7 +175,7 @@ class Issue257FoldsSpec extends ToolSpecBase {
         settingsMap.enableRead = true
 
         when:
-        script.toolDeviceHealthCheck([traceroute: "example.com"])
+        script.toolDeviceHealthCheck([tracerouteHost: "example.com"])
 
         then:
         thrown(IllegalArgumentException)
@@ -186,7 +186,7 @@ class Issue257FoldsSpec extends ToolSpecBase {
         settingsMap.enableRead = true
 
         when:
-        script.toolDeviceHealthCheck([traceroute: bad])
+        script.toolDeviceHealthCheck([tracerouteHost: bad])
 
         then:
         thrown(IllegalArgumentException)
@@ -204,7 +204,7 @@ class Issue257FoldsSpec extends ToolSpecBase {
         // No handler registered for the traceroute path -> fetch throws -> caught.
 
         when:
-        def result = script.toolDeviceHealthCheck([traceroute: "9.9.9.9"])
+        def result = script.toolDeviceHealthCheck([tracerouteHost: "9.9.9.9"])
 
         then:
         result.traceroute.host == "9.9.9.9"
@@ -267,7 +267,7 @@ class Issue257FoldsSpec extends ToolSpecBase {
         hubGet.register('/hub/networkTest/speedtest') { params -> "1.5 MB/s" }
 
         when:
-        def result = script.toolDeviceHealthCheck([traceroute: "8.8.8.8", speedtest: true])
+        def result = script.toolDeviceHealthCheck([tracerouteHost: "8.8.8.8", speedtest: true])
 
         then:
         result.message == "No devices selected for MCP access"
@@ -286,7 +286,7 @@ class Issue257FoldsSpec extends ToolSpecBase {
         hubGet.register('/hub/networkTest/speedtest') { params -> "(2.7 MB/s) saved [10485760/10485760]" }
 
         when:
-        def result = script.toolDeviceHealthCheck([traceroute: "8.8.8.8", speedtest: true])
+        def result = script.toolDeviceHealthCheck([tracerouteHost: "8.8.8.8", speedtest: true])
 
         then:
         // Reached the populated-result path, not the early "No devices selected" return.
@@ -320,7 +320,7 @@ class Issue257FoldsSpec extends ToolSpecBase {
         hubGet.register('/hub/networkTest/traceroute/1.2.3.4') { params -> "hops here" }
 
         when:
-        def result = script.executeTool("hub_get_device_health", [traceroute: "1.2.3.4"])
+        def result = script.executeTool("hub_get_device_health", [tracerouteHost: "1.2.3.4"])
 
         then:
         result.traceroute.host == "1.2.3.4"
