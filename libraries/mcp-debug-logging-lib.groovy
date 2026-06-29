@@ -527,7 +527,7 @@ def _getAllToolDefinitions_partDebugLogging() {
         ],
         [
             name: "hub_report_issue",
-            description: "File a bug, report a bug, open an issue, open a github issue, request a feature/enhancement, or flag agent-behavior issues against this MCP server. Does NOT submit the issue itself: it gathers context (scoped recent logs, hub/version info) and returns a prefilled GitHub issue link (template + title) plus the report body for the user to open and post. Use privacyMode='public' to placeholder the hub name and suppress raw logs before sharing.",
+            description: "File a bug, report a bug, open an issue, open a github issue, request a feature/enhancement, or flag agent-behavior issues against this MCP server. Does NOT submit the issue itself: it gathers context (scoped recent logs, hub/version info) and returns a prefilled GitHub issue link (template + title) plus the report body for the user to open and post.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -537,12 +537,12 @@ def _getAllToolDefinitions_partDebugLogging() {
                     stepsToReproduce: [type: "string"],
                     issueType: [type: "string", enum: ["bug", "enhancement", "agent_behavior"], description: "Default bug."],
                     failingTool: [type: "string", description: "MCP tool that failed; scopes logs + titles issue."],
-                    ruleId: [type: "string"],
-                    nativeAppId: [type: "string"],
+                    ruleId: [type: "string", description: "Legacy custom MCP rule-engine rule id; scopes logs to it. A native Rule Machine rule goes in nativeAppId, not here."],
+                    nativeAppId: [type: "string", description: "Native Rule Machine app id; scopes logs to that app. A legacy custom MCP rule goes in ruleId."],
                     llmClient: [type: "string", description: "Claude / ChatGPT / Gemini / etc."],
                     privacyMode: [type: "string", enum: ["private", "public"], description: "'public' placeholders hub name, suppresses raw logs."],
                     includeRawLogs: [type: "boolean", description: "Default: true private, false public."],
-                    includeUnrelatedRecentLogs: [type: "boolean", description: "When the report is scoped (failingTool/ruleId/nativeAppId set), also attach recent logs outside that scope; default false. With NO scope set there is nothing to scope by, so the ~20 most recent log entries are attached as context regardless (this flag has no effect then). Set privacyMode='public' or includeRawLogs=false to suppress raw log text."],
+                    includeUnrelatedRecentLogs: [type: "boolean", description: "When scoped (failingTool/ruleId/nativeAppId set), also attach recent logs outside that scope; default false, no-op when unscoped."],
                     logWindowSeconds: [type: "integer", description: "Default 120."]
                 ],
                 required: ["title", "expected", "actual"]
