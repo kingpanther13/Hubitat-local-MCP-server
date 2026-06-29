@@ -863,10 +863,10 @@ Verify rule after creation.""",
                     description: [type: "string", description: "New rule description"],
                     enabled: [type: "boolean", description: "Enable (true) or disable (false) the rule"],
                     testRule: [type: "boolean", description: "Mark as test rule - will NOT be backed up on deletion"],
-                    triggers: [type: "array", description: "Replacement trigger objects (overwrites all triggers); see the rules guide for structure"],
-                    conditions: [type: "array", description: "Replacement condition objects (overwrites all conditions); see the rules guide for structure"],
+                    triggers: [type: "array", description: "Replacement trigger objects (overwrites ALL triggers); see hub_get_tool_guide(section='rules') for valid types and structure"],
+                    conditions: [type: "array", description: "Replacement condition objects (overwrites ALL conditions); see hub_get_tool_guide(section='rules') for valid types and structure"],
                     conditionLogic: [type: "string", enum: ["all", "any"], description: "How to combine conditions: 'all' = AND, 'any' = OR"],
-                    actions: [type: "array", description: "Replacement action objects (overwrites all actions); see the rules guide for structure"]
+                    actions: [type: "array", description: "Replacement action objects (overwrites ALL actions); see hub_get_tool_guide(section='rules') for valid types and structure"]
                 ],
                 required: ["ruleId"]
             ],
@@ -882,7 +882,7 @@ Verify rule after creation.""",
         ],
         [
             name: "hub_delete_custom_rule",
-            description: "DESTRUCTIVE: Permanently delete a rule. Automatically saves a backup to File Manager (mcp_rule_backup_*.json) before deletion. Rules marked as testRule=true skip backup automatically.",
+            description: "DESTRUCTIVE: Permanently delete an MCP custom-engine rule. Automatically saves a backup to File Manager (mcp_rule_backup_*.json) before deletion. Rules marked as testRule=true skip backup automatically.",
             inputSchema: [
                 type: "object",
                 properties: [
