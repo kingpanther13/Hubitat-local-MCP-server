@@ -26,7 +26,7 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         settingsMap.enableMandatoryBPS = true
 
         when:
-        script.executeTool("hub_set_hsm", [mode: "armHome"])
+        script.executeTool("hub_set_hsm", [armCommand: "armHome"])
 
         then:
         def e = thrown(IllegalArgumentException)
@@ -43,7 +43,7 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         settingsMap.enableMandatoryBPS = true
 
         when:
-        script.executeTool("hub_set_hsm", [mode: "armHome", bestPracticeKey: "not-the-key"])
+        script.executeTool("hub_set_hsm", [armCommand: "armHome", bestPracticeKey: "not-the-key"])
 
         then:
         thrown(IllegalArgumentException)
@@ -54,7 +54,7 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         settingsMap.enableMandatoryBPS = true
 
         when:
-        def result = script.executeTool("hub_set_hsm", [mode: "armHome", bestPracticeKey: script.hubBpsGuideKey()])
+        def result = script.executeTool("hub_set_hsm", [armCommand: "armHome", bestPracticeKey: script.hubBpsGuideKey()])
 
         then:
         noExceptionThrown()
@@ -66,7 +66,7 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         settingsMap.remove('enableMandatoryBPS')
 
         when:
-        script.executeTool("hub_set_hsm", [mode: "armHome"])
+        script.executeTool("hub_set_hsm", [armCommand: "armHome"])
 
         then:
         def e = thrown(IllegalArgumentException)
@@ -78,7 +78,7 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         settingsMap.remove('enableMandatoryBPS')
 
         expect:
-        script.executeTool("hub_set_hsm", [mode: "armHome", bestPracticeKey: script.hubBpsGuideKey()]).stubbed == true
+        script.executeTool("hub_set_hsm", [armCommand: "armHome", bestPracticeKey: script.hubBpsGuideKey()]).stubbed == true
     }
 
     def "gate OFF (explicit false) leaves writes reachable without a key"() {
@@ -86,7 +86,7 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         settingsMap.enableMandatoryBPS = false
 
         expect:
-        script.executeTool("hub_set_hsm", [mode: "armHome"]).stubbed == true
+        script.executeTool("hub_set_hsm", [armCommand: "armHome"]).stubbed == true
     }
 
     def "hub_get_tool_guide (read) is exempt -- always reachable to discover the key"() {
@@ -150,7 +150,7 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         settingsMap.enableMandatoryBPS = true
 
         when: "a numeric bestPracticeKey -> coerced to '12345' != the key -> blocked"
-        script.executeTool("hub_set_hsm", [mode: "armHome", bestPracticeKey: 12345])
+        script.executeTool("hub_set_hsm", [armCommand: "armHome", bestPracticeKey: 12345])
 
         then:
         thrown(IllegalArgumentException)

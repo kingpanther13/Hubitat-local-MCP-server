@@ -92,7 +92,7 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
         script.metaClass.toolSetHsm = { m -> throw new IllegalArgumentException("HSM not configured") }
 
         when:
-        def response = mcpDriver.callTool('hub_set_hsm', [mode: 'armHome'])
+        def response = mcpDriver.callTool('hub_set_hsm', [armCommand: 'armHome'])
 
         then:
         response.error.code == -32602

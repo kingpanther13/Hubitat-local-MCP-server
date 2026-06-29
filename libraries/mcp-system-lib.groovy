@@ -663,20 +663,20 @@ def toolGetHsmStatus() {
     ]
 }
 
-def toolSetHsm(mode) {
-    def validModes = ["armAway", "armHome", "armNight", "disarm"]
-    if (!validModes.contains(mode)) {
-        throw new IllegalArgumentException("Invalid HSM mode: ${mode}. Valid modes: ${validModes}")
+def toolSetHsm(armCommand) {
+    def validCommands = ["armAway", "armHome", "armNight", "disarm"]
+    if (!validCommands.contains(armCommand)) {
+        throw new IllegalArgumentException("Invalid HSM arm command: ${armCommand}. Valid commands: ${validCommands}")
     }
 
     // Capture current status BEFORE sending the change event
     def previousStatus = location.hsmStatus
-    sendLocationEvent(name: "hsmSetArm", value: mode)
+    sendLocationEvent(name: "hsmSetArm", value: armCommand)
 
     return [
         success: true,
         previousStatus: previousStatus,
-        newMode: mode
+        newMode: armCommand
     ]
 }
 
@@ -984,11 +984,11 @@ def _getAllToolDefinitions_partSystem() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    action: [type: "string", enum: ["create", "rename", "delete", "activate"], description: "create | rename | delete | activate a location mode."],
+                    action: [type: "string", enum: ["create", "rename", "delete", "activate"], description: "Which mode operation to perform."],
                     name: [type: "string", description: "New mode name (create), or the new name (rename)."],
                     mode: [type: "string", description: "Target for rename/delete/activate: id or name (from hub_list_modes)."],
-                    icon: [type: "string", description: "OPTIONAL icon for create/rename."],
-                    confirm: [type: "boolean", description: "REQUIRED for action=delete: must be true."]
+                    icon: [type: "string", description: "OPTIONAL icon for create/rename, e.g. fa-moon."],
+                    confirm: [type: "boolean", description: "REQUIRED for action=delete: true + a backup <24h (hub_create_backup)."]
                 ],
                 required: ["action"]
             ],
@@ -1014,7 +1014,7 @@ def _getAllToolDefinitions_partSystem() {
                 type: "object",
                 properties: [
                     manager: [type: "string", enum: ["builtIn", "legacy", "app"], description: "Which Mode Manager to activate."],
-                    conditions: [type: "object", description: "OPTIONAL: per-mode automation conditions to set."]
+                    conditions: [type: "object", description: "OPTIONAL per-mode conditions keyed by mode id; REPLACES the whole set, so read-modify-write from hub_list_modes. See hub_get_tool_guide."]
                 ]
             ],
             outputSchema: [
@@ -1047,13 +1047,13 @@ def _getAllToolDefinitions_partSystem() {
         ],
         [
             name: "hub_set_hsm",
-            description: "Set HSM mode (armAway, armHome, armNight, disarm). Always verify HSM changed after.",
+            description: "Set Hubitat Safety Monitor (HSM) arm state. Always verify HSM changed after.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    mode: [type: "string", description: "HSM mode: armAway, armHome, armNight, disarm"]
+                    armCommand: [type: "string", enum: ["armAway", "armHome", "armNight", "disarm"], description: "HSM arm command."]
                 ],
-                required: ["mode"]
+                required: ["armCommand"]
             ],
             outputSchema: [
                 type: "object",
@@ -1072,10 +1072,10 @@ def _getAllToolDefinitions_partSystem() {
                 type: "object",
                 properties: [
                     hubName: [type: "string", description: "New hub name."],
-                    timeZone: [type: "string", description: "IANA time zone ID."],
-                    latitude: [type: "number", description: "Latitude in decimal degrees."],
-                    longitude: [type: "number", description: "Longitude in decimal degrees."],
-                    zipCode: [type: "string", description: "Postal/zip code."],
+                    timeZone: [type: "string", description: "IANA time zone ID, e.g. America/New_York. ⚠️ Reboots the hub."],
+                    latitude: [type: "number", description: "Latitude in decimal degrees, e.g. 40.7128."],
+                    longitude: [type: "number", description: "Longitude in decimal degrees, e.g. -74.006."],
+                    zipCode: [type: "string", description: "Postal/zip code, e.g. 10001."],
                     temperatureScale: [type: "string", enum: ["F", "C"], description: "Temperature scale: F or C."],
                     darkMode: [type: "boolean", description: "Hub admin UI dark mode (true) or light (false)."],
                     network: [type: "object", description: "⚠️ Hub network config — can DISCONNECT the hub; needs confirm=true + a backup <24h.", properties: [
@@ -1089,7 +1089,7 @@ def _getAllToolDefinitions_partSystem() {
                         wifiSsid: [type: "string", description: "WiFi SSID to join."],
                         wifiPassword: [type: "string", description: "WiFi password (psk)."]
                     ]],
-                    confirm: [type: "boolean", description: "Required (must be true) for timeZone or network changes."]
+                    confirm: [type: "boolean", description: "REQUIRED (true) for timeZone or network changes; both need a backup <24h (hub_create_backup)."]
                 ]
             ],
             outputSchema: [
@@ -1162,7 +1162,7 @@ Requires Write master.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    statusOnly: [type: "boolean", description: "Poll /hub/cloud/checkUpdateStatus only and return without applying anything. No confirm/backup needed. Default false."],
+                    statusOnly: [type: "boolean", description: "Poll the hub's update status only and return without applying anything. No confirm/backup needed. Default false."],
                     confirm: [type: "boolean", description: "REQUIRED to apply (omit for statusOnly): must be true. Confirms a backup <24h exists and the user approved the install + reboot."]
                 ]
             ],
