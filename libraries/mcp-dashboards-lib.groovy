@@ -96,17 +96,17 @@ private List _listDashboardsViaChildApps() {
 private String _requireDashboardId(rawId, String verbNote) {
     def s = rawId?.toString()?.trim()
     if (!s) {
-        throw new IllegalArgumentException("id is required (the dashboard installedAppId${verbNote}). Call hub_list_dashboards to find it.")
+        throw new IllegalArgumentException("dashboardId is required (the dashboard installedAppId${verbNote}). Call hub_list_dashboards to find it.")
     }
     if (!(s ==~ /\d+/)) {
-        throw new IllegalArgumentException("id must be a numeric dashboard installedAppId; got '${rawId}'. Call hub_list_dashboards to find it.")
+        throw new IllegalArgumentException("dashboardId must be a numeric dashboard installedAppId; got '${rawId}'. Call hub_list_dashboards to find it.")
     }
     return s
 }
 
 def toolGetDashboard(args) {
     args = args ?: [:]
-    def wantId = _requireDashboardId(args.id, "")
+    def wantId = _requireDashboardId(args.dashboardId, "")
     // No single-dashboard read endpoint; derive from the list and filter by id.
     def listed = toolListDashboards(args)
     if (listed instanceof Map && listed.success == false) {
@@ -195,7 +195,7 @@ def toolCreateDashboard(args) {
 
 def toolUpdateDashboard(args) {
     args = args ?: [:]
-    def updateId = _requireDashboardId(args.id, " to update")
+    def updateId = _requireDashboardId(args.dashboardId, " to update")
     if (!args.name?.toString()?.trim()) {
         throw new IllegalArgumentException("name is required. Update REPLACES the dashboard's config wholesale (there is no server-side read-merge), so pass the full desired config every time.")
     }
@@ -241,7 +241,7 @@ def toolUpdateDashboard(args) {
 def toolDeleteDashboard(args) {
     args = args ?: [:]
     requireDestructiveConfirm(args.confirm)
-    def dashId = _requireDashboardId(args.id, " to delete")
+    def dashId = _requireDashboardId(args.dashboardId, " to delete")
     try {
         def raw = hubInternalGet("/dashboard/delete", [id: dashId])
         def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
@@ -267,10 +267,10 @@ def toolDeleteDashboard(args) {
 
 def toolCloneDashboard(args) {
     args = args ?: [:]
-    def sourceId = _requireDashboardId(args.id, " to clone")
+    def sourceId = _requireDashboardId(args.dashboardId, " to clone")
     // /dashboard/cloneAsEasy is session-bound and fails from the server, so clone BY VALUE: read the
     // source config and create a copy. (theme isn't in the app config, so the copy may use the default.)
-    def src = toolGetDashboard([id: sourceId])
+    def src = toolGetDashboard([dashboardId: sourceId])
     if (!(src instanceof Map) || src.success == false) {
         return [success: false, sourceId: sourceId,
                 error: "Could not read the source dashboard to clone it" + ((src instanceof Map && src.error) ? ": ${src.error}" : "."),
@@ -461,7 +461,7 @@ def _getAllToolDefinitions_partDashboards() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    pinToken: [type: "string", description: "Optional override."]
+                    pinToken: [type: "string", description: "Optional pin token; auto-resolved when omitted."]
                 ]
             ],
             outputSchema: [
@@ -480,10 +480,10 @@ def _getAllToolDefinitions_partDashboards() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    id: [type: "string", description: "installedAppId."],
-                    pinToken: [type: "string", description: "Optional override."]
+                    dashboardId: [type: "string", description: "installedAppId."],
+                    pinToken: [type: "string", description: "Optional pin token; auto-resolved when omitted."]
                 ],
-                required: ["id"]
+                required: ["dashboardId"]
             ],
             outputSchema: [
                 type: "object",
@@ -501,7 +501,7 @@ def _getAllToolDefinitions_partDashboards() {
                 properties: [
                     name: [type: "string", description: "Display name."],
                     deviceIds: [type: "array", description: "Device ids, >=1.", items: [type: "string"]],
-                    options: [type: "object", description: "Optional config."]
+                    options: [type: "object", description: "Optional config; see hub_get_tool_guide(section='dashboards')."]
                 ],
                 required: ["name", "deviceIds"]
             ],
@@ -516,16 +516,16 @@ def _getAllToolDefinitions_partDashboards() {
         ],
         [
             name: "hub_update_dashboard",
-            description: "Replace a dashboard's config wholesale by id.",
+            description: "Wholesale replace by id; read hub_get_dashboard first and pass its full config back (omitted fields revert to default).",
             inputSchema: [
                 type: "object",
                 properties: [
-                    id: [type: "string", description: "installedAppId."],
+                    dashboardId: [type: "string", description: "installedAppId."],
                     name: [type: "string", description: "Display name (required)."],
                     deviceIds: [type: "array", description: "Full device id set, >=1.", items: [type: "string"]],
                     options: [type: "object", description: "Same keys as hub_create_dashboard.options."]
                 ],
-                required: ["id", "name", "deviceIds"]
+                required: ["dashboardId", "name", "deviceIds"]
             ],
             outputSchema: [
                 type: "object",
@@ -542,10 +542,10 @@ def _getAllToolDefinitions_partDashboards() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    id: [type: "string", description: "installedAppId to delete."],
-                    confirm: [type: "boolean", description: "Must be true."]
+                    dashboardId: [type: "string", description: "installedAppId to delete."],
+                    confirm: [type: "boolean", description: "Must be true (requires a recent backup + user approval)."]
                 ],
-                required: ["id", "confirm"]
+                required: ["dashboardId", "confirm"]
             ],
             outputSchema: [
                 type: "object",
@@ -562,9 +562,9 @@ def _getAllToolDefinitions_partDashboards() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    id: [type: "string", description: "Source installedAppId."]
+                    dashboardId: [type: "string", description: "Source installedAppId."]
                 ],
-                required: ["id"]
+                required: ["dashboardId"]
             ],
             outputSchema: [
                 type: "object",

@@ -167,7 +167,7 @@ class ToolDashboardSpec extends ToolSpecBase {
 
     def "get filters the list by id"() {
         when:
-        def r = script.toolGetDashboard([id: '500'])
+        def r = script.toolGetDashboard([dashboardId: '500'])
 
         then:
         r.id == '500'
@@ -184,7 +184,7 @@ class ToolDashboardSpec extends ToolSpecBase {
 
     def "get with an unknown id returns a structured not-found (no throw) listing available ids"() {
         when:
-        def r = script.toolGetDashboard([id: '9999'])
+        def r = script.toolGetDashboard([dashboardId: '9999'])
 
         then:
         r.success == false
@@ -193,7 +193,7 @@ class ToolDashboardSpec extends ToolSpecBase {
 
     def "get rejects a non-numeric id (the URL-splice guard) with a validation error"() {
         when:
-        script.toolGetDashboard([id: 'abc; rm'])
+        script.toolGetDashboard([dashboardId: 'abc; rm'])
 
         then:
         thrown(IllegalArgumentException)
@@ -212,7 +212,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         }
 
         when:
-        def r = script.toolGetDashboard([id: '38'])
+        def r = script.toolGetDashboard([dashboardId: '38'])
 
         then: 'string tile toggles coerce to booleans, devicesPicked keys become deviceIds, unset pins are omitted'
         r.id == '38'
@@ -232,7 +232,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         }
 
         when:
-        def r = script.toolGetDashboard([id: '38'])
+        def r = script.toolGetDashboard([dashboardId: '38'])
 
         then: 'returns id+name but FLAGS partial -- a caller must not read it as a complete (all-default) config'
         r.id == '38'
@@ -250,7 +250,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when: 'read the dashboard, then feed the read shape straight back into update'
-        def got = script.toolGetDashboard([id: '412'])
+        def got = script.toolGetDashboard([dashboardId: '412'])
 
         then: 'pins are surfaced and nav is normalized to a CSV the update endpoint accepts'
         got.dashboardPin == '1111'
@@ -258,7 +258,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         got.navigationSelection == '5,6'
 
         when: 'round-trip: pass the get output (flattened) back through update'
-        script.toolUpdateDashboard([id: got.id, name: got.name, deviceIds: '12,34',
+        script.toolUpdateDashboard([dashboardId: got.id, name: got.name, deviceIds: '12,34',
                                     dashboardPin: got.dashboardPin, hsmPin: got.hsmPin,
                                     navigationSelection: got.navigationSelection])
 
@@ -283,13 +283,13 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when: 'read the dashboard'
-        def got = script.toolGetDashboard([id: '38'])
+        def got = script.toolGetDashboard([dashboardId: '38'])
 
         then: 'the bracketed hub string is normalized to CSV -- NOT returned verbatim as "[1,2]" (which the hub misparses to index 0)'
         got.navigationSelection == '1,2'
 
         when: 'round-trip: feed the get output back through update'
-        script.toolUpdateDashboard([id: got.id, name: got.name, deviceIds: ['14'], navigationSelection: got.navigationSelection])
+        script.toolUpdateDashboard([dashboardId: got.id, name: got.name, deviceIds: ['14'], navigationSelection: got.navigationSelection])
 
         then: 'update sends a CSV the hub parses correctly, so nav survives the get->update round-trip'
         def call = hubGet.calls.find { it.path == '/dashboard/update' }
@@ -473,7 +473,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        def r = script.toolUpdateDashboard([id: '412', name: 'Living Room', deviceIds: ['12', '34'], options: [theme: 'dark']])
+        def r = script.toolUpdateDashboard([dashboardId: '412', name: 'Living Room', deviceIds: ['12', '34'], options: [theme: 'dark']])
 
         then:
         r.success == true
@@ -500,7 +500,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        script.toolUpdateDashboard([id: '412', deviceIds: ['12']])
+        script.toolUpdateDashboard([dashboardId: '412', deviceIds: ['12']])
 
         then:
         thrown(IllegalArgumentException)
@@ -511,7 +511,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        script.toolUpdateDashboard([id: '412', name: 'Living Room', deviceIds: []])
+        script.toolUpdateDashboard([dashboardId: '412', name: 'Living Room', deviceIds: []])
 
         then:
         thrown(IllegalArgumentException)
@@ -525,7 +525,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         }
 
         when: 'an unrelated edit (no pin in args)'
-        script.toolUpdateDashboard([id: '412', name: 'Living Room', deviceIds: ['12', '34'], options: [theme: 'dark']])
+        script.toolUpdateDashboard([dashboardId: '412', name: 'Living Room', deviceIds: ['12', '34'], options: [theme: 'dark']])
 
         then: 'the current PIN is read back and re-sent, so it is not blanked'
         def call = hubGet.calls.find { it.path == '/dashboard/update' }
@@ -537,7 +537,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        def r = script.toolUpdateDashboard([id: '412', name: 'Living Room', deviceIds: ['12', '34'], options: [theme: 'dark']])
+        def r = script.toolUpdateDashboard([dashboardId: '412', name: 'Living Room', deviceIds: ['12', '34'], options: [theme: 'dark']])
 
         then: 'the update applies but FLAGS that an omitted PIN may have been cleared -- the clear is not silent'
         r.success == true
@@ -553,7 +553,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         }
 
         when: 'an unrelated edit (no hsmPin in args)'
-        script.toolUpdateDashboard([id: '412', name: 'Living Room', deviceIds: ['12', '34'], options: [theme: 'dark']])
+        script.toolUpdateDashboard([dashboardId: '412', name: 'Living Room', deviceIds: ['12', '34'], options: [theme: 'dark']])
 
         then: 'the current hsmPin is read back and re-sent, not blanked'
         def call = hubGet.calls.find { it.path == '/dashboard/update' }
@@ -568,7 +568,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         }
 
         when:
-        script.toolUpdateDashboard([id: '412', name: 'Living Room', deviceIds: ['12', '34'], dashboardPin: '9999'])
+        script.toolUpdateDashboard([dashboardId: '412', name: 'Living Room', deviceIds: ['12', '34'], dashboardPin: '9999'])
 
         then: 'the new dashboardPin is sent and the omitted hsmPin is preserved (not cleared)'
         def call = hubGet.calls.find { it.path == '/dashboard/update' }
@@ -583,7 +583,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        def r = script.toolDeleteDashboard([id: '412', confirm: true])
+        def r = script.toolDeleteDashboard([dashboardId: '412', confirm: true])
 
         then:
         r.success == true
@@ -597,7 +597,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         settingsMap.enableWrite = true   // Write master on, but NO recent backup -> confirm gate fails
 
         when:
-        script.toolDeleteDashboard([id: '412'])
+        script.toolDeleteDashboard([dashboardId: '412'])
 
         then:
         thrown(IllegalArgumentException)
@@ -620,7 +620,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         hubGet.register('/dashboard/delete') { params -> '{"success":false,"message":"not found"}' }
 
         when:
-        def r = script.toolDeleteDashboard([id: '412', confirm: true])
+        def r = script.toolDeleteDashboard([dashboardId: '412', confirm: true])
 
         then:
         r.success == false
@@ -638,7 +638,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         }
 
         when:
-        def r = script.toolDeleteDashboard([id: '412', confirm: true])
+        def r = script.toolDeleteDashboard([dashboardId: '412', confirm: true])
 
         then: 'verify-by-effect: 412 is no longer present, so the delete is reported as success'
         r.success == true
@@ -652,7 +652,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         hubGet.register('/dashboard/all') { params -> throw new RuntimeException('endpoint down') }
 
         when:
-        def r = script.toolDeleteDashboard([id: '412', confirm: true])
+        def r = script.toolDeleteDashboard([dashboardId: '412', confirm: true])
 
         then: 'a destructive op is NOT reported as success without confirming evidence'
         r.success == false
@@ -667,7 +667,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        def r = script.toolCloneDashboard([id: '412'])
+        def r = script.toolCloneDashboard([dashboardId: '412'])
 
         then: 'reads the source (412) via the list, then creates a copy via /dashboard/create'
         r.success == true
@@ -686,7 +686,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        script.toolCloneDashboard([id: '412'])
+        script.toolCloneDashboard([dashboardId: '412'])
 
         then: 'the source 412 config (theme dark, showModeTile true) flows into /dashboard/create, not just name+devices'
         def createCall = hubGet.calls.find { it.path == '/dashboard/create' }
@@ -699,7 +699,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        def r = script.toolCloneDashboard([id: '9999'])
+        def r = script.toolCloneDashboard([dashboardId: '9999'])
 
         then: 'clone surfaces a runtime failure rather than letting create throw IllegalArgumentException'
         r.success == false
@@ -718,7 +718,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         // /installedapp/configure/json/38 unmocked -> enrichment fails -> the get match is partial (no deviceIds)
 
         when:
-        def r = script.toolCloneDashboard([id: '38'])
+        def r = script.toolCloneDashboard([dashboardId: '38'])
 
         then: 'clone returns a runtime failure naming the device list -- NOT a caller-blaming -32602 thrown by create'
         r.success == false
@@ -749,7 +749,7 @@ class ToolDashboardSpec extends ToolSpecBase {
 
     def "hub_get_dashboard via dispatch returns the dashboard"() {
         when:
-        def resp = mcpDriver.callTool('hub_get_dashboard', [id: '412'])
+        def resp = mcpDriver.callTool('hub_get_dashboard', [dashboardId: '412'])
 
         then:
         mcpDriver.parseInner(resp).name == 'Living Room'
@@ -771,7 +771,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        def resp = mcpDriver.callTool('hub_update_dashboard', [id: '412', name: 'Living Room', deviceIds: ['12', '34']])
+        def resp = mcpDriver.callTool('hub_update_dashboard', [dashboardId: '412', name: 'Living Room', deviceIds: ['12', '34']])
 
         then:
         mcpDriver.parseInner(resp).success == true
@@ -782,7 +782,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        def resp = mcpDriver.callTool('hub_delete_dashboard', [id: '412', confirm: true])
+        def resp = mcpDriver.callTool('hub_delete_dashboard', [dashboardId: '412', confirm: true])
 
         then:
         mcpDriver.parseInner(resp).success == true
@@ -793,7 +793,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        def resp = mcpDriver.callTool('hub_clone_dashboard', [id: '412'])
+        def resp = mcpDriver.callTool('hub_clone_dashboard', [dashboardId: '412'])
 
         then:
         mcpDriver.parseInner(resp).success == true
@@ -851,7 +851,7 @@ class ToolDashboardSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        def r = script.handleGateway('hub_manage_dashboards', 'hub_delete_dashboard', [id: '412', confirm: true])
+        def r = script.handleGateway('hub_manage_dashboards', 'hub_delete_dashboard', [dashboardId: '412', confirm: true])
 
         then:
         r.success == true
