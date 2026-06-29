@@ -245,11 +245,11 @@ def _getAllToolDefinitions_partDiscovery() {
         // Tool Guide
         [
             name: "hub_get_tool_guide",
-            description: "Get the deep-reference guide for an MCP tool topic (exhaustive capability tables, wire formats, worked examples) when a tool's own description and parameter descriptions are not enough. Supplement only - those descriptions are self-sufficient for normal use, so reach for this just for the named sections. Always pass a section to minimize tokens; omit it only to discover the available section keys.",
+            description: "Get the deep-reference guide for an MCP tool topic (exhaustive capability tables, wire formats, worked examples) when a tool's own description and parameter descriptions are not enough. Supplement only - reach for it just for the named sections. Always pass a section to minimize tokens; omit it only to discover the available section keys.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    section: [type: "string", description: "REQUIRED for efficiency: device_authorization, best_practice_reference, hub_admin_write, virtual_devices, update_device, rules, backup, file_manager, performance, builtin_app_tools, set_rule_reference, set_rule_create_reference, visual_rule_reference. Full guide only if absolutely necessary.", enum: ["device_authorization", "best_practice_reference", "hub_admin_write", "virtual_devices", "update_device", "rules", "backup", "file_manager", "performance", "builtin_app_tools", "set_rule_reference", "set_rule_create_reference", "visual_rule_reference"]]
+                    section: [type: "string", description: "REQUIRED for efficiency: pass one section key (see enum). Omit only to fetch the full guide / discover the available keys.", enum: ["device_authorization", "best_practice_reference", "hub_admin_write", "virtual_devices", "update_device", "rules", "backup", "file_manager", "performance", "builtin_app_tools", "set_rule_reference", "set_rule_create_reference", "visual_rule_reference"]]
                 ]
             ],
             outputSchema: [
