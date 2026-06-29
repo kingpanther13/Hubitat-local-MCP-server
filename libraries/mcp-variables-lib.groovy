@@ -948,7 +948,7 @@ def _getAllToolDefinitions_partVariables() {
                 properties: [
                     name: [type: "string", description: "New variable name, e.g. \"vacationMode\". Omit when using variables."],
                     type: [type: "string", enum: ["Number", "Decimal", "String", "Boolean", "DateTime"], description: "Variable type. Omit when using variables."],
-                    value: [description: "Initial value, must match the type. Omit when using variables."],
+                    value: [description: "Initial value, must match the type; for DateTime e.g. 2026-02-04T14:00. Omit when using variables."],
                     variables: [type: "array", description: "Bulk form: several variables in one call.", items: [
                         type: "object",
                         properties: [
