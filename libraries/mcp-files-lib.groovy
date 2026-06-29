@@ -315,7 +315,7 @@ def _getAllToolDefinitions_partFiles() {
         // File Manager Tools
         [
             name: "hub_list_files",
-            description: "List files stored in the hub's File Manager (the local web-accessible file store), returning each file's name, size, last-modified date, and direct download URL. Use this to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. Read-only. For large stores, opt into pagination via the cursor parameter (page size 100).",
+            description: "List files stored in the hub's File Manager (the local web-accessible file store), returning each file's name, size, last-modified date, and direct download URL. Use this to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. Read-only. For large stores, opt into pagination via the cursor parameter.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -397,7 +397,7 @@ def _getAllToolDefinitions_partFiles() {
         ],
         [
             name: "hub_delete_file",
-            description: "⚠️ Permanently delete a file from the hub's File Manager. The file is auto-backed up before deletion (see backupFile/undoHint in the result for recovery), but the original is removed. Tell the user and get approval first. Requires Write master and confirm=true.",
+            description: "⚠️ Permanently delete a file from the hub's File Manager. The file is auto-backed up first (see backupFile/undoHint for recovery). Requires Write master, confirm=true, and a recent hub backup — get user approval before calling.",
             inputSchema: [
                 type: "object",
                 properties: [
