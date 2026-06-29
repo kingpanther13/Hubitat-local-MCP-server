@@ -743,13 +743,13 @@ def _getAllToolDefinitions_partCustomRules() {
         // Rule Management
         [
             name: "hub_get_custom_rule",
-            description: "Read MCP custom-engine automation rules. Omit ruleId to LIST all rules (summaries; supports cursor pagination). Provide ruleId for one rule's full detail. Add detailed=true (requires ruleId) for comprehensive diagnostics (config + execution history + recent logs + errors). NOTE: when the Custom Rule Engine toggle is OFF, this operates read-only -- you can list/inspect existing custom rules, but create/modify/delete are hidden. The custom MCP rule engine is legacy; for new rule work prefer native Rule Machine via hub_manage_native_rules_and_apps.",
+            description: "Read MCP custom-engine automation rules. Omit ruleId to LIST all rules (summaries; supports cursor pagination). Provide ruleId for one rule's full detail. Add detailed=true (requires ruleId) for comprehensive diagnostics (config + execution history + recent logs + errors).[[FLAT_TRIM]] When the Custom Rule Engine toggle is OFF this operates read-only -- you can list/inspect existing custom rules, but create/modify/delete are hidden. The custom MCP rule engine is legacy; for new rule work prefer native Rule Machine via hub_manage_native_rules_and_apps.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     ruleId: [type: "string", description: "Rule ID. Omit to list all rules; provide for one rule's detail."],
-                    detailed: [type: "boolean", description: "Requires ruleId. Returns comprehensive diagnostics (execution history, recent logs, errors) instead of plain rule data. Rejected if set without a ruleId.", default: false],
-                    cursor: [type: "string", description: "List mode only (ruleId omitted): opt-in pagination cursor. Pass \"\" for the first page, iterate nextCursor (page size 50)."]
+                    detailed: [type: "boolean", description: "Requires ruleId; returns diagnostics instead of plain rule data. Rejected if set without a ruleId.", default: false],
+                    cursor: [type: "string", description: "List mode only (ruleId omitted): pagination cursor. Pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
             ],
             outputSchema: [
@@ -829,8 +829,8 @@ Verify rule after creation.""",
                     name: [type: "string", description: "Rule name, e.g. \"Porch light at sunset\""],
                     description: [type: "string", description: "Optional human-readable rule description"],
                     enabled: [type: "boolean", description: "Enable rule immediately on creation", default: true],
-                    testRule: [type: "boolean", description: "Mark as test rule - will NOT be backed up on deletion. Use for temporary/experimental rules.", default: false],
-                    triggers: [type: "array", items: [type: "object", properties: [type: [type: "string", enum: ["device_event", "button_event", "time", "sunrise", "sunset", "sun", "periodic", "mode_change", "hsm_change"]]]], description: "Trigger objects (at least one required), each a {type, ...} object — the `type` enum lists the kinds (sunrise/sunset/sun are shortcuts for a time trigger)."],
+                    testRule: [type: "boolean", description: "Mark as test rule - will NOT be backed up on deletion.", default: false],
+                    triggers: [type: "array", items: [type: "object", properties: [type: [type: "string", enum: ["device_event", "button_event", "time", "sunrise", "sunset", "sun", "periodic", "mode_change", "hsm_change"]]]], description: "Trigger objects (at least one required), each a {type, ...} object.[[FLAT_TRIM]] The `type` enum lists the kinds; sunrise/sunset/sun are shortcuts for a time trigger.[[/FLAT_TRIM]]"],
                     conditions: [type: "array", items: [type: "object", properties: [type: [type: "string", enum: ["device_state", "device_was", "time_range", "mode", "variable", "days_of_week", "sun_position", "hsm_status", "presence", "lock", "thermostat_mode", "thermostat_state", "illuminance", "power"]]]], description: "Optional condition objects gating the actions, each {type, ...}."],
                     conditionLogic: [type: "string", enum: ["all", "any"], description: "How to combine multiple conditions: 'all' = AND, 'any' = OR.", default: "all"],
                     actions: [type: "array", items: [type: "object", properties: [type: [type: "string", enum: ["device_command", "toggle_device", "activate_scene", "set_variable", "set_local_variable", "set_mode", "set_hsm", "delay", "if_then_else", "cancel_delayed", "repeat", "stop", "log", "set_level", "set_color", "set_color_temperature", "lock", "unlock", "capture_state", "restore_state", "send_notification", "set_thermostat", "http_request", "speak", "comment", "set_valve", "set_fan_speed", "set_shade", "variable_math"]]]], description: "Action objects to run when triggered (at least one required), each {type, ...}."]
@@ -854,7 +854,7 @@ Verify rule after creation.""",
         ],
         [
             name: "hub_update_custom_rule",
-            description: "Update an existing MCP custom-engine rule in place; only the fields you supply are changed. Use enabled=true/false to enable or disable.",
+            description: "Update an existing MCP custom-engine rule in place; only the fields you supply are changed (use enabled=true/false to enable/disable). Replacing triggers/conditions/actions overwrites the whole array, not a merge; see hub_get_tool_guide(section='rules') for valid types and structure.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -863,10 +863,10 @@ Verify rule after creation.""",
                     description: [type: "string", description: "New rule description"],
                     enabled: [type: "boolean", description: "Enable (true) or disable (false) the rule"],
                     testRule: [type: "boolean", description: "Mark as test rule - will NOT be backed up on deletion"],
-                    triggers: [type: "array", description: "Replacement trigger objects (overwrites ALL triggers); see hub_get_tool_guide(section='rules') for valid types and structure"],
-                    conditions: [type: "array", description: "Replacement condition objects (overwrites ALL conditions); see hub_get_tool_guide(section='rules') for valid types and structure"],
+                    triggers: [type: "array", description: "Replacement trigger objects (overwrites ALL triggers)"],
+                    conditions: [type: "array", description: "Replacement condition objects (overwrites ALL conditions)"],
                     conditionLogic: [type: "string", enum: ["all", "any"], description: "How to combine conditions: 'all' = AND, 'any' = OR"],
-                    actions: [type: "array", description: "Replacement action objects (overwrites ALL actions); see hub_get_tool_guide(section='rules') for valid types and structure"]
+                    actions: [type: "array", description: "Replacement action objects (overwrites ALL actions)"]
                 ],
                 required: ["ruleId"]
             ],
@@ -882,13 +882,13 @@ Verify rule after creation.""",
         ],
         [
             name: "hub_delete_custom_rule",
-            description: "DESTRUCTIVE: Permanently delete an MCP custom-engine rule. Automatically saves a backup to File Manager (mcp_rule_backup_*.json) before deletion. Rules marked as testRule=true skip backup automatically.",
+            description: "DESTRUCTIVE: Permanently delete an MCP custom-engine rule. Automatically saves a backup to File Manager before deletion.[[FLAT_TRIM]] Backup filename pattern: mcp_rule_backup_*.json. Rules marked testRule=true skip backup automatically.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     ruleId: [type: "string", description: "Rule ID"],
                     confirm: [type: "boolean", description: "REQUIRED: Set to true to confirm deletion."],
-                    skipBackupCheck: [type: "boolean", description: "Force skip backup even for non-test rules. Rarely needed since testRule flag handles this. Default: false."]
+                    skipBackupCheck: [type: "boolean", description: "Force skip backup even for non-test rules."]
                 ],
                 required: ["ruleId", "confirm"]
             ],
@@ -905,7 +905,7 @@ Verify rule after creation.""",
         // enable_rule and disable_rule merged into hub_update_custom_rule (use enabled=true/false)
         [
             name: "hub_test_custom_rule",
-            description: "Dry-run an MCP custom-engine rule: evaluate its conditions against current device/hub state and report whether it would fire, WITHOUT executing any actions (no devices change, no side effects).",
+            description: "Dry-run an MCP custom-engine rule: evaluate its conditions against current device/hub state and report whether it would fire, WITHOUT executing any actions.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -997,7 +997,7 @@ Verify rule after creation.""",
         ],
         [
             name: "hub_clone_custom_rule",
-            description: "Duplicate an existing MCP custom-engine rule into a new, independent rule with its own ruleId (same triggers/conditions/actions and device references as the source).",
+            description: "Duplicate an existing MCP custom-engine rule into a new, independent rule with its own ruleId.[[FLAT_TRIM]] Same triggers/conditions/actions and device references as the source.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
