@@ -290,7 +290,7 @@ def toolInstallBundle(args) {
     if (!(lower.startsWith("http://") || lower.startsWith("https://"))) {
         throw new IllegalArgumentException("importUrl scheme must be http or https (got '${importUrl.take(40)}')")
     }
-    boolean primary = (args.primary == true)
+    boolean installer = (args.installer == true)
 
     String fw = null
     try { fw = location?.hub?.firmwareVersionString?.toString() } catch (Exception ignored) { }
@@ -302,15 +302,15 @@ def toolInstallBundle(args) {
     boolean modern = _firmwareAtLeast(fw, "2.3.8.108")
     String endpoint = modern ? "/bundle2/uploadZipFromUrl" : "/bundle/uploadZipFromUrl"
 
-    mcpLog("info", "hub-admin", "Installing bundle (endpoint: ${endpoint}, fw: ${fw}, primary: ${primary}, url: ${importUrl})")
+    mcpLog("info", "hub-admin", "Installing bundle (endpoint: ${endpoint}, fw: ${fw}, installer: ${installer}, url: ${importUrl})")
     try {
         def resp
         if (modern) {
             // hubInternalGet passes the query map to httpGet, which URL-encodes the values. `private`
             // is quoted because it is a Groovy keyword. 300s timeout matches HPM's bundle install.
-            resp = hubInternalGet("/bundle2/uploadZipFromUrl", [url: importUrl, pwd: "", "private": primary.toString()], 300)
+            resp = hubInternalGet("/bundle2/uploadZipFromUrl", [url: importUrl, pwd: "", "private": installer.toString()], 300)
         } else {
-            def body = groovy.json.JsonOutput.toJson([url: importUrl, installer: primary, pwd: ""])
+            def body = groovy.json.JsonOutput.toJson([url: importUrl, installer: installer, pwd: ""])
             resp = hubInternalPostJson("/bundle/uploadZipFromUrl", body)
         }
         boolean ok = _bundleResponseSucceeded(resp)
@@ -329,7 +329,7 @@ def toolInstallBundle(args) {
             success: true,
             message: "Bundle installed from ${importUrl}. Its libraries/apps/drivers are now in Code -- verify with hub_list_libraries / hub_list_apps.",
             endpoint: endpoint,
-            primary: primary,
+            installer: installer,
             lastBackup: formatTimestamp(state.lastBackupTimestamp)
         ]
     } catch (Exception e) {
@@ -387,7 +387,7 @@ def _getAllToolDefinitions_partBundles() {
                 type: "object",
                 properties: [
                     importUrl: [type: "string", description: "URL of the bundle .zip the hub fetches and installs (http:// or https://)."],
-                    primary: [type: "boolean", description: "OPTIONAL. Mark the bundle's contents as installed-by-this-package (HPM's installer/private flag). Default false."],
+                    installer: [type: "boolean", description: "OPTIONAL. Mark the bundle's contents as installed-by-this-package (HPM's installer/private flag). Default false."],
                     confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms a recent backup exists and the user approved installing this bundle."]
                 ],
                 required: ["importUrl", "confirm"]
@@ -398,7 +398,7 @@ def _getAllToolDefinitions_partBundles() {
                     success: [type: "boolean", description: "Whether the bundle installed"],
                     message: [type: "string", description: "Human-readable result"],
                     endpoint: [type: "string", description: "Hub endpoint used (/bundle2/uploadZipFromUrl or /bundle/uploadZipFromUrl)"],
-                    primary: [type: "boolean", description: "Whether the bundle was marked primary/installer"],
+                    installer: [type: "boolean", description: "Whether the bundle was marked as installer"],
                     error: [type: "string", description: "Failure detail; present on failure"],
                     rawResponse: [type: "string", description: "Raw hub response (truncated); present on a no-success result"],
                     lastBackup: [type: "string", description: "Timestamp of most recent backup"]
