@@ -325,7 +325,7 @@ def _getAllToolDefinitions_partRooms() {
         ],
         [
             name: "hub_create_room",
-            description: "Create a new room on the hub, optionally assigning devices to it at creation. Use when a needed room does not yet exist; to only move devices into an existing room, use hub_update_room/room-assignment flows instead. Write operation: requires Write master, a backup taken within the last 24h, and confirm=true. Returns the new room's ID and assigned device count.",
+            description: "Create a new room on the hub, optionally assigning devices to it at creation. Use when a needed room does not yet exist; to only move devices into an existing room, set the device's room with hub_update_device instead. Write operation: requires Write master, a backup taken within the last 24h, and confirm=true. Returns the new room's ID and assigned device count.",
             inputSchema: [
                 type: "object",
                 properties: [
