@@ -153,6 +153,12 @@ def mainPage() {
             if (selectedDevices) {
                 paragraph "Selected ${selectedDevices.size()} devices"
             }
+            input "bypassDeviceAllowlist", "bool", title: "Bypass Device Allowlist (reach EVERY device)",
+                  description: "DANGER: when ON, the MCP server IGNORES the device list above and can read, command, and reconfigure ANY device on the hub by id. The list above no longer limits access. Leave OFF unless you intend to expose the entire hub.",
+                  defaultValue: false, submitOnChange: true
+            if (settings.bypassDeviceAllowlist) {
+                paragraph "<b style='color: red;'>⚠ WARNING: Device allowlist bypass is ON. The MCP server can reach EVERY device on this hub by id, ignoring the device selection above entirely (read, command, and config writes all apply to unlisted devices). Turn this OFF to restore the allowlist.</b>"
+            }
         }
 
         section("Tool Access (Read / Write masters)") {
@@ -1371,7 +1377,7 @@ def getGatewayConfig() {
                 hub_update_mcp_settings: "Update one or more of the MCP rule app's own settings (toggles, log level, tuning params, and the device-access scope selectedDevices). Args: settings (map of key→value), confirm=true. Allowlist-gated; selectedDevices ids validated atomically."
             ],
             searchHints: [
-                hub_update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableRead enableCustomRuleEngine useGateways publishOutputSchemas outputSchema output schema structured content claude desktop gateway mode consolidate flat tools ci automation enableMandatoryBPS best practice acknowledgment gate device access scope authorize selectedDevices grant revoke replace which devices mcp server can see control authorization lockout"
+                hub_update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableRead enableCustomRuleEngine useGateways publishOutputSchemas outputSchema output schema structured content claude desktop gateway mode consolidate flat tools ci automation enableMandatoryBPS best practice acknowledgment gate device access scope authorize selectedDevices grant revoke replace which devices mcp server can see control authorization lockout bypassDeviceAllowlist bypass device allowlist reach every any device on hub ignore selection unlisted device full hub access"
             ]
         ],
         hub_read_devices: [
@@ -5363,7 +5369,7 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 
 ### hub_call_device_command
 
-**Response `state` snapshot.** Returns a `state` snapshot (per-attribute value + freshness timestamp) read AS OF the command. To get the CONFIRMED resulting state, pass `waitFor` to block-poll until the attribute converges; without it, confirm separately via hub_get_device_attribute. The snapshot is an immediate read taken in the same request that fires the command, so it shows the PRE-effect value -- even for virtual/local devices -- because the hub commits the change after this request returns; the per-attribute timestamp is the freshness signal. With `waitFor`, the `state` snapshot reflects the converged value and a `waitFor` result block reports convergence.
+**Response `state` snapshot.** Returns a `state` snapshot (per-attribute value + freshness timestamp) read AS OF the command. To get the CONFIRMED resulting state, pass `waitFor` to block-poll until the attribute converges; without it, confirm separately via hub_get_device_attribute. The snapshot is an immediate read taken in the same request that fires the command, so it shows the PRE-effect value -- even for virtual/local devices -- because the hub commits the change after this request returns; the per-attribute timestamp is the freshness signal. With `waitFor`, the `state` snapshot reflects the converged value and a `waitFor` result block reports convergence. On the device-allowlist bypass (an UNLISTED device reached with bypassDeviceAllowlist ON) hub_call_device_command can return `success: false` (a structured hub-rejection) rather than the listed path's fire-and-forget.
 
 **`parameters` arg.** Omit for no-arg commands like on/off. Each element is a string; numbers and JSON-object values are passed as strings (e.g. `["{\"hue\":0,\"saturation\":100,\"level\":50}"]`) and coerced hub-side.
 
@@ -5511,6 +5517,14 @@ Deploys every declared library bundle + app from the manifest at `ref`, saving t
 **Developer Mode visibility:** when Developer Mode is off the tool is hidden from `tools/list` entirely (catalog-hidden, not merely runtime-refused).
 
 **`baseUrl`:** per-call source URLs are built as `<baseUrl>/<ref>/<path>` (`baseUrl` carries no trailing slash, no ref/path). It exists to point at forks / CI branches on a different remote.
+
+### hub_update_mcp_settings — bypassDeviceAllowlist (DANGEROUS escape hatch)
+
+`bypassDeviceAllowlist` (bool, default OFF) removes a security boundary: when ON, the per-device tools (hub_get_device, hub_get_device_attribute incl. poll mode, hub_call_device_command incl. waitFor, hub_update_device config writes, hub_list_device_events, hub_list_device_events history) IGNORE the device allowlist (selectedDevices) and reach ANY device on the hub by id, via the hub's id-keyed admin endpoints, at full read+write parity. Other device tools (hub_list_devices, device swap/replace/delete, device-health) are NOT bypassed. Its effect is independent of Developer Mode -- once ON it works in normal operation. Leave OFF unless you intentionally want the MCP server to control every hub device (e.g. automated whole-hub testing).
+
+**selectedDevices** is the MCP device-access scope. Pass {"mode":"replace"|"add"|"remove", "ids":[<device id strings>], "allowEmpty":<bool>} -- or a bare array as shorthand for replace ({"selectedDevices":["42","108"]} == {mode:"replace", ids:["42","108"]}). 'replace' sets the authorized set to exactly ids; 'add' unions ids with the current set (safest for "grant one device" -- no need to re-enumerate the whole list); 'remove' subtracts ids. For replace/add every id is validated against the full hub device list (discover ids via hub_list_devices(scope='all'), each carries an mcpAuthorized flag) -- one unknown id rejects the whole batch and nothing is written; 'remove' does not validate (removing an absent/since-deleted id is a no-op). Refuses to empty the scope unless allowEmpty:true.
+
+**Deliberately NOT allowlisted** by hub_update_mcp_settings: enableWrite (would disable this tool's own write path mid-session), enableDeveloperMode (lockout protection -- must stay UI-only to disable), disabled_tools/disabled_gateways (could self-disable this tool).
 ''',
 
         virtual_devices: '''## Virtual Device Types

@@ -23,6 +23,12 @@ def toolUpdateMcpSettings(args) {
     // enableMandatoryBPS (issue #299) is allowlisted as an ESCAPE HATCH: hub_update_mcp_settings is
     // itself exempt from the best-practice gate, so letting the AI self-disable the (default-ON) gate
     // here is the documented un-lock path, not a footgun. (The reactive hint has no toggle -- always on.)
+    // bypassDeviceAllowlist is allowlisted: it is a plain bool preference whose EFFECT is INDEPENDENT
+    // of Developer Mode (this tool is dev-mode-gated, but once the flag is ON the bypass works in
+    // normal operation). WARNING: when ON it makes the per-device tools (hub_get_device,
+    // hub_get_device_attribute, hub_call_device_command, hub_update_device, hub_list_device_events)
+    // ignore the device allowlist (settings.selectedDevices) and reach ANY device on the hub by id;
+    // default OFF. (hub_list_devices, swap/replace/delete, and device-health are NOT bypassed.)
     // selectedDevices is ALSO allowed but is NOT in this scalar map: it is the MCP device-access
     // scope (a capability.* multi-select), so it routes to _validateMcpDeviceScope (atomic id
     // validation + lockout guard + the capability.* List write) rather than the scalar coerce path.
@@ -40,7 +46,8 @@ def toolUpdateMcpSettings(args) {
         "enableCustomRuleEngine": "bool",
         "useGateways":            "bool",
         "publishOutputSchemas":   "bool",
-        "enableMandatoryBPS":     "bool"
+        "enableMandatoryBPS":     "bool",
+        "bypassDeviceAllowlist":  "bool"
     ]
     // Allowed keys for the not-allowed error message = scalar allowlist + the special selectedDevices key.
     def allowedKeyNames = ((allowedSettings.keySet() + ["selectedDevices"]) as List).sort()
@@ -735,7 +742,7 @@ def _getAllToolDefinitions_partSelfAdmin() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    settings: [type: "object", description: "Map of setting key → new value (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true}). Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, publishOutputSchemas, enableMandatoryBPS, selectedDevices — any other key is rejected. mcpLogLevel: debug|info|warn|error. selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write') for per-mode semantics."],
+                    settings: [type: "object", description: "Map of setting key → new value (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true}). Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, publishOutputSchemas, enableMandatoryBPS, bypassDeviceAllowlist, selectedDevices — any other key is rejected. mcpLogLevel: debug|info|warn|error. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON the per-device tools reach ANY hub device by id, IGNORING selectedDevices; independent of Developer Mode; see hub_get_tool_guide(section='hub_admin_write'). selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write') for per-mode semantics."],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the operation"]
                 ],
                 required: ["settings", "confirm"]

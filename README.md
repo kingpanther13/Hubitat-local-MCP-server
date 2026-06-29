@@ -637,7 +637,7 @@ Reads are gated by the Read master; create/update/delete by the Write master (wi
 
 | Tool | Description |
 |------|-------------|
-| `hub_update_mcp_settings` | Update one or more of the MCP rule app's own settings (toggles, log level, tuning params, and the device-access scope `selectedDevices` — pass `{mode:"replace"/"add"/"remove", ids:[...], allowEmpty?}` or a bare array of device IDs as the replace shorthand; ids are validated against the hub; refuses to empty the scope unless `allowEmpty`). Allowlist-gated. |
+| `hub_update_mcp_settings` | Update one or more of the MCP rule app's own settings (toggles, log level, tuning params, and the device-access scope `selectedDevices` — pass `{mode:"replace"/"add"/"remove", ids:[...], allowEmpty?}` or a bare array of device IDs as the replace shorthand; ids are validated against the hub; refuses to empty the scope unless `allowEmpty`). Also sets `bypassDeviceAllowlist` (bool, default OFF) — ⚠ DANGEROUS: when ON, the per-device tools (get/get-attribute/command/update/events) ignore the allowlist and reach ANY device on the hub by id; `hub_list_devices`, swap/replace/delete, and device-health are NOT bypassed (effect independent of Developer Mode). Allowlist-gated. |
 
 The **Developer Mode** pattern — for LLM-agent and CI/CD pipelines that need to manage the MCP rule app's own configuration and device-access scope without manual UI intervention. Additional self-admin tools (true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same toggle. Requires opt-in **Enable Developer Mode Tools** setting (default OFF). Each successful write is logged at WARN level for audit.
 
@@ -907,6 +907,8 @@ If your hub has Hub Security enabled (login required for the web UI), the MCP se
 <summary><b>Device not found</b></summary>
 
 Make sure the device is selected in the app's "Select Devices for MCP Access" setting.
+
+Alternatively, the app's Device Access section has a **Bypass Device Allowlist** toggle (default OFF). When ON, the MCP server ignores the device selection and can read, command, reconfigure, and read events for **any** device on the hub by id (full parity across `hub_get_device`, `hub_get_device_attribute`, `hub_call_device_command`, `hub_update_device`, and `hub_list_device_events`). `hub_list_devices`, device swap/replace/delete, and device-health are NOT bypassed. It is settable from that checkbox or via `hub_update_mcp_settings`, and its effect is independent of Developer Mode. ⚠ This removes the device-selection security boundary — enable it only if you intend to expose the whole hub.
 
 </details>
 
