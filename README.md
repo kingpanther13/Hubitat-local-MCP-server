@@ -1637,6 +1637,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v3.1.0** - refactor: shrink flat tools/list catalog + Anthropic best-practice tool audit (#296). PRs: [#331](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/331)
 - **v3.0.2** - docs: correct device-edit endpoint notes — drop unsupported firmware-causation claim; feat: hub_set_system_settings dark mode + network config; rename hub_call_destructive_radio → hub_call_destructive_ops (adds network/cloud). PRs: [#328](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/328), [#329](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/329)
 - **v3.0.1** - feat: device-edit properties, full driver catalog, create-from-driver, and compatible-devices lookup. PRs: [#327](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/327)
 - **v3.0.0** - fix: report distinct tool count from hub_search_tools, not gateway-membership rows; ci: fail-fast bind-check in e2e deploy; feat: hub_manage_dashboards — Easy Dashboard CRUD (#259 item 9). PRs: [#323](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/323), [#321](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/321), [#324](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/324)
