@@ -1994,12 +1994,12 @@ def _getAllToolDefinitions_partDiagnostics() {
                     deviceId: [type: "string", description: "Scope to a single device's log entries (server-side filter, mutually exclusive with appId)"],
                     appId: [type: "string", description: "Scope to a single app's log entries (server-side filter, mutually exclusive with deviceId)"],
                     limit: [type: "integer", description: "Max entries to return. Default: 100, max: 500.", default: 100],
-                    pattern: [type: "string", description: "Case-insensitive regex applied to the log message field only -- use source for app/device-name substring matching."],
-                    patterns: [type: "array", items: [type: "string"], description: "Multiple regex patterns, same matching rules and caveats as `pattern`. Combine via patternMode."],
+                    pattern: [type: "string", description: "Case-insensitive regex applied to the log message field only.[[FLAT_TRIM]] Use source for app/device-name substring matching.[[/FLAT_TRIM]]"],
+                    patterns: [type: "array", items: [type: "string"], description: "Multiple regex patterns; combine via patternMode.[[FLAT_TRIM]] Same matching rules and caveats as `pattern`.[[/FLAT_TRIM]]"],
                     patternMode: [type: "string", description: "How patterns array is combined: 'any' (default) = OR; 'all' = AND.", enum: ["any", "all"]],
-                    since: [type: "string", description: "Return only entries at or after this time. Accepts ISO-8601 timestamp (e.g. '2024-01-15T10:30:00Z') or relative offset (e.g. '30m', '2h', '1d', '7d'). Max relative offset: 30d."],
+                    since: [type: "string", description: "Return only entries at or after this time; ISO-8601 or relative offset like '2h'.[[FLAT_TRIM]] Full forms: ISO-8601 timestamp (e.g. '2024-01-15T10:30:00Z') or relative '30m'/'2h'/'1d'/'7d'; max relative offset 30d.[[/FLAT_TRIM]]"],
                     until: [type: "string", description: "Return only entries at or before this time. Same format as since. Default: now (no upper bound)."],
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Pass \"\" for the first page, iterate nextCursor (page size 100)."]
+                    cursor: [type: "string", description: "Opt-in pagination cursor.[[FLAT_TRIM]] Pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
                 ]
             ],
             outputSchema: [
@@ -2103,7 +2103,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_get_metrics",
-            description: "Retrieve hub metrics (memory, temp, DB size) with CSV trend history. Trend history is sparse/stale — the hub never auto-samples, so points exist only from earlier recordSnapshot=true calls. Requires Read master.",
+            description: "Retrieve hub metrics (memory, temp, DB size) with CSV trend history. Trend history is sparse/stale[[FLAT_TRIM]] — the hub never auto-samples, so points exist only from earlier recordSnapshot=true calls[[/FLAT_TRIM]]. Requires Read master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2139,12 +2139,12 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_get_memory_history",
-            description: "Get the hub's free-memory and CPU-load history (the platform's own timestamped ring buffer, each entry with freeMemoryKB and cpuLoad5min). Use to diagnose memory leaks or load trends over time. For a single current snapshot plus temp/DB-size, use hub_get_metrics instead. Requires Read master.",
+            description: "Get the hub's free-memory and CPU-load history (the platform's own timestamped ring buffer[[FLAT_TRIM]], each entry with freeMemoryKB and cpuLoad5min[[/FLAT_TRIM]]). Use to diagnose memory leaks or load trends over time.[[FLAT_TRIM]] For a single current snapshot plus temp/DB-size, use hub_get_metrics instead.[[/FLAT_TRIM]] Requires Read master.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    limit: [type: "integer", description: "Max entries to return (most recent); 0 for all. Hub may have thousands of entries.", default: 100],
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Pages within the limit-filtered entries. Pass \"\" for the first page, iterate nextCursor (page size 100)."]
+                    limit: [type: "integer", description: "Max entries to return (most recent); 0 for all.[[FLAT_TRIM]] Hub may have thousands of entries.[[/FLAT_TRIM]]", default: 100],
+                    cursor: [type: "string", description: "Opt-in pagination cursor.[[FLAT_TRIM]] Pages within the limit-filtered entries. Pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
                 ]
             ],
             outputSchema: [
@@ -2187,7 +2187,7 @@ def _getAllToolDefinitions_partDiagnostics() {
                     tracerouteHost: [type: "string", description: "Optional single IPv4 dotted-quad host (e.g. '8.8.8.8') to traceroute; plain-text route table returned under traceroute.output."],
                     speedtest: [type: "boolean", description: "If true, run the hub's WAN download speedtest; plain-text wget log with the measured speed returned under speedtest.output. Default: false."],
                     identifyHub: [type: "boolean", description: "Blink hub LED to identify hub. Default: false.", default: false],
-                    cursor: [type: "string", description: "Opt-in pagination cursor for the staleDevices array. Omit to get all stale devices in one response (subject to the universal response-size guard). Pass nextCursor from a prior call to fetch the next page (page size 100). unknownDevices and healthyDevices are always returned in full alongside the page."]
+                    cursor: [type: "string", description: "Opt-in pagination cursor for the staleDevices array.[[FLAT_TRIM]] Omit to get all stale devices in one response (subject to the universal response-size guard). Pass nextCursor from a prior call to fetch the next page (page size 100). unknownDevices and healthyDevices are always returned in full alongside the page.[[/FLAT_TRIM]]"]
                 ]
             ],
             outputSchema: [
@@ -2301,7 +2301,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_set_zwave",
-            description: "Configure the Z-Wave radio (idempotent): enable/disable it, or set region and long-range channel. Read current values with hub_get_radio_details(radio='zwave'). Requires Write master.",
+            description: "Configure the Z-Wave radio (idempotent)[[FLAT_TRIM]]: enable/disable it, or set region and long-range channel[[/FLAT_TRIM]]. Read current values with hub_get_radio_details(radio='zwave'). Requires Write master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2329,7 +2329,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_set_zigbee",
-            description: "Configure the Zigbee radio (idempotent): enable/disable, channel + power, radio settings (rebuild-on-reboot / inactive-device ping), or per-device keep-alive ping. One operation per call. Read current values with hub_get_radio_details(radio='zigbee'). Requires Write master.",
+            description: "Configure the Zigbee radio (idempotent)[[FLAT_TRIM]]: enable/disable, channel + power, radio settings (rebuild-on-reboot / inactive-device ping), or per-device keep-alive ping[[/FLAT_TRIM]]. One operation per call. Read current values with hub_get_radio_details(radio='zigbee'). Requires Write master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2363,7 +2363,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_call_zwave",
-            description: "Z-Wave network lifecycle operations (NOT idempotent): repair, device inclusion (join + S2 grants), exclusion, per-node maintenance, node replace/remove, antenna test, and SmartStart delete. Pick the operation with action. Requires Write master.",
+            description: "Z-Wave network lifecycle operations (NOT idempotent)[[FLAT_TRIM]]: repair, device inclusion (join + S2 grants), exclusion, per-node maintenance, node replace/remove, antenna test, and SmartStart delete[[/FLAT_TRIM]]. Pick the operation with action. Requires Write master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2394,7 +2394,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_call_zigbee",
-            description: "Zigbee radio operations (NOT idempotent): reboot, rebuild the mesh network, or run a channel energy scan; select with action. Requires Write master.",
+            description: "Zigbee radio operations (NOT idempotent); select with action. Requires Write master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2418,7 +2418,7 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_call_matter",
-            description: "Matter radio operations (NOT idempotent): enable/disable, pair (commission) a device, or open a pairing/share window — select with action. Requires Write master.",
+            description: "Matter radio operations (NOT idempotent); select with action. Requires Write master.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2485,7 +2485,7 @@ Requires Write master.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
+                    cursor: [type: "string", description: "Opt-in pagination cursor.[[FLAT_TRIM]] Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50).[[/FLAT_TRIM]]"]
                 ]
             ],
             outputSchema: [
