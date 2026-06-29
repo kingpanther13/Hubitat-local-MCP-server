@@ -245,7 +245,7 @@ def _getAllToolDefinitions_partDiscovery() {
         // Tool Guide
         [
             name: "hub_get_tool_guide",
-            description: "Get the deep-reference guide for an MCP tool topic (exhaustive capability tables, wire formats, worked examples) when a tool's own description and parameter descriptions are not enough. Supplement only - reach for it just for the named sections. Always pass a section to minimize tokens; omit it only to discover the available section keys.",
+            description: "Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]] when a tool's own description and parameter descriptions are not enough. Supplement only - reach for it just for the named sections. Always pass a section to minimize tokens.",
             inputSchema: [
                 type: "object",
                 properties: [
