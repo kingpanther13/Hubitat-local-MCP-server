@@ -1185,14 +1185,14 @@ def getGatewayConfig() {
             description: "Install, update, and delete hub apps, drivers, libraries, and code bundles (install/delete/export). All operations modify hub code and require Write master. Read-only counterparts (hub_get_source, list_*) live in the hub_read_apps_code gateway.",
             tools: ["hub_create_app", "hub_create_driver", "hub_update_app", "hub_update_driver", "hub_delete_item", "hub_create_library", "hub_update_library", "hub_install_bundle", "hub_delete_bundle", "hub_export_bundle"],
             summaries: [
-                hub_create_app: "Install new app code (source|sourceFile|importUrl), OR with installAsUserApp=<codeAppId> create a running instance from already-installed code (mutually exclusive). To save context prefer importUrl (hub fetches the source itself) or hub_write_file + sourceFile; inline source for stubs only. confirm=true",
+                hub_create_app: "Install new app code (source|sourceFile|importUrl), OR with codeAppId=<id> create a running instance from already-installed code (mutually exclusive). To save context prefer importUrl (hub fetches the source itself) or hub_write_file + sourceFile; inline source for stubs only. confirm=true",
                 hub_create_driver: "Install new driver. To save context prefer importUrl (hub fetches the source) or hub_write_file + sourceFile; inline source for stubs only. For 1: source|sourceFile|importUrl. For >1: USE BULK (single round-trip: installs=[{source|sourceFile|importUrl},...]). confirm=true",
                 hub_update_app: "Modify existing app code (CRITICAL), and/or enable OAuth on it. To save context prefer importUrl (hub fetches the source itself) or hub_write_file + sourceFile over inline source. Args: appId, source|sourceFile|importUrl|resave, oauth ({enabled,client_id?,client_secret?,refresh_secret?} -- enable/configure OAuth, returns the clientId/secret), confirm=true",
                 hub_update_driver: "Modify existing driver code (CRITICAL). For 1 driver: driverId+source|sourceFile|importUrl|resave. For >1 drivers: USE BULK (single round-trip: updates=[{driverId,sourceFile|importUrl},...]). To save context prefer importUrl (hub fetches) or hub_write_file + sourceFile over inline. confirm=true",
-                hub_delete_item: "Permanently delete an app/driver/library (DESTRUCTIVE, auto-backs up). Args: type (app|driver|library), id, confirm=true",
+                hub_delete_item: "Permanently delete an app/driver/library (DESTRUCTIVE, auto-backs up). Args: type (app|driver|library), item_id, confirm=true",
                 hub_create_library: "Install new Groovy library (#include namespace.Name). To save context prefer importUrl (hub fetches the source) or hub_write_file + sourceFile; inline source for stubs only. Args: source|sourceFile|importUrl, confirm=true",
                 hub_update_library: "Modify existing library code. To save context prefer importUrl (hub fetches) or hub_write_file + sourceFile over inline. Args: libraryId, source|sourceFile|importUrl|resave, confirm=true",
-                hub_install_bundle: "Install a code bundle (.zip) from a URL the way HPM does (hub fetches+unpacks into Libraries/Apps/Drivers Code). Args: importUrl (zip), primary?, confirm=true",
+                hub_install_bundle: "Install a code bundle (.zip) from a URL the way HPM does (hub fetches+unpacks into Libraries/Apps/Drivers Code). Args: importUrl (zip), installer?, confirm=true",
                 hub_delete_bundle: "Delete an installed code bundle container by id (DESTRUCTIVE; verifies via re-list). Code it delivered may remain in Code -- delete separately. Args: bundleId (from hub_list_bundles), confirm=true",
                 hub_export_bundle: "Export an installed bundle's .zip to the File Manager (downloadable at /local/<file>). Args: bundleId (from hub_list_bundles), saveAs?"
             ],
@@ -1237,7 +1237,7 @@ def getGatewayConfig() {
                 hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history + the hub's own health alerts (radio offline, backup failures, low memory, DB bloat, safeMode). Read-only by default; recordSnapshot=true also persists a snapshot. Args: recordSnapshot, trendPoints",
                 hub_get_memory_history: "Get free OS memory and CPU load history. Returns most recent entries with summary stats. Args: limit (default 100, 0 for all). Requires Read master",
                 hub_call_gc: "Force JVM garbage collection to reclaim memory. Returns before/after free memory. Requires the Write master",
-                hub_get_device_health: "Check device staleness; run network diagnostics: ICMP-ping arbitrary IPs (router, NAS, server), traceroute to one IPv4, WAN download speedtest; and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts (max 5 IPv4), pingCount (1-5), traceroute (IPv4), speedtest (bool), identifyHub",
+                hub_get_device_health: "Check device staleness; run network diagnostics: ICMP-ping arbitrary IPs (router, NAS, server), traceroute to one IPv4, WAN download speedtest; and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts (max 5 IPv4), pingCount (1-5), tracerouteHost (IPv4), speedtest (bool), identifyHub",
                 hub_get_radio_details: "Z-Wave/Zigbee/Matter radio info + the read-only radio surface (topology, per-node state, status pollers, channel scan, SmartStart, firmware lists). Args: radio (zwave|zigbee|matter, omit for Z-Wave+Zigbee), node_id?, include_topology/status/logs/channel_scan/smartstart/firmware?. Requires Read master",
                 hub_list_captured_states: "List saved device state snapshots",
                 hub_delete_captured_state: "Delete a captured state by stateId, or ALL captured states when stateId is omitted. Args: stateId (optional)"
@@ -1298,7 +1298,7 @@ def getGatewayConfig() {
                 hub_get_debug_logs: "Get MCP internal debug logs (mode='logs') or logging status (mode='status'). Args: mode, level, component (e.g. server/rule), ruleId, limit",
                 hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history + the hub's own health alerts (radio offline, backup failures, low memory, DB bloat, safeMode). Read-only by default; pass recordSnapshot=true to also append a snapshot to the File Manager. Args: recordSnapshot?, trendPoints?",
                 hub_get_memory_history: "Get free OS memory and CPU load history with summary stats. Args: limit",
-                hub_get_device_health: "Check device staleness; run network diagnostics (ICMP-ping arbitrary IPs, traceroute to one IPv4, WAN download speedtest); and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts, pingCount, traceroute, speedtest, identifyHub",
+                hub_get_device_health: "Check device staleness; run network diagnostics (ICMP-ping arbitrary IPs, traceroute to one IPv4, WAN download speedtest); and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts, pingCount, tracerouteHost, speedtest, identifyHub",
                 hub_get_radio_details: "Z-Wave and/or Zigbee radio info (firmware, channel, PAN/home ID, device count), or Matter fabric/device details. Args: radio (zwave|zigbee|matter, omit for Z-Wave+Zigbee)",
                 hub_list_captured_states: "List saved device state snapshots"
             ],
@@ -1340,7 +1340,7 @@ def getGatewayConfig() {
             summaries: [
                 hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
                 hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId, action (rule/actions/stop/start, default rule). rule/actions use RMUtils; stop/start toggle the stopRule button (start also resets private boolean).",
-                hub_set_rule_paused: "Pause or resume an RM rule (RMUtils). Args: ruleId, value (true=pause, false=resume)",
+                hub_set_rule_paused: "Pause or resume an RM rule (RMUtils). Args: ruleId, paused (true=pause, false=resume)",
                 hub_set_rule_private_boolean: "Set an RM rule's private boolean (RMUtils). Args: ruleId, value (bool)",
                 hub_set_native_app: "Create or edit any classic native app (Room Lighting, Button Controller, Basic Rule, Notifier, Groups+Scenes, etc.) — generic upsert. Omit appId to create (appType, name); provide appId to edit via settings/button/walkStep. buttonRule={controllerId, buttonNumber, event} creates a Button Rule through its parent controller. Auto-backs-up before edits. For Rule Machine RULES use hub_set_rule (in hub_manage_rule_machine). Args: appId (omit=create), appType, name, settings|button|walkStep|buttonRule, pageName (opt), stateAttribute (opt), confirm.",
                 hub_delete_native_app: "Delete any classic native app (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm",
@@ -1463,7 +1463,7 @@ def getGatewayConfig() {
                 hub_set_rule: "Create or edit a Rule Machine rule (RM 5.1) — the full authoring surface. Omit appId to create (name; optionally bundle addTriggers/addActions); provide appId to edit via addTrigger / addAction / addRequiredExpression / replaceRequiredExpression / addTriggers / addActions / replaceActions / removeAction / clearActions / moveAction / removeTrigger / modifyTrigger / addLocalVariable / removeLocalVariable / patches / walkStep, or raw settings/button. Auto-backs-up first. Args: appId (omit=create), name, <shortcut>|settings|button, confirm.",
                 hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (RMUtils — RM only)",
                 hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId, action (rule/actions/stop/start, default rule)",
-                hub_set_rule_paused: "Pause or resume an RM rule. Args: ruleId, value (true=pause, false=resume)",
+                hub_set_rule_paused: "Pause or resume an RM rule. Args: ruleId, paused (true=pause, false=resume)",
                 hub_set_rule_private_boolean: "Set an RM rule's private boolean. Args: ruleId, value (bool)",
                 hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, BROKEN markers, configPage errors, multiple-flag corruption. Args: appId, source",
                 hub_list_rule_local_variables: "List a Rule Machine rule's local variables (name/type/value) from state.allLocalVars. Distinct from hub_list_variables (hub globals). Args: appId",
@@ -1491,11 +1491,11 @@ def getGatewayConfig() {
             tools: ["hub_list_dashboards", "hub_get_dashboard", "hub_create_dashboard", "hub_update_dashboard", "hub_delete_dashboard", "hub_clone_dashboard"],
             summaries: [
                 hub_list_dashboards: "List Easy Dashboards (id, name, tile/theme config). Args: pinToken? (optional; resolved automatically)",
-                hub_get_dashboard: "Get one Easy Dashboard's full config by id (list-then-filter). Args: id, pinToken?",
+                hub_get_dashboard: "Get one Easy Dashboard's full config by id (list-then-filter). Args: dashboardId, pinToken?",
                 hub_create_dashboard: "Create an Easy Dashboard. Args: name, deviceIds (>=1), tile toggles?, navigationSelection?, theme?, pins?",
-                hub_update_dashboard: "Replace an Easy Dashboard's config wholesale (pass the FULL config). Args: id, name, deviceIds (>=1), tile toggles?, theme?",
-                hub_delete_dashboard: "Permanently delete an Easy Dashboard (DESTRUCTIVE). Args: id, confirm=true",
-                hub_clone_dashboard: "Clone an Easy Dashboard into a copy (clone-by-value). Args: id"
+                hub_update_dashboard: "Replace an Easy Dashboard's config wholesale (pass the FULL config). Args: dashboardId, name, deviceIds (>=1), tile toggles?, theme?",
+                hub_delete_dashboard: "Permanently delete an Easy Dashboard (DESTRUCTIVE). Args: dashboardId, confirm=true",
+                hub_clone_dashboard: "Clone an Easy Dashboard into a copy (clone-by-value). Args: dashboardId"
             ],
             searchHints: [
                 hub_list_dashboards: "list show easy dashboards dashboard tiles panels touch UI screen wall tablet",
@@ -1511,7 +1511,7 @@ def getGatewayConfig() {
             tools: ["hub_list_dashboards", "hub_get_dashboard"],
             summaries: [
                 hub_list_dashboards: "List Easy Dashboards (id, name, tile/theme config). Args: pinToken? (optional; resolved automatically)",
-                hub_get_dashboard: "Get one Easy Dashboard's full config by id (list-then-filter). Args: id, pinToken?"
+                hub_get_dashboard: "Get one Easy Dashboard's full config by id (list-then-filter). Args: dashboardId, pinToken?"
             ],
             searchHints: [
                 hub_list_dashboards: "list show easy dashboards dashboard tiles panels touch UI screen wall tablet read",
@@ -2341,7 +2341,7 @@ def executeTool(toolName, args) {
         case "hub_update_mcp_settings": return toolUpdateMcpSettings(args)
         case "hub_update_package": return toolUpdatePackage(args)
         case "hub_get_hsm_status": return toolGetHsmStatus()
-        case "hub_set_hsm": return toolSetHsm(args.mode)
+        case "hub_set_hsm": return toolSetHsm(args.armCommand)
         case "hub_set_system_settings": return toolSetSystemSettings(args)
 
         // Captured State Management
@@ -5346,7 +5346,7 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 
 ### hub_create_app (install new app code, then instantiate a running instance)
 
-**installAsUserApp second-step mode** (pass the `codeAppId` from a prior code-install `hub_create_app` call to instantiate already-installed code AND commit the install; mutually exclusive with the code-install args):
+**codeAppId second-step mode** (pass the `codeAppId` from a prior code-install `hub_create_app` call to instantiate already-installed code AND commit the install; mutually exclusive with the code-install args):
 - Submits the config page's Done, firing `installed()`/`initialize()` so the instance's schedules and event subscriptions register.
 - Works for apps whose first page installs with defaults.
 - A required first-page input with no default blocks the auto-Done (same behavior as the Hubitat UI) -- in that case the install cannot be auto-committed.
@@ -5665,7 +5665,7 @@ Updates an existing MCP custom-engine rule in place; only the fields you supply 
 
 ### hub_test_custom_rule
 
-Use this to validate a rule's logic after creating or updating it. Returns per-condition results, `wouldEvaluate`, and the list of actions that would have run. Applies only to MCP custom rules; for native Rule Machine use `hub_manage_native_rules_and_apps`.
+Use this to validate a rule's logic after creating or updating it. Returns per-condition results, `wouldExecute`, and the list of actions that would have run. Applies only to MCP custom rules; for native Rule Machine use `hub_manage_native_rules_and_apps`.
 
 ### hub_export_custom_rule
 
@@ -5730,14 +5730,6 @@ Files stored at http://<HUB_IP>/local/<filename>
 - fields=[...] projects named fields only: currentStates and attributes are the expensive ones (per-device hub reads) -- project those out to save hub CPU; capabilities and commands are in-memory and cheap. id is always included regardless of projection. Unknown field names throw.
 
 **hub_list_device_events:**
-- Default limit 10, recommended max 50
-- Higher values (100+) may cause delays
-
-**hub_get_logs:**
-- Default 100 entries, max 500
-- Use level and source filters to narrow results
-
-**hub_list_device_events:**
 - Default: most-recent events for a device (deviceId + limit)
 - Add hoursBack for up to 7 days of relative history; omit deviceId for location-level events (mode/HSM/hub variable)
 - Add since for an absolute bookmark -- return only events AFTER an exact timestamp (ISO-8601 in the same format the tool emits in date/sinceTimestamp -- a numeric offset with no colon, e.g. 2026-06-23T10:00:00.000-0600; a trailing Z for UTC and a millis-less variant are also accepted -- or epoch milliseconds). since takes precedence over hoursBack; a future since yields an empty list. Both since and hoursBack route to history mode
@@ -5769,9 +5761,9 @@ Files stored at http://<HUB_IP>/local/<filename>
 
 ### hub_get_device_health (device-staleness check + LAN/WAN network probes)
 - Stale check covers only devices authorized for MCP access (the app's selected device list). MCP-managed virtual/child devices (from hub_manage_virtual_device) are a SEPARATE population NOT included here -- list those via hub_list_devices(filter='virtual').
-- pingHosts/traceroute/speedtest are independent read-only network probes, runnable in any combination; each param documents its own mechanics and result location.
+- pingHosts/tracerouteHost/speedtest are independent read-only network probes, runnable in any combination; each param documents its own mechanics and result location.
 - pingHosts: each entry is sent through hubitat.helper.NetworkUtils.ping() and reported under pingResults with reachable/rttAvg/packetLoss. Hostnames are not resolved -- pass IPs only.
-- traceroute: hostnames are rejected -- pass an IP (dotted-quad).
+- tracerouteHost: hostnames are rejected -- pass an IP (dotted-quad).
 - speedtest: fixed 10 MB Hubitat S3 blob, no caller input; a few seconds on a fast link, up to ~90s on slow ones.
 
 ### hub_get_metrics (hub metrics + the hub's own health alerts)
@@ -5911,7 +5903,7 @@ RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/priva
   - action="rule" (default): full evaluation (triggers + conditions + actions)
   - action="actions": run actions only, skip conditions
   - action="stop": stop running actions
-- **hub_set_rule_paused** — pause (value=true) or resume (value=false) a rule; reversible
+- **hub_set_rule_paused** — pause (paused=true) or resume (paused=false) a rule; reversible
 - **hub_set_rule_private_boolean** — set private boolean (Boolean or lowercase "true"/"false" only)
 
 Native CRUD (hub admin-layer, additionally requires the Write master):
