@@ -3000,16 +3000,16 @@ Call `hub_get_tool_guide(section='performance')` for response-shape details, fil
             name: "hub_get_device_attribute",
             description: """Get a device attribute's current value, or block-poll until it reaches an expected value.
 
-One-shot read by default (deviceId + attribute). Provide expectedValue and/or expectedValues to block-poll until currentValue matches, returning immediately on match or when timeoutMs elapses.""",
+One-shot read by default (deviceId + attribute). Provide expectedValue or expectedValues (exactly one) to block-poll until currentValue matches, returning immediately on match or when timeoutMs elapses.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     deviceId: [type: "string", description: "Device ID from hub_list_devices."],
-                    deviceIds: [type: "array", items: [type: "string"], description: "Multi-device poll."],
+                    deviceIds: [type: "array", items: [type: "string"], description: "Array of device IDs for a multi-device poll (mutually exclusive with deviceId; max 20)."],
                     mode: [type: "string", enum: ["any", "all"], description: "Multi-device aggregate.", default: "all"],
                     attribute: [type: "string", description: "Attribute name."],
-                    expectedValue: [type: "string", description: "If set, block-poll until currentValue matches per comparator. Enables poll mode."],
-                    expectedValues: [type: "array", items: [type: "string"], description: "If set, block-poll until currentValue matches per comparator. Enables poll mode."],
+                    expectedValue: [type: "string", description: "If set, block-poll until currentValue matches per comparator (enables poll mode). Single value, e.g. \"72\". Provide exactly one of expectedValue or expectedValues."],
+                    expectedValues: [type: "array", items: [type: "string"], description: "If set, block-poll until currentValue matches per comparator (enables poll mode). For between, two numeric bounds [low, high]. Provide exactly one of expectedValue or expectedValues."],
                     comparator: [type: "string", enum: ["eq", "ne", "gt", "gte", "lt", "lte", "between"], description: "Match operator. Default eq (value in the expected set).", default: "eq"],
                     stableForMs: [type: "integer", description: "Debounce: the match must hold continuously for this many MILLISECONDS before converging. Default 0 (first match).", default: 0, minimum: 0],
                     timeoutMs: [type: "integer", description: "Poll mode only: max wait in MILLISECONDS. Default 5000, min 100, max 60000. Requires expectedValue/expectedValues — passing a timeout without one is rejected.", default: 5000, minimum: 100, maximum: 60000],
@@ -3065,8 +3065,8 @@ If no exact device match: suggest similar devices and get user confirmation befo
                         expectedValues: [type: "array", items: [type: "string"], description: "Awaited set: eq/ne value list (OR), or between's two bounds [low, high]."],
                         comparator: [type: "string", enum: ["eq", "ne", "gt", "gte", "lt", "lte", "between"], description: "Match operator, as on hub_get_device_attribute. Default eq.", default: "eq"],
                         stableForMs: [type: "integer", description: "Debounce ms; match must hold this long before converging. Default 0, < timeoutMs.", default: 0, minimum: 0],
-                        timeoutMs: [type: "integer", description: "Max wait in MILLISECONDS. Default 5000, min 100, max 30000. Capped lower than hub_get_device_attribute's poll because this BLOCKS a hub thread for the full timeout.", default: 5000, minimum: 100, maximum: 30000],
-                        pollIntervalMs: [type: "integer", description: "Re-check interval in MILLISECONDS. Default 250 (higher than hub_get_device_attribute's 200 because a post-command poll follows a write -- wider spacing reduces read contention), min 50, max 5000. Clamped to timeoutMs if larger.", default: 250, minimum: 50, maximum: 5000]
+                        timeoutMs: [type: "integer", description: "Max wait in MILLISECONDS. Default 5000, min 100, max 30000. BLOCKS a hub thread for the full timeout, so keep it tight.", default: 5000, minimum: 100, maximum: 30000],
+                        pollIntervalMs: [type: "integer", description: "Re-check interval in MILLISECONDS. Default 250, min 50, max 5000. Clamped to timeoutMs if larger.", default: 250, minimum: 50, maximum: 5000]
                     ], required: ["attribute"]]
                 ],
                 required: ["deviceId", "command"]
@@ -3105,7 +3105,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
         ],
         [
             name: "hub_list_device_events",
-            description: """Get event history for a device, an APP (app events: events emitted by an app or rule -- automation events), or the location.
+            description: """Get event history for a device, an app or rule (the automation events it emitted), or the location.
 
 Default: most-recent events for a device (deviceId + optional limit).""",
             inputSchema: [
@@ -3114,7 +3114,7 @@ Default: most-recent events for a device (deviceId + optional limit).""",
                     deviceId: [type: "string", description: "Device ID. Mutually exclusive with appId; omit both for location-level events (mode/HSM/hub variable)."],
                     appId: [type: "integer", description: "Installed-app ID for per-app events (what the app/rule emitted). Mutually exclusive with deviceId."],
                     hoursBack: [type: "integer", description: "If set, return up to this many hours of history (max 168 = 7 days) instead of just the most recent events. Ignored when since is given."],
-                    since: [type: ["string", "integer"], description: "Absolute window start -- return only events AFTER this timestamp. ISO-8601 string in the same format this tool emits in `date`/`sinceTimestamp` -- a numeric offset with no colon, e.g. 2026-06-23T10:00:00.000-0600 (a trailing Z for UTC and a millis-less variant are also accepted) -- or epoch milliseconds (integer). Takes precedence over hoursBack. A future timestamp yields an empty list. Routes to history mode like hoursBack."],
+                    since: [type: ["string", "integer"], description: "Absolute window start -- return only events AFTER this timestamp. ISO-8601 in the format this tool emits in `date`/`sinceTimestamp` (a numeric offset with no colon, e.g. 2026-06-23T10:00:00.000-0600) or epoch milliseconds. Takes precedence over hoursBack; a future timestamp yields an empty list."],
                     attribute: [type: "string", description: "Event-name filter. Device: an attribute (e.g. 'switch')."],
                     limit: [type: "integer", description: "Max events to return. Recent mode default 10; history mode default 100 (max 500). Higher values may slow hub.", default: 10]
                 ]
@@ -3163,7 +3163,7 @@ Only modify devices user explicitly requested. Writes require Write master. Call
                         additionalProperties: [type: "string"]],
                     preferences: [type: "object", description: "Device preferences to update. Each value must be an object with 'type' and 'value'. Example: {\"pollInterval\": {\"type\": \"number\", \"value\": 30}}"],
                     showOnHome: [type: "boolean", description: "Show this device on the hub Home page."],
-                    defaultCurrentState: [type: "string", description: "Which attribute appears in the Status column on the Devices/Rooms pages."],
+                    defaultCurrentState: [type: "string", description: "Which attribute appears in the Status column (Devices/Rooms pages), e.g. \"switch\"; \"\" selects None."],
                     tags: [type: "array", description: "Free-form device tags; REPLACES the full set ([] clears all).", items: [type: "string"]]
                 ],
                 required: ["deviceId"]
@@ -3261,14 +3261,16 @@ Pre-flight (mandatory): 1) hub backup <24h (hub_create_backup); 2) preview the b
         ],
         [
             name: "hub_call_device_replace",
-            description: """⚠️ DESTRUCTIVE: Replace a device's hardware while KEEPING its id + all app/rule references.""",
+            description: """⚠️ DESTRUCTIVE: Replace a device's hardware, KEEPING its id + all app/rule references.
+
+Two-step: list_options=true to list candidates, then apply with confirm=true. Pre-flight: backup <24h (hub_create_backup) + user OK.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     old_device_id: [type: "string", description: "Device to replace; its id is preserved."],
                     new_device_id: [type: "string", description: "Compatible replacement device."],
                     list_options: [type: "boolean", description: "Read-only: list compatible replacement candidates (no confirm)."],
-                    confirm: [type: "boolean", description: "REQUIRED to apply (omit for list_options): must be true."]
+                    confirm: [type: "boolean", description: "REQUIRED to apply (omit for list_options): confirms backup <24h + user approval."]
                 ],
                 required: ["old_device_id"]
             ],
@@ -3297,7 +3299,7 @@ Pre-flight (mandatory): 1) hub backup <24h (hub_create_backup); 2) preview the b
         ],
         [
             name: "hub_create_device",
-            description: """Create a device from a driver TYPE id (the 'id' from hub_list_drivers(include='all')). Requires Write master + confirm.""",
+            description: """Create a device from a driver TYPE id. Requires Write master + confirm. For LAN/integration/software drivers, NOT radio pairing (Z-Wave/Zigbee/Matter); for virtual devices use hub_manage_virtual_device.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3334,8 +3336,8 @@ Pre-flight (mandatory): 1) hub backup <24h (hub_create_backup); 2) preview the b
                 properties: [
                     query: [type: "string", description: "Free-text match across brand, name, product number, device type, and driver name."],
                     brand: [type: "string", description: "Filter by brand (substring, case-insensitive)."],
-                    protocol: [type: "string", description: "Filter by protocol (substring)."],
-                    deviceType: [type: "string", description: "Filter by device type (substring)."],
+                    protocol: [type: "string", description: "Filter by protocol (substring), e.g. 'Zigbee'."],
+                    deviceType: [type: "string", description: "Filter by device type (substring), e.g. 'Dimmer'."],
                     includeInstructions: [type: "boolean", description: "Include join/exclude/factory-reset instructions (HTML stripped) + notes. Default false (summaries)."],
                     cursor: [type: "string", description: "Pagination cursor. Pass \"\" (or omit) for the first page; iterate nextCursor."]
                 ]
