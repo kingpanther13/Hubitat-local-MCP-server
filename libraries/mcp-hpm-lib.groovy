@@ -638,8 +638,6 @@ def _getAllToolDefinitions_partHpm() {
             name: "hub_list_hpm_packages",
             description: """List all packages tracked by Hubitat Package Manager (HPM). Returns the installed name, version, beta flag, author, and the full component inventory (apps, drivers, files) as HPM last recorded at install or update time.
 
-If hpmAppId is omitted, the tool auto-discovers HPM by scanning the installed-app tree for type='Hubitat Package Manager'; pass hpmAppId explicitly to skip that call.
-
 Set includeDrift=true to ALSO cross-reference tracked state against what is actually installed and attach a `drift` block (missing-required / orphan signals). Call `hub_get_tool_guide(section='builtin_app_tools')` for the full drift-signal taxonomy, response-field reference, and caveats.
 
 Requires Read master. HPM itself must be installed.""",
