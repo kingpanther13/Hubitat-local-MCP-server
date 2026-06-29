@@ -1,12 +1,12 @@
 {
     "packageName": "MCP Rule Server",
     "author": "kingpanther13",
-    "version": "3.1.0",
+    "version": "3.1.1",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-06-29",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/README.md",
     "communityLink": "",
-    "releaseNotes": "v3.1.0 - 2026-06-29\n- refactor: shrink flat tools/list catalog + Anthropic best-practice tool audit (#296) (#331)\n  - Tool definitions streamlined: tighter descriptions and clearer parameter schemas, with deep reference detail available through `hub_get_tool_guide`. Frees significant headroom in the flat tool list.\n  - Several tool parameters were renamed for consistency (e.g. `hub_set_hsm` `mode`→`armCommand`, the dashboard tools `id`→`dashboardId`, `hub_delete_item` `id`→`item_id`). MCP clients pick these up automatically on the next tool-list refresh.",
+    "releaseNotes": "v3.1.1 - 2026-06-29\n- feat: add bypassDeviceAllowlist toggle for full device-tool parity on unlisted devices (#330)\n  - New **Bypass Device Allowlist** setting (default OFF). When enabled, the MCP server can read, command, reconfigure, and read events for **any** device on the hub by id — ignoring the device-selection list — for automated testing or whole-hub control. Settable from the app's Device Access page or via `hub_update_mcp_settings`. This removes the device-selection boundary; enable it only if you intend to expose the whole hub.\n\nv3.1.0 - 2026-06-29\n- refactor: shrink flat tools/list catalog + Anthropic best-practice tool audit (#296) (#331)\n  - Tool definitions streamlined: tighter descriptions and clearer parameter schemas, with deep reference detail available through `hub_get_tool_guide`. Frees significant headroom in the flat tool list.\n  - Several tool parameters were renamed for consistency (e.g. `hub_set_hsm` `mode`→`armCommand`, the dashboard tools `id`→`dashboardId`, `hub_delete_item` `id`→`item_id`). MCP clients pick these up automatically on the next tool-list refresh.",
     "apps": [
         {
             "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
