@@ -717,15 +717,18 @@ def _getAllToolDefinitions_partAppCloner() {
     return [
         [
             name: "hub_clone_native_app",
-            description: """Clone any classic native automation app (RM rule, Room Lighting, Button Controller, Basic Rule, Notifier, etc.) using Hubitat's first-party appCloner system app. Lower-overhead alternative to rebuilding via the wizard — clone an existing rule that has the shape you want, then surgically edit fields via hub_set_rule (RM rules) or hub_set_native_app (other classic apps). Preserves the full rule shape (state.actNdx, conditions, expressions, IF/THEN/ELSE positional arrays). Drives the appCloner's 4-step wizard (cloneRuleButton → confirmation → importRule sub-page → importNow); the actual clone fires in tens of seconds for typical rules. Returns newAppId on success. Requires the Write master + confirm=true (+ a recent backup).""",
+            description: """Clone any classic native automation app (RM rule, Room Lighting, Button Controller, Basic Rule, Notifier, etc.) using Hubitat's first-party appCloner system app. Lower-overhead alternative to rebuilding via the wizard — clone an existing rule that has the shape you want, then surgically edit fields via hub_set_rule (RM rules) or hub_set_native_app (other classic apps). Preserves the full rule shape (conditions, expressions, IF/THEN/ELSE structure). The clone completes in tens of seconds for typical rules. Returns newAppId on success. Requires the Write master + confirm=true (+ a recent backup).""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    sourceAppId: [type: "integer", description: "Installed-app ID of the rule/app to clone. (alias: appId)"],
-                    appId: [type: "integer", description: "Alias for sourceAppId."],
+                    sourceAppId: [type: "integer", description: "Installed-app ID of the rule/app to clone. (alias: appId) Either sourceAppId or appId is required."],
+                    appId: [type: "integer", description: "Alias for sourceAppId. Either sourceAppId or appId is required."],
                     newName: [type: "string", description: "Label for the new cloned app. If omitted, the cloner default ('<source-label> clone') is kept."],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
+                // "sourceAppId OR appId" can't be a schema-level anyOf (Anthropic's
+                // input_schema validator rejects top-level anyOf/oneOf/allOf); enforced
+                // at runtime in toolCloneNativeApp. Both param descriptions document the OR.
                 required: ["confirm"]
             ],
             outputSchema: [
@@ -744,7 +747,7 @@ def _getAllToolDefinitions_partAppCloner() {
         ],
         [
             name: "hub_export_native_app",
-            description: """Export any classic native automation app to its canonical JSON shape via Hubitat's first-party appCloner. The exported JSON is the same format Hubitat's UI 'Export' button produces — a self-contained document with appReplacements + deviceReplacements + the full rule state — that round-trips cleanly through hub_import_native_app. Use for: (1) backup before risky edits, (2) edit-as-text workflows that materialize the rule, mutate the JSON, and re-import as a new rule, (3) hub-to-hub transfer. Pass saveAs to also write the JSON to the hub's File Manager (e.g. for HPM-style distribution). Requires the Write master (it instantiates a cloner app and persists, so it is a write operation; no confirm/backup required).""",
+            description: """Export any classic native automation app to its canonical JSON shape via Hubitat's first-party appCloner. The exported JSON is the same format Hubitat's UI 'Export' button produces — a self-contained document that round-trips cleanly through hub_import_native_app. Use for: (1) backup before risky edits, (2) edit-as-text workflows that materialize the rule, mutate the JSON, and re-import as a new rule, (3) hub-to-hub transfer. Pass saveAs to also write the JSON to the hub's File Manager (e.g. for HPM-style distribution). Requires the Write master (it instantiates a cloner app and persists, so it is a write operation; no confirm/backup required).""",
             inputSchema: [
                 type: "object",
                 properties: [
