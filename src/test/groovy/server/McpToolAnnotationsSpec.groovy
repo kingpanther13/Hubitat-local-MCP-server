@@ -708,18 +708,22 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         secondDev.description.contains('List all devices')
     }
 
-    def "leaf tool definitions carry no [[FLAT_TRIM]] markers -- deferred content lives in the served guide (#296)"() {
-        // #296 migrated every leaf tool's deferred ([[FLAT_TRIM]]) content into the served
-        // getToolGuideSections() guide, so both the flat and full def paths are marker-free.
-        // (The one surviving FLAT_TRIM -- hub_set_rule's setVariable.fromDevice in its
-        // probe-built fat self-gateway schema -- is NOT part of getAllToolDefinitions().)
-        // The stripFlatTrim helper's strip/non-mutation behaviour is covered by its own spec;
-        // this guards against a leaf tool re-introducing FLAT_TRIM instead of using the guide.
+    def "flat-mode strips [[FLAT_TRIM]] advanced blocks; the full defs keep them (gateway-rich, flat-small) (#296)"() {
+        // #296 keeps advanced/optional detail in the tool defs wrapped in [[FLAT_TRIM]]:
+        // gateway mode (full defs) shows it (BP-rich, no flat budget there); flat mode strips
+        // it (small catalog); the served getToolGuideSections() guide carries the same content
+        // so flat-mode callers can still reach it via hub_get_tool_guide. This pins the strip:
+        // the full defs MUST carry markers and the flat catalog MUST leak none.
         given:
         def markers = { defs -> defs.sum { groovy.json.JsonOutput.toJson(it).count('[[FLAT_TRIM]]') } ?: 0 }
 
-        expect: 'no [[FLAT_TRIM]] markers leak into the full or flat def paths'
-        markers(script.getAllToolDefinitions()) == 0
+        when:
+        settingsMap.useGateways = false
+
+        then: 'the full defs carry FLAT_TRIM-wrapped advanced content (kept for gateway / BP)'
+        markers(script.getAllToolDefinitions()) > 0
+
+        and: 'flat-mode strips every marker -- the wrapped content is gone from the flat wire'
         markers(script.getToolDefinitions()) == 0
     }
 }

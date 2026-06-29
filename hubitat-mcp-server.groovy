@@ -5494,11 +5494,19 @@ For replace/add every id is validated against the full hub device list (discover
 - `enableDeveloperMode` -- lockout protection; must stay UI-only to disable.
 - `disabled_tools` / `disabled_gateways` -- could self-disable this tool.
 
+**Schema refresh / reconnect.** Changing an `enable*` toggle, `useGateways`, or `publishOutputSchemas` reshapes `tools/list`; changing `selectedDevices` changes which devices are visible. So MCP clients may need to reconnect to refresh cached schemas / device visibility.
+
 ### hub_update_package
 
 Deploys every declared library bundle + app from the manifest at `ref`, saving the running self app LAST (its recompile can drop the response, #237). Does NOT touch app instances, undeclared drivers, or anything outside this package's manifest.
 
 **Brick-safe:** if ANYTHING before the self app save fails (app/manifest fetch, an unresolved app class, a bundle install, a non-self app), it aborts BEFORE touching the self app -- the running server is left exactly as-is and still updatable via hub_update_app, the always-available escape hatch. Self-modification is gated by this tool's own enableDeveloperMode check (it deploys by Apps Code CLASS id, so hub_update_app's instance-id self-update guard does not fire here).
+
+**Why an unmerged PR installs:** plain Hubitat Package Manager Repair reads only the PUBLISHED manifest, so it can't reach an unmerged PR's artifacts. This tool instead anchors to `packageManifest.json` AT `ref`.
+
+**Developer Mode visibility:** when Developer Mode is off the tool is hidden from `tools/list` entirely (catalog-hidden, not merely runtime-refused).
+
+**`baseUrl`:** per-call source URLs are built as `<baseUrl>/<ref>/<path>` (`baseUrl` carries no trailing slash, no ref/path). It exists to point at forks / CI branches on a different remote.
 ''',
 
         virtual_devices: '''## Virtual Device Types
@@ -5596,6 +5604,7 @@ NOTE: this section describes the LEGACY custom MCP rule engine (the custom_* too
 - Multi-device: {"type":"device_event","deviceIds":["id1","id2"],"attribute":"switch","value":"on","matchMode":"all"}
 - button_event: {"type":"button_event","deviceId":"id","action":"pushed|held|doubleTapped","buttonNumber":1}
 - time: {"type":"time","time":"08:30"} or {"type":"time","sunrise":true,"offset":30} or {"type":"time","sunset":true,"offset":-15} — offset in minutes (positive=after, negative=before)
+- sunrise / sunset / sun: standalone trigger-`type` shortcuts that normalize to a time trigger (normalizeTrigger maps "sun" to a time trigger); equivalent to the canonical {"type":"time","sunrise":true} form above
 - periodic: {"type":"periodic","interval":5,"unit":"minutes|hours|days"}
 - mode_change: {"type":"mode_change","fromMode":"Away","toMode":"Home"} — both optional
 - hsm_change: {"type":"hsm_change","status":"armedAway|armedHome|armedNight|disarmed|intrusion"} — optional
@@ -5644,6 +5653,10 @@ NOTE: this section describes the LEGACY custom MCP rule engine (the custom_* too
 - restore_state: Restore previously captured states — {stateId? (optional, default "default")}
 - send_notification: Send a notification to a device — {deviceId, message}
 - variable_math: Arithmetic on variables — {variableName, operation: add|subtract|multiply|divide|modulo|set, operand, scope: local|global}
+
+### hub_get_custom_rule
+
+Read-only inspect of an existing custom rule. It stays usable when the Custom Rule Engine toggle is OFF (read-only mode): you can still list and inspect existing custom rules, while create/modify/delete are hidden.
 
 ### hub_create_custom_rule
 
@@ -5703,7 +5716,25 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 ### Rule Backups (Automatic)
 - hub_delete_custom_rule auto-backs up to File Manager as mcp_rule_backup_<name>_<timestamp>.json
 - Restore via: hub_read_file → hub_import_custom_rule
-- Skip backup: set testRule=true when creating/updating''',
+- Skip backup: set testRule=true when creating/updating
+
+### hub_create_backup
+
+Also sets the hub's automatic-backup schedule. Pass a `schedule` object {hour 0-23, minute 0-59, localBackupFrequency, cloudBackupFrequency (days; enum 0,1,2,3,5,7,14,21,28; 0=off)}. `scheduleOnly=true` (with a schedule) sets the schedule only and creates no backup. Omitted schedule fields are read-merged (keep their current value). If cloud backup is or stays enabled you MUST pass `cloudBackupPassword` (the hub does not expose it for read-back), or pass `cloudBackupFrequency=0` to disable cloud backup -- otherwise the call is refused (a wholesale write would blank the password).
+
+### hub_list_backups
+
+`scope=source` (default) lists auto-created code backups, each with a `backupKey`. `scope=hub_local` / `hub_cloud` / `hub` / `all` return whole-hub DB backups under `hubLocalBackups` / `hubCloudBackups`. A local backup's `name` and a cloud backup's `path` feed hub_restore_backup and hub_delete_backup.
+
+### hub_get_backup
+
+Reads the saved source from one backup -- use it to inspect or diff a prior version before restoring (to re-apply, use hub_restore_backup, not this tool). Large sources are omitted from the response (`sourceTooLargeForResponse=true`) with a File Manager download link instead.
+
+### hub_restore_backup
+
+- `scope=source` (default) -- restore an app/driver/rule by `backupKey` (for deleted code use hub_create_*; deleted rules DO recreate).
+- `scope=hub_local` (`fileName`) and `scope=hub_cloud` (`path` + `cloudBackupPassword`) -- restore the WHOLE hub DB and REBOOT the hub.
+- `scope=hub_uploaded` -- upload an external `.lzf` fetched from `backupUrl`, then restore (open-world).''',
 
         file_manager: '''## File Manager
 
@@ -5717,7 +5748,16 @@ Files stored at http://<HUB_IP>/local/<filename>
 
 **Chunked reading:**
 - Use offset and length for files >60KB
-- Each chunk must be <60KB''',
+- Each chunk must be <60KB
+- Follow `nextOffset` while `hasMore` is true to read the next chunk
+
+### hub_list_files
+
+Use to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. **Cursor pagination:** page size 100 -- omit the cursor for an unbounded list; pass "" for the first page and iterate `nextCursor`.
+
+### hub_read_file
+
+Use after hub_list_files to fetch a named file (config, backup, exported rule/app, CSV). For files >60KB use the chunked-reading loop above.''',
 
         performance: '''## Performance Tips
 
@@ -5765,6 +5805,7 @@ Files stored at http://<HUB_IP>/local/<filename>
 - pingHosts: each entry is sent through hubitat.helper.NetworkUtils.ping() and reported under pingResults with reachable/rttAvg/packetLoss. Hostnames are not resolved -- pass IPs only.
 - tracerouteHost: hostnames are rejected -- pass an IP (dotted-quad).
 - speedtest: fixed 10 MB Hubitat S3 blob, no caller input; a few seconds on a fast link, up to ~90s on slow ones.
+- **Cursor pagination (staleDevices):** page size 100. Omit the cursor to get all stale devices in one response (subject to the response-size guard). unknownDevices and healthyDevices are always returned in full alongside the page.
 
 ### hub_get_metrics (hub metrics + the hub's own health alerts)
 - `current` snapshot fields: timestamp, timestampEpoch, freeMemoryKB, internalTempC, databaseSizeKB, uptimeSeconds, uptimeFormatted. `current` also carries locally-derived warning notes when thresholds are crossed: memoryWarning (<50 MB free), temperatureWarning (>70 °C), databaseWarning (>500 MB) — with softer memoryNote/temperatureNote variants below those thresholds.
@@ -5785,10 +5826,19 @@ Files stored at http://<HUB_IP>/local/<filename>
 **hub_list_captured_states (list saved device-state snapshots):**
 - Storage limit is configurable (default 20; `maxCapturedStates` setting). When the store is full, the oldest snapshot is auto-deleted to make room for a new capture.
 - The response reports `maxLimit` (the retention cap) and, when near/at the cap, a `warning` field: "Approaching limit" within 4 slots of the cap, "At maximum capacity" once full (the next capture will evict the oldest).
+- **Cursor pagination:** page size 50. Omit the cursor for an unbounded list; for paging pass an empty string for the first page and iterate `nextCursor`.
 
 **hub_call_gc (force JVM garbage collection):**
 - Returns free memory before and after GC in KB (`beforeFreeMemoryKB`, `afterFreeMemoryKB`).
 - Reports the reclaimed amount as `deltaKB` plus a `memoryReclaimed` boolean (true when free memory increased); both are present only when both readings succeeded.
+
+### hub_delete_debug_logs
+
+Clears ONLY the MCP debug-log buffer (the in-app state log read by hub_get_debug_logs). It does NOT touch Hubitat system logs (hub_get_logs) or captured device states (hub_delete_captured_state). Use it to reset that buffer before reproducing an issue, or to free space.
+
+### hub_report_issue
+
+Rule routing: a legacy custom MCP rule-engine rule id goes in the `ruleId` param; a native Rule Machine rule/app goes in the `nativeAppId` param. They are different engines -- do not cross them (each scopes the report's logs to its own engine).
 
 
 ### hub_list_devices
@@ -5986,6 +6036,8 @@ This is the generic upsert tool for ANY classic SmartApp. It is separate from th
 
 **RM authoring shortcuts and `walkStep` are EDIT-only here.** `walkStep` and the RM authoring shortcuts also work on this tool, but ONLY on EDIT (appId present) for RM-wire-format classic apps; the CREATE arm (no appId) honors NONE of them and rejects rather than silently dropping them. `walkStep` has the same shape as `hub_set_rule`'s `walkStep` — see `hub_get_tool_guide(section='set_rule_reference')`. For Rule Machine RULES use `hub_set_rule`.
 
+**CREATE is limited to the 5 enum `appType`s** (`rule_machine` / `button_controller` / `groups_scenes` / `notifier` / `basic_rule`). Other classic apps (e.g. Room Lighting, Scenes) are EDIT/DELETE-only via `appId` — there is NO create path for them here.
+
 ### hub_get_rule_health
 
 Rule Machine, Visual Rules Builder, and the other supported classic apps (Button Controller, Basic Rule) share RM's configPage protocol.
@@ -6037,6 +6089,32 @@ The `force` flag selects which hub admin-layer endpoint performs the delete:
 - `hpmAppId` pointing at a non-HPM app -> `IllegalArgumentException` disclosing the actual app type.
 
 **Drift mode (`includeDrift=true`):** off by default; enabling it adds 1-2 hub calls.
+
+**Cursor pagination:** page size 25. Each package entry carries its full app/driver/file inventory, so individual entries can be large.
+
+### hub_list_device_dependents
+
+Referencing app types it can surface include: Room Lighting instances, Rule Machine rules, Groups and Scenes, Mode Manager, dashboards, Maker API, and the Echo Skill.
+
+### hub_clone_native_app
+
+- Preserves the full rule shape (conditions, expressions, IF/THEN/ELSE structure).
+- A lower-overhead alternative to rebuilding via the wizard: clone an existing rule that already has the shape you want, then adjust the copy.
+- `newName` defaults to `<source-label> clone` when omitted.
+
+### hub_export_native_app
+
+Exports to the same JSON format Hubitat's UI Export button produces. Three use cases:
+- Backup before risky edits.
+- Edit-as-text: materialize a rule to JSON, mutate it, then re-import as a new rule via hub_import_native_app.
+- Hub-to-hub transfer.
+
+`saveAs` writes the JSON to File Manager (e.g. for HPM-style distribution). Export instantiates a cloner app and persists it, so it counts as a write.
+
+### hub_import_native_app
+
+- Pair with hub_export_native_app for backup/restore workflows.
+- `parentHintAppId` seeds the cloner instance from an existing rule under the target parent (e.g. another RM rule for an RM import). It has no semantic effect on the imported rule beyond placing it under the same parent.
 ''',
 
         set_rule_reference: '''## `hub_set_rule` capability reference
@@ -6347,6 +6425,11 @@ VRB rules are much easier to author than Rule Machine (each rule is one clean JS
 Editing an existing rule (`appId` supplied):
 - The `definition` you pass replaces the rule **wholesale** (a full replacement of the whole rule, not a partial patch).
 - Passing `name` together with `appId` renames the rule.
+
+### hub_delete_visual_rule
+
+- TYPE-GATED: it refuses appIds that are not VRB rules and routes them to hub_delete_native_app (for RM rules / other classic apps).
+- The delete response RETURNS the pre-delete rule definition (`predeleteDefinition`) for recovery via hub_set_visual_rule.
 '''
     ,
         variables: '''## Hub Variables
@@ -6382,9 +6465,13 @@ Useful for sweeping orphaned `BAT_E2E_*` artifacts after CI runs, removing stale
 
 **Why the reference-safety refusal matters:** the tool refuses by default when a child rule app references the variable because deletion would silently break those rules — null lookups → false conditions, and a literal `%varname%` left in substitutions. Pass `force=true` to proceed anyway after acknowledging the breakage.
 
+### hub_list_variable_changes
+
+Audit/debug what changed a hub variable and when, without polling hub_get_variable. This buffer caps at 200 entries and clears on hub restart. For the hub's authoritative, complete, restart-surviving change log, call hub_list_device_events with no deviceId (location-event mode).
+
 ### hub_create_connector
 
-For Number/Decimal vars, Hubitat shows a connector-type chooser (Dimmer/Variable/etc.); pass `connectorType` to pick, default `Variable`. For String/Boolean/DateTime vars, the chooser is skipped.
+For Number/Decimal vars, Hubitat shows a connector-type chooser (Dimmer/Variable/etc.); pass `connectorType` to pick, default `Variable`. For String/Boolean/DateTime vars, the chooser is skipped. The full Number/Decimal `connectorType` set is: Dimmer, Variable, Volume, ColorTemp, Humidity, Illuminance.
 '''
     ,
         dashboards: '''## Dashboards
@@ -6428,6 +6515,41 @@ Devices are NOT deleted. Write op; needs `confirm=true` + a backup within 24h.
 ### hub_clone_dashboard
 
 Write op. Copies the source dashboard's config into a new dashboard (theme may default).
+'''
+    ,
+        bundles: '''## Bundles
+
+Reference for the bundle tools (hub_install_bundle, hub_list_bundles, hub_delete_bundle, hub_export_bundle). A bundle is a packaged .zip of apps, drivers, and/or libraries.
+
+### hub_install_bundle
+
+- **Verify the install** afterward with hub_list_libraries / hub_get_source.
+- **Endpoint routing:** uses /bundle2/uploadZipFromUrl on firmware >= 2.3.8.108, else the legacy /bundle/uploadZipFromUrl (the chosen path is also surfaced in the result's `endpoint` field).
+
+### hub_list_bundles
+
+Each entry: id, name, namespace, a private flag, and a `contains` summary of the apps/drivers/libraries the bundle delivers.
+
+### hub_export_bundle
+
+`saveAs` filename sanitization: `.zip` is appended if missing, and non-filename characters are replaced with `_`. The result returns the final `fileName`.
+'''
+    ,
+        rooms: '''## Rooms
+
+Reference for the room tools (hub_list_rooms, hub_get_room, hub_create_room, hub_update_room, hub_delete_room). hub_delete_room's destructive behaviour is under "Destructive Write Tools".
+
+### hub_get_room
+
+A device the MCP server cannot reach is returned with `accessible=false` and no `currentStates` (label "(device not accessible via MCP)").
+
+### hub_create_room
+
+To move EXISTING devices into an existing room, set each device's room via hub_update_device -- do NOT create a room for that.
+
+### hub_update_room
+
+Renaming a room preserves device assignments, but may require updating automations/dashboards that reference the room by name.
 '''
     ]
 }

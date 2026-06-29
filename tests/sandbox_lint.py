@@ -1403,6 +1403,8 @@ def check_tool_guide_pointers(src_override: str | None = None,
         "visual_rule_reference": "Visual Rules Builder reference",
         "variables": "Hub Variables",
         "dashboards": "Dashboards",
+        "bundles": "Bundles",
+        "rooms": "Rooms",
     }
     for key in section_keys:
         hint = key_to_heading_hint.get(key)

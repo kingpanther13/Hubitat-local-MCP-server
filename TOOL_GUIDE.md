@@ -980,3 +980,11 @@ Reference for the hub-variable tools (per-tool details migrated from tool descri
 ## Dashboards
 
 Reference for the dashboard tools (per-tool details migrated from tool descriptions).
+
+## Bundles
+
+Reference for the bundle tools (per-tool details migrated from tool descriptions).
+
+## Rooms
+
+Reference for the room tools (per-tool details migrated from tool descriptions).
