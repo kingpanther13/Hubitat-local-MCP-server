@@ -292,17 +292,19 @@ def _getAllToolDefinitions_partVirtualDevices() {
         // Virtual Device Management
         [
             name: "hub_manage_virtual_device",
-            description: """Create or delete MCP-managed virtual devices. Requires Write master + confirm.
-
-action="create": Provide EITHER deviceType (built-in virtual types, see enum) OR customDriver={namespace, name} (user-installed driver), plus deviceLabel and optional deviceNetworkId. The two are mutually exclusive.[[FLAT_TRIM]] Supplying both (including a blank/whitespace deviceType alongside customDriver) is an error. Create response shape: {success, message, tips, device: {id, name, label, deviceNetworkId, driverNamespace, driverType, typeName (deprecated alias for driverType -- prefer driverType), capabilities, commands, attributes}}. Built-in deviceType not-found surfaces as a platform error (isError); customDriver not-found surfaces as an input error (-32602) with a hub_list_drivers hint.[[/FLAT_TRIM]]
-action="delete": Provide deviceNetworkId of device to delete. Use hub_list_devices(filter='virtual') to find DNIs.[[FLAT_TRIM]] Delete response: {success, deviceId, deviceNetworkId, deviceLabel, message}.[[/FLAT_TRIM]]""",
+            description: """Create or delete MCP-managed virtual devices. Requires Write master + confirm; see hub_get_tool_guide(section='virtual_devices') for device types and response shapes.
+[[FLAT_TRIM]]
+action="create": provide EITHER deviceType (built-in virtual type, see enum) OR customDriver={namespace, name} (user-installed driver) -- exactly one -- plus deviceLabel; deviceNetworkId auto-generates when omitted. Discover custom-driver namespace+name via hub_read_apps_code(tool="hub_list_drivers").
+action="delete": provide the target deviceNetworkId.
+[[/FLAT_TRIM]]
+""",
             inputSchema: [
                 type: "object",
                 properties: [
                     action: [type: "string", description: "Operation to perform", enum: ["create", "delete"]],
-                    deviceType: [type: "string", description: "Built-in virtual device driver type (for create). Mutually exclusive with customDriver -- provide exactly one.",
+                    deviceType: [type: "string", description: "Built-in virtual driver type for create; mutually exclusive with customDriver.",
                         enum: getSupportedVirtualDeviceTypes()],
-                    customDriver: [type: "object", description: "Alternative to deviceType: a user-installed custom driver (mutually exclusive with deviceType).[[FLAT_TRIM]] Both fields required. Use hub_list_drivers to find available drivers.[[/FLAT_TRIM]]",
+                    customDriver: [type: "object", description: "User-installed custom driver for create; mutually exclusive with deviceType.",
                         properties: [
                             namespace: [type: "string", description: "Driver namespace (e.g., 'level99-vesync')."],
                             name: [type: "string", description: "Driver type name as registered on the hub (e.g., 'Levoit Classic 200S Humidifier')."]
@@ -310,7 +312,7 @@ action="delete": Provide deviceNetworkId of device to delete. Use hub_list_devic
                         required: ["namespace", "name"]
                     ],
                     deviceLabel: [type: "string", description: "Display label (required for create)"],
-                    deviceNetworkId: [type: "string", description: "Device network ID. Auto-generated for create if omitted. REQUIRED for delete."],
+                    deviceNetworkId: [type: "string", description: "Device network ID; auto-generated on create when omitted, REQUIRED for delete (find via hub_list_devices(filter='virtual'))."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true to confirm the operation."]
                 ],
                 required: ["action", "confirm"]

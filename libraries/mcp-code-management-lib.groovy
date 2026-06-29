@@ -934,29 +934,29 @@ def toolInstallApp(args) {
     }
     requireDestructiveConfirm(args.confirm)
 
-    // installAsUserApp mode: create a running instance from already-installed code.
+    // codeAppId (installAsUserApp) mode: create a running instance from already-installed code.
     // Closes the "hub_create_app installs code but not an instance" gap. Mutually
     // exclusive with code-install args -- callers can't combine the two in one
     // call (avoids confusion about which appId the response refers to).
-    if (args.installAsUserApp != null) {
+    if (args.codeAppId != null) {
         if (args.source || args.sourceFile || args.importUrl) {
             throw new IllegalArgumentException(
-                "installAsUserApp is mutually exclusive with source/sourceFile/importUrl. " +
+                "codeAppId is mutually exclusive with source/sourceFile/importUrl. " +
                 "Use two calls: (1) hub_create_app(source|sourceFile|importUrl, confirm:true) " +
                 "to install the code, then " +
-                "(2) hub_create_app(installAsUserApp:<codeAppId>, confirm:true) " +
+                "(2) hub_create_app(codeAppId:<codeAppId>, confirm:true) " +
                 "to create the running instance."
             )
         }
         def codeAppId
-        try { codeAppId = args.installAsUserApp as Integer }
+        try { codeAppId = args.codeAppId as Integer }
         catch (Exception e) {
-            throw new IllegalArgumentException("installAsUserApp must be a positive integer (got '${args.installAsUserApp}')")
+            throw new IllegalArgumentException("codeAppId must be a positive integer (got '${args.codeAppId}')")
         }
         // Range-check at the caller so _createUserAppInstance can keep a clean
         // "always returns an envelope, never throws" contract.
         if (codeAppId == null || codeAppId < 1) {
-            throw new IllegalArgumentException("installAsUserApp must be a positive integer (got '${args.installAsUserApp}')")
+            throw new IllegalArgumentException("codeAppId must be a positive integer (got '${args.codeAppId}')")
         }
         return _createUserAppInstance(codeAppId)
     }
@@ -1701,13 +1701,13 @@ def toolUpdateDriverCode(args) {
 
 // Unified delete for the hub_delete_item tool: dispatches on type to the shared
 // app/driver endpoint helper or the library-specific handler. Public param is
-// `id`; mapped to the per-type id the helpers expect.
+// `item_id`; mapped to the per-type id the helpers expect.
 def toolDeleteItem(args) {
     def type = args.type
     if (!(type in ["app", "driver", "library"])) {
         throw new IllegalArgumentException("type is required and must be one of: app, driver, library")
     }
-    def id = (args.id != null) ? args.id : (type == "app" ? args.appId : (type == "driver" ? args.driverId : args.libraryId))
+    def id = (args.item_id != null) ? args.item_id : (type == "app" ? args.appId : (type == "driver" ? args.driverId : args.libraryId))
     if (type == "library") {
         return toolDeleteLibrary(args + [libraryId: id])
     }
@@ -2466,24 +2466,14 @@ def _getAllToolDefinitions_partCodeManagement() {
         // get_hub_details merged into hub_get_info (core tool)
         [
             name: "hub_list_apps",
-            description: """List apps on the hub. scope selects what kind of "apps" to return.
-
-scope='instances' (default) — running app INSTANCES (built-in + user) with parent/child tree. Requires the Read master.[[FLAT_TRIM]]
-  Each app entry returns: id, name, type, disabled, user (true=user-installed Groovy app, false=built-in), hidden, parentId (null for top-level), hasChildren, childCount. Per-app event history: hub_list_device_events with appId.
-  Use filter to narrow results: 'all' (default), 'builtin' (Hubitat native apps), 'user' (custom Groovy apps), 'disabled' (paused/disabled), 'parents' (apps with children like Rule Machine, Room Lighting, Groups and Scenes), 'children' (individual rules, scenes, etc.).
-  filter, includeHidden, and cursor apply to this mode.[[/FLAT_TRIM]]
-
-scope='types' — installed app CODE LIBRARY / available app TYPES (the app code installed on the hub, not running instances). Requires Read master.[[FLAT_TRIM]]
-  filter and includeHidden are ignored in this mode.[[/FLAT_TRIM]]
-
-Pass cursor to page through the list at 50 per page when the full response would exceed the hub's 128KB JSON-RPC cap.""",
+            description: """List apps on the hub — running instances or installed app code/types (see scope). Per-app event history: hub_list_device_events with appId. Requires the Read master.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    scope: [type: "string", enum: ["instances", "types"], description: "What to list. 'instances' (default) = running app instances with parent/child tree (Read master). 'types' = installed app code library / available app types (Read master).", default: "instances"],
-                    filter: [type: "string", enum: ["all", "builtin", "user", "disabled", "parents", "children"], description: "scope='instances' only: filter apps by category. Default: all"],
+                    scope: [type: "string", enum: ["instances", "types"], description: "What to list. 'instances' (default) = running app instances with parent/child tree; 'types' = installed app code library / available app types.", default: "instances"],
+                    filter: [type: "string", enum: ["all", "builtin", "user", "disabled", "parents", "children"], description: "scope='instances' only: category filter."],
                     includeHidden: [type: "boolean", description: "scope='instances' only: include hidden apps (typically Hubitat internal). Default: false", default: false],
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded (subject to 120KB guard).[[FLAT_TRIM]] Pass the nextCursor value from a prior call to fetch the next page (page size 50). Empty string starts at the first page.[[/FLAT_TRIM]]"]
+                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded (subject to 120KB guard); pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
             ],
             outputSchema: [
@@ -2514,12 +2504,12 @@ Pass cursor to page through the list at 50 per page when the full response would
         ],
         [
             name: "hub_list_drivers",
-            description: "List device driver types on the hub. include='user' (default) lists user-installed drivers; include='all' returns the full catalog (system + virtual + user).[[FLAT_TRIM]] Each include='all' entry is tagged with a bucket; its id is the driver-type id for hub_create_device, while hub_manage_virtual_device(customDriver) takes the entry's namespace + name (not the id).[[/FLAT_TRIM]] Requires Read master.",
+            description: "List device driver types on the hub. Requires Read master.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    include: [type: "string", enum: ["user", "all"], description: "Scope: 'user' (default) = user-installed drivers only; 'all' = full catalog (system + virtual + user)[[FLAT_TRIM]], each entry tagged bucket=system|virtual|user[[/FLAT_TRIM]]."],
-                    cursor: [type: "string", description: "Opt-in pagination cursor.[[FLAT_TRIM]] Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50).[[/FLAT_TRIM]]"]
+                    include: [type: "string", enum: ["user", "all"], description: "Scope: 'user' (default) = user-installed drivers only; 'all' = full catalog (system + virtual + user)."],
+                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
             ],
             outputSchema: [
@@ -2563,13 +2553,13 @@ Pass cursor to page through the list at 50 per page when the full response would
         // Hub Admin App/Driver Source Read Tools
         [
             name: "hub_get_source",
-            description: "Get the Groovy source of an installed app, driver, or library. Pass type and id. Supports chunked reading (offset/length); large files are auto-saved to the File Manager for use with the matching update tool's sourceFile mode. Requires Read master.",
+            description: "Get the Groovy source of an installed app, driver, or library. Supports chunked reading (offset/length); large sources are auto-saved to the File Manager for use with the matching update tool's sourceFile mode. Requires Read master.",
             inputSchema: [
                 type: "object",
                 properties: [
                     type: [type: "string", enum: ["app", "driver", "library"], description: "What kind of code to read."],
-                    id: [type: "string", description: "The app/driver/library ID (positive integer). App IDs from hub_list_apps, driver IDs from hub_list_drivers, library IDs from hub_list_libraries (or a hub_create_library response, or the Hubitat Libraries code page)."],
-                    offset: [type: "integer", description: "Character offset to start reading from (for chunked reading of large sources). Default: 0"],
+                    id: [type: "string", description: "App/driver/library ID (positive integer), from hub_list_apps / hub_list_drivers / hub_list_libraries respectively (library id is also in a hub_create_library response or the Hubitat Libraries code page)."],
+                    offset: [type: "integer", description: "Char offset to start reading from. Default: 0"],
                     length: [type: "integer", description: "Max characters to return in this chunk. Default/max: 64000"]
                 ],
                 required: ["type", "id"]
@@ -2605,21 +2595,20 @@ Pass cursor to page through the list at 50 per page when the full response would
             name: "hub_create_app",
             description: """⚠️ Install new app. Show code to user and get confirmation first.
 
-Three source modes (mutually exclusive):
-- source (inline) -- stubs only, fills agent transcript
-- sourceFile -- read from File Manager[[FLAT_TRIM]] (upload first via curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload; Hub Security: prefix with curl -c cookies.txt -d username=USER&password=PASS http://<hub>/login then add -b cookies.txt)[[/FLAT_TRIM]]
-- importUrl -- hub fetches the URL directly[[FLAT_TRIM]] (mirrors UI's "Import Code from Website" then Save flow)[[/FLAT_TRIM]]
+Supply the code via exactly one of source / sourceFile / importUrl (mutually exclusive; see each param).
 
-After installing the code, create a running instance with a SECOND call: hub_create_app(installAsUserApp: <newAppId>, confirm: true). Mutually exclusive with code-install args.
+[[FLAT_TRIM]]
+After the code installs, create a running instance with a SECOND call: hub_create_app(codeAppId: <newAppId>, confirm: true).
+[[/FLAT_TRIM]]
 
-Verifies install succeeded: if the hub accepted the request but the app failed to compile, hub_create_app returns success=false with the error. Requires Write master + confirm + backup <24h. Returns new app ID.""",
+Verifies the install compiled -- returns success=false with the error if it didn't. Requires Write master + confirm + backup <24h. Returns the new app ID.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    source: [type: "string", description: "Inline Groovy source. Stubs only -- fills agent transcript. For non-trivial apps prefer sourceFile or importUrl."],
-                    sourceFile: [type: "string", description: "File Manager filename (upload first via curl per tool description; bypasses agent transcript)."],
-                    importUrl: [type: "string", description: "URL the hub fetches directly. Mirrors the editor's Import Code from Website + Save. http:// or https://. Mutually exclusive with source/sourceFile."],
-                    installAsUserApp: [type: "integer", description: "Second-step mode: create a running instance from already-installed code (the codeAppId returned by a prior hub_create_app call) AND commit the install. Mutually exclusive with code-install args.[[FLAT_TRIM]] Submits the config page's Done, firing installed()/initialize() so schedules/subscriptions actually register. Targets apps whose first page installs with defaults; a required first-page input with no default blocks the auto-Done (same as the UI).[[/FLAT_TRIM]]"],
+                    source: [type: "string", description: "Inline Groovy source (stubs only)."],
+                    sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-app.groovy."],
+                    importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
+                    codeAppId: [type: "integer", description: "Second-step mode: instantiate already-installed code (codeAppId from a prior call) and commit the install; not combinable with source/sourceFile/importUrl."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["confirm"]
@@ -2651,23 +2640,18 @@ Verifies install succeeded: if the hub accepted the request but the app failed t
             name: "hub_create_driver",
             description: """⚠️ Install new driver. Show code to user and get confirmation first.
 
-Three source modes (mutually exclusive per item):
-- source (inline) -- stubs only
-- sourceFile -- File Manager filename[[FLAT_TRIM]] (upload first via curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload)[[/FLAT_TRIM]]
-- importUrl -- hub fetches the URL directly
+Supply the code via exactly one of source / sourceFile / importUrl (mutually exclusive; see each param). For >1 driver use BULK mode (the installs param).
 
-For >1 driver: USE BULK mode (single round-trip, not N separate calls): installs=[{source|sourceFile|importUrl}, ...].[[FLAT_TRIM]] Cannot mix bulk and single-driver fields.[[/FLAT_TRIM]]
-
-Verifies install succeeded: if the hub accepted the request but the driver failed to compile, hub_create_driver returns success=false with the error. Requires Write master + confirm + backup <24h. Returns new driver ID(s).""",
+Verifies the install compiled: returns success=false with the error if the hub accepted the request but the driver failed to compile. Requires Write master + confirm + backup <24h. Returns new driver ID(s).""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    source: [type: "string", description: "Inline Groovy source (single-driver mode). Stubs only -- fills agent transcript."],
-                    sourceFile: [type: "string", description: "File Manager filename (single-driver mode). Upload first via curl per tool description."],
-                    importUrl: [type: "string", description: "URL the hub fetches directly (single-driver mode). http:// or https://. Mutually exclusive with source/sourceFile."],
+                    source: [type: "string", description: "Inline Groovy source (stubs only)."],
+                    sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
+                    importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
                     installs: [
                         type: "array",
-                        description: "BULK MODE -- one round-trip for many drivers. Each entry: {source|sourceFile|importUrl}. Cannot mix with single-driver fields. Continue-on-error.",
+                        description: "Bulk mode: one round-trip for many drivers. Each entry {source|sourceFile|importUrl}; cannot mix with single-driver fields; continue-on-error.",
                         items: [
                             type: "object",
                             properties: [
@@ -2711,28 +2695,22 @@ Verifies install succeeded: if the hub accepted the request but the driver faile
             name: "hub_update_app",
             description: """⚠️ CRITICAL: Modify existing app code. Read current source first, explain changes, get confirmation.
 
-Four source modes (mutually exclusive):
-- source (inline) -- stubs only, fills agent transcript
-- sourceFile -- File Manager filename[[FLAT_TRIM]] (upload first via curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload)[[/FLAT_TRIM]]
-- importUrl -- hub fetches the URL directly[[FLAT_TRIM]] (mirrors UI's "Import Code from Website" then Save flow)[[/FLAT_TRIM]]
-- resave -- recompile without changes (on-hub only, no source touched)
+Supply the new code via exactly one of source / sourceFile / importUrl, or resave to recompile in place (see each param). Optionally enable OAuth via the oauth param (apps only), alone or alongside a source change.
 
-Auto-backs up before modifying. Requires Write master + confirm + backup <24h.
+Auto-backs up before modifying. Requires Write master + confirm + backup <24h.[[FLAT_TRIM]]
 
-Self-update guard: refuses to overwrite the MCP server's own app source unless Developer Mode is on.[[FLAT_TRIM]] Optional expectedVersion arg enables optimistic locking. Optional triggerUpdated arg fires updated() on a named instance after save. A bad self-update bricks the MCP loop. UI Save does NOT fire updated() -- triggerUpdated is opt-in only.
-
-OAuth: pass oauth={enabled:true} to enable OAuth on the app code definition (apps only) -- the programmatic version of the UI's "Enable OAuth in App" -- and get the generated clientId/clientSecret back under result.oauth. Use it to ship apps with OAuth already on instead of the manual UI step. Runs alone (no source change) or alongside a source update.[[/FLAT_TRIM]]""",
+Self-update guard: refuses to overwrite the MCP server's own app source or OAuth unless Developer Mode is on.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
                     appId: [type: "string", description: "The app ID (Apps Code id) to update"],
-                    source: [type: "string", description: "Inline Groovy source. Stubs only -- fills agent transcript."],
-                    sourceFile: [type: "string", description: "File Manager filename. Upload first via curl per tool description."],
-                    importUrl: [type: "string", description: "URL the hub fetches directly (http:// or https://). Mirrors UI's Import Code from Website + Save."],
-                    resave: [type: "boolean", description: "Re-save the current source code without changes. Runs entirely on-hub."],
-                    expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard. Aborts with conflict:true on version mismatch.[[FLAT_TRIM]] Stringified integers coerced; explicit null rejected.[[/FLAT_TRIM]]"],
-                    triggerUpdated: [type: "integer", description: "OPTIONAL post-save lifecycle refresh. Set to the running instance appId; fires updated() so subscriptions/schedules re-initialize.[[FLAT_TRIM]] Default: omitted (matches UI behavior; UI does NOT fire updated() on save).[[/FLAT_TRIM]]"],
-                    oauth: [type: "object", description: "OPTIONAL: enable/configure OAuth on this app (apps only).[[FLAT_TRIM]] Returns the generated clientId/secret. {enabled (bool, default true), client_id?, client_secret?, refresh_secret? (bool, regenerate the secret)}. Omit client_id/client_secret to preserve the app's current values (the hub generates them on first enable); if those current values can't be read it refuses (success:false) rather than risk blanking them -- pass them explicitly to force it. The resulting clientId/clientSecret come back under result.oauth. Can be the only change (no source mode required) or run with a source update. Refuses to alter the MCP server's own app OAuth unless Developer Mode is on (it backs the live /mcp token).[[/FLAT_TRIM]]"],
+                    source: [type: "string", description: "Inline Groovy source (stubs only)."],
+                    sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
+                    importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
+                    resave: [type: "boolean", description: "Re-save the current source without changes; runs entirely on-hub."],
+                    expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] Stringified integers coerced; explicit null rejected.[[/FLAT_TRIM]]"],
+                    triggerUpdated: [type: "integer", description: "OPTIONAL: running instance appId to fire updated() after save."],
+                    oauth: [type: "object", description: "OPTIONAL: enable/configure OAuth on this app (apps only); e.g. {enabled:true}. Full shape: hub_get_tool_guide(section='hub_admin_write')."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["appId", "confirm"]
@@ -2764,27 +2742,21 @@ OAuth: pass oauth={enabled:true} to enable OAuth on the app code definition (app
             name: "hub_update_driver",
             description: """⚠️ CRITICAL: Modify existing driver code. Read current source first, explain changes, get confirmation.
 
-Four source modes (mutually exclusive per item):
-- source (inline) -- stubs only
-- sourceFile -- File Manager filename[[FLAT_TRIM]] (upload first via curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload)[[/FLAT_TRIM]]
-- importUrl -- hub fetches the URL directly
-- resave -- recompile without changes (on-hub only)
-
-For >1 driver: USE BULK mode (single round-trip): updates=[{driverId, source|sourceFile|importUrl|resave, optional expectedVersion}, ...].[[FLAT_TRIM]] Cannot mix bulk and single-driver fields. Continue-on-error.[[/FLAT_TRIM]]
+Supply the new code via exactly one of source / sourceFile / importUrl, or resave to recompile in place (see each param). For >1 driver use BULK mode (the updates param).
 
 Auto-backs up before modifying. Requires Write master + confirm + backup <24h.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     driverId: [type: "string", description: "The driver ID to update (single-driver mode). Omit when using 'updates' array."],
-                    source: [type: "string", description: "Inline Groovy source. Stubs only -- fills agent transcript."],
-                    sourceFile: [type: "string", description: "File Manager filename. Upload first via curl per tool description."],
-                    importUrl: [type: "string", description: "URL the hub fetches directly. http:// or https://.[[FLAT_TRIM]] Mutually exclusive with source/sourceFile/resave.[[/FLAT_TRIM]]"],
+                    source: [type: "string", description: "Inline Groovy source (stubs only)."],
+                    sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
+                    importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
                     resave: [type: "boolean", description: "Re-save the current source without changes. Runs entirely on-hub."],
-                    expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard.[[FLAT_TRIM]] Update aborts with conflict:true on version mismatch.[[/FLAT_TRIM]] Bulk mode: put expectedVersion inside each updates[] entry."],
+                    expectedVersion: [type: "integer", description: "Optional optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] In bulk mode, put it inside each updates[] entry.[[/FLAT_TRIM]]"],
                     updates: [
                         type: "array",
-                        description: "BULK MODE -- one round-trip for many drivers.[[FLAT_TRIM]] Each entry: {driverId, sourceFile|source|importUrl|resave, optional expectedVersion}. Cannot mix with single-driver fields. Continue-on-error.[[/FLAT_TRIM]]",
+                        description: "Bulk mode: one round-trip for many drivers. Each entry {driverId, sourceFile|source|importUrl|resave, optional expectedVersion}; cannot mix with single-driver fields; continue-on-error.",
                         items: [
                             type: "object",
                             properties: [
@@ -2835,17 +2807,19 @@ Auto-backs up before modifying. Requires Write master + confirm + backup <24h.""
             name: "hub_delete_item",
             description: """⚠️ DESTRUCTIVE: Permanently delete an app, driver, or library. Auto-backs up the source before deletion.
 
-Pre-flight by type: apps -- remove app instances via the Hubitat UI first; drivers -- switch any devices to a different driver first; libraries -- ensure no apps/drivers still #include it (deleting an included library causes compile errors).
+[[FLAT_TRIM]]
+Pre-flight by type: apps -- remove app instances via the Hubitat UI first; drivers -- switch any devices to a different driver first; libraries -- ensure no apps/drivers still #include it (else compile errors).
+[[/FLAT_TRIM]]
 
 Tell the user the item name/ID, warn it's permanent, get confirmation. Requires Write master + confirm + backup <24h.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     type: [type: "string", enum: ["app", "driver", "library"], description: "What to delete."],
-                    id: [type: "string", description: "The app/driver/library ID to delete."],
+                    item_id: [type: "string", description: "The app/driver/library ID to delete."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
-                required: ["type", "id", "confirm"]
+                required: ["type", "item_id", "confirm"]
             ],
             outputSchema: [
                 type: "object",
@@ -2868,18 +2842,15 @@ Tell the user the item name/ID, warn it's permanent, get confirmation. Requires 
             name: "hub_create_library",
             description: """⚠️ Install new Groovy library code. Libraries are #include'd by drivers/apps. Show code to user and get confirmation first.
 
-Three source modes (mutually exclusive):
-- source (inline) -- stubs only
-- sourceFile -- File Manager filename (upload first via curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload)
-- importUrl -- hub fetches the URL directly
+Provide exactly one of source / sourceFile / importUrl (see each param).
 
-Library source must include a library() definition block. Requires Write master + confirm + backup <24h. Returns new libraryId.[[FLAT_TRIM]] Required fields: name, namespace, author, description. The hub does NOT compile-check libraries at install time -- syntax errors only surface later when an app or driver tries to #include the library.[[/FLAT_TRIM]]""",
+Source must include a library() block with name/namespace/author/description (all required). The hub does NOT compile-check libraries at install -- syntax errors surface only when an app/driver #includes it. Requires Write master + confirm + backup <24h. Returns new libraryId.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    source: [type: "string", description: "Inline source. Stubs only -- fills agent transcript.[[FLAT_TRIM]] Must include library() block with name/namespace/author/description.[[/FLAT_TRIM]]"],
-                    sourceFile: [type: "string", description: "File Manager filename. Upload first via curl per tool description."],
-                    importUrl: [type: "string", description: "URL the hub fetches directly. http:// or https://. Mutually exclusive with source/sourceFile."],
+                    source: [type: "string", description: "Inline source (stubs only)."],
+                    sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
+                    importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["confirm"]
@@ -2905,20 +2876,16 @@ Library source must include a library() definition block. Requires Write master 
             name: "hub_update_library",
             description: """⚠️ CRITICAL: Modify existing library code. Read current source first, explain changes, get confirmation.
 
-Four source modes (mutually exclusive):
-- source (inline) -- stubs only
-- sourceFile -- File Manager filename (upload first via curl -F uploadFile=@./X.groovy -F folder=/ http://<hub>/hub/fileManager/upload)
-- importUrl -- hub fetches the URL directly
-- resave -- recompile without changes (on-hub only)
+Supply the new code via exactly one of source / sourceFile / importUrl, or resave to recompile in place (see each param). Not compile-checked at save (see hub_create_library).
 
 Auto-backs up before modifying. Requires Write master + confirm + backup <24h.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     libraryId: [type: "string", description: "The library ID to update"],
-                    source: [type: "string", description: "Inline source. Stubs only -- fills agent transcript."],
-                    sourceFile: [type: "string", description: "File Manager filename. Upload first via curl per tool description."],
-                    importUrl: [type: "string", description: "URL the hub fetches directly. http:// or https://. Mutually exclusive with source/sourceFile/resave."],
+                    source: [type: "string", description: "Inline source (stubs only)."],
+                    sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
+                    importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
                     resave: [type: "boolean", description: "Re-save the current source without changes. Runs entirely on-hub."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
@@ -2943,20 +2910,18 @@ Auto-backs up before modifying. Requires Write master + confirm + backup <24h.""
         // Hub Admin App Configuration Read (grouped with installed-apps peers)
         [
             name: "hub_get_app_config",
-            description: """Read an installed app's configuration — the same structured data the Hubitat Web UI shows on each app's settings page. Works for Rule Machine rules, Room Lighting instances, Basic Rules, Button Controllers, Hubitat Package Manager, Mode Manager, and any other legacy SmartApp.
+            description: """Read an installed app's configuration — the structured data the Hubitat Web UI shows on an app's settings page. Works for any legacy SmartApp (Rule Machine rules, Room Lighting, Basic Rules, HPM, Mode Manager, etc.). Read-only.
 
-Returns the app's identity (label, type, parent, disabled state) and its current config page: sections, inputs (name, type, title, description, options, current value), and `embeddedActions` — clickable button affordances embedded in paragraph HTML[[FLAT_TRIM]] (RM 5.1 wizards expose "Create New Trigger", "Edit Trigger", "Delete Trigger" etc. as `<div class='submitOnChange'>` elements rather than schema inputs; this field surfaces them with their button name + stateAttribute so hub_set_rule can drive them)[[/FLAT_TRIM]]. Multi-page apps (e.g. RM 5.1) expose sub-pages by name — pass pageName to navigate into them. Read-only; does not modify anything. summary=true: fast identity-only mode.
+Returns the app's identity plus its current config page (sections, inputs, current values) and `embeddedActions` — clickable RM wizard buttons hub_set_rule can drive. Multi-page apps (e.g. RM 5.1): pass pageName; call hub_list_app_pages to discover sub-page names.
 
-Get the appId from hub_list_apps (scope='instances') or hub_list_rules; for multi-page apps pass pageName (hub_list_app_pages discovers available names).[[FLAT_TRIM]] Use hub_list_rules, not hub_get_custom_rule, for RM rules (hub_get_custom_rule only handles MCP-native rules).[[/FLAT_TRIM]]
-
-Requires Read master.""",
+Get appId from hub_list_apps (scope='instances') or hub_list_rules.[[FLAT_TRIM]] For RM rules use hub_list_rules, NOT hub_get_custom_rule (which only handles MCP-native rules).[[/FLAT_TRIM]] Requires Read master.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_apps (scope='instances'), hub_list_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."],
-                    pageName: [type: "string", description: "Optional sub-page name for multi-page apps. Main page is used when omitted. Call hub_list_app_pages to discover available pages.[[FLAT_TRIM]] HPM: prefPkgUninstall (full installed-package list), prefPkgModify (modifiable subset), prefOptions (main menu). RM / Room Lighting: mainPage only.[[/FLAT_TRIM]]"],
-                    includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map. Default false -- large apps can have 500-1000 keys with app-specific encoding (e.g. Room Lighting's dm~<deviceId>~<scene>). Set true only for power-user inspection.", default: false],
-                    summary: [type: "boolean", description: "Fast identity-only read (returns the hub's thin app record: id, name, type, disabled, user -- no config page). pageName/includeSettings are ignored.", default: false]
+                    pageName: [type: "string", description: "Optional sub-page name for multi-page apps; main page when omitted. Call hub_list_app_pages to discover available names."],
+                    includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map (default false). Set true only for power-user inspection.", default: false],
+                    summary: [type: "boolean", description: "Fast identity-only read: returns the thin app record (id, name, type, disabled, user), no config page; pageName/includeSettings ignored.", default: false]
                 ],
                 required: ["appId"]
             ],
@@ -3015,17 +2980,9 @@ Requires Read master.""",
         // Hub Admin App Pages Directory
         [
             name: "hub_list_app_pages",
-            description: """List known page names for a multi-page installed app. Returns the primary page (introspected live from the hub) plus a curated directory of known sub-pages for well-known app types.
+            description: """List page names for a multi-page installed app: the live-introspected primary page plus a curated directory of sub-pages for well-known app types (HPM, Rule Machine, Room Lighting, Mode Manager).[[FLAT_TRIM]] Unknown app types return the primary page only, with a note to consult the app's source or Web UI for other page names.[[/FLAT_TRIM]]
 
-[[FLAT_TRIM]]
-Curated directories: HPM (prefOptions main menu, prefPkgUninstall full installed-package list, prefPkgModify modifiable subset, prefPkgInstall install flow, prefPkgMatchUp match-up flow); Rule Machine rules (mainPage only -- rules are single-page); Room Lighting (mainPage); Mode Manager (mainPage).
-[[/FLAT_TRIM]]
-
-Unknown app types return the primary page only, plus a note directing you to consult the app's source or Web UI navigation for additional page names.
-
-Use this before hub_get_app_config on multi-page apps to avoid guessing page names.
-
-Requires Read master.""",
+Use before hub_get_app_config on multi-page apps to avoid guessing page names. Requires Read master.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3061,12 +3018,7 @@ Requires Read master.""",
         // Installed Apps Integration (built-in + user app visibility)
         [
             name: "hub_list_device_dependents",
-            description: """List all apps that reference a specific device (Room Lighting instances, Rule Machine rules, Groups and Scenes, Mode Manager, dashboards, Maker API, Echo Skill, etc.). Requires the Read master.
-
-Answers \"which apps would break or change behavior if I disable/delete this device?\" — critical before device cleanup, troubleshooting, or reassignment.
-[[FLAT_TRIM]]
-Returns: deviceId, deviceName, appsUsing array (each entry: id, name=app type, label=user-visible name, trueLabel=label without HTML decoration, disabled), count, parentApp.
-[[/FLAT_TRIM]]""",
+            description: """List all apps that reference a specific device[[FLAT_TRIM]] (Room Lighting instances, Rule Machine rules, Groups and Scenes, Mode Manager, dashboards, Maker API, Echo Skill, etc.)[[/FLAT_TRIM]] — critical before device cleanup, troubleshooting, or reassignment. Requires the Read master.""",
             inputSchema: [
                 type: "object",
                 properties: [

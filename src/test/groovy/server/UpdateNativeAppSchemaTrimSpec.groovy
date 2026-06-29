@@ -407,6 +407,19 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         (script.getToolGuideSections()['set_rule_create_reference'] as String).length() > 200
     }
 
+    def "hub_get_tool_guide section enum stays in lockstep with getToolGuideSections() (#296 reachability guard)"() {
+        given: 'the advertised section enum on hub_get_tool_guide, and the served section map'
+        def guideDef = script.getAllToolDefinitions().find { it.name == 'hub_get_tool_guide' }
+        def enumKeys = (guideDef.inputSchema.properties.section.enum as List) as Set
+        def sectionKeys = script.getToolGuideSections().keySet() as Set
+
+        expect: 'every advertised enum key resolves to a real served section -- a schema-valid client is never pointed at a missing section'
+        (enumKeys - sectionKeys).isEmpty()
+
+        and: 'every served section is advertised in the enum -- a newly added section is discoverable, not orphaned. The #296 defect this guards: dashboards/bundles/rooms/variables were served by getToolGuideSections() but absent from the enum, so schema-validating clients (and LLMs reading the enum) could not request them.'
+        (sectionKeys - enumKeys).isEmpty()
+    }
+
     def "hub_get_tool_guide end-to-end: dispatcher resolves the new section keys and returns sentinel-bearing content"() {
         // The pointer-resolution test above asserts the keys exist in the
         // getToolGuideSections() map. This test exercises the actual runtime
@@ -479,9 +492,15 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         def listDevicesGw = gwAll.find { it.name == 'hub_list_devices' }.description as String
         def createNativeGw = gwAll.find { it.name == 'hub_set_rule' }.description as String
 
-        then: 'hub_list_devices flat-mode strips its wrapped sentinel prose; gateway keeps it'
+        then: 'hub_list_devices: the deferred prose migrated OUT of the tool def (flat AND gateway) to the served performance guide; the flat guide-pointer survives (#296)'
         !listDevicesFlat.contains('Server-side filtering (all applied before pagination)')
-        listDevicesGw.contains('Server-side filtering (all applied before pagination)')
+        !listDevicesGw.contains('Server-side filtering (all applied before pagination)')
+
+        and: 'the deferred prose actually LANDED in the served performance guide -- migrated, not dropped (reachability; a strip that forgets to keep the guide home must fail HERE, not silently green) (#296)'
+        def perfGuide = script.getToolGuideSections()['performance'] as String
+        perfGuide.contains('Server-side filtering')
+        perfGuide.contains('mcpManaged')
+        perfGuide.contains('auto-promotes the response to detailed mode')
 
         and: 'hub_set_rule fat schema (gateway mode + probe source) carries the deduped partial-success contract + the create-reference pointer'
         // hub_set_rule is now a flat self-gateway: in flat mode it is the thin
@@ -532,9 +551,9 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         !flatFieldsDesc.contains('auto-promotes the response to detailed mode')
         flatFieldsDesc.contains("hub_get_tool_guide(section='performance')")
 
-        and: 'gateway-mode keeps the full enumeration; marker tokens stripped'
-        gwFieldsDesc.contains('mcpManaged')
-        gwFieldsDesc.contains('auto-promotes the response to detailed mode')
+        and: 'gateway-mode ALSO drops the enumeration -- migrated to the served performance guide (#296); no marker tokens either way'
+        !gwFieldsDesc.contains('mcpManaged')
+        !gwFieldsDesc.contains('auto-promotes the response to detailed mode')
         !gwFieldsDesc.contains(OPEN_MARKER)
         !gwFieldsDesc.contains(CLOSE_MARKER)
     }

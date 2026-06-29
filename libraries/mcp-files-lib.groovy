@@ -315,11 +315,11 @@ def _getAllToolDefinitions_partFiles() {
         // File Manager Tools
         [
             name: "hub_list_files",
-            description: "List files stored in the hub's File Manager (the local web-accessible file store), returning each file's name, size, last-modified date, and direct download URL. Use this to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. Read-only. For large stores, opt into pagination via the cursor parameter (page size 100).",
+            description: "List files stored in the hub's File Manager[[FLAT_TRIM]] (the local web-accessible file store)[[/FLAT_TRIM]], returning each file's name, size, last-modified date, and direct download URL.[[FLAT_TRIM]] Use this to discover available files before reading one with hub_read_file, or to confirm a write/backup landed.[[/FLAT_TRIM]] Read-only.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100)."]
+                    cursor: [type: "string", description: "Opt-in pagination cursor.[[FLAT_TRIM]] Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
                 ]
             ],
             outputSchema: [
@@ -341,12 +341,12 @@ def _getAllToolDefinitions_partFiles() {
         ],
         [
             name: "hub_read_file",
-            description: "Read the text content of a single file from the hub's File Manager by exact file name. Use after hub_list_files to fetch a named file (config, backup, exported rule/app, CSV). Read-only. Large files are returned in chunks: pass offset/length, then follow nextOffset while hasMore is true (default/max chunk 60000 chars).",
+            description: "Read the text content of a single file from the hub's File Manager by exact file name.[[FLAT_TRIM]] Use after hub_list_files to fetch a named file (config, backup, exported rule/app, CSV).[[/FLAT_TRIM]] Read-only.[[FLAT_TRIM]] Large files are returned in chunks: pass offset/length, then follow nextOffset while hasMore is true (default/max chunk 60000 chars).[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     fileName: [type: "string", description: "The exact file name (e.g., 'dashboard-backup.json', 'mcp-backup-app-123.groovy')"],
-                    offset: [type: "integer", description: "Character offset to start reading from (for chunked reading of large files). Default: 0"],
+                    offset: [type: "integer", description: "Character offset to start reading from. Default: 0"],
                     length: [type: "integer", description: "Max characters to return in this chunk. Default/max: 60000"]
                 ],
                 required: ["fileName"]
@@ -371,7 +371,7 @@ def _getAllToolDefinitions_partFiles() {
         ],
         [
             name: "hub_write_file",
-            description: "⚠️ Write (create or overwrite) a text file in the hub's File Manager. If a file of the same name exists this OVERWRITES it wholesale; the prior version is auto-backed up first (see backupFile in the result for recovery). Requires Write master and confirm=true — confirm the write with the user before calling. Returns the file name, chars written, and download URL.",
+            description: "⚠️ Write (create or overwrite) a text file in the hub's File Manager. If a file of the same name exists this OVERWRITES it wholesale; the prior version is auto-backed up first (see backupFile in the result for recovery). Requires Write master and confirm=true — confirm the write with the user before calling.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -397,7 +397,7 @@ def _getAllToolDefinitions_partFiles() {
         ],
         [
             name: "hub_delete_file",
-            description: "⚠️ Permanently delete a file from the hub's File Manager. The file is auto-backed up before deletion (see backupFile/undoHint in the result for recovery), but the original is removed. Tell the user and get approval first. Requires Write master and confirm=true.",
+            description: "⚠️ Permanently delete a file from the hub's File Manager. The file is auto-backed up first (see backupFile/undoHint for recovery). Requires Write master, confirm=true, and a recent hub backup — get user approval before calling.",
             inputSchema: [
                 type: "object",
                 properties: [

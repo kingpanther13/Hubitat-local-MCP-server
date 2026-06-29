@@ -636,26 +636,15 @@ def _getAllToolDefinitions_partHpm() {
         // HPM Package State Tools
         [
             name: "hub_list_hpm_packages",
-            description: """List all packages tracked by Hubitat Package Manager (HPM). Returns the installed name, version, beta flag, author, and the full component inventory (apps, drivers, files) as HPM last recorded at install or update time.
-
-[[FLAT_TRIM]]App and driver components include: manifest-internal id (UUID), name, heID (Hubitat's internal code ID -- null if the component was never installed or was removed outside HPM), required flag, and per-component version (if the manifest author included one; many do not). File components include only id and name (File Manager assets are tracked by name only). If a component's heID is an empty/whitespace-only string, heID is cleared to null and a _warning field is added to that entry (e.g. "empty heID string '' normalized to null"). A whitespace-padded heID (e.g. ' 142 ') is trimmed, heID stays non-null, and _warning records the normalization. A non-scalar heID (not Number or String) is cleared to null with a _warning.[[/FLAT_TRIM]]
-
-[[FLAT_TRIM]]
-Response also includes: count (packages returned); hpmAppId (HPM's installed-app ID, echoed so callers can cache it and skip discovery); skippedMalformed (manifest URLs whose top-level value was not a Map -- package skipped); per-package skippedAppCount/skippedDriverCount/skippedFileCount (non-Map entries skipped, each omitted when 0).
-[[/FLAT_TRIM]]
-
-If hpmAppId is omitted, the tool auto-discovers HPM by scanning the installed-app tree for type='Hubitat Package Manager'; pass hpmAppId explicitly to skip that call. [[FLAT_TRIM]]Multiple HPM instances throw IllegalArgumentException listing up to 10 instance IDs with "and N more (total M)"; an hpmAppId pointing at a non-HPM app throws disclosing the actual type (all such IllegalArgumentExceptions surface as JSON-RPC error -32602).[[/FLAT_TRIM]]
-
-Set includeDrift=true to ALSO cross-reference tracked state against what is actually installed and attach a `drift` block (missing-required / orphan signals). Call `hub_get_tool_guide(section='builtin_app_tools')` for the full drift-signal taxonomy, response-field reference, and caveats.[[FLAT_TRIM]] Optional packageFilter narrows which packages are analyzed. Off by default (adds 1-2 hub calls). Drift is heID-presence-only -- post-install source edits are NOT surfaced.[[/FLAT_TRIM]]
-
-Requires Read master. HPM itself must be installed.""",
+            description: """List all packages tracked by Hubitat Package Manager (HPM): name, version, beta flag, author, and component inventory (apps/drivers/files) as HPM recorded at install/update time. Requires Read master; HPM must be installed.[[FLAT_TRIM]]
+Set includeDrift=true to ALSO cross-reference tracked state against what is actually installed and attach a `drift` block (missing-required / orphan signals). See `hub_get_tool_guide(section='builtin_app_tools')` for the full drift-signal taxonomy, response-field reference, and caveats.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    hpmAppId: [type: "string", description: "HPM's installed-app ID (decimal). Auto-discovered if omitted by scanning installed apps for type='Hubitat Package Manager'. Pass explicitly to skip the discovery call."],
-                    includeDrift: [type: "boolean", description: "Also attach a drift cross-reference under a `drift` key (missing-required/orphan-app/orphan-driver). Default false; adds 1-2 hub calls.", default: false],
-                    packageFilter: [type: "string", description: "Drift mode only (includeDrift=true): case-insensitive substring filter on packageName; only matching packages are analyzed for drift."],
-                    cursor: [type: "string", description: "Opt-in pagination cursor for the packages list. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 25 -- HPM entries carry full app/driver/file inventories so each entry can be large)."]
+                    hpmAppId: [type: "string", description: "HPM's installed-app ID (decimal). Auto-discovered if omitted.[[FLAT_TRIM]] Scans installed apps for type='Hubitat Package Manager'; pass explicitly to skip that discovery call.[[/FLAT_TRIM]]"],
+                    includeDrift: [type: "boolean", description: "Also attach a drift cross-reference under a `drift` key.[[FLAT_TRIM]] Signal types: missing-required/orphan-app/orphan-driver.[[/FLAT_TRIM]] Default false; adds 1-2 hub calls.", default: false],
+                    packageFilter: [type: "string", description: "Drift mode only (includeDrift=true): case-insensitive substring filter on packageName."],
+                    cursor: [type: "string", description: "Opt-in pagination cursor for the packages list. Omit for unbounded; pass \"\" for the first page, iterate nextCursor.[[FLAT_TRIM]] Page size 25 -- HPM entries carry full app/driver/file inventories so each entry can be large.[[/FLAT_TRIM]]"]
                 ]
             ],
             outputSchema: [

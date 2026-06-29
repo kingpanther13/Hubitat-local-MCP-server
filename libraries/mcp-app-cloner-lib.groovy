@@ -717,15 +717,18 @@ def _getAllToolDefinitions_partAppCloner() {
     return [
         [
             name: "hub_clone_native_app",
-            description: """Clone any classic native automation app (RM rule, Room Lighting, Button Controller, Basic Rule, Notifier, etc.) using Hubitat's first-party appCloner system app. Lower-overhead alternative to rebuilding via the wizard — clone an existing rule that has the shape you want, then surgically edit fields via hub_set_rule (RM rules) or hub_set_native_app (other classic apps). Preserves the full rule shape (state.actNdx, conditions, expressions, IF/THEN/ELSE positional arrays). Drives the appCloner's 4-step wizard (cloneRuleButton → confirmation → importRule sub-page → importNow); the actual clone fires in tens of seconds for typical rules. Returns newAppId on success. Requires the Write master + confirm=true (+ a recent backup).""",
+            description: """Clone any classic native automation app (RM rule, Room Lighting, Button Controller, Basic Rule, Notifier, etc.) using Hubitat's first-party appCloner, then surgically edit fields via hub_set_rule (RM rules) or hub_set_native_app (other classic apps).[[FLAT_TRIM]] A lower-overhead alternative to rebuilding via the wizard: clone an existing rule that has the shape you want. Preserves the full rule shape (conditions, expressions, IF/THEN/ELSE structure). The clone completes in tens of seconds for typical rules.[[/FLAT_TRIM]] Returns newAppId on success. Requires the Write master + confirm=true (+ a recent backup).""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    sourceAppId: [type: "integer", description: "Installed-app ID of the rule/app to clone. (alias: appId)"],
+                    sourceAppId: [type: "integer", description: "Installed-app ID of the rule/app to clone. (alias: appId) Either sourceAppId or appId is required."],
                     appId: [type: "integer", description: "Alias for sourceAppId."],
-                    newName: [type: "string", description: "Label for the new cloned app. If omitted, the cloner default ('<source-label> clone') is kept."],
+                    newName: [type: "string", description: "Label for the new cloned app.[[FLAT_TRIM]] If omitted, the cloner default ('<source-label> clone') is kept.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
+                // "sourceAppId OR appId" can't be a schema-level anyOf (Anthropic's
+                // input_schema validator rejects top-level anyOf/oneOf/allOf); enforced
+                // at runtime in toolCloneNativeApp. sourceAppId's description documents the OR.
                 required: ["confirm"]
             ],
             outputSchema: [
@@ -744,7 +747,7 @@ def _getAllToolDefinitions_partAppCloner() {
         ],
         [
             name: "hub_export_native_app",
-            description: """Export any classic native automation app to its canonical JSON shape via Hubitat's first-party appCloner. The exported JSON is the same format Hubitat's UI 'Export' button produces — a self-contained document with appReplacements + deviceReplacements + the full rule state — that round-trips cleanly through hub_import_native_app. Use for: (1) backup before risky edits, (2) edit-as-text workflows that materialize the rule, mutate the JSON, and re-import as a new rule, (3) hub-to-hub transfer. Pass saveAs to also write the JSON to the hub's File Manager (e.g. for HPM-style distribution). Requires the Write master (it instantiates a cloner app and persists, so it is a write operation; no confirm/backup required).""",
+            description: """Export any classic native automation app to its canonical JSON shape via Hubitat's first-party appCloner — a self-contained document that round-trips cleanly through hub_import_native_app.[[FLAT_TRIM]] The exported JSON is the same format Hubitat's UI 'Export' button produces. Use for: (1) backup before risky edits, (2) edit-as-text workflows that materialize the rule, mutate the JSON, and re-import as a new rule, (3) hub-to-hub transfer.[[/FLAT_TRIM]] Pass saveAs to also write the JSON to the hub's File Manager[[FLAT_TRIM]] (e.g. for HPM-style distribution)[[/FLAT_TRIM]]. Requires the Write master (no confirm/backup required).[[FLAT_TRIM]] Export instantiates a cloner app and persists, so it counts as a write.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -772,14 +775,14 @@ def _getAllToolDefinitions_partAppCloner() {
         ],
         [
             name: "hub_import_native_app",
-            description: """Create a new rule/app from a previously-exported JSON via Hubitat's first-party appCloner. Pair with hub_export_native_app for round-trip edits or backup/restore workflows. Pass jsonContent (the exported JSON string) OR fromFile (a File Manager filename written by hub_export_native_app). The cloner needs an existing rule under the target parent to seed itself — pass parentHintAppId (any existing rule id under the same parent app you want the imported rule to land under, e.g. another RM rule for an RM import). Requires the Write master + confirm=true (+ a recent backup).""",
+            description: """Create a new rule/app from a previously-exported JSON via Hubitat's first-party appCloner.[[FLAT_TRIM]] Pair with hub_export_native_app for round-trip edits or backup/restore workflows.[[/FLAT_TRIM]] Pass jsonContent (the exported JSON string) OR fromFile (a File Manager filename written by hub_export_native_app). Pass parentHintAppId — any existing rule id under the target parent the imported rule should land under[[FLAT_TRIM]] (e.g. another RM rule for an RM import); the cloner needs it to seed itself[[/FLAT_TRIM]]. Requires the Write master + confirm=true (+ a recent backup).""",
             inputSchema: [
                 type: "object",
                 properties: [
                     jsonContent: [type: "string", description: "The exported JSON content. Either jsonContent or fromFile is required."],
-                    fromFile: [type: "string", description: "File Manager filename to read the JSON from. Either jsonContent or fromFile is required."],
-                    parentHintAppId: [type: "integer", description: "Any existing rule's id under the target parent app. Used purely to seed the cloner instance — has no semantic effect on the imported rule beyond placing it under the same parent."],
-                    newName: [type: "string", description: "Label for the imported app. If omitted, the cloner default ('<original-label> import') is kept."],
+                    fromFile: [type: "string", description: "File Manager filename to read the JSON from."],
+                    parentHintAppId: [type: "integer", description: "Any existing rule's id under the target parent app.[[FLAT_TRIM]] Used purely to seed the cloner instance — has no semantic effect on the imported rule beyond placing it under the same parent.[[/FLAT_TRIM]]"],
+                    newName: [type: "string", description: "Label for the imported app.[[FLAT_TRIM]] If omitted, the cloner default ('<original-label> import') is kept.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
                 // "jsonContent OR fromFile" is enforced at runtime in

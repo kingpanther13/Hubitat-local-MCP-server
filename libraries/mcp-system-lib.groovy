@@ -663,20 +663,20 @@ def toolGetHsmStatus() {
     ]
 }
 
-def toolSetHsm(mode) {
-    def validModes = ["armAway", "armHome", "armNight", "disarm"]
-    if (!validModes.contains(mode)) {
-        throw new IllegalArgumentException("Invalid HSM mode: ${mode}. Valid modes: ${validModes}")
+def toolSetHsm(armCommand) {
+    def validCommands = ["armAway", "armHome", "armNight", "disarm"]
+    if (!validCommands.contains(armCommand)) {
+        throw new IllegalArgumentException("Invalid HSM arm command: ${armCommand}. Valid commands: ${validCommands}")
     }
 
     // Capture current status BEFORE sending the change event
     def previousStatus = location.hsmStatus
-    sendLocationEvent(name: "hsmSetArm", value: mode)
+    sendLocationEvent(name: "hsmSetArm", value: armCommand)
 
     return [
         success: true,
         previousStatus: previousStatus,
-        newMode: mode
+        newMode: armCommand
     ]
 }
 
@@ -897,13 +897,13 @@ def _getAllToolDefinitions_partSystem() {
         // System Tools
         [
             name: "hub_get_info",
-            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, memory, temperature, DB size, MCP stats, and security/toggle settings.[[FLAT_TRIM]] Also surfaces the pending hub firmware/platform update (platformUpdate) + Safe Mode (safeMode). Pass includeHealthAlerts=true for the hub's full health-alerts block from /hub2/hubData (radio offline, backup failures, low memory, DB bloat, weak mesh), or includeAppUpdate=true to also check GitHub for a newer MCP server APP version (returned under appUpdate). Use this for health checks, version lookups, or when triaging hub performance. Location/PII fields (name, local IP, timezone, coordinates, zip code) are returned only when Read master is enabled; otherwise they are omitted.[[/FLAT_TRIM]]",
+            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, memory, temperature, DB size, MCP stats, and security/toggle settings. See hub_get_tool_guide(section='hub_admin_write') for the optional deep-dive flags and PII gating.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    identifyHub: [type: "boolean", description: "Blink hub LED to identify hub. Default: false.", default: false],
-                    includeHealthAlerts: [type: "boolean", description: "Include the full health-alerts block (default false).[[FLAT_TRIM]] Every /hub2/hubData alert flag + messages under healthAlerts; platformUpdate and safeMode are returned regardless.[[/FLAT_TRIM]]", default: false],
-                    includeAppUpdate: [type: "boolean", description: "Also check GitHub for a newer MCP Rule Server APP version, returned under appUpdate (default false).[[FLAT_TRIM]] Asynchronous: the first call may return latestVersion 'unknown (check in progress)' -- call again in a few seconds. Distinct from platformUpdate (the hub's own firmware). To INSTALL a pending hub firmware update, use hub_update_firmware.[[/FLAT_TRIM]]", default: false]
+                    identifyHub: [type: "boolean", description: "Blink the hub LED to identify it.", default: false],
+                    includeHealthAlerts: [type: "boolean", description: "Include the full health-alerts block.", default: false],
+                    includeAppUpdate: [type: "boolean", description: "Also check GitHub for a newer MCP Rule Server APP version, returned under appUpdate.", default: false]
                 ]
             ],
             outputSchema: [
@@ -980,15 +980,15 @@ def _getAllToolDefinitions_partSystem() {
         ],
         [
             name: "hub_manage_mode",
-            description: """⚠️ Create, rename, delete, or activate a hub location mode.[[FLAT_TRIM]] The full mode-management surface in one tool. Modes (Day/Night/Away/…) are hub-wide states apps and rules trigger on. Read current modes + ids with hub_list_modes first. delete is irreversible and breaks any app/rule referencing that mode, so it requires confirm=true + a recent backup; create/rename/activate do not.[[/FLAT_TRIM]]""",
+            description: """⚠️ Create, rename, delete, or activate a hub location mode.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    action: [type: "string", enum: ["create", "rename", "delete", "activate"], description: "create | rename | delete | activate a location mode."],
+                    action: [type: "string", enum: ["create", "rename", "delete", "activate"], description: "Which mode operation to perform."],
                     name: [type: "string", description: "New mode name (create), or the new name (rename)."],
                     mode: [type: "string", description: "Target for rename/delete/activate: id or name (from hub_list_modes)."],
-                    icon: [type: "string", description: "OPTIONAL icon for create/rename.[[FLAT_TRIM]] Font Awesome name, e.g. fa-moon, fa-sun.[[/FLAT_TRIM]]"],
-                    confirm: [type: "boolean", description: "REQUIRED for action=delete: must be true.[[FLAT_TRIM]] Confirms a backup <24h + that breaking mode references is intended.[[/FLAT_TRIM]]"]
+                    icon: [type: "string", description: "OPTIONAL icon for create/rename, e.g. fa-moon."],
+                    confirm: [type: "boolean", description: "REQUIRED for action=delete: true + a backup <24h (hub_create_backup). Confirms a backup <24h + that breaking mode references is intended."]
                 ],
                 required: ["action"]
             ],
@@ -1009,12 +1009,12 @@ def _getAllToolDefinitions_partSystem() {
         ],
         [
             name: "hub_set_mode_manager",
-            description: """Configure the hub's Mode Manager — select which manager runs and/or set its per-mode conditions.[[FLAT_TRIM]] Mode Manager is the automation that changes the location mode automatically: 'manager' selects builtIn (the Integrated Mode Manager), legacy (the legacy Mode Manager app), or app (a 3rd-party mode-manager app — only valid when one is installed). 'conditions' replaces the Integrated Mode Manager's per-mode condition set (POST /modes/easyModeManager/json) — read the current shape from hub_list_modes.modeManager.easyConditions first and modify-then-write. Read state back with hub_list_modes.[[/FLAT_TRIM]]""",
+            description: """Configure the hub's Mode Manager — select which manager runs and/or set its per-mode conditions.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    manager: [type: "string", enum: ["builtIn", "legacy", "app"], description: "Which Mode Manager to activate.[[FLAT_TRIM]] app = a 3rd-party mode-manager app, valid only when one is installed.[[/FLAT_TRIM]]"],
-                    conditions: [type: "object", description: "OPTIONAL: per-mode automation conditions to set.[[FLAT_TRIM]] Same shape as hub_list_modes.modeManager.easyConditions (keyed by mode id); read-modify-write that block.[[/FLAT_TRIM]]"]
+                    manager: [type: "string", enum: ["builtIn", "legacy", "app"], description: "Which Mode Manager to activate."],
+                    conditions: [type: "object", description: "OPTIONAL per-mode conditions keyed by mode id; REPLACES the whole set, so read-modify-write from hub_list_modes. See hub_get_tool_guide(section='hub_admin_write')."]
                 ]
             ],
             outputSchema: [
@@ -1032,7 +1032,7 @@ def _getAllToolDefinitions_partSystem() {
         ],
         [
             name: "hub_get_hsm_status",
-            description: "Get the current HSM (Hubitat Safety Monitor) armed status, any active alert, and the valid HSM arm commands.[[FLAT_TRIM]] Use this to check the security-system state or to confirm a change made via hub_set_hsm.[[/FLAT_TRIM]]",
+            description: "Get the current HSM (Hubitat Safety Monitor) armed status, any active alert, and the valid HSM arm commands. See hub_get_tool_guide(section='hub_admin_write').",
             inputSchema: [type: "object", properties: [:]],
             outputSchema: [
                 type: "object",
@@ -1047,13 +1047,13 @@ def _getAllToolDefinitions_partSystem() {
         ],
         [
             name: "hub_set_hsm",
-            description: "Set HSM mode (armAway, armHome, armNight, disarm). Always verify HSM changed after.",
+            description: "Set Hubitat Safety Monitor (HSM) arm state. Always verify HSM changed after.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    mode: [type: "string", description: "HSM mode: armAway, armHome, armNight, disarm"]
+                    armCommand: [type: "string", enum: ["armAway", "armHome", "armNight", "disarm"], description: "HSM arm command."]
                 ],
-                required: ["mode"]
+                required: ["armCommand"]
             ],
             outputSchema: [
                 type: "object",
@@ -1067,18 +1067,18 @@ def _getAllToolDefinitions_partSystem() {
         ],
         [
             name: "hub_set_system_settings",
-            description: """Set hub-GLOBAL settings: hub name, time zone, location, zip code, temperature scale, admin-UI dark mode, and network config. All optional — pass only what changes.[[FLAT_TRIM]] lat/long/timeZone/temperatureScale/zipCode are written together via one granular endpoint that read-merges current values, so omitted fields keep their value; darkMode and the network legs are each applied via separate setters (no read-back of the current value). ⚠️ Changing timeZone REBOOTS the hub (1-3 min downtime), and any network change can DISCONNECT the hub — both require confirm=true + a backup <24h; the other fields need only the Write master. Network legs apply in order (IP mode → Ethernet autoneg → WiFi) and are NOT atomic, so a mid-sequence failure leaves the earlier legs applied (see the `applied` array). Read back applied values with hub_get_info. Requires Write master.[[/FLAT_TRIM]]""",
+            description: """Set hub-GLOBAL settings: hub name, time zone, location, zip code, temperature scale, admin-UI dark mode, and network config. All optional — pass only what changes. See hub_get_tool_guide(section='hub_admin_write') for the per-field write model and reboot caveats.""",
             inputSchema: [
                 type: "object",
                 properties: [
                     hubName: [type: "string", description: "New hub name."],
-                    timeZone: [type: "string", description: "IANA time zone ID.[[FLAT_TRIM]] e.g. 'America/New_York'. ⚠️ Changing this REBOOTS the hub — requires confirm=true + a recent backup.[[/FLAT_TRIM]]"],
-                    latitude: [type: "number", description: "Latitude in decimal degrees.[[FLAT_TRIM]] e.g. 40.7128.[[/FLAT_TRIM]]"],
-                    longitude: [type: "number", description: "Longitude in decimal degrees.[[FLAT_TRIM]] e.g. -74.006.[[/FLAT_TRIM]]"],
-                    zipCode: [type: "string", description: "Postal/zip code.[[FLAT_TRIM]] e.g. '10001'.[[/FLAT_TRIM]]"],
-                    temperatureScale: [type: "string", enum: ["F", "C"], description: "Temperature scale: F or C."],
-                    darkMode: [type: "boolean", description: "Hub admin UI dark mode (true) or light (false).[[FLAT_TRIM]] Applied via /hub/applyDarkMode; no read-back of the current value.[[/FLAT_TRIM]]"],
-                    network: [type: "object", description: "⚠️ Hub network config — can DISCONNECT the hub; needs confirm=true + a backup <24h.[[FLAT_TRIM]] All sub-fields optional; only the legs you provide are applied, in order (IP mode → Ethernet autoneg → WiFi), non-atomically. ipMode='static' requires address+netmask+gateway (nameserver optional); ipMode='dhcp' uses nameserver + useDNSFallover. ethernetAutoneg toggles Ethernet autonegotiation. wifiSsid (+ wifiPassword) joins a WiFi network.[[/FLAT_TRIM]]", properties: [
+                    timeZone: [type: "string", description: "IANA time zone ID, e.g. America/New_York. ⚠️ Reboots the hub."],
+                    latitude: [type: "number", description: "Latitude in decimal degrees, e.g. 40.7128."],
+                    longitude: [type: "number", description: "Longitude in decimal degrees, e.g. -74.006."],
+                    zipCode: [type: "string", description: "Postal/zip code, e.g. 10001."],
+                    temperatureScale: [type: "string", enum: ["F", "C"], description: "Temperature scale."],
+                    darkMode: [type: "boolean", description: "Hub admin UI dark mode (true) or light (false)."],
+                    network: [type: "object", description: "⚠️ Hub network config — can DISCONNECT the hub; needs confirm=true + a backup <24h.", properties: [
                         ipMode: [type: "string", enum: ["dhcp", "static"], description: "IP mode."],
                         address: [type: "string", description: "Static IP address."],
                         netmask: [type: "string", description: "Static subnet mask."],
@@ -1089,7 +1089,7 @@ def _getAllToolDefinitions_partSystem() {
                         wifiSsid: [type: "string", description: "WiFi SSID to join."],
                         wifiPassword: [type: "string", description: "WiFi password (psk)."]
                     ]],
-                    confirm: [type: "boolean", description: "Required (must be true) for timeZone or network changes.[[FLAT_TRIM]] timeZone reboots the hub; network can disconnect it. Confirms a backup <24h + that the disruption is intended.[[/FLAT_TRIM]]"]
+                    confirm: [type: "boolean", description: "REQUIRED (true) for timeZone or network changes; both need a backup <24h (hub_create_backup)."]
                 ]
             ],
             outputSchema: [
@@ -1105,10 +1105,9 @@ def _getAllToolDefinitions_partSystem() {
         ],
         [
             name: "hub_reboot",
-            description: """⚠️ DESTRUCTIVE: Reboots the hub (1-3 min downtime, all automations stop). To install a pending hub firmware update instead, use hub_update_firmware.
+            description: """⚠️ DESTRUCTIVE: Reboots the hub (1-3 min downtime, all automations stop). To install a pending hub firmware update instead, use hub_update_firmware. Requires Write master.[[FLAT_TRIM]]
 
-PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 4) Set confirm=true
-Requires Write master.""",
+PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 4) Set confirm=true[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1130,10 +1129,9 @@ Requires Write master.""",
         ],
         [
             name: "hub_shutdown",
-            description: """⚠️ EXTREME: Powers OFF the hub (requires physical restart). NOT a reboot.
+            description: """⚠️ EXTREME: Powers OFF the hub (requires physical restart). NOT a reboot. Requires Write master.[[FLAT_TRIM]]
 
-PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user it won't restart automatically 3) Get explicit confirmation 4) Set confirm=true
-Requires Write master.""",
+PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user it won't restart automatically 3) Get explicit confirmation 4) Set confirm=true[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1155,14 +1153,13 @@ Requires Write master.""",
         ],
         [
             name: "hub_update_firmware",
-            description: """⚠️ DESTRUCTIVE: Install the hub's pending platform/firmware update. The hub downloads + installs it and then REBOOTS ITSELF (5-10 min of full downtime; all automations and device communications stop).[[FLAT_TRIM]] Uses the hub's own cloud-update path (/hub/cloud/checkForUpdate + /hub/cloud/updatePlatform). Read whether an update is pending first with hub_get_info (platformUpdate). On apply, the `available` field returns the checkForUpdate payload verbatim (version, upgrade, status, releaseNotesUrl, beta, hubCount, and the hub owner's accountEmails). Poll install progress with statusOnly=true (status IDLE when none is running); the endpoint goes dark during the reboot, then confirm the new firmwareVersion via hub_get_info.[[/FLAT_TRIM]]
+            description: """⚠️ DESTRUCTIVE: Install the hub's pending platform/firmware update. The hub downloads + installs it and then REBOOTS ITSELF (5-10 min of full downtime; all automations and device communications stop). Requires Write master.[[FLAT_TRIM]]
 
-PRE-FLIGHT (apply): 1) Ensure backup <24h old 2) Confirm an update is actually pending 3) Tell user about the downtime 4) Get explicit confirmation 5) Set confirm=true
-Requires Write master.""",
+PRE-FLIGHT (apply): 1) Ensure backup <24h old 2) Confirm an update is actually pending 3) Tell user about the downtime 4) Get explicit confirmation 5) Set confirm=true[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    statusOnly: [type: "boolean", description: "Poll /hub/cloud/checkUpdateStatus only and return without applying anything. No confirm/backup needed. Default false."],
+                    statusOnly: [type: "boolean", description: "Poll the hub's update status only and return without applying anything. No confirm/backup needed. Default false."],
                     confirm: [type: "boolean", description: "REQUIRED to apply (omit for statusOnly): must be true. Confirms a backup <24h exists and the user approved the install + reboot."]
                 ]
             ],

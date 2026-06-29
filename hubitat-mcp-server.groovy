@@ -1185,14 +1185,14 @@ def getGatewayConfig() {
             description: "Install, update, and delete hub apps, drivers, libraries, and code bundles (install/delete/export). All operations modify hub code and require Write master. Read-only counterparts (hub_get_source, list_*) live in the hub_read_apps_code gateway.",
             tools: ["hub_create_app", "hub_create_driver", "hub_update_app", "hub_update_driver", "hub_delete_item", "hub_create_library", "hub_update_library", "hub_install_bundle", "hub_delete_bundle", "hub_export_bundle"],
             summaries: [
-                hub_create_app: "Install new app code (source|sourceFile|importUrl), OR with installAsUserApp=<codeAppId> create a running instance from already-installed code (mutually exclusive). To save context prefer importUrl (hub fetches the source itself) or hub_write_file + sourceFile; inline source for stubs only. confirm=true",
+                hub_create_app: "Install new app code (source|sourceFile|importUrl), OR with codeAppId=<id> create a running instance from already-installed code (mutually exclusive). To save context prefer importUrl (hub fetches the source itself) or hub_write_file + sourceFile; inline source for stubs only. confirm=true",
                 hub_create_driver: "Install new driver. To save context prefer importUrl (hub fetches the source) or hub_write_file + sourceFile; inline source for stubs only. For 1: source|sourceFile|importUrl. For >1: USE BULK (single round-trip: installs=[{source|sourceFile|importUrl},...]). confirm=true",
                 hub_update_app: "Modify existing app code (CRITICAL), and/or enable OAuth on it. To save context prefer importUrl (hub fetches the source itself) or hub_write_file + sourceFile over inline source. Args: appId, source|sourceFile|importUrl|resave, oauth ({enabled,client_id?,client_secret?,refresh_secret?} -- enable/configure OAuth, returns the clientId/secret), confirm=true",
                 hub_update_driver: "Modify existing driver code (CRITICAL). For 1 driver: driverId+source|sourceFile|importUrl|resave. For >1 drivers: USE BULK (single round-trip: updates=[{driverId,sourceFile|importUrl},...]). To save context prefer importUrl (hub fetches) or hub_write_file + sourceFile over inline. confirm=true",
-                hub_delete_item: "Permanently delete an app/driver/library (DESTRUCTIVE, auto-backs up). Args: type (app|driver|library), id, confirm=true",
+                hub_delete_item: "Permanently delete an app/driver/library (DESTRUCTIVE, auto-backs up). Args: type (app|driver|library), item_id, confirm=true",
                 hub_create_library: "Install new Groovy library (#include namespace.Name). To save context prefer importUrl (hub fetches the source) or hub_write_file + sourceFile; inline source for stubs only. Args: source|sourceFile|importUrl, confirm=true",
                 hub_update_library: "Modify existing library code. To save context prefer importUrl (hub fetches) or hub_write_file + sourceFile over inline. Args: libraryId, source|sourceFile|importUrl|resave, confirm=true",
-                hub_install_bundle: "Install a code bundle (.zip) from a URL the way HPM does (hub fetches+unpacks into Libraries/Apps/Drivers Code). Args: importUrl (zip), primary?, confirm=true",
+                hub_install_bundle: "Install a code bundle (.zip) from a URL the way HPM does (hub fetches+unpacks into Libraries/Apps/Drivers Code). Args: importUrl (zip), installer?, confirm=true",
                 hub_delete_bundle: "Delete an installed code bundle container by id (DESTRUCTIVE; verifies via re-list). Code it delivered may remain in Code -- delete separately. Args: bundleId (from hub_list_bundles), confirm=true",
                 hub_export_bundle: "Export an installed bundle's .zip to the File Manager (downloadable at /local/<file>). Args: bundleId (from hub_list_bundles), saveAs?"
             ],
@@ -1237,7 +1237,7 @@ def getGatewayConfig() {
                 hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history + the hub's own health alerts (radio offline, backup failures, low memory, DB bloat, safeMode). Read-only by default; recordSnapshot=true also persists a snapshot. Args: recordSnapshot, trendPoints",
                 hub_get_memory_history: "Get free OS memory and CPU load history. Returns most recent entries with summary stats. Args: limit (default 100, 0 for all). Requires Read master",
                 hub_call_gc: "Force JVM garbage collection to reclaim memory. Returns before/after free memory. Requires the Write master",
-                hub_get_device_health: "Check device staleness; run network diagnostics: ICMP-ping arbitrary IPs (router, NAS, server), traceroute to one IPv4, WAN download speedtest; and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts (max 5 IPv4), pingCount (1-5), traceroute (IPv4), speedtest (bool), identifyHub",
+                hub_get_device_health: "Check device staleness; run network diagnostics: ICMP-ping arbitrary IPs (router, NAS, server), traceroute to one IPv4, WAN download speedtest; and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts (max 5 IPv4), pingCount (1-5), tracerouteHost (IPv4), speedtest (bool), identifyHub",
                 hub_get_radio_details: "Z-Wave/Zigbee/Matter radio info + the read-only radio surface (topology, per-node state, status pollers, channel scan, SmartStart, firmware lists). Args: radio (zwave|zigbee|matter, omit for Z-Wave+Zigbee), node_id?, include_topology/status/logs/channel_scan/smartstart/firmware?. Requires Read master",
                 hub_list_captured_states: "List saved device state snapshots",
                 hub_delete_captured_state: "Delete a captured state by stateId, or ALL captured states when stateId is omitted. Args: stateId (optional)"
@@ -1298,7 +1298,7 @@ def getGatewayConfig() {
                 hub_get_debug_logs: "Get MCP internal debug logs (mode='logs') or logging status (mode='status'). Args: mode, level, component (e.g. server/rule), ruleId, limit",
                 hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history + the hub's own health alerts (radio offline, backup failures, low memory, DB bloat, safeMode). Read-only by default; pass recordSnapshot=true to also append a snapshot to the File Manager. Args: recordSnapshot?, trendPoints?",
                 hub_get_memory_history: "Get free OS memory and CPU load history with summary stats. Args: limit",
-                hub_get_device_health: "Check device staleness; run network diagnostics (ICMP-ping arbitrary IPs, traceroute to one IPv4, WAN download speedtest); and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts, pingCount, traceroute, speedtest, identifyHub",
+                hub_get_device_health: "Check device staleness; run network diagnostics (ICMP-ping arbitrary IPs, traceroute to one IPv4, WAN download speedtest); and/or blink the hub identify-LED. Args: staleHours, includeHealthy, pingHosts, pingCount, tracerouteHost, speedtest, identifyHub",
                 hub_get_radio_details: "Z-Wave and/or Zigbee radio info (firmware, channel, PAN/home ID, device count), or Matter fabric/device details. Args: radio (zwave|zigbee|matter, omit for Z-Wave+Zigbee)",
                 hub_list_captured_states: "List saved device state snapshots"
             ],
@@ -1340,7 +1340,7 @@ def getGatewayConfig() {
             summaries: [
                 hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
                 hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId, action (rule/actions/stop/start, default rule). rule/actions use RMUtils; stop/start toggle the stopRule button (start also resets private boolean).",
-                hub_set_rule_paused: "Pause or resume an RM rule (RMUtils). Args: ruleId, value (true=pause, false=resume)",
+                hub_set_rule_paused: "Pause or resume an RM rule (RMUtils). Args: ruleId, paused (true=pause, false=resume)",
                 hub_set_rule_private_boolean: "Set an RM rule's private boolean (RMUtils). Args: ruleId, value (bool)",
                 hub_set_native_app: "Create or edit any classic native app (Room Lighting, Button Controller, Basic Rule, Notifier, Groups+Scenes, etc.) — generic upsert. Omit appId to create (appType, name); provide appId to edit via settings/button/walkStep. buttonRule={controllerId, buttonNumber, event} creates a Button Rule through its parent controller. Auto-backs-up before edits. For Rule Machine RULES use hub_set_rule (in hub_manage_rule_machine). Args: appId (omit=create), appType, name, settings|button|walkStep|buttonRule, pageName (opt), stateAttribute (opt), confirm.",
                 hub_delete_native_app: "Delete any classic native app (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm",
@@ -1463,7 +1463,7 @@ def getGatewayConfig() {
                 hub_set_rule: "Create or edit a Rule Machine rule (RM 5.1) — the full authoring surface. Omit appId to create (name; optionally bundle addTriggers/addActions); provide appId to edit via addTrigger / addAction / addRequiredExpression / replaceRequiredExpression / addTriggers / addActions / replaceActions / removeAction / clearActions / moveAction / removeTrigger / modifyTrigger / addLocalVariable / removeLocalVariable / patches / walkStep, or raw settings/button. Auto-backs-up first. Args: appId (omit=create), name, <shortcut>|settings|button, confirm.",
                 hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (RMUtils — RM only)",
                 hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId, action (rule/actions/stop/start, default rule)",
-                hub_set_rule_paused: "Pause or resume an RM rule. Args: ruleId, value (true=pause, false=resume)",
+                hub_set_rule_paused: "Pause or resume an RM rule. Args: ruleId, paused (true=pause, false=resume)",
                 hub_set_rule_private_boolean: "Set an RM rule's private boolean. Args: ruleId, value (bool)",
                 hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, BROKEN markers, configPage errors, multiple-flag corruption. Args: appId, source",
                 hub_list_rule_local_variables: "List a Rule Machine rule's local variables (name/type/value) from state.allLocalVars. Distinct from hub_list_variables (hub globals). Args: appId",
@@ -1491,11 +1491,11 @@ def getGatewayConfig() {
             tools: ["hub_list_dashboards", "hub_get_dashboard", "hub_create_dashboard", "hub_update_dashboard", "hub_delete_dashboard", "hub_clone_dashboard"],
             summaries: [
                 hub_list_dashboards: "List Easy Dashboards (id, name, tile/theme config). Args: pinToken? (optional; resolved automatically)",
-                hub_get_dashboard: "Get one Easy Dashboard's full config by id (list-then-filter). Args: id, pinToken?",
+                hub_get_dashboard: "Get one Easy Dashboard's full config by id (list-then-filter). Args: dashboardId, pinToken?",
                 hub_create_dashboard: "Create an Easy Dashboard. Args: name, deviceIds (>=1), tile toggles?, navigationSelection?, theme?, pins?",
-                hub_update_dashboard: "Replace an Easy Dashboard's config wholesale (pass the FULL config). Args: id, name, deviceIds (>=1), tile toggles?, theme?",
-                hub_delete_dashboard: "Permanently delete an Easy Dashboard (DESTRUCTIVE). Args: id, confirm=true",
-                hub_clone_dashboard: "Clone an Easy Dashboard into a copy (clone-by-value). Args: id"
+                hub_update_dashboard: "Replace an Easy Dashboard's config wholesale (pass the FULL config). Args: dashboardId, name, deviceIds (>=1), tile toggles?, theme?",
+                hub_delete_dashboard: "Permanently delete an Easy Dashboard (DESTRUCTIVE). Args: dashboardId, confirm=true",
+                hub_clone_dashboard: "Clone an Easy Dashboard into a copy (clone-by-value). Args: dashboardId"
             ],
             searchHints: [
                 hub_list_dashboards: "list show easy dashboards dashboard tiles panels touch UI screen wall tablet",
@@ -1511,7 +1511,7 @@ def getGatewayConfig() {
             tools: ["hub_list_dashboards", "hub_get_dashboard"],
             summaries: [
                 hub_list_dashboards: "List Easy Dashboards (id, name, tile/theme config). Args: pinToken? (optional; resolved automatically)",
-                hub_get_dashboard: "Get one Easy Dashboard's full config by id (list-then-filter). Args: id, pinToken?"
+                hub_get_dashboard: "Get one Easy Dashboard's full config by id (list-then-filter). Args: dashboardId, pinToken?"
             ],
             searchHints: [
                 hub_list_dashboards: "list show easy dashboards dashboard tiles panels touch UI screen wall tablet read",
@@ -2341,7 +2341,7 @@ def executeTool(toolName, args) {
         case "hub_update_mcp_settings": return toolUpdateMcpSettings(args)
         case "hub_update_package": return toolUpdatePackage(args)
         case "hub_get_hsm_status": return toolGetHsmStatus()
-        case "hub_set_hsm": return toolSetHsm(args.mode)
+        case "hub_set_hsm": return toolSetHsm(args.armCommand)
         case "hub_set_system_settings": return toolSetSystemSettings(args)
 
         // Captured State Management
@@ -5265,7 +5265,11 @@ pointer to THAT tool's own guide section -- follow it for the failing tool's ref
 - Destructive writes: create a backup with hub_create_backup within 24h and pass confirm=true;
   destructive tools refuse otherwise.''',
 
-        hub_admin_write: '''## Destructive Write Tools - Pre-Flight Checklist
+        hub_admin_write: '''## Admin, System & Destructive Write Tools
+
+This section covers the hub-admin and system tools (hub info, location modes, HSM status, system settings) AND the destructive write tools. The read-only / non-destructive entries below (e.g. hub_get_info, hub_list_modes, hub_get_hsm_status, the create/rename/activate mode actions) need no confirm; only the destructive writes require the pre-flight checklist.
+
+### Destructive Write Tools - Pre-Flight Checklist
 
 All Write master tools require these steps:
 1. Backup check: Ensure hub_create_backup was called within the last 24 hours
@@ -5292,7 +5296,222 @@ All Write master tools require these steps:
 
 **hub_delete_room** - Devices become unassigned (not deleted). List affected devices first.
 
-**hub_delete_item (type=app|driver|library)** - Remove app instances via Hubitat UI first (apps). Change devices to different driver first (drivers). For libraries, check that no apps/drivers reference the library via #include namespace.Name before deleting -- deletion breaks any code that still includes it. Auto-backs up before deletion.''',
+**hub_delete_item (type=app|driver|library)** - Remove app instances via Hubitat UI first (apps). Change devices to different driver first (drivers). For libraries, check that no apps/drivers reference the library via #include namespace.Name before deleting -- deletion breaks any code that still includes it. Auto-backs up before deletion.
+
+### hub_call_zwave (Z-Wave lifecycle action grouping + routing)
+
+- Action groups: repair_start/repair_cancel + repair_node (network rebuild); inclusion_start/inclusion_stop + grant_keys/grant_code (S2 pairing); exclusion_start/exclusion_stop; node_refresh/node_rediscover/node_reinitialize + refresh_stats (per-node maintenance); node_replace + node_replace_stop; node_remove (failed-node removal); antenna_test_start/antenna_test_continue; smartstart_delete.
+- S2 pairing payloads: grant_keys takes the granted security classes, e.g. {S2AccessControl:true, S2Authenticated:true, S2Unauthenticated:false, S0Unauthenticated:false}; grant_code (DSK confirmation) takes e.g. {accept:true, securityCode:'12345'}.
+- Poll repair/operation progress with hub_get_radio_details(include_status=true). (repair_start duration/disruption and off-peak guidance: see the repair_start note above.)
+- Related radio tools: enable/disable, region, and long-range channel via hub_set_zwave; radio reset (unpairs every device) and Z-Wave firmware flashes via hub_call_destructive_ops.
+
+### hub_set_zigbee (configure the Zigbee radio: enable/disable, channel/power, radio settings, per-device ping)
+
+- Idempotent config, one operation per call; read current values first with hub_get_radio_details(radio='zigbee'). Disabling the radio strands every Zigbee device and is confirm-gated (confirm=true + backup <24h).
+- **Channel changes** can drop devices that do not follow the new channel (they may need re-pairing); a channel/power update returns a `warning` describing the disruption.
+- **Radio settings** (rebuild_on_reboot / ping_inactive) MERGE over current values -- an unspecified flag is preserved, so pass only the flag you intend to change.
+- **Sibling tools:** for reboot / rebuild-network / channel-scan use hub_call_zigbee; for radio reset or firmware flash use hub_call_destructive_ops.
+
+### hub_call_destructive_ops — firmware-flash action reference
+
+The radio firmware-flash `action` values (the bullet above summarizes these as "a firmware flash"; an interrupted flash can brick hardware — never power-cycle during one):
+- `device_firmware_start` — Z-Wave device firmware OTA. Requires `node_id` + `file_name` (`file_name` comes from hub_get_radio_details(include_firmware=true)); optional `target_index` defaults to `node_id`.
+- `device_firmware_abort` — abort an in-progress Z-Wave device flash. Requires `node_id`.
+- `zwave_chip_firmware` — flash the hub's own Z-Wave radio chip (no extra args).
+- `zigbee_firmware` — update the Zigbee radio to the latest firmware (no extra args).
+
+(Matter supports only `reset`, no firmware flash.)
+
+### hub_call_matter (Matter radio: enable/disable, pair, open pairing window)
+
+- After `action=pair` (the 11- or 21-digit Matter setup code), poll commissioning progress with hub_get_radio_details(radio='matter', include_status=true).
+- Matter requires a C-8 / C-8 Pro hub on supported firmware; the failure note repeats this.
+- `action=open_pairing_window` opens a share window for a commissioned node_id; the response carries the setup code to add that device to another fabric.
+- To RESET the Matter fabric (wipes commissioning, unpairs every Matter device) use hub_call_destructive_ops(target='matter', action='reset').
+
+### hub_set_zwave (configure the Z-Wave radio: enable/disable, region, long-range channel)
+
+- Config updates preserve the radio's other current settings: a region or long-range-channel change keeps the current `enabled` and `secureJoin` values. The hub's zwaveDetails update is a full-replacement endpoint (it takes the complete param set, not a partial patch), so the tool reads current state first and overrides only what you changed.
+- Disabling the radio strands every Z-Wave device, so it is confirm-gated (confirm=true plus a hub backup <24h).
+- Scope routing: for repair / inclusion (join + S2 grants) / exclusion / per-node maintenance use hub_call_zwave; for radio reset or firmware flash use hub_call_destructive_ops.
+
+### hub_call_zigbee (non-idempotent Zigbee radio ops)
+- Actions: radio_reboot (restart the Zigbee chip), rebuild_network (rebuild the mesh), channel_scan (trigger an energy scan). No confirm gate, but the Write master applies.
+- rebuild_network takes time; Zigbee devices may be briefly unresponsive during the rebuild.
+- Read channel_scan results with hub_get_radio_details(include_channel_scan=true).
+- For enable/disable, channel, or power use hub_set_zigbee (idempotent config); for radio reset or firmware flash use hub_call_destructive_ops.
+
+
+### hub_update_app (modify existing app code, and/or enable/configure OAuth)
+
+- **Self-update guard rationale:** the tool refuses to overwrite the MCP server's own app source or OAuth unless Developer Mode is on because a bad self-update bricks the MCP loop — the server app's own OAuth backs the live `/mcp` token.
+- **`triggerUpdated`:** OPTIONAL post-save lifecycle refresh. Set it to the running instance appId to fire `updated()` so subscriptions/schedules re-initialize. UI Save does NOT fire `updated()`, so this is opt-in only.
+- **`oauth` param shape:** `{enabled (bool, default true), client_id?, client_secret?, refresh_secret? (bool, regenerate the secret)}`. Omit `client_id`/`client_secret` to preserve current values; if they are unreadable the tool refuses (`success:false`) rather than blanking them. Resulting credentials return under `result.oauth`.
+
+### hub_create_app (install new app code, then instantiate a running instance)
+
+**codeAppId second-step mode** (pass the `codeAppId` from a prior code-install `hub_create_app` call to instantiate already-installed code AND commit the install; mutually exclusive with the code-install args):
+- Submits the config page's Done, firing `installed()`/`initialize()` so the instance's schedules and event subscriptions register.
+- Works for apps whose first page installs with defaults.
+- A required first-page input with no default blocks the auto-Done (same behavior as the Hubitat UI) -- in that case the install cannot be auto-committed.
+
+
+### hub_update_app / hub_update_driver — expectedVersion (optimistic-lock guard)
+
+`expectedVersion` aborts the write with `conflict:true` on a version mismatch. Stringified integers are coerced; an explicit null is rejected. In bulk driver updates, put `expectedVersion` inside each `updates[]` entry.
+
+
+### hub_call_device_command
+
+**Response `state` snapshot.** Returns a `state` snapshot (per-attribute value + freshness timestamp) read AS OF the command. To get the CONFIRMED resulting state, pass `waitFor` to block-poll until the attribute converges; without it, confirm separately via hub_get_device_attribute. The snapshot is an immediate read taken in the same request that fires the command, so it shows the PRE-effect value -- even for virtual/local devices -- because the hub commits the change after this request returns; the per-attribute timestamp is the freshness signal. With `waitFor`, the `state` snapshot reflects the converged value and a `waitFor` result block reports convergence.
+
+**`parameters` arg.** Omit for no-arg commands like on/off. Each element is a string; numbers and JSON-object values are passed as strings (e.g. `["{\"hue\":0,\"saturation\":100,\"level\":50}"]`) and coerced hub-side.
+
+**`waitFor` arg.** comparator (eq/ne/gt/gte/lt/lte/between) and stableForMs (debounce) work as on hub_get_device_attribute. BLOCKS the request up to timeoutMs and queues concurrent MCP calls; reuses the hub_get_device_attribute poll engine.
+
+### hub_call_device_swap
+
+Drives the hub's built-in Swap Device tool; use to migrate device references to new hardware or swap out a failing device without editing each automation.
+
+The hub only offers compatible replacement devices: an incompatible to_device_id fails with a structured error listing the compatible options.
+
+### hub_call_device_replace
+
+DESTRUCTIVE. Re-points `old_device_id` onto `new_device_id`'s node; the new hardware adopts the OLD id, so the old device's rules and dashboard tiles stay intact. Use when a Z-Wave/Zigbee device died and you paired a compatible replacement.
+
+Differs from `hub_call_device_swap`, which instead migrates references onto the NEW device's id.
+
+**Two-step flow:**
+1. Call with `list_options=true` first to read the hub's compatible replacement candidates for `old_device_id` (read-only, no confirm).
+2. Pick one as `new_device_id`, then call again with `confirm=true`.
+
+**Apply-path pre-flight** (in addition to the standard destructive checklist above — backup <24h, user approval, `confirm=true`): a compatible `new_device_id`.
+
+**Parameters:**
+- `old_device_id` — the device to replace; its id is preserved. Comes from `hub_list_devices`.
+- `new_device_id` — the compatible replacement device; its hardware is adopted under the old id. Required to apply; omit when `list_options=true`.
+- `confirm` — required to apply (omit for `list_options`); must be true. Confirms a backup <24h + user approval (see the standard destructive checklist above).
+
+### hub_create_device
+
+Creates a device from a driver TYPE id (the `id` from `hub_list_drivers(include='all')`). Requires the Write master + `confirm=true`. Scope and routing:
+
+- For built-in LAN/integration/cloud and software/component drivers with no pairing flow.
+- NOT for Z-Wave/Zigbee/Matter hardware -- pair those with `hub_call_zwave`/`zigbee`/`matter`. A radio driver created here is a non-functional orphan shell; the response warns.
+- For MCP-managed virtual devices use `hub_manage_virtual_device` instead.
+
+
+### hub_get_info
+
+Read-only diagnostics tool. Beyond the default payload (model, firmware, uptime, memory, temperature, DB size, MCP stats, security/toggle settings), it always returns two extra fields and supports two optional deep-dive flags. Use it for health checks, version lookups, or when triaging hub performance.
+
+**Always returned (regardless of the flags below):**
+- `platformUpdate` — the pending hub FIRMWARE/platform update (see the hub_update_firmware entry above, which installs it).
+- `safeMode` — whether the hub is running in Safe Mode (from /hub2/hubData; absent if /hub2/hubData was unreadable).
+
+**`includeHealthAlerts=true`** (default false): returns the hub's full health-alerts block from /hub2/hubData — every /hub2/hubData alert flag plus the hub's message strings, under `healthAlerts`. Covers radio offline, backup failures, low memory, DB bloat, and weak mesh. `platformUpdate` and `safeMode` are returned whether or not this flag is set.
+
+**`includeAppUpdate=true`** (default false): also checks GitHub for a newer MCP (Rule) Server APP version, returned under `appUpdate`. The check is ASYNCHRONOUS — the first call may return `latestVersion: 'unknown (check in progress)'`; call again in a few seconds. This is DISTINCT from `platformUpdate` (the hub's own firmware). To INSTALL a pending hub firmware update, use hub_update_firmware.
+
+**PII / Read master gating:** Location/PII fields (name, local IP, timezone, coordinates, zip code) are returned ONLY when the Read master is enabled; otherwise they are omitted.
+
+### hub_list_modes
+
+- Use it to get valid mode names + ids (hub-specific, e.g. Day/Night/Away) before activating/renaming/deleting a mode.
+
+### hub_manage_mode
+
+Create, rename, delete, or activate a hub location mode — the full mode-management surface in one tool. Modes (Day/Night/Away/…) are hub-wide states that apps and rules trigger on. Read the current modes + ids with `hub_list_modes` first.
+
+**Actions:** `create` | `rename` | `delete` | `activate` a location mode.
+
+- **delete** is irreversible and breaks any app/rule referencing that mode, so it requires `confirm=true` + a recent backup. The `confirm` flag (must be `true` for `action=delete`) confirms a backup <24h AND that breaking those mode references is intended.
+- **create / rename / activate** do NOT require confirm.
+- **icon** (OPTIONAL, for create/rename) — a Font Awesome name, e.g. `fa-moon`, `fa-sun`.
+
+### hub_set_mode_manager
+
+Configure the hub's Mode Manager — select which manager runs and/or set its per-mode conditions. Mode Manager is the automation that changes the location mode automatically.
+
+**`manager`** — which Mode Manager to activate:
+- `builtIn` — the Integrated Mode Manager
+- `legacy` — the legacy Mode Manager app
+- `app` — a 3rd-party mode-manager app, valid only when one is installed
+
+**`conditions`** (OPTIONAL) — per-mode automation conditions to set. Replaces the Integrated Mode Manager's per-mode condition set (`POST /modes/easyModeManager/json`). Same shape as `hub_list_modes.modeManager.easyConditions` (keyed by mode id). Read the current shape from `hub_list_modes.modeManager.easyConditions` first, then modify-then-write (read-modify-write that block).
+
+Read state back with `hub_list_modes`.
+
+### hub_get_hsm_status
+
+Use this to check the security-system state or to confirm a change made via hub_set_hsm.
+
+### hub_set_system_settings
+
+Set hub-GLOBAL settings: hub name, time zone, location (latitude/longitude), zip code, temperature scale, admin-UI dark mode, and network config. All fields optional — pass only what changes.
+
+**Write model:**
+- `latitude`, `longitude`, `timeZone`, `zipCode`, `temperatureScale` (plus `hubName`) are written together via ONE granular endpoint that read-merges the current values, so omitted fields keep their current value.
+- `darkMode` and the network legs are each applied via SEPARATE setters, with NO read-back of the current value. `darkMode` is applied via `/hub/applyDarkMode`.
+- Read back applied values with `hub_get_info`.
+
+**Safety gating:**
+- Changing `timeZone` REBOOTS the hub (1-3 min downtime).
+- Any `network` change can DISCONNECT the hub.
+- `timeZone` and `network` changes therefore require `confirm=true` plus a backup <24h. All other fields need only the Write master (no confirm). The `confirm` parameter (must be `true`) confirms a backup <24h exists and that the disruption is intended.
+
+**Network config (`network` object):**
+- All sub-fields optional; only the legs you provide are applied, in order — IP mode → Ethernet autoneg → WiFi — and the sequence is NOT atomic, so a mid-sequence failure leaves the earlier legs applied (see the `applied` array in the response).
+- `ipMode='static'` requires `address` + `netmask` + `gateway` (`nameserver` optional).
+- `ipMode='dhcp'` uses `nameserver` + `useDNSFallover`.
+- `ethernetAutoneg` toggles Ethernet autonegotiation.
+- `wifiSsid` (+ `wifiPassword`) joins a WiFi network.
+
+**Parameter examples / formats:**
+- `timeZone` — IANA time zone ID, e.g. `America/New_York`. Changing it reboots the hub — requires `confirm=true` + a recent backup.
+- `latitude` — decimal degrees, e.g. `40.7128`.
+- `longitude` — decimal degrees, e.g. `-74.006`.
+- `zipCode` — postal/zip code, e.g. `10001`.
+- `temperatureScale` — `F` or `C`.
+
+### hub_update_firmware
+
+Uses the hub's own cloud-update path (`/hub/cloud/checkForUpdate` + `/hub/cloud/updatePlatform`).
+
+On apply, the `available` field returns the checkForUpdate payload verbatim: `version`, `upgrade`, `status`, `releaseNotesUrl`, `beta`, `hubCount`, and the hub owner's `accountEmails`.
+
+Poll install progress with `statusOnly=true` (`status` is IDLE when none is running); the endpoint goes dark during the reboot, then confirm the new `firmwareVersion` via `hub_get_info`.
+
+
+### hub_update_mcp_settings
+
+**`selectedDevices` — the MCP device-access scope.** Pass `{"mode":"replace"|"add"|"remove", "ids":[<device id strings>], "allowEmpty":<bool>}` -- or a bare array as shorthand for replace (`{"selectedDevices":["42","108"]}` == `{mode:"replace", ids:["42","108"]}`).
+
+- `replace` sets the authorized set to exactly `ids`.
+- `add` unions `ids` with the current set (safest for "grant one device" -- no need to re-enumerate the whole list).
+- `remove` subtracts `ids`.
+
+For replace/add every id is validated against the full hub device list (discover ids via `hub_list_devices(scope='all')`, each carries an `mcpAuthorized` flag) -- one unknown id rejects the whole batch and nothing is written; `remove` does not validate (removing an absent/since-deleted id is a no-op). Refuses to empty the scope unless `allowEmpty:true`.
+
+**Deliberately NOT allowlisted:**
+- `enableWrite` -- would disable this tool's own write path mid-session.
+- `enableDeveloperMode` -- lockout protection; must stay UI-only to disable.
+- `disabled_tools` / `disabled_gateways` -- could self-disable this tool.
+
+**Schema refresh / reconnect.** Changing an `enable*` toggle, `useGateways`, or `publishOutputSchemas` reshapes `tools/list`; changing `selectedDevices` changes which devices are visible. So MCP clients may need to reconnect to refresh cached schemas / device visibility.
+
+### hub_update_package
+
+Deploys every declared library bundle + app from the manifest at `ref`, saving the running self app LAST (its recompile can drop the response, #237). Does NOT touch app instances, undeclared drivers, or anything outside this package's manifest.
+
+**Brick-safe:** if ANYTHING before the self app save fails (app/manifest fetch, an unresolved app class, a bundle install, a non-self app), it aborts BEFORE touching the self app -- the running server is left exactly as-is and still updatable via hub_update_app, the always-available escape hatch. Self-modification is gated by this tool's own enableDeveloperMode check (it deploys by Apps Code CLASS id, so hub_update_app's instance-id self-update guard does not fire here).
+
+**Why an unmerged PR installs:** plain Hubitat Package Manager Repair reads only the PUBLISHED manifest, so it can't reach an unmerged PR's artifacts. This tool instead anchors to `packageManifest.json` AT `ref`.
+
+**Developer Mode visibility:** when Developer Mode is off the tool is hidden from `tools/list` entirely (catalog-hidden, not merely runtime-refused).
+
+**`baseUrl`:** per-call source URLs are built as `<baseUrl>/<ref>/<path>` (`baseUrl` carries no trailing slash, no ref/path). It exists to point at forks / CI branches on a different remote.
+''',
 
         virtual_devices: '''## Virtual Device Types
 
@@ -5325,7 +5544,24 @@ Use `customDriver={namespace, name}` instead of `deviceType` to instantiate any 
 MCP-managed virtual devices:
 - Auto-accessible to all MCP tools without manual selection
 - Appear in Hubitat UI for Maker API, Dashboard, Rule Machine
-- Use hub_manage_virtual_device(action="delete") to remove (not hub_delete_device)''',
+- Use hub_manage_virtual_device(action="delete") to remove (not hub_delete_device)
+
+### hub_manage_virtual_device
+
+**action="create" — `deviceType` vs `customDriver`:** Supplying both is an error, including a blank/whitespace `deviceType` supplied alongside `customDriver`.
+
+**action="create" response shape:**
+`{success, message, tips, device: {id, name, label, deviceNetworkId, driverNamespace, driverType, typeName (deprecated alias for driverType -- prefer driverType), capabilities, commands, attributes}}`
+
+**action="create" error surfaces:**
+- Built-in `deviceType` not-found surfaces as a platform error (`isError`).
+- `customDriver` not-found surfaces as an input error (`-32602`) with a `hub_list_drivers` hint.
+
+**`customDriver` object:** Both fields (`namespace`, `name`) are required.
+
+**action="delete" response shape:**
+`{success, deviceId, deviceNetworkId, deviceLabel, message}`
+''',
 
         update_device: '''## hub_update_device Properties
 
@@ -5353,7 +5589,12 @@ MCP-managed virtual devices:
 
 **defaultCurrentState:** the attribute shown in the Status column on the Devices/Rooms pages. Use an attribute name from the device's current states (e.g. "switch", "temperature"); "" selects None.
 
-**tags:** array of strings; REPLACES the full tag set ([] clears all). Applied via the wholesale device-edit form, which preserves the device's other fields.''',
+**tags:** array of strings; REPLACES the full tag set ([] clears all). Applied via the wholesale device-edit form, which preserves the device's other fields.
+
+### hub_update_device
+
+**showOnHome:** the quick status-bar summaries this device count feeds are the per-category counts (climate / lights / locks / etc.).
+''',
 
         rules: '''## Rule Structure Reference
 
@@ -5367,6 +5608,7 @@ NOTE: this section describes the LEGACY custom MCP rule engine (the custom_* too
 - Multi-device: {"type":"device_event","deviceIds":["id1","id2"],"attribute":"switch","value":"on","matchMode":"all"}
 - button_event: {"type":"button_event","deviceId":"id","action":"pushed|held|doubleTapped","buttonNumber":1}
 - time: {"type":"time","time":"08:30"} or {"type":"time","sunrise":true,"offset":30} or {"type":"time","sunset":true,"offset":-15} — offset in minutes (positive=after, negative=before)
+- sunrise / sunset / sun: standalone trigger-`type` shortcuts that normalize to a time trigger (normalizeTrigger maps "sun" to a time trigger); equivalent to the canonical {"type":"time","sunrise":true} form above
 - periodic: {"type":"periodic","interval":5,"unit":"minutes|hours|days"}
 - mode_change: {"type":"mode_change","fromMode":"Away","toMode":"Home"} — both optional
 - hsm_change: {"type":"hsm_change","status":"armedAway|armedHome|armedNight|disarmed|intrusion"} — optional
@@ -5414,7 +5656,52 @@ NOTE: this section describes the LEGACY custom MCP rule engine (the custom_* too
 - capture_state: Capture device states for later restore — {deviceIds, stateId? (optional, default "default")}
 - restore_state: Restore previously captured states — {stateId? (optional, default "default")}
 - send_notification: Send a notification to a device — {deviceId, message}
-- variable_math: Arithmetic on variables — {variableName, operation: add|subtract|multiply|divide|modulo|set, operand, scope: local|global}''',
+- variable_math: Arithmetic on variables — {variableName, operation: add|subtract|multiply|divide|modulo|set, operand, scope: local|global}
+
+### hub_get_custom_rule
+
+Read-only inspect of an existing custom rule. It stays usable when the Custom Rule Engine toggle is OFF (read-only mode): you can still list and inspect existing custom rules, while create/modify/delete are hidden.
+
+### hub_create_custom_rule
+
+Creates a new automation rule in the LEGACY custom MCP rule engine (the `custom_*` tools described by the Rule Structure Reference above). The custom MCP rule engine is now considered legacy: existing custom rules continue to fire and this engine will receive bug fixes if reported, but new feature work goes to native Rule Machine. THIS tool creates MCP-managed sandbox rules that fire as installed apps but are NOT visible in Hubitat's RM UI; only use when explicitly asked for that or for backward compatibility with existing `custom_*` rules.
+
+At least one trigger and at least one action are required. The per-type fields for every trigger, condition, and action are in the Triggers / Conditions / Actions reference above. Concrete shape examples for the array members:
+- `triggers` member: `{"type":"time","time":"sunset"}`
+- `conditions` member: `{"type":"mode","mode":"Night"}`
+- `actions` member: `{"type":"device_command","deviceId":"42","command":"on"}`
+
+### hub_update_custom_rule
+
+Updates an existing MCP custom-engine rule in place; only the fields you supply change (use `enabled=true/false` to enable/disable).
+
+- Replacing `triggers`/`conditions`/`actions` overwrites that whole array -- it is **not** a merge. If you only want to tweak part of a rule, get the current rule via `hub_get_custom_rule` first, then send back the full modified array.
+- For the trigger/condition/action structure, see the Triggers / Conditions / Actions reference above in this same section (Rule Structure Reference).
+- Verify changes after updating.
+- **Read-only mode (Custom Rule Engine toggle OFF):** only the `enabled` field is accepted. Structural changes (`triggers`, `conditions`, `actions`, `name`) require the toggle to be ON.
+
+### hub_test_custom_rule
+
+Use this to validate a rule's logic after creating or updating it. Returns per-condition results, `wouldExecute`, and the list of actions that would have run. Applies only to MCP custom rules; for native Rule Machine use `hub_manage_native_rules_and_apps`.
+
+### hub_export_custom_rule
+
+Returns the full rule data plus a device manifest listing all referenced devices, and writes a `.json` file to the File Manager (pass `saveAs` for the filename; defaults to a generated name).
+
+### hub_import_custom_rule
+
+Use this to restore a backup or copy a rule between hubs. Import creates a NEW rule with a fresh ruleId; it does not overwrite an existing rule.
+
+- **deviceMapping (optional)** remaps the exported device IDs onto this hub's devices, e.g. `{"old_id": "new_id"}`. Unmapped IDs are kept as-is, so verify device references after import.
+- Verify the rule after creation.
+
+### hub_clone_custom_rule
+
+Duplicates an existing MCP custom-engine rule into a new, independent rule with its own ruleId (same triggers/conditions/actions and device references as the source).
+
+- The clone starts **DISABLED** so you can review and adjust it before activating via `hub_update_custom_rule(enabled=true)`.
+- Use this to base a new rule on an existing one.
+''',
 
         backup: '''## Backup System
 
@@ -5433,7 +5720,25 @@ NOTE: this section describes the LEGACY custom MCP rule engine (the custom_* too
 ### Rule Backups (Automatic)
 - hub_delete_custom_rule auto-backs up to File Manager as mcp_rule_backup_<name>_<timestamp>.json
 - Restore via: hub_read_file → hub_import_custom_rule
-- Skip backup: set testRule=true when creating/updating''',
+- Skip backup: set testRule=true when creating/updating
+
+### hub_create_backup
+
+Also sets the hub's automatic-backup schedule. Pass a `schedule` object {hour 0-23, minute 0-59, localBackupFrequency, cloudBackupFrequency (days; enum 0,1,2,3,5,7,14,21,28; 0=off)}. `scheduleOnly=true` (with a schedule) sets the schedule only and creates no backup. Omitted schedule fields are read-merged (keep their current value). If cloud backup is or stays enabled you MUST pass `cloudBackupPassword` (the hub does not expose it for read-back), or pass `cloudBackupFrequency=0` to disable cloud backup -- otherwise the call is refused (a wholesale write would blank the password).
+
+### hub_list_backups
+
+`scope=source` (default) lists auto-created code backups, each with a `backupKey`. `scope=hub_local` / `hub_cloud` / `hub` / `all` return whole-hub DB backups under `hubLocalBackups` / `hubCloudBackups`. A local backup's `name` and a cloud backup's `path` feed hub_restore_backup and hub_delete_backup.
+
+### hub_get_backup
+
+Reads the saved source from one backup -- use it to inspect or diff a prior version before restoring (to re-apply, use hub_restore_backup, not this tool). Large sources are omitted from the response (`sourceTooLargeForResponse=true`) with a File Manager download link instead.
+
+### hub_restore_backup
+
+- `scope=source` (default) -- restore an app/driver/rule by `backupKey` (for deleted code use hub_create_*; deleted rules DO recreate).
+- `scope=hub_local` (`fileName`) and `scope=hub_cloud` (`path` + `cloudBackupPassword`) -- restore the WHOLE hub DB and REBOOT the hub.
+- `scope=hub_uploaded` -- upload an external `.lzf` fetched from `backupUrl`, then restore (open-world).''',
 
         file_manager: '''## File Manager
 
@@ -5447,7 +5752,16 @@ Files stored at http://<HUB_IP>/local/<filename>
 
 **Chunked reading:**
 - Use offset and length for files >60KB
-- Each chunk must be <60KB''',
+- Each chunk must be <60KB
+- Follow `nextOffset` while `hasMore` is true to read the next chunk
+
+### hub_list_files
+
+Use to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. **Cursor pagination:** page size 100 -- omit the cursor for an unbounded list; pass "" for the first page and iterate `nextCursor`.
+
+### hub_read_file
+
+Use after hub_list_files to fetch a named file (config, backup, exported rule/app, CSV). For files >60KB use the chunked-reading loop above.''',
 
         performance: '''## Performance Tips
 
@@ -5460,20 +5774,135 @@ Files stored at http://<HUB_IP>/local/<filename>
 - fields=[...] projects named fields only: currentStates and attributes are the expensive ones (per-device hub reads) -- project those out to save hub CPU; capabilities and commands are in-memory and cheap. id is always included regardless of projection. Unknown field names throw.
 
 **hub_list_device_events:**
-- Default limit 10, recommended max 50
-- Higher values (100+) may cause delays
-
-**hub_get_logs:**
-- Default 100 entries, max 500
-- Use level and source filters to narrow results
-
-**hub_list_device_events:**
 - Default: most-recent events for a device (deviceId + limit)
 - Add hoursBack for up to 7 days of relative history; omit deviceId for location-level events (mode/HSM/hub variable)
 - Add since for an absolute bookmark -- return only events AFTER an exact timestamp (ISO-8601 in the same format the tool emits in date/sinceTimestamp -- a numeric offset with no colon, e.g. 2026-06-23T10:00:00.000-0600; a trailing Z for UTC and a millis-less variant are also accepted -- or epoch milliseconds). since takes precedence over hoursBack; a future since yields an empty list. Both since and hoursBack route to history mode
 - Change-watching loop: record a returned event date, run your action, then pass that date back as since to get exactly the new events. The response echoes sinceMode ("explicit" when since drove it, "relative" for hoursBack) and the bounding field (since or hoursBack)
 - appId (mutually exclusive with deviceId) returns the events an installed app/rule emitted; rows are {name, value, description, date}
-- Use the attribute filter to reduce data volume''',
+- Use the attribute filter to reduce data volume
+
+### hub_get_logs (filter pipeline, regex, and time-window reference)
+
+- Filter pipeline order: scope (deviceId/appId, server-side) -> level -> source -> pattern -> patterns -> time window (since/until) -> limit.
+- `pattern` / `patterns`: the regex matches the log message field ONLY (use `source` for app/device-name substring matching); it is compiled once and throws on invalid regex syntax. A pathological regex like `(.*)*` may hang the matcher -- prefer simple alternation (`error|fail`) or anchored prefixes.
+- `pattern` and `patterns` are compatible: when both are supplied, both apply simultaneously.
+- `patternMode` is case-insensitive ('ANY' and 'any' both work).
+- `since`/`until` relative offsets are subtracted from now; the max relative offset is 30d and a larger offset throws -- use an ISO-8601 timestamp for longer ranges.
+- Timestamps without a TZ marker (e.g. '2024-01-15T10:30:00' or '2024-01-15 10:30:00.000') are parsed as UTC. '0m' / '0d' is a degenerate `since` that filters out everything older than now (useful for test harnesses, rarely otherwise).
+- `until` defaults to now (no upper bound); pair it with `since` for a window, e.g. since='2h', until='1h' means '1 to 2 hours ago'.
+- `cursor`: filters + limit apply first, then the cursor pages within the filtered result (page size 100).
+
+### hub_get_radio_details (read-only Z-Wave/Zigbee/Matter radio surface)
+
+- Covers radio details (firmware, home/PAN ID, channel, device nodes), mesh topology, per-node state, lifecycle status pollers, channel scan, SmartStart entries, and firmware-eligible devices.
+- Pairs with the write tools in hub_manage_radio (hub_set_zwave / hub_set_zigbee / hub_call_zwave / hub_call_zigbee / hub_call_matter) and the destructive resets/firmware in hub_call_destructive_ops.
+- include_topology shape (Z-Wave/Zigbee only): Z-Wave returns nodes+connectors plus the raw route table; Zigbee returns children+neighbors+routes.
+- node_id result location: Z-Wave node state lands under result.nodeState (plain text; 'Done' when idle); Matter commissioning status (radio='matter') lands under result.matterPairStatus.
+- include_status (result.status) contents: Z-Wave repair stage, heal-running flag, exclusion status, join discovery, antenna-test progress, node-replace status/info, and Zigbee network status (panId/extendedPanId/networkState). Matter commissioning status is per-node instead: radio='matter' + node_id.
+- include_channel_scan: run a fresh scan with hub_call_zigbee action='channel_scan' first, then read result.channelScan.
+- include_smartstart: each entry's nodeDSK feeds hub_call_zwave action='smartstart_delete'.
+- include_firmware: shape {devices:[{nodeId,label}], files}; feeds hub_call_destructive_ops firmware actions.
+
+### hub_get_device_health (device-staleness check + LAN/WAN network probes)
+- Stale check covers only devices authorized for MCP access (the app's selected device list). MCP-managed virtual/child devices (from hub_manage_virtual_device) are a SEPARATE population NOT included here -- list those via hub_list_devices(filter='virtual').
+- pingHosts/tracerouteHost/speedtest are independent read-only network probes, runnable in any combination; each param documents its own mechanics and result location.
+- pingHosts: each entry is sent through hubitat.helper.NetworkUtils.ping() and reported under pingResults with reachable/rttAvg/packetLoss. Hostnames are not resolved -- pass IPs only.
+- tracerouteHost: hostnames are rejected -- pass an IP (dotted-quad).
+- speedtest: fixed 10 MB Hubitat S3 blob, no caller input; a few seconds on a fast link, up to ~90s on slow ones.
+- **Cursor pagination (staleDevices):** page size 100. Omit the cursor to get all stale devices in one response (subject to the response-size guard). unknownDevices and healthyDevices are always returned in full alongside the page.
+
+### hub_get_metrics (hub metrics + the hub's own health alerts)
+- `current` snapshot fields: timestamp, timestampEpoch, freeMemoryKB, internalTempC, databaseSizeKB, uptimeSeconds, uptimeFormatted. `current` also carries locally-derived warning notes when thresholds are crossed: memoryWarning (<50 MB free), temperatureWarning (>70 °C), databaseWarning (>500 MB) — with softer memoryNote/temperatureNote variants below those thresholds.
+- `trends`: recent history points {timestamp, freeMemoryKB, internalTempC, databaseSizeKB, uptimeSeconds}. `trendPoints` chooses how many (default 10, max 50). `trendPointsAvailable` = total rows on file; `historyFile` = the CSV name in File Manager (mcp-performance-history.csv).
+- Trend history is sparse/stale: the hub never auto-samples, so points exist only from earlier recordSnapshot=true calls and reset if that CSV is cleared. Call recordSnapshot=true periodically to build a trend — it appends one row to the performance-history CSV (rolling 500-row window) and is the tool's ONLY write side-effect (default false = read-only).
+- `healthAlerts`: the hub's own active health alerts pulled from /hub2/hubData — {safeMode, active (currently-firing alert flags such as hubLowMemory / hubLargeDatabase / zwaveOffline / localBackupFailed / weakZigbee), details (full alert-flag map + the hub's message strings)}. Covers radio offline, backup failures, low memory, DB bloat, weak mesh, and safeMode. Complements the locally-derived warnings on `current` (and may differ in threshold from them). null if /hub2/hubData was unreadable.
+
+**hub_get_memory_history:**
+- Free OS memory and CPU-load history (the platform's own timestamped ring buffer; each entry has freeMemoryKB and cpuLoad5min)
+- limit caps the most-recent entries returned (default 100); limit=0 returns all (the hub may hold thousands of rows)
+- Cursor mode pages within the limit-filtered entries; with limit=0 + cursor it pages the FULL ring buffer (every history row, not just a limit-filtered window). Pass "" for the first page and iterate nextCursor (page size 100)
+
+### hub_get_performance_stats (per-device/app metrics it reports)
+
+- Reports per device/app: method call counts, % busy, state size, events, states, hub actions, and pending events.
+- The `sortBy` enum maps onto these columns: `pct` = % busy (default), `count` = method call count, `stateSize` = state size, `totalMs` = total ms, `name` = device/app name.
+
+**hub_list_captured_states (list saved device-state snapshots):**
+- Storage limit is configurable (default 20; `maxCapturedStates` setting). When the store is full, the oldest snapshot is auto-deleted to make room for a new capture.
+- The response reports `maxLimit` (the retention cap) and, when near/at the cap, a `warning` field: "Approaching limit" within 4 slots of the cap, "At maximum capacity" once full (the next capture will evict the oldest).
+- **Cursor pagination:** page size 50. Omit the cursor for an unbounded list; for paging pass an empty string for the first page and iterate `nextCursor`.
+
+**hub_call_gc (force JVM garbage collection):**
+- Returns free memory before and after GC in KB (`beforeFreeMemoryKB`, `afterFreeMemoryKB`).
+- Reports the reclaimed amount as `deltaKB` plus a `memoryReclaimed` boolean (true when free memory increased); both are present only when both readings succeeded.
+
+### hub_delete_debug_logs
+
+Clears ONLY the MCP debug-log buffer (the in-app state log read by hub_get_debug_logs). It does NOT touch Hubitat system logs (hub_get_logs) or captured device states (hub_delete_captured_state). Use it to reset that buffer before reproducing an issue, or to free space.
+
+### hub_report_issue
+
+Rule routing: a legacy custom MCP rule-engine rule id goes in the `ruleId` param; a native Rule Machine rule/app goes in the `nativeAppId` param. They are different engines -- do not cross them (each scopes the report's logs to its own engine).
+
+
+### hub_list_devices
+
+**Response shapes & general behaviour.** Summary mode returns `currentStates`; detailed mode replaces that with `capabilities`, `attributes`, and `commands` (full field list in the tool's `outputSchema`). `scope='all'` lists every hub device (not just MCP-authorized ones), each tagged with an `mcpAuthorized` flag (true/false). To count a parent's children, group the response by `parentDeviceId`.
+
+**Filter ordering.** Server-side filtering via the `filter` / `labelFilter` / `capabilityFilter` params is all applied *before* pagination (each is documented on its own parameter). Effective order: `filter` -> `labelFilter` -> `capabilityFilter` -> pagination.
+
+- **filter** -- `stale:<hours>` example: `stale:24` = no activity in the last 24 hours; never-reported devices count as stale. `virtual` returns a *different* population and shape from the other filters, including driver namespace/type.
+- **labelFilter** -- applied after `filter`, before pagination.
+- **capabilityFilter** -- applied after `labelFilter`, before pagination. When `count=0`, the response includes `capabilityFilterMatchedKnownCapability` to distinguish "no devices have this capability" from a typo.
+- **format** -- `'detailed'` is the same as `detailed=true`; `detailed=true` overrides `format='summary'`.
+- **fields** -- valid names: `id`, `name`, `label`, `room`, `disabled`, `deviceNetworkId`, `lastActivity`, `parentDeviceId`, `mcpManaged`, `currentStates`, `capabilities`, `attributes`, `commands`. Omitted or empty = all default fields for the active format. Ignored when `format='ids'`. `id` is always included regardless of projection (use `format='ids'` for id-only results). Including `capabilities`, `attributes`, or `commands` auto-promotes the response to detailed mode (those fields require detailed-mode device introspection).
+- **cursor** -- `nextCursor` is returned alongside `nextOffset`.
+- **scope** -- `'all'` returns EVERY device on the hub, each tagged `mcpAuthorized` true/false. Use it to find a device that exists on the hub but can't be controlled -- `mcpAuthorized=false` means it must be added to this app's device list in the hub UI. `scope='all'` records are lightweight (id/label/capabilities/mcpAuthorized only; no attributes/commands/currentStates) and support format `'summary'` or `'ids'`; `capabilityFilter` / `labelFilter` / pagination still apply.
+
+### hub_get_device
+
+Use when you need a single device's complete profile — e.g. to discover which commands/attributes it supports before calling hub_call_device_command or hub_get_device_attribute. For a multi-device listing use hub_list_devices instead.
+
+Only query devices the user has mentioned or that are relevant to their request. Do not probe random devices.
+
+### hub_get_device_attribute
+
+Get a device attribute's current value, or block-poll until it reaches an expected value. Polls one device, or several at once via deviceIds.
+
+One-shot read by default (deviceId + attribute). Provide expectedValue and/or expectedValues to block-poll until currentValue matches, returning immediately on match or when timeoutMs elapses.
+
+A single round-trip that replaces N client-side reads + sleeps (verify a command took effect, wait for a sensor threshold, detect Z-Wave inclusion finished). comparator controls the match: eq (default, in-set), ne (not in-set), gt/gte/lt/lte (numeric threshold via expectedValue), between (numeric inclusive range via expectedValues [low, high]). stableForMs requires the condition to hold continuously for that many ms before converging (debounce). For MULTI-DEVICE convergence pass deviceIds (a list, mutually exclusive with deviceId, max 20) instead of deviceId: the same condition is applied to every device and mode controls the aggregate -- "all" (default) converges when every device matches, "any" on the first to match; the result is a compact per-device array (not full device objects) plus convergedCount. Poll mode BLOCKS up to timeoutMs (default 5000ms, max 60000ms) and queues concurrent MCP requests; prefer event-driven flows where possible. First read fires immediately; subsequent reads are spaced by pollIntervalMs.
+
+Only query devices the user has mentioned or that are relevant to their request.
+
+**Parameters:**
+
+- **deviceId** (Device ID from hub_list_devices): Required for single-device mode; omit when using deviceIds. Provide exactly ONE of deviceId or deviceIds, not both.
+- **deviceIds** (multi-device poll): Mutually exclusive with deviceId. The same condition (attribute + comparator + expectedValue(s) + stableForMs) is applied to every device; mode controls the aggregate (any/all). Max 20 devices, no duplicates. The result is a compact per-device array (deviceId/device/finalValue/matched, plus per-device neverReported/nonNumericAttribute on timeout) plus convergedCount -- not full device objects.
+- **mode** (multi-device aggregate): Used with deviceIds. all (default) converges when EVERY device matches; any on the first to match. Rejected if passed with a single deviceId. Also drives stableForMs (the whole any/all condition must hold for the window).
+- **attribute** (attribute name): The same attribute is read on every device in multi-device mode.
+- **expectedValue**: For eq/ne it is one of the in-set values; for gt/gte/lt/lte it is the single numeric threshold (e.g. "72"). Provide exactly ONE of expectedValue or expectedValues, not both.
+- **expectedValues**: For eq/ne it is the value set (OR semantics -- match any member); for between it is exactly two numeric bounds [low, high]. Provide exactly ONE of expectedValue or expectedValues, not both.
+- **comparator** (default eq, value in the expected set): ne = NOT in the set. gt/gte/lt/lte = numeric compare against expectedValue. between = numeric inclusive low<=value<=high from expectedValues (exactly 2). Numeric comparators never match a null/non-numeric value (keep polling).
+- **stableForMs** (debounce, default 0 = first match): Must be < timeoutMs. A value that flaps out of the condition restarts the window.
+- **pollIntervalMs** (poll mode re-check interval, default 200): (hub_call_device_command's waitFor defaults to 250 instead: a post-command poll follows a write, so wider spacing reduces read contention.)
+
+### hub_list_device_events
+- Higher limits (50+) may slow the hub; default limit applies otherwise.
+
+- `attribute` filters by event name. For a device it is an attribute (e.g. `switch`); for location-level events it accepts one of `mode`, `hsmStatus`, `hsmAlert`, or a hub-variable name.
+
+### hub_get_compatible_devices
+
+- Requires the Read master.
+- Filter by brand, protocol (Zigbee|Z-Wave|Matter|LAN|...), deviceType, or a free-text query; paginated (cursor).
+- Summaries by default; set `includeInstructions=true` (with a narrow filter) for the HTML-stripped step-by-step instructions.
+- `brand` filter is a brand substring, e.g. 'Aeotec'.
+- `protocol` filter is a protocol substring, e.g. 'Zigbee', 'Z-Wave', 'Matter', 'LAN'.
+- `deviceType` filter is a device-type substring, e.g. 'Dimmer', 'Water Sensor'.
+- `includeInstructions`: use with a narrow filter; pages are smaller in this mode.
+- `cursor` page size: 40 (summary) / 12 (with instructions).
+''',
 
         builtin_app_tools: '''## Installed-App & Native-Rule Tools
 
@@ -5528,7 +5957,7 @@ RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/priva
   - action="rule" (default): full evaluation (triggers + conditions + actions)
   - action="actions": run actions only, skip conditions
   - action="stop": stop running actions
-- **hub_set_rule_paused** — pause (value=true) or resume (value=false) a rule; reversible
+- **hub_set_rule_paused** — pause (paused=true) or resume (paused=false) a rule; reversible
 - **hub_set_rule_private_boolean** — set private boolean (Boolean or lowercase "true"/"false" only)
 
 Native CRUD (hub admin-layer, additionally requires the Write master):
@@ -5558,7 +5987,139 @@ For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub
   hub_set_rule(appId=974, addTrigger={capability: "Switch", deviceIds: [8, 9], state: "on"}, confirm=true)
   hub_set_rule(appId=974, addAction={capability: "switch", action: "off", deviceIds: [10]}, confirm=true)
   hub_get_rule_health(appId=974) → verify ok=true, no configPageError or brokenMarkers
-  hub_delete_native_app(appId=974, force=true, confirm=true) → {backup: {backupKey: "rm-rule_974_..."}}''',
+  hub_delete_native_app(appId=974, force=true, confirm=true) → {backup: {backupKey: "rm-rule_974_..."}}
+
+### hub_get_app_config (deferred internals: embeddedActions wire-format + includeSettings key encoding)
+
+- **embeddedActions in RM 5.1**: the clickable wizard buttons (e.g. RM's Create/Edit/Delete Trigger) are exposed by the hub as `<div class='submitOnChange'>` elements, NOT as schema inputs. The `embeddedActions` field surfaces each button's `name` plus its `stateAttribute` so that `hub_set_rule` can drive the button.
+- **includeSettings raw-key encoding example**: large apps' raw app-internal settings keys use app-specific encoding — e.g. Room Lighting encodes per-device-per-scene keys as `dm~<deviceId>~<scene>`. (Set `includeSettings=true` only for power-user inspection; large apps can have 500-1000 such keys.)
+
+### hub_list_apps (scope='instances' filter — category meanings)
+
+The `filter` enum values select which category of instances to return (scope='instances' only):
+- **all** (default) — every instance
+- **builtin** — Hubitat native apps
+- **user** — custom Groovy apps
+- **disabled** — paused apps
+- **parents** — apps with children, e.g. Rule Machine, Room Lighting
+- **children** — individual rules, scenes
+
+### hub_list_drivers (list device driver TYPES on the hub)
+
+`include='user'` (default) lists user-installed drivers only; `include='all'` returns the full catalog (system + virtual + user), where each entry is `{id, name, namespace, bucket}` per driver type.
+
+- For `include='all'`, each entry is tagged `bucket=system|virtual|user`.
+- For an `include='all'` entry, its **id** is the driver-type id to pass to `hub_create_device`, while `hub_manage_virtual_device(customDriver={namespace, name})` takes that same entry's **namespace + name** (not the id).
+
+
+### hub_list_app_pages (curated page-name directory)
+
+Curated sub-page directories by app type: HPM — prefOptions (main menu), prefPkgUninstall (full installed-package list), prefPkgModify (modifiable subset), prefPkgInstall (install flow), prefPkgMatchUp (match-up flow); Rule Machine rules — mainPage only (rules are single-page); Room Lighting — mainPage; Mode Manager — mainPage. Unknown app types return the live primary page only.
+
+
+### hub_call_rule
+
+`action` selects which Rule Machine verb to invoke (default `rule`):
+
+- **`rule`** → `runRule`: re-evaluate the rule's conditions, then run the matching true/false action set.
+- **`actions`** → `runRuleAct`: run the action list directly, skipping condition evaluation.
+- **`stop`**: halt the rule's in-progress actions.
+- **`start`**: re-enable a stopped rule (also resets its private boolean).
+
+`stop`/`start` toggle the stopRule UI button, not RMUtils (RMUtils has no startRule verb).
+
+### hub_set_native_app
+
+This is the generic upsert tool for ANY classic SmartApp. It is separate from the MCP custom rule engine (`hub_*_custom_rule`), and Rule Machine RULES belong in `hub_set_rule` (use this tool only for non-RM classic apps).
+
+**Create path (admin-layer shell).** A new app's shell is created via the hub's admin-layer `createchild` endpoint, which bypasses the SmartApp parent-type check that blocks third-party `addChildApp('hubitat', ...)` calls. The new app then appears under Apps / Automations exactly as if created via the native UI. The creatable `appType` enum is driven by `_appTypeRegistry()` — add new creatable types there.
+
+**`name`** — the label for the new app; it is shown in the hub's app list.
+
+**Button Rules.** A Button Rule cannot be created standalone and is NOT an `appType` value — create it via the `buttonRule` parameter (`buttonRule={controllerId, buttonNumber, event}`). It routes through the controller's add-button flow and returns `buttonRuleId` with the Button trigger auto-seeded; author its actions via `hub_set_rule(appId=buttonRuleId, addAction=...)`. The controller must already have a button device assigned.
+
+**RM authoring shortcuts and `walkStep` are EDIT-only here.** `walkStep` and the RM authoring shortcuts also work on this tool, but ONLY on EDIT (appId present) for RM-wire-format classic apps; the CREATE arm (no appId) honors NONE of them and rejects rather than silently dropping them. `walkStep` has the same shape as `hub_set_rule`'s `walkStep` — see `hub_get_tool_guide(section='set_rule_reference')`. For Rule Machine RULES use `hub_set_rule`.
+
+**CREATE is limited to the 5 enum `appType`s** (`rule_machine` / `button_controller` / `groups_scenes` / `notifier` / `basic_rule`). Other classic apps (e.g. Room Lighting, Scenes) are EDIT/DELETE-only via `appId` — there is NO create path for them here.
+
+### hub_get_rule_health
+
+Rule Machine, Visual Rules Builder, and the other supported classic apps (Button Controller, Basic Rule) share RM's configPage protocol.
+
+`ruleFormat` says which engine answered: `rm` / `vrb-graph` / `vrb-classic` / `basic-rule` / `button-controller` / `classic-app`.
+
+The report surfaces the compiled-state broken verdict, validationErrors, config-page render errors, RM `*BROKEN*` / `**Broken Trigger|Action|Condition**` markers, multiple-flag corruption, structural IF/Repeat imbalance, and a compiled-vs-HTML cross-check (the full key list plus `brokenMarkerCounts` lives in the tool's outputSchema).
+
+**`source` parameter — which source(s) to read:**
+- `auto` (default): the preferred compiled-state verdict plus the RM HTML render detections + a cross-check.
+- `ruleBuilderJson`: the compiled-state verdict only.
+- `configPage`: the legacy RM HTML render scan only.
+
+### hub_list_rule_local_variables
+
+List a Rule Machine rule's LOCAL variables (per-rule, distinct from hub globals). Requires the Read master.
+
+- Hub globals are covered by `hub_list_variables`; locals are created via `hub_set_rule` `addLocalVariable` / `removeLocalVariable`.
+- Reads `state.allLocalVars` from the rule's `statusJson` appState; returns each local's name, type, and current value.
+- Pure read -- no wizard, no mutation.
+- Use to confirm a local exists (and its type) before targeting it with the `setLocalVariable` action or `removeLocalVariable` shortcut.
+
+### hub_delete_native_app
+
+The `force` flag selects which hub admin-layer endpoint performs the delete:
+
+- **force=false (default)** — soft delete via `/installedapp/delete`. The hub refuses if the app has child apps or devices; the response includes `hubMessage` explaining why.
+- **force=true** — hard delete via `/installedapp/forcedelete/quiet` — the same path the hub UI uses internally for its own "Delete" buttons. No child safety checks.
+
+
+### hub_list_hpm_packages
+
+**Component inventory detail (per app/driver component):**
+- `heID` (Hubitat's internal code ID) is null when the component was never installed OR was removed outside HPM.
+- Per-component `version` is present only if the manifest author included one -- many manifests do not.
+- **heID normalization, recorded via a per-entry `_warning` field on the component:**
+  - An empty/whitespace-only heID string -> heID is cleared to null and a `_warning` field is added to that entry (e.g. `"empty heID string '' normalized to null"`).
+  - A whitespace-padded heID (e.g. `' 142 '`) -> trimmed, heID stays non-null, and `_warning` records the normalization.
+  - A non-scalar heID (not a Number or String) -> cleared to null with a `_warning`.
+
+**Response fields (beyond `packages[]`):**
+- `count` -- packages returned.
+- `hpmAppId` -- HPM's installed-app ID, echoed so callers can cache it and skip discovery.
+- `skippedMalformed` -- manifest URLs whose top-level value was not a Map (the package is skipped).
+- per-package `skippedAppCount` / `skippedDriverCount` / `skippedFileCount` -- non-Map component entries skipped; each field is omitted when 0.
+
+**Errors (all surface as JSON-RPC error -32602):**
+- Multiple HPM instances -> `IllegalArgumentException` listing up to 10 instance IDs with `"and N more (total M)"`.
+- `hpmAppId` pointing at a non-HPM app -> `IllegalArgumentException` disclosing the actual app type.
+
+**Drift mode (`includeDrift=true`):** off by default; enabling it adds 1-2 hub calls.
+
+**Cursor pagination:** page size 25. Each package entry carries its full app/driver/file inventory, so individual entries can be large.
+
+### hub_list_device_dependents
+
+Referencing app types it can surface include: Room Lighting instances, Rule Machine rules, Groups and Scenes, Mode Manager, dashboards, Maker API, and the Echo Skill.
+
+### hub_clone_native_app
+
+- Preserves the full rule shape (conditions, expressions, IF/THEN/ELSE structure).
+- A lower-overhead alternative to rebuilding via the wizard: clone an existing rule that already has the shape you want, then adjust the copy.
+- `newName` defaults to `<source-label> clone` when omitted.
+
+### hub_export_native_app
+
+Exports to the same JSON format Hubitat's UI Export button produces. Three use cases:
+- Backup before risky edits.
+- Edit-as-text: materialize a rule to JSON, mutate it, then re-import as a new rule via hub_import_native_app.
+- Hub-to-hub transfer.
+
+`saveAs` writes the JSON to File Manager (e.g. for HPM-style distribution). Export instantiates a cloner app and persists it, so it counts as a write.
+
+### hub_import_native_app
+
+- Pair with hub_export_native_app for backup/restore workflows.
+- `parentHintAppId` seeds the cloner instance from an existing rule under the target parent (e.g. another RM rule for an RM import). It has no semantic effect on the imported rule beyond placing it under the same parent.
+''',
 
         set_rule_reference: '''## `hub_set_rule` capability reference
 
@@ -5857,6 +6418,142 @@ hub_set_visual_rule(name="Hallway motion light", confirm=true, definition={
   "elseNodes": []
 })
 
-Then verify with hub_get_visual_rule(appId=<returned appId>) — the response echoes the persisted definition. Pause/resume with hub_set_visual_rule(appId=N, paused=true|false, confirm=true).'''
+Then verify with hub_get_visual_rule(appId=<returned appId>) — the response echoes the persisted definition. Pause/resume with hub_set_visual_rule(appId=N, paused=true|false, confirm=true).
+
+### hub_get_visual_rule
+
+VRB rules are much easier to author than Rule Machine (each rule is one clean JSON definition rather than Rule Machine's classic wizard/settings[] protocol).
+
+### hub_set_visual_rule
+
+Editing an existing rule (`appId` supplied):
+- The `definition` you pass replaces the rule **wholesale** (a full replacement of the whole rule, not a partial patch).
+- Passing `name` together with `appId` renames the rule.
+
+### hub_delete_visual_rule
+
+- TYPE-GATED: it refuses appIds that are not VRB rules and routes them to hub_delete_native_app (for RM rules / other classic apps).
+- The delete response RETURNS the pre-delete rule definition (`predeleteDefinition`) for recovery via hub_set_visual_rule.
+'''
+    ,
+        variables: '''## Hub Variables
+
+Reference for the hub-variable tools (hub_get_variable, hub_create_variable, hub_delete_variable, hub_create_connector). Per-tool details below.
+
+### hub_get_variable
+
+The returned `source` field says which one matched (the hub-variable namespace is searched first, then rule-engine variables). For hub variables it also returns metadata: `type`, plus `deviceId`/`attribute` when a connector is linked.
+
+### hub_create_variable
+
+Create a new hub variable (global variable visible to apps and Rule Machine), one at a time or several in one call. Single form: name + type + value.
+
+**Bulk form:**
+- `variables=[{name,type,value}, ...]` — mutually exclusive with the single form (i.e. mutually exclusive with `name`/`type`/`value`).
+- Bulk items are created sequentially; each succeeds or fails independently and the result reports per-item status.
+
+**Why create first (vs hub_set_variable):**
+- Use this before `hub_set_variable` for a name that doesn't exist yet — Hubitat's `setGlobalVar` cannot create, only update.
+- Drives the Settings → Hub Variables wizard, since creation isn't exposed via the public app API.
+
+**Constraints:**
+- Name must not contain any of these characters: `' " \\ ~ [ : ] < >`. (This applies to the single-form `name` and to each bulk item's `name`.)
+- A String variable's initial value must be non-empty (an empty String reports success but never persists).
+
+**Expose to device-only apps:**
+- To also expose the variable to device-only apps, follow up with `hub_create_connector`.
+
+### hub_delete_variable
+
+Useful for sweeping orphaned `BAT_E2E_*` artifacts after CI runs, removing stale lease variables, or general cleanup.
+
+**Why the reference-safety refusal matters:** the tool refuses by default when a child rule app references the variable because deletion would silently break those rules — null lookups → false conditions, and a literal `%varname%` left in substitutions. Pass `force=true` to proceed anyway after acknowledging the breakage.
+
+### hub_list_variable_changes
+
+Audit/debug what changed a hub variable and when, without polling hub_get_variable. This buffer caps at 200 entries and clears on hub restart. For the hub's authoritative, complete, restart-surviving change log, call hub_list_device_events with no deviceId (location-event mode).
+
+### hub_create_connector
+
+For Number/Decimal vars, Hubitat shows a connector-type chooser (Dimmer/Variable/etc.); pass `connectorType` to pick, default `Variable`. For String/Boolean/DateTime vars, the chooser is skipped. The full Number/Decimal `connectorType` set is: Dimmer, Variable, Volume, ColorTemp, Humidity, Illuminance.
+'''
+    ,
+        dashboards: '''## Dashboards
+
+Reference for the dashboard tools (hub_list_dashboards, hub_get_dashboard, hub_create_dashboard, hub_update_dashboard, hub_delete_dashboard, hub_clone_dashboard). Per-tool details below.
+
+### hub_list_dashboards
+
+Read-only; each dashboard entry has id, name, and tile/theme config. Resolves the dashboard token automatically, so no pinToken is normally needed.
+
+### hub_get_dashboard
+
+Read-only; returns tiles, navigation, devices, and PINs. Read before the wholesale `hub_update_dashboard` and pass its output straight back.
+
+### hub_create_dashboard
+
+Write op; needs >=1 device. Tiles default off; theme defaults to `legacy`.
+
+**`options` (optional config object):**
+- `showModeTile`, `showClockTile`, `showCalendarTile`, `showHSMTile` (bool)
+- `showEdit`, `showNavigation`, `showTutorial` (bool)
+- `navigationSelection`
+- `theme` — one of `legacy` | `light` | `dark` | `auto`
+- `dashboardPin`
+- `hsmPin`
+
+### hub_update_dashboard
+
+Replace a dashboard's config wholesale by id.
+
+- **Write op.** Pass the FULL config — this is a wholesale replace, not a partial patch. Any field you omit (PINs included) reverts to its default.
+- **Read `hub_get_dashboard` first** and pass its output straight back, so nothing already configured (tiles, navigation, devices, PINs) is silently dropped.
+- `options`: same keys as `hub_create_dashboard.options`. Any omitted key reverts to its default.
+
+### hub_delete_dashboard
+
+Devices are NOT deleted. Write op; needs `confirm=true` + a backup within 24h.
+
+- `confirm` (param) — Confirms a recent backup + user approval.
+
+### hub_clone_dashboard
+
+Write op. Copies the source dashboard's config into a new dashboard (theme may default).
+'''
+    ,
+        bundles: '''## Bundles
+
+Reference for the bundle tools (hub_install_bundle, hub_list_bundles, hub_delete_bundle, hub_export_bundle). A bundle is a packaged .zip of apps, drivers, and/or libraries.
+
+### hub_install_bundle
+
+- **Verify the install** afterward with hub_list_libraries / hub_get_source.
+- **Endpoint routing:** uses /bundle2/uploadZipFromUrl on firmware >= 2.3.8.108, else the legacy /bundle/uploadZipFromUrl (the chosen path is also surfaced in the result's `endpoint` field).
+
+### hub_list_bundles
+
+Each entry: id, name, namespace, a private flag, and a `contains` summary of the apps/drivers/libraries the bundle delivers.
+
+### hub_export_bundle
+
+`saveAs` filename sanitization: `.zip` is appended if missing, and non-filename characters are replaced with `_`. The result returns the final `fileName`.
+'''
+    ,
+        rooms: '''## Rooms
+
+Reference for the room tools (hub_list_rooms, hub_get_room, hub_create_room, hub_update_room, hub_delete_room). hub_delete_room's destructive behaviour is under "Destructive Write Tools".
+
+### hub_get_room
+
+A device the MCP server cannot reach is returned with `accessible=false` and no `currentStates` (label "(device not accessible via MCP)").
+
+### hub_create_room
+
+To move EXISTING devices into an existing room, set each device's room via hub_update_device -- do NOT create a room for that.
+
+### hub_update_room
+
+Renaming a room preserves device assignments, but may require updating automations/dashboards that reference the room by name.
+'''
     ]
 }

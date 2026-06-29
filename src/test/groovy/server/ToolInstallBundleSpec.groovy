@@ -179,7 +179,7 @@ class ToolInstallBundleSpec extends ToolSpecBase {
         when:
         def result = script.toolInstallBundle([importUrl: BUNDLE_URL, confirm: true])
 
-        then: 'query carries the url, an empty pwd, and private=false (primary defaults off)'
+        then: 'query carries the url, an empty pwd, and private=false (installer defaults off)'
         captured.url == BUNDLE_URL
         captured.pwd == ''
         captured['private'] == 'false'
@@ -187,12 +187,12 @@ class ToolInstallBundleSpec extends ToolSpecBase {
         and:
         result.success == true
         result.endpoint == '/bundle2/uploadZipFromUrl'
-        result.primary == false
+        result.installer == false
         result.message.contains('Bundle installed')
         result.lastBackup != null
     }
 
-    def "hub_install_bundle (modern firmware) marks private=true when primary=true"() {
+    def "hub_install_bundle (modern firmware) marks private=true when installer=true"() {
         given:
         enableWrite()
         modernHub()
@@ -203,12 +203,12 @@ class ToolInstallBundleSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolInstallBundle([importUrl: BUNDLE_URL, primary: true, confirm: true])
+        def result = script.toolInstallBundle([importUrl: BUNDLE_URL, installer: true, confirm: true])
 
         then:
         captured['private'] == 'true'
         result.success == true
-        result.primary == true
+        result.installer == true
     }
 
     def "hub_install_bundle trims surrounding whitespace from importUrl before sending"() {
@@ -258,7 +258,7 @@ class ToolInstallBundleSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolInstallBundle([importUrl: BUNDLE_URL, primary: true, confirm: true])
+        def result = script.toolInstallBundle([importUrl: BUNDLE_URL, installer: true, confirm: true])
 
         then:
         capturedPath == '/bundle/uploadZipFromUrl'
@@ -269,7 +269,7 @@ class ToolInstallBundleSpec extends ToolSpecBase {
         and:
         result.success == true
         result.endpoint == '/bundle/uploadZipFromUrl'
-        result.primary == true
+        result.installer == true
     }
 
     // -------- failure handling --------

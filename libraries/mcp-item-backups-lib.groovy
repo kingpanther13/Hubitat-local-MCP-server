@@ -806,17 +806,17 @@ def _getAllToolDefinitions_partItemBackups() {
         // ==================== Hub-DB (whole-hub) backup tools — issue #259 item #1 ====================
         [
             name: "hub_create_backup",
-            description: """Create a full hub-database backup (whole-hub .lzf). REQUIRED before any Write master op (24h validity). Optionally set the automatic-backup schedule via `schedule` (scheduleOnly=true sets the schedule only). The only write tool needing no prior backup.""",
+            description: """Create a full hub-database backup (whole-hub .lzf). REQUIRED before any Write master op (24h validity).[[FLAT_TRIM]] Optionally set the automatic-backup schedule via `schedule` (scheduleOnly=true sets the schedule only). The only write tool needing no prior backup.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
                     confirm: [type: "boolean", description: "true to create a backup now (omit with scheduleOnly)."],
                     mock: [type: "boolean", description: "Developer Mode only: stamp the 24h gate record; no real backup (test envs)."],
-                    schedule: [type: "object", description: "Optional: set the automatic-backup schedule. Omitted fields keep their current value (read-merged from the hub). If cloud backup is enabled you MUST pass cloudBackupPassword (the hub doesn't expose it for read-back) or pass cloudBackupFrequency=0 to turn cloud backup off.", properties: [
+                    schedule: [type: "object", description: "Optional: set the automatic-backup schedule. Omitted fields keep their current value (read-merged from the hub).[[FLAT_TRIM]] If cloud backup is enabled you MUST pass cloudBackupPassword (the hub doesn't expose it for read-back) or pass cloudBackupFrequency=0 to turn cloud backup off.[[/FLAT_TRIM]]", properties: [
                         hour: [type: "integer", description: "Hour 0-23 (kept if omitted)"],
                         minute: [type: "integer", description: "Minute 0-59 (kept if omitted)"],
-                        localBackupFrequency: [description: "Local backup frequency, hub value (kept if omitted)"],
-                        cloudBackupFrequency: [description: "Cloud backup frequency, hub value; 0 disables cloud backup (kept if omitted)"],
+                        localBackupFrequency: [type: "integer", enum: [0, 1, 2, 3, 5, 7, 14, 21, 28], description: "Local backup interval in DAYS (0=off); kept if omitted"],
+                        cloudBackupFrequency: [type: "integer", enum: [0, 1, 2, 3, 5, 7, 14, 21, 28], description: "Cloud backup interval in DAYS (0=off); kept if omitted"],
                         cloudBackupPassword: [type: "string", description: "Cloud-backup encryption password. Required when cloud backup is/stays enabled."]
                     ]],
                     scheduleOnly: [type: "boolean", description: "With schedule: set schedule only, no backup now."]
@@ -841,7 +841,7 @@ def _getAllToolDefinitions_partItemBackups() {
         ],
         [
             name: "hub_delete_backup",
-            description: """⚠️ Delete a whole-hub database backup (DESTRUCTIVE — removes a recovery point; tell the user first). location=local needs fileName, location=cloud needs path (both from hub_list_backups). Write master + confirm + a recent backup.""",
+            description: """⚠️ Delete a whole-hub database backup (DESTRUCTIVE — removes a recovery point; tell the user first). Write master + confirm + a recent backup.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -867,11 +867,11 @@ def _getAllToolDefinitions_partItemBackups() {
         // ==================== Source-code item backup tools ====================
         [
             name: "hub_list_backups",
-            description: "List backups: scope=source (default; auto-created code backups, each with a backupKey) | hub_local | hub_cloud | hub | all (whole-hub DB backups under hubLocalBackups/hubCloudBackups — name/path feed restore+delete). Read-only.",
+            description: "List backups: scope=source (default; auto-created code backups, each with a backupKey) | hub_local | hub_cloud | hub | all[[FLAT_TRIM]] (whole-hub DB backups under hubLocalBackups/hubCloudBackups — name/path feed restore+delete)[[/FLAT_TRIM]]. Read-only.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    scope: [type: "string", enum: ["source", "hub_local", "hub_cloud", "hub", "all"], description: "source (default) | hub_local | hub_cloud | hub | all."],
+                    scope: [type: "string", enum: ["source", "hub_local", "hub_cloud", "hub", "all"], description: "Which backups to list; default source."],
                     cursor: [type: "string", description: "Opt-in pagination cursor (source only); pass \"\" for the first page, iterate nextCursor."]
                 ],
                 required: []
@@ -921,7 +921,7 @@ def _getAllToolDefinitions_partItemBackups() {
         ],
         [
             name: "hub_get_backup",
-            description: "Read the saved source code from one backup. Call hub_list_backups first to find the backupKey (e.g. 'app_123', 'driver_456', 'library_42'). Use this to inspect or diff a prior version before restoring. Large sources are omitted from the response (sourceTooLargeForResponse=true) with a File Manager download link instead. To re-apply a backup, use hub_restore_backup, not this tool. Read-only.",
+            description: "Read the saved source code from one backup. Call hub_list_backups first to find the backupKey.[[FLAT_TRIM]] Use this to inspect or diff a prior version before restoring; to re-apply it use hub_restore_backup, not this tool. Large sources are omitted from the response (sourceTooLargeForResponse=true) with a File Manager download link instead.[[/FLAT_TRIM]] Read-only.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -951,14 +951,14 @@ def _getAllToolDefinitions_partItemBackups() {
         ],
         [
             name: "hub_restore_backup",
-            description: """⚠️ Restore a backup — tell the user first; hub-DB scopes REBOOT the hub. scope=source (default): an app/driver/rule by backupKey (deleted code → hub_create_*; deleted rules DO recreate). scope=hub_local/hub_cloud: restore the WHOLE hub DB (hub_local→fileName; hub_cloud→path+cloudBackupPassword). scope=hub_uploaded: upload an external .lzf from backupUrl, then restore (open-world). Write master + confirm.""",
+            description: """⚠️ Restore a backup — tell the user first; hub-DB scopes REBOOT the hub.[[FLAT_TRIM]] scope=source (default): an app/driver/rule by backupKey (deleted code → hub_create_*; deleted rules DO recreate). scope=hub_local/hub_cloud: restore the WHOLE hub DB (hub_local→fileName; hub_cloud→path+cloudBackupPassword). scope=hub_uploaded: upload an external .lzf from backupUrl, then restore (open-world).[[/FLAT_TRIM]] Write master + confirm.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    scope: [type: "string", enum: ["source", "hub_local", "hub_cloud", "hub_uploaded"], description: "source (default) | hub_local | hub_cloud | hub_uploaded."],
+                    scope: [type: "string", enum: ["source", "hub_local", "hub_cloud", "hub_uploaded"], description: "Which backup to restore; default source."],
                     backupKey: [type: "string", description: "scope=source: backupKey from hub_list_backups (e.g. app_123)."],
                     fileName: [type: "string", description: "scope=hub_local: backup name from hub_list_backups."],
-                    path: [type: "string", description: "scope=hub_cloud: the cloud backup `path` from hub_list_backups(scope=hub_cloud)."],
+                    path: [type: "string", description: "scope=hub_cloud: the cloud backup `path` from hub_list_backups."],
                     cloudBackupPassword: [type: "string", description: "scope=hub_cloud: cloud backup encryption password."],
                     backupUrl: [type: "string", description: "scope=hub_uploaded: http(s) URL to the .lzf to upload+restore."],
                     confirm: [type: "boolean", description: "REQUIRED true. Confirms the restore (hub-DB scopes reboot)."]

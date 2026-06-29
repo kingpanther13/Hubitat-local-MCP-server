@@ -627,7 +627,7 @@ def _getAllToolDefinitions_partVisualRules() {
     return [
         [
             name: "hub_get_visual_rule",
-            description: "List Visual Rules Builder rules (omit appId) or read one rule's full JSON definition. Returns the rule's format: 'classic' ({whenNodes, thenNodes, elseNodes}) or 'graph' ({version, nodes, edges}); pass the same format back to hub_set_visual_rule when editing.[[FLAT_TRIM]] VRB is the primary rule engine; its rules are stored as clean JSON -- much easier to author than Rule Machine. Node schemas: hub_get_tool_guide(section='visual_rule_reference').[[/FLAT_TRIM]]",
+            description: "List Visual Rules Builder rules (omit appId) or read one rule's full JSON definition.[[FLAT_TRIM]] Returns the rule's format: 'classic' ({whenNodes, thenNodes, elseNodes}) or 'graph' ({version, nodes, edges}); pass the same format back to hub_set_visual_rule when editing.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -660,13 +660,13 @@ def _getAllToolDefinitions_partVisualRules() {
         ],
         [
             name: "hub_set_visual_rule",
-            description: "Create or update a Visual Rules Builder rule -- VRB is the PRIMARY rule engine for new automations[[FLAT_TRIM]] (one JSON write; no wizard)[[/FLAT_TRIM]]; supports an if/then/else condition gate. Most automations fit it; use hub_set_rule (Rule Machine) only for complex ones (nested logic, loops, variables, custom device commands). Omit appId to create (name + definition required). Pre-flight: backup within 24h + confirm=true. Schemas + worked example: hub_get_tool_guide(section='visual_rule_reference').[[FLAT_TRIM]] With appId: definition replaces wholesale, name renames, paused pauses/resumes; the definition format must match the rule's existing format (see hub_get_visual_rule).[[/FLAT_TRIM]]",
+            description: "Create or update a Visual Rules Builder rule.[[FLAT_TRIM]] VRB is the PRIMARY rule engine for new automations; supports an if/then/else condition gate. Most automations fit it; use hub_set_rule (Rule Machine) only for complex ones (nested logic, loops, variables, custom device commands).[[/FLAT_TRIM]] Omit appId to create (name + definition required). Pre-flight: backup within 24h + confirm=true. Schemas + worked example: hub_get_tool_guide(section='visual_rule_reference').",
             inputSchema: [
                 type: "object",
                 properties: [
                     appId: [type: "integer", description: "Existing Visual Rule app id to edit. Omit to create."],
                     name: [type: "string", description: "Rule name. Required on create; renames on edit."],
-                    definition: [type: "object", description: "Full rule definition (wholesale replacement). Classic: {whenNodes, thenNodes, elseNodes}; graph: {version, nodes, edges}. Field schemas: hub_get_tool_guide(section='visual_rule_reference')."],
+                    definition: [type: "object", description: "Full rule definition (wholesale replacement).[[FLAT_TRIM]] Classic: {whenNodes, thenNodes, elseNodes}; graph: {version, nodes, edges}.[[/FLAT_TRIM]] Field schemas: hub_get_tool_guide(section='visual_rule_reference')."],
                     paused: [type: "boolean", description: "true=pause, false=resume. May be sent alone with appId."],
                     confirm: [type: "boolean", description: "REQUIRED: must be true (recent backup + user approval)."]
                 ],
@@ -695,7 +695,7 @@ def _getAllToolDefinitions_partVisualRules() {
         ],
         [
             name: "hub_delete_visual_rule",
-            description: "Delete a Visual Rules Builder rule by appId. Type-gated: refuses ids that are not VRB rules (use hub_delete_native_app for RM rules / other classic apps). Returns the pre-delete definition for recovery via hub_set_visual_rule. Pre-flight: backup within 24h + confirm=true.",
+            description: "Delete a Visual Rules Builder rule by appId.[[FLAT_TRIM]] Type-gated: refuses ids that are not VRB rules (use hub_delete_native_app for RM rules / other classic apps). Returns the pre-delete definition for recovery via hub_set_visual_rule.[[/FLAT_TRIM]] Pre-flight: backup within 24h + confirm=true.",
             inputSchema: [
                 type: "object",
                 properties: [

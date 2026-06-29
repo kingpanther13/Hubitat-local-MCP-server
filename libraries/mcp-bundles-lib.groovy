@@ -290,7 +290,7 @@ def toolInstallBundle(args) {
     if (!(lower.startsWith("http://") || lower.startsWith("https://"))) {
         throw new IllegalArgumentException("importUrl scheme must be http or https (got '${importUrl.take(40)}')")
     }
-    boolean primary = (args.primary == true)
+    boolean installer = (args.installer == true)
 
     String fw = null
     try { fw = location?.hub?.firmwareVersionString?.toString() } catch (Exception ignored) { }
@@ -302,15 +302,15 @@ def toolInstallBundle(args) {
     boolean modern = _firmwareAtLeast(fw, "2.3.8.108")
     String endpoint = modern ? "/bundle2/uploadZipFromUrl" : "/bundle/uploadZipFromUrl"
 
-    mcpLog("info", "hub-admin", "Installing bundle (endpoint: ${endpoint}, fw: ${fw}, primary: ${primary}, url: ${importUrl})")
+    mcpLog("info", "hub-admin", "Installing bundle (endpoint: ${endpoint}, fw: ${fw}, installer: ${installer}, url: ${importUrl})")
     try {
         def resp
         if (modern) {
             // hubInternalGet passes the query map to httpGet, which URL-encodes the values. `private`
             // is quoted because it is a Groovy keyword. 300s timeout matches HPM's bundle install.
-            resp = hubInternalGet("/bundle2/uploadZipFromUrl", [url: importUrl, pwd: "", "private": primary.toString()], 300)
+            resp = hubInternalGet("/bundle2/uploadZipFromUrl", [url: importUrl, pwd: "", "private": installer.toString()], 300)
         } else {
-            def body = groovy.json.JsonOutput.toJson([url: importUrl, installer: primary, pwd: ""])
+            def body = groovy.json.JsonOutput.toJson([url: importUrl, installer: installer, pwd: ""])
             resp = hubInternalPostJson("/bundle/uploadZipFromUrl", body)
         }
         boolean ok = _bundleResponseSucceeded(resp)
@@ -329,7 +329,7 @@ def toolInstallBundle(args) {
             success: true,
             message: "Bundle installed from ${importUrl}. Its libraries/apps/drivers are now in Code -- verify with hub_list_libraries / hub_list_apps.",
             endpoint: endpoint,
-            primary: primary,
+            installer: installer,
             lastBackup: formatTimestamp(state.lastBackupTimestamp)
         ]
     } catch (Exception e) {
@@ -382,12 +382,12 @@ def _getAllToolDefinitions_partBundles() {
     return [
         [
             name: "hub_install_bundle",
-            description: "Install a Hubitat code bundle (.zip) from a URL the way Hubitat Package Manager does -- the hub fetches the zip and unpacks it into Libraries/Apps/Drivers Code (how a package delivers the libraries an app #includes). Use it to prove on the real hub that a package installs the HPM way before users update. Requires Write master + confirm=true + a recent backup; the hub does not deep-validate the zip, so verify with hub_list_libraries / hub_get_source. Uses /bundle2/uploadZipFromUrl on firmware >= 2.3.8.108, else legacy /bundle/uploadZipFromUrl.",
+            description: "Install a Hubitat code bundle (.zip) from a URL the way Hubitat Package Manager does -- the hub fetches the zip and unpacks it into Libraries/Apps/Drivers Code (how a package delivers the libraries an app #includes). Use it to prove on the real hub that a package installs the HPM way before users update. Requires Write master + confirm=true + a recent backup; the hub does not deep-validate the zip.[[FLAT_TRIM]] Verify the result with hub_list_libraries / hub_get_source. Uses /bundle2/uploadZipFromUrl on firmware >= 2.3.8.108, else legacy /bundle/uploadZipFromUrl.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     importUrl: [type: "string", description: "URL of the bundle .zip the hub fetches and installs (http:// or https://)."],
-                    primary: [type: "boolean", description: "OPTIONAL. Mark the bundle's contents as installed-by-this-package (HPM's installer/private flag). Default false."],
+                    installer: [type: "boolean", description: "OPTIONAL. Mark the bundle's contents as installed-by-this-package (HPM's installer/private flag). Default false."],
                     confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms a recent backup exists and the user approved installing this bundle."]
                 ],
                 required: ["importUrl", "confirm"]
@@ -398,7 +398,7 @@ def _getAllToolDefinitions_partBundles() {
                     success: [type: "boolean", description: "Whether the bundle installed"],
                     message: [type: "string", description: "Human-readable result"],
                     endpoint: [type: "string", description: "Hub endpoint used (/bundle2/uploadZipFromUrl or /bundle/uploadZipFromUrl)"],
-                    primary: [type: "boolean", description: "Whether the bundle was marked primary/installer"],
+                    installer: [type: "boolean", description: "Whether the bundle was marked as installer"],
                     error: [type: "string", description: "Failure detail; present on failure"],
                     rawResponse: [type: "string", description: "Raw hub response (truncated); present on a no-success result"],
                     lastBackup: [type: "string", description: "Timestamp of most recent backup"]
@@ -408,7 +408,7 @@ def _getAllToolDefinitions_partBundles() {
         ],
         [
             name: "hub_list_bundles",
-            description: "List installed code bundles -- the Bundle-Manager containers HPM delivers code in, distinct from Libraries Code. Each entry: id, name, namespace, private flag, and a 'contains' summary of the apps/drivers/libraries it delivered. Use to find a bundle's id for hub_delete_bundle/hub_export_bundle, or to verify a bundle installed. Read-only. Requires Read master.",
+            description: "List installed code bundles -- the Bundle-Manager containers HPM delivers code in, distinct from Libraries Code.[[FLAT_TRIM]] Each entry: id, name, namespace, private flag, and a 'contains' summary of the apps/drivers/libraries it delivered.[[/FLAT_TRIM]] Use to find a bundle's id for hub_delete_bundle/hub_export_bundle, or to verify a bundle installed. Read-only.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -457,12 +457,12 @@ def _getAllToolDefinitions_partBundles() {
         ],
         [
             name: "hub_export_bundle",
-            description: "Export an installed bundle's .zip to the hub File Manager (downloadable at /local/<fileName>; find the id with hub_list_bundles). A write -- it creates a File Manager file -- but not destructive, so it needs the Write master and no confirm. Use saveAs to set the filename (defaults to the bundle name).",
+            description: "Export an installed bundle's .zip to the hub File Manager (downloadable at /local/<fileName>; find the id with hub_list_bundles). A write (creates a File Manager file), not destructive -- needs Write master, no confirm.",
             inputSchema: [
                 type: "object",
                 properties: [
                     bundleId: [type: "string", description: "The numeric bundle id from hub_list_bundles (e.g. \"4\")."],
-                    saveAs: [type: "string", description: "OPTIONAL File Manager filename for the exported .zip. Defaults to the bundle's name. '.zip' is appended if missing; non-filename characters are replaced with '_'."]
+                    saveAs: [type: "string", description: "OPTIONAL File Manager filename for the exported .zip. Defaults to the bundle's name.[[FLAT_TRIM]] '.zip' is appended if missing; non-filename characters are replaced with '_'.[[/FLAT_TRIM]]"]
                 ],
                 required: ["bundleId"]
             ],

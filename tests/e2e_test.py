@@ -1376,7 +1376,7 @@ class TestRunner:
         # must produce a result.traceroute object carrying the target host; on a hub with WAN it returns
         # output (the plain-text route table), otherwise a structured error -- tolerate either so the
         # test is resilient, but assert the fold fired (traceroute present with host + output|error).
-        result = self.client.call_tool("hub_get_device_health", {"traceroute": "8.8.8.8"})
+        result = self.client.call_tool("hub_get_device_health", {"tracerouteHost": "8.8.8.8"})
         assert isinstance(result, dict), "hub_get_device_health did not return an object"
         tr = result.get("traceroute")
         assert isinstance(tr, dict), f"traceroute fold did not attach a traceroute object: {result}"
@@ -2324,7 +2324,7 @@ class TestRunner:
 
         # READ back via hub_get_dashboard
         got = self.client.call_tool("hub_manage_dashboards", {
-            "tool": "hub_get_dashboard", "args": {"id": dash_id}})
+            "tool": "hub_get_dashboard", "args": {"dashboardId": dash_id}})
         assert isinstance(got, dict), f"hub_get_dashboard returned non-dict: {got}"
         assert got.get("name") == dash_name, f"dashboard name mismatch: {got}"
 
@@ -2335,10 +2335,10 @@ class TestRunner:
         uw = self._soft_write(
             lambda: self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_update_dashboard",
-                "args": {"id": dash_id, "name": dash_name, "deviceIds": upd_devices,
+                "args": {"dashboardId": dash_id, "name": dash_name, "deviceIds": upd_devices,
                          "options": {"showClockTile": new_clock}}}),
             lambda: bool((self.client.call_tool("hub_manage_dashboards", {
-                "tool": "hub_get_dashboard", "args": {"id": dash_id}}) or {}).get("showClockTile")) == new_clock,
+                "tool": "hub_get_dashboard", "args": {"dashboardId": dash_id}}) or {}).get("showClockTile")) == new_clock,
             "update dashboard",
         )
         if uw["relayDropped"]:
@@ -2347,13 +2347,13 @@ class TestRunner:
             assert isinstance(uw["response"], dict) and uw["response"].get("success"), \
                 f"hub_update_dashboard failed: {uw['response']}"
             reread = self.client.call_tool("hub_manage_dashboards", {
-                "tool": "hub_get_dashboard", "args": {"id": dash_id}})
+                "tool": "hub_get_dashboard", "args": {"dashboardId": dash_id}})
             assert bool(reread.get("showClockTile")) == new_clock, \
                 f"hub_update_dashboard reported success but showClockTile didn't change: {reread}"
 
         # CLONE (clone-by-value: copies the source config into a new dashboard named "<name> (copy)")
         clone = self.client.call_tool("hub_manage_dashboards", {
-            "tool": "hub_clone_dashboard", "args": {"id": dash_id}})
+            "tool": "hub_clone_dashboard", "args": {"dashboardId": dash_id}})
         if isinstance(clone, dict) and clone.get("success"):
             clone_id = clone.get("newId")
             if not clone_id:
@@ -2368,7 +2368,7 @@ class TestRunner:
         dw = self._soft_write(
             lambda: self.client.call_tool("hub_manage_dashboards", {
                 "tool": "hub_delete_dashboard",
-                "args": {"id": dash_id, "confirm": True}}),
+                "args": {"dashboardId": dash_id, "confirm": True}}),
             lambda: not self._dashboard_id_present(dash_id),
             "delete dashboard",
         )
@@ -5136,7 +5136,7 @@ class TestRunner:
             # 2) Create a RUNNING instance from that code -> the #243 commit path.
             installed = self.client.call_tool("hub_manage_code", {
                 "tool": "hub_create_app",
-                "args": {"installAsUserApp": code_app_id, "confirm": True},
+                "args": {"codeAppId": code_app_id, "confirm": True},
             })
             instance_app_id = installed.get("instanceAppId")
             committed = installed.get("committed")
@@ -5170,7 +5170,7 @@ class TestRunner:
                 try:
                     self.client.call_tool("hub_manage_code", {
                         "tool": "hub_delete_item",
-                        "args": {"type": "app", "id": code_app_id, "confirm": True},
+                        "args": {"type": "app", "item_id": code_app_id, "confirm": True},
                     })
                 except Exception as exc:
                     print(f"  [WARN] deadman cleanup: delete code class {code_app_id} failed: {exc}")
@@ -5346,7 +5346,7 @@ def updateLegMarker() { return "UPDATE-LEG-MARKER-V1" }
                 try:
                     self.client.call_tool("hub_manage_code", {
                         "tool": "hub_delete_item",
-                        "args": {"type": "app", "id": code_app_id, "confirm": True},
+                        "args": {"type": "app", "item_id": code_app_id, "confirm": True},
                     })
                 except Exception as exc:
                     print(f"  [WARN] app-code update cleanup: delete code class {code_app_id} failed: {exc}")
@@ -5452,7 +5452,7 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                 try:
                     self.client.call_tool("hub_manage_code", {
                         "tool": "hub_delete_item",
-                        "args": {"type": "driver", "id": driver_id, "confirm": True},
+                        "args": {"type": "driver", "item_id": driver_id, "confirm": True},
                     })
                 except Exception as exc:
                     print(f"  [WARN] driver-code update cleanup: delete driver code class {driver_id} failed: {exc}")
@@ -6880,7 +6880,7 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                     if lib.get("namespace") == "mcptest" and lib.get("id"):
                         self.client.call_tool("hub_manage_code", {
                             "tool": "hub_delete_item",
-                            "args": {"type": "library", "id": str(lib["id"]), "confirm": True},
+                            "args": {"type": "library", "item_id": str(lib["id"]), "confirm": True},
                         })
             except Exception as exc:
                 print(f"  [WARN] throwaway library cleanup failed: {exc}")
@@ -8061,7 +8061,7 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                         print(f"  Sweep: deleting stranded deadman code class {a.get('id')}")
                         self.client.call_tool("hub_manage_code", {
                             "tool": "hub_delete_item",
-                            "args": {"type": "app", "id": str(a.get("id")), "confirm": True},
+                            "args": {"type": "app", "item_id": str(a.get("id")), "confirm": True},
                         })
                     except Exception as exc:
                         print(f"  [WARN] deadman sweep: code-class delete failed: {exc}")
@@ -8079,7 +8079,7 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                         print(f"  Sweep: deleting stranded throwaway driver code class {d.get('id')}")
                         self.client.call_tool("hub_manage_code", {
                             "tool": "hub_delete_item",
-                            "args": {"type": "driver", "id": str(d.get("id")), "confirm": True},
+                            "args": {"type": "driver", "item_id": str(d.get("id")), "confirm": True},
                         })
                     except Exception as exc:
                         print(f"  [WARN] driver sweep: code-class delete failed: {exc}")
@@ -8136,7 +8136,7 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                         print(f"  Sweep: deleting throwaway library '{lib.get('name')}' (id={lib.get('id')})")
                         self.client.call_tool("hub_manage_code", {
                             "tool": "hub_delete_item",
-                            "args": {"type": "library", "id": str(lib.get("id")), "confirm": True},
+                            "args": {"type": "library", "item_id": str(lib.get("id")), "confirm": True},
                         })
                     except Exception as exc:
                         print(f"  [WARN] throwaway library sweep delete failed for '{lib.get('name')}': {exc}")
@@ -8150,7 +8150,7 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             try:
                 print(f"  Deleting tracked dashboard {dash_id}")
                 self.client.call_tool("hub_manage_dashboards", {
-                    "tool": "hub_delete_dashboard", "args": {"id": dash_id, "confirm": True}})
+                    "tool": "hub_delete_dashboard", "args": {"dashboardId": dash_id, "confirm": True}})
             except Exception as exc:
                 print(f"  [WARN] Failed to delete dashboard {dash_id}: {exc}")
         self.created_dashboard_ids.clear()
@@ -8162,7 +8162,7 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                     try:
                         print(f"  Sweep: deleting dashboard '{dname}' (id={d.get('id')})")
                         self.client.call_tool("hub_manage_dashboards", {
-                            "tool": "hub_delete_dashboard", "args": {"id": str(d["id"]), "confirm": True}})
+                            "tool": "hub_delete_dashboard", "args": {"dashboardId": str(d["id"]), "confirm": True}})
                     except Exception as exc:
                         print(f"  [WARN] Dashboard sweep delete failed for '{dname}': {exc}")
         except Exception as exc:

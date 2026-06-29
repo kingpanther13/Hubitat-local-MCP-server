@@ -3128,7 +3128,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        script.toolDeleteItem([type: 'app', id: '1'])
+        script.toolDeleteItem([type: 'app', item_id: '1'])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -3142,7 +3142,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', id: '1'])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', item_id: '1'])
 
         then:
         response.error.code == -32602
@@ -3157,7 +3157,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         settingsMap.enableWrite = false
 
         when:
-        script.executeTool('hub_delete_item', [type: 'app', id: '1', confirm: true])
+        script.executeTool('hub_delete_item', [type: 'app', item_id: '1', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -3171,7 +3171,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         settingsMap.enableWrite = false
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', id: '1', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', item_id: '1', confirm: true])
 
         then:
         response.error.code == -32602
@@ -3227,7 +3227,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolDeleteItem([type: 'app', id: '33', confirm: true])
+        def result = script.toolDeleteItem([type: 'app', item_id: '33', confirm: true])
 
         then:
         result.success == true
@@ -3250,7 +3250,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/app/edit/deleteJsonSafe/33') { params -> '{"status": "true"}' }
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', id: '33', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', item_id: '33', confirm: true])
 
         then:
         response.error == null
@@ -3277,7 +3277,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolDeleteItem([type: 'app', id: '44', confirm: true])
+        def result = script.toolDeleteItem([type: 'app', item_id: '44', confirm: true])
 
         then: 'delete still succeeds, but the response flags that the backup could not be created'
         result.success == true
@@ -3296,7 +3296,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/app/edit/deleteJsonSafe/44') { params -> '{"status": "true"}' }
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', id: '44', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', item_id: '44', confirm: true])
 
         then:
         response.error == null
@@ -3322,7 +3322,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolDeleteItem([type: 'app', id: '55', confirm: true])
+        def result = script.toolDeleteItem([type: 'app', item_id: '55', confirm: true])
 
         then:
         result.success == false
@@ -3344,7 +3344,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', id: '55', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'app', item_id: '55', confirm: true])
 
         then:
         response.error == null
@@ -3372,7 +3372,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolDeleteItem([type: 'driver', id: '77', confirm: true])
+        def result = script.toolDeleteItem([type: 'driver', item_id: '77', confirm: true])
 
         then:
         deletePath == '/driver/editor/deleteJson/77'
@@ -3397,7 +3397,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'driver', id: '77', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'driver', item_id: '77', confirm: true])
 
         then:
         deletePath == '/driver/editor/deleteJson/77'

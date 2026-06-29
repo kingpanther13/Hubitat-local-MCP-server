@@ -708,25 +708,22 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         secondDev.description.contains('List all devices')
     }
 
-    def "flat-mode in-place FLAT_TRIM strip does not leak into a subsequent getAllToolDefinitions() call"() {
-        // getToolDefinitions(useGateways=false) strips the [[FLAT_TRIM]] block IN PLACE on
-        // its fresh maps. Because each getAllToolDefinitions() rebuilds, the next caller
-        // must still see the un-stripped FLAT_TRIM content. hub_list_devices carries one.
+    def "flat-mode strips [[FLAT_TRIM]] advanced blocks; the full defs keep them (gateway-rich, flat-small) (#296)"() {
+        // #296 keeps advanced/optional detail in the tool defs wrapped in [[FLAT_TRIM]]:
+        // gateway mode (full defs) shows it (BP-rich, no flat budget there); flat mode strips
+        // it (small catalog); the served getToolGuideSections() guide carries the same content
+        // so flat-mode callers can still reach it via hub_get_tool_guide. This pins the strip:
+        // the full defs MUST carry markers and the flat catalog MUST leak none.
         given:
+        def markers = { defs -> defs.sum { groovy.json.JsonOutput.toJson(it).count('[[FLAT_TRIM]]') } ?: 0 }
+
+        when:
         settingsMap.useGateways = false
 
-        when: 'run the flat-mode strip path (mutates its own fresh copy in place)'
-        def flat = script.getToolDefinitions()
-        def flatDev = flat.find { it.name == 'hub_list_devices' }
+        then: 'the full defs carry FLAT_TRIM-wrapped advanced content (kept for gateway / BP)'
+        markers(script.getAllToolDefinitions()) > 0
 
-        and: 'a fresh full-definition call afterwards'
-        def freshDev = script.getAllToolDefinitions().find { it.name == 'hub_list_devices' }
-
-        then: 'flat copy had the FLAT_TRIM markers removed'
-        !flatDev.description.contains('[[FLAT_TRIM]]')
-
-        and: 'the fresh copy still carries the original FLAT_TRIM markers + wrapped content'
-        freshDev.description.contains('[[FLAT_TRIM]]')
-        freshDev.description.contains('Summary mode returns currentStates')
+        and: 'flat-mode strips every marker -- the wrapped content is gone from the flat wire'
+        markers(script.getToolDefinitions()) == 0
     }
 }

@@ -4,7 +4,7 @@ import support.RMUtilsMock
 import support.ToolSpecBase
 
 /**
- * Spec for toolSetRulePaused with value=true (the pause half of the merged
+ * Spec for toolSetRulePaused with paused=true (the pause half of the merged
  * verb-pair tool; former pause_rm_rule).
  * Gateway: hub_manage_native_rules_and_apps -> hub_set_rule_paused.
  *
@@ -29,7 +29,7 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
         settingsMap.enableWrite = false
 
         when: 'the central executeTool gate blocks the write tool (tool body no longer self-gates)'
-        script.executeTool('hub_set_rule_paused', [ruleId: 1, value: true])
+        script.executeTool('hub_set_rule_paused', [ruleId: 1, paused: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -43,7 +43,7 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
         settingsMap.enableWrite = false
 
         when:
-        def response = mcpDriver.callTool('hub_set_rule_paused', [ruleId: 1, value: true])
+        def response = mcpDriver.callTool('hub_set_rule_paused', [ruleId: 1, paused: true])
 
         then:
         response.error.code == -32602
@@ -55,7 +55,7 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
 
     def "throws when ruleId is missing"() {
         when:
-        script.toolSetRulePaused([value: true])
+        script.toolSetRulePaused([paused: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -68,7 +68,7 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('hub_set_rule_paused', [value: true])
+        def response = mcpDriver.callTool('hub_set_rule_paused', [paused: true])
 
         then:
         response.error.code == -32602
@@ -80,7 +80,7 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
 
     def "golden path: dispatches pauseRule sendAction for the given ruleId"() {
         when:
-        def result = script.toolSetRulePaused([ruleId: 400, value: true])
+        def result = script.toolSetRulePaused([ruleId: 400, paused: true])
 
         then:
         result.success == true
@@ -90,8 +90,8 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
 
     def "result echoes the applied paused state (BUG-12: no paused-state in response)"() {
         expect: "the response confirms the applied state so callers don't need a follow-up read"
-        script.toolSetRulePaused([ruleId: 400, value: true]).paused == true
-        script.toolSetRulePaused([ruleId: 400, value: false]).paused == false
+        script.toolSetRulePaused([ruleId: 400, paused: true]).paused == true
+        script.toolSetRulePaused([ruleId: 400, paused: false]).paused == false
     }
 
     @spock.lang.Unroll
@@ -100,7 +100,7 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('hub_set_rule_paused', [ruleId: 400, value: true])
+        def response = mcpDriver.callTool('hub_set_rule_paused', [ruleId: 400, paused: true])
 
         then:
         response.error == null
@@ -116,7 +116,7 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
 
     def "String ruleId is coerced to Integer"() {
         when:
-        def result = script.toolSetRulePaused([ruleId: '401', value: true])
+        def result = script.toolSetRulePaused([ruleId: '401', paused: true])
 
         then:
         result.success == true
@@ -130,7 +130,7 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('hub_set_rule_paused', [ruleId: '401', value: true])
+        def response = mcpDriver.callTool('hub_set_rule_paused', [ruleId: '401', paused: true])
 
         then:
         response.error == null
@@ -146,7 +146,7 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
 
     def "non-numeric ruleId throws IllegalArgumentException"() {
         when:
-        script.toolSetRulePaused([ruleId: 'abc', value: true])
+        script.toolSetRulePaused([ruleId: 'abc', paused: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -159,7 +159,7 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('hub_set_rule_paused', [ruleId: 'abc', value: true])
+        def response = mcpDriver.callTool('hub_set_rule_paused', [ruleId: 'abc', paused: true])
 
         then:
         response.error.code == -32602
@@ -171,7 +171,7 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
 
     def "gateway dispatch via handleGateway routes to hub_set_rule_paused"() {
         when:
-        def result = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_set_rule_paused', [ruleId: 500, value: true])
+        def result = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_set_rule_paused', [ruleId: 500, paused: true])
 
         then:
         result.success == true
