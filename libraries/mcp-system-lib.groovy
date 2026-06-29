@@ -957,7 +957,7 @@ def _getAllToolDefinitions_partSystem() {
         ],
         [
             name: "hub_list_modes",
-            description: "List the hub's location modes (with the active one) + Mode Manager state.",
+            description: "List the hub's location modes (with the active one) + Mode Manager state.[[FLAT_TRIM]] Use it to get valid mode names + ids (hub-specific, e.g. Day/Night/Away) before activating/renaming/deleting a mode.[[/FLAT_TRIM]]",
             inputSchema: [type: "object", properties: [:]],
             outputSchema: [
                 type: "object",
@@ -988,7 +988,7 @@ def _getAllToolDefinitions_partSystem() {
                     name: [type: "string", description: "New mode name (create), or the new name (rename)."],
                     mode: [type: "string", description: "Target for rename/delete/activate: id or name (from hub_list_modes)."],
                     icon: [type: "string", description: "OPTIONAL icon for create/rename, e.g. fa-moon."],
-                    confirm: [type: "boolean", description: "REQUIRED for action=delete: true + a backup <24h (hub_create_backup)."]
+                    confirm: [type: "boolean", description: "REQUIRED for action=delete: true + a backup <24h (hub_create_backup).[[FLAT_TRIM]] Confirms a backup <24h + that breaking mode references is intended.[[/FLAT_TRIM]]"]
                 ],
                 required: ["action"]
             ],

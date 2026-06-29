@@ -1997,7 +1997,7 @@ def _getAllToolDefinitions_partDiagnostics() {
                     pattern: [type: "string", description: "Case-insensitive regex applied to the log message field only.[[FLAT_TRIM]] Use source for app/device-name substring matching.[[/FLAT_TRIM]]"],
                     patterns: [type: "array", items: [type: "string"], description: "Multiple regex patterns; combine via patternMode.[[FLAT_TRIM]] Same matching rules and caveats as `pattern`.[[/FLAT_TRIM]]"],
                     patternMode: [type: "string", description: "How patterns array is combined: 'any' (default) = OR; 'all' = AND.", enum: ["any", "all"]],
-                    since: [type: "string", description: "Return only entries at or after this time; ISO-8601 or relative offset like '2h'.[[FLAT_TRIM]] Full forms: ISO-8601 timestamp (e.g. '2024-01-15T10:30:00Z') or relative '30m'/'2h'/'1d'/'7d'; max relative offset 30d.[[/FLAT_TRIM]]"],
+                    since: [type: "string", description: "Return only entries at or after this time; ISO-8601 or relative offset like '2h'.[[FLAT_TRIM]] Full forms: ISO-8601 timestamp (e.g. '2024-01-15T10:30:00Z') or relative '30m'/'2h'/'1d'/'7d'; max relative offset 30d.[[/FLAT_TRIM]][[FLAT_TRIM]] Timestamps without a TZ marker (e.g. '2024-01-15T10:30:00' or '2024-01-15 10:30:00.000') are parsed as UTC. Use '0m' / '0d' as a degenerate since to filter out everything older than now -- useful for testing harnesses but rarely otherwise.[[/FLAT_TRIM]]"],
                     until: [type: "string", description: "Return only entries at or before this time. Same format as since. Default: now (no upper bound)."],
                     cursor: [type: "string", description: "Opt-in pagination cursor.[[FLAT_TRIM]] Pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
                 ]
@@ -2458,7 +2458,7 @@ Requires Write master.""",
                     node_id: [description: "Z-Wave node id."],
                     file_name: [type: "string", description: "Firmware file name; required for action=device_firmware_start."],
                     target_index: [description: "Optional Z-Wave firmware target index."],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true."]
+                    confirm: [type: "boolean", description: "REQUIRED: must be true.[[FLAT_TRIM]] Confirms backup was created and the user approved this destructive op.[[/FLAT_TRIM]]"]
                 ],
                 required: ["target", "action", "confirm"]
             ],
