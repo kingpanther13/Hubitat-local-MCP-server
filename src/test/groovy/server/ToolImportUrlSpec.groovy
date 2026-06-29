@@ -350,7 +350,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         def commit = stubInstallCommit()
 
         when:
-        def result = script.toolInstallApp([installAsUserApp: 310, confirm: true])
+        def result = script.toolInstallApp([codeAppId: 310, confirm: true])
 
         then:
         capturedPath == '/installedapp/create/310'
@@ -377,7 +377,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         def commit = stubInstallCommit()
 
         when:
-        def result = script.toolInstallApp([installAsUserApp: 313, confirm: true])
+        def result = script.toolInstallApp([codeAppId: 313, confirm: true])
 
         then:
         result.success == true
@@ -397,7 +397,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         stubInstallCommit(doneStatus: 500)
 
         when:
-        def result = script.toolInstallApp([installAsUserApp: 314, confirm: true])
+        def result = script.toolInstallApp([codeAppId: 314, confirm: true])
 
         then:
         result.success == false
@@ -418,7 +418,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         stubInstallCommit(installedFlag: false)
 
         when:
-        def result = script.toolInstallApp([installAsUserApp: 314, confirm: true])
+        def result = script.toolInstallApp([codeAppId: 314, confirm: true])
 
         then:
         result.success == false
@@ -439,7 +439,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         stubInstallCommit(statusThrows: true)
 
         when:
-        def result = script.toolInstallApp([installAsUserApp: 312, confirm: true])
+        def result = script.toolInstallApp([codeAppId: 312, confirm: true])
 
         then:
         result.success == true
@@ -459,7 +459,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         def commit = stubInstallCommit()  // configPage.name == 'mainPage'
 
         when:
-        def result = script.toolInstallApp([installAsUserApp: 312, confirm: true])
+        def result = script.toolInstallApp([codeAppId: 312, confirm: true])
 
         then:
         result.success == true
@@ -485,7 +485,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         ]])
 
         when:
-        def result = script.toolInstallApp([installAsUserApp: 312, confirm: true])
+        def result = script.toolInstallApp([codeAppId: 312, confirm: true])
 
         then:
         result.success == true
@@ -510,7 +510,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolInstallApp([installAsUserApp: 99999, confirm: true])
+        def result = script.toolInstallApp([codeAppId: 99999, confirm: true])
 
         then:
         result.success == false
@@ -530,7 +530,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolInstallApp([installAsUserApp: 310, confirm: true])
+        def result = script.toolInstallApp([codeAppId: 310, confirm: true])
 
         then:
         result.success == false
@@ -551,7 +551,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
         when:
         script.toolInstallApp([
-            installAsUserApp: 310,
+            codeAppId: 310,
             importUrl: 'https://example.com/x.groovy',
             confirm: true
         ])
@@ -888,7 +888,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         enableWrite()
 
         when:
-        script.toolInstallApp([installAsUserApp: value, confirm: true])
+        script.toolInstallApp([codeAppId: value, confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -907,7 +907,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         stubInstallCommit()
 
         when:
-        def result = script.toolInstallApp([installAsUserApp: '310', confirm: true])
+        def result = script.toolInstallApp([codeAppId: '310', confirm: true])
 
         then:
         result.success == true
@@ -1084,7 +1084,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         stubInstallCommit()
 
         when:
-        def response = mcpDriver.callTool('hub_create_app', [installAsUserApp: 310, confirm: true])
+        def response = mcpDriver.callTool('hub_create_app', [codeAppId: 310, confirm: true])
 
         then:
         response.error == null
@@ -1106,7 +1106,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
         when:
         def response = mcpDriver.callTool('hub_create_app', [
-            installAsUserApp: 310,
+            codeAppId: 310,
             importUrl: 'https://example.com/x.groovy',
             confirm: true
         ])

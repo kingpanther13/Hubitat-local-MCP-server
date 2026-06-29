@@ -1506,7 +1506,7 @@ def helperMethod() { return "ok" }
         settingsMap.enableWrite = false
 
         when:
-        script.executeTool('hub_delete_item', [type: 'library', id: '42', confirm: true])
+        script.executeTool('hub_delete_item', [type: 'library', item_id: '42', confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -1520,7 +1520,7 @@ def helperMethod() { return "ok" }
         settingsMap.enableWrite = false
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', id: '42', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', item_id: '42', confirm: true])
 
         then:
         response.error.code == -32602
@@ -1549,7 +1549,7 @@ def helperMethod() { return "ok" }
         enableWrite()
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', id: '42'])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', item_id: '42'])
 
         then:
         response.error.code == -32602
@@ -1622,7 +1622,7 @@ def helperMethod() { return "ok" }
         hubGet.register('/library/edit/deleteJson/42') { params -> '{"success":true,"message":null}' }
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', id: '42', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', item_id: '42', confirm: true])
 
         then:
         response.error == null
@@ -1693,7 +1693,7 @@ def helperMethod() { return "ok" }
         hubGet.register('/library/edit/deleteJson/42') { params -> '{"success":true,"message":null}' }
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', id: '42', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', item_id: '42', confirm: true])
 
         then:
         uploads == []
@@ -1739,7 +1739,7 @@ def helperMethod() { return "ok" }
         hubGet.register('/library/edit/deleteJson/42') { params -> '{"success":true,"message":null}' }
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', id: '42', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', item_id: '42', confirm: true])
 
         then:
         response.error == null
@@ -1785,7 +1785,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', id: '42', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', item_id: '42', confirm: true])
 
         then:
         response.error == null
@@ -1830,7 +1830,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', id: '42', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', item_id: '42', confirm: true])
 
         then:
         response.error == null
@@ -1873,7 +1873,7 @@ def helperMethod() { return "ok" }
         hubGet.register('/library/edit/deleteJson/42') { params -> '' }
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', id: '42', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', item_id: '42', confirm: true])
 
         then:
         response.error == null
@@ -1921,7 +1921,7 @@ def helperMethod() { return "ok" }
         }
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', id: '42', confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', item_id: '42', confirm: true])
 
         then:
         response.error == null
@@ -2059,7 +2059,7 @@ def helperMethod() { return "ok" }
         enableWrite()
 
         when:
-        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', id: badId, confirm: true])
+        def response = mcpDriver.callTool('hub_delete_item', [type: 'library', item_id: badId, confirm: true])
 
         then:
         response.error.code == -32602
