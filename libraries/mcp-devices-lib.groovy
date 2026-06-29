@@ -2909,17 +2909,19 @@ def _getAllToolDefinitions_partDevices() {
 
 DEVICE AUTHORIZATION: Exact name match -> use directly. No exact match -> suggest similar, ASK USER before using. NEVER control unconfirmed devices (HVAC/locks risk). Report tool failures; don't silently fall back to existing devices.
 
+[[FLAT_TRIM]]
 Use detailed=false for discovery; detailed=true with limit=20-30. Sequential calls only.
+[[/FLAT_TRIM]]
 Call `hub_get_tool_guide(section='performance')` for response-shape details, filter/projection semantics, and field-name reference.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    detailed: [type: "boolean", description: "Include full device details (capabilities, all attributes, commands). WARNING: Resource-intensive for large device counts."],
+                    detailed: [type: "boolean", description: "Include full device details (capabilities, all attributes, commands).[[FLAT_TRIM]] WARNING: Resource-intensive for large device counts.[[/FLAT_TRIM]]"],
                     offset: [type: "integer", description: "Start from device at this index (0-based). Use for pagination.", default: 0],
-                    limit: [type: "integer", description: "Maximum number of devices to return. Recommended: 20-30 for detailed=true, higher values may slow hub.", default: 0],
-                    filter: [type: "string", description: "Server-side filter (applied before pagination). 'all' (default) | 'enabled' | 'disabled' | 'stale:<hours>' | 'virtual' (this MCP app's own virtual devices; use to find their IDs/DNIs)."],
+                    limit: [type: "integer", description: "Maximum number of devices to return.[[FLAT_TRIM]] Recommended: 20-30 for detailed=true, higher values may slow hub.[[/FLAT_TRIM]]", default: 0],
+                    filter: [type: "string", description: "Server-side filter (applied before pagination). 'all' (default) | 'enabled' | 'disabled' | 'stale:<hours>' | 'virtual'[[FLAT_TRIM]] (this MCP app's own virtual devices; use to find their IDs/DNIs)[[/FLAT_TRIM]]."],
                     labelFilter: [type: "string", description: "Case-insensitive substring match against device label; falls back to name for devices without a label set."],
-                    capabilityFilter: [type: "string", description: "Case-insensitive exact match against capability name. Capability names are camelCase (e.g. 'ColorControl', 'TemperatureMeasurement')."],
+                    capabilityFilter: [type: "string", description: "Case-insensitive exact match against capability name. Capability names are camelCase (e.g. 'ColorControl')."],
                     format: [type: "string", enum: ["summary", "detailed", "ids"], description: "Response shape. 'summary' (default) = standard fields + currentStates. 'detailed' = capabilities/attributes/commands. 'ids' = flat array of device ID integers (cheapest, ignores fields arg)."],
                     fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object. Call `hub_get_tool_guide(section='performance')` for valid field names and projection semantics."],
                     cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor."],
@@ -3000,7 +3002,10 @@ Call `hub_get_tool_guide(section='performance')` for response-shape details, fil
             name: "hub_get_device_attribute",
             description: """Get a device attribute's current value, or block-poll until it reaches an expected value.
 
-One-shot read by default (deviceId + attribute). Provide expectedValue or expectedValues (exactly one) to block-poll until currentValue matches, returning immediately on match or when timeoutMs elapses.""",
+[[FLAT_TRIM]]
+One-shot read by default (deviceId + attribute). Provide expectedValue or expectedValues (exactly one) to block-poll until currentValue matches, returning immediately on match or when timeoutMs elapses.
+[[/FLAT_TRIM]]
+""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3008,8 +3013,8 @@ One-shot read by default (deviceId + attribute). Provide expectedValue or expect
                     deviceIds: [type: "array", items: [type: "string"], description: "Array of device IDs for a multi-device poll (mutually exclusive with deviceId; max 20)."],
                     mode: [type: "string", enum: ["any", "all"], description: "Multi-device aggregate.", default: "all"],
                     attribute: [type: "string", description: "Attribute name."],
-                    expectedValue: [type: "string", description: "If set, block-poll until currentValue matches per comparator (enables poll mode). Single value, e.g. \"72\". Provide exactly one of expectedValue or expectedValues."],
-                    expectedValues: [type: "array", items: [type: "string"], description: "If set, block-poll until currentValue matches per comparator (enables poll mode). For between, two numeric bounds [low, high]. Provide exactly one of expectedValue or expectedValues."],
+                    expectedValue: [type: "string", description: "If set, block-poll until currentValue matches per comparator (enables poll mode). Single value, e.g. \"72\".[[FLAT_TRIM]] Provide exactly one of expectedValue or expectedValues.[[/FLAT_TRIM]]"],
+                    expectedValues: [type: "array", items: [type: "string"], description: "If set, block-poll until currentValue matches per comparator (enables poll mode). For between, two numeric bounds [low, high].[[FLAT_TRIM]] Provide exactly one of expectedValue or expectedValues.[[/FLAT_TRIM]]"],
                     comparator: [type: "string", enum: ["eq", "ne", "gt", "gte", "lt", "lte", "between"], description: "Match operator. Default eq (value in the expected set).", default: "eq"],
                     stableForMs: [type: "integer", description: "Debounce: the match must hold continuously for this many MILLISECONDS before converging. Default 0 (first match).", default: 0, minimum: 0],
                     timeoutMs: [type: "integer", description: "Poll mode only: max wait in MILLISECONDS. Default 5000, min 100, max 60000. Requires expectedValue/expectedValues — passing a timeout without one is rejected.", default: 5000, minimum: 100, maximum: 60000],
@@ -3058,8 +3063,8 @@ If no exact device match: suggest similar devices and get user confirmation befo
                 properties: [
                     deviceId: [type: "string", description: "Device ID from hub_list_devices - must be confirmed by user if not an exact match"],
                     command: [type: "string", description: "Command name, e.g. \"setLevel\". Must be one of the device's supported commands (see hub_get_device)."],
-                    parameters: [type: "array", description: "Ordered command arguments as an array of strings, in the order the command declares them, e.g. [\"75\"] for setLevel or [\"#FF0000\"] for setColor.", items: [type: "string"]],
-                    waitFor: [type: "object", description: "Optional: after firing the command, block-poll the device until an attribute reaches an expected value, so the response confirms the RESULTING state (and the `state` snapshot reflects the converged value). Omit for a fire-and-forget command with only the immediate pre-effect snapshot.", properties: [
+                    parameters: [type: "array", description: "Ordered command arguments as an array of strings, in the order the command declares them, e.g. [\"75\"] for setLevel[[FLAT_TRIM]] or [\"#FF0000\"] for setColor[[/FLAT_TRIM]].", items: [type: "string"]],
+                    waitFor: [type: "object", description: "Optional: after firing the command, block-poll the device until an attribute reaches an expected value, so the response confirms the RESULTING state.[[FLAT_TRIM]] (The `state` snapshot then reflects the converged value.) Omit for a fire-and-forget command with only the immediate pre-effect snapshot.[[/FLAT_TRIM]]", properties: [
                         attribute: [type: "string", description: "Attribute to poll until it converges, e.g. \"switch\". Must be a supported attribute of the device."],
                         expectedValue: [type: "string", description: "Awaited value: eq/ne in-set, or gt/gte/lt/lte numeric threshold."],
                         expectedValues: [type: "array", items: [type: "string"], description: "Awaited set: eq/ne value list (OR), or between's two bounds [low, high]."],
@@ -3107,16 +3112,19 @@ If no exact device match: suggest similar devices and get user confirmation befo
             name: "hub_list_device_events",
             description: """Get event history for a device, an app or rule (the automation events it emitted), or the location.
 
-Default: most-recent events for a device (deviceId + optional limit).""",
+[[FLAT_TRIM]]
+Default: most-recent events for a device (deviceId + optional limit).
+[[/FLAT_TRIM]]
+""",
             inputSchema: [
                 type: "object",
                 properties: [
                     deviceId: [type: "string", description: "Device ID. Mutually exclusive with appId; omit both for location-level events (mode/HSM/hub variable)."],
                     appId: [type: "integer", description: "Installed-app ID for per-app events (what the app/rule emitted). Mutually exclusive with deviceId."],
-                    hoursBack: [type: "integer", description: "If set, return up to this many hours of history (max 168 = 7 days) instead of just the most recent events. Ignored when since is given."],
-                    since: [type: ["string", "integer"], description: "Absolute window start -- return only events AFTER this timestamp. ISO-8601 in the format this tool emits in `date`/`sinceTimestamp` (a numeric offset with no colon, e.g. 2026-06-23T10:00:00.000-0600) or epoch milliseconds. Takes precedence over hoursBack; a future timestamp yields an empty list."],
+                    hoursBack: [type: "integer", description: "If set, return up to this many hours of history (max 168 = 7 days) instead of just the most recent events.[[FLAT_TRIM]] Ignored when since is given.[[/FLAT_TRIM]]"],
+                    since: [type: ["string", "integer"], description: "Absolute window start -- return only events AFTER this timestamp; ISO-8601 (e.g. 2026-06-23T10:00:00.000-0600, a numeric offset with no colon) or epoch milliseconds.[[FLAT_TRIM]] This is the format this tool emits in `date`/`sinceTimestamp`. Takes precedence over hoursBack; a future timestamp yields an empty list.[[/FLAT_TRIM]]"],
                     attribute: [type: "string", description: "Event-name filter. Device: an attribute (e.g. 'switch')."],
-                    limit: [type: "integer", description: "Max events to return. Recent mode default 10; history mode default 100 (max 500). Higher values may slow hub.", default: 10]
+                    limit: [type: "integer", description: "Max events to return. Recent mode default 10; history mode default 100 (max 500).[[FLAT_TRIM]] Higher values may slow hub.[[/FLAT_TRIM]]", default: 10]
                 ]
             ],
             outputSchema: [
@@ -3147,7 +3155,7 @@ Default: most-recent events for a device (deviceId + optional limit).""",
         ],
         [
             name: "hub_update_device",
-            description: """Update device properties: label, name, deviceNetworkId, room, enabled, dataValues, preferences, showOnHome, defaultCurrentState, tags.
+            description: """Update device properties[[FLAT_TRIM]]: label, name, deviceNetworkId, room, enabled, dataValues, preferences, showOnHome, defaultCurrentState, tags[[/FLAT_TRIM]].
 
 Only modify devices user explicitly requested. Writes require Write master. Call `hub_get_tool_guide(section='update_device')` for preferences format.""",
             inputSchema: [
@@ -3163,7 +3171,7 @@ Only modify devices user explicitly requested. Writes require Write master. Call
                         additionalProperties: [type: "string"]],
                     preferences: [type: "object", description: "Device preferences to update. Each value must be an object with 'type' and 'value'. Example: {\"pollInterval\": {\"type\": \"number\", \"value\": 30}}"],
                     showOnHome: [type: "boolean", description: "Show this device on the hub Home page."],
-                    defaultCurrentState: [type: "string", description: "Which attribute appears in the Status column (Devices/Rooms pages), e.g. \"switch\"; \"\" selects None."],
+                    defaultCurrentState: [type: "string", description: "Which attribute appears in the Status column[[FLAT_TRIM]] (Devices/Rooms pages)[[/FLAT_TRIM]], e.g. \"switch\"; \"\" selects None."],
                     tags: [type: "array", description: "Free-form device tags; REPLACES the full set ([] clears all).", items: [type: "string"]]
                 ],
                 required: ["deviceId"]
@@ -3263,7 +3271,10 @@ Pre-flight (mandatory): 1) hub backup <24h (hub_create_backup); 2) preview the b
             name: "hub_call_device_replace",
             description: """⚠️ DESTRUCTIVE: Replace a device's hardware, KEEPING its id + all app/rule references.
 
-Two-step: list_options=true to list candidates, then apply with confirm=true. Pre-flight: backup <24h (hub_create_backup) + user OK.""",
+[[FLAT_TRIM]]
+Two-step: list_options=true to list candidates, then apply with confirm=true.
+[[/FLAT_TRIM]]
+Pre-flight: backup <24h (hub_create_backup) + user OK.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3299,7 +3310,7 @@ Two-step: list_options=true to list candidates, then apply with confirm=true. Pr
         ],
         [
             name: "hub_create_device",
-            description: """Create a device from a driver TYPE id. Requires Write master + confirm. For LAN/integration/software drivers, NOT radio pairing (Z-Wave/Zigbee/Matter); for virtual devices use hub_manage_virtual_device.""",
+            description: """Create a device from a driver TYPE id. Requires Write master + confirm.[[FLAT_TRIM]] For LAN/integration/software drivers, NOT radio pairing (Z-Wave/Zigbee/Matter); for virtual devices use hub_manage_virtual_device.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3330,7 +3341,7 @@ Two-step: list_options=true to list candidates, then apply with confirm=true. Pr
         ],
         [
             name: "hub_get_compatible_devices",
-            description: """Search Hubitat's official compatible-devices catalog: brands/models with pairing/exclusion/factory-reset instructions and the Hubitat driver each maps to. Read-only reference -- NOT your installed devices.""",
+            description: """Search Hubitat's official compatible-devices catalog of brands/models[[FLAT_TRIM]] with pairing/exclusion/factory-reset instructions and the Hubitat driver each maps to[[/FLAT_TRIM]]. Read-only reference -- NOT your installed devices.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3338,7 +3349,7 @@ Two-step: list_options=true to list candidates, then apply with confirm=true. Pr
                     brand: [type: "string", description: "Filter by brand (substring, case-insensitive)."],
                     protocol: [type: "string", description: "Filter by protocol (substring), e.g. 'Zigbee'."],
                     deviceType: [type: "string", description: "Filter by device type (substring), e.g. 'Dimmer'."],
-                    includeInstructions: [type: "boolean", description: "Include join/exclude/factory-reset instructions (HTML stripped) + notes. Default false (summaries)."],
+                    includeInstructions: [type: "boolean", description: "Include join/exclude/factory-reset instructions[[FLAT_TRIM]] (HTML stripped) + notes[[/FLAT_TRIM]]. Default false (summaries)."],
                     cursor: [type: "string", description: "Pagination cursor. Pass \"\" (or omit) for the first page; iterate nextCursor."]
                 ]
             ],
