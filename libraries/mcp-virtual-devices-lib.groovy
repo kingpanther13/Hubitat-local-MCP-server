@@ -294,7 +294,7 @@ def _getAllToolDefinitions_partVirtualDevices() {
             name: "hub_manage_virtual_device",
             description: """Create or delete MCP-managed virtual devices. Requires Write master + confirm.
 
-action="create": Provide EITHER deviceType (built-in virtual types, see enum) OR customDriver={namespace, name} (user-installed driver), plus deviceLabel and optional deviceNetworkId. The two are mutually exclusive.
+action="create": Provide EITHER deviceType (built-in virtual types, see enum) OR customDriver={namespace, name} (user-installed driver), plus deviceLabel and optional deviceNetworkId.
 action="delete": Provide deviceNetworkId of device to delete. Use hub_list_devices(filter='virtual') to find DNIs.""",
             inputSchema: [
                 type: "object",
