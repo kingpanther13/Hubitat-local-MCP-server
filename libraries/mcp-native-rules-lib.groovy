@@ -60,14 +60,14 @@ def _getAllToolDefinitions_partNativeRM() {
         ],
         [
             name: "hub_set_rule_paused",
-            description: "Pause or resume a Rule Machine rule (paused rules don't fire on triggers). value=true pauses, value=false resumes (idempotent on the hub). Requires the Write master.",
+            description: "Pause or resume a Rule Machine rule (paused rules don't fire on triggers). paused=true pauses, paused=false resumes (idempotent on the hub). Requires the Write master.",
             inputSchema: [
                 type: "object",
                 properties: [
                     ruleId: [type: "integer", description: "Rule ID from hub_list_rules"],
-                    value: [type: "boolean", description: "true = pause the rule; false = resume it."]
+                    paused: [type: "boolean", description: "true = pause the rule; false = resume it."]
                 ],
-                required: ["ruleId", "value"]
+                required: ["ruleId", "paused"]
             ],
             outputSchema: [
                 type: "object",
@@ -85,12 +85,12 @@ def _getAllToolDefinitions_partNativeRM() {
         ],
         [
             name: "hub_set_rule_private_boolean",
-            description: "Set a Rule Machine rule's private boolean to true or false (strict: accepts Boolean or lowercase string 'true'/'false' only). Requires the Write master. Call `hub_get_tool_guide(section='builtin_app_tools')` for pattern and coercion policy.",
+            description: "Set a Rule Machine rule's private boolean to true or false (strict: accepts Boolean or lowercase string 'true'/'false' only). Requires the Write master. Call `hub_get_tool_guide(section='builtin_app_tools')` for the master/permission pattern.",
             inputSchema: [
                 type: "object",
                 properties: [
                     ruleId: [type: "integer", description: "Rule ID from hub_list_rules"],
-                    value: [type: "boolean", description: "true sets the boolean to TRUE, false sets it to FALSE"]
+                    value: [type: "boolean", description: "Target value for the rule's Private Boolean."]
                 ],
                 required: ["ruleId", "value"]
             ],
@@ -114,11 +114,9 @@ def _getAllToolDefinitions_partNativeRM() {
         // get added to _appTypeRegistry().
         [
             name: "hub_set_native_app",
-            description: """Create OR edit a classic native automation app on the hub — one generic upsert tool for any classic SmartApp instance (Room Lighting, Button Controller, Notifier, Group, Scene, Visual Rule, etc.), addressed by appId.
+            description: """Create OR edit a classic native automation app on the hub — one generic upsert tool for any classic SmartApp instance (Room Lighting, Button Controller, Notifier, Group, Scene, Visual Rule, etc.), addressed by appId. For Rule Machine RULES use hub_set_rule.
 
 Omit appId to CREATE a new app of `appType` (provide name). Provide appId to EDIT an existing app: write its config-page inputs via `settings`, and/or click a page-transition button via `button`. Discover input names and buttons via hub_get_app_config first.
-
-This is the GENERIC tool for any classic SmartApp.
 
 Requires the Write master + confirm=true + recent hub backup.""",
             inputSchema: [
@@ -132,7 +130,7 @@ Requires the Write master + confirm=true + recent hub backup.""",
                     pageName: [type: "string", description: "Optional sub-page for schema introspection + settings POST."],
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click."],
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
-                    walkStep: [type: "object", description: "Generic classic-dynamicPage walker for stateful multi-page classic apps -- introspect/write/click/navigate/done one step per call, or operation='drive' with steps=[...] to run the whole sequence in one call."],
+                    walkStep: [type: "object", description: "Generic classic-dynamicPage walker for stateful multi-page classic apps -- introspect/write/click/navigate/done one step per call, or operation='drive' with steps=[...] to run the whole sequence in one call. EDIT-only (requires appId; rejected on create)."],
                     confirm: [type: "boolean", description: "Must be true. Safety gate for Write master operations."]
                 ],
                 required: ["confirm"]
@@ -209,7 +207,7 @@ Deep reference (per-capability field specs, extended condition shapes, periodic 
                     ],
                     addLocalVariable: [
                         type: "object",
-                        description: "Add a local variable. Spec: {name, type, value}; type ∈ Number/Decimal/String/Boolean/DateTime (case-insensitive; DateTime wants an ISO timestamp) and value must match the type. Use as %name% in actions/expressions."
+                        description: "Add a local variable. Spec: {name, type, value}; type ∈ Number/Decimal/String/Boolean/DateTime (case-insensitive; DateTime wants an ISO timestamp, e.g. 2026-05-06T12:00:00) and value must match the type. Use as %name% in actions/expressions."
                     ],
                     removeLocalVariable: [
                         type: "object",
@@ -347,7 +345,7 @@ Deep reference (per-capability field specs, extended condition shapes, periodic 
                 type: "object",
                 properties: [
                     appId: [type: "integer", description: "Installed-app ID to check (Rule Machine or Visual Rules Builder rule)."],
-                    source: [type: "string", enum: ["auto", "ruleBuilderJson", "configPage"], description: "Which source(s) to read."]
+                    source: [type: "string", enum: ["auto", "ruleBuilderJson", "configPage"], description: "Which source(s) to read; default auto."]
                 ],
                 required: ["appId"]
             ],
@@ -427,7 +425,7 @@ Requires Write master + confirm=true + recent hub backup.""",
         ],
         [
             name: "hub_set_app_disabled",
-            description: "Enable or disable any installed app (the admin UI red-X) without deleting it — reversible and preserves the app's config. For Rule Machine rules use hub_set_rule_paused instead. Write master only — no confirm/backup needed (fully reversible); the disabled flag is read-back verified.",
+            description: "Enable or disable any installed app (the admin UI red-X) without deleting it — reversible and preserves the app's config. For Rule Machine rules use hub_set_rule_paused instead. Write master only — no confirm/backup needed; the disabled flag is read-back verified.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -790,16 +788,16 @@ private Object _rmGetStateEditAct(Integer appId) {
 }
 
 // Pause or resume a Rule Machine rule via RMUtils.sendAction(pauseRule|resumeRule).
-// value=true pauses, value=false resumes. Idempotent on the hub side. Backs the
+// paused=true pauses, paused=false resumes. Idempotent on the hub side. Backs the
 // hub_set_rule_paused tool (verb-pair merge of the former pause/resume tools).
 def toolSetRulePaused(args) {
     if (args?.ruleId == null) throw new IllegalArgumentException("ruleId is required")
-    if (args?.value == null) throw new IllegalArgumentException("value (boolean) is required: true=pause, false=resume")
+    if (args?.paused == null) throw new IllegalArgumentException("paused (boolean) is required: true=pause, false=resume")
     Boolean paused
-    if (args.value instanceof Boolean) paused = args.value
-    else if (args.value == "true") paused = true
-    else if (args.value == "false") paused = false
-    else throw new IllegalArgumentException("value must be boolean true/false (got: ${args.value})")
+    if (args.paused instanceof Boolean) paused = args.paused
+    else if (args.paused == "true") paused = true
+    else if (args.paused == "false") paused = false
+    else throw new IllegalArgumentException("paused must be boolean true/false (got: ${args.paused})")
     def ruleId = normalizeRuleId(args.ruleId)
     def result = paused ? sendRmAction(ruleId, "pauseRule", "hub_set_rule_paused")
                         : sendRmAction(ruleId, "resumeRule", "hub_set_rule_paused")

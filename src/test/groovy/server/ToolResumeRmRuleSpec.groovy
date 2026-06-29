@@ -4,7 +4,7 @@ import support.RMUtilsMock
 import support.ToolSpecBase
 
 /**
- * Spec for toolSetRulePaused resume path (value:false).
+ * Spec for toolSetRulePaused resume path (paused:false).
  * Gateway: hub_manage_native_rules_and_apps -> hub_set_rule_paused.
  *
  * Covers: gate-throw, missing ruleId, golden-path resumeRule dispatch,
@@ -28,7 +28,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
         settingsMap.enableWrite = false
 
         when: 'the central executeTool gate blocks the write tool (tool body no longer self-gates)'
-        script.executeTool('hub_set_rule_paused', [ruleId: 1, value: false])
+        script.executeTool('hub_set_rule_paused', [ruleId: 1, paused: false])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -42,7 +42,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
         settingsMap.enableWrite = false
 
         when:
-        def response = mcpDriver.callTool('hub_set_rule_paused', [ruleId: 1, value: false])
+        def response = mcpDriver.callTool('hub_set_rule_paused', [ruleId: 1, paused: false])
 
         then:
         response.error.code == -32602
@@ -54,7 +54,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
 
     def "throws when ruleId is missing"() {
         when:
-        script.toolSetRulePaused([value: false])
+        script.toolSetRulePaused([paused: false])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -67,7 +67,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('hub_set_rule_paused', [value: false])
+        def response = mcpDriver.callTool('hub_set_rule_paused', [paused: false])
 
         then:
         response.error.code == -32602
@@ -79,7 +79,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
 
     def "golden path: dispatches resumeRule sendAction for the given ruleId"() {
         when:
-        def result = script.toolSetRulePaused([ruleId: 600, value: false])
+        def result = script.toolSetRulePaused([ruleId: 600, paused: false])
 
         then:
         result.success == true
@@ -93,7 +93,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('hub_set_rule_paused', [ruleId: 600, value: false])
+        def response = mcpDriver.callTool('hub_set_rule_paused', [ruleId: 600, paused: false])
 
         then:
         response.error == null
@@ -109,7 +109,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
 
     def "String ruleId is coerced to Integer"() {
         when:
-        def result = script.toolSetRulePaused([ruleId: '601', value: false])
+        def result = script.toolSetRulePaused([ruleId: '601', paused: false])
 
         then:
         result.success == true
@@ -123,7 +123,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('hub_set_rule_paused', [ruleId: '601', value: false])
+        def response = mcpDriver.callTool('hub_set_rule_paused', [ruleId: '601', paused: false])
 
         then:
         response.error == null
@@ -139,7 +139,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
 
     def "non-numeric ruleId throws IllegalArgumentException"() {
         when:
-        script.toolSetRulePaused([ruleId: 'xyz', value: false])
+        script.toolSetRulePaused([ruleId: 'xyz', paused: false])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -152,7 +152,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('hub_set_rule_paused', [ruleId: 'xyz', value: false])
+        def response = mcpDriver.callTool('hub_set_rule_paused', [ruleId: 'xyz', paused: false])
 
         then:
         response.error.code == -32602
@@ -164,7 +164,7 @@ class ToolResumeRmRuleSpec extends ToolSpecBase {
 
     def "gateway dispatch via handleGateway routes to hub_set_rule_paused (resume)"() {
         when:
-        def result = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_set_rule_paused', [ruleId: 700, value: false])
+        def result = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_set_rule_paused', [ruleId: 700, paused: false])
 
         then:
         result.success == true
