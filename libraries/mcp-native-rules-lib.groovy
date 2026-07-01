@@ -1362,7 +1362,9 @@ private List<String> _rmStateChangeTokenStems() { _rmRhsOptionalComparatorMarker
 private boolean _rmLooksLikeStateChangeToken(Object raw) {
     def s = raw?.toString()?.toLowerCase()
     if (!s) return false
-    return _rmStateChangeTokenStems().any { s.contains(it) }
+    // Fold BOTH sides: the stems come from _rmRhsOptionalComparatorMarkers(), so a
+    // future marker added in mixed case must not silently defeat the case-folded match.
+    return _rmStateChangeTokenStems().any { s.contains(it.toLowerCase()) }
 }
 
 private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
