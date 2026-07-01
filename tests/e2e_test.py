@@ -2618,26 +2618,37 @@ class TestRunner:
     @test("native_apps")
     def test_set_rule_failloud_wrong_trigger_shape(self) -> None:
         # Fail-loud validation: a plausible-but-wrong addTrigger shape must return a clear
-        # error steering to the correct field, NOT silently commit a broken trigger. Fired
-        # through the edit engine on a throwaway rule so a rejected spec orphans nothing.
+        # error steering to the correct field, NOT silently commit a broken trigger. The
+        # edit engine CATCHES the guard's IllegalArgumentException and returns a structured
+        # {success:false, error:...} map (no isError), so call_tool returns NORMALLY -- assert
+        # on the RETURNED ENVELOPE, not a raised exception. confirm:True is required: a
+        # confirm-less edit returns only a schema probe ("no rule was changed"), so the guard
+        # never runs. Throwaway rule: a rejected spec never mutates, so nothing orphans.
         app_id = self._create_native_rule("FailLoud", {
             "addActions": [{"capability": "log", "message": "E2E fail-loud base"}],
         })
         try:
             # Periodic Schedule needs periodic:{frequency,everyN}; a bare `minutes` is unrecognized.
-            try:
-                self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
-                    "args": {"appId": app_id, "addTrigger": {"capability": "Periodic Schedule", "minutes": 1}}})
-                raise AssertionError("Periodic Schedule minutes:1 should fail loud, got success")
-            except (McpError, McpToolError) as exc:
-                assert "periodic" in str(exc).lower(), f"periodic shape guard error lacked guidance: {exc}"
+            periodic = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "addTrigger": {"capability": "Periodic Schedule", "minutes": 1},
+                         "confirm": True}})
+            assert periodic.get("success") is False and "periodic" in str(periodic.get("error", "")).lower(), \
+                f"Periodic Schedule minutes:1 should fail loud steering to periodic, got: {periodic}"
+            # The pre-flight refusal mutated nothing, so the edit-path restoreHint must report
+            # that RM was not touched -- NOT the misleading "Backup saved before write; call
+            # hub_restore_backup" prompt for a write that never ran.
+            assert "not touched" in str(periodic.get("restoreHint", "")).lower() \
+                and "backup saved before write" not in str(periodic.get("restoreHint", "")).lower(), \
+                f"periodic pre-flight refusal should carry a not-touched restoreHint, got: {periodic.get('restoreHint')!r}"
             # A state-change token belongs in comparator, not state.
-            try:
-                self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
-                    "args": {"appId": app_id, "addTrigger": {"capability": "Temperature", "state": "changed"}}})
-                raise AssertionError("Temperature state:'changed' should fail loud, got success")
-            except (McpError, McpToolError) as exc:
-                assert "comparator" in str(exc).lower(), f"state-change shape guard error lacked guidance: {exc}"
+            state_changed = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "addTrigger": {"capability": "Temperature", "state": "changed"},
+                         "confirm": True}})
+            assert state_changed.get("success") is False and "comparator" in str(state_changed.get("error", "")).lower(), \
+                f"Temperature state:'changed' should fail loud steering to comparator, got: {state_changed}"
+            assert "not touched" in str(state_changed.get("restoreHint", "")).lower() \
+                and "backup saved before write" not in str(state_changed.get("restoreHint", "")).lower(), \
+                f"state-change pre-flight refusal should carry a not-touched restoreHint, got: {state_changed.get('restoreHint')!r}"
         finally:
             self._delete_native(app_id)
 

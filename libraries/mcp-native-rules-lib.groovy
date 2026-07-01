@@ -1077,7 +1077,7 @@ private Set _collectLiveAppIds() {
 //
 // <p>Throws {@code IllegalArgumentException} for input that does not
 // match any of the above forms (ASCII-only message, echoes the bad value).
-// package-private for testability -- the _rm prefix is the convention for internal helpers
+// Internal _rm helper -- not part of the tool surface.
 String _rmNormalizeAtTime(String raw) {
     if (!raw) throw new IllegalArgumentException("addTrigger.atTime is required when time='A specific time'")
 
@@ -1225,7 +1225,7 @@ private void _rmValidateDeviceIdsExist(String label, Object ids) {
 // 2.5.0.135: writing "!=" silently rejects because the enum option set
 // is the Unicode "≠". Pass-through for unrecognized values so callers
 // who already pass the Unicode glyphs continue to work.
-// package-private for testability — _rm prefix is the convention for internal helpers
+// Internal _rm helper -- not part of the tool surface.
 String _rmNormalizeComparator(Object raw) {
     if (raw == null) return null
     def s = raw.toString()
@@ -1234,7 +1234,7 @@ String _rmNormalizeComparator(Object raw) {
     return s
 }
 
-// package-private for testability — _rm prefix is the convention for internal helpers
+// Internal _rm helper -- not part of the tool surface.
 // Single source of truth for the RM no-RHS state-change comparator family. Each entry
 // is a substring marker that identifies a comparator selecting a change EVENT rather
 // than a value test, so it has no right-hand value to place in a value picker. The
@@ -1246,7 +1246,7 @@ String _rmNormalizeComparator(Object raw) {
 // rejects the field in the Hubitat sandbox -- see hubResponseCapBytes).
 private List<String> _rmRhsOptionalComparatorMarkers() { ["changed", "became"] }
 
-// package-private for testability — _rm prefix is the convention for internal helpers
+// Internal _rm helper -- not part of the tool surface.
 // FAMILY gate for the no-RHS state-change comparator family. Used both to relax the
 // RHS-required guards (a missing value is legitimate here) and to detect when such a
 // comparator is being routed to an enum-valued attribute whose value picker cannot
@@ -1259,7 +1259,7 @@ boolean _rmComparatorIsRhsOptional(Object rawComparator) {
     return _rmRhsOptionalComparatorMarkers().any { c.contains(it) }
 }
 
-// package-private for testability — _rm prefix is the convention for internal helpers
+// Internal _rm helper -- not part of the tool surface.
 // Strip a comparator token to its comparable core: the '*...*' wizard wrapping and
 // surrounding whitespace removed, case-folded. RM renders state-change tokens wrapped
 // (e.g. '*became true*') in the picker option list but the request may arrive wrapped
@@ -1275,7 +1275,7 @@ private String _rmComparatorToken(Object raw) {
     return s ?: null
 }
 
-// package-private for testability — _rm prefix is the convention for internal helpers
+// Internal _rm helper -- not part of the tool surface.
 // Exact-token equality between a requested comparator and a candidate picker option,
 // after stripping the '*...*' wrapping and case-folding both sides. This is the ROUTE
 // gate: a picker offering both 'became true' and 'became false' must route a
@@ -1286,7 +1286,7 @@ private boolean _rmComparatorTokensMatch(Object requested, Object candidate) {
     return _rmComparatorTokenMatchesOption(_rmComparatorToken(requested), candidate)
 }
 
-// package-private for testability — _rm prefix is the convention for internal helpers
+// Internal _rm helper -- not part of the tool surface.
 // Equality of an ALREADY-NORMALIZED requested token against a candidate picker option.
 // Route sites normalize the requested comparator ONCE (hoisted out of the per-candidate
 // .find) and call this; _rmComparatorTokensMatch is the un-hoisted convenience form.
@@ -1296,7 +1296,7 @@ private boolean _rmComparatorTokenMatchesOption(String requestedToken, Object ca
     return b != null && requestedToken == b
 }
 
-// package-private for testability — _rm prefix is the convention for internal helpers
+// Internal _rm helper -- not part of the tool surface.
 // Normalize an enum input's `options` to a list of value strings. The hub returns
 // enum-picker options in shapes that need flattening before use:
 //   - bare strings: ["on", "off"]
@@ -1325,7 +1325,7 @@ List _rmReadPickerOptionStrings(Object pickerInput) {
     }).findAll { it }
 }
 
-// package-private for testability — _rm prefix is the convention for internal helpers
+// Internal _rm helper -- not part of the tool surface.
 // Canonical repair-hint for a no-RHS state-change comparator requested on an enum-valued
 // Custom Attribute (the comparator_not_representable_for_enum_attribute skip). Single
 // source of truth so the trigger / condition / Required-Expression emit sites cannot
@@ -1342,29 +1342,46 @@ private String _rmNotRepresentableEnumComparatorHint(Object attribute, Object co
 // `minutes` where a `periodic` map belongs) names the offending key instead of silently
 // committing a broken trigger. Keep in lockstep with the triggerSpec fields read below.
 private List<String> _rmRecognizedTriggerKeys() {
-    ["discover", "capability", "deviceIds", "deviceId", "condition", "conditional",
+    ["discover", "capability", "deviceIds", "condition", "conditional",
      "periodic", "rawSettings", "variable", "comparator", "attribute", "buttonNumber",
      "modeIds", "state", "value", "time", "atTime", "offset", "allOfThese", "andStays"]
 }
 
-// package-private for testability — _rm prefix is the convention for internal helpers
+// Internal _rm helper -- not part of the tool surface.
 // The state-change comparator family expressed as substring stems: the RHS-optional
 // 'changed'/'became' forms plus the value-delta 'increased'/'decreased' forms. Built on
 // _rmRhsOptionalComparatorMarkers so the changed/became stems have one owner and cannot
 // drift. Used to detect a state-change token that was mistakenly supplied as `state`.
 private List<String> _rmStateChangeTokenStems() { _rmRhsOptionalComparatorMarkers() + ["increased", "decreased"] }
 
-// package-private for testability — _rm prefix is the convention for internal helpers
-// True when a value looks like a state-change comparator token (wrapped '*changed*' or
-// bare 'changed', 'became true', 'increased', ...). Case-folded substring test so wrapped
-// and bare forms both match while enum states (on/open/active/Day/locked) never do -- none
-// of those contain a change stem. A `state` that matches was meant for `comparator`.
+// Internal _rm helper -- not part of the tool surface.
+// True when a value looks like a state-change comparator token (wrapped '*changed*' or bare
+// 'changed', 'became true', 'increased', ...). Case-folded substring test so wrapped and bare
+// forms both match. Meaningful only for device-attribute capabilities, where the change
+// semantics belong in comparator:'*changed*' and `state` holds an enum value that never
+// contains a change stem (on/open/active/locked). Mode/Variable/Custom Attribute are EXEMPT
+// from the guard that uses this (see _rmStateChangeGuardExemptCapability) -- their `state`
+// legitimately carries a mode name or comparison/enum value that CAN contain such a stem. A
+// `state` that matches on a non-exempt capability was meant for `comparator`.
 private boolean _rmLooksLikeStateChangeToken(Object raw) {
     def s = raw?.toString()?.toLowerCase()
     if (!s) return false
     // Fold BOTH sides: the stems come from _rmRhsOptionalComparatorMarkers(), so a
     // future marker added in mixed case must not silently defeat the case-folded match.
     return _rmStateChangeTokenStems().any { s.contains(it.toLowerCase()) }
+}
+
+// Internal _rm helper -- not part of the tool surface.
+// Capabilities whose `state` field legitimately carries a value that may contain a change
+// stem, so the state-change guard must NOT fire for them: Mode (state is a mode NAME, e.g.
+// "Day Changed"), Variable (a bare no-comparator Variable already defaults to *changed*, and
+// its value may be any string), and Custom Attribute (state is the attribute's own enum value,
+// e.g. "increased"/"decreased"). The guard's steer-to-comparator hint is wrong for these too
+// (Mode has no comparator; an enum Custom Attribute comparator is not representable). Matches
+// the raw capability string case-insensitively, before canonicalization. Keep the spellings in
+// step with the Mode / Variable / Custom Attribute branches in _rmAddTrigger.
+private boolean _rmStateChangeGuardExemptCapability(String cap) {
+    ["Mode", "Variable", "Custom Attribute"].any { it.equalsIgnoreCase(cap) }
 }
 
 private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
@@ -1382,22 +1399,34 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     // a rejected spec never leaves a half-written trigger editor open.
     //
     // A state-change token belongs in `comparator`, not `state`. Supplied as `state` on a
-    // numeric or variable trigger it falls through to the generic tstate path, which the
-    // hub rejects (tstate not_in_schema) and leaves a partial trigger with no hint. Only
-    // fires when no comparator was given -- an explicit comparator is the correct channel
-    // and takes precedence.
-    if (triggerSpec.comparator == null && _rmLooksLikeStateChangeToken(triggerSpec.state)) {
-        throw new IllegalArgumentException("state:'${triggerSpec.state}' is not a valid state value -- for a state-change trigger use comparator:'*changed*' (or '*became*'/'*increased*'/'*decreased*'), not state. Pass {discover:true} for this capability's field schema.")
+    // numeric or device-state trigger it falls through to the generic tstate path, which the
+    // hub rejects (tstate not_in_schema) and leaves a partial trigger with no hint. Fires only
+    // for device-attribute capabilities and only when no comparator was given -- an explicit
+    // comparator is the correct channel and takes precedence, and Mode/Variable/Custom
+    // Attribute are exempt because their `state` legitimately carries names/enum values.
+    if (triggerSpec.comparator == null && !_rmStateChangeGuardExemptCapability(cap) && _rmLooksLikeStateChangeToken(triggerSpec.state)) {
+        throw new IllegalArgumentException("state:'${triggerSpec.state}' is not a valid state value -- for a state-change trigger use comparator:'*changed*' (or '*became*'/'*increased*'/'*decreased*'), not state. Pass {discover:true} for this capability's field schema. RM is not touched.")
     }
 
     // A Periodic Schedule trigger's schedule lives entirely in the periodic map; without it
     // only tCapab is written, the trigger renders as "null", and the response is success:true.
-    // Reject early and name the stray top-level keys the caller passed (e.g. a bare `minutes`)
-    // so the mistaken shape is concrete. Match on the raw capability string -- the canonical
-    // enum value is not resolved until the wizard opens, further down.
+    // Reject early and name the concrete mistake: a present-but-non-Map `periodic`, else any
+    // stray top-level keys the caller passed (e.g. a bare `minutes`). Match on the raw
+    // capability string -- the canonical enum value is not resolved until the wizard opens.
     if (cap.equalsIgnoreCase("Periodic Schedule") && !(triggerSpec.periodic instanceof Map)) {
         def strayKeys = triggerSpec.keySet().findAll { !(it?.toString() in _rmRecognizedTriggerKeys()) }
-        throw new IllegalArgumentException("Periodic Schedule trigger requires periodic:{frequency:'Seconds'|'Minutes'|'Hourly'|'Daily'|'Weekly'|'Monthly'|'Yearly'|'Cron String', everyN:<n>, ...}. Received keys: ${strayKeys}. Pass {discover:true} for the full periodic field schema.")
+        // Only name a clause when there is something concrete to name -- "Received keys: []"
+        // (bare capability, or a wrong-typed `periodic` which is itself a recognized key) told
+        // the caller nothing.
+        def detail
+        if (triggerSpec.containsKey("periodic")) {
+            detail = " periodic was supplied but is not a Map of schedule fields."
+        } else if (strayKeys) {
+            detail = " Received unrecognized key${strayKeys.size() == 1 ? '' : 's'}: ${strayKeys}."
+        } else {
+            detail = ""
+        }
+        throw new IllegalArgumentException("Periodic Schedule trigger requires periodic:{frequency:'Seconds'|'Minutes'|'Hourly'|'Daily'|'Weekly'|'Monthly'|'Yearly'|'Cron String', everyN:<n>, ...}.${detail} Pass {discover:true} for the full periodic field schema. RM is not touched.")
     }
 
     // Pre-validate device IDs exist — RM 5.1 silently stores
@@ -2530,7 +2559,7 @@ private Map _rmTriggerSchemaForDiscover() {
                 requiredFields: [
                     [name: "periodic", type: "Map", description: "{frequency, everyN?, startingTime?, weekdaysOnly?, selectedHours?, selectedMinutes?, selectedDaysOfMonth?, daysOfWeek?, dayOfWeek?, dayOfMonth?, everyNMonths?, months?, weekOfMonth?, minutesOffset?, cronString?, rawSettings?}"]
                 ],
-                notes: "frequency values: 'Seconds', 'Minutes', 'Hourly', 'Daily', 'Weekly', 'Monthly', 'Yearly', 'Cron String'. everyN is REQUIRED even when =1 for Daily AND Hourly -- omitting it renders 'null'. For Seconds and Minutes, everyN is a restricted enum -- one of [1,2,3,4,5,6,10,12,15,20,30] and must be a whole number (firmware-imposed; Hourly/Daily accept any positive integer. Fractional values truncate, e.g. 5.5 -> 5; anything outside the set fails). Seconds exposes ONLY the count enum -- no toggle and no startingTime. For Hourly-everyN, pass startingTime too -- omitting it renders a cosmetic trailing 'starting at ' blank. Monthly has TWO mutually-exclusive modes: by-day (dayOfMonth + everyNMonths) and nth-weekday (weekOfMonth + dayOfWeek + everyNMonths) -- passing both dayOfMonth and weekOfMonth is rejected. Monthly by-day needs BOTH dayOfMonth AND everyNMonths or it renders 'null'. Monthly 'specific months' ('on day N of selected months') is NOT yet supported (an order-sensitive third sub-mode) -- use rawSettings if needed. Yearly is ALWAYS nth-weekday: weekOfMonth + dayOfWeek + months (single month) -- because RM 5.1 exposes no by-day calendar-day field for Yearly, only the nth-weekday picker; the month alone never completes. Without periodic the trigger renders as description='?'. The helper walks the periodic sub-page automatically.",
+                notes: "frequency values: 'Seconds', 'Minutes', 'Hourly', 'Daily', 'Weekly', 'Monthly', 'Yearly', 'Cron String'. everyN is REQUIRED even when =1 for Daily AND Hourly -- omitting it renders 'null'. For Seconds and Minutes, everyN is a restricted enum -- one of [1,2,3,4,5,6,10,12,15,20,30] and must be a whole number (firmware-imposed; Hourly/Daily accept any positive integer. Fractional values truncate, e.g. 5.5 -> 5; anything outside the set fails). Seconds exposes ONLY the count enum -- no toggle and no startingTime. For Hourly-everyN, pass startingTime too -- omitting it renders a cosmetic trailing 'starting at ' blank. Monthly has TWO mutually-exclusive modes: by-day (dayOfMonth + everyNMonths) and nth-weekday (weekOfMonth + dayOfWeek + everyNMonths) -- passing both dayOfMonth and weekOfMonth is rejected. Monthly by-day needs BOTH dayOfMonth AND everyNMonths or it renders 'null'. Monthly 'specific months' ('on day N of selected months') is NOT yet supported (an order-sensitive third sub-mode) -- use rawSettings if needed. Yearly is ALWAYS nth-weekday: weekOfMonth + dayOfWeek + months (single month) -- because RM 5.1 exposes no by-day calendar-day field for Yearly, only the nth-weekday picker; the month alone never completes. A Periodic Schedule spec with no periodic map is rejected up front (success=false, naming the stray keys) rather than committing a phantom '?' row. The helper walks the periodic sub-page automatically.",
                 periodicShape: [
                     frequency: "Seconds | Minutes | Hourly | Daily | Weekly | Monthly | Yearly | Cron String",
                     everyN: "Integer -- 'every N <unit>' mode (Seconds/Minutes/Hourly/Daily). REQUIRED even when =1 for Daily AND Hourly (omitting renders null). For Seconds/Minutes restricted to a whole number in [1,2,3,4,5,6,10,12,15,20,30] (firmware-imposed; Hourly/Daily accept any positive integer. Fractional values truncate, e.g. 5.5 -> 5).",
@@ -3508,6 +3537,15 @@ private Map _rmModifyTrigger(Integer appId, Integer triggerIdx, Map mods) {
     }
     if (!mods.containsKey("state")) {
         throw new IllegalArgumentException("modifyTrigger.mods must include 'state'. Supported fields: state.")
+    }
+    // A state-change token belongs in a comparator, but modifyTrigger only edits an existing
+    // device-state trigger's tstate value and has NO comparator channel (the standing scope
+    // limit above). So a change token in mods.state can only ever commit as a literal state
+    // that silently never matches. Reject up front, before any hub round-trip, steering to the
+    // removeTrigger + addTrigger path where a comparator CAN be set. Shares the single
+    // _rmLooksLikeStateChangeToken predicate with addTrigger so the token family has one owner.
+    if (_rmLooksLikeStateChangeToken(mods.state)) {
+        throw new IllegalArgumentException("modifyTrigger.mods.state:'${mods.state}' looks like a state-change comparator token, but modifyTrigger only edits a device-state trigger's value and cannot set a comparator. For a state-change trigger use removeTrigger then addTrigger with comparator:'*changed*' (or '*became*'/'*increased*'/'*decreased*'). RM is not touched.")
     }
     def existingIndices = _rmCollectTriggerIndices(appId)
     if (!existingIndices.contains(triggerIdx)) {
