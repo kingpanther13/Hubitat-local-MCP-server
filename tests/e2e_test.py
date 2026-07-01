@@ -2616,6 +2616,32 @@ class TestRunner:
         self._untrack_native_app(app_id)
 
     @test("native_apps")
+    def test_set_rule_failloud_wrong_trigger_shape(self) -> None:
+        # Fail-loud validation: a plausible-but-wrong addTrigger shape must return a clear
+        # error steering to the correct field, NOT silently commit a broken trigger. Fired
+        # through the edit engine on a throwaway rule so a rejected spec orphans nothing.
+        app_id = self._create_native_rule("FailLoud", {
+            "addActions": [{"capability": "log", "message": "E2E fail-loud base"}],
+        })
+        try:
+            # Periodic Schedule needs periodic:{frequency,everyN}; a bare `minutes` is unrecognized.
+            try:
+                self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                    "args": {"appId": app_id, "addTrigger": {"capability": "Periodic Schedule", "minutes": 1}}})
+                raise AssertionError("Periodic Schedule minutes:1 should fail loud, got success")
+            except (McpError, McpToolError) as exc:
+                assert "periodic" in str(exc).lower(), f"periodic shape guard error lacked guidance: {exc}"
+            # A state-change token belongs in comparator, not state.
+            try:
+                self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                    "args": {"appId": app_id, "addTrigger": {"capability": "Temperature", "state": "changed"}}})
+                raise AssertionError("Temperature state:'changed' should fail loud, got success")
+            except (McpError, McpToolError) as exc:
+                assert "comparator" in str(exc).lower(), f"state-change shape guard error lacked guidance: {exc}"
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
     def test_set_native_app_lifecycle(self) -> None:
         # hub_set_native_app: the GENERIC create-or-edit upsert. Create via the
         # registry-driven create path, rename via a raw settings write, then delete.

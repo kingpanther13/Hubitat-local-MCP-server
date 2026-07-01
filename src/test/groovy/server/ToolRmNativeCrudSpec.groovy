@@ -2261,6 +2261,68 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { it.path == "/installedapp/update/json" }
     }
 
+    // Fail-loud shape validation: both guards run before any hub round-trip, so the
+    // throwing cases below need no schema/POST mocks -- the reject fires first.
+
+    def "addTrigger Periodic Schedule without a periodic map is rejected naming periodic and the stray key"() {
+        when: "Periodic Schedule is requested with a bare minutes key instead of a periodic map"
+        script._rmAddTrigger(100, [capability: "Periodic Schedule", minutes: 1])
+
+        then: "the shape is rejected up front, naming the required periodic map and the stray key"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("periodic:")
+        ex.message.contains("minutes")
+    }
+
+    def "addTrigger Periodic Schedule with a valid periodic map is not rejected by the shape guard"() {
+        when: "a well-formed periodic map is supplied"
+        Exception thrownEx = null
+        try {
+            script._rmAddTrigger(100, [capability: "Periodic Schedule", periodic: [frequency: "Minutes", everyN: 1]])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "the periodic shape guard does not fire (any error comes from later hub interaction, not this validation)"
+        thrownEx == null || !thrownEx.message?.contains("requires periodic:")
+    }
+
+    def "addTrigger with a state-change token in state instead of comparator is rejected steering to comparator"() {
+        when: "a numeric trigger passes state:'changed' with no comparator"
+        script._rmAddTrigger(100, [capability: "Temperature", deviceIds: [8], state: "changed"])
+
+        then: "the shape is rejected up front, steering to comparator"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("comparator")
+        ex.message.contains("changed")
+    }
+
+    def "addTrigger with comparator '*changed*' is not rejected by the state-change guard"() {
+        when: "a numeric trigger uses comparator for the state change"
+        Exception thrownEx = null
+        try {
+            script._rmAddTrigger(100, [capability: "Temperature", deviceIds: [8], comparator: "*changed*"])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "the state-change guard does not fire (comparator is the correct channel)"
+        thrownEx == null || !thrownEx.message?.contains("is not a valid state value")
+    }
+
+    def "addTrigger enum state '#stateVal' is not mistaken for a state-change token"() {
+        when: "a device-state trigger uses a legitimate enum state with no comparator"
+        Exception thrownEx = null
+        try {
+            script._rmAddTrigger(100, [capability: cap, deviceIds: [8], state: stateVal])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "the state-change guard does not over-fire on a normal enum state"
+        thrownEx == null || !thrownEx.message?.contains("is not a valid state value")
+
+        where:
+        cap       | stateVal
+        "Switch"  | "on"
+        "Contact" | "open"
+        "Motion"  | "active"
+    }
+
     def "patches batch outer success rolls up inner sub-item success"() {
         given:
         enableWrite()

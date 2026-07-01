@@ -1336,6 +1336,35 @@ private String _rmNotRepresentableEnumComparatorHint(Object attribute, Object co
     return "Comparator '${cmp}' cannot be represented for the enum-valued Custom Attribute '${attrName}': Rule Machine offers only a value picker (e.g. on/off) for an attribute it recognizes as an enum, with no comparator slot, so a state-change comparator has nowhere to land. Use a non-built-in attribute name, or trigger on the device's native capability instead (e.g. capability:'Switch')."
 }
 
+// The set of top-level keys an addTrigger spec is allowed to carry. Single source of
+// truth for "did the caller pass a key we understand": the fail-loud shape validators
+// report the leftover (unrecognized) keys, so a plausible-but-wrong shape (e.g. a bare
+// `minutes` where a `periodic` map belongs) names the offending key instead of silently
+// committing a broken trigger. Keep in lockstep with the triggerSpec fields read below.
+private List<String> _rmRecognizedTriggerKeys() {
+    ["discover", "capability", "deviceIds", "deviceId", "condition", "conditional",
+     "periodic", "rawSettings", "variable", "comparator", "attribute", "buttonNumber",
+     "modeIds", "state", "value", "time", "atTime", "offset", "allOfThese", "andStays"]
+}
+
+// package-private for testability — _rm prefix is the convention for internal helpers
+// The state-change comparator family expressed as substring stems: the RHS-optional
+// 'changed'/'became' forms plus the value-delta 'increased'/'decreased' forms. Built on
+// _rmRhsOptionalComparatorMarkers so the changed/became stems have one owner and cannot
+// drift. Used to detect a state-change token that was mistakenly supplied as `state`.
+private List<String> _rmStateChangeTokenStems() { _rmRhsOptionalComparatorMarkers() + ["increased", "decreased"] }
+
+// package-private for testability — _rm prefix is the convention for internal helpers
+// True when a value looks like a state-change comparator token (wrapped '*changed*' or
+// bare 'changed', 'became true', 'increased', ...). Case-folded substring test so wrapped
+// and bare forms both match while enum states (on/open/active/Day/locked) never do -- none
+// of those contain a change stem. A `state` that matches was meant for `comparator`.
+private boolean _rmLooksLikeStateChangeToken(Object raw) {
+    def s = raw?.toString()?.toLowerCase()
+    if (!s) return false
+    return _rmStateChangeTokenStems().any { s.contains(it) }
+}
+
 private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     if (!(triggerSpec instanceof Map)) throw new IllegalArgumentException("addTrigger requires a Map spec")
     // Discover mode -- return static schema without touching the hub.
@@ -1345,6 +1374,29 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     }
     def cap = triggerSpec.capability?.toString()?.trim()
     if (!cap) throw new IllegalArgumentException("addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema.")
+
+    // Fail loud on the two plausible-but-wrong shapes the wizard would otherwise commit
+    // as a broken trigger with success:true. Both checks run before any hub round-trip, so
+    // a rejected spec never leaves a half-written trigger editor open.
+    //
+    // A state-change token belongs in `comparator`, not `state`. Supplied as `state` on a
+    // numeric or variable trigger it falls through to the generic tstate path, which the
+    // hub rejects (tstate not_in_schema) and leaves a partial trigger with no hint. Only
+    // fires when no comparator was given -- an explicit comparator is the correct channel
+    // and takes precedence.
+    if (triggerSpec.comparator == null && _rmLooksLikeStateChangeToken(triggerSpec.state)) {
+        throw new IllegalArgumentException("state:'${triggerSpec.state}' is not a valid state value -- for a state-change trigger use comparator:'*changed*' (or '*became*'/'*increased*'/'*decreased*'), not state. Pass {discover:true} for this capability's field schema.")
+    }
+
+    // A Periodic Schedule trigger's schedule lives entirely in the periodic map; without it
+    // only tCapab is written, the trigger renders as "null", and the response is success:true.
+    // Reject early and name the stray top-level keys the caller passed (e.g. a bare `minutes`)
+    // so the mistaken shape is concrete. Match on the raw capability string -- the canonical
+    // enum value is not resolved until the wizard opens, further down.
+    if (cap.equalsIgnoreCase("Periodic Schedule") && !(triggerSpec.periodic instanceof Map)) {
+        def strayKeys = triggerSpec.keySet().findAll { !(it?.toString() in _rmRecognizedTriggerKeys()) }
+        throw new IllegalArgumentException("Periodic Schedule trigger requires periodic:{frequency:'Seconds'|'Minutes'|'Hourly'|'Daily'|'Weekly'|'Monthly'|'Yearly'|'Cron String', everyN:<n>, ...}. Received keys: ${strayKeys}. Pass {discover:true} for the full periodic field schema.")
+    }
 
     // Pre-validate device IDs exist — RM 5.1 silently stores
     // {<bogusId>: null} in tDev_<N> if the ID doesn't resolve, and the
