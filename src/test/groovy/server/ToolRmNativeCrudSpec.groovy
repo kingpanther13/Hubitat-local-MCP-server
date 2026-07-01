@@ -2442,6 +2442,42 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { it.path == "/installedapp/update/json" }
     }
 
+    def "modifyTrigger pre-flight shape refusal on the edit path yields a not-touched restoreHint, not a restore prompt"() {
+        // Sibling of the addTrigger spec above, on the trigger-mutation branch.
+        // modifyTrigger's mods.state state-change-token guard throws before any
+        // hub round-trip, carrying the 'RM is not touched' sentinel. The trigger-
+        // mutation catch keeps a legacy-flat error shape (not _rmBuildUpdateError-
+        // Response), so it must detect the sentinel itself and emit the not-touched
+        // wording -- otherwise it falsely prompts a "Backup saved before write;
+        // call hub_restore_backup" restore for a mutation that never ran.
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Plain", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, []) }
+
+        when: "a modifyTrigger passes a state-change token as mods.state (a pre-flight shape refusal)"
+        def result = script.toolSetRule([appId: 100, modifyTrigger: [index: 1, mods: [state: "changed"]], confirm: true])
+
+        then: "the edit path surfaces the refusal, carrying the sentinel into the error"
+        result.success == false
+        result.error?.contains("looks like a state-change comparator token")
+        result.error?.contains("RM is not touched")
+
+        and: "restoreHint is the pre-flight (not-touched) form, NOT the misleading 'Backup saved before write' restore prompt"
+        result.restoreHint?.contains("Pre-flight refusal")
+        result.restoreHint?.contains("RM was not touched")
+        !result.restoreHint?.contains("Backup saved before write")
+
+        and: "no rule-write POST committed -- the refusal happened before any hub round-trip"
+        !posts.any { it.path == "/installedapp/update/json" }
+    }
+
     def "patches batch outer success rolls up inner sub-item success"() {
         given:
         enableWrite()

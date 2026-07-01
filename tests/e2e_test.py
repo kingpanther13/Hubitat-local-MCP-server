@@ -2649,6 +2649,17 @@ class TestRunner:
             assert "not touched" in str(state_changed.get("restoreHint", "")).lower() \
                 and "backup saved before write" not in str(state_changed.get("restoreHint", "")).lower(), \
                 f"state-change pre-flight refusal should carry a not-touched restoreHint, got: {state_changed.get('restoreHint')!r}"
+            # modifyTrigger rejects a state-change token the same way. Its guard runs before the
+            # index-exists check, so no real trigger is needed; the reject steers to removeTrigger
+            # + addTrigger and carries the same accurate not-touched restoreHint as the add path.
+            modified = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "modifyTrigger": {"index": 1, "mods": {"state": "changed"}},
+                         "confirm": True}})
+            assert modified.get("success") is False and "removetrigger" in str(modified.get("error", "")).lower(), \
+                f"modifyTrigger mods.state:'changed' should fail loud steering to removeTrigger, got: {modified}"
+            assert "not touched" in str(modified.get("restoreHint", "")).lower() \
+                and "backup saved before write" not in str(modified.get("restoreHint", "")).lower(), \
+                f"modifyTrigger pre-flight refusal should carry a not-touched restoreHint, got: {modified.get('restoreHint')!r}"
         finally:
             self._delete_native(app_id)
 

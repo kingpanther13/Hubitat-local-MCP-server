@@ -1368,7 +1368,9 @@ private boolean _rmLooksLikeStateChangeToken(Object raw) {
     if (!s) return false
     // Fold BOTH sides: the stems come from _rmRhsOptionalComparatorMarkers(), so a
     // future marker added in mixed case must not silently defeat the case-folded match.
-    return _rmStateChangeTokenStems().any { s.contains(it.toLowerCase()) }
+    // Lower-case the stems once, not per element of the any-scan.
+    def stems = _rmStateChangeTokenStems().collect { it.toLowerCase() }
+    return stems.any { s.contains(it) }
 }
 
 // Internal _rm helper -- not part of the tool surface.
@@ -6675,6 +6677,15 @@ private List _rmStructuralSequenceFromSpecList(List specList) {
     out
 }
 
+// Single source of truth for the restoreHint wording emitted when a
+// pre-flight refusal (the "RM is not touched" sentinel) is detected in a
+// caught error message. Both the structured _rmBuildUpdateErrorResponse
+// path and the legacy-flat trigger-mutation catch reuse this so the two
+// surfaces stay word-identical.
+private String _rmPreflightRestoreHint() {
+    "Pre-flight refusal -- RM was not touched; the saved backup is identical to the current rule and does not need to be restored."
+}
+
 // Build the standard error response shape for _applyNativeAppEdit catch
 // blocks. Detects pre-flight refusals (signalled by the "RM is not
 // touched" sentinel that every pre-flight refusal throw includes) and
@@ -6695,7 +6706,7 @@ private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, S
     try { health = _rmCheckRuleHealth(appId) } catch (Exception ignored) { /* best effort — never let a health read mask the real error */ }
     def restoreHint
     if (isPreflightRefusal) {
-        restoreHint = "Pre-flight refusal -- RM was not touched; the saved backup is identical to the current rule and does not need to be restored."
+        restoreHint = _rmPreflightRestoreHint()
     } else if (wizardStuck) {
         // pageName tells the caller which wizard page the cancelCapab recovery click belongs on
         // (doActPage for addAction, STPage for addRequiredExpression). The wizardStuck markers
@@ -11758,15 +11769,27 @@ def _applyNativeAppEdit(args) {
             // exhaustion throw (which fires only after the in-helper re-click
             // also failed to land; BUG-13 had rewritten the original wording on
             // both the action and trigger paths).
+            //
+            // A pre-flight refusal (a shape/structural guard that throws before
+            // any hub round-trip, carrying the "RM is not touched" sentinel --
+            // e.g. modifyTrigger's state-change-token guard) never mutated the
+            // rule, so the plain "Backup saved before write" restore prompt is
+            // misleading. Detect the sentinel and emit the not-touched wording
+            // instead, sharing the single owner with the structured path. This
+            // is mutually exclusive with retry-exhaustion (a refused write never
+            // clicked), so it takes precedence.
+            def isPreflightRefusal = e.message?.contains("RM is not touched")
             def isRetryExhaustion = e.message?.contains("one verified re-click")
             def trigResult = [
                 success: false,
                 appId: appId,
                 error: e.message ?: e.toString(),
                 backup: backup,
-                restoreHint: isRetryExhaustion ?
-                    "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}')." :
-                    "Backup saved before write. Call hub_restore_backup with backupKey='${backup.backupKey}' to roll back."
+                restoreHint: isPreflightRefusal ?
+                    _rmPreflightRestoreHint() :
+                    (isRetryExhaustion ?
+                        "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}')." :
+                        "Backup saved before write. Call hub_restore_backup with backupKey='${backup.backupKey}' to roll back.")
             ]
             if (isRetryExhaustion) {
                 trigResult.verifyHint = "Call hub_get_app_config(appId=${appId}) and inspect the triggers list -- if the operation actually committed despite the false-fail, do NOT call hub_restore_backup."
