@@ -58,8 +58,9 @@ def test_self_test_case(desc, source, expected):
 # may NEVER be stranded behind only a hub_manage_* gateway. The main lint
 # (sandbox-lint.yml) enforces the invariant on the real source. These tests run
 # the must-catch / must-not-catch fixtures through the REAL check in pytest (CI)
-# so the guard can never silently no-op -- the `--self-test` runner is dev-only
-# and not wired into any CI job.
+# so the guard can never silently no-op. (The `--self-test` runner now also runs
+# as a sandbox-lint.yml step, so the other fixture families get CI coverage too;
+# these pytest cases predate that and stay for the richer per-case reporting.)
 
 @pytest.mark.parametrize("desc,src,expected_codes", sl.READ_WRITE_SPLIT_SELF_TEST_CASES)
 def test_read_write_split_self_test_case(desc, src, expected_codes):
