@@ -120,7 +120,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a scratch rule via hub_set_rule with name='BAT-RM-ReqExpr Flag' and remember its id.",
-  "test_prompt": "Enable the Required Expression feature on the rule (the useST flag). Read the rule back and confirm useST is true AND that the required-expression editor sub-page/section is now present in the config.",
+  "test_prompt": "Enable the Required Expression feature on the rule. Read the rule back and confirm useST is true AND that the required-expression editor sub-page/section is now present in the config.",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
@@ -132,7 +132,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a scratch rule via hub_set_rule with name='BAT-RM-Function Mode' and remember its id.",
-  "test_prompt": "Mark the rule as a function (isFunction=true). Verify by reading it back that isFunction round-trips as true.",
+  "test_prompt": "Mark the rule as a function. Verify by reading it back that isFunction round-trips as true.",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
@@ -144,7 +144,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a scratch rule via hub_set_rule with name='BAT-RM-Logging Combo' and remember its id.",
-  "test_prompt": "Set the rule's logging options to include all three values ['Events', 'Triggers', 'Actions'] and also enable Display Current Values (dValues=true). Read back and confirm: (a) logging contains all three entries, (b) dValues is true.",
+  "test_prompt": "Set the rule's logging options to include all three values ['Events', 'Triggers', 'Actions'] and also enable Display Current Values. Read back and confirm: (a) logging contains all three entries, (b) dValues is true.",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
@@ -156,7 +156,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a scratch native RM rule via hub_set_rule(name='BAT-RM-Full Create', confirm=true) (omit appId to create). Capture the returned appId.",
-  "test_prompt": "STEP 1 (populate in one edit): In a single edit, populate the rule with every rule-level field at once — comments 'Created with every rule-level field populated', enable Required Expression (useST), isFunction false, logging ['Triggers','Actions'], and Display Current Values (dValues). Verify the edit reports no config-page error and that all five fields were applied.\n\nSTEP 2 (read-back #1): Read the rule back including its settings. Assert every one of these round-trips: app.label === 'BAT-RM-Full Create'; settings.comments === the exact string; settings.useST === 'true'; settings.isFunction === 'false'; settings.logging is a JSON array === ['Triggers','Actions'] (length 2, NOT collapsed to CSV); settings.dValues === 'true'. The page paragraphs MUST include 'Define Required Expression' — this proves useST=true actually exposed the required-expression editor section.\n\nSTEP 3 (force a re-init): Press the rule's 'Update Rule' button to force it to re-initialize. Verify there is no config-page error.\n\nSTEP 4 (read-back #2, post re-init): Read the rule back again including its settings. Assert ALL fields from STEP 2 are still present with the same values and logging is STILL a 2-element array. This is the wire-format regression guard — enum-multi persisted from the in-memory write must survive the updateRule re-marshal.\n\nReport any field whose read value does not match what was sent, either after STEP 2 or after STEP 4.",
+  "test_prompt": "STEP 1 (populate in one edit): In a single edit, populate the rule with every rule-level field at once — comments 'Created with every rule-level field populated', enable the Required Expression feature, mark it NOT a function, logging ['Triggers','Actions'], and enable Display Current Values. Verify the edit reports no config-page error and that all five fields were applied.\n\nSTEP 2 (read-back #1): Read the rule back including its settings. Assert every one of these round-trips: app.label === 'BAT-RM-Full Create'; settings.comments === the exact string; settings.useST === 'true'; settings.isFunction === 'false'; settings.logging is a JSON array === ['Triggers','Actions'] (length 2, NOT collapsed to CSV); settings.dValues === 'true'. The page paragraphs MUST include 'Define Required Expression' — this proves useST=true actually exposed the required-expression editor section.\n\nSTEP 3 (force a re-init): Press the rule's 'Update Rule' button to force it to re-initialize. Verify there is no config-page error.\n\nSTEP 4 (read-back #2, post re-init): Read the rule back again including its settings. Assert ALL fields from STEP 2 are still present with the same values and logging is STILL a 2-element array. This is the wire-format regression guard — enum-multi persisted from the in-memory write must survive the updateRule re-marshal.\n\nReport any field whose read value does not match what was sent, either after STEP 2 or after STEP 4.",
   "teardown_prompt": "Force-delete the rule via hub_delete_native_app(appId=<id>, force=true, confirm=true)."
 }
 ```
@@ -237,7 +237,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a scratch rule via hub_set_rule with name='BAT-RM-Update Btn' with one trigger on 'BAT-RM Switch 1'. Remember the rule id.",
-  "test_prompt": "Modify the rule (e.g., toggle dValues=true) AND also trigger the 'Update Rule' button action so subscriptions are re-initialized in place. Verify by reading it back that dValues round-trips AND that statusJson.eventSubscriptions.length > 0 (subscription not dropped by the re-init).",
+  "test_prompt": "Modify the rule (e.g., turn Display Current Values on) AND also trigger the 'Update Rule' button action so subscriptions are re-initialized in place. Verify by reading it back that dValues round-trips AND that statusJson.eventSubscriptions.length > 0 (subscription not dropped by the re-init).",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
@@ -1045,7 +1045,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create virtual switches BAT-RM-OrdA, BAT-RM-OrdB, BAT-RM-OrdC. Create rule 'BAT-RM-Order' with Certain Time trigger and actions in order [A on, B on, C on].",
-  "test_prompt": "Reorder the rule's actions (a wholesale action-list replacement) to [C on, A on, B on]. Read back and verify the new order matches exactly. Then reorder again to [B on, C on, A on]. Read back and verify.",
+  "test_prompt": "Reorder the rule's actions to [C on, A on, B on] by replacing the whole action list in one operation (not by moving actions one at a time). Read back and verify the new order matches exactly. Then reorder the same way to [B on, C on, A on]. Read back and verify.",
   "teardown_prompt": "Delete the rule and all three virtual switches."
 }
 ```

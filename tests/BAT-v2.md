@@ -485,7 +485,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 ```json
 {
-  "test_prompt": "Pull up the server's reference documentation section that covers its device authorization rules."
+  "test_prompt": "Pull up the section of the server's built-in guide that covers its device authorization rules — I want the actual guide content, not a from-memory summary."
 }
 ```
 
@@ -1670,9 +1670,9 @@ Run these prompts on BOTH v0.7.7 (all 74 on tools/list) and v0.8.0 (11 flat + 19
 
 ## Section 10: Natural Language Discovery Tests
 
-These tests cover the same tool capabilities as earlier sections, but use **purely conversational prompts**. No tool names, no parameter names, no implementation-specific terms. The LLM must figure out which tool(s) to use from context alone.
+These tests cover the same tool capabilities as earlier sections, but use **purely conversational prompts**. No tool names, no parameter names, no implementation-specific terms. The LLM must figure out which tool(s) to use from context alone. (Sections 1-9 are also goal-first, but they state goals in precise domain vocabulary; this section restates the same coverage the way a non-technical user would phrase it.)
 
-**Purpose**: Measure whether the LLM can map real user intent to the correct MCP tools without being told which tools exist. Compare results with the explicit-tool versions in earlier sections.
+**Purpose**: Measure whether the LLM can map real user intent to the correct MCP tools without being told which tools exist. Compare results with the same tools' technically-phrased tests in earlier sections.
 
 **Rules**:
 - `test_prompt` MUST NOT contain any tool names, gateway names, or parameter names
@@ -2544,7 +2544,7 @@ These operations are too destructive for automated testing. Test manually with e
 2. Setup → Test → Teardown all happen in the **same session**
 3. Record metrics per the tracking table
 4. For Section 8 (Comparison): run same prompts on v0.7.7 and v0.8.0
-5. For Section 10 (NL Discovery): compare results with the equivalent explicit tests from earlier sections — same tool should be triggered, but the LLM must discover it without hints
+5. For Section 10 (NL Discovery): compare results with the equivalent tests from earlier sections — the same tool should be triggered from the casual phrasing as from the precise goal phrasing
 
 ### Results Template
 
@@ -2875,6 +2875,8 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 3. Click Done.
 
 ### T219 — hub_update_mcp_settings refuses when Developer Mode toggle is OFF
+
+> Prompt-style carve-out: the prompt names the tool deliberately. With the Developer Mode toggle OFF the self-admin tool is hidden from `tools/list`, so only a by-name (cached-client) call can exercise the refusal path — a goal-first phrasing ("change the MCP log level") would route to `hub_set_log_level` and never hit it.
 
 ```json
 {
