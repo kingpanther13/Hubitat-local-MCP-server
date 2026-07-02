@@ -128,6 +128,31 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         result.schemaOnly == true
     }
 
+    def "hub_set_native_app schema-only discover probe is exempt (mirrors the hub_set_rule exemption)"() {
+        given:
+        settingsMap.enableMandatoryBPS = true
+
+        when: "edit-shaped discover meta-call, no key -- static schema return, no mutation"
+        def result = script.executeTool("hub_set_native_app", [appId: 123, addTrigger: [discover: true]])
+
+        then: "the gate does not fire; the real static discovery schema comes back"
+        noExceptionThrown()
+        result.discriminator == 'capability'
+        result.capabilities instanceof List
+    }
+
+    def "hub_set_native_app CREATE-shaped call with a stray guide flag is still gated (no key -> blocked)"() {
+        given:
+        settingsMap.enableMandatoryBPS = true
+
+        when: "no appId -> the create arm would really execute; the schema-only exemption must not apply"
+        script.executeTool("hub_set_native_app", [guide: true, appType: "rule_machine", name: "X"])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.startsWith("Mandatory best-practice")
+    }
+
     def "gateway name is not gated -- sub-tools gate on re-entry"() {
         given:
         settingsMap.enableMandatoryBPS = true

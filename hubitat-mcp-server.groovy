@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 3.1.2 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 3.1.3 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -767,7 +767,14 @@ def handleNotification(msg) {
 }
 
 def serverInstructions() {
-    "Gateway tools (hub_manage_* / hub_read_*) expose sub-tools -- call a gateway with no arguments to list its sub-tools and their schemas. Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page)."
+    // Flat mode advertises every tool individually and BLOCKS gateway-name calls
+    // ("useGateways is OFF"), so the gateway guidance would send a flat client
+    // straight into an error (worse: hub_manage_virtual_device / hub_manage_mode
+    // match the hub_manage_* pattern but are direct tools, not gateways).
+    if (settings.useGateways == false) {
+        return "Every tool is advertised individually on tools/list (flat catalog; there are no gateway tools). Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page)."
+    }
+    "Gateway tools (hub_manage_* / hub_read_*) expose sub-tools -- call a gateway with no arguments to list its sub-tools and their schemas. hub_manage_virtual_device and hub_manage_mode are direct tools (not gateways) -- call them with their own arguments. Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page)."
 }
 
 // Protocol versions this server can speak, newest first. Echo-allowlist:
@@ -832,7 +839,9 @@ def handleToolsCall(msg) {
     // `args instanceof Map` guards a malformed non-object `arguments` (e.g. a JSON string): probing
     // .tool on a String here (before the try below) would throw and surface as a -32603 instead of
     // the handled path -- fall back to the gateway name and let the try block report it cleanly.
-    def reactiveToolName = (getGatewayConfig().containsKey(toolName) && args instanceof Map && args.tool instanceof String) ? args.tool : toolName
+    // The truthiness check keeps an empty-string tool (catalog mode) attributed to the
+    // gateway name -- the catalog IS the gateway's own surface.
+    def reactiveToolName = (getGatewayConfig().containsKey(toolName) && args instanceof Map && args.tool instanceof String && args.tool) ? args.tool : toolName
 
     if (!toolName) {
         return jsonRpcError(msg.id, -32602, "Invalid params: tool name required")
@@ -844,10 +853,14 @@ def handleToolsCall(msg) {
         // isError envelope instead of letting JsonOutput render the literal string
         // "null" into the wire payload (which looks like a normal tool result).
         if (result == null) {
-            mcpLog("error", "server", "Tool ${toolName} returned null -- internal tool bug", null, [details: [tool: toolName]])
+            // Blame the failing SUB-TOOL on a gateway-routed call (issue #299 pattern) --
+            // reactiveToolName already resolved it; keep the gateway for context.
+            mcpLog("error", "server", "Tool ${reactiveToolName} returned null -- internal tool bug", null, [
+                details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null]
+            ])
             return jsonRpcResult(msg.id, [
                 content: [[type: "text", text: groovy.json.JsonOutput.toJson([
-                    isError: true, error: "Tool ${toolName} returned no result", tool: toolName
+                    isError: true, error: "Tool ${reactiveToolName} returned no result", tool: reactiveToolName
                 ])]],
                 isError: true
             ])
@@ -865,7 +878,7 @@ def handleToolsCall(msg) {
             try {
                 _applyReactiveBpsWarning(reactiveToolName, args, result)
             } catch (Exception bpErr) {
-                mcpLog("warn", "server", "Reactive BPS hint failed for ${toolName}: ${bpErr.message}", null, [details: [tool: toolName]])
+                mcpLog("warn", "server", "Reactive BPS hint failed for ${reactiveToolName}: ${bpErr.message}", null, [details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null]])
             }
         }
         def jsonText
@@ -875,13 +888,13 @@ def handleToolsCall(msg) {
             // Tool returned a value JsonOutput cannot encode (Closure, java.util.regex.Pattern,
             // circular Map, etc.). Surface it as a tool bug rather than letting it look like
             // a generic execution failure under the bottom catch.
-            mcpLog("error", "server", "Tool ${toolName} returned a non-serializable result: ${serErr.message}", null, [
-                details: [tool: toolName, resultType: result?.class?.name, error: serErr.message]
+            mcpLog("error", "server", "Tool ${reactiveToolName} returned a non-serializable result: ${serErr.message}", null, [
+                details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null, resultType: result?.class?.name, error: serErr.message]
             ])
             return jsonRpcResult(msg.id, [
                 content: [[type: "text", text: groovy.json.JsonOutput.toJson([
                     isError: true,
-                    error: "Tool ${toolName} returned a result the JSON serializer cannot encode",
+                    error: "Tool ${reactiveToolName} returned a result the JSON serializer cannot encode",
                     cause: serErr.message,
                     resultType: result?.class?.name,
                     note: "Internal tool bug -- report with the tool name and arguments used."
@@ -915,15 +928,13 @@ def handleToolsCall(msg) {
         int wireBytes = candidateJson.getBytes("UTF-8").length
         final int responseSizeLimit = hubResponseCapBytes() - 11072  // =120000; ~11 KB headroom under the 131072-byte (128 KiB) hub cap
         if (wireBytes > responseSizeLimit) {
-            // Gateway calls (manage_*) carry the real sub-tool name in args.tool; the
-            // gateway-config whitelist check rules out a non-gateway caller who happens
-            // to pass a stray `tool` arg, which would otherwise mis-route the suggestion.
-            boolean isGateway = getGatewayConfig().containsKey(toolName)
-            String hintTool = (isGateway && args?.tool instanceof String && args.tool) ? args.tool : toolName
-            mcpLog("warn", "server", "Tool ${hintTool} response too large (${wireBytes} > ${responseSizeLimit} bytes) -- returning response_too_large envelope", null, [
-                details: [tool: hintTool, gateway: (hintTool != toolName) ? toolName : null, bytes: wireBytes, limit: responseSizeLimit]
+            // reactiveToolName already resolved the real sub-tool for a gateway call
+            // (args.tool, whitelist-checked against getGatewayConfig), so the size
+            // suggestion routes to the failing tool, not the gateway.
+            mcpLog("warn", "server", "Tool ${reactiveToolName} response too large (${wireBytes} > ${responseSizeLimit} bytes) -- returning response_too_large envelope", null, [
+                details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null, bytes: wireBytes, limit: responseSizeLimit]
             ])
-            return jsonRpcResult(msg.id, [content: [[type: "text", text: groovy.json.JsonOutput.toJson(_responseTooLargeEnvelope(hintTool, wireBytes, responseSizeLimit))]]])
+            return jsonRpcResult(msg.id, [content: [[type: "text", text: groovy.json.JsonOutput.toJson(_responseTooLargeEnvelope(reactiveToolName as String, wireBytes, responseSizeLimit))]]])
         }
         // Single-message verbatim-passthrough: handleMcpRequest's single-Map branch detects
         // this sentinel and renders __preserialized as-is (no re-encode). The batch-collect
@@ -932,8 +943,8 @@ def handleToolsCall(msg) {
         // deliberately returns a normal Map (not a sentinel); re-encoding that rare path is fine.
         return [__preserialized: candidateJson]
     } catch (IllegalArgumentException e) {
-        mcpLog("warn", "server", "Validation error in ${toolName}: ${e.message}", null, [
-            details: [tool: toolName, error: e.message]
+        mcpLog("warn", "server", "Validation error in ${reactiveToolName}: ${e.message}", null, [
+            details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null, error: e.message]
         ])
         // Reactive best-practice hint on a thrown validation error (issue #299, always on). Most
         // recoverable tool errors (device-not-found, unsupported command, missing confirm) throw
@@ -947,13 +958,13 @@ def handleToolsCall(msg) {
                 def w = _reactiveBpsWarning(reactiveToolName, args, e.message)
                 if (w) msgText = "${e.message} ${w}"
             } catch (Exception bpErr) {
-                mcpLog("warn", "server", "Reactive BPS hint failed for ${toolName}: ${bpErr.message}", null, [details: [tool: toolName]])
+                mcpLog("warn", "server", "Reactive BPS hint failed for ${reactiveToolName}: ${bpErr.message}", null, [details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null]])
             }
         }
         return jsonRpcError(msg.id, -32602, "Invalid params: ${msgText}")
     } catch (Exception e) {
-        mcpLog("error", "server", "Tool execution error in ${toolName}: ${e.message}", null, [
-            details: [tool: toolName, error: e.message],
+        mcpLog("error", "server", "Tool execution error in ${reactiveToolName}: ${e.message}", null, [
+            details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null, error: e.message],
             stackTrace: e.getStackTrace()?.take(5)?.collect { it.toString() }?.join("\n")
         ])
         // Hubitat's LogWrapper.error() does NOT accept (String, Throwable) — passing the
@@ -1912,7 +1923,16 @@ def handleGateway(gatewayName, toolName, toolArgs) {
         toolArgs = parsed as Map
     }
 
-    // Option D: Pre-validate required parameters and return a helpful error.
+    // Option D: Pre-validate required parameters and throw a helpful error listing ALL
+    // of them at once (types/enums/descriptions) so a gateway-mode caller -- which sees
+    // only the {tool,args} envelope on tools/list, not each sub-tool's inputSchema --
+    // fixes everything in one retry instead of discovering params one-at-a-time. This is
+    // ADDITIVE: it surfaces schema the gateway defers to the catalog, never filters a
+    // response. It THROWS IllegalArgumentException (-> -32602) rather than returning an
+    // isError envelope, so a missing-param error has the SAME shape gateway and flat
+    // (issue #319: the flat handler validation also throws -> -32602). The pre-check
+    // fires only on an ABSENT key, so a present-but-invalid value (e.g. confirm:false)
+    // still reaches the handler's own richer runtime message in both modes.
     def safeArgs = toolArgs ?: [:]
     // Read this tool's required-param list from the memoized map. Computing the
     // memo key walks the catalog once per gateway call; the memo saves the per-tool
@@ -1931,10 +1951,19 @@ def handleGateway(gatewayName, toolName, toolArgs) {
     // self-gateway guide/discover op / args-omitted probe) return content with no
     // mutation and short-circuit at the top of toolSetRule, so they bypass the
     // required-param pre-check (else the gateway rejects them for missing confirm).
-    def isGatedMetaCall = toolName == "hub_set_rule" && _isSetRuleSchemaOnlyCall(safeArgs)
+    // hub_set_native_app shares the same _applyNativeAppEdit guide/discover
+    // short-circuits, so its schema-only meta-calls get the same bypass.
+    def isGatedMetaCall = (toolName == "hub_set_rule" && _isSetRuleSchemaOnlyCall(safeArgs)) ||
+        (toolName == "hub_set_native_app" && _isNativeAppSchemaOnlyCall(safeArgs))
     if (required && !isGatedMetaCall) {
         def missing = required.findAll { !safeArgs.containsKey(it) }
-        if (missing) {
+        // A sub-tool hidden by the masters / custom-engine mode / dev-mode / #114
+        // overrides must fall through to executeTool's canonical refusal -- returning
+        // the missing-param hint here would leak the full parameter schema of a tool
+        // the caller isn't allowed to use (the catalog surface above already filters
+        // through getHiddenToolNames(); this closes the dispatch surface too) and
+        // wrongly imply the tool is callable once the params are supplied.
+        if (missing && !getHiddenToolNames().contains(toolName)) {
             // Missing-param hint only (rare path): rebuild the full catalog here so
             // param descriptions are available. Strip [[FLAT_TRIM]] marker tokens --
             // this error is a client-visible surface where markers would leak.
@@ -1950,12 +1979,12 @@ def handleGateway(gatewayName, toolName, toolArgs) {
                 hint
             }.join("\n")
             def paramWord = (missing.size() == 1) ? "parameter" : "parameters"
-            return [
-                isError: true,
-                error: "Missing required ${paramWord}: ${missing.join(', ')}",
-                tool: toolName,
-                parameters: paramList
-            ]
+            // Throw (-> -32602) rather than return an isError envelope, so gateway and
+            // flat give the SAME error shape for the same mistake (issue #319). The full
+            // all-params list rides in the message -- no content is lost vs the old
+            // structured `parameters` field.
+            throw new IllegalArgumentException(
+                "Missing required ${paramWord} for ${toolName}: ${missing.join(', ')}. All parameters:\n${paramList}")
         }
     }
 
@@ -2209,10 +2238,13 @@ def executeTool(toolName, args) {
             if (settings.enableRead == false) {
                 throw new IllegalArgumentException("Read tools are disabled. Enable 'Read Tools' in MCP Rule Server app settings to use ${toolName}.")
             }
-        } else if (settings.enableWrite == false && !(toolName == 'hub_set_rule' && _isSetRuleSchemaOnlyCall(args))) {
-            // hub_set_rule schema-only calls (guide/discover/args-omitted probe) return
-            // reference content and mutate nothing, so they stay reachable when writes
-            // are disabled; every actual write still hits this gate.
+        } else if (settings.enableWrite == false
+                && !(toolName == 'hub_set_rule' && _isSetRuleSchemaOnlyCall(args))
+                && !(toolName == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(args))) {
+            // hub_set_rule / hub_set_native_app schema-only calls (guide/discover/
+            // args-omitted probe) return reference content and mutate nothing, so they
+            // stay reachable when writes are disabled; every actual write still hits
+            // this gate.
             throw new IllegalArgumentException("Write tools are disabled. Enable 'Write Tools' in MCP Rule Server app settings to use ${toolName}.")
         }
     }
@@ -2228,11 +2260,13 @@ def executeTool(toolName, args) {
     // computed above -- gateway names short-circuit (sub-tools gate on re-entry). Two tools are
     // exempt so the gate can NEVER lock the caller out: hub_get_tool_guide (read-only; the only
     // way to discover the key) and hub_update_mcp_settings (the toggle-off escape hatch).
-    // hub_set_rule schema-only probes stay reachable like the Write master above.
+    // hub_set_rule / hub_set_native_app schema-only probes stay reachable like the
+    // Write master above.
     if (!isGatewayName && settings.enableMandatoryBPS != false
             && !getReadOnlyToolNames().contains(toolName)
             && !(toolName in ['hub_get_tool_guide', 'hub_update_mcp_settings'])
-            && !(toolName == 'hub_set_rule' && _isSetRuleSchemaOnlyCall(args ?: [:]))) {
+            && !(toolName == 'hub_set_rule' && _isSetRuleSchemaOnlyCall(args ?: [:]))
+            && !(toolName == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(args ?: [:]))) {
         if (args?.bestPracticeKey?.toString() != hubBpsGuideKey()) {
             throw new IllegalArgumentException("Mandatory best-practice acknowledgment is enabled for write tools. Read hub_get_tool_guide(section='best_practice_reference') to obtain the required acknowledgment key, then pass it as the bestPracticeKey argument on this call. The key appears only in that guide section.")
         }
@@ -5158,7 +5192,7 @@ private Map _rmForceDeleteApp(Integer appId) {
 
 
 def currentVersion() {
-    return "3.1.2"
+    return "3.1.3"
 }
 
 

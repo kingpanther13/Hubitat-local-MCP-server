@@ -34,7 +34,8 @@ import support.ToolSpecBase
 class HandleMcpRequestDispatchSpec extends ToolSpecBase {
 
     def "initialize returns protocolVersion and serverInfo via render(Map)"() {
-        given:
+        given: 'gateway mode explicit -- the instructions prose is mode-branched'
+        settingsMap.useGateways = true
         mcpDriver.pushBody([jsonrpc: '2.0', id: 1, method: 'initialize', params: [:]])
 
         when:
@@ -65,6 +66,25 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         response.result.instructions instanceof String
         !response.result.instructions.isEmpty()
         response.result.instructions.toLowerCase().contains('gateway')
+        response.result.instructions.toLowerCase().contains('pagination')
+    }
+
+    def "initialize instructions in flat mode do not tell the client to call gateways"() {
+        // useGateways=false blocks gateway-name calls ("useGateways is OFF"), so the
+        // instructions must not steer a flat client into that error -- the flat prose
+        // keeps the pagination guidance and drops the call-a-gateway recipe.
+        given:
+        settingsMap.useGateways = false
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 1, method: 'initialize', params: [:]])
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        def response = mcpDriver.parseResponseJson()
+        response.result.instructions instanceof String
+        !response.result.instructions.toLowerCase().contains('call a gateway')
+        response.result.instructions.toLowerCase().contains('flat catalog')
         response.result.instructions.toLowerCase().contains('pagination')
     }
 
@@ -375,6 +395,58 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         def warn = (stateMap.debugLogs?.entries ?: []).find { it.message?.contains('response too large') }
         warn.details.tool == 'hub_get_app_config'
         warn.details.gateway == 'hub_read_apps_code'
+    }
+
+    def "validation-error mcpLog blames the SUB-TOOL, not the gateway, on a gateway-routed call (#319)"() {
+        given: 'hub_get_room reaches its handler (room supplied) then throws IAE (no rooms), via its gateway'
+        settingsMap.enableRead = true
+        settingsMap.useGateways = true
+        stateMap.debugLogs = [entries: [], config: [logLevel: 'debug', maxEntries: 1000]]
+        settingsMap.mcpLogLevel = 'debug'
+        // getRooms is a dynamic SDK method (metaClass-stubbable); [] makes toolGetRoom
+        // throw its own "No rooms configured" IAE -> the validation branch.
+        script.metaClass.getRooms = { -> [] }
+        mcpDriver.pushBody([
+            jsonrpc: '2.0', id: 210, method: 'tools/call',
+            params: [name: 'hub_read_rooms', arguments: [tool: 'hub_get_room', args: [room: 'X']]]
+        ])
+
+        when:
+        script.handleMcpRequest()
+
+        then: 'the -32602 fires and the debug-log entry names the sub-tool with the gateway as context'
+        def response = mcpDriver.parseResponseJson()
+        response.error.code == -32602
+        def warn = (stateMap.debugLogs?.entries ?: []).find { it.message?.startsWith('Validation error in') }
+        warn != null
+        warn.message.contains('hub_get_room')
+        warn.details.tool == 'hub_get_room'
+        warn.details.gateway == 'hub_read_rooms'
+    }
+
+    def "execution-error mcpLog blames the SUB-TOOL, not the gateway, on a gateway-routed call (#319)"() {
+        given: 'hub_get_room reaches its handler then a non-IAE bubbles up (generic execution error), via its gateway'
+        settingsMap.enableRead = true
+        settingsMap.useGateways = true
+        stateMap.debugLogs = [entries: [], config: [logLevel: 'debug', maxEntries: 1000]]
+        settingsMap.mcpLogLevel = 'debug'
+        script.metaClass.getRooms = { -> throw new RuntimeException('boom-exec') }
+        mcpDriver.pushBody([
+            jsonrpc: '2.0', id: 211, method: 'tools/call',
+            params: [name: 'hub_read_rooms', arguments: [tool: 'hub_get_room', args: [room: 'X']]]
+        ])
+
+        when:
+        script.handleMcpRequest()
+
+        then: 'the isError envelope fires and the error-level entry names the sub-tool with the gateway as context'
+        def response = mcpDriver.parseResponseJson()
+        response.result.isError == true
+        def err = (stateMap.debugLogs?.entries ?: []).find { it.message?.startsWith('Tool execution error in') }
+        err != null
+        err.message.contains('hub_get_room')
+        err.details.tool == 'hub_get_room'
+        err.details.gateway == 'hub_read_rooms'
     }
 
     def "guide:true through the full tools/call gateway dispatch returns the reference, not a missing-param error (live-path regression)"() {

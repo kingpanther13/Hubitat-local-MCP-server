@@ -76,6 +76,43 @@ def _op_key(name: str, arguments: dict | None) -> str:
     return key
 
 
+def _gateway_members_from_catalog(tools: list) -> dict[str, set[str]]:
+    """Build the gateway-name -> set of advertised sub-tool leaf names from a gateway-mode
+    tools/list catalog (issue #319). A gateway entry is recognized by its envelope
+    inputSchema (properties tool + args -- leaf tools never have that pair); its sub-tools
+    are the `tool` enum, the same visibility-filtered set the gateway's no-args catalog
+    disclosure returns. A flat-mode catalog has no gateway entries and yields an empty
+    map. Insertion order is preserved (Python dict) so the reverse map's tie-break is
+    catalog-order-stable. Pure dict logic (unit-tested in test_e2e_test_helpers.py)."""
+    members: dict[str, set[str]] = {}
+    for entry in tools:
+        props = (entry.get("inputSchema") or {}).get("properties") or {}
+        if "tool" not in props or "args" not in props:
+            continue   # leaf/core tool, not a gateway envelope
+        tool_prop = props["tool"]
+        if not isinstance(tool_prop, dict):
+            continue   # malformed schema -- the catalog is external hub input
+        members[entry["name"]] = set(tool_prop.get("enum") or [])
+    return members
+
+
+def _gateway_route_from_catalog(tools: list) -> dict[str, str]:
+    """Build the leaf-tool -> owning-gateway reverse map from a gateway-mode tools/list
+    catalog (issue #319), derived from _gateway_members_from_catalog at zero extra
+    round-trips. Runtime-derived so it cannot go stale as tools move between gateways. A
+    tool listed in several gateways prefers a pure-read hub_read_* home (reads route
+    through the read surface); otherwise the first gateway in catalog order wins. A
+    flat-mode catalog yields an empty map. Pure dict logic (unit-tested)."""
+    route: dict[str, str] = {}
+    for gw, leaves in _gateway_members_from_catalog(tools).items():
+        for leaf in leaves:
+            if leaf not in route or (
+                gw.startswith("hub_read_") and not route[leaf].startswith("hub_read_")
+            ):
+                route[leaf] = gw
+    return route
+
+
 class HubitatMcpClient:
     """Thin client for the Hubitat MCP Server JSON-RPC 2.0 endpoint."""
 
@@ -104,6 +141,12 @@ class HubitatMcpClient:
         # the only place real per-operation cost (RM create vs edit vs delete, etc.) is visible, since
         # the >> call traces are verbose-gated and never reach the CI log.
         self.op_timings: list[tuple[str, float]] = []
+        # Catalog-derived maps (issue #319), built lazily together from the live
+        # gateway-mode catalog; None = not built yet. _gateway_members (gateway -> its
+        # sub-tools) backs the membership guard; _gateway_route (leaf -> owning gateway)
+        # backs auto-routing.
+        self._gateway_members: dict[str, set[str]] | None = None
+        self._gateway_route: dict[str, str] | None = None
         # Mask token for safe logging: show first 4 chars only
         self._masked_token = access_token[:4] + "..." if len(access_token) > 4 else "****"
 
@@ -286,12 +329,62 @@ class HubitatMcpClient:
             params = {"cursor": next_cursor}
         raise McpError("tools/list pagination did not terminate within 20 pages")
 
-    def call_tool(self, name: str, arguments: dict | None = None) -> Any:
-        """Call an MCP tool. Returns parsed content text (dict/list/str)."""
+    def _ensure_catalog_maps(self) -> None:
+        """Build _gateway_members + _gateway_route lazily from one live tools/list.
+        list_tools() goes over _send, so building never re-enters call_tool. Only a
+        NON-EMPTY member set is cached: a transiently degraded/truncated catalog (or a
+        rare pre-infrastructure first call, or flat mode) yields nothing, and caching
+        that would silently flat-dispatch every leaf and disable the membership guard for
+        the rest of the run. Leaving it uncached retries on the next call."""
+        if self._gateway_members is None:
+            tools = self.list_tools().get("tools", [])
+            members = _gateway_members_from_catalog(tools)
+            if members:   # don't poison the cache with a degraded/flat catalog
+                self._gateway_members = members
+                self._gateway_route = _gateway_route_from_catalog(tools)
+
+    def _route_for(self, name: str) -> str | None:
+        """Owning gateway for a non-core leaf tool, or None (core/flat top-level tools
+        and gateway names pass through). The e2e hub is pinned to gateway mode, so a
+        persistently empty map means the affected leaves fail loudly at their own gate
+        rather than routing wrong."""
+        self._ensure_catalog_maps()
+        return self._gateway_route.get(name) if self._gateway_route else None
+
+    def call_tool(self, name: str, arguments: dict | None = None, *, flat: bool = False) -> Any:
+        """Call an MCP tool. Returns parsed content text (dict/list/str).
+
+        Gateway mode is the PRIMARY invocation path (issue #319): a non-core leaf tool
+        is rewritten to route through its owning gateway as {tool, args} -- the wire
+        shape a real gateway-mode client produces -- so every leaf call exercises the
+        handleGateway wrapper (required-param pre-check, per-sub-tool re-entry gating,
+        the #299 reactive hint resolution) instead of the flat executeTool shortcut.
+        Gateway names and core/flat top-level tools are sent as-is. flat=True forces
+        direct leaf-name dispatch for the small deliberate flat-dispatch proof tests
+        (executeTool resolves leaf names by name in any mode).
+
+        Membership guard (#319): a hard-coded gateway-envelope call whose sub-tool is NOT
+        a member of the named gateway is a test bug (the class that once silently killed
+        _find_app_id_by_label -- the wrong gateway threw a membership -32602 that a
+        swallowing except hid). Validate it against the live catalog and fail loudly, so
+        a future wrong-gateway hard-code can't slip through the e2e run."""
         args = arguments or {}
-        op_key = _op_key(name, args)   # gateway sub-tool / flat name; hub_set_rule split create-vs-edit
+        wire_name, wire_args = name, args
+        if not flat:
+            self._ensure_catalog_maps()
+            if (self._gateway_members and name in self._gateway_members
+                    and isinstance(args.get("tool"), str)
+                    and args["tool"] not in self._gateway_members[name]):
+                raise McpError(
+                    f"e2e bug: '{args['tool']}' is not a member of gateway '{name}' "
+                    f"(members: {sorted(self._gateway_members[name])}). Route it through its "
+                    f"owning gateway, or call it by its leaf name and let the client route it.")
+            gateway = self._route_for(name)
+            if gateway:
+                wire_name, wire_args = gateway, {"tool": name, "args": args}
+        op_key = _op_key(wire_name, wire_args)   # gateway sub-tool / flat name; hub_set_rule split create-vs-edit
         _t0 = time.monotonic()
-        result = self._send("tools/call", {"name": name, "arguments": args})
+        result = self._send("tools/call", {"name": wire_name, "arguments": wire_args})
         self.op_timings.append((op_key, time.monotonic() - _t0))
 
         # Check for tool-level error
@@ -1107,6 +1200,126 @@ class TestRunner:
         assert rooms["title"] == "List Rooms", f"hub_list_rooms catalog title unexpected: {rooms['title']!r}"
 
     @test("infrastructure")
+    def test_gateway_route_map_covers_every_gateway_sub_tool(self) -> None:
+        # Issue #319: gateway mode is the PRIMARY invocation path -- call_tool routes
+        # every non-core leaf through its owning gateway via the runtime-derived reverse
+        # map (leaf -> gateway, from each gateway entry's `tool` enum on tools/list, so
+        # it cannot go stale as tools move between gateways). Pin the map's load-bearing
+        # properties: it is populated, every value is a real gateway entry, reads prefer
+        # the pure-read surface, and no top-level tool is ever routed.
+        tools = self.client.list_tools().get("tools", [])
+        route = _gateway_route_from_catalog(tools)
+        assert route, "reverse map is empty -- tools/list has no gateway envelopes?"
+        top_level = {t.get("name") for t in tools}
+        gateway_names = {
+            t["name"] for t in tools
+            if {"tool", "args"} <= set((t.get("inputSchema") or {}).get("properties") or {})
+        }
+        bad = {leaf: gw for leaf, gw in route.items() if gw not in gateway_names}
+        assert not bad, f"leaf tools routed to non-gateway entries: {bad}"
+        overlap = set(route) & top_level
+        assert not overlap, f"top-level tools must never be gateway-routed: {sorted(overlap)}"
+        # Multi-gateway reads ride the pure-read surface; writes their manage gateway.
+        assert route.get("hub_list_devices") == "hub_read_devices", \
+            f"hub_list_devices should route via hub_read_devices, got {route.get('hub_list_devices')}"
+        assert route.get("hub_call_device_command") == "hub_manage_devices", \
+            f"hub_call_device_command should route via hub_manage_devices, got {route.get('hub_call_device_command')}"
+        assert len(route) >= 60, f"suspiciously small reverse map ({len(route)} leaf tools): {sorted(route)}"
+
+    @test("infrastructure")
+    def test_gateway_route_map_matches_catalog_disclosure(self) -> None:
+        # The reverse map derives from the tools/list `tool` enum at zero extra
+        # round-trips; the #319 design sketch derived it from each gateway's no-args
+        # catalog. Prove the two disclosure surfaces agree (same config, same
+        # visibility filtering) on a deterministic exemplar gateway, so the cheaper
+        # enum derivation is sound.
+        tools = self.client.list_tools().get("tools", [])
+        entry = next((t for t in tools if t.get("name") == "hub_read_rooms"), None)
+        assert entry is not None, "hub_read_rooms gateway missing from tools/list"
+        enum = (((entry.get("inputSchema") or {}).get("properties") or {}).get("tool") or {}).get("enum") or []
+        catalog = self._get_rooms_catalog()
+        catalog_names = [e.get("name") for e in catalog.get("tools", [])]
+        assert sorted(enum) == sorted(catalog_names), \
+            f"tools/list enum and no-args catalog disagree: {sorted(enum)} vs {sorted(catalog_names)}"
+
+    @test("infrastructure")
+    def test_flat_leaf_dispatch_still_works(self) -> None:
+        # Deliberate FLAT dispatch proof (issue #319 keeps a small set of these):
+        # executeTool resolves leaf names by name in any mode, so a stale/flat client
+        # calling a gateway sub-tool by its leaf name still works even though gateway
+        # mode is the catalog default and the primary e2e invocation path.
+        rooms = self.client.call_tool("hub_list_rooms", flat=True)
+        assert isinstance(rooms, dict) and "rooms" in rooms, f"flat hub_list_rooms dispatch failed: {rooms!r}"
+
+    @test("infrastructure")
+    def test_flat_mode_round_trip(self) -> None:
+        """Issue #319: flat mode is a real client mode with behaviors the gateway-mode
+        suite never exercises. Flip the hub to flat mode (useGateways=false) via the dev
+        tool, verify the flat catalog + flat dispatch (read AND write leaf) + the
+        gateway-name refusal + the flat serverInstructions branch, then ALWAYS restore
+        gateway mode. The restore is bulletproof (retry + verify) because leaving the hub
+        flat would break every gateway-routed test after this one."""
+        # Flip to flat mode (sent through the gateway -- still gateway mode at this point).
+        self.client.call_tool("hub_manage_mcp", {
+            "tool": "hub_update_mcp_settings",
+            "args": {"settings": {"useGateways": False}, "confirm": True}})
+        try:
+            # The catalog is now flat: no gateway ENVELOPES, every sub-tool top-level,
+            # hub_search_tools hidden (its purpose is finding tools behind gateways).
+            tools = self.client.list_tools().get("tools", [])
+            names = {t.get("name") for t in tools}
+            # Detect gateways by their {tool, args} envelope SHAPE, not a name prefix:
+            # hub_read_file / hub_write_file (file-manager leaves) and
+            # hub_manage_virtual_device / hub_manage_mode (flat action-dispatch tools) share
+            # the hub_read_*/hub_manage_* prefix but are real top-level leaves, not gateways.
+            gw_envelopes = _gateway_members_from_catalog(tools)
+            assert not gw_envelopes, \
+                f"flat catalog must not contain gateway envelopes: {sorted(gw_envelopes)}"
+            assert {"hub_list_rooms", "hub_list_devices", "hub_get_logs"} <= names, \
+                "flat catalog must surface sub-tools as top-level leaves"
+            assert "hub_search_tools" not in names, "hub_search_tools must be hidden in flat mode"
+
+            # A READ leaf dispatches by its own name in flat mode.
+            rooms = self.client.call_tool("hub_list_rooms", flat=True)
+            assert isinstance(rooms, dict) and "rooms" in rooms, f"flat read-leaf dispatch failed: {rooms!r}"
+
+            # A gateway NAME call is refused in flat mode (gateways aren't advertised).
+            try:
+                self.client.call_tool("hub_read_rooms", {"tool": "hub_list_rooms", "args": {}}, flat=True)
+                raise AssertionError("a gateway-name call must be refused in flat mode")
+            except McpError as e:
+                assert "usegateways is off" in str(e).lower() or "disabled" in str(e).lower(), \
+                    f"expected a useGateways-OFF refusal, got: {e}"
+
+            # serverInstructions is the flat branch: it must NOT tell the client to call a gateway.
+            instr = self.client.initialize().get("instructions", "")
+            assert "flat catalog" in instr.lower(), f"flat-mode instructions missing 'flat catalog': {instr!r}"
+            assert "call a gateway" not in instr.lower(), \
+                f"flat-mode instructions must not steer the client into a gateway call: {instr!r}"
+        finally:
+            # ALWAYS restore gateway mode. In flat mode the gateway is gone, so the restore
+            # is a WRITE leaf dispatched by its own name (flat=True) -- which also proves
+            # write-leaf flat dispatch. Retry + verify: a left-flat hub breaks the rest of
+            # the run. (hub_update_mcp_settings is replay-safe, so _send also retries a 504.)
+            restored = False
+            last = None
+            for _ in range(3):
+                try:
+                    last = self.client.call_tool("hub_update_mcp_settings",
+                        {"settings": {"useGateways": True}, "confirm": True}, flat=True)
+                    # Force both catalog maps to rebuild from the (now gateway) catalog.
+                    self.client._gateway_members = None
+                    self.client._gateway_route = None
+                    back = {t.get("name") for t in self.client.list_tools().get("tools", [])}
+                    if "hub_read_devices" in back:
+                        restored = True
+                        break
+                except (McpError, McpToolError, requests.HTTPError) as exc:
+                    last = exc
+                time.sleep(1.0)
+            assert restored, f"CRITICAL: could not restore gateway mode after the flat-mode test: {last}"
+
+    @test("infrastructure")
     def test_search_tools_counts_distinct_not_gateway_rows(self) -> None:
         # hub_search_tools builds its BM25 corpus with one row per (gateway, tool)
         # membership, and the read/write split lists every read tool in BOTH a
@@ -1578,6 +1791,20 @@ class TestRunner:
                           for s in ("confirm", "safety check", "required parameter"))
         assert refused, \
             f"hub_call_destructive_ops reset without confirm must be refused by the safety gate, got: {detail}"
+
+    @test("native_apps")
+    def test_set_native_app_guide_meta_call_via_gateway(self) -> None:
+        """Issue #319 latent-bug fix: hub_set_native_app's guide/discover meta-calls are
+        schema-only (static reference content, no mutation) and must clear the gateway
+        required-param pre-check WITHOUT confirm -- exactly like hub_set_rule's. Before
+        the fix the pre-check refused them for the missing confirm on the gateway path
+        while the identical flat call succeeded. The appId only shapes the call as an
+        edit; the guide short-circuit never dereferences it, so a bogus id is safe."""
+        result = self.client.call_tool("hub_manage_native_rules_and_apps", {
+            "tool": "hub_set_native_app", "args": {"appId": 999999999, "guide": True}})
+        blob = str(result)
+        assert "addTrigger" in blob and "walkStep" in blob, \
+            f"guide meta-call did not return the capability reference: {blob[:200]}"
 
     @test("native_apps")
     def test_set_app_disabled_roundtrip(self) -> None:
@@ -2536,9 +2763,13 @@ class TestRunner:
         Hub Variables, basic rules) AND hub_list_rules (RM rules surface there by
         name/label). Returns the id as a string, or None if the create truly failed."""
         try:
-            listed = self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_list_apps", "args": {"scope": "instances", "filter": "user"},
-            })
+            # Leaf-name call so the client's reverse map picks the owning gateway. A
+            # hard-coded gateway here once silently killed this leg: hub_list_apps was
+            # routed through hub_manage_native_rules_and_apps (not a member), the
+            # membership error was swallowed by the WARN below, and the lookup always
+            # fell through (latent #319-class bug).
+            listed = self.client.call_tool(
+                "hub_list_apps", {"scope": "instances", "filter": "user"})
             apps = listed if isinstance(listed, list) else (listed.get("apps") or listed.get("instances") or [])
             for a in apps:
                 if not isinstance(a, dict):
@@ -2548,7 +2779,7 @@ class TestRunner:
         except (McpError, McpToolError, requests.HTTPError) as exc:
             print(f"    [WARN] hub_list_apps lookup for {label!r} failed: {exc}")
         try:
-            rules = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
+            rules = self.client.call_tool("hub_list_rules")
             rule_list = rules if isinstance(rules, list) else (rules.get("rules") or [])
             for r in rule_list:
                 if isinstance(r, dict) and label in (r.get("label") or r.get("name") or ""):
@@ -7108,20 +7339,23 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
     @test("developer_mode")
     def test_t223_update_mcp_settings_reconnect_hint(self) -> None:
         """T223: response message includes a client-reconnect hint."""
-        result = self.client.call_tool("hub_manage_mcp", {
-            "tool": "hub_update_mcp_settings",
-            "args": {"settings": {"enableCustomRuleEngine": False}, "confirm": True},
-        })
-        assert result.get("success") is True
-        msg = result.get("message") or ""
-        assert "reconnect" in msg.lower(), f"message missing 'reconnect' hint: {msg}"
-        assert "tool schemas" in msg, f"message missing 'tool schemas' phrase: {msg}"
-        # Restore so the rest of the suite (rule_crud etc.) keeps working.
-        restore = self.client.call_tool("hub_manage_mcp", {
-            "tool": "hub_update_mcp_settings",
-            "args": {"settings": {"enableCustomRuleEngine": True}, "confirm": True},
-        })
-        assert restore.get("success") is True
+        try:
+            result = self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings",
+                "args": {"settings": {"enableCustomRuleEngine": False}, "confirm": True},
+            })
+            assert result.get("success") is True
+            msg = result.get("message") or ""
+            assert "reconnect" in msg.lower(), f"message missing 'reconnect' hint: {msg}"
+            assert "tool schemas" in msg, f"message missing 'tool schemas' phrase: {msg}"
+        finally:
+            # Restore in a finally so an assertion failure above cannot leave the custom
+            # engine OFF and cascade "…tools are disabled" through the rest of the suite.
+            restore = self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings",
+                "args": {"settings": {"enableCustomRuleEngine": True}, "confirm": True},
+            })
+            assert restore.get("success") is True
 
     @test("developer_mode")
     def test_t223c_update_mcp_settings_enable_read_allowlisted(self) -> None:
@@ -7134,21 +7368,24 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         toggles. Restore enableRead:true so the rest of the suite keeps its
         read tools.
         """
-        result = self.client.call_tool("hub_manage_mcp", {
-            "tool": "hub_update_mcp_settings",
-            "args": {"settings": {"enableRead": False}, "confirm": True},
-        })
-        assert result.get("success") is True, f"enableRead flip did not succeed: {result}"
-        assert result.get("updated") == {"enableRead": False}, f"updated field mismatch: {result}"
-        msg = result.get("message") or ""
-        assert "reconnect" in msg.lower(), f"message missing 'reconnect' hint: {msg}"
-        assert "tool schemas" in msg, f"message missing 'tool schemas' phrase: {msg}"
-        # Restore so the rest of the suite keeps its read tools.
-        restore = self.client.call_tool("hub_manage_mcp", {
-            "tool": "hub_update_mcp_settings",
-            "args": {"settings": {"enableRead": True}, "confirm": True},
-        })
-        assert restore.get("success") is True
+        try:
+            result = self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings",
+                "args": {"settings": {"enableRead": False}, "confirm": True},
+            })
+            assert result.get("success") is True, f"enableRead flip did not succeed: {result}"
+            assert result.get("updated") == {"enableRead": False}, f"updated field mismatch: {result}"
+            msg = result.get("message") or ""
+            assert "reconnect" in msg.lower(), f"message missing 'reconnect' hint: {msg}"
+            assert "tool schemas" in msg, f"message missing 'tool schemas' phrase: {msg}"
+        finally:
+            # Restore in a finally so an assertion failure above cannot leave the Read
+            # master OFF and cascade "Read tools are disabled" through the rest of the suite.
+            restore = self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings",
+                "args": {"settings": {"enableRead": True}, "confirm": True},
+            })
+            assert restore.get("success") is True
 
     @test("developer_mode")
     def test_t224_delete_variable_round_trip(self) -> None:
@@ -8087,11 +8324,21 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
     @test("protocol")
     def test_initialize_returns_instructions(self) -> None:
         """initialize advertises a non-empty instructions string (gateway +
-        pagination usage hint) so MCP clients can surface server guidance."""
+        pagination usage hint) so MCP clients can surface server guidance.
+
+        The e2e hub runs gateway mode (mcp_setup_env pins useGateways=true), so the
+        gateway-mode prose must be present: it names the gateway-call convention AND
+        clarifies that hub_manage_virtual_device / hub_manage_mode are direct tools
+        (not gateways) despite matching the hub_manage_* pattern (#319)."""
         result = self.client.initialize()
         instructions = result.get("instructions")
         assert isinstance(instructions, str) and instructions.strip(), \
             f"Expected non-empty instructions string, got: {instructions!r}"
+        assert "gateway" in instructions.lower(), f"gateway-mode instructions missing the gateway convention: {instructions!r}"
+        assert "pagination" in instructions.lower(), f"instructions missing the pagination hint: {instructions!r}"
+        # The direct-tool clarification (the #319 addition) must be present in gateway mode.
+        assert "hub_manage_virtual_device" in instructions and "hub_manage_mode" in instructions, \
+            f"gateway-mode instructions missing the direct-tool clarification: {instructions!r}"
 
     @test("protocol")
     def test_batch_too_large_rejected(self) -> None:

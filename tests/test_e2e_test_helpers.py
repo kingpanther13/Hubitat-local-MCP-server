@@ -131,3 +131,150 @@ def test_op_key_flat_tool_uses_name():
     """A flat (non-gateway) call resolves to the tool name; None args are tolerated."""
     assert et._op_key("hub_get_info", {}) == "hub_get_info"
     assert et._op_key("hub_get_info", None) == "hub_get_info"
+
+
+# ---------------------------------------------------------------------------
+# _gateway_route_from_catalog (issue #319 leaf -> gateway reverse map)
+# ---------------------------------------------------------------------------
+
+def _gw(name: str, subtools: list[str]) -> dict:
+    """A minimal gateway-mode tools/list gateway entry (the {tool, args} envelope)."""
+    return {
+        "name": name,
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tool": {"type": "string", "enum": subtools},
+                "args": {"type": "object"},
+            },
+        },
+    }
+
+
+def _leaf(name: str, props: dict | None = None) -> dict:
+    """A minimal core/leaf tools/list entry (no {tool, args} envelope)."""
+    return {"name": name, "inputSchema": {"type": "object", "properties": props or {}}}
+
+
+def test_route_map_routes_leaf_to_its_gateway():
+    route = et._gateway_route_from_catalog([_gw("hub_manage_rooms", ["hub_create_room", "hub_delete_room"])])
+    assert route == {"hub_create_room": "hub_manage_rooms", "hub_delete_room": "hub_manage_rooms"}
+
+
+def test_route_map_ignores_core_leaf_entries():
+    """Core tools (no tool+args envelope) contribute nothing -- they are never routed."""
+    route = et._gateway_route_from_catalog([
+        _leaf("hub_get_info"),
+        _leaf("hub_manage_virtual_device", {"action": {"type": "string", "enum": ["create", "delete"]}}),
+        _gw("hub_manage_rooms", ["hub_create_room"]),
+    ])
+    assert "hub_get_info" not in route
+    assert "hub_manage_virtual_device" not in route
+    assert route["hub_create_room"] == "hub_manage_rooms"
+
+
+def test_route_map_multi_gateway_read_prefers_pure_read_gateway():
+    """A read living in both a manage_ and a read_ gateway routes through the read surface,
+    regardless of catalog order."""
+    entries = [
+        _gw("hub_manage_devices", ["hub_list_devices", "hub_call_device_command"]),
+        _gw("hub_read_devices", ["hub_list_devices"]),
+    ]
+    route = et._gateway_route_from_catalog(entries)
+    assert route["hub_list_devices"] == "hub_read_devices"
+    assert route["hub_call_device_command"] == "hub_manage_devices"
+    # ...and with the read gateway FIRST it stays on the read surface.
+    route_rev = et._gateway_route_from_catalog(list(reversed(entries)))
+    assert route_rev["hub_list_devices"] == "hub_read_devices"
+
+
+def test_route_map_multi_manage_membership_first_gateway_wins():
+    """A write in two manage_ gateways routes through the first in catalog order (deterministic)."""
+    route = et._gateway_route_from_catalog([
+        _gw("hub_manage_rule_machine", ["hub_delete_native_app"]),
+        _gw("hub_manage_native_rules_and_apps", ["hub_delete_native_app"]),
+    ])
+    assert route["hub_delete_native_app"] == "hub_manage_rule_machine"
+
+
+def test_route_map_flat_catalog_yields_empty_map():
+    """A flat-mode catalog (every tool a leaf) builds an empty map -- every call falls
+    through to direct dispatch."""
+    assert et._gateway_route_from_catalog([_leaf("hub_list_rooms"), _leaf("hub_get_info")]) == {}
+
+
+def test_route_map_tolerates_missing_schema_and_enum():
+    """Entries without inputSchema/properties/enum are skipped, not crashed on."""
+    route = et._gateway_route_from_catalog([
+        {"name": "hub_weird"},
+        {"name": "hub_no_props", "inputSchema": {"type": "object"}},
+        {"name": "hub_no_enum", "inputSchema": {"type": "object", "properties": {"tool": {"type": "string"}, "args": {"type": "object"}}}},
+        {"name": "hub_nondict_tool", "inputSchema": {"type": "object", "properties": {"tool": None, "args": {"type": "object"}}}},
+        _gw("hub_manage_rooms", ["hub_create_room"]),
+    ])
+    assert route == {"hub_create_room": "hub_manage_rooms"}
+
+
+# ---------------------------------------------------------------------------
+# _gateway_members_from_catalog + the call_tool membership guard (issue #319)
+# ---------------------------------------------------------------------------
+
+def test_members_map_lists_each_gateways_subtools():
+    members = et._gateway_members_from_catalog([
+        _gw("hub_manage_rooms", ["hub_list_rooms", "hub_create_room"]),
+        _gw("hub_read_devices", ["hub_list_devices"]),
+        _leaf("hub_get_info"),
+    ])
+    assert members == {
+        "hub_manage_rooms": {"hub_list_rooms", "hub_create_room"},
+        "hub_read_devices": {"hub_list_devices"},
+    }
+    assert "hub_get_info" not in members   # core tools are not gateways
+
+
+def test_members_map_flat_catalog_is_empty():
+    assert et._gateway_members_from_catalog([_leaf("hub_list_rooms"), _leaf("hub_get_info")]) == {}
+
+
+def _client_with_catalog(tools: list) -> "et.HubitatMcpClient":
+    """A client whose catalog maps are pre-seeded from `tools` without any network I/O."""
+    c = et.HubitatMcpClient.__new__(et.HubitatMcpClient)
+    c._gateway_members = et._gateway_members_from_catalog(tools)
+    c._gateway_route = et._gateway_route_from_catalog(tools)
+    return c
+
+
+def test_membership_guard_rejects_wrong_gateway():
+    """A gateway-envelope call whose sub-tool is NOT a member of the named gateway raises
+    loudly -- the guard against the _find_app_id_by_label class of silent bug."""
+    c = _client_with_catalog([
+        _gw("hub_manage_native_rules_and_apps", ["hub_list_rules", "hub_set_native_app"]),
+        _gw("hub_read_apps_code", ["hub_list_apps"]),
+    ])
+    # hub_list_apps is a member of hub_read_apps_code, NOT hub_manage_native_rules_and_apps.
+    with pytest.raises(et.McpError) as ei:
+        c.call_tool("hub_manage_native_rules_and_apps",
+                    {"tool": "hub_list_apps", "args": {"scope": "instances"}})
+    msg = str(ei.value)
+    assert "not a member" in msg and "hub_list_apps" in msg and "hub_manage_native_rules_and_apps" in msg
+
+
+def test_membership_guard_allows_valid_membership_then_routes():
+    """A valid gateway-envelope call passes the guard. (It would then be sent as-is; we
+    stop before network I/O by asserting no guard error is raised for a real member.)"""
+    c = _client_with_catalog([_gw("hub_manage_rooms", ["hub_list_rooms", "hub_delete_room"])])
+    # No McpError from the guard for a real member; _send would be next (not exercised here).
+    # Drive only the guard by monkeypatching _send to short-circuit.
+    c._request_id = 0
+    c.op_timings = []
+    c._send = lambda method, params: {"content": [{"type": "text", "text": "{}"}]}
+    c.call_tool("hub_manage_rooms", {"tool": "hub_delete_room", "args": {"room": "X", "confirm": True}})
+
+
+def test_membership_guard_skipped_for_flat_calls():
+    """flat=True bypasses the guard entirely (deliberate flat-dispatch proofs)."""
+    c = _client_with_catalog([_gw("hub_manage_rooms", ["hub_list_rooms"])])
+    c._send = lambda method, params: {"content": [{"type": "text", "text": "{}"}]}
+    c.op_timings = []
+    # A leaf name with flat=True is never treated as a gateway envelope; no guard, no raise.
+    c.call_tool("hub_list_rooms", flat=True)
