@@ -2612,11 +2612,10 @@ class TestRunner:
     @test("dashboards")
     def test_dashboard_legacy_lifecycle(self) -> None:
         """Legacy Hubitat(R) Dashboard CRUD (issue #326): create a legacy dashboard,
-        add a tile + set grid options granularly, rename it, then delete it. Needs the
-        built-in Hubitat(R) Dashboard parent app installed; a create that reports the
-        parent missing SKIPS (a hub-provisioning gap the e2e hub does not control) --
-        same shape as the pinToken skip in the Easy test above. A create ERROR that is
-        NOT the missing-parent case is a REAL failure."""
+        add a tile + set grid options granularly, rename it, then delete it. The built-in
+        Hubitat(R) Dashboard parent app is a documented e2e-hub precondition (same class
+        as the Easy Dashboard parent) -- a create that reports the parent missing FAILS
+        loudly so the gap gets provisioned, never skipped into silence."""
         switch_id = self.get_test_switch_id()
         assert switch_id, "could not get a test switch for the legacy dashboard"
         dash_name = f"{PREFIX}LegacyDash"
@@ -2637,11 +2636,14 @@ class TestRunner:
         else:
             resp = cw["response"]
             assert isinstance(resp, dict), f"hub_create_dashboard(legacy) returned non-dict: {resp}"
-            # The legacy parent isn't a throw -- create returns success:false with an error naming the
-            # parent app. That specific case is a hub-provisioning precondition, so SKIP; any OTHER
-            # create failure is a real regression and FAILS.
+            # A missing legacy parent is NOT skippable: the built-in Hubitat(R) Dashboard app is a
+            # documented e2e-hub precondition (like the Easy Dashboard parent), so a create that
+            # reports it missing fails loudly with the remedy instead of skipping the whole group.
             if resp.get("success") is False and "parent" in str(resp.get("error", "")).lower():
-                raise SkipTest(f"legacy Hubitat(R) Dashboard parent app not installed: {resp.get('error')}")
+                raise AssertionError(
+                    "legacy Hubitat(R) Dashboard parent app is not installed on the e2e hub -- "
+                    "install the built-in 'Hubitat(R) Dashboard' app there (documented precondition), "
+                    f"then re-run: {resp.get('error')}")
             assert resp.get("success") is not False, f"hub_create_dashboard(legacy) failed: {resp.get('error')}"
             dash_id = self._find_dashboard_id_by_name(dash_name)
             if not dash_id and resp.get("id"):

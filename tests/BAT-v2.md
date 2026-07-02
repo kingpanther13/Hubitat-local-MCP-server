@@ -4352,7 +4352,7 @@ Dashboard CRUD across BOTH Easy Dashboards and legacy Hubitat® Dashboards (issu
 - Only create/edit/delete **BAT-prefixed** dashboards created within the same scenario — never touch existing dashboards
 - Dashboards only ever reference BAT-created virtual switches
 - Deleting a dashboard does NOT delete its devices
-- Legacy scenarios additionally require the built-in **Hubitat® Dashboard** parent app to be installed on the hub; a create that reports the parent app missing is a hub-provisioning gap, not a tool failure (skip and note it)
+- Legacy scenarios additionally require the built-in **Hubitat® Dashboard** parent app to be installed on the hub — a documented precondition, not a skippable gap: install the built-in app first, then run the scenario
 
 ### T720 — Create an Easy Dashboard, read it back, then delete it
 
