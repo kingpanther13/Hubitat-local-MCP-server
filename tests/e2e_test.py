@@ -1683,6 +1683,20 @@ class TestRunner:
             f"hub_call_destructive_ops reset without confirm must be refused by the safety gate, got: {detail}"
 
     @test("native_apps")
+    def test_set_native_app_guide_meta_call_via_gateway(self) -> None:
+        """Issue #319 latent-bug fix: hub_set_native_app's guide/discover meta-calls are
+        schema-only (static reference content, no mutation) and must clear the gateway
+        required-param pre-check WITHOUT confirm -- exactly like hub_set_rule's. Before
+        the fix the pre-check refused them for the missing confirm on the gateway path
+        while the identical flat call succeeded. The appId only shapes the call as an
+        edit; the guide short-circuit never dereferences it, so a bogus id is safe."""
+        result = self.client.call_tool("hub_manage_native_rules_and_apps", {
+            "tool": "hub_set_native_app", "args": {"appId": 999999999, "guide": True}})
+        blob = str(result)
+        assert "addTrigger" in blob and "walkStep" in blob, \
+            f"guide meta-call did not return the capability reference: {blob[:200]}"
+
+    @test("native_apps")
     def test_set_app_disabled_roundtrip(self) -> None:
         # Item 2 (#257): toggle a standalone non-e2e app's disabled flag and restore it.
         # Pinned to "Hub Health Monitor & Auto Reboot" (app id 68) -- the only user-installed app on

@@ -7767,6 +7767,25 @@ def _isSetRuleSchemaOnlyCall(args) {
     return false
 }
 
+// hub_set_native_app shares _applyNativeAppEdit's guide/discover short-circuits (static
+// schema returns, no mutation, before requireDestructiveConfirm), so those meta-calls are
+// schema-only exactly like hub_set_rule's legacy form. Consumed by the same three gates
+// that exempt hub_set_rule (handleGateway's required-param pre-check, the Write master,
+// the mandatory-BPS gate). UNLIKE toolSetRule (whose guide shortcut sits at the very top
+// of the handler), the shortcuts here live only in the EDIT engine -- toolSetNativeApp
+// routes buttonRule and no-appId calls to WRITE paths first -- so a call is schema-only
+// ONLY when it is edit-shaped (appId present, no buttonRule) AND carries a meta flag.
+// A guide flag on a create-shaped call must NOT bypass any gate: the create arm would
+// really execute.
+def _isNativeAppSchemaOnlyCall(args) {
+    if (!(args instanceof Map)) return false
+    if (args.appId == null || args.buttonRule != null) return false
+    if (args.guide == true) return true
+    if (args.addTrigger instanceof Map && args.addTrigger.discover == true) return true
+    if (args.addAction instanceof Map && args.addAction.discover == true) return true
+    return false
+}
+
 // Re-key a flat self-gateway envelope {operation, appId?, args?, confirm?} into the
 // canonical handler shape, OR (for a probe) return the operation's schema slice.
 // PROBE vs EXECUTE is decided by confirm (a no-payload op like clearActions has no
@@ -11440,8 +11459,9 @@ def _applyNativeAppEdit(args) {
     // {addAction: {discover: true}} returns static schema with no hub
     // interaction -- bypass the in-handler requireDestructiveConfirm gate (confirm
     // + backup snapshot). Being a no-mutation schema return, executeTool's Write
-    // master deliberately lets this through even when writes are disabled
-    // (_isSetRuleSchemaOnlyCall); a confirmed write stays Write-master gated.
+    // master and the gateway required-param pre-check deliberately let this through
+    // even when writes are disabled (_isNativeAppSchemaOnlyCall, edit-shaped calls
+    // only); a confirmed write stays Write-master gated.
     // Pure static data; no hub dependency whatsoever.
     if (args?.addTrigger instanceof Map && args.addTrigger.discover == true) {
         return _rmAddTrigger(0, args.addTrigger as Map)

@@ -34,7 +34,8 @@ import support.ToolSpecBase
 class HandleMcpRequestDispatchSpec extends ToolSpecBase {
 
     def "initialize returns protocolVersion and serverInfo via render(Map)"() {
-        given:
+        given: 'gateway mode explicit -- the instructions prose is mode-branched'
+        settingsMap.useGateways = true
         mcpDriver.pushBody([jsonrpc: '2.0', id: 1, method: 'initialize', params: [:]])
 
         when:
@@ -65,6 +66,25 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         response.result.instructions instanceof String
         !response.result.instructions.isEmpty()
         response.result.instructions.toLowerCase().contains('gateway')
+        response.result.instructions.toLowerCase().contains('pagination')
+    }
+
+    def "initialize instructions in flat mode do not tell the client to call gateways"() {
+        // useGateways=false blocks gateway-name calls ("useGateways is OFF"), so the
+        // instructions must not steer a flat client into that error -- the flat prose
+        // keeps the pagination guidance and drops the call-a-gateway recipe.
+        given:
+        settingsMap.useGateways = false
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 1, method: 'initialize', params: [:]])
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        def response = mcpDriver.parseResponseJson()
+        response.result.instructions instanceof String
+        !response.result.instructions.toLowerCase().contains('call a gateway')
+        response.result.instructions.toLowerCase().contains('flat catalog')
         response.result.instructions.toLowerCase().contains('pagination')
     }
 
