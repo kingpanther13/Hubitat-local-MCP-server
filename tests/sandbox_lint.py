@@ -570,7 +570,7 @@ def check_versions() -> list[dict]:
 # ---------------------------------------------------------------------------
 #
 # Tool counts are quoted across many docs (README, SKILL, TOOL_GUIDE,
-# agent-skill mirrors, BAT-v2). Without a check, every tool-adding PR has
+# the agent-skill SKILL.md, BAT-v2). Without a check, every tool-adding PR has
 # to manually update them in lockstep, and drift is silent until someone
 # notices. This check derives the canonical counts from the Groovy source
 # (getGatewayConfig + getAllToolDefinitions) and flags any current-state
@@ -956,32 +956,59 @@ COUNT_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\bgateways?\s+on\s+(?:`tools/list`|\|?\s*tools/list\s*\|)\s*\|?\s*(\d+)\b", re.IGNORECASE), "gateways"),
 ]
 
-# Per-gateway pattern: "manage_X (N)", "`manage_X` (N)", "<b>manage_X</b> (N)",
+# Per-gateway pattern: "hub_manage_X (N)", "`hub_read_X` (N)", "manage_X (N)",
 # "### manage_X (N tools)", "manage_X (N tools, 7 original + 3 library tools)".
+# The canonical `hub_` prefix is tolerated but excluded from the capture
+# (docs use the full `hub_manage_X` / `hub_read_X` names; `\b` can't anchor
+# inside "hub_manage", so the prefix must be matched explicitly) — captures
+# are re-prefixed via _normalize_gateway_name before the canonical lookup.
+# Covers BOTH gateway families: `manage_` and the pure-read `read_` gateways.
 # The 0-10 char window between the gateway name and the open paren
 # tolerates backticks and short HTML tags without matching across
 # unrelated text. The trailing class allows `)` (bare or `(N tools)`),
 # `,` (qualifier follows like "(N tools, 7 original + ...)"), or
 # whitespace + non-paren (e.g. "(N tools generic across...)").
 PER_GATEWAY_PATTERN = re.compile(
-    r"\b(manage_[a-z_]+)\b[^(\n]{0,10}\((\d+)(?:\s+tools?)?(?:[,)]|\s+(?:tools?|original|library|read|write))"
+    r"\b(?:hub_)?((?:manage|read)_[a-z_]+)\b[^(\n]{0,10}\((\d+)(?:\s+tools?)?(?:[,)]|\s+(?:tools?|original|library|read|write))"
 )
 
-# Per-gateway in markdown tables: "| `manage_X` | N |" — the count lives
+# Per-gateway in markdown tables: "| `hub_manage_X` | N |" — the count lives
 # in a separate column from the name, so the parenthesis-anchored pattern
 # above misses these.
 PER_GATEWAY_TABLE_PATTERN = re.compile(
-    r"\|\s*`?(manage_[a-z_]+)`?\s*\|\s*(\d+)\s*\|"
+    r"\|\s*`?(?:hub_)?((?:manage|read)_[a-z_]+)`?\s*\|\s*(\d+)\s*\|"
 )
 
-# "AI calls `manage_X` ... sees N tools" — gateway op-count claim where
+# "AI calls `hub_manage_X` ... sees N tools" — gateway op-count claim where
 # the gateway name and the count are separated by descriptive prose. The
 # 1-80 char window is loose enough to cover phrasings like "AI calls
 # `manage_native_rules_and_apps` with no args, sees 12 tools" without
 # crossing sentence boundaries (terminated by `.` or newline).
 PER_GATEWAY_SEES_PATTERN = re.compile(
-    r"`(manage_[a-z_]+)`[^.\n]{1,80}\bsees?\s+(?:catalog\s+of\s+)?(\d+)\s+tools?\b"
+    r"`(?:hub_)?((?:manage|read)_[a-z_]+)`[^.\n]{1,80}\bsees?\s+(?:catalog\s+of\s+)?(\d+)\s+tools?\b"
 )
+
+# Gateway-family subtotals: "Read gateways (8):" / "Manage gateways (15):"
+# (the TOOL_GUIDE.md gateway-inventory lines). Checked against the count of
+# hub_read_* / hub_manage_* keys in canonical per_gateway.
+GATEWAY_FAMILY_PATTERN = re.compile(
+    r"\b(read|manage)\s+gateways\s*\((\d+)\)", re.IGNORECASE
+)
+
+
+def _normalize_gateway_name(captured: str) -> str:
+    """Map a per-gateway pattern capture (bare `manage_X` / `read_X`) to the
+    canonical `hub_`-prefixed key used by per_gateway. Kept as a shared
+    helper so check_tool_counts and the self-test harness cannot diverge."""
+    return "hub_" + captured
+
+
+def _gateway_family_expected(canonical: dict, family: str) -> int:
+    """Canonical number of gateways in a family ('read' or 'manage'),
+    derived from the per_gateway keys."""
+    return sum(
+        1 for k in canonical["per_gateway"] if k.startswith(f"hub_{family}_")
+    )
 
 
 def check_tool_counts() -> list[dict]:
@@ -1052,6 +1079,39 @@ def check_tool_counts() -> list[dict]:
                     }
                 )
 
+        # Gateway-family subtotals: "Read gateways (8):" / "Manage gateways (15):".
+        family_seen: set[tuple[int, str, int]] = set()
+        for m in GATEWAY_FAMILY_PATTERN.finditer(content):
+            if _is_historical_at(content, m.start(), m.end()):
+                continue
+            family = m.group(1).lower()
+            actual = int(m.group(2))
+            expected = _gateway_family_expected(canonical, family)
+            if actual == expected:
+                continue
+            line_no = content[:m.start()].count("\n") + 1
+            dedup_key = (line_no, family, actual)
+            if dedup_key in family_seen:
+                continue
+            family_seen.add(dedup_key)
+            line_start = content.rfind("\n", 0, m.start()) + 1
+            line_end = content.find("\n", m.start())
+            if line_end == -1:
+                line_end = len(content)
+            findings.append(
+                {
+                    "file": rel,
+                    "line": line_no,
+                    "rule": "TOOL_COUNT",
+                    "message": (
+                        f"{family} gateway subtotal claims {actual}, "
+                        f"canonical is {expected}."
+                    ),
+                    "severity": "error",
+                    "source": content[line_start:line_end].strip()[:200],
+                }
+            )
+
         # Per-gateway op counts: parenthesized form, markdown table form,
         # and "AI ... sees N tools" gateway-context form.
         per_gw_seen: set[tuple[int, str, int]] = set()
@@ -1062,7 +1122,7 @@ def check_tool_counts() -> list[dict]:
         ):
             if _is_historical_at(content, m.start(), m.end()):
                 continue
-            gw_name = m.group(1)
+            gw_name = _normalize_gateway_name(m.group(1))
             actual = int(m.group(2))
             line_no_dedup = content[:m.start()].count("\n") + 1
             dedup_key = (line_no_dedup, gw_name, actual)
@@ -2783,30 +2843,64 @@ COUNT_SELF_TEST_CASES = [
     ),
 
     # === Per-gateway extraction patterns ===
+    # Canonical per_gateway keys are hub_-prefixed (hub_manage_X / hub_read_X);
+    # captures normalize through _normalize_gateway_name, so bare-name prose
+    # ("manage_logs (8 tools)") and full-name docs ("`hub_manage_logs` (8)")
+    # both resolve to the same canonical key.
     (
-        "Per-gateway: `manage_X (N tools)` parenthesized",
+        "Per-gateway: bare `manage_X (N tools)` parenthesized (legacy prose form)",
         "The `manage_logs` (8 tools) gateway covers system-log access.",
-        {"per_gateway": {"manage_logs": 9}}, ["per_gateway:manage_logs"],
+        {"per_gateway": {"hub_manage_logs": 9}}, ["per_gateway:hub_manage_logs"],
+    ),
+    (
+        "Per-gateway: hub_-prefixed inventory-line form `\\`hub_manage_X\\` (N),` "
+        "(the TOOL_GUIDE.md gateway-inventory shape — regression guard: the "
+        "pre-hub_-prefix pattern matched ZERO of these, leaving the real docs "
+        "unguarded)",
+        "**Manage gateways (2):** `hub_manage_logs` (8), `hub_manage_selftest_zz` (4)",
+        {"per_gateway": {"hub_manage_logs": 9, "hub_manage_selftest_zz": 4}},
+        ["per_gateway:hub_manage_logs"],
+    ),
+    (
+        "Per-gateway: hub_read_* gateway (read_ family was previously not "
+        "covered by any pattern)",
+        "`hub_read_selftest_zz` (5) is the pure-read gateway.",
+        {"per_gateway": {"hub_read_selftest_zz": 6}}, ["per_gateway:hub_read_selftest_zz"],
     ),
     (
         "Per-gateway: `manage_X (N tools, qualifier)` allows trailing qualifier",
         "manage_app_driver_code (10 tools, 7 original + 3 library tools)",
-        {"per_gateway": {"manage_app_driver_code": 11}}, ["per_gateway:manage_app_driver_code"],
+        {"per_gateway": {"hub_manage_app_driver_code": 11}}, ["per_gateway:hub_manage_app_driver_code"],
     ),
     (
         "Per-gateway: markdown-table form",
-        "| `manage_logs` | 8 |",
-        {"per_gateway": {"manage_logs": 9}}, ["per_gateway:manage_logs"],
+        "| `hub_manage_logs` | 8 |",
+        {"per_gateway": {"hub_manage_logs": 9}}, ["per_gateway:hub_manage_logs"],
     ),
     (
         "Per-gateway: `sees N tools` after backticked gateway name",
         "AI calls `manage_native_rules_and_apps` with no args, sees 12 tools.",
-        {"per_gateway": {"manage_native_rules_and_apps": 13}}, ["per_gateway:manage_native_rules_and_apps"],
+        {"per_gateway": {"hub_manage_native_rules_and_apps": 13}}, ["per_gateway:hub_manage_native_rules_and_apps"],
     ),
     (
         "Per-gateway: `sees catalog of N tools` phrasing (catalog-of variant)",
         "AI calls `manage_installed_apps` with no args, sees catalog of 4 tools.",
-        {"per_gateway": {"manage_installed_apps": 5}}, ["per_gateway:manage_installed_apps"],
+        {"per_gateway": {"hub_manage_installed_apps": 5}}, ["per_gateway:hub_manage_installed_apps"],
+    ),
+
+    # === Gateway-family subtotals ("Read gateways (N):" / "Manage gateways (N):") ===
+    # Expected values derive live from per_gateway keys, so drift fixtures use
+    # counts no real catalog will reach; the no-fire case is proven by the real
+    # lint run over the real docs.
+    (
+        "Family subtotal: wrong `Read gateways (N)` fires",
+        "**Read gateways (999):** `hub_read_selftest_zz` (2)",
+        {"per_gateway": {"hub_read_selftest_zz": 2}}, ["gateway_family:read"],
+    ),
+    (
+        "Family subtotal: wrong `Manage gateways (N)` fires",
+        "**Manage gateways (999):** `hub_manage_selftest_zz` (4)",
+        {"per_gateway": {"hub_manage_selftest_zz": 4}}, ["gateway_family:manage"],
     ),
 
     # === Required #2 — asymmetric window: trailing `was N` must not suppress live count ===
@@ -3013,6 +3107,21 @@ def _check_doc_against_canonical(content: str, canonical_override: dict) -> set[
             seen.add(dedup)
             kinds.add(kind)
 
+    # Gateway-family subtotal scan
+    family_seen: set[tuple[int, str, int]] = set()
+    for m in GATEWAY_FAMILY_PATTERN.finditer(content):
+        if _is_historical_at(content, m.start(), m.end()):
+            continue
+        family = m.group(1).lower()
+        actual = int(m.group(2))
+        line_no = content[:m.start()].count("\n") + 1
+        dedup = (line_no, family, actual)
+        if dedup in family_seen:
+            continue
+        family_seen.add(dedup)
+        if actual != _gateway_family_expected(canonical, family):
+            kinds.add(f"gateway_family:{family}")
+
     # Per-gateway scans
     per_gw_seen: set[tuple[int, str, int]] = set()
     for m in (
@@ -3022,7 +3131,7 @@ def _check_doc_against_canonical(content: str, canonical_override: dict) -> set[
     ):
         if _is_historical_at(content, m.start(), m.end()):
             continue
-        gw_name = m.group(1)
+        gw_name = _normalize_gateway_name(m.group(1))
         actual = int(m.group(2))
         line_no = content[:m.start()].count("\n") + 1
         dedup = (line_no, gw_name, actual)
