@@ -346,7 +346,7 @@ Call a gateway with no arguments to see full parameter schemas. Call with `tool=
 </details>
 
 <details>
-<summary><b>hub_read_devices</b> (4) — Query devices (read-only)</summary>
+<summary><b>hub_read_devices</b> (5) — Query devices (read-only)</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -354,6 +354,7 @@ Call a gateway with no arguments to see full parameter schemas. Call with `tool=
 | `hub_get_device` | Full device details: attributes, commands, capabilities |
 | `hub_get_device_attribute` | Get a specific attribute value. Pass exactly one of `expectedValue` or `expectedValues` to block-poll the attribute until it matches or times out — `timeoutMs` in MILLISECONDS (default 5000ms = 5 seconds, max 60000ms). `comparator` (eq/ne/gt/gte/lt/lte/between) and `stableForMs` (debounce) refine the match; a numeric comparator on a non-numeric attribute times out with `nonNumericAttribute: true`. For multi-device convergence pass `deviceIds` (a list, mutually exclusive with `deviceId`, max 20) with `mode` (all/any), returning a compact per-device array (`{deviceId, device, finalValue, matched}`) plus `convergedCount`. A device whose read throws mid-poll (e.g. removed) is flagged `readError: true` (per-device in multi-device mode) and degraded to unread without aborting the poll for the others. Polling BLOCKS the MCP request; use sparingly and prefer event-driven flows when available. |
 | `hub_list_device_events` | Recent events for a device. Add `hoursBack` for a relative window (up to 7 days) or `since` for an absolute bookmark (events after an exact timestamp; round-trip a returned `date`); the response echoes `sinceMode` (`explicit`/`relative`) and the bounding field (`since` or `hoursBack`). Omit `deviceId` for mode/HSM/hub-variable/sendLocationEvent location events. |
+| `hub_get_compatible_devices` | Search Hubitat's official compatible-device catalog (brands/models + their Hubitat driver) by `query`/`brand`/`protocol`/`deviceType`; paginated (`cursor`). `includeInstructions=true` adds join/exclude/factory-reset steps. Reference catalog only — NOT your installed devices. |
 
 </details>
 
@@ -450,7 +451,7 @@ Monitoring tools are gated by the Read master (ON by default).
 </details>
 
 <details>
-<summary><b>hub_manage_devices</b> (7) — Control and query devices</summary>
+<summary><b>hub_manage_devices</b> (9) — Control and query devices</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -458,6 +459,7 @@ Monitoring tools are gated by the Read master (ON by default).
 | `hub_call_device_swap` | Replace a device across ALL apps/rules that reference it (built-in Swap Device tool; compatible replacements only) |
 | `hub_call_device_replace` | Replace a dead/failing device's hardware while KEEPING its id + all app/rule references (re-points to `new_device_id`; `list_options=true` reads compatible candidates). Distinct from swap, which moves references to the new device |
 | `hub_update_device` | Update device properties (label, room, preferences, etc.) |
+| `hub_create_device` | Create a device from a driver-type id (`deviceTypeId` from `hub_list_drivers(include='all')`); for LAN/integration/software drivers, NOT radio hardware (pair those). Requires `confirm=true`. |
 | `hub_list_devices` | List accessible devices (pagination, server-side labelFilter/capabilityFilter, format=ids, field projection; `filter='virtual'` lists only MCP-managed virtual devices) (also in `hub_read_devices`) |
 | `hub_get_device` | Full device details: attributes, commands, capabilities (also in `hub_read_devices`) |
 | `hub_get_device_attribute` | Get a specific attribute value. Pass exactly one of `expectedValue` or `expectedValues` to block-poll the attribute until it matches or times out — `timeoutMs` in MILLISECONDS (default 5000ms = 5 seconds, max 60000ms). `comparator` (eq/ne/gt/gte/lt/lte/between) and `stableForMs` (debounce) refine the match; a numeric comparator on a non-numeric attribute times out with `nonNumericAttribute: true`. For multi-device convergence pass `deviceIds` (a list, mutually exclusive with `deviceId`, max 20) with `mode` (all/any), returning a compact per-device array (`{deviceId, device, finalValue, matched}`) plus `convergedCount`. Polling BLOCKS the MCP request; use sparingly and prefer event-driven flows when available. (also in `hub_read_devices`) |
@@ -509,7 +511,7 @@ All operations are disruptive. These tools are gated by the Write master (ON by 
 </details>
 
 <details>
-<summary><b>hub_manage_code</b> (11) — Install, update, delete apps/drivers/libraries/bundles and restore backups</summary>
+<summary><b>hub_manage_code</b> (10) — Install, update, delete apps/drivers/libraries/bundles</summary>
 
 | Tool | Description |
 |------|-------------|
@@ -518,7 +520,6 @@ All operations are disruptive. These tools are gated by the Write master (ON by 
 | `hub_update_app` | Modify existing app code (source, sourceFile, or resave), and/or enable OAuth on it |
 | `hub_update_driver` | Modify existing driver code (single-driver or bulk `updates` array) |
 | `hub_delete_item` | Permanently delete an app, driver, or library (`type`: "app", "driver", "library"; auto-backs up first) |
-| `hub_restore_backup` | Restore app/driver to backed-up version (libraries: see `hub_update_library`). Rule snapshots (incl. Visual Rules) recreate a deleted rule. |
 | `hub_create_library` | Install new Groovy library (#include namespace.Name) |
 | `hub_update_library` | Modify existing library code |
 | `hub_install_bundle` | Install a code bundle (.zip) from a URL the HPM way — unpacks into Libraries/Apps/Drivers Code |
@@ -526,6 +527,20 @@ All operations are disruptive. These tools are gated by the Write master (ON by 
 | `hub_export_bundle` | Export an installed bundle's .zip to the hub File Manager (downloadable at `/local/<fileName>`) |
 
 Source code is automatically backed up before any modify/delete operation.
+
+</details>
+
+<details>
+<summary><b>hub_manage_backup</b> (4) — List, restore, and delete backups</summary>
+
+| Tool | Description |
+|------|-------------|
+| `hub_list_backups` | List backups. Default `scope=source` lists auto-created code backups; `scope=hub_local`/`hub_cloud`/`hub`/`all` lists whole-hub database backups (also in `hub_read_apps_code`) |
+| `hub_get_backup` | Retrieve source from a code backup (also in `hub_read_apps_code`) |
+| `hub_restore_backup` | Restore app/driver to backed-up version (libraries: see `hub_update_library`). Rule snapshots (incl. Visual Rules) recreate a deleted rule. |
+| `hub_delete_backup` | Delete a whole-hub database backup (`location`: local or cloud) |
+
+Whole-hub backup *creation* is the flat core tool `hub_create_backup`.
 
 </details>
 

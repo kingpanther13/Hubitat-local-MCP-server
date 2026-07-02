@@ -12,9 +12,9 @@ As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used 
 
 Gateway verbs encode mutation: **`hub_read_*`** gateways are pure-read (every sub-tool read-only), **`hub_manage_*`** gateways contain at least one write. A read tool may appear in BOTH a `hub_read_*` gateway and a mixed `hub_manage_*` gateway (multi-membership).
 
-**Read gateways:** `hub_read_apps_code` (11), `hub_read_devices` (4), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3)
+**Read gateways (8):** `hub_read_apps_code` (11), `hub_read_dashboards` (2), `hub_read_devices` (5), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3)
 
-**Manage gateways:** `hub_manage_code` (11), `hub_manage_custom_rules` (8), `hub_manage_destructive_ops` (4), `hub_manage_devices` (7), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
+**Manage gateways (15):** `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (9), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
 
 All safety gates are preserved: the Read/Write master gate runs centrally in `executeTool()` and re-applies per sub-tool when a gateway routes back through it, and the destructive `confirm`+backup checks run in the handlers of the destructive write tools.
 
@@ -405,6 +405,7 @@ A bundle is a `.zip` that Hubitat Package Manager (HPM) fetches and unpacks into
 - `hub_create_backup` creates full hub database backup
 - Required within 24 hours before any destructive write operation (the `confirm`+backup tier)
 - Only destructive write tool that doesn't require a prior backup
+- Managed via the `hub_manage_backup` gateway: `hub_list_backups` (`scope=hub_local`/`hub_cloud`/`hub` for whole-hub DB backups; default `scope=source` lists code backups), `hub_get_backup`, `hub_restore_backup`, and `hub_delete_backup` (delete a whole-hub DB backup, local or cloud)
 
 ### Source Code Backups (Automatic)
 - Created automatically when using hub_update_app, hub_update_driver, hub_update_library, hub_delete_item (type=app|driver|library)
@@ -421,7 +422,7 @@ A bundle is a `.zip` that Hubitat Package Manager (HPM) fetches and unpacks into
 ### Native RM Rule Backups (Automatic)
 - `update_rm_rule` and `delete_rm_rule` snapshot configure/json + statusJson to File Manager as `mcp-rm-backup-<ruleId>-<timestamp>.json`
 - Snapshots register in the unified `state.itemBackupManifest` with type=`rm-rule`
-- Use `hub_list_backups` (in `hub_read_apps_code`) to enumerate, `hub_restore_backup` (in `hub_manage_code`) with the backupKey to roll back
+- Use `hub_list_backups` (in `hub_read_apps_code` / `hub_manage_backup`) to enumerate, `hub_restore_backup` (in `hub_manage_backup`) with the backupKey to roll back
 - If the rule still exists, settings are replayed in place; if deleted, a fresh empty rule is recreated and the saved settings replayed onto it
 
 ### Hubitat Built-in Rule Redirect
@@ -623,7 +624,7 @@ If a user asks "create a new RM rule" or "modify this Room Lighting instance":
 **Cross-references** (live in other gateways but commonly used together):
 - **`hub_list_rule_local_variables`** (in `hub_read_rules` and `hub_manage_rule_machine`) — read-only list of a Rule Machine rule's LOCAL variables (the per-rule variables created via `hub_set_rule` `addLocalVariable` / `removeLocalVariable` — distinct from hub-global variables, which `hub_list_variables` covers). Reads `state.allLocalVars` from the rule's statusJson appState; returns `{appId, localVariables:[{name, type, value}], total}`. Use to confirm a local exists (and its type) before targeting it with the `setLocalVariable` action or `removeLocalVariable` shortcut. The `type` is the INTERNAL token, which differs from the `addLocalVariable` `type` enum — translate when piping list output back into `addLocalVariable`: **Number->`integer`, Decimal->`bigdecimal`, String->`string`, Boolean->`boolean`, DateTime->`datetime`**.
 - **`hub_get_app_config`** (in `hub_read_apps_code`) — read any installed app's current page schema, settings, and child apps. Use BEFORE every `hub_set_rule` / `hub_set_native_app` edit to discover the right input names.
-- **`hub_list_backups`** + **`hub_restore_backup`** (in `hub_read_apps_code` / `hub_manage_code`) — enumerate and restore native-app snapshots (`type="rm-rule"` entries). Restore re-applies settings in place if the app exists, or recreates the app and replays settings if it was deleted.
+- **`hub_list_backups`** (in `hub_read_apps_code` / `hub_manage_backup`) + **`hub_restore_backup`** (in `hub_manage_backup`) — enumerate and restore native-app snapshots (`type="rm-rule"` entries). Restore re-applies settings in place if the app exists, or recreates the app and replays settings if it was deleted.
 
 **Basic Rules** are registered: `hub_set_native_app(appType="basic_rule", name=...)` creates one via generic `createchild`, and editing its settings works cleanly (Basic Rule is a submitOnChange classic app — `commitButton` is null in the registry so no spurious `updateRule` click poisons its render). **Button Rules** are grandchildren of a Button Controller and can't be created standalone — use `buttonRule` (on `hub_set_native_app` or `hub_set_rule`), which drives the controller's add-button flow and returns the new rule's `appId`; then author its actions with `hub_set_rule(appId=<buttonRuleId>, addAction=...)`. For Room Lighting and other not-yet-registered types, `hub_set_native_app` (edit) and `hub_delete_native_app` already work by appId; creation needs the `_appTypeRegistry()` entry (namespace + appName + parentTypeName, verified live). If a registered type's built-in **parent** app isn't installed on the hub (e.g. a fresh hub with no Button Controllers), creation self-bootstraps it via the "Add Built-In App" endpoint (`GET /installedapp/sysApp/<parentTypeName>`) and retries — no manual install needed.
 
