@@ -162,8 +162,9 @@ def toolGetDashboard(args) {
 // (tiles + grid + colors); POST replaces it wholesale and echoes the saved layout back.
 
 // Probe whether an installed app is a legacy dashboard via /installedapp/statusJson/<id>.
-// TRI-STATE: [legacy: true, accessToken, label, deviceIds, localAccess] | [legacy: false] |
-// null (the status read FAILED -- unknown, callers must not blind-fire a write at the id).
+// TRI-STATE: [legacy: true, label, + accessToken/deviceIds/localAccess when readable] |
+// [legacy: false] | null (the status read FAILED -- unknown, callers must not blind-fire a
+// write at the id).
 private Map _legacyDashboardProbe(String id) {
     def raw
     try {
@@ -174,7 +175,10 @@ private Map _legacyDashboardProbe(String id) {
     }
     if (!raw) return null
     def parsed
-    try { parsed = new groovy.json.JsonSlurper().parseText(raw) } catch (Exception ignored) { return null }
+    try { parsed = new groovy.json.JsonSlurper().parseText(raw) } catch (Exception e) {
+        mcpLogError("dashboard", "legacy dashboard probe: statusJson for ${id} was not JSON", e)
+        return null
+    }
     def ia = (parsed instanceof Map) ? parsed.installedApp : null
     // statusJson answers {} (not 404) for a deleted id -- that is a definitive "not a legacy
     // dashboard", distinct from the read-failure null above.
@@ -319,19 +323,54 @@ private String _dashboardTypeArg(raw) {
     return t
 }
 
-// Find the legacy "Hubitat® Dashboard" parent's installed-app id via /hub2/appsList.
+// Find the legacy "Hubitat® Dashboard" parent's installed-app id via /hub2/appsList. When the
+// built-in parent isn't installed, bootstrap it through the hub's Add Built-In App link (the
+// same GET /installedapp/sysApp/<type name> flow the RM-family parent discovery uses). The
+// parent is a self-installing singleton (installOnOpen), so the GET can never duplicate it.
 private Integer _legacyDashboardParentId() {
+    def node = _findLegacyDashboardParentNode()
+    if (node == null) {
+        // Literal name, no pre-encoding -- the HTTP layer encodes the path; pre-encoding gets
+        // double-encoded and the hub then matches no app.
+        def created = null
+        try {
+            created = hubInternalGetRaw("/installedapp/sysApp/Hubitat® Dashboard")
+        } catch (Exception e) {
+            mcpLogError("dashboard", "legacy dashboard parent bootstrap (Add Built-In App) failed", e)
+        }
+        node = _findLegacyDashboardParentNode()
+        if (node == null && created?.location) {
+            // /hub2/appsList can lag right after creation -- fall back to the id in the redirect.
+            def lm = (created.location.toString() =~ /\/installedapp\/configure\/(\d+)/)
+            if (lm.find()) node = [id: lm.group(1), installed: true]
+        }
+        if (node != null) {
+            if (node.installed != true) {
+                // installOnOpen normally self-installs the singleton; commit defensively when a
+                // firmware surfaces it install-pending (same belt-and-braces as the RM bootstrap).
+                try { _commitUserAppInstall(node.id.toString().toInteger(), null) } catch (Exception e) {
+                    mcpLog("warn", "dashboard", "legacy dashboard parent install commit unverified: ${e.message}")
+                }
+            }
+            mcpLog("info", "dashboard", "legacy Hubitat® Dashboard parent bootstrapped via Add Built-In App (id ${node.id})")
+        }
+    }
+    if (node?.id == null) return null
+    try { return node.id.toString().toInteger() } catch (NumberFormatException ignored) { return null }
+}
+
+private Map _findLegacyDashboardParentNode() {
     try {
         def raw = hubInternalGet("/hub2/appsList")
         if (!raw) return null
         def parsed = new groovy.json.JsonSlurper().parseText(raw)
-        Integer found = null
+        Map found = null
         def walk
         walk = { node ->
             if (found != null) return
             def d = node?.data ?: [:]
-            if (_isLegacyDashboardParentType(d.type?.toString()) && d.id != null) {
-                found = d.id.toString() as Integer
+            if (_isLegacyDashboardParentType(d.type?.toString()) && d.id != null && d.hidden != true) {
+                found = [id: d.id, installed: d.installed]
                 return
             }
             (node?.children ?: []).each { walk(it) }
@@ -370,8 +409,8 @@ private Map _createLegacyDashboard(Map args) {
     def parentId = _legacyDashboardParentId()
     if (parentId == null) {
         return [success: false,
-                error: "The legacy Hubitat® Dashboard parent app was not found (not installed, or the app list was unreadable), so no legacy dashboard can be created.",
-                note: "Install the built-in 'Hubitat® Dashboard' app first, or create an Easy Dashboard instead (omit type)."]
+                error: "The legacy Hubitat® Dashboard parent app was not found and could not be auto-installed via Add Built-In App (details logged), so no legacy dashboard can be created.",
+                note: "Install the built-in 'Hubitat® Dashboard' app via Apps > Add built-in app and retry, or create an Easy Dashboard instead (omit type)."]
     }
     def resp
     try {
@@ -391,8 +430,10 @@ private Map _createLegacyDashboard(Map args) {
                 note: "Nothing may have been created; check hub_list_dashboards for an unnamed 'Dashboard' entry."]
     }
     def warnings = []
+    boolean labelApplied = false
     try {
         _legacyDashboardFormPost(newId, [label: name, ("label.type"): "text", ("label.multiple"): "false"])
+        labelApplied = true
     } catch (Exception e) {
         warnings << "label write failed (${e.message}) -- the dashboard keeps the default 'Dashboard' label; rename via hub_update_dashboard(name=...)."
     }
@@ -409,8 +450,11 @@ private Map _createLegacyDashboard(Map args) {
             warnings << "device authorization failed (${e.message}) -- re-apply via hub_update_dashboard(deviceIds=[...])."
         }
     }
-    def out = [success: true, id: newId, type: "legacy", name: name,
+    def out = [success: true, id: newId, type: "legacy",
                note: "Legacy dashboard created with an empty layout. Add tiles with hub_update_dashboard (addTiles / setOptions)."]
+    // Echo name only when the label write took -- on failure the hub label is the default
+    // 'Dashboard', and a result claiming the requested name would contradict its own warning.
+    if (labelApplied) out.name = name
     if (warnings) out.warnings = warnings
     return out
 }
@@ -606,7 +650,10 @@ private Map _applyLegacyLayoutOps(Map current, Map args, Map probe, List warning
         if (!(args.addTiles instanceof Collection)) {
             throw new IllegalArgumentException("addTiles must be an array of tile objects ({template, col, row, device?, colSpan?, rowSpan?, ...}).")
         }
-        int nextId = (tiles.collect { _tileIdOf(it) ?: 0 }.max() ?: -1) + 1
+        // isEmpty check, not Elvis: a real max id of 0 is falsy in Groovy, so `.max() ?: -1` would
+        // hand the next add id 0 again -- two tiles sharing an id makes later id-addressed ops ambiguous.
+        def existingIds = tiles.collect { _tileIdOf(it) }.findAll { it != null }
+        int nextId = (existingIds.isEmpty() ? -1 : existingIds.max()) + 1
         args.addTiles.each { spec ->
             if (!(spec instanceof Map)) throw new IllegalArgumentException("Each addTiles entry must be a tile object.")
             def missing = ["template", "col", "row"].findAll { spec[it] == null }
@@ -616,7 +663,7 @@ private Map _applyLegacyLayoutOps(Map current, Map args, Map probe, List warning
             // Skip an add identical to an existing tile so a retried call can't stack duplicates
             // (keeps hub_update_dashboard honest about its idempotent annotation).
             def dup = tiles.find { t ->
-                ["template", "device", "col", "row"].every { k -> t[k]?.toString() == spec[k]?.toString() } &&
+                ["template", "device", "col", "row", "templateExtra"].every { k -> t[k]?.toString() == spec[k]?.toString() } &&
                     (t.colSpan ?: 1).toString() == (spec.colSpan ?: 1).toString() &&
                     (t.rowSpan ?: 1).toString() == (spec.rowSpan ?: 1).toString()
             }
@@ -677,7 +724,15 @@ def toolDeleteDashboard(args) {
     requireDestructiveConfirm(args.confirm)
     def dashId = _requireDashboardId(args.dashboardId, " to delete")
     def legacyProbe = _legacyDashboardProbe(dashId)
-    if (legacyProbe?.legacy == true) {
+    if (legacyProbe == null) {
+        // Unknown target type (status read failed): don't route by guess. The Easy /dashboard/delete
+        // is a no-op for a legacy dashboard, so a mis-route can end in a false verdict -- fail safe,
+        // same as update.
+        return [success: false, id: dashId,
+                error: "Could not determine the dashboard's type (the status read failed), so no delete was attempted.",
+                note: "Transient hub error (details logged); retry."]
+    }
+    if (legacyProbe.legacy == true) {
         // /dashboard/delete does NOT remove a legacy child (verified live: success:false and the app
         // stays), so route through the classic force-delete. That endpoint can answer 500 for a
         // delete that actually committed -- confirm by effect, same as the Easy path.
@@ -776,8 +831,14 @@ private Map _cloneLegacyDashboard(String sourceId, Map src) {
     def probe = _legacyDashboardProbe(newId)
     String saveError = null
     if (probe?.legacy == true && probe.accessToken) {
-        try { _legacyLayoutPost(newId, probe.accessToken, new LinkedHashMap(src.layout as Map)) }
-        catch (Exception e) { saveError = e.message }
+        try {
+            def saved = _legacyLayoutPost(newId, probe.accessToken, new LinkedHashMap(src.layout as Map))
+            // Same write confirmation as the update path: a dropped/empty POST body returns null
+            // (no throw), which must not pass as a written layout.
+            if (!(saved instanceof Map) || !(saved.tiles instanceof List)) {
+                saveError = "the layout endpoint did not echo a saved layout (outcome unconfirmed)"
+            }
+        } catch (Exception e) { saveError = e.message }
     } else {
         saveError = "the new dashboard's access token was unreadable"
     }
@@ -786,8 +847,11 @@ private Map _cloneLegacyDashboard(String sourceId, Map src) {
                 error: "Copy ${newId} was created but its layout could not be written: ${saveError}",
                 note: "Re-apply with hub_update_dashboard(dashboardId=${newId}, layout=<the source's layout from hub_get_dashboard>)."]
     }
-    return [success: true, sourceId: sourceId, newId: newId, type: "legacy",
-            message: "Cloned legacy dashboard ${sourceId} by copying its layout into a new dashboard (${newId})."]
+    def out = [success: true, sourceId: sourceId, newId: newId, type: "legacy",
+               message: "Cloned legacy dashboard ${sourceId} by copying its layout into a new dashboard (${newId})."]
+    // A copy that landed with caveats (e.g. device authorization didn't take) must say so.
+    if (created.warnings) out.warnings = created.warnings
+    return out
 }
 
 // ---- domain helpers ----
@@ -1044,6 +1108,7 @@ def _getAllToolDefinitions_partDashboards() {
                 type: "object",
                 properties: [
                     success: [type: "boolean"], id: [type: "string"], type: [type: "string"],
+                    name: [type: "string"], deviceIds: [type: "array"],
                     applied: [type: "array"], tileCount: [type: "integer"], layout: [type: "object"],
                     dashboard: [type: "object"], dashboards: [type: "array"], message: [type: "string"],
                     error: [type: "string"], note: [type: "string"], warnings: [type: "array"]

@@ -1144,20 +1144,59 @@ class ToolDashboardSpec extends ToolSpecBase {
         !forms.any { it.body.containsKey('settings[devicesPicked]') }
     }
 
-    def "create legacy: a missing legacy parent returns a structured error (no throw)"() {
-        given: 'the apps tree has an Easy parent but NO legacy Hubitat® Dashboard parent'
+    def "create legacy: a missing parent that the Add Built-In App bootstrap can't surface returns a structured error (no throw)"() {
+        given: 'the apps tree never has the legacy parent, and the sysApp bootstrap GET yields nothing'
         enableWrite()
         hubGet.register('/hub2/appsList') { params ->
             JsonOutput.toJson([apps: [[data: [id: 19, name: 'Easy Dashboards', type: 'Easy Dashboard Parent'], children: []]]])
+        }
+        def rawPaths = []
+        script.metaClass.hubInternalGetRaw = { String p, Map q = null, int t = 30, boolean r = false ->
+            rawPaths << p
+            [status: 200, location: null, data: '']   // bootstrap answered but created nothing
         }
 
         when:
         def r = script.toolCreateDashboard([name: 'Patio', type: 'legacy', deviceIds: ['16']])
 
-        then:
+        then: 'the bootstrap was ATTEMPTED before giving up'
+        rawPaths.any { it.startsWith('/installedapp/sysApp/') }
         r.success == false
         r.error.toLowerCase().contains('parent')
         r.note != null
+    }
+
+    def "create legacy: a missing parent is auto-installed via Add Built-In App, then create proceeds"() {
+        given: 'the parent is absent until the sysApp bootstrap GET fires, then appsList surfaces it'
+        enableWrite()
+        def parentInstalled = [false]
+        hubGet.register('/hub2/appsList') { params ->
+            parentInstalled[0]
+                ? JsonOutput.toJson([apps: [[data: [id: 21, name: 'HD', type: 'Hubitat® Dashboard', installed: true], children: []]]])
+                : JsonOutput.toJson([apps: [[data: [id: 19, name: 'Easy Dashboards', type: 'Easy Dashboard Parent'], children: []]]])
+        }
+        def rawPaths = []
+        script.metaClass.hubInternalGetRaw = { String p, Map q = null, int t = 30, boolean r = false ->
+            rawPaths << p
+            if (p.startsWith('/installedapp/sysApp/')) {
+                parentInstalled[0] = true
+                return [status: 302, location: '/installedapp/configure/21', data: '']
+            }
+            if (p.startsWith('/installedapp/createchild')) {
+                return [status: 302, location: '/installedapp/configure/860', data: '']
+            }
+            return [status: 200, location: null, data: '']
+        }
+        captureFormPosts()
+
+        when:
+        def r = script.toolCreateDashboard([name: 'Bootstrapped', type: 'legacy'])
+
+        then: 'the sysApp bootstrap fired, then createchild landed under the bootstrapped parent'
+        r.success == true
+        r.id == '860'
+        rawPaths.any { it.startsWith('/installedapp/sysApp/') }
+        rawPaths.contains('/installedapp/createchild/hubitat/Dashboard/parent/21')
     }
 
     def "create legacy: createchild returning no new id surfaces a structured error"() {
@@ -1237,6 +1276,38 @@ class ToolDashboardSpec extends ToolSpecBase {
         added.rowSpan == 1
 
         and: 'an authorized device raises no warning'
+        !r.warnings
+    }
+
+    def "update legacy: addTiles onto a layout whose only tile is id 0 assigns id 1 (0 is falsy, not absent)"() {
+        given: 'the canonical fresh-dashboard state: exactly one tile, id 0'
+        enableWrite()
+        registerLegacyStatus('700')
+        registerLegacyLayout('700', [name: 'Fresh', cols: 4, tiles: [[id: 0, template: 'clock', col: 1, row: 1, colSpan: 1, rowSpan: 1]]])
+        def posts = captureLayoutPosts()
+
+        when: 'the second add in the tool-documented workflow'
+        def r = script.toolUpdateDashboard([dashboardId: '700', addTiles: [[template: 'mode', col: 2, row: 1]]])
+
+        then: 'no id collision with the existing tile 0'
+        r.success == true
+        posts[0].body.tiles*.id == [0, 1]
+    }
+
+    def "update legacy: an addTiles differing only in templateExtra is NOT deduped as identical"() {
+        given:
+        enableWrite()
+        registerLegacyStatus('700')
+        registerLegacyLayout('700', LEGACY_LAYOUT)   // tile 0: clock col 1 row 1, no templateExtra
+        def posts = captureLayoutPosts()
+
+        when:
+        def r = script.toolUpdateDashboard([dashboardId: '700',
+            addTiles: [[template: 'clock', col: 1, row: 1, templateExtra: 'seconds']]])
+
+        then:
+        r.success == true
+        posts[0].body.tiles.size() == 3
         !r.warnings
     }
 
@@ -1397,6 +1468,223 @@ class ToolDashboardSpec extends ToolSpecBase {
         script.toolUpdateDashboard([dashboardId: '700', setOptions: [name: 'X']])
         then:
         thrown(IllegalArgumentException)
+    }
+
+    // ---------- update legacy: write-failure + partial-degradation branches ----------
+
+    def "update legacy: layout ops with an unreadable access token fail structured (endpoint unreachable)"() {
+        given: 'legacy probe succeeds but carries NO accessToken (app never opened)'
+        enableWrite()
+        registerLegacyStatus('700', [accessToken: null])
+
+        when:
+        def r = script.toolUpdateDashboard([dashboardId: '700', addTiles: [[template: 'clock', col: 1, row: 1]]])
+
+        then:
+        r.success == false
+        r.error.toLowerCase().contains('access token')
+        r.note != null
+    }
+
+    def "update legacy: a failed read-before-edit of the current layout fails structured, noting disabled LAN access"() {
+        given: 'token mints but the layout GET is unregistered -> unreadable; LAN access is off'
+        enableWrite()
+        registerLegacyStatus('700', [localAccess: false])
+        registerLegacyMint('700')
+        def posts = captureLayoutPosts()
+
+        when:
+        def r = script.toolUpdateDashboard([dashboardId: '700', setOptions: [cols: 5]])
+
+        then: 'no save was fired on top of an unreadable layout'
+        r.success == false
+        r.error.toLowerCase().contains('current layout')
+        r.note.toLowerCase().contains('lan')
+        posts.isEmpty()
+    }
+
+    def "update legacy: a rename write failure stops the update before any layout op fires"() {
+        given:
+        enableWrite()
+        registerLegacyStatus('700')
+        registerLegacyLayout('700', LEGACY_LAYOUT)
+        script.metaClass.hubInternalPostForm = { String p, Map b, int t = 420, boolean r = false ->
+            throw new RuntimeException('hub choked')
+        }
+        def posts = captureLayoutPosts()
+
+        when:
+        def r = script.toolUpdateDashboard([dashboardId: '700', name: 'X', setOptions: [cols: 5]])
+
+        then: 'the failure reports nothing after the rename was attempted -- and the layout save never fired'
+        r.success == false
+        r.error.toLowerCase().contains('rename failed')
+        r.applied == []
+        posts.isEmpty()
+    }
+
+    def "update legacy: a deviceIds write failure fails structured without touching the layout"() {
+        given:
+        enableWrite()
+        registerLegacyStatus('700')
+        script.metaClass.hubInternalPostForm = { String p, Map b, int t = 420, boolean r = false ->
+            [status: 500, location: null, data: '']
+        }
+        def posts = captureLayoutPosts()
+
+        when:
+        def r = script.toolUpdateDashboard([dashboardId: '700', deviceIds: ['5'], setOptions: [cols: 5]])
+
+        then:
+        r.success == false
+        r.error.toLowerCase().contains('device authorization')
+        posts.isEmpty()
+    }
+
+    def "update legacy: a layout save that throws fails structured (layout may be unchanged)"() {
+        given:
+        enableWrite()
+        registerLegacyStatus('700')
+        registerLegacyLayout('700', LEGACY_LAYOUT)
+        script.metaClass.hubInternalPostJson = { String p, String body, int t = 420, boolean r = false, Map q = null ->
+            throw new RuntimeException('relay dropped')
+        }
+
+        when:
+        def r = script.toolUpdateDashboard([dashboardId: '700', setOptions: [cols: 5]])
+
+        then:
+        r.success == false
+        r.error.toLowerCase().contains('layout save failed')
+        r.note.toLowerCase().contains('hub_get_dashboard')
+    }
+
+    def "update legacy: a layout save whose echo has no tiles list reports the outcome unconfirmed"() {
+        given: 'the POST answers 200 but echoes junk instead of the saved layout'
+        enableWrite()
+        registerLegacyStatus('700')
+        registerLegacyLayout('700', LEGACY_LAYOUT)
+        script.metaClass.hubInternalPostJson = { String p, String body, int t = 420, boolean r = false, Map q = null ->
+            [error: true]
+        }
+
+        when:
+        def r = script.toolUpdateDashboard([dashboardId: '700', setOptions: [cols: 5]])
+
+        then:
+        r.success == false
+        r.error.toLowerCase().contains('unconfirmed')
+    }
+
+    def "update legacy: a wholesale layout that is not an object throws"() {
+        given:
+        enableWrite()
+        registerLegacyStatus('700')
+
+        when:
+        script.toolUpdateDashboard([dashboardId: '700', layout: 'not-a-map'])
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
+    def "create legacy: a failed label write still creates, surfacing the fallback-label warning"() {
+        given:
+        enableWrite()
+        registerLegacyParent(21)
+        stubCreateChild('852')
+        script.metaClass.hubInternalPostForm = { String p, Map b, int t = 420, boolean r = false ->
+            throw new RuntimeException('label write dropped')
+        }
+
+        when:
+        def r = script.toolCreateDashboard([name: 'Patio', type: 'legacy'])
+
+        then: "the dashboard exists (createchild committed) -- the caller is told the label didn't take"
+        r.success == true
+        r.id == '852'
+        r.warnings.any { it.toLowerCase().contains('label') }
+
+        and: "the result does NOT echo a name the hub doesn't carry (the label is still 'Dashboard')"
+        !r.containsKey('name')
+    }
+
+    def "delete: a probe read failure fails safe without firing any delete"() {
+        given: 'id 909 has no statusJson stub -> the probe read throws -> null (type unknown)'
+        enableWrite()
+        def deleteFired = [false]
+        hubGet.register('/dashboard/delete') { params -> deleteFired[0] = true; '{"success":true}' }
+        def rawPaths = []
+        script.metaClass.hubInternalGetRaw = { String p, Map q = null, int t = 30, boolean r = false ->
+            rawPaths << p
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def r = script.toolDeleteDashboard([dashboardId: '909', confirm: true])
+
+        then: 'neither the Easy delete endpoint nor the force-delete was touched'
+        r.success == false
+        r.error.toLowerCase().contains('type')
+        !deleteFired[0]
+        !rawPaths.any { it.contains('forcedelete') }
+    }
+
+    def "clone legacy: a layout save whose echo is empty reports the copy's layout unconfirmed"() {
+        given: 'the copy is created and has a token, but the layout POST echoes nothing (dropped body)'
+        enableWrite()
+        hubGet.register('/dashboard/all') { params ->
+            JsonOutput.toJson([[installedAppId: 700, name: 'Studio', version: '1.0', deviceIds: '[16,4]']])
+        }
+        registerLegacyStatus('700', [label: 'Studio', deviceIds: '[16, 4]'])
+        registerLegacyLayout('700', LEGACY_LAYOUT)
+        registerLegacyParent(21)
+        stubCreateChild('882')
+        captureFormPosts()
+        registerLegacyStatus('882', [accessToken: 'tok-882', label: 'Studio (copy)'])
+        registerLegacyMint('882')
+        script.metaClass.hubInternalPostJson = { String p, String body, int t = 420, boolean r = false, Map q = null ->
+            null
+        }
+
+        when:
+        def r = script.toolCloneDashboard([dashboardId: '700'])
+
+        then:
+        r.success == false
+        r.newId == '882'
+        r.error.toLowerCase().contains('unconfirmed')
+    }
+
+    def "list: the legacy parent type matches without the trademark glyph (encoding-tolerant walker)"() {
+        given: 'a parent whose type name lost the (R) glyph somewhere in the chain'
+        hubGet.register('/dashboard/all') { params -> '[]' }
+        hubGet.register('/hub2/appsList') { params ->
+            JsonOutput.toJson([apps: [[data: [id: 21, name: 'HD', type: 'Hubitat Dashboard'],
+                children: [[data: [id: 707, name: 'Porch', type: 'Dashboard'], children: []]]]]])
+        }
+
+        when:
+        def r = script.toolListDashboards([:])
+
+        then:
+        r.dashboards.find { it.id == '707' }?.type == 'legacy'
+    }
+
+    def "delete legacy: reports failure when removal can't be CONFIRMED (verification read failed)"() {
+        given: 'forcedelete fires but both presence sources are unreadable -> tri-state null'
+        enableWrite()
+        registerLegacyStatus('700')
+        stubForceDelete(false)
+        hubGet.register('/hub2/appsList') { params -> throw new RuntimeException('appsList down') }
+        hubGet.register('/dashboard/all') { params -> throw new RuntimeException('dashboard/all down') }
+
+        when:
+        def r = script.toolDeleteDashboard([dashboardId: '700', confirm: true])
+
+        then: 'a destructive op never claims success it cannot verify'
+        r.success == false
+        r.error.toLowerCase().contains('could not be confirmed')
     }
 
     // ---------- update legacy: name / deviceIds / validation ----------
