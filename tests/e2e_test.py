@@ -1264,13 +1264,17 @@ class TestRunner:
             "tool": "hub_update_mcp_settings",
             "args": {"settings": {"useGateways": False}, "confirm": True}})
         try:
-            # The catalog is now flat: no gateway entries, every sub-tool top-level,
+            # The catalog is now flat: no gateway ENVELOPES, every sub-tool top-level,
             # hub_search_tools hidden (its purpose is finding tools behind gateways).
-            names = {t.get("name") for t in self.client.list_tools().get("tools", [])}
-            leaked_gw = {n for n in names if n.startswith(("hub_read_", "hub_manage_"))}
-            # hub_manage_virtual_device / hub_manage_mode are direct tools, not gateways -- allowed.
-            leaked_gw -= {"hub_manage_virtual_device", "hub_manage_mode"}
-            assert not leaked_gw, f"flat catalog must not list gateway entries: {sorted(leaked_gw)}"
+            tools = self.client.list_tools().get("tools", [])
+            names = {t.get("name") for t in tools}
+            # Detect gateways by their {tool, args} envelope SHAPE, not a name prefix:
+            # hub_read_file / hub_write_file (file-manager leaves) and
+            # hub_manage_virtual_device / hub_manage_mode (flat action-dispatch tools) share
+            # the hub_read_*/hub_manage_* prefix but are real top-level leaves, not gateways.
+            gw_envelopes = _gateway_members_from_catalog(tools)
+            assert not gw_envelopes, \
+                f"flat catalog must not contain gateway envelopes: {sorted(gw_envelopes)}"
             assert {"hub_list_rooms", "hub_list_devices", "hub_get_logs"} <= names, \
                 "flat catalog must surface sub-tools as top-level leaves"
             assert "hub_search_tools" not in names, "hub_search_tools must be hidden in flat mode"
