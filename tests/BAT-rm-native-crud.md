@@ -16,7 +16,7 @@ Supplement to `tests/BAT-v2.md`. Scenarios in this file exercise the native Rule
 - `hub_manage_native_rules_and_apps.hub_set_rule_private_boolean`
 - `hub_read_apps_code.hub_get_app_config` (used as fallback verification)
 
-**Note on tool names:** prompts use the shipped tool names — `hub_set_rule` for RM create/edit (omit appId to create, pass appId to edit), `hub_delete_native_app` for delete, and `hub_get_app_config` (in `hub_read_apps_code`) for readback.
+**Note on tool names:** the expected tool paths are `hub_set_rule` for RM create/edit (omit appId to create, pass appId to edit), `hub_delete_native_app` for delete, and `hub_get_app_config` (in `hub_read_apps_code`) for readback. These names live in each test's title and **Expected** grading text — the `test_prompt`s themselves stay goal-first (see Prompt style below).
 
 **Status:** Use this file as the acceptance bar for the native CRUD tools: every T### must pass before declaring the feature stable.
 
@@ -31,6 +31,10 @@ Each test is a JSON scenario with optional `setup_prompt`, required `test_prompt
   "teardown_prompt": "Cleanup after the test"
 }
 ```
+
+### Prompt style — goal-first
+
+Same rule as [BAT-v2.md](./BAT-v2.md): the `test_prompt` fed to the sub-agent under test states the scenario + goal in plain language and does **not** name any MCP tool, gateway, or call arg — tool names belong in the test title, **Expected**, and failure-mode grading text. `setup_prompt` / `teardown_prompt` are orchestrator scaffolding and MAY name tools directly. Per-test edge case: a test whose *subject is* the MCP surface itself (wire-shape regressions, deliberately malformed calls, gateway-override visibility) may still name that surface in its `test_prompt`.
 
 ### Pass / Fail / Partial
 
@@ -80,7 +84,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 ```json
 {
-  "test_prompt": "Create a new Rule Machine rule named 'BAT-RM-Empty Create' with no triggers or actions yet. After creation, verify the rule exists by calling hub_get_app_config and confirm the name round-trips. Report the new rule's id.",
+  "test_prompt": "Create a new Rule Machine rule named 'BAT-RM-Empty Create' with no triggers or actions yet. After creation, verify the rule exists by reading it back and confirm the name round-trips. Report the new rule's id.",
   "teardown_prompt": "Delete the rule you just created via hub_manage_rule_machine.hub_delete_native_app with force=true."
 }
 ```
@@ -92,7 +96,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a scratch rule via hub_set_rule with name='BAT-RM-Rename Before' and remember its id.",
-  "test_prompt": "Rename that rule to 'BAT-RM-Rename After' using hub_set_rule(appId=ruleId, settings={origLabel: 'BAT-RM-Rename After'}). Then read it back with hub_get_app_config to confirm the new name.",
+  "test_prompt": "Rename that rule to 'BAT-RM-Rename After', then read it back to confirm the new name.",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
@@ -104,7 +108,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a scratch rule via hub_set_rule with name='BAT-RM-Comments Test' and remember its id.",
-  "test_prompt": "Use hub_set_rule(appId=ruleId, ...) to set the rule's comments/notes to the string 'BAT test scenario — verifies textarea round-trip. Multi-line input: line 2 here.'. Read the rule back with hub_get_app_config and confirm the comments field round-trips exactly, including the newline.",
+  "test_prompt": "Set the rule's comments/notes to the string 'BAT test scenario — verifies textarea round-trip. Multi-line input: line 2 here.'. Read the rule back and confirm the comments field round-trips exactly, including the newline.",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
@@ -116,7 +120,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a scratch rule via hub_set_rule with name='BAT-RM-ReqExpr Flag' and remember its id.",
-  "test_prompt": "Use hub_set_rule(appId=ruleId, ...) to enable the Required Expression feature on the rule (the useST flag). Read the rule back with hub_get_app_config and confirm useST is true AND that the required-expression editor sub-page/section is now present in the config.",
+  "test_prompt": "Enable the Required Expression feature on the rule. Read the rule back and confirm useST is true AND that the required-expression editor sub-page/section is now present in the config.",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
@@ -128,7 +132,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a scratch rule via hub_set_rule with name='BAT-RM-Function Mode' and remember its id.",
-  "test_prompt": "Use hub_set_rule(appId=ruleId, ...) to mark the rule as a function (isFunction=true). Verify by reading back with hub_get_app_config that isFunction round-trips as true.",
+  "test_prompt": "Mark the rule as a function. Verify by reading it back that isFunction round-trips as true.",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
@@ -140,7 +144,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a scratch rule via hub_set_rule with name='BAT-RM-Logging Combo' and remember its id.",
-  "test_prompt": "Use hub_set_rule(appId=ruleId, ...) to set the rule's logging options to include all three values ['Events', 'Triggers', 'Actions'] and also enable Display Current Values (dValues=true). Read back with hub_get_app_config and confirm: (a) logging contains all three entries, (b) dValues is true.",
+  "test_prompt": "Set the rule's logging options to include all three values ['Events', 'Triggers', 'Actions'] and also enable Display Current Values. Read back and confirm: (a) logging contains all three entries, (b) dValues is true.",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
@@ -152,7 +156,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a scratch native RM rule via hub_set_rule(name='BAT-RM-Full Create', confirm=true) (omit appId to create). Capture the returned appId.",
-  "test_prompt": "STEP 1 (populate in one update): Call hub_set_rule(appId=<id>, settings={comments: 'Created with every rule-level field populated', useST: true, isFunction: false, logging: ['Triggers','Actions'], dValues: true}, confirm=true). Verify the response reports configPageError=null and settingsApplied lists all five keys.\n\nSTEP 2 (read-back #1): Call hub_get_app_config(appId=<id>, includeSettings=true). Assert every one of these round-trips: app.label === 'BAT-RM-Full Create'; settings.comments === the exact string; settings.useST === 'true'; settings.isFunction === 'false'; settings.logging is a JSON array === ['Triggers','Actions'] (length 2, NOT collapsed to CSV); settings.dValues === 'true'. The page paragraphs MUST include 'Define Required Expression' — this proves useST=true actually exposed the required-expression editor section.\n\nSTEP 3 (force a re-init): Call hub_set_rule(appId=<id>, button='updateRule', confirm=true). Verify configPageError is null.\n\nSTEP 4 (read-back #2, post re-init): Call hub_get_app_config(appId=<id>, includeSettings=true). Assert ALL fields from STEP 2 are still present with the same values and logging is STILL a 2-element array. This is the wire-format regression guard — enum-multi persisted from the in-memory write must survive the updateRule re-marshal.\n\nReport any field whose read value does not match what was sent, either after STEP 2 or after STEP 4.",
+  "test_prompt": "STEP 1 (populate in one edit): In a single edit, populate the rule with every rule-level field at once — comments 'Created with every rule-level field populated', enable the Required Expression feature, mark it NOT a function, logging ['Triggers','Actions'], and enable Display Current Values. Verify the edit reports no config-page error and that all five fields were applied.\n\nSTEP 2 (read-back #1): Read the rule back including its settings. Assert every one of these round-trips: app.label === 'BAT-RM-Full Create'; settings.comments === the exact string; settings.useST === 'true'; settings.isFunction === 'false'; settings.logging is a JSON array === ['Triggers','Actions'] (length 2, NOT collapsed to CSV); settings.dValues === 'true'. The page paragraphs MUST include 'Define Required Expression' — this proves useST=true actually exposed the required-expression editor section.\n\nSTEP 3 (force a re-init): Press the rule's 'Update Rule' button to force it to re-initialize. Verify there is no config-page error.\n\nSTEP 4 (read-back #2, post re-init): Read the rule back again including its settings. Assert ALL fields from STEP 2 are still present with the same values and logging is STILL a 2-element array. This is the wire-format regression guard — enum-multi persisted from the in-memory write must survive the updateRule re-marshal.\n\nReport any field whose read value does not match what was sent, either after STEP 2 or after STEP 4.",
   "teardown_prompt": "Force-delete the rule via hub_delete_native_app(appId=<id>, force=true, confirm=true)."
 }
 ```
@@ -173,7 +177,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a scratch rule via hub_set_rule with name='BAT-RM-Soft Delete' and remember its id. Do NOT add any child apps or nested rules.",
-  "test_prompt": "Delete the rule using the soft-delete path — hub_delete_native_app(appId=ruleId) with force=false (or force omitted). Confirm the tool returns success, then verify the rule is gone by calling hub_list_rules and checking that the id is absent.",
+  "test_prompt": "Delete the rule (a normal, non-forced delete). Confirm the delete succeeded, then verify the rule no longer appears in the rules list (its id is absent).",
   "teardown_prompt": "If the rule still exists, clean up with hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
@@ -185,7 +189,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a scratch rule via hub_set_rule with name='BAT-RM-Force Delete' and remember its id.",
-  "test_prompt": "Delete the rule using force=true — hub_delete_native_app(appId=ruleId, force=true). Confirm success and verify the id is absent from hub_list_rules afterwards.",
+  "test_prompt": "Delete the rule using a force delete. Confirm success and verify the id is absent from the rules list afterwards.",
   "teardown_prompt": "No teardown — the test itself is the teardown. If the rule somehow still exists, call hub_delete_native_app(appId=ruleId, force=true) again."
 }
 ```
@@ -197,7 +201,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a scratch rule via hub_set_rule with name='BAT-RM-Pause Update Path' and remember its id.",
-  "test_prompt": "First, pause the rule by calling hub_manage_rule_machine.hub_set_rule_paused(ruleId=ruleId, value=true). Confirm via hub_get_app_config that the rule shows as paused/disabled. Then resume it by calling hub_manage_rule_machine.hub_set_rule_paused(ruleId=ruleId, value=false). Confirm it is running again. Report the state at each step.",
+  "test_prompt": "First, pause the rule. Confirm by reading it back that the rule shows as paused/disabled. Then resume it. Confirm it is running again. Report the state at each step.",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
@@ -209,7 +213,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a scratch rule via hub_set_rule with name='BAT-RM-RunAct Verb', with a single harmless action like 'Log a Message: BAT T310 fired'. Remember the rule id.",
-  "test_prompt": "Invoke the rule's actions directly by calling hub_manage_rule_machine.hub_call_rule(ruleId=ruleId, action='actions'). Confirm the tool returns {success: true, rmAction: 'runRuleAct'}. Report what the AI saw.",
+  "test_prompt": "Run the rule's actions directly, without waiting for its trigger to fire. Confirm the run was acknowledged. Report what the AI saw.",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
@@ -221,7 +225,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a scratch rule via hub_set_rule with name='BAT-RM-Stop Start' and at least one trivial trigger (e.g., a virtual switch trigger on 'BAT-RM Switch 1'). Remember the rule id.",
-  "test_prompt": "Stop the rule via hub_manage_rule_machine.hub_call_rule(ruleId=ruleId, action='stop') (stopRuleAct). Verify: via hub_get_app_config + statusJson, confirm eventSubscriptions drops to zero / the rule's delays and repeats are cancelled. Then Start the rule again via hub_call_rule(ruleId=ruleId, action='start'). Verify eventSubscriptions.length > 0 afterwards (Start also resets Private Boolean to true).",
+  "test_prompt": "Stop the rule (stopRuleAct). Verify by reading it back that statusJson.eventSubscriptions drops to zero / the rule's delays and repeats are cancelled. Then Start the rule again. Verify eventSubscriptions.length > 0 afterwards (Start also resets Private Boolean to true).",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
@@ -233,7 +237,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a scratch rule via hub_set_rule with name='BAT-RM-Update Btn' with one trigger on 'BAT-RM Switch 1'. Remember the rule id.",
-  "test_prompt": "Use hub_set_rule(appId=ruleId, ...) to modify the rule (e.g., toggle dValues=true) AND also trigger the 'Update Rule' button action so subscriptions are re-initialized in place. Verify via hub_get_app_config that dValues round-trips AND that statusJson.eventSubscriptions.length > 0 (subscription not dropped by the re-init).",
+  "test_prompt": "Modify the rule (e.g., turn Display Current Values on) AND also trigger the 'Update Rule' button action so subscriptions are re-initialized in place. Verify by reading it back that dValues round-trips AND that statusJson.eventSubscriptions.length > 0 (subscription not dropped by the re-init).",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
@@ -245,7 +249,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a scratch rule via hub_set_rule with name='BAT-RM-Done Btn' with one trigger on 'BAT-RM Switch 1'. Remember the rule id.",
-  "test_prompt": "Simulate the 'Done' button press on the rule — this is usually done by hub_set_rule(appId=ruleId, ...) with a flag like commit=true or done=true, or by a dedicated lifecycle call. After Done, confirm via hub_get_app_config that the rule still has its trigger (statusJson.eventSubscriptions.length > 0) and that configPage.error is null. The Done button should re-run initialize() and resubscribe.",
+  "test_prompt": "Simulate the 'Done' button press on the rule (whatever lifecycle path accomplishes a Done/commit). After Done, confirm by reading the rule back that it still has its trigger (statusJson.eventSubscriptions.length > 0) and that configPage.error is null. The Done button should re-run initialize() and resubscribe.",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
@@ -257,7 +261,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create two virtual switches named 'BAT-RM Switch 1' and 'BAT-RM Switch 2' via hub_manage_virtual_device if they do not exist.",
-  "test_prompt": "Create a Rule Machine rule named 'BAT-RM-MultiDev Flag' with a single Switch trigger bound to BOTH 'BAT-RM Switch 1' and 'BAT-RM Switch 2' (multi-device capability input). After creation, call hub_get_app_config — you MUST verify that statusJson.appSettings for the switch capability input has multiple=true (NOT false, NOT missing). Also verify configPage.error is null and eventSubscriptions.length >= 2. This is the flag-poisoning regression check.",
+  "test_prompt": "Create a Rule Machine rule named 'BAT-RM-MultiDev Flag' with a single Switch trigger bound to BOTH 'BAT-RM Switch 1' and 'BAT-RM Switch 2' (multi-device capability input). After creation, read the rule back — you MUST verify that statusJson.appSettings for the switch capability input has multiple=true (NOT false, NOT missing). Also verify configPage.error is null and eventSubscriptions.length >= 2. This is the flag-poisoning regression check.",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true). Leave the virtual switches in place for later tests."
 }
 ```
@@ -269,7 +273,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Ensure virtual device 'BAT-RM Switch 1' exists (create via hub_manage_virtual_device if needed).",
-  "test_prompt": "Run this end-to-end round-trip on a single rule: (1) hub_set_rule(name='BAT-RM-Roundtrip', comments='step 1 comment', logging=['Events']) — capture the ruleId; (2) hub_get_app_config(appId=ruleId) and record the full config; (3) hub_set_rule(appId=ruleId, settings={comments: 'step 3 comment updated', logging: ['Triggers','Actions'], dValues: true, useST: true}); (4) hub_get_app_config(appId=ruleId) again and confirm EVERY field from step 3's patch round-trips; (5) hub_delete_native_app(appId=ruleId, force=true). Report side-by-side the before/after config values for comments, logging, dValues, useST.",
+  "test_prompt": "Run this end-to-end round-trip on a single rule: (1) create a rule named 'BAT-RM-Roundtrip' with comments 'step 1 comment' and logging ['Events'] — capture the ruleId; (2) read the rule back and record the full config; (3) edit the rule to set comments 'step 3 comment updated', logging ['Triggers','Actions'], dValues true, and useST true; (4) read it back again and confirm EVERY field from step 3's patch round-trips; (5) force-delete the rule. Report side-by-side the before/after config values for comments, logging, dValues, useST.",
   "teardown_prompt": "If the rule still exists because step 5 failed, delete it now via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
@@ -281,12 +285,12 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a scratch rule via hub_set_rule with name='BAT-RM-Remove Btn' and remember its id.",
-  "test_prompt": "Remove the rule using the 'Remove' button path — this may be exposed as hub_delete_native_app(appId=ruleId) without force, or as a separate remove action. Confirm the rule is gone from hub_list_rules afterwards and that no orphan child apps remain (check via hub_list_apps for any entry referencing the removed ruleId).",
+  "test_prompt": "Remove the rule using the 'Remove' button path. Confirm the rule is gone from the rules list afterwards and that no orphan child apps remain (check the installed-apps list for any entry referencing the removed ruleId).",
   "teardown_prompt": "If the rule still exists, clean up with hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
 
-**Expected**: AI invokes the remove path. Rule is absent from `hub_list_rules`. No orphan child apps reference the removed id. Covers the `Remove` button lifecycle verb from matrix §7.
+**Expected**: AI invokes the remove path (`hub_delete_native_app`). Rule is absent from `hub_list_rules`. No orphan child apps reference the removed id (verified via `hub_list_apps`). Covers the `Remove` button lifecycle verb from matrix §7.
 
 ## Section 2: Triggers + conditions (T320–T349)
 
@@ -487,7 +491,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "No devices needed. Confirm the hub has a configured location (latitude/longitude) so sunrise/sunset is calculable.",
-  "test_prompt": "Create 'BAT-RM-T336a-SunriseOffset' with a single Certain Time trigger: 30 minutes after sunrise (no day-of-week restriction). Verify the sunrise-offset of +30 minutes round-trips via hub_get_app_config.",
+  "test_prompt": "Create 'BAT-RM-T336a-SunriseOffset' with a single Certain Time trigger: 30 minutes after sunrise (no day-of-week restriction). Verify the +30-minute sunrise offset round-trips by reading the rule back.",
   "teardown_prompt": "Force-delete 'BAT-RM-T336a-SunriseOffset'."
 }
 ```
@@ -499,7 +503,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a BAT-RM-T336b-Motion virtual motion sensor.",
-  "test_prompt": "Create 'BAT-RM-T336b-Weekdays' triggered by BAT-RM-T336b-Motion becoming active, with a Days of Week restriction limiting firing to Monday through Friday (weekdays, excluding Sat/Sun). Verify the 5 weekday flags round-trip correctly via hub_get_app_config.",
+  "test_prompt": "Create 'BAT-RM-T336b-Weekdays' triggered by BAT-RM-T336b-Motion becoming active, with a Days of Week restriction limiting firing to Monday through Friday (weekdays, excluding Sat/Sun). Verify the 5 weekday flags round-trip correctly by reading the rule back.",
   "teardown_prompt": "Force-delete 'BAT-RM-T336b-Weekdays' and the BAT-RM-T336b-Motion virtual device."
 }
 ```
@@ -631,7 +635,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create BAT virtual devices: 'BAT-Motion-U1' and 'BAT-Motion-U2' (Virtual Motion Sensors). Record IDs.",
-  "test_prompt": "Step 1: Create 'BAT-RM-Update Triggers' with a single trigger: BAT-Motion-U1 becomes active. Step 2: Use hub_set_rule (addTrigger) to ADD a second trigger (BAT-Motion-U2 becomes active). Step 3: Use hub_set_rule (addTrigger) to MODIFY the first trigger (change motion=active to motion=inactive). Step 4: Use hub_set_rule to REMOVE the second trigger. After each step, read the rule back and verify the exact trigger set. Assert configPage.error stays null throughout and eventSubscriptions updates accordingly.",
+  "test_prompt": "Step 1: Create 'BAT-RM-Update Triggers' with a single trigger: BAT-Motion-U1 becomes active. Step 2: ADD a second trigger (BAT-Motion-U2 becomes active). Step 3: MODIFY the first trigger (change motion=active to motion=inactive). Step 4: REMOVE the second trigger. After each step, read the rule back and verify the exact trigger set. Assert configPage.error stays null throughout and eventSubscriptions updates accordingly.",
   "teardown_prompt": "Delete the rule and remove both motion sensors."
 }
 ```
@@ -643,7 +647,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create BAT virtual device 'BAT-Switch-Del' (Virtual Switch). Record ID.",
-  "test_prompt": "Create 'BAT-RM-Delete Me' triggered by BAT-Switch-Del turning on. Then attempt a SOFT delete (hub_delete_native_app without force=true). Verify it succeeds for a rule without children. Re-create the same-named rule, then do a FORCE delete (force=true). Verify force delete also succeeds and returns success regardless. After both deletes, hub_list_rules must not contain the rule name.",
+  "test_prompt": "Create 'BAT-RM-Delete Me' triggered by BAT-Switch-Del turning on. Then attempt a SOFT delete (a normal, non-forced delete). Verify it succeeds for a rule without children. Re-create the same-named rule, then do a FORCE delete. Verify force delete also succeeds and returns success regardless. After both deletes, the rules list must not contain the rule name.",
   "teardown_prompt": "Ensure rule is gone (force-delete by name if still present). Remove BAT-Switch-Del."
 }
 ```
@@ -655,7 +659,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create BAT virtual devices: 'BAT-RT-Motion' (motion), 'BAT-RT-Sw1' and 'BAT-RT-Sw2' (switches, for multi-device), 'BAT-RT-Temp' (temperature), 'BAT-RT-Lock' (lock). Create hub variable 'BAT_RT_var' (number, init 0). Record all IDs.",
-  "test_prompt": "Create 'BAT-RM-Round Trip Sampler' as a comprehensive coverage test with SIX triggers in one rule: (1) BAT-RT-Motion active as a CONDITIONAL TRIGGER with attached condition (BAT-RT-Lock is unlocked), (2) BAT-RT-Sw1 + BAT-RT-Sw2 as a SINGLE multi-device Switch trigger (any turns on), (3) BAT-RT-Temp > 75 with AND-STAYS for 5 minutes, (4) Mode changes to Day, (5) hub variable BAT_RT_var > 10, (6) Certain Time: 08:00 on weekdays only. Then: (A) Read the rule back via hub_get_app_config and verify ALL six triggers are present with their flags/values. (B) Read statusJson and assert `configPage.error == null`, `eventSubscriptions.length >= 5` (one per non-HTTP trigger including each multi-device member), and CRITICALLY `appSettings[<multi-device tDev>].multiple == true`. (C) Report any trigger whose round-trip value doesn't match what was sent.",
+  "test_prompt": "Create 'BAT-RM-Round Trip Sampler' as a comprehensive coverage test with SIX triggers in one rule: (1) BAT-RT-Motion active as a CONDITIONAL TRIGGER with attached condition (BAT-RT-Lock is unlocked), (2) BAT-RT-Sw1 + BAT-RT-Sw2 as a SINGLE multi-device Switch trigger (any turns on), (3) BAT-RT-Temp > 75 with AND-STAYS for 5 minutes, (4) Mode changes to Day, (5) hub variable BAT_RT_var > 10, (6) Certain Time: 08:00 on weekdays only. Then: (A) Read the rule back and verify ALL six triggers are present with their flags/values. (B) Read statusJson and assert `configPage.error == null`, `eventSubscriptions.length >= 5` (one per non-HTTP trigger including each multi-device member), and CRITICALLY `appSettings[<multi-device tDev>].multiple == true`. (C) Report any trigger whose round-trip value doesn't match what was sent.",
   "teardown_prompt": "Delete the rule, all five BAT-RT-* virtual devices, and hub variable BAT_RT_var."
 }
 ```
@@ -693,7 +697,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a virtual button device BAT-RM-Btn1 (driver: Virtual Button) and a second BAT-RM-Btn2. Note two existing hub modes.",
-  "test_prompt": "Create rule 'BAT-RM-ButtonBundle' with a Mode trigger. Actions: (1) Push button 1 on BAT-RM-Btn1, (2) Push button per mode — button 2 in mode[0], button 3 in mode[1] on BAT-RM-Btn1, (3) Choose button per mode — BAT-RM-Btn1 in mode[0], BAT-RM-Btn2 in mode[1], push button 1. Verify round-trip via hub_get_app_config.",
+  "test_prompt": "Create rule 'BAT-RM-ButtonBundle' with a Mode trigger. Actions: (1) Push button 1 on BAT-RM-Btn1, (2) Push button per mode — button 2 in mode[0], button 3 in mode[1] on BAT-RM-Btn1, (3) Choose button per mode — BAT-RM-Btn1 in mode[0], BAT-RM-Btn2 in mode[1], push button 1. Verify round-trip by reading the rule back.",
   "teardown_prompt": "Delete rule and both virtual buttons."
 }
 ```
@@ -789,19 +793,19 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Verify HSM is installed via hub_list_apps. Record current HSM status via hub_get_hsm_status for restoration.",
-  "test_prompt": "Create rule 'BAT-RM-HSMBundle-DoNotRun' (paused at creation). Trigger: a harmless Certain Time far in the future (e.g. 2099-01-01). Actions: (1) Arm Away, (2) Disarm, (3) Disarm All, (4) Cancel All Alerts. Confirm the rule is created via hub_set_rule and then paused via hub_set_rule_paused, and all 4 actions round-trip via hub_get_app_config. Do NOT run the rule.",
+  "test_prompt": "Create rule 'BAT-RM-HSMBundle-DoNotRun' (paused at creation). Trigger: a harmless Certain Time far in the future (e.g. 2099-01-01). Actions: (1) Arm Away, (2) Disarm, (3) Disarm All, (4) Cancel All Alerts. Confirm the rule is created and then paused, and all 4 actions round-trip when you read it back. Do NOT run the rule.",
   "teardown_prompt": "Delete the rule via hub_delete_native_app. Confirm HSM status matches the original recorded state."
 }
 ```
 
-**Expected**: Rule is created DISABLED/paused; `statusJson` shows rule disabled. `hub_get_app_config.actions` has all 4 HSM actions. HSM real state untouched. [INV-1] `configPage.error == null`.
+**Expected**: AI creates the rule via `hub_set_rule` and pauses it via `hub_set_rule_paused`; `statusJson` shows rule disabled. `hub_get_app_config.actions` has all 4 HSM actions. HSM real state untouched. [INV-1] `configPage.error == null`.
 
 ### T361 — HSM per-rule arm/disarm + cancel rule alert + arm all rules
 
 ```json
 {
   "setup_prompt": "Via hub_list_apps find any existing HSM custom monitoring rule (or skip and mark SKIPPED if none). Confirm rule is paused-at-creation is supported.",
-  "test_prompt": "Create rule 'BAT-RM-HSMPerRule-DoNotRun' paused. Trigger: year-2099 Certain Time. Actions: (1) Arm specific HSM rule [discovered id], (2) Disarm specific HSM rule, (3) Cancel HSM Rule Alert for that rule, (4) Arm All HSM Rules. Verify round-trip via hub_get_app_config.",
+  "test_prompt": "Create rule 'BAT-RM-HSMPerRule-DoNotRun' paused. Trigger: year-2099 Certain Time. Actions: (1) Arm specific HSM rule [discovered id], (2) Disarm specific HSM rule, (3) Cancel HSM Rule Alert for that rule, (4) Arm All HSM Rules. Verify round-trip by reading the rule back.",
   "teardown_prompt": "Delete the rule."
 }
 ```
@@ -813,7 +817,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create virtual devices: BAT-RM-Garage (driver: Virtual Garage Door Opener), BAT-RM-Lock (driver: Virtual Lock), BAT-RM-Valve (driver: Virtual Valve). Verify none of them are production devices.",
-  "test_prompt": "Create rule 'BAT-RM-GarageLockValve-DoNotRun' paused with a year-2099 Certain Time trigger (so actions never fire). Actions: (1) Open BAT-RM-Garage, (2) Close BAT-RM-Garage, (3) Lock BAT-RM-Lock, (4) Unlock BAT-RM-Lock, (5) Open BAT-RM-Valve, (6) Close BAT-RM-Valve. Verify all six round-trip via hub_get_app_config. Rule must stay paused; actions must NOT fire against the virtual devices.",
+  "test_prompt": "Create rule 'BAT-RM-GarageLockValve-DoNotRun' paused with a year-2099 Certain Time trigger (so actions never fire). Actions: (1) Open BAT-RM-Garage, (2) Close BAT-RM-Garage, (3) Lock BAT-RM-Lock, (4) Unlock BAT-RM-Lock, (5) Open BAT-RM-Valve, (6) Close BAT-RM-Valve. Verify all six round-trip by reading the rule back. Rule must stay paused; actions must NOT fire against the virtual devices.",
   "teardown_prompt": "Delete rule and all three virtual devices."
 }
 ```
@@ -957,7 +961,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "No device creation needed — Z-Wave polling is hub-level.",
-  "test_prompt": "Create rule 'BAT-RM-ZWavePoll-DoNotRun' paused, year-2099 trigger. Actions: (1) Start Z-Wave Polling, (2) Stop Z-Wave Polling. Verify both round-trip via hub_get_app_config. Rule must stay paused.",
+  "test_prompt": "Create rule 'BAT-RM-ZWavePoll-DoNotRun' paused, year-2099 trigger. Actions: (1) Start Z-Wave Polling, (2) Stop Z-Wave Polling. Verify both round-trip by reading the rule back. Rule must stay paused.",
   "teardown_prompt": "Delete the rule. Verify Z-Wave polling state is unchanged from pre-test via hub_manage_diagnostics or equivalent."
 }
 ```
@@ -993,24 +997,24 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create virtual switches BAT-RM-UpdSw1 and BAT-RM-UpdSw2. Create rule 'BAT-RM-T377-Update' (unique name) with Certain Time trigger and one action: turn BAT-RM-UpdSw1 on. Capture the rule ID.",
-  "test_prompt": "Call hub_set_rule (with appId=BAT-RM-T377-Update's ruleId, using replaceActions) to replace actions with: (1) turn BAT-RM-UpdSw1 off, (2) turn BAT-RM-UpdSw2 on, (3) toggle BAT-RM-UpdSw1. Read the rule back and confirm the new 3-action list is in place and the old action is gone.",
+  "test_prompt": "Replace the rule's action list wholesale with: (1) turn BAT-RM-UpdSw1 off, (2) turn BAT-RM-UpdSw2 on, (3) toggle BAT-RM-UpdSw1. Read the rule back and confirm the new 3-action list is in place and the old action is gone.",
   "teardown_prompt": "Delete the rule and both virtual switches."
 }
 ```
 
-**Expected**: `hub_set_rule` (edit path) returns success. `hub_get_app_config.actions.length === 3` with new commands; old single-action list is gone. [INV-1] `configPage.error == null`. [INV-2] `statusJson.eventSubscriptions.length > 0` still true.
+**Expected**: `hub_set_rule` (edit path, `replaceActions`) returns success. `hub_get_app_config.actions.length === 3` with new commands; old single-action list is gone. [INV-1] `configPage.error == null`. [INV-2] `statusJson.eventSubscriptions.length > 0` still true.
 
 ### T378 — Delete rule (soft) then delete with force
 
 ```json
 {
   "setup_prompt": "Create virtual switch BAT-RM-DelSw. Create rule 'BAT-RM-T378-Delete' (unique name) with Certain Time trigger and one action: turn BAT-RM-DelSw on. Capture rule ID.",
-  "test_prompt": "Call hub_delete_native_app without force on BAT-RM-T378-Delete; expect success. Attempt hub_get_app_config on that ID; expect 404/not-found. Then, for a second scenario, re-create the rule and call hub_delete_native_app with force=true and confirm it also returns success and the rule is gone.",
+  "test_prompt": "Delete BAT-RM-T378-Delete with a normal (non-forced) delete; expect success. Attempt to read that rule's config by its ID; expect 404/not-found. Then, for a second scenario, re-create the rule and force-delete it and confirm it also returns success and the rule is gone.",
   "teardown_prompt": "Ensure no BAT-RM-T378-Delete rule remains via hub_list_rules. Delete the virtual switch."
 }
 ```
 
-**Expected**: First delete returns `{success:true}`, subsequent `hub_get_app_config` returns not-found. Force-delete path also succeeds. Both paths confirmed gone via `hub_list_rules`.
+**Expected**: First `hub_delete_native_app` (no force) returns `{success:true}`, subsequent `hub_get_app_config` returns not-found. The `force=true` path also succeeds. Both paths confirmed gone via `hub_list_rules`.
 
 ### T379 — Mega-compound rule: switches + dimmers + color + message + log
 
@@ -1041,19 +1045,19 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create virtual switches BAT-RM-OrdA, BAT-RM-OrdB, BAT-RM-OrdC. Create rule 'BAT-RM-Order' with Certain Time trigger and actions in order [A on, B on, C on].",
-  "test_prompt": "Call hub_set_rule (with appId=BAT-RM-Order's ruleId, using replaceActions) reordering actions to [C on, A on, B on]. Read back and verify the new order matches exactly. Then update again to [B on, C on, A on]. Read back and verify.",
+  "test_prompt": "Reorder the rule's actions to [C on, A on, B on] by replacing the whole action list in one operation (not by moving actions one at a time). Read back and verify the new order matches exactly. Then reorder the same way to [B on, C on, A on]. Read back and verify.",
   "teardown_prompt": "Delete the rule and all three virtual switches."
 }
 ```
 
-**Expected**: `hub_get_app_config.actions[0/1/2].deviceId` matches the requested order after each update. No phantom action duplication or reshuffling. [INV-1] `configPage.error == null`.
+**Expected**: Each reorder is a `hub_set_rule` (edit, `replaceActions`) call; `hub_get_app_config.actions[0/1/2].deviceId` matches the requested order after each update. No phantom action duplication or reshuffling. [INV-1] `configPage.error == null`.
 
 ### T382 — Device IDs round-trip as strings (not coerced to int)
 
 ```json
 {
   "setup_prompt": "Create virtual switch BAT-RM-StrId. Note its deviceId as a string.",
-  "test_prompt": "Create rule 'BAT-RM-IdStr' with Certain Time trigger. Action: turn BAT-RM-StrId on. Read back via hub_get_app_config. Confirm the deviceId on the action, when compared via string equality with the ID captured in setup, is equal (i.e. no numeric coercion lossy behavior, no leading-zero stripping, no scientific notation).",
+  "test_prompt": "Create rule 'BAT-RM-IdStr' with Certain Time trigger. Action: turn BAT-RM-StrId on. Read the rule back. Confirm the deviceId on the action, when compared via string equality with the ID captured in setup, is equal (i.e. no numeric coercion lossy behavior, no leading-zero stripping, no scientific notation).",
   "teardown_prompt": "Delete the rule and virtual switch."
 }
 ```
@@ -1065,7 +1069,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create virtual contact sensor BAT-RM-ContactSub.",
-  "test_prompt": "Create rule 'BAT-RM-Sub' triggered by BAT-RM-ContactSub contact changing to open. Action: log 'sub fired'. After creation, query hub_get_app_config and assert statusJson.eventSubscriptions.length > 0 (because the rule has a device trigger). Then call hub_set_rule (with appId=BAT-RM-Sub's ruleId) removing the trigger (swap to Certain Time year-2099) and confirm eventSubscriptions becomes 0 or empty for device subscriptions.",
+  "test_prompt": "Create rule 'BAT-RM-Sub' triggered by BAT-RM-ContactSub contact changing to open. Action: log 'sub fired'. After creation, read the rule back and assert statusJson.eventSubscriptions.length > 0 (because the rule has a device trigger). Then edit the rule to remove the trigger (swap to Certain Time year-2099) and confirm eventSubscriptions becomes 0 or empty for device subscriptions.",
   "teardown_prompt": "Delete the rule and virtual contact sensor."
 }
 ```
@@ -1088,7 +1092,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 ```json
 {
-  "test_prompt": "Call hub_manage_rule_machine.hub_get_app_config with appId=99999999 (non-existent). AI should report the tool returned not-found / error and not fabricate a rule."
+  "test_prompt": "Show me the configuration of the app with ID 99999999 (a non-existent ID). AI should report the tool returned not-found / error and not fabricate a rule."
 }
 ```
 
@@ -1099,19 +1103,19 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create virtual switch BAT-RM-Clear. Create rule 'BAT-RM-ClearActions' with Certain Time trigger and 3 actions (any valid switch/toggle/flash).",
-  "test_prompt": "Call hub_set_rule (with appId=BAT-RM-ClearActions' ruleId, using replaceActions=[]) to set actions to an empty list []. Read back and confirm actions is empty AND the rule still exists AND configPage.error is null.",
+  "test_prompt": "Clear all of the rule's actions — replace its action list with an empty list. Read back and confirm actions is empty AND the rule still exists AND configPage.error is null.",
   "teardown_prompt": "Delete the rule and virtual switch."
 }
 ```
 
-**Expected**: `hub_get_app_config.actions.length === 0`. Rule still present in `hub_list_rules`. No configPage errors.
+**Expected**: AI calls `hub_set_rule` (edit, `replaceActions=[]`). `hub_get_app_config.actions.length === 0`. Rule still present in `hub_list_rules`. No configPage errors.
 
 ### T387 — hub_set_rule with empty actions list succeeds
 
 ```json
 {
   "setup_prompt": "No devices needed.",
-  "test_prompt": "Create rule 'BAT-RM-EmptyActions' with a Certain Time year-2099 trigger and actions=[] (empty list). Confirm creation succeeds and hub_get_app_config shows 0 actions. This is legal per RM 5.1.",
+  "test_prompt": "Create rule 'BAT-RM-EmptyActions' with a Certain Time year-2099 trigger and an empty action list. Confirm creation succeeds and reading the rule back shows 0 actions. This is legal per RM 5.1.",
   "teardown_prompt": "Delete the rule."
 }
 ```
@@ -1307,7 +1311,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "No setup — test creates everything fresh.",
-  "test_prompt": "Create rule 'BAT-RM-VarTypes' with five local variables: BAT-RM-LocalNum (number, 42), BAT-RM-LocalDec (decimal, 3.14), BAT-RM-LocalStr (string, 'hello'), BAT-RM-LocalBool (boolean, true), BAT-RM-LocalDT (datetime, 2026-04-24 12:00). Trigger: Periodic daily 06:00. Action: log 'vars loaded'. Then hub_set_rule(appId=<id>): (a) change BAT-RM-LocalNum value to 99, (b) delete BAT-RM-LocalStr. Read back and verify: 4 local vars remain, BAT-RM-LocalNum=99, types for the remaining four are preserved correctly.",
+  "test_prompt": "Create rule 'BAT-RM-VarTypes' with five local variables: BAT-RM-LocalNum (number, 42), BAT-RM-LocalDec (decimal, 3.14), BAT-RM-LocalStr (string, 'hello'), BAT-RM-LocalBool (boolean, true), BAT-RM-LocalDT (datetime, 2026-04-24 12:00). Trigger: Periodic daily 06:00. Action: log 'vars loaded'. Then edit the rule to: (a) change BAT-RM-LocalNum value to 99, (b) delete BAT-RM-LocalStr. Read back and verify: 4 local vars remain, BAT-RM-LocalNum=99, types for the remaining four are preserved correctly.",
   "teardown_prompt": "Force-delete 'BAT-RM-VarTypes'."
 }
 ```
@@ -1391,7 +1395,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a virtual switch 'BAT-RM-GateSw' and a virtual contact 'BAT-RM-CrossTrig'.",
-  "test_prompt": "Create TWO rules. Rule B first: 'BAT-RM-Cross-B' with Required Expression 'Rule BAT-RM-Cross-B Private Boolean is true', trigger BAT-RM-GateSw changed, action log 'B fired'. Then Rule A: 'BAT-RM-Cross-A' triggered by BAT-RM-CrossTrig opens, with actions: IF (BAT-RM-CrossTrig is open) THEN Set Private Boolean on rule 'BAT-RM-Cross-B' = true; ELSE Set Private Boolean on rule 'BAT-RM-Cross-B' = false; END-IF. Read both rules back and verify: (a) Rule A's two Set PB actions reference Rule B's app ID (not self), (b) Rule B's required expression references its own PB. Then use hub_set_rule_private_boolean on Rule B to confirm the existing single-PB tool still works as a third path.",
+  "test_prompt": "Create TWO rules. Rule B first: 'BAT-RM-Cross-B' with Required Expression 'Rule BAT-RM-Cross-B Private Boolean is true', trigger BAT-RM-GateSw changed, action log 'B fired'. Then Rule A: 'BAT-RM-Cross-A' triggered by BAT-RM-CrossTrig opens, with actions: IF (BAT-RM-CrossTrig is open) THEN Set Private Boolean on rule 'BAT-RM-Cross-B' = true; ELSE Set Private Boolean on rule 'BAT-RM-Cross-B' = false; END-IF. Read both rules back and verify: (a) Rule A's two Set PB actions reference Rule B's app ID (not self), (b) Rule B's required expression references its own PB. Then directly set Rule B's Private Boolean using the dedicated single-Private-Boolean setter (not a rule action), to confirm that path still works as a third route.",
   "teardown_prompt": "Force-delete both 'BAT-RM-Cross-A' and 'BAT-RM-Cross-B'. Remove BAT-RM-GateSw and BAT-RM-CrossTrig."
 }
 ```
@@ -1403,12 +1407,12 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a virtual switch 'BAT-RM-DefPB'.",
-  "test_prompt": "Create rule 'BAT-RM-PBDefault' with trigger BAT-RM-DefPB changed, action Set Private Boolean (self) = false. Run the rule actions once via hub_manage_rule_machine.hub_call_rule to drive PB to false. Verify PB is now false (via hub_get_app_config or reading state). Then press the rule's Start button (lifecycle verb — via hub_manage_rule_machine or a hub_set_rule lifecycle action). Verify PB has reset to true (RM's documented behavior: Start always resets PB to true).",
+  "test_prompt": "Create rule 'BAT-RM-PBDefault' with trigger BAT-RM-DefPB changed, action Set Private Boolean (self) = false. Run the rule's actions once directly (without waiting for the trigger) to drive PB to false. Verify PB is now false by reading the rule back. Then press the rule's Start button (a lifecycle verb). Verify PB has reset to true (RM's documented behavior: Start always resets PB to true).",
   "teardown_prompt": "Force-delete 'BAT-RM-PBDefault'. Remove BAT-RM-DefPB."
 }
 ```
 
-**Expected**: PB observed as false after running actions, then true after Start. Confirms Start-resets-PB-to-true documented behavior.
+**Expected**: AI runs the actions via `hub_call_rule(action='actions')` and presses Start via the lifecycle path (`hub_call_rule(action='start')`). PB observed as false after running actions, then true after Start. Confirms Start-resets-PB-to-true documented behavior.
 
 ### T424 — Kitchen-sink rule: IF/ELSE + variable-sourced Delay + per-mode action + Exit
 
@@ -1427,7 +1431,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create virtual switches 'BAT-RM-UpdA', 'BAT-RM-UpdB', 'BAT-RM-UpdC'. No cross-test dependency: this test is fully self-contained.",
-  "test_prompt": "Create rule 'BAT-RM-T425-Update' (unique name) with Required Expression 'BAT-RM-UpdA is on', trigger BAT-RM-UpdA changed, one local variable BAT-RM-Counter (number, 0), action log '%BAT-RM-Counter% fires'. Then call hub_set_rule(appId=<ruleId>) with a patch that: (a) changes Required Expression to 'BAT-RM-UpdA is on AND BAT-RM-UpdB is on', (b) appends a second action 'Set BAT-RM-Counter = BAT-RM-Counter + 1' (arithmetic), (c) changes BAT-RM-Counter initial value to 10. Read back and confirm all three changes applied atomically and the rule still has exactly one trigger.",
+  "test_prompt": "Create rule 'BAT-RM-T425-Update' (unique name) with Required Expression 'BAT-RM-UpdA is on', trigger BAT-RM-UpdA changed, one local variable BAT-RM-Counter (number, 0), action log '%BAT-RM-Counter% fires'. Then edit the rule with a single patch that: (a) changes Required Expression to 'BAT-RM-UpdA is on AND BAT-RM-UpdB is on', (b) appends a second action 'Set BAT-RM-Counter = BAT-RM-Counter + 1' (arithmetic), (c) changes BAT-RM-Counter initial value to 10. Read back and confirm all three changes applied atomically and the rule still has exactly one trigger.",
   "teardown_prompt": "Force-delete 'BAT-RM-T425-Update'. Remove BAT-RM-UpdA, BAT-RM-UpdB, BAT-RM-UpdC."
 }
 ```
@@ -1439,19 +1443,19 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a virtual switch 'BAT-RM-DelSw'.",
-  "test_prompt": "Create rule 'BAT-RM-DelTest' with trigger BAT-RM-DelSw changed and one log action. Try hub_delete_native_app(force=false) — should succeed because rule has no children. Then recreate the same rule. Finally hub_delete_native_app(force=true) — should succeed regardless (uses /installedapp/forcedelete/.../quiet endpoint, always 302). Verify post-delete the rule no longer appears in hub_list_rules.",
+  "test_prompt": "Create rule 'BAT-RM-DelTest' with trigger BAT-RM-DelSw changed and one log action. Try a soft (non-forced) delete — should succeed because the rule has no children. Then recreate the same rule. Finally a force delete — should succeed regardless (uses the /installedapp/forcedelete/.../quiet endpoint, always 302). Verify post-delete the rule no longer appears in the rules list.",
   "teardown_prompt": "Remove BAT-RM-DelSw. Confirm no BAT-RM-DelTest remains."
 }
 ```
 
-**Expected**: Soft delete returns `{success:true, message:...}`. Force delete returns success via 302 redirect. `hub_list_rules` confirms rule gone both times.
+**Expected**: The soft `hub_delete_native_app` (force=false) returns `{success:true, message:...}`. The `force=true` call returns success via 302 redirect. `hub_list_rules` confirms rule gone both times.
 
 ### T427 — Operator precedence round-trip with mixed AND/OR/XOR (left-to-right equal)
 
 ```json
 {
   "setup_prompt": "Create virtual switches BAT-RM-P1, BAT-RM-P2, BAT-RM-P3, BAT-RM-P4.",
-  "test_prompt": "Create rule 'BAT-RM-Precedence' with Required Expression 'BAT-RM-P1 is on AND BAT-RM-P2 is on OR BAT-RM-P3 is on XOR BAT-RM-P4 is on' (no parens — tests left-to-right equal precedence of AND/OR/XOR). Trigger: any of the four. Action: log 'precedence hit'. Read back and verify operator evaluation order is preserved exactly left-to-right (RM spec: AND/OR/XOR have equal precedence, left-to-right), and hub_get_app_config returns the four conditions in the same sequence with the three operators in-between in the same order.",
+  "test_prompt": "Create rule 'BAT-RM-Precedence' with Required Expression 'BAT-RM-P1 is on AND BAT-RM-P2 is on OR BAT-RM-P3 is on XOR BAT-RM-P4 is on' (no parens — tests left-to-right equal precedence of AND/OR/XOR). Trigger: any of the four. Action: log 'precedence hit'. Read back and verify operator evaluation order is preserved exactly left-to-right (RM spec: AND/OR/XOR have equal precedence, left-to-right), and reading the rule back returns the four conditions in the same sequence with the three operators in-between in the same order.",
   "teardown_prompt": "Force-delete 'BAT-RM-Precedence'. Remove BAT-RM-P1..P4."
 }
 ```
@@ -1475,7 +1479,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "No setup.",
-  "test_prompt": "Call hub_set_rule with name 'BAT-RM-BadRule' and a malformed Required Expression 'BAT-RM-Ghost is on AND AND BAT-RM-Other is off' (double AND, undefined devices). The tool should reject this with a validation error before writing to the hub, or — if it reaches the hub — the returned configPage.error should be non-null and no rule should be created. Confirm via hub_list_rules that 'BAT-RM-BadRule' is not present.",
+  "test_prompt": "Create a rule named 'BAT-RM-BadRule' with a malformed Required Expression 'BAT-RM-Ghost is on AND AND BAT-RM-Other is off' (double AND, referencing undefined devices). This should be rejected with a validation error before writing to the hub, or — if it reaches the hub — the returned configPage.error should be non-null and no rule should be created. Confirm that 'BAT-RM-BadRule' is not present in the rules list.",
   "teardown_prompt": "If the rule did get partially created, force-delete 'BAT-RM-BadRule'. Otherwise no teardown."
 }
 ```
@@ -1487,7 +1491,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "No setup.",
-  "test_prompt": "Create a Rule Machine rule named 'BAT-RM-T430b-BugC' with: (1) a Certain Time trigger at 3:00 AM, (2) a Required Expression with two Switch conditions joined by AND -- Condition A: switch device 1063 is on; Condition B: switch device 1080 is off. After creation, call hub_get_app_config(appId=<ruleId>, includeSettings=true) and report ALL paragraph text from the mainPage. Confirm the render does NOT contain '(unused)' and does NOT contain 'Define Required Expression'.",
+  "test_prompt": "Create a Rule Machine rule named 'BAT-RM-T430b-BugC' with: (1) a Certain Time trigger at 3:00 AM, (2) a Required Expression with two Switch conditions joined by AND -- Condition A: switch device 1063 is on; Condition B: switch device 1080 is off. After creation, read the rule back including its settings and report ALL paragraph text from the mainPage. Confirm the render does NOT contain '(unused)' and does NOT contain 'Define Required Expression'.",
   "teardown_prompt": "Force-delete BAT-RM-T430b-BugC."
 }
 ```
@@ -1499,7 +1503,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "No setup.",
-  "test_prompt": "Create a Rule Machine rule named 'BAT-RM-T431b-BugD' with: (1) a Certain Time trigger at 3:15 AM, (2) a Required Expression with Switch device 1063 is on AND Switch device 1080 is off, (3) a plain switch-on action on device 1063. After creation, call hub_get_app_config(appId=<ruleId>) and report ALL paragraph text. Confirm the action renders as 'On: <device name>' NOT as 'IF (**Broken Condition**) ...'.",
+  "test_prompt": "Create a Rule Machine rule named 'BAT-RM-T431b-BugD' with: (1) a Certain Time trigger at 3:15 AM, (2) a Required Expression with Switch device 1063 is on AND Switch device 1080 is off, (3) a plain switch-on action on device 1063. After creation, read the rule back and report ALL paragraph text. Confirm the action renders as 'On: <device name>' NOT as 'IF (**Broken Condition**) ...'.",
   "teardown_prompt": "Force-delete BAT-RM-T431b-BugD."
 }
 ```
@@ -1511,7 +1515,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "No setup.",
-  "test_prompt": "Create a Rule Machine rule named 'BAT-RM-T432b-BugE' with: (1) a Certain Time trigger at 4:00 AM, (2) four sequential runCommand actions -- action 1: device 1072 setDisplay('on'), action 2: device 1121 setChildLock('on'), action 3: device 1072 setDisplay('off'), action 4: device 1121 setChildLock('off'). After creation, call hub_get_app_config(appId=<ruleId>, includeSettings=true) and report ALL paragraph text from mainPage and the settingsApplied/settingsSkipped counts for each action. Confirm that all four actions render with their parameter (e.g., 'on' or 'off') and none show empty/missing parameter text.",
+  "test_prompt": "Create a Rule Machine rule named 'BAT-RM-T432b-BugE' with: (1) a Certain Time trigger at 4:00 AM, (2) four sequential runCommand actions -- action 1: device 1072 setDisplay('on'), action 2: device 1121 setChildLock('on'), action 3: device 1072 setDisplay('off'), action 4: device 1121 setChildLock('off'). After creation, read the rule back including its settings and report ALL paragraph text from mainPage and the settingsApplied/settingsSkipped counts for each action. Confirm that all four actions render with their parameter (e.g., 'on' or 'off') and none show empty/missing parameter text.",
   "teardown_prompt": "Force-delete BAT-RM-T432b-BugE."
 }
 ```
@@ -1537,7 +1541,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a helper rule BAT-RM-T431-Target via hub_set_rule with a simple delayed log action. Note its ruleId.",
-  "test_prompt": "Create 'BAT-RM-T431-Endpoint' whose only trigger is a Local End Point configured to stop the actions of the helper rule (/stopRuleAct=<id>). Then call hub_get_app_config and show me the endpoint URL and the verb.",
+  "test_prompt": "Create 'BAT-RM-T431-Endpoint' whose only trigger is a Local End Point configured to stop the actions of the helper rule (/stopRuleAct=<id>). Then read the rule back and show me the endpoint URL and the verb.",
   "teardown_prompt": "Force-delete both BAT-RM-T431-* rules. Verify hub_list_rules is clean and no orphan children remain under the RM parent."
 }
 ```
@@ -1561,7 +1565,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create helper rule BAT-RM-T433-Target that uses Private Boolean in a condition. Note its ruleId.",
-  "test_prompt": "Create 'BAT-RM-T433-PBTrue' with Local End Point trigger /setRuleBooleanTrue=<target_id> and 'BAT-RM-T433-PBFalse' with /setRuleBooleanFalse=<target_id>. Confirm both endpoint URLs via hub_get_app_config.",
+  "test_prompt": "Create 'BAT-RM-T433-PBTrue' with Local End Point trigger /setRuleBooleanTrue=<target_id> and 'BAT-RM-T433-PBFalse' with /setRuleBooleanFalse=<target_id>. Confirm both endpoint URLs by reading the rules back.",
   "teardown_prompt": "Force-delete all three BAT-RM-T433-* rules. Verify cleanup."
 }
 ```
@@ -1573,7 +1577,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create BAT-RM-T434-Target with a simple log action.",
-  "test_prompt": "Create 'BAT-RM-T434-Legacy' with a Local End Point trigger that uses the legacy /runRule=<id> verb (not runRuleAct). After creation, call hub_get_app_config and confirm the URL uses the legacy path.",
+  "test_prompt": "Create 'BAT-RM-T434-Legacy' with a Local End Point trigger that uses the legacy /runRule=<id> verb (not runRuleAct). After creation, read the rule back and confirm the URL uses the legacy path.",
   "teardown_prompt": "Force-delete both BAT-RM-T434-* rules."
 }
 ```
@@ -1584,7 +1588,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 ```json
 {
-  "test_prompt": "Create a rule 'BAT-RM-T435-GetList' with a Local End Point trigger that calls /getRuleList (the verb that returns a JSON map of all rules). Call hub_get_app_config and verify the generated URL ends with /getRuleList and that no rule-id parameter is required.",
+  "test_prompt": "Create a rule 'BAT-RM-T435-GetList' with a Local End Point trigger that calls /getRuleList (the verb that returns a JSON map of all rules). Read the rule back and verify the generated URL ends with /getRuleList and that no rule-id parameter is required.",
   "teardown_prompt": "Force-delete BAT-RM-T435-GetList. Verify cleanup."
 }
 ```
@@ -1596,7 +1600,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a hub variable named 'batT436Var' (number, initial 0) via manage_hub_variables.",
-  "test_prompt": "Create 'BAT-RM-T436-SetHubVar' with a Local End Point trigger configured with the /setHubVariable verb targeting batT436Var. Call hub_get_app_config and confirm the generated URL shows /setHubVariable=batT436Var:<value> pattern in the rule config.",
+  "test_prompt": "Create 'BAT-RM-T436-SetHubVar' with a Local End Point trigger configured with the /setHubVariable verb targeting batT436Var. Read the rule back and confirm the generated URL shows /setHubVariable=batT436Var:<value> pattern in the rule config.",
   "teardown_prompt": "Force-delete BAT-RM-T436-SetHubVar. Delete the batT436Var hub variable. Verify both are gone."
 }
 ```
@@ -1608,7 +1612,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a hub variable literally named 'my test var' (with spaces) via manage_hub_variables.",
-  "test_prompt": "Create 'BAT-RM-T437-EncodedVar' with a Local End Point trigger using /setHubVariableEncoded targeting the variable 'my test var'. Because the name has spaces, the generated URL must URL-encode both the name and value placeholders. Call hub_get_app_config and confirm the encoded path.",
+  "test_prompt": "Create 'BAT-RM-T437-EncodedVar' with a Local End Point trigger using /setHubVariableEncoded targeting the variable 'my test var'. Because the name has spaces, the generated URL must URL-encode both the name and value placeholders. Read the rule back and confirm the encoded path.",
   "teardown_prompt": "Force-delete BAT-RM-T437-EncodedVar and delete the 'my test var' hub variable."
 }
 ```
@@ -1620,7 +1624,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a legacy global variable (or reuse a suitable hub variable) named 'batT438Legacy'.",
-  "test_prompt": "Create 'BAT-RM-T438-SetGV' with a Local End Point trigger using the legacy /setGlobalVariable=<name>:<value> verb. Call hub_get_app_config and confirm the URL uses /setGlobalVariable (not /setHubVariable).",
+  "test_prompt": "Create 'BAT-RM-T438-SetGV' with a Local End Point trigger using the legacy /setGlobalVariable=<name>:<value> verb. Read the rule back and confirm the URL uses /setGlobalVariable (not /setHubVariable).",
   "teardown_prompt": "Force-delete BAT-RM-T438-SetGV. Remove the test variable."
 }
 ```
@@ -1631,7 +1635,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 ```json
 {
-  "test_prompt": "Create 'BAT-RM-T439-ValuePassthrough' with a Local End Point trigger configured so that any arbitrary trailing URL string (not matching a known verb like runRuleAct/pauseRule/etc.) populates the built-in %value% variable. Then give it an action that logs '%value%'. Call hub_get_app_config and confirm the endpoint is configured as a catch-all (no verb binding).",
+  "test_prompt": "Create 'BAT-RM-T439-ValuePassthrough' with a Local End Point trigger configured so that any arbitrary trailing URL string (not matching a known verb like runRuleAct/pauseRule/etc.) populates the built-in %value% variable. Then give it an action that logs '%value%'. Read the rule back and confirm the endpoint is configured as a catch-all (no verb binding).",
   "teardown_prompt": "Force-delete BAT-RM-T439-ValuePassthrough."
 }
 ```
@@ -1643,7 +1647,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Confirm the hub has cloud access configured (Hubitat login registered).",
-  "test_prompt": "Create 'BAT-RM-T440-Cloud' with a Cloud End Point trigger using /runRuleAct=<self> (pointed at the rule itself). After creation, call hub_get_app_config and confirm the URL starts with https://cloud.hubitat.com (or the equivalent cloud host), NOT the local http://<hub-ip>:8080 prefix.",
+  "test_prompt": "Create 'BAT-RM-T440-Cloud' with a Cloud End Point trigger using /runRuleAct=<self> (pointed at the rule itself). After creation, read the rule back and confirm the URL starts with https://cloud.hubitat.com (or the equivalent cloud host), NOT the local http://<hub-ip>:8080 prefix.",
   "teardown_prompt": "Force-delete BAT-RM-T440-Cloud. Verify cleanup."
 }
 ```
@@ -1655,7 +1659,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create BAT-RM-T441-TargetA and BAT-RM-T441-TargetB (two simple log-only rules). Note both ruleIds.",
-  "test_prompt": "Create 'BAT-RM-T441-Switchable' with a Local End Point trigger bound to /runRuleAct=<TargetA_id>. Call hub_get_app_config and record the URL. Then use hub_set_rule(appId=ruleId) to switch the binding to /runRuleAct=<TargetB_id>. Call hub_get_app_config again and confirm the URL now references TargetB, and that the old TargetA subscription is gone from eventSubscriptions.",
+  "test_prompt": "Create 'BAT-RM-T441-Switchable' with a Local End Point trigger bound to /runRuleAct=<TargetA_id>. Read the rule back and record the URL. Then edit the rule to switch the binding to /runRuleAct=<TargetB_id>. Read it back again and confirm the URL now references TargetB, and that the old TargetA subscription is gone from eventSubscriptions.",
   "teardown_prompt": "Force-delete all three BAT-RM-T441-* rules."
 }
 ```
@@ -1667,7 +1671,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Record baseline: call hub_list_rules and note the count N. Also hub_get_app_config on the Rule Machine PARENT app and note its hasChildren count M. Also enable MCP debug logging (set_log_level=debug) so we can capture the tool's internal trace.",
-  "test_prompt": "Attempt to create a rule 'BAT-RM-T442-Orphan' with a trigger that will PASS pre-validation (e.g., valid Motion trigger on an existing BAT-created virtual motion sensor) BUT configure an action that can only be validated server-side by posting it (e.g., reference a scene/app/rule ID that doesn't exist, or a custom command that the target device doesn't support — something that `createchild` will accept but the subsequent action-configuration POST to `/installedapp/update/json` will reject). The create must reach the `createchild` step (so a child app IS allocated server-side) and then fail during action configuration. Verify via MCP debug logs that: (a) `/installedapp/createchild/hubitat/Rule-5.1/parent/<rmParentId>` returned a 302 with a NEW child app ID, (b) the subsequent update/json or btn POST returned an error, (c) the tool then issued `/installedapp/forcedelete/<newChildId>/quiet` to clean up. All three steps MUST appear in the trace. After the error, call hub_list_rules and hub_get_app_config on the RM parent — count must still be N and M respectively. A tool that pre-validates client-side and never calls createchild would 'pass' the count check but FAIL this test — the trace evidence of the three-step cycle is what proves the cleanup path works.",
+  "test_prompt": "Attempt to create a rule 'BAT-RM-T442-Orphan' with a trigger that will PASS pre-validation (e.g., valid Motion trigger on an existing BAT-created virtual motion sensor) BUT configure an action that can only be validated server-side by posting it (e.g., reference a scene/app/rule ID that doesn't exist, or a custom command that the target device doesn't support — something that `createchild` will accept but the subsequent action-configuration POST to `/installedapp/update/json` will reject). The create must reach the `createchild` step (so a child app IS allocated server-side) and then fail during action configuration. Verify via MCP debug logs that: (a) `/installedapp/createchild/hubitat/Rule-5.1/parent/<rmParentId>` returned a 302 with a NEW child app ID, (b) the subsequent update/json or btn POST returned an error, (c) the tool then issued `/installedapp/forcedelete/<newChildId>/quiet` to clean up. All three steps MUST appear in the trace. After the error, read the rules list and the RM parent app's config — count must still be N and M respectively. A tool that pre-validates client-side and never calls createchild would 'pass' the count check but FAIL this test — the trace evidence of the three-step cycle is what proves the cleanup path works.",
   "teardown_prompt": "If for any reason an orphan persists, list installed apps filtered by name prefix 'BAT-RM-T442' and force-delete anything found. Re-verify counts match baseline. Reset log level if changed."
 }
 ```
@@ -1679,7 +1683,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Ensure at least three virtual switches exist: list_virtual_devices; if fewer than 3 'BAT-SW-*' virtuals exist, create enough via hub_manage_virtual_device.",
-  "test_prompt": "Create 'BAT-RM-T443-MultiSwitch' with a single Switch trigger bound to THREE virtual switches (multi-device, any of them turning on/off fires the rule). After creation, call hub_get_app_config (with includeSettings=true) and assert THREE things: (a) the tDev<N> setting lists all 3 device IDs, (b) appSettings[tDev<N>].type == 'capability.switch', (c) appSettings[tDev<N>].multiple == true. If multiple is false, this is the Phase 1 flag-poisoning regression — stop and report.",
+  "test_prompt": "Create 'BAT-RM-T443-MultiSwitch' with a single Switch trigger bound to THREE virtual switches (multi-device, any of them turning on/off fires the rule). After creation, read the rule back including its settings and assert THREE things: (a) the tDev<N> setting lists all 3 device IDs, (b) appSettings[tDev<N>].type == 'capability.switch', (c) appSettings[tDev<N>].multiple == true. If multiple is false, this is the Phase 1 flag-poisoning regression — stop and report.",
   "teardown_prompt": "Force-delete BAT-RM-T443-MultiSwitch. Verify cleanup."
 }
 ```
@@ -1691,7 +1695,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create three BAT-prefixed virtual switches via hub_manage_virtual_device: BAT-T444-Sw1, BAT-T444-Sw2, BAT-T444-Sw3. Record their IDs. Create a new rule named 'BAT-RM-T444-MultiSwitch' via hub_set_rule with a single Switch trigger bound to all three virtual switches (multi-device). Verify at creation time that appSettings[tDev<N>].multiple == true as a baseline precondition.",
-  "test_prompt": "Call hub_set_rule(appId=ruleId) on BAT-RM-T444-MultiSwitch to REMOVE one of the three trigger devices (leaving BAT-T444-Sw1 and BAT-T444-Sw2). Immediately after the update, re-read appSettings[tDev<N>] and confirm multiple is STILL true (not silently rewritten to false during the update). Also call hub_get_app_config and confirm it renders without any 'Command size is not supported by device' RM rendering error. This test guards the update-path regression of the flag-poisoning bug described in the Phase 1 findings on #120.",
+  "test_prompt": "Edit BAT-RM-T444-MultiSwitch to REMOVE one of the three trigger devices (leaving BAT-T444-Sw1 and BAT-T444-Sw2). Immediately after the update, re-read appSettings[tDev<N>] and confirm multiple is STILL true (not silently rewritten to false during the update). Also read the rule back and confirm it renders without any 'Command size is not supported by device' RM rendering error. This test guards the update-path regression of the flag-poisoning bug described in the Phase 1 findings on #120.",
   "teardown_prompt": "Force-delete BAT-RM-T444-MultiSwitch via hub_delete_native_app(appId=ruleId, force=true). Delete all three BAT-T444-Sw* virtual devices."
 }
 ```
@@ -1715,19 +1719,19 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create 'BAT-RM-T446-EditCond' with a multi-device trigger.",
-  "test_prompt": "This is a defensive test for Phase 1 finding — stuck `state.editCond` after a button-handler exception (stale state.editCond). After creation, if by construction state.editCond is ever stuck (inspect via hub_get_app_config with includeSettings=true — look for state.editCond in the state map), the tool should detect this on the NEXT hub_set_rule(appId=ruleId) call and call /installedapp/btn with name=updateRule to clear it. Attempt two back-to-back hub_set_rule(appId=ruleId) calls that touch trigger config. Verify the final state.editCond is null/unset AND configPage.error is null. If the new tool design makes editCond-stuckness impossible to reach, note that and mark aspirational.",
+  "test_prompt": "This is a defensive test for Phase 1 finding — stuck `state.editCond` after a button-handler exception (stale state.editCond). After creation, if by construction state.editCond is ever stuck (inspect by reading the rule's state/settings — look for state.editCond in the state map), the tool should detect this on the NEXT rule edit and POST /installedapp/btn with name=updateRule to clear it. Attempt two back-to-back edits that touch trigger config. Verify the final state.editCond is null/unset AND configPage.error is null. If the new tool design makes editCond-stuckness impossible to reach, note that and mark aspirational.",
   "teardown_prompt": "Force-delete BAT-RM-T446-EditCond. Final check: no rule with prefix 'BAT-RM-T446' appears in hub_list_rules."
 }
 ```
 
-**Expected**: Tool detects stuck `state.editCond` if present and POSTs `updateRule` to clear. Post-test `state.editCond` is null. [INV-1] `configPage.error == null`. If unreachable by design, test is aspirational — both conditions (editCond clear AND final config error null) still asserted as preconditions for teardown.
+**Expected**: On the next `hub_set_rule` (edit), the tool detects stuck `state.editCond` if present and POSTs `updateRule` to clear. Post-test `state.editCond` is null. [INV-1] `configPage.error == null`. If unreachable by design, test is aspirational — both conditions (editCond clear AND final config error null) still asserted as preconditions for teardown.
 
 ### T447 — Concurrent update race (same rule, rapid updates)
 
 ```json
 {
   "setup_prompt": "Create 'BAT-RM-T447-Race' with a single Switch trigger on one virtual switch and a simple log action.",
-  "test_prompt": "Fire two hub_set_rule(appId=ruleId) calls in rapid succession on the same ruleId: call A sets the rule's comment to 'update-A', call B sets it to 'update-B'. Issue both without waiting for the first to return if the client supports it. After both complete, call hub_get_app_config and confirm: (a) both calls returned success (no 500/race error), (b) the final comment is either 'update-A' or 'update-B' (deterministic last-writer-wins, not a corrupted mix), (c) configPage.error is null, (d) eventSubscriptions is still populated.",
+  "test_prompt": "Fire two edits in rapid succession on the same rule: edit A sets the rule's comment to 'update-A', edit B sets it to 'update-B'. Issue both without waiting for the first to return if the client supports it. After both complete, read the rule back and confirm: (a) both calls returned success (no 500/race error), (b) the final comment is either 'update-A' or 'update-B' (deterministic last-writer-wins, not a corrupted mix), (c) configPage.error is null, (d) eventSubscriptions is still populated.",
   "teardown_prompt": "Force-delete BAT-RM-T447-Race."
 }
 ```
@@ -1739,7 +1743,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Simulate a fresh MCP install: via hub_manage_diagnostics or an equivalent reset path, clear the cached state.rmParentId (if the tool exposes it) OR confirm that on a fresh hub this value starts unset. Record current value.",
-  "test_prompt": "With state.rmParentId unset, attempt to create 'BAT-RM-T448-FirstRun' with a minimal trigger + action. The tool should internally call hub_list_apps, filter for the Rule Machine parent app (name 'Rule Machine' / type matches), cache its id into state.rmParentId, then proceed with /installedapp/createchild. Verify: (a) the rule is created successfully, (b) state.rmParentId is now populated. Then create a second rule 'BAT-RM-T448-FirstRun-2' and verify the tool uses the cached value (no second hub_list_apps call for parent discovery — confirm via mcpLog or a debug trace if available).",
+  "test_prompt": "With state.rmParentId unset, attempt to create 'BAT-RM-T448-FirstRun' with a minimal trigger + action. On this first run the tool must discover the Rule Machine parent app (by listing installed apps and matching name 'Rule Machine' / type), cache its id into state.rmParentId, then proceed with /installedapp/createchild. Verify: (a) the rule is created successfully, (b) state.rmParentId is now populated. Then create a second rule 'BAT-RM-T448-FirstRun-2' and verify the tool uses the cached value (no second parent-discovery lookup — confirm via mcpLog or a debug trace if available).",
   "teardown_prompt": "Force-delete both BAT-RM-T448-FirstRun* rules via hub_delete_native_app. The cached state.rmParentId can stay set (that's the expected post-first-run state)."
 }
 ```
@@ -1751,7 +1755,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "This test requires either a hub where Rule Machine is NOT installed, or simulating that state by pointing the tool at an rmParentId that doesn't exist. If the live hub has RM installed and it cannot be safely uninstalled for the test, mark this as environment-dependent.",
-  "test_prompt": "Attempt to create 'BAT-RM-T449-NoRM' via hub_set_rule. Because Rule Machine is not installed (or the parent app is missing), the tool should return a clean error message pointing the user to 'Install Rule Machine from Apps → Add Built-In App'. It must NOT fabricate a success response, NOT create orphan state, and NOT silently pick some other app as the parent.",
+  "test_prompt": "Attempt to create a Rule Machine rule named 'BAT-RM-T449-NoRM'. Because Rule Machine is not installed (or the parent app is missing), the tool should return a clean error message pointing the user to 'Install Rule Machine from Apps → Add Built-In App'. It must NOT fabricate a success response, NOT create orphan state, and NOT silently pick some other app as the parent.",
   "teardown_prompt": "No teardown needed — the create should have failed cleanly with no orphans. As a sanity check, call hub_list_apps and confirm no 'BAT-RM-T449-*' entries exist."
 }
 ```
@@ -1762,7 +1766,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 ```json
 {
-  "test_prompt": "Call hub_manage_rule_machine.hub_set_rule with appId=99999999 and a harmless patch (e.g. change comments to 'x'). Because the rule does not exist, the tool MUST return a clean error response — NOT silently succeed, NOT create a new rule with that ID, NOT fabricate success. Report the error message verbatim."
+  "test_prompt": "Edit the rule with ID 99999999 — change its comments to 'x'. Because no rule with that ID exists, the tool MUST return a clean error response — NOT silently succeed, NOT create a new rule with that ID, NOT fabricate success. Report the error message verbatim."
 }
 ```
 
@@ -1772,7 +1776,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 ```json
 {
-  "test_prompt": "Call hub_manage_native_rules_and_apps.hub_delete_native_app with appId=99999999 and force=false. Then call again with force=true. In both cases, the tool MUST return a clean response — either `{success:false, error:<not-found>}` or (if the framework's underlying endpoint returns 302/success for nonexistent IDs) `{success:true, note:<no-op>}` with a clear indication that no deletion actually occurred. The tool must NOT claim to have deleted something that did not exist, and must NOT throw an unhandled exception."
+  "test_prompt": "Delete the app with ID 99999999 — first with a normal (non-forced) delete, then with a force delete. In both cases, the tool MUST return a clean response — either `{success:false, error:<not-found>}` or (if the framework's underlying endpoint returns 302/success for nonexistent IDs) `{success:true, note:<no-op>}` with a clear indication that no deletion actually occurred. The tool must NOT claim to have deleted something that did not exist, and must NOT throw an unhandled exception."
 }
 ```
 
@@ -1794,7 +1798,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 ```json
 {
-  "test_prompt": "Create a Basic Rule named 'BAT-BasicRule' via hub_manage_native_rules_and_apps.hub_set_native_app with appType='basic_rule'. Capture the returned appId, then read it back with hub_get_app_config and report the app's type name.",
+  "test_prompt": "Create a Basic Rule named 'BAT-BasicRule'. Capture the returned appId, then read it back and report the app's type name.",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
@@ -1806,19 +1810,19 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a Basic Rule named 'BAT-BR-Edit' via hub_set_native_app(appType='basic_rule') and remember its id.",
-  "test_prompt": "Write the Notes field on that Basic Rule via hub_set_native_app(appId=ruleId, settings={comments: 'BAT note'}). Then read it back with hub_get_app_config and confirm the page has no rendering error.",
+  "test_prompt": "Write the Notes field on that Basic Rule, setting its comments/notes to 'BAT note'. Then read it back and confirm the page has no rendering error.",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
 
-**Expected**: The settings write succeeds and `configPageError` is null/absent — specifically it must NOT contain "For input string: \"updateRule\"". Basic Rule is a submitOnChange app (registry `commitButton: null`), so no spurious `updateRule` button click fires after the write. Post-test invariant: [INV-1] `configPage.error == null` after the edit.
+**Expected**: The `hub_set_native_app` settings write (comments) succeeds and `configPageError` is null/absent — specifically it must NOT contain "For input string: \"updateRule\"". Basic Rule is a submitOnChange app (registry `commitButton: null`), so no spurious `updateRule` button click fires after the write. Post-test invariant: [INV-1] `configPage.error == null` after the edit.
 
 ### T455 — Create a Button Rule through its controller via buttonRule (issue #185 item 2)
 
 ```json
 {
   "setup_prompt": "Create a Virtual Button device labeled 'BAT-BtnDev' via hub_manage_virtual_device. Create a Button Controller via hub_set_native_app(appType='button_controller', name='BAT-BtnCtrl'), then assign the virtual button to it with hub_set_native_app(appId=controllerId, settings={buttonDev: [deviceId]}). Remember the controllerId and deviceId.",
-  "test_prompt": "Create a Button Rule for button 1 pushed under that controller via hub_set_native_app(buttonRule={controllerId: <controllerId>, buttonNumber: 1, event: 'pushed'}). Capture the returned buttonRuleId, then add a log action to it with hub_set_rule(appId=buttonRuleId, addAction={capability:'log', message:'BAT button rule'}). Read the rule back with hub_get_app_config and confirm it renders cleanly.",
+  "test_prompt": "Create a Button Rule for button 1 pushed under that controller. Capture the returned buttonRuleId, then add a log action to it with the message 'BAT button rule'. Read the rule back and confirm it renders cleanly.",
   "teardown_prompt": "Delete the controller via hub_delete_native_app(appId=controllerId, force=true) (this cascades to its button rules), then delete the virtual button device."
 }
 ```
@@ -1830,31 +1834,31 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a minimal empty rule named 'BAT-HealthSrc' via hub_set_rule and remember its appId.",
-  "test_prompt": "Call hub_get_rule_health(appId=ruleId) (default source=auto) and report ok, broken, and source. Then call hub_get_rule_health(appId=ruleId, source='configPage') and report broken and source.",
+  "test_prompt": "Check the rule's health (let it pick the best source automatically) and report ok, broken, and source. Then check its health again, restricted to the config-page render as the source, and report broken and source.",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
 
-**Expected**: The auto call returns `ok: true`, `broken: false` (the authoritative boolean read from GET /app/ruleBuilderJson), and `source` containing `ruleBuilderJson` (typically `ruleBuilderJson+configPage`). The `source='configPage'` call returns `broken: null` (the HTML render scan does not produce the compiled-state boolean) and `source: configPage`. Neither path is dropped.
+**Expected**: The auto `hub_get_rule_health` call returns `ok: true`, `broken: false` (the authoritative boolean read from GET /app/ruleBuilderJson), and `source` containing `ruleBuilderJson` (typically `ruleBuilderJson+configPage`). The `hub_get_rule_health(source='configPage')` call returns `broken: null` (the HTML render scan does not produce the compiled-state boolean) and `source: configPage`. Neither path is dropped.
 
 ### T457 — hub_get_rule_health reports broken:true on a genuinely broken rule (issue #254 verification)
 
 ```json
 {
   "setup_prompt": "Create a rule named 'BAT-BrokenProbe' via hub_set_rule with a trigger on a BAT virtual device, then delete that BAT device so the rule's trigger reference dangles (RM marks the rule *BROKEN*). Use ONLY BAT-prefixed devices.",
-  "test_prompt": "Call hub_get_rule_health(appId=ruleId) and report ok, broken, source, and issues.",
+  "test_prompt": "Check the rule's health and report ok, broken, source, and issues.",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
 
-**Expected**: `broken: true` (the compiled-state boolean from ruleBuilderJson), `ok: false`, and an `issues` entry naming the broken state. `source` includes `ruleBuilderJson`. This confirms the boolean fires both ways (the open verification item from the issue). SAFETY: only BAT-prefixed devices/rules are touched.
+**Expected**: `hub_get_rule_health` returns `broken: true` (the compiled-state boolean from ruleBuilderJson), `ok: false`, and an `issues` entry naming the broken state. `source` includes `ruleBuilderJson`. This confirms the boolean fires both ways (the open verification item from the issue). SAFETY: only BAT-prefixed devices/rules are touched.
 
 ### T458 — hub_get_rule_health covers Visual Rules Builder rules (issue #254)
 
 ```json
 {
   "setup_prompt": "Create a Visual Rules Builder rule named 'BAT-VRB-Health' via hub_set_visual_rule with a simple trigger on a BAT virtual device. Remember its appId and format.",
-  "test_prompt": "Call hub_get_rule_health(appId=ruleId) and report ruleFormat, broken, source, and issues. Also report whether the hub_set_visual_rule create response carried a `health` block.",
+  "test_prompt": "Check the rule's health and report ruleFormat, broken, source, and issues. Also report whether the create response for the Visual Rules Builder rule carried a `health` block.",
   "teardown_prompt": "Delete the rule via hub_delete_visual_rule(appId=ruleId, confirm=true)."
 }
 ```
@@ -1866,7 +1870,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a Basic Rule named 'BAT-RH-Basic' and a Button Controller named 'BAT-RH-Btn' via hub_set_native_app. Remember both appIds.",
-  "test_prompt": "Call hub_get_rule_health(appId=...) for each. Report ruleFormat, broken, source, configPageError, and multipleFlagPoison for both.",
+  "test_prompt": "Check the health of each. Report ruleFormat, broken, source, configPageError, and multipleFlagPoison for both.",
   "teardown_prompt": "Delete both via hub_delete_native_app(appId=..., force=true)."
 }
 ```
