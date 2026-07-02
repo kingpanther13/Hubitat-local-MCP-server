@@ -585,7 +585,6 @@ DOC_FILES_FOR_COUNTS = [
     REPO_ROOT / "SKILL.md",
     REPO_ROOT / "TOOL_GUIDE.md",
     REPO_ROOT / "agent-skill" / "hubitat-mcp" / "SKILL.md",
-    REPO_ROOT / "agent-skill" / "hubitat-mcp" / "tool-reference.md",
     REPO_ROOT / "tests" / "BAT-v2.md",
     # tests/e2e_test.py hardcodes a tools/list count assertion + descriptive
     # message; the message string contains "(N core + M gateways)" forms
@@ -1136,7 +1135,6 @@ def check_tool_counts() -> list[dict]:
 DOC_FILES_FOR_TOOL_NAMES = [
     REPO_ROOT / "README.md",
     REPO_ROOT / "TOOL_GUIDE.md",
-    REPO_ROOT / "agent-skill" / "hubitat-mcp" / "tool-reference.md",
 ]
 
 # Markdown table row in the form `| `name` | description |` — the leading
