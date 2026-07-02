@@ -704,6 +704,7 @@ def _extract_canonical_counts() -> dict | None:
     gw_block = gw_match.group(1)
 
     per_gateway: dict[str, int] = {}
+    gateway_members: dict[str, set[str]] = {}
     proxied_names: set[str] = set()
     # Two-stage anchor:
     #   1. `^\s+([a-z_]+):\s*\[\s*description:` — gateway-key indented
@@ -740,6 +741,7 @@ def _extract_canonical_counts() -> dict | None:
             if t.strip()
         ]
         per_gateway[name] = len(tool_list)
+        gateway_members[name] = set(tool_list)
         proxied_names.update(tool_list)
 
     if not per_gateway:
@@ -819,6 +821,7 @@ def _extract_canonical_counts() -> dict | None:
         # total == core + proxied + dev_only_top_level (see the self-test invariant).
         "dev_only_top_level": len(dev_only_top_level),
         "per_gateway": per_gateway,
+        "gateway_members": gateway_members,  # {gateway: set(member tools)} for attribution checks
         # Name sets for tool-name consistency check (separate from counts):
         "tool_names": tool_names,           # all tool identifiers in getAllToolDefinitions()
         "gateway_names": set(per_gateway.keys()),  # gateway facade identifiers (manage_X)
@@ -1321,6 +1324,156 @@ def check_tool_name_consistency() -> list[dict]:
             )
 
     return findings
+
+
+# ---------------------------------------------------------------------------
+# Gateway-attribution consistency check
+# ---------------------------------------------------------------------------
+#
+# Catches a third drift class the count and name checks are blind to: a doc
+# claiming a tool lives in the WRONG gateway (both names real, membership
+# stale). Real instance: TOOL_GUIDE.md said "hub_restore_backup (in
+# `hub_manage_code`)" long after the tool moved to hub_manage_backup — counts
+# and names were all valid, so nothing fired. This scans the attribution
+# idiom "`hub_tool` (in `hub_gw`)" / "(via `hub_gw` / `hub_gw2`)" and checks
+# EVERY claimed gateway's membership in getGatewayConfig(). Claims where the
+# subject isn't a known tool, or a claimed name isn't a known gateway, are
+# skipped (prose like "(via `hub_update_mcp_settings`)" names a tool, not a
+# gateway).
+GATEWAY_ATTRIBUTION_PATTERN = re.compile(
+    r"`(hub_[a-z_]+)`\**\s*\((?:in|via)\s+((?:`hub_[a-z_]+`(?:\s*/\s*)?)+)"
+)
+
+
+def _scan_gateway_attributions(
+    content: str, tool_names: set, gateway_members: dict
+) -> list[tuple[int, str, str, str]]:
+    """Return (line_no, tool, claimed_gateway, line_text) for every
+    attribution whose claimed gateway does not contain the tool."""
+    bad: list[tuple[int, str, str, str]] = []
+    for m in GATEWAY_ATTRIBUTION_PATTERN.finditer(content):
+        if _is_historical_at(content, m.start(), m.end()):
+            continue
+        tool = m.group(1)
+        if tool not in tool_names:
+            continue
+        line_no = content[:m.start()].count("\n") + 1
+        line_start = content.rfind("\n", 0, m.start()) + 1
+        line_end = content.find("\n", m.start())
+        if line_end == -1:
+            line_end = len(content)
+        line_text = content[line_start:line_end].strip()
+        for claimed in re.findall(r"`(hub_[a-z_]+)`", m.group(2)):
+            members = gateway_members.get(claimed)
+            if members is None:
+                continue  # not a gateway (e.g. another tool named in prose)
+            if tool not in members:
+                bad.append((line_no, tool, claimed, line_text))
+    return bad
+
+
+def check_gateway_attributions() -> list[dict]:
+    """Verify doc attribution claims ("`tool` (in `gateway`)") against
+    getGatewayConfig() membership."""
+    findings: list[dict] = []
+    canonical = _extract_canonical_counts()
+    if canonical is None:
+        return findings  # check_tool_counts already reports the extractor failure
+    for doc_path in DOC_FILES_FOR_COUNTS:
+        if not doc_path.exists():
+            continue
+        rel = str(doc_path.relative_to(REPO_ROOT)).replace("\\", "/")
+        content = doc_path.read_text(encoding="utf-8", errors="replace")
+        for line_no, tool, claimed, line_text in _scan_gateway_attributions(
+            content, canonical["tool_names"], canonical["gateway_members"]
+        ):
+            actual = sorted(
+                g for g, members in canonical["gateway_members"].items()
+                if tool in members
+            )
+            findings.append(
+                {
+                    "file": rel,
+                    "line": line_no,
+                    "rule": "GATEWAY_ATTRIBUTION",
+                    "message": (
+                        f"Doc claims `{tool}` is in `{claimed}`, but "
+                        f"getGatewayConfig() puts it in: {actual or '(no gateway — flat tool)'}. "
+                        "Stale attribution — update the doc."
+                    ),
+                    "severity": "error",
+                    "source": line_text[:200],
+                }
+            )
+    return findings
+
+
+# Must-catch / must-not-catch fixtures: (description, content, members_override,
+# expected (tool, gateway) pairs). Routed through _scan_gateway_attributions with
+# a synthetic tool set + membership map.
+GATEWAY_ATTRIBUTION_SELF_TEST_CASES = [
+    (
+        "wrong single-gateway attribution fires",
+        "Use `hub_restore_backup` (in `hub_manage_code`) to roll back.",
+        [("hub_restore_backup", "hub_manage_code")],
+    ),
+    (
+        "correct single-gateway attribution is silent",
+        "Use `hub_restore_backup` (in `hub_manage_backup`) to roll back.",
+        [],
+    ),
+    (
+        "multi-gateway claim checks EVERY listed gateway",
+        "**`hub_list_backups`** (in `hub_read_apps_code` / `hub_manage_code`) enumerates.",
+        [("hub_list_backups", "hub_manage_code")],
+    ),
+    (
+        "via-phrasing fires too",
+        "`hub_restore_backup` (via `hub_manage_code` gateway) restores.",
+        [("hub_restore_backup", "hub_manage_code")],
+    ),
+    (
+        "claimed name that is a tool, not a gateway, is skipped",
+        "`hub_restore_backup` (via `hub_update_mcp_settings`) — nonsense prose, but not a gateway claim.",
+        [],
+    ),
+    (
+        "unknown subject tool is skipped",
+        "`hub_totally_fake` (in `hub_manage_code`) does not exist.",
+        [],
+    ),
+]
+
+_ATTRIBUTION_SELF_TEST_TOOLS = {
+    "hub_restore_backup", "hub_list_backups", "hub_update_mcp_settings",
+}
+_ATTRIBUTION_SELF_TEST_MEMBERS = {
+    "hub_manage_backup": {"hub_restore_backup", "hub_list_backups"},
+    "hub_manage_code": {"hub_create_app"},
+    "hub_read_apps_code": {"hub_list_backups"},
+}
+
+
+def _run_gateway_attribution_self_test() -> int:
+    failures = 0
+    for i, (desc, content, expected) in enumerate(
+        GATEWAY_ATTRIBUTION_SELF_TEST_CASES, start=1
+    ):
+        got = [
+            (tool, claimed)
+            for _, tool, claimed, _ in _scan_gateway_attributions(
+                content, _ATTRIBUTION_SELF_TEST_TOOLS, _ATTRIBUTION_SELF_TEST_MEMBERS
+            )
+        ]
+        if got != expected:
+            failures += 1
+            print(
+                f"ATTRIBUTION-SELF-TEST FAIL [{i}] {desc}\n"
+                f"  expected: {expected}\n"
+                f"  actual:   {got}\n"
+                f"  content: {content!r}"
+            )
+    return failures
 
 
 # ---------------------------------------------------------------------------
@@ -3409,6 +3562,9 @@ def run_self_test() -> int:
     count_failures = _run_count_self_test()
     failures += count_failures
 
+    # Gateway-attribution must-catch / must-not-catch fixtures.
+    failures += _run_gateway_attribution_self_test()
+
     # Tool-guide-anchor must-catch / must-not-catch fixtures (PIPELINE.md Rule 13:
     # the anchor-drift check inside check_tool_guide_pointers is a class-wide
     # mechanism; it ships with positive + negative fixtures so a future regression
@@ -3712,6 +3868,7 @@ def main() -> int:
 
     # Check tool-count consistency between Groovy source and docs
     all_findings.extend(check_tool_counts())
+    all_findings.extend(check_gateway_attributions())
 
     # Check tool-name references in doc tables match canonical tool names
     all_findings.extend(check_tool_name_consistency())
