@@ -1923,7 +1923,16 @@ def handleGateway(gatewayName, toolName, toolArgs) {
         toolArgs = parsed as Map
     }
 
-    // Option D: Pre-validate required parameters and return a helpful error.
+    // Option D: Pre-validate required parameters and throw a helpful error listing ALL
+    // of them at once (types/enums/descriptions) so a gateway-mode caller -- which sees
+    // only the {tool,args} envelope on tools/list, not each sub-tool's inputSchema --
+    // fixes everything in one retry instead of discovering params one-at-a-time. This is
+    // ADDITIVE: it surfaces schema the gateway defers to the catalog, never filters a
+    // response. It THROWS IllegalArgumentException (-> -32602) rather than returning an
+    // isError envelope, so a missing-param error has the SAME shape gateway and flat
+    // (issue #319: the flat handler validation also throws -> -32602). The pre-check
+    // fires only on an ABSENT key, so a present-but-invalid value (e.g. confirm:false)
+    // still reaches the handler's own richer runtime message in both modes.
     def safeArgs = toolArgs ?: [:]
     // Read this tool's required-param list from the memoized map. Computing the
     // memo key walks the catalog once per gateway call; the memo saves the per-tool
@@ -1970,12 +1979,12 @@ def handleGateway(gatewayName, toolName, toolArgs) {
                 hint
             }.join("\n")
             def paramWord = (missing.size() == 1) ? "parameter" : "parameters"
-            return [
-                isError: true,
-                error: "Missing required ${paramWord}: ${missing.join(', ')}",
-                tool: toolName,
-                parameters: paramList
-            ]
+            // Throw (-> -32602) rather than return an isError envelope, so gateway and
+            // flat give the SAME error shape for the same mistake (issue #319). The full
+            // all-params list rides in the message -- no content is lost vs the old
+            // structured `parameters` field.
+            throw new IllegalArgumentException(
+                "Missing required ${paramWord} for ${toolName}: ${missing.join(', ')}. All parameters:\n${paramList}")
         }
     }
 
