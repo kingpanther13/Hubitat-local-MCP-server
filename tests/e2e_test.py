@@ -2609,6 +2609,125 @@ class TestRunner:
         if dash_id in self.created_dashboard_ids:
             self.created_dashboard_ids.remove(dash_id)
 
+    @test("dashboards")
+    def test_dashboard_legacy_lifecycle(self) -> None:
+        """Legacy Hubitat(R) Dashboard CRUD (issue #326): create a legacy dashboard,
+        add a tile + set grid options granularly, rename it, then delete it. The built-in
+        Hubitat(R) Dashboard parent app is a documented e2e-hub precondition (same class
+        as the Easy Dashboard parent) -- a create that reports the parent missing FAILS
+        loudly so the gap gets provisioned, never skipped into silence."""
+        switch_id = self.get_test_switch_id()
+        assert switch_id, "could not get a test switch for the legacy dashboard"
+        dash_name = f"{PREFIX}LegacyDash"
+
+        # CREATE (type=legacy): starts with an empty layout; deviceIds is the authorized-device list.
+        cw = self._soft_write(
+            lambda: self.client.call_tool("hub_manage_dashboards", {
+                "tool": "hub_create_dashboard",
+                "args": {"name": dash_name, "type": "legacy", "deviceIds": [str(switch_id)]},
+            }),
+            lambda: self._find_dashboard_id_by_name(dash_name),
+            "create legacy dashboard",
+        )
+        if cw["relayDropped"]:
+            if not cw["committed"]:
+                raise SkipTest("create legacy dashboard lost to relay 504 and did not commit")
+            dash_id = str(cw["evidence"])
+        else:
+            resp = cw["response"]
+            assert isinstance(resp, dict), f"hub_create_dashboard(legacy) returned non-dict: {resp}"
+            # A missing legacy parent is NOT skippable: the built-in Hubitat(R) Dashboard app is a
+            # documented e2e-hub precondition (like the Easy Dashboard parent), so a create that
+            # reports it missing fails loudly with the remedy instead of skipping the whole group.
+            if resp.get("success") is False and "parent" in str(resp.get("error", "")).lower():
+                raise AssertionError(
+                    "legacy Hubitat(R) Dashboard parent app is not installed on the e2e hub -- "
+                    "install the built-in 'Hubitat(R) Dashboard' app there (documented precondition), "
+                    f"then re-run: {resp.get('error')}")
+            assert resp.get("success") is not False, f"hub_create_dashboard(legacy) failed: {resp.get('error')}"
+            dash_id = self._find_dashboard_id_by_name(dash_name)
+            if not dash_id and resp.get("id"):
+                dash_id = str(resp["id"])
+        if not dash_id:
+            # Created (no error) but the list could not surface it -- pinToken-gated /dashboard/all,
+            # a hub-provisioning gap, not a tool bug. Document and skip the rest.
+            raise SkipTest("legacy dashboard created but not listable (pinToken likely required for /dashboard/all)")
+        self.created_dashboard_ids.append(dash_id)
+
+        # READ back: a legacy dashboard carries type="legacy" and a nested layout {tiles:[...], ...}.
+        got = self.client.call_tool("hub_manage_dashboards", {
+            "tool": "hub_get_dashboard", "args": {"dashboardId": dash_id}})
+        assert isinstance(got, dict), f"hub_get_dashboard(legacy) returned non-dict: {got}"
+        assert got.get("type") == "legacy", f"expected a legacy dashboard, got: {got}"
+        layout = got.get("layout")
+        assert isinstance(layout, dict), f"legacy dashboard has no layout dict: {got}"
+        assert isinstance(layout.get("tiles"), list), f"legacy layout has no tiles list: {layout}"
+
+        # UPDATE (granular): add one clock tile and set grid options in a single save.
+        uw = self._soft_write(
+            lambda: self.client.call_tool("hub_manage_dashboards", {
+                "tool": "hub_update_dashboard",
+                "args": {"dashboardId": dash_id,
+                         "addTiles": [{"template": "clock", "col": 1, "row": 1}],
+                         "setOptions": {"bgColor": "#222222", "cols": 4}}}),
+            lambda: bool(((self.client.call_tool("hub_manage_dashboards", {
+                "tool": "hub_get_dashboard", "args": {"dashboardId": dash_id}}) or {}).get("layout") or {}).get("tiles")),
+            "update legacy dashboard (addTiles + setOptions)",
+        )
+        if uw["relayDropped"]:
+            assert uw["committed"], "clock tile not visible after a relay-504 granular update"
+        else:
+            resp = uw["response"]
+            assert isinstance(resp, dict) and resp.get("success"), \
+                f"hub_update_dashboard(legacy granular) failed: {resp}"
+            assert (resp.get("tileCount") or 0) >= 1, f"expected tileCount>=1 after addTiles: {resp}"
+        # Re-GET and confirm the clock tile and the bgColor option both took.
+        reread = self.client.call_tool("hub_manage_dashboards", {
+            "tool": "hub_get_dashboard", "args": {"dashboardId": dash_id}})
+        rlayout = reread.get("layout") if isinstance(reread, dict) else None
+        assert isinstance(rlayout, dict), f"legacy re-read has no layout: {reread}"
+        assert any((t or {}).get("template") == "clock" for t in (rlayout.get("tiles") or [])), \
+            f"clock tile not present after addTiles: {rlayout}"
+        assert rlayout.get("bgColor") == "#222222", f"bgColor option didn't take: {rlayout}"
+
+        # UPDATE (rename): a legacy dashboard's name is its app label.
+        dash_name2 = f"{PREFIX}LegacyDash2"
+        rw = self._soft_write(
+            lambda: self.client.call_tool("hub_manage_dashboards", {
+                "tool": "hub_update_dashboard",
+                "args": {"dashboardId": dash_id, "name": dash_name2}}),
+            lambda: (self.client.call_tool("hub_manage_dashboards", {
+                "tool": "hub_get_dashboard", "args": {"dashboardId": dash_id}}) or {}).get("name") == dash_name2,
+            "rename legacy dashboard",
+        )
+        if rw["relayDropped"]:
+            assert rw["committed"], "legacy dashboard name not updated after a relay-504 rename"
+        else:
+            resp = rw["response"]
+            assert isinstance(resp, dict) and resp.get("success"), f"hub_update_dashboard(legacy rename) failed: {resp}"
+            renamed = self.client.call_tool("hub_manage_dashboards", {
+                "tool": "hub_get_dashboard", "args": {"dashboardId": dash_id}})
+            assert isinstance(renamed, dict) and renamed.get("name") == dash_name2, \
+                f"legacy rename reported success but name didn't change: {renamed}"
+
+        # DELETE (confirm-gated; routes through the classic force-delete for legacy). Verify by id.
+        dw = self._soft_write(
+            lambda: self.client.call_tool("hub_manage_dashboards", {
+                "tool": "hub_delete_dashboard",
+                "args": {"dashboardId": dash_id, "confirm": True}}),
+            lambda: not self._dashboard_id_present(dash_id),
+            "delete legacy dashboard",
+        )
+        if dw["relayDropped"]:
+            assert dw["committed"], "legacy dashboard still present after a relay-504 delete (did not commit)"
+        else:
+            resp = dw["response"]
+            assert isinstance(resp, dict) and resp.get("success"), f"hub_delete_dashboard(legacy) failed: {resp}"
+            assert not self._dashboard_id_present(dash_id), \
+                f"hub_delete_dashboard reported success but legacy dashboard id {dash_id} is still on the hub"
+        if dash_id in self.created_dashboard_ids:
+            self.created_dashboard_ids.remove(dash_id)
+
     # -----------------------------------------------------------------------
     # GROUP 4: rule_crud (4 tests)
     # -----------------------------------------------------------------------
