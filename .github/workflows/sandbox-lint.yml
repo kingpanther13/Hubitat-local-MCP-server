@@ -22,6 +22,12 @@ jobs:
           python-version: '3.x'
       - name: Sandbox-lint scan
         run: python tests/sandbox_lint.py
+      # The lint's own must-catch/must-not-catch fixtures. Without this step a
+      # broken fixture (or a dead check the fixtures would expose) never turns
+      # CI red — found live on PR #336, where a fixture regression was invisible
+      # because nothing ran --self-test.
+      - name: Sandbox-lint self-tests
+        run: python tests/sandbox_lint.py --self-test
       # Bundle build smoke (issue #209): nothing under bundles/ is committed -- delivery is
       # the bundle-artifacts branch, fed by publish-bundle-artifact.yml on every push. This
       # step only proves the builder still RUNS against the PR's libraries/ (a broken LIBS

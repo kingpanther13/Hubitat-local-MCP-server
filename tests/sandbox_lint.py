@@ -570,7 +570,7 @@ def check_versions() -> list[dict]:
 # ---------------------------------------------------------------------------
 #
 # Tool counts are quoted across many docs (README, SKILL, TOOL_GUIDE,
-# agent-skill mirrors, BAT-v2). Without a check, every tool-adding PR has
+# the agent-skill SKILL.md, BAT-v2). Without a check, every tool-adding PR has
 # to manually update them in lockstep, and drift is silent until someone
 # notices. This check derives the canonical counts from the Groovy source
 # (getGatewayConfig + getAllToolDefinitions) and flags any current-state
@@ -585,7 +585,6 @@ DOC_FILES_FOR_COUNTS = [
     REPO_ROOT / "SKILL.md",
     REPO_ROOT / "TOOL_GUIDE.md",
     REPO_ROOT / "agent-skill" / "hubitat-mcp" / "SKILL.md",
-    REPO_ROOT / "agent-skill" / "hubitat-mcp" / "tool-reference.md",
     REPO_ROOT / "tests" / "BAT-v2.md",
     # tests/e2e_test.py hardcodes a tools/list count assertion + descriptive
     # message; the message string contains "(N core + M gateways)" forms
@@ -705,6 +704,7 @@ def _extract_canonical_counts() -> dict | None:
     gw_block = gw_match.group(1)
 
     per_gateway: dict[str, int] = {}
+    gateway_members: dict[str, set[str]] = {}
     proxied_names: set[str] = set()
     # Two-stage anchor:
     #   1. `^\s+([a-z_]+):\s*\[\s*description:` — gateway-key indented
@@ -741,6 +741,7 @@ def _extract_canonical_counts() -> dict | None:
             if t.strip()
         ]
         per_gateway[name] = len(tool_list)
+        gateway_members[name] = set(tool_list)
         proxied_names.update(tool_list)
 
     if not per_gateway:
@@ -820,6 +821,7 @@ def _extract_canonical_counts() -> dict | None:
         # total == core + proxied + dev_only_top_level (see the self-test invariant).
         "dev_only_top_level": len(dev_only_top_level),
         "per_gateway": per_gateway,
+        "gateway_members": gateway_members,  # {gateway: set(member tools)} for attribution checks
         # Name sets for tool-name consistency check (separate from counts):
         "tool_names": tool_names,           # all tool identifiers in getAllToolDefinitions()
         "gateway_names": set(per_gateway.keys()),  # gateway facade identifiers (manage_X)
@@ -957,32 +959,59 @@ COUNT_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\bgateways?\s+on\s+(?:`tools/list`|\|?\s*tools/list\s*\|)\s*\|?\s*(\d+)\b", re.IGNORECASE), "gateways"),
 ]
 
-# Per-gateway pattern: "manage_X (N)", "`manage_X` (N)", "<b>manage_X</b> (N)",
+# Per-gateway pattern: "hub_manage_X (N)", "`hub_read_X` (N)", "manage_X (N)",
 # "### manage_X (N tools)", "manage_X (N tools, 7 original + 3 library tools)".
+# The canonical `hub_` prefix is tolerated but excluded from the capture
+# (docs use the full `hub_manage_X` / `hub_read_X` names; `\b` can't anchor
+# inside "hub_manage", so the prefix must be matched explicitly) — captures
+# are re-prefixed via _normalize_gateway_name before the canonical lookup.
+# Covers BOTH gateway families: `manage_` and the pure-read `read_` gateways.
 # The 0-10 char window between the gateway name and the open paren
 # tolerates backticks and short HTML tags without matching across
 # unrelated text. The trailing class allows `)` (bare or `(N tools)`),
 # `,` (qualifier follows like "(N tools, 7 original + ...)"), or
 # whitespace + non-paren (e.g. "(N tools generic across...)").
 PER_GATEWAY_PATTERN = re.compile(
-    r"\b(manage_[a-z_]+)\b[^(\n]{0,10}\((\d+)(?:\s+tools?)?(?:[,)]|\s+(?:tools?|original|library|read|write))"
+    r"\b(?:hub_)?((?:manage|read)_[a-z_]+)\b[^(\n]{0,10}\((\d+)(?:\s+tools?)?(?:[,)]|\s+(?:tools?|original|library|read|write))"
 )
 
-# Per-gateway in markdown tables: "| `manage_X` | N |" — the count lives
+# Per-gateway in markdown tables: "| `hub_manage_X` | N |" — the count lives
 # in a separate column from the name, so the parenthesis-anchored pattern
 # above misses these.
 PER_GATEWAY_TABLE_PATTERN = re.compile(
-    r"\|\s*`?(manage_[a-z_]+)`?\s*\|\s*(\d+)\s*\|"
+    r"\|\s*`?(?:hub_)?((?:manage|read)_[a-z_]+)`?\s*\|\s*(\d+)\s*\|"
 )
 
-# "AI calls `manage_X` ... sees N tools" — gateway op-count claim where
+# "AI calls `hub_manage_X` ... sees N tools" — gateway op-count claim where
 # the gateway name and the count are separated by descriptive prose. The
 # 1-80 char window is loose enough to cover phrasings like "AI calls
 # `manage_native_rules_and_apps` with no args, sees 12 tools" without
 # crossing sentence boundaries (terminated by `.` or newline).
 PER_GATEWAY_SEES_PATTERN = re.compile(
-    r"`(manage_[a-z_]+)`[^.\n]{1,80}\bsees?\s+(?:catalog\s+of\s+)?(\d+)\s+tools?\b"
+    r"`(?:hub_)?((?:manage|read)_[a-z_]+)`[^.\n]{1,80}\bsees?\s+(?:catalog\s+of\s+)?(\d+)\s+tools?\b"
 )
+
+# Gateway-family subtotals: "Read gateways (8):" / "Manage gateways (15):"
+# (the TOOL_GUIDE.md gateway-inventory lines). Checked against the count of
+# hub_read_* / hub_manage_* keys in canonical per_gateway.
+GATEWAY_FAMILY_PATTERN = re.compile(
+    r"\b(read|manage)\s+gateways\s*\((\d+)\)", re.IGNORECASE
+)
+
+
+def _normalize_gateway_name(captured: str) -> str:
+    """Map a per-gateway pattern capture (bare `manage_X` / `read_X`) to the
+    canonical `hub_`-prefixed key used by per_gateway. Kept as a shared
+    helper so check_tool_counts and the self-test harness cannot diverge."""
+    return "hub_" + captured
+
+
+def _gateway_family_expected(canonical: dict, family: str) -> int:
+    """Canonical number of gateways in a family ('read' or 'manage'),
+    derived from the per_gateway keys."""
+    return sum(
+        1 for k in canonical["per_gateway"] if k.startswith(f"hub_{family}_")
+    )
 
 
 def check_tool_counts() -> list[dict]:
@@ -1053,6 +1082,39 @@ def check_tool_counts() -> list[dict]:
                     }
                 )
 
+        # Gateway-family subtotals: "Read gateways (8):" / "Manage gateways (15):".
+        family_seen: set[tuple[int, str, int]] = set()
+        for m in GATEWAY_FAMILY_PATTERN.finditer(content):
+            if _is_historical_at(content, m.start(), m.end()):
+                continue
+            family = m.group(1).lower()
+            actual = int(m.group(2))
+            expected = _gateway_family_expected(canonical, family)
+            if actual == expected:
+                continue
+            line_no = content[:m.start()].count("\n") + 1
+            dedup_key = (line_no, family, actual)
+            if dedup_key in family_seen:
+                continue
+            family_seen.add(dedup_key)
+            line_start = content.rfind("\n", 0, m.start()) + 1
+            line_end = content.find("\n", m.start())
+            if line_end == -1:
+                line_end = len(content)
+            findings.append(
+                {
+                    "file": rel,
+                    "line": line_no,
+                    "rule": "TOOL_COUNT",
+                    "message": (
+                        f"{family} gateway subtotal claims {actual}, "
+                        f"canonical is {expected}."
+                    ),
+                    "severity": "error",
+                    "source": content[line_start:line_end].strip()[:200],
+                }
+            )
+
         # Per-gateway op counts: parenthesized form, markdown table form,
         # and "AI ... sees N tools" gateway-context form.
         per_gw_seen: set[tuple[int, str, int]] = set()
@@ -1063,7 +1125,7 @@ def check_tool_counts() -> list[dict]:
         ):
             if _is_historical_at(content, m.start(), m.end()):
                 continue
-            gw_name = m.group(1)
+            gw_name = _normalize_gateway_name(m.group(1))
             actual = int(m.group(2))
             line_no_dedup = content[:m.start()].count("\n") + 1
             dedup_key = (line_no_dedup, gw_name, actual)
@@ -1136,7 +1198,6 @@ def check_tool_counts() -> list[dict]:
 DOC_FILES_FOR_TOOL_NAMES = [
     REPO_ROOT / "README.md",
     REPO_ROOT / "TOOL_GUIDE.md",
-    REPO_ROOT / "agent-skill" / "hubitat-mcp" / "tool-reference.md",
 ]
 
 # Markdown table row in the form `| `name` | description |` — the leading
@@ -1263,6 +1324,244 @@ def check_tool_name_consistency() -> list[dict]:
             )
 
     return findings
+
+
+# ---------------------------------------------------------------------------
+# Gateway-attribution consistency check
+# ---------------------------------------------------------------------------
+#
+# Catches a third drift class the count and name checks are blind to: a doc
+# claiming a tool lives in the WRONG gateway (both names real, membership
+# stale). Real instance: TOOL_GUIDE.md said "hub_restore_backup (in
+# `hub_manage_code`)" long after the tool moved to hub_manage_backup — counts
+# and names were all valid, so nothing fired. This scans the attribution
+# idiom "`hub_tool` (in `hub_gw`)" / "(via `hub_gw` / `hub_gw2`)" and checks
+# EVERY claimed gateway's membership in getGatewayConfig(). A claim whose
+# subject isn't a known tool is skipped; a claimed name that is a known TOOL
+# is skipped as prose (e.g. "(via `hub_update_mcp_settings`)"); a claimed name
+# that is NEITHER fires as unknown_gateway (a renamed-away gateway must fire,
+# not skip).
+GATEWAY_ATTRIBUTION_PATTERN = re.compile(
+    r"`(hub_[a-z_]+)`\**\s*\((?:in|via)\s+((?:`hub_[a-z_]+`(?:\s*[/,]\s*)?)+)"
+)
+
+
+def _scan_gateway_attributions(
+    content: str, tool_names: set, gateway_members: dict
+) -> list[tuple[int, str, str, str, str]]:
+    """Return (line_no, tool, claimed_gateway, kind, line_text) for every bad
+    attribution. kind='wrong_gateway' when the claimed gateway exists but does
+    not contain the tool; kind='unknown_gateway' when the claimed name is
+    neither a gateway nor a tool (a renamed-away gateway must fire, not skip —
+    only a claimed name that is a KNOWN tool is legitimate prose to skip)."""
+    bad: list[tuple[int, str, str, str, str]] = []
+    for m in GATEWAY_ATTRIBUTION_PATTERN.finditer(content):
+        if _is_historical_at(content, m.start(), m.end()):
+            continue
+        tool = m.group(1)
+        if tool not in tool_names:
+            continue
+        line_no = content[:m.start()].count("\n") + 1
+        line_start = content.rfind("\n", 0, m.start()) + 1
+        line_end = content.find("\n", m.start())
+        if line_end == -1:
+            line_end = len(content)
+        line_text = content[line_start:line_end].strip()
+        for claimed in re.findall(r"`(hub_[a-z_]+)`", m.group(2)):
+            members = gateway_members.get(claimed)
+            if members is None:
+                if claimed in tool_names:
+                    continue  # prose naming another tool, not a gateway claim
+                bad.append((line_no, tool, claimed, "unknown_gateway", line_text))
+            elif tool not in members:
+                bad.append((line_no, tool, claimed, "wrong_gateway", line_text))
+    return bad
+
+
+def check_gateway_attributions(docs_override: list | None = None,
+                               canonical_override: dict | None = None) -> list[dict]:
+    """Verify doc attribution claims ("`tool` (in `gateway`)") against
+    getGatewayConfig() membership.
+
+    docs_override ([(rel_name, content), ...]) and canonical_override
+    ({"tool_names", "gateway_members"}) let the self-test route must-catch
+    fixtures through THIS function — the doc loop and the finding-dict
+    construction, not just the scan helper."""
+    findings: list[dict] = []
+    canonical = canonical_override or _extract_canonical_counts()
+    if canonical is None:
+        return findings  # check_tool_counts already reports the extractor failure
+    if docs_override is not None:
+        docs = docs_override
+    else:
+        docs = [
+            (str(p.relative_to(REPO_ROOT)).replace("\\", "/"),
+             p.read_text(encoding="utf-8", errors="replace"))
+            for p in DOC_FILES_FOR_COUNTS if p.exists()
+        ]
+    for rel, content in docs:
+        for line_no, tool, claimed, kind, line_text in _scan_gateway_attributions(
+            content, canonical["tool_names"], canonical["gateway_members"]
+        ):
+            actual = sorted(
+                g for g, members in canonical["gateway_members"].items()
+                if tool in members
+            )
+            if kind == "unknown_gateway":
+                message = (
+                    f"Doc claims `{tool}` is in `{claimed}`, which is neither "
+                    f"a gateway nor a tool — likely a renamed/removed gateway. "
+                    f"getGatewayConfig() puts `{tool}` in: "
+                    f"{actual or '(no gateway — flat tool)'}."
+                )
+            else:
+                message = (
+                    f"Doc claims `{tool}` is in `{claimed}`, but "
+                    f"getGatewayConfig() puts it in: {actual or '(no gateway — flat tool)'}. "
+                    "Stale attribution — update the doc."
+                )
+            findings.append(
+                {
+                    "file": rel,
+                    "line": line_no,
+                    "rule": "GATEWAY_ATTRIBUTION",
+                    "message": message,
+                    "severity": "error",
+                    "source": line_text[:200],
+                }
+            )
+    return findings
+
+
+# Must-catch / must-not-catch fixtures: (description, content, members_override,
+# expected (tool, gateway) pairs). Routed through _scan_gateway_attributions with
+# a synthetic tool set + membership map.
+GATEWAY_ATTRIBUTION_SELF_TEST_CASES = [
+    (
+        "wrong single-gateway attribution fires",
+        "Use `hub_restore_backup` (in `hub_manage_code`) to roll back.",
+        [("hub_restore_backup", "hub_manage_code", "wrong_gateway")],
+    ),
+    (
+        "correct single-gateway attribution is silent",
+        "Use `hub_restore_backup` (in `hub_manage_backup`) to roll back.",
+        [],
+    ),
+    (
+        "multi-gateway claim checks EVERY listed gateway",
+        "**`hub_list_backups`** (in `hub_read_apps_code` / `hub_manage_code`) enumerates.",
+        [("hub_list_backups", "hub_manage_code", "wrong_gateway")],
+    ),
+    (
+        "comma-separated multi-gateway claim checks EVERY listed gateway",
+        "`hub_list_backups` (in `hub_read_apps_code`, `hub_manage_code`) enumerates.",
+        [("hub_list_backups", "hub_manage_code", "wrong_gateway")],
+    ),
+    (
+        "via-phrasing fires too",
+        "`hub_restore_backup` (via `hub_manage_code` gateway) restores.",
+        [("hub_restore_backup", "hub_manage_code", "wrong_gateway")],
+    ),
+    (
+        "claimed name that is a tool, not a gateway, is skipped",
+        "`hub_restore_backup` (via `hub_update_mcp_settings`) — nonsense prose, but not a gateway claim.",
+        [],
+    ),
+    (
+        "renamed-away gateway (neither gateway nor tool) fires as unknown",
+        "Use `hub_restore_backup` (in `hub_manage_apps_code`) to roll back.",
+        [("hub_restore_backup", "hub_manage_apps_code", "unknown_gateway")],
+    ),
+    (
+        "unknown subject tool is skipped",
+        "`hub_totally_fake` (in `hub_manage_code`) does not exist.",
+        [],
+    ),
+]
+
+_ATTRIBUTION_SELF_TEST_TOOLS = {
+    "hub_restore_backup", "hub_list_backups", "hub_update_mcp_settings",
+}
+_ATTRIBUTION_SELF_TEST_MEMBERS = {
+    "hub_manage_backup": {"hub_restore_backup", "hub_list_backups"},
+    "hub_manage_code": {"hub_create_app"},
+    "hub_read_apps_code": {"hub_list_backups"},
+}
+
+
+def _run_gateway_attribution_self_test() -> int:
+    failures = 0
+    for i, (desc, content, expected) in enumerate(
+        GATEWAY_ATTRIBUTION_SELF_TEST_CASES, start=1
+    ):
+        got = [
+            (tool, claimed, kind)
+            for _, tool, claimed, kind, _ in _scan_gateway_attributions(
+                content, _ATTRIBUTION_SELF_TEST_TOOLS, _ATTRIBUTION_SELF_TEST_MEMBERS
+            )
+        ]
+        if got != expected:
+            failures += 1
+            print(
+                f"ATTRIBUTION-SELF-TEST FAIL [{i}] {desc}\n"
+                f"  expected: {expected}\n"
+                f"  actual:   {got}\n"
+                f"  content: {content!r}"
+            )
+
+    # Route one must-catch through the REAL check function (doc loop +
+    # finding-dict construction) and render it with format_finding, so a
+    # malformed finding dict fails HERE instead of KeyError-ing in CI the
+    # first time a real stale attribution appears.
+    prod_findings = check_gateway_attributions(
+        docs_override=[
+            ("selftest.md",
+             "Use `hub_restore_backup` (in `hub_manage_code`) to roll back.")
+        ],
+        canonical_override={
+            "tool_names": _ATTRIBUTION_SELF_TEST_TOOLS,
+            "gateway_members": _ATTRIBUTION_SELF_TEST_MEMBERS,
+        },
+    )
+    prod_ok = (
+        len(prod_findings) == 1
+        and prod_findings[0]["rule"] == "GATEWAY_ATTRIBUTION"
+        and prod_findings[0]["file"] == "selftest.md"
+    )
+    if prod_ok:
+        try:
+            format_finding(prod_findings[0])
+        except Exception as exc:  # any render failure IS the self-test finding
+            prod_ok = False
+            print(f"ATTRIBUTION-SELF-TEST FAIL [production-path render]: {exc!r}")
+    if not prod_ok:
+        failures += 1
+        print(
+            "ATTRIBUTION-SELF-TEST FAIL [production-path must-catch]\n"
+            f"  findings: {prod_findings!r}"
+        )
+
+    # Extractor tripwire: the synthetic fixtures above never touch
+    # _extract_canonical_counts(), so a regression in the gateway_members
+    # extraction would leave them green while check_gateway_attributions
+    # silently under-checks the real docs. Pin membership to the count
+    # extraction (which has its own guards): same gateway keys, and each
+    # member-set's size equals the counted per-gateway length.
+    canonical = _extract_canonical_counts()
+    if canonical is not None:
+        members = canonical["gateway_members"]
+        per_gateway = canonical["per_gateway"]
+        if set(members) != set(per_gateway) or any(
+            len(members[g]) != per_gateway[g] for g in members
+        ):
+            failures += 1
+            print(
+                "ATTRIBUTION-SELF-TEST FAIL [gateway-members extractor]\n"
+                "  gateway_members diverged from per_gateway "
+                f"(keys {sorted(set(members) ^ set(per_gateway))} or set-size vs count mismatch) — "
+                "the attribution check is under-checking real docs."
+            )
+    return failures
 
 
 # ---------------------------------------------------------------------------
@@ -2785,30 +3084,90 @@ COUNT_SELF_TEST_CASES = [
     ),
 
     # === Per-gateway extraction patterns ===
+    # Canonical per_gateway keys are hub_-prefixed (hub_manage_X / hub_read_X);
+    # captures normalize through _normalize_gateway_name, so bare-name prose
+    # ("manage_logs (8 tools)") and full-name docs ("`hub_manage_logs` (8)")
+    # both resolve to the same canonical key.
     (
-        "Per-gateway: `manage_X (N tools)` parenthesized",
+        "Per-gateway: bare `manage_X (N tools)` parenthesized (legacy prose form)",
         "The `manage_logs` (8 tools) gateway covers system-log access.",
-        {"per_gateway": {"manage_logs": 9}}, ["per_gateway:manage_logs"],
+        {"per_gateway": {"hub_manage_logs": 9}}, ["per_gateway:hub_manage_logs"],
+    ),
+    (
+        "Per-gateway: hub_-prefixed inventory-line form `\\`hub_manage_X\\` (N),` "
+        "(the TOOL_GUIDE.md gateway-inventory shape — regression guard: the "
+        "pre-hub_-prefix pattern matched ZERO of these, leaving the real docs "
+        "unguarded). Deliberately NO 'Manage gateways (N):' lead-in — that text "
+        "belongs to GATEWAY_FAMILY_PATTERN's fixtures; one pattern class per fixture.",
+        "Inventory: `hub_manage_logs` (8), `hub_manage_selftest_zz` (4)",
+        {"per_gateway": {"hub_manage_logs": 9, "hub_manage_selftest_zz": 4}},
+        ["per_gateway:hub_manage_logs"],
+    ),
+    (
+        "Per-gateway: hub_read_* gateway (read_ family was previously not "
+        "covered by any pattern)",
+        "`hub_read_selftest_zz` (5) is the pure-read gateway.",
+        {"per_gateway": {"hub_read_selftest_zz": 6}}, ["per_gateway:hub_read_selftest_zz"],
     ),
     (
         "Per-gateway: `manage_X (N tools, qualifier)` allows trailing qualifier",
         "manage_app_driver_code (10 tools, 7 original + 3 library tools)",
-        {"per_gateway": {"manage_app_driver_code": 11}}, ["per_gateway:manage_app_driver_code"],
+        {"per_gateway": {"hub_manage_app_driver_code": 11}}, ["per_gateway:hub_manage_app_driver_code"],
     ),
     (
         "Per-gateway: markdown-table form",
-        "| `manage_logs` | 8 |",
-        {"per_gateway": {"manage_logs": 9}}, ["per_gateway:manage_logs"],
+        "| `hub_manage_logs` | 8 |",
+        {"per_gateway": {"hub_manage_logs": 9}}, ["per_gateway:hub_manage_logs"],
+    ),
+    (
+        "Per-gateway: markdown-table form, read_ family",
+        "| `hub_read_selftest_zz` | 5 |",
+        {"per_gateway": {"hub_read_selftest_zz": 6}}, ["per_gateway:hub_read_selftest_zz"],
     ),
     (
         "Per-gateway: `sees N tools` after backticked gateway name",
         "AI calls `manage_native_rules_and_apps` with no args, sees 12 tools.",
-        {"per_gateway": {"manage_native_rules_and_apps": 13}}, ["per_gateway:manage_native_rules_and_apps"],
+        {"per_gateway": {"hub_manage_native_rules_and_apps": 13}}, ["per_gateway:hub_manage_native_rules_and_apps"],
+    ),
+    (
+        "Per-gateway: `sees N tools` with hub_-prefixed name (the real BAT-v2 shape)",
+        "AI calls `hub_read_apps_code` with no args, sees catalog of 9 tools.",
+        {"per_gateway": {"hub_read_apps_code": 11}}, ["per_gateway:hub_read_apps_code"],
+    ),
+    (
+        "Per-gateway: unknown gateway name (renamed/removed) fires",
+        "The `hub_manage_ghost_zz` (3 tools) gateway covers nothing.",
+        {}, ["per_gateway:hub_manage_ghost_zz"],
+    ),
+    (
+        "Per-gateway: historical section skips a per-gateway count",
+        "## Version History\n\n### v0.9.0 (2026-01-01)\n\n`hub_manage_logs` (8 tools) at that release.\n",
+        {"per_gateway": {"hub_manage_logs": 9}}, [],
+    ),
+    (
+        "Family subtotal: historical section skips it",
+        "## Version History\n\n### v0.9.0 (2026-01-01)\n\nManage gateways (12) back then.\n",
+        {}, [],
     ),
     (
         "Per-gateway: `sees catalog of N tools` phrasing (catalog-of variant)",
         "AI calls `manage_installed_apps` with no args, sees catalog of 4 tools.",
-        {"per_gateway": {"manage_installed_apps": 5}}, ["per_gateway:manage_installed_apps"],
+        {"per_gateway": {"hub_manage_installed_apps": 5}}, ["per_gateway:hub_manage_installed_apps"],
+    ),
+
+    # === Gateway-family subtotals ("Read gateways (N):" / "Manage gateways (N):") ===
+    # Expected values derive live from per_gateway keys, so drift fixtures use
+    # counts no real catalog will reach; the no-fire case is proven by the real
+    # lint run over the real docs.
+    (
+        "Family subtotal: wrong `Read gateways (N)` fires",
+        "**Read gateways (999):** `hub_read_selftest_zz` (2)",
+        {"per_gateway": {"hub_read_selftest_zz": 2}}, ["gateway_family:read"],
+    ),
+    (
+        "Family subtotal: wrong `Manage gateways (N)` fires",
+        "**Manage gateways (999):** `hub_manage_selftest_zz` (4)",
+        {"per_gateway": {"hub_manage_selftest_zz": 4}}, ["gateway_family:manage"],
     ),
 
     # === Required #2 — asymmetric window: trailing `was N` must not suppress live count ===
@@ -3015,6 +3374,21 @@ def _check_doc_against_canonical(content: str, canonical_override: dict) -> set[
             seen.add(dedup)
             kinds.add(kind)
 
+    # Gateway-family subtotal scan
+    family_seen: set[tuple[int, str, int]] = set()
+    for m in GATEWAY_FAMILY_PATTERN.finditer(content):
+        if _is_historical_at(content, m.start(), m.end()):
+            continue
+        family = m.group(1).lower()
+        actual = int(m.group(2))
+        line_no = content[:m.start()].count("\n") + 1
+        dedup = (line_no, family, actual)
+        if dedup in family_seen:
+            continue
+        family_seen.add(dedup)
+        if actual != _gateway_family_expected(canonical, family):
+            kinds.add(f"gateway_family:{family}")
+
     # Per-gateway scans
     per_gw_seen: set[tuple[int, str, int]] = set()
     for m in (
@@ -3024,7 +3398,7 @@ def _check_doc_against_canonical(content: str, canonical_override: dict) -> set[
     ):
         if _is_historical_at(content, m.start(), m.end()):
             continue
-        gw_name = m.group(1)
+        gw_name = _normalize_gateway_name(m.group(1))
         actual = int(m.group(2))
         line_no = content[:m.start()].count("\n") + 1
         dedup = (line_no, gw_name, actual)
@@ -3302,6 +3676,9 @@ def run_self_test() -> int:
     count_failures = _run_count_self_test()
     failures += count_failures
 
+    # Gateway-attribution must-catch / must-not-catch fixtures.
+    failures += _run_gateway_attribution_self_test()
+
     # Tool-guide-anchor must-catch / must-not-catch fixtures (PIPELINE.md Rule 13:
     # the anchor-drift check inside check_tool_guide_pointers is a class-wide
     # mechanism; it ships with positive + negative fixtures so a future regression
@@ -3334,6 +3711,7 @@ def run_self_test() -> int:
     total_cases = (
         len(SELF_TEST_CASES)
         + len(COUNT_SELF_TEST_CASES)
+        + len(GATEWAY_ATTRIBUTION_SELF_TEST_CASES)
         + len(TOOL_GUIDE_ANCHOR_SELF_TEST_CASES)
         + len(DISCRETE_EVENT_CAPS_SELF_TEST_CASES)
         + len(ENVELOPE_PARITY_SELF_TEST_CASES)
@@ -3342,6 +3720,7 @@ def run_self_test() -> int:
     print(
         f"Self-test: {total_cases} case(s) passed "
         f"({len(SELF_TEST_CASES)} sandbox, {len(COUNT_SELF_TEST_CASES)} count, "
+        f"{len(GATEWAY_ATTRIBUTION_SELF_TEST_CASES)} gateway-attribution, "
         f"{len(TOOL_GUIDE_ANCHOR_SELF_TEST_CASES)} tool-guide-anchor, "
         f"{len(DISCRETE_EVENT_CAPS_SELF_TEST_CASES)} discrete-event-caps, "
         f"{len(ENVELOPE_PARITY_SELF_TEST_CASES)} envelope-parity, "
@@ -3605,6 +3984,7 @@ def main() -> int:
 
     # Check tool-count consistency between Groovy source and docs
     all_findings.extend(check_tool_counts())
+    all_findings.extend(check_gateway_attributions())
 
     # Check tool-name references in doc tables match canonical tool names
     all_findings.extend(check_tool_name_consistency())
