@@ -27,6 +27,14 @@ Each test is a JSON scenario with optional `setup_prompt`, required `test_prompt
 }
 ```
 
+### Prompt style — goal-first
+
+BAT tests are run by an orchestrating/grading agent: it reads the entry, sets it up, feeds the `test_prompt` to a **sub-agent under test**, then grades whether that sub-agent found and used the right tool. The whole point is *discovery*, so:
+
+- The `test_prompt` states the scenario + goal in plain language and does **not** name any MCP tool, gateway, or call arg. Tool names belong in the test title, **Expected**, and failure-mode text — the grading scaffolding — never in the prompt fed to the sub-agent.
+- `setup_prompt` / `teardown_prompt` are orchestrator infrastructure, not under test — they MAY name tools directly for reliability.
+- Per-test edge case: a test whose *subject is* the MCP surface itself — wrong-gateway routing, a tool name that is off `tools/list`, deliberately mutually-exclusive or malformed call shapes under regression — may still name that surface in its `test_prompt`, because the scenario cannot be expressed without it.
+
 ### Pass/Fail Criteria
 
 - **Pass**: AI completes the task, calls the expected tools, returns correct information
@@ -196,7 +204,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 ```json
 {
   "setup_prompt": "Create a virtual switch called 'BAT Poll OR Test'. Leave it in whatever state it defaults to (off).",
-  "test_prompt": "Poll the switch attribute of 'BAT Poll OR Test' waiting for it to be in EITHER the 'on' or 'off' state. Use expectedValues=['on','off'] and a 2-second timeout. Report whether the poll succeeded.",
+  "test_prompt": "Poll the switch attribute of 'BAT Poll OR Test' waiting for it to be in EITHER the 'on' or 'off' state, with a 2-second timeout. Report whether the poll succeeded.",
   "teardown_prompt": "Delete the virtual device 'BAT Poll OR Test'."
 }
 ```
@@ -232,7 +240,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 ```json
 {
   "setup_prompt": "Create a virtual switch called 'BAT NE Test' and turn it on.",
-  "test_prompt": "Poll the switch attribute of 'BAT NE Test' waiting for it to be NOT 'off' (use comparator ne, expectedValue 'off', a 3-second timeout). Report whether it succeeded and the final value.",
+  "test_prompt": "Poll the switch attribute of 'BAT NE Test' waiting for it to read anything OTHER than 'off', with a 3-second timeout. Report whether it succeeded and the final value.",
   "teardown_prompt": "Delete the virtual device 'BAT NE Test'."
 }
 ```
@@ -244,7 +252,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 ```json
 {
   "setup_prompt": "Create two virtual switches 'BAT Multi A' and 'BAT Multi B' and turn both on.",
-  "test_prompt": "Wait until BOTH 'BAT Multi A' and 'BAT Multi B' have switch 'on' in a single call (poll both device IDs together, mode all, 5-second timeout). Then turn 'BAT Multi B' off and wait until EITHER one is 'on' (mode any). Report convergedCount for each.",
+  "test_prompt": "In a single call, wait until BOTH 'BAT Multi A' and 'BAT Multi B' have switch 'on', with a 5-second timeout. Then turn 'BAT Multi B' off and wait until EITHER one of the two is 'on'. Report how many devices converged for each wait.",
   "teardown_prompt": "Delete the virtual devices 'BAT Multi A' and 'BAT Multi B'."
 }
 ```
@@ -256,7 +264,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 ```json
 {
   "setup_prompt": "Create a virtual switch called 'BAT Debounce Test' and turn it off.",
-  "test_prompt": "Turn on 'BAT Debounce Test', and wait for the switch attribute to read 'on' and stay 'on' continuously for at least 500 milliseconds before confirming (use waitFor with stableForMs=500 and a 5-second timeout). Report whether it converged.",
+  "test_prompt": "Turn on 'BAT Debounce Test', and wait for the switch attribute to read 'on' and stay 'on' continuously for at least 500 milliseconds before confirming, allowing up to 5 seconds overall. Report whether it converged.",
   "teardown_prompt": "Delete the virtual device 'BAT Debounce Test'."
 }
 ```
@@ -477,7 +485,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 ```json
 {
-  "test_prompt": "Show me the tool guide section about device authorization rules."
+  "test_prompt": "Pull up the server's reference documentation section that covers its device authorization rules."
 }
 ```
 
@@ -550,7 +558,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 ```json
 {
   "setup_prompt": "Use hub_read_apps_code(tool='hub_list_drivers') to find any installed custom driver. If none are installed, skip this test and say 'no custom drivers available'.",
-  "test_prompt": "Create a virtual device using the first available custom driver (use its namespace and name), label it 'BAT Custom Driver Success Test' (include confirm=true). Then delete it.",
+  "test_prompt": "Create a virtual device using the first available custom driver (use its namespace and name), label it 'BAT Custom Driver Success Test', and confirm the creation. Then delete it.",
   "teardown_prompt": "Delete the virtual device 'BAT Custom Driver Success Test' if it still exists."
 }
 ```
@@ -891,7 +899,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 ```json
 {
-  "test_prompt": "Pull the last hour of hub logs and show me only entries where the message mentions 'error' or 'failed' -- case-insensitive. Use the pattern filter, not just the level filter."
+  "test_prompt": "Pull the last hour of hub logs and show me only entries where the message text mentions 'error' or 'failed' -- case-insensitive, matching on the message text itself, not just filtering by log level."
 }
 ```
 
@@ -1506,7 +1514,7 @@ Per Finding #4 (shipped in commit `95654ad`), `success` and `partial` are orthog
 ```json
 {
   "setup_prompt": "Create a virtual switch called 'BAT Partial Test Switch'. Note its device ID.",
-  "test_prompt": "Using hub_set_rule with addAction, add a 'Switch: on' action targeting 'BAT Partial Test Switch' to a new RM rule called 'BAT Finding4 Rule'. The addAction response may return partial=true -- interpret this response correctly and report whether the action was successfully added to the rule.",
+  "test_prompt": "Create a new RM rule called 'BAT Finding4 Rule' and add a 'Switch: on' action targeting 'BAT Partial Test Switch' to it. The response may flag a partial result -- interpret it correctly and report whether the action was successfully added to the rule.",
   "teardown_prompt": "Delete the rule 'BAT Finding4 Rule'. Delete the virtual switch 'BAT Partial Test Switch'."
 }
 ```
@@ -2585,7 +2593,7 @@ These operations are too destructive for automated testing. Test manually with e
 
 All 117 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
-Sections 1-9 use explicit or semi-explicit tool references. Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
+Sections 1-9 each target a specific tool — named in the test's title and **Expected** criteria while the `test_prompt` stays goal-first (see Prompt style above). Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
 **Total: 262 test scenarios** (124 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 3 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 5 read-side convergence + 1 multi-device convergence + 3 MCP device-access scope) plus 13 excluded destructive operations documented for manual testing
 
@@ -2770,7 +2778,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 ```json
 {
   "setup_prompt": "Use hub_list_apps (scope=instances) to find the Hubitat Package Manager app ID.",
-  "test_prompt": "Use hub_get_app_config to list ALL packages installed via Hubitat Package Manager."
+  "test_prompt": "Read HPM's configuration pages to list ALL packages installed via Hubitat Package Manager."
 }
 ```
 
@@ -2813,7 +2821,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 ```json
 {
   "setup_prompt": "the Read master is enabled. Use hub_list_apps (scope=instances) to find the Hubitat Package Manager app and note its app ID.",
-  "test_prompt": "I want to inspect HPM's configuration but I don't know the page names. Use hub_list_app_pages to discover what pages are available for the HPM app you just found."
+  "test_prompt": "I want to inspect HPM's configuration but I don't know the page names. Discover what configuration pages are available for the HPM app you just found."
 }
 ```
 
@@ -2882,7 +2890,7 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 ```json
 {
   "setup_prompt": "Developer Mode is enabled, the Write master is enabled, recent backup exists. Note the current value of debugLogging via hub_get_info or by reading state.",
-  "test_prompt": "Use hub_update_mcp_settings to set debugLogging to true. Then verify the change took effect."
+  "test_prompt": "Flip the MCP server app's own debugLogging setting to true. Then verify the change took effect."
 }
 ```
 
@@ -2893,7 +2901,7 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 ```json
 {
   "setup_prompt": "Developer Mode is enabled and the Write master is enabled.",
-  "test_prompt": "Use hub_update_mcp_settings to set enableHubAdminWrite to false."
+  "test_prompt": "Turn off the MCP server app's own enableHubAdminWrite setting."
 }
 ```
 
@@ -2904,7 +2912,7 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 ```json
 {
   "setup_prompt": "Developer Mode is enabled and the Write master is enabled.",
-  "test_prompt": "Use hub_update_mcp_settings to set both enableHubAdminRead=true and enableBuiltinApp=true in a single call."
+  "test_prompt": "Turn on both the enableHubAdminRead and enableBuiltinApp settings on the MCP server app, in one single change."
 }
 ```
 
@@ -2915,7 +2923,7 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 ```json
 {
   "setup_prompt": "Developer Mode is enabled.",
-  "test_prompt": "Use hub_update_mcp_settings to flip enableCustomRuleEngine to false, then back to true."
+  "test_prompt": "Flip the MCP server app's enableCustomRuleEngine setting to false, then back to true."
 }
 ```
 
@@ -2926,7 +2934,7 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 ```json
 {
   "setup_prompt": "Developer Mode is enabled, the Write master is enabled, recent backup exists. Note whether the server is currently in gateway mode or flat mode (useGateways).",
-  "test_prompt": "Use hub_update_mcp_settings to flip useGateways to the OPPOSITE of its current value. Report the response message, then explain what the user must do for the new tool surface to take effect.",
+  "test_prompt": "Flip the MCP server app's useGateways setting to the OPPOSITE of its current value. Report the response message, then explain what the user must do for the new tool surface to take effect.",
   "teardown_prompt": "Use hub_update_mcp_settings to set useGateways back to its original value, then reconnect (/mcp refresh) so the tool list matches the server again."
 }
 ```
@@ -2938,7 +2946,7 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 ```json
 {
   "setup_prompt": "Developer Mode is enabled, the Write master is enabled, recent backup exists, and the server is in gateway mode (useGateways ON). publishOutputSchemas is OFF (its default).",
-  "test_prompt": "Use hub_update_mcp_settings to set publishOutputSchemas to true. Report the response message, then explain what changes about the advertised tool list and why a strict client like Claude Desktop could be affected.",
+  "test_prompt": "Turn on the MCP server app's publishOutputSchemas setting. Report the response message, then explain what changes about the advertised tool list and why a strict client like Claude Desktop could be affected.",
   "teardown_prompt": "Use hub_update_mcp_settings to set publishOutputSchemas back to false, then reconnect (/mcp refresh) so the advertised tool schema matches the server again."
 }
 ```
@@ -2950,7 +2958,7 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 ```json
 {
   "setup_prompt": "the Write master is enabled, recent backup exists. Use hub_set_variable to create a temporary variable named BAT_E2E_DELETE_TEST with value 'scratch'.",
-  "test_prompt": "We don't need BAT_E2E_DELETE_TEST any more. Use hub_delete_variable to remove it, then confirm via hub_get_variable that it's gone."
+  "test_prompt": "We don't need BAT_E2E_DELETE_TEST any more. Delete that hub variable, then read it back to confirm it's gone."
 }
 ```
 
@@ -2961,7 +2969,7 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 ```json
 {
   "setup_prompt": "the Write master is enabled. Manually create a Hub Variable named TEST_CONNECTOR_VAR via Settings → Hub Variables UI (this lives in the connector namespace, not rule_engine).",
-  "test_prompt": "Use hub_delete_variable to remove TEST_CONNECTOR_VAR."
+  "test_prompt": "Delete the hub variable TEST_CONNECTOR_VAR."
 }
 ```
 
@@ -2972,7 +2980,7 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 ```json
 {
   "setup_prompt": "the Write master is enabled, recent backup exists. Use hub_set_variable to create BAT_E2E_NO_CONFIRM with value 'safe'.",
-  "test_prompt": "Use hub_delete_variable to remove BAT_E2E_NO_CONFIRM. Don't pass confirm — let's see what happens."
+  "test_prompt": "Delete the hub variable BAT_E2E_NO_CONFIRM, but do NOT confirm the destructive action — let's see what happens."
 }
 ```
 
@@ -2983,7 +2991,7 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 ```json
 {
   "setup_prompt": "Developer Mode is enabled, the Write master is enabled, recent backup exists. List every hub device with hub_list_devices(scope='all') and pick one device that is currently mcpAuthorized=false (NOT already in the MCP scope). Note the full set of currently-authorized device IDs.",
-  "test_prompt": "Add that unauthorized device to the MCP server's device-access scope with hub_update_mcp_settings({settings:{selectedDevices:{mode:'add', ids:['<id>']}}}), confirm it now reads back as authorized via hub_list_devices(scope='all'), then remove it again (mode:'remove') so the scope returns to exactly what it was.",
+  "test_prompt": "Add that unauthorized device to the MCP server's device-access scope, confirm it now reads back as authorized in the all-devices listing, then remove it from the scope again so the scope returns to exactly what it was.",
   "teardown_prompt": "Verify via hub_list_devices(scope='all') that the authorized set matches the original noted set (the add+remove was a net no-op)."
 }
 ```
@@ -2995,7 +3003,7 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 ```json
 {
   "setup_prompt": "Developer Mode is enabled, the Write master is enabled, recent backup exists.",
-  "test_prompt": "Try to add device id 999999999 (which does not exist on this hub) to the MCP device-access scope via hub_update_mcp_settings({settings:{selectedDevices:{mode:'add', ids:['999999999']}}})."
+  "test_prompt": "Try to add device id 999999999 (which does not exist on this hub) to the MCP device-access scope."
 }
 ```
 
@@ -3006,7 +3014,7 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 ```json
 {
   "setup_prompt": "Developer Mode is enabled, the Write master is enabled, recent backup exists. Note the currently-authorized device IDs.",
-  "test_prompt": "Use hub_update_mcp_settings({settings:{selectedDevices:{mode:'replace', ids:[]}}}) with an empty id list (do NOT pass allowEmpty). This should be refused."
+  "test_prompt": "Replace the MCP server's device-access scope with an EMPTY device list, without passing any special override flag for emptying it. This should be refused."
 }
 ```
 
@@ -3017,7 +3025,7 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 ```json
 {
   "setup_prompt": "Developer Mode is enabled, the Write master is enabled, recent backup exists, and bypassDeviceAllowlist is OFF (the default). List every hub device with hub_list_devices(scope='all') and pick one that is currently mcpAuthorized=false (NOT in the MCP scope). Confirm hub_get_device on that id returns 'Device not found'.",
-  "test_prompt": "Turn on the device-allowlist bypass with hub_update_mcp_settings({settings:{bypassDeviceAllowlist:true}}), then read that same unauthorized device with hub_get_device(deviceId='<id>') and report whether it is now reachable.",
+  "test_prompt": "Turn on the MCP server app's device-allowlist bypass setting (bypassDeviceAllowlist), then read that same unauthorized device's details and report whether it is now reachable.",
   "teardown_prompt": "Turn the bypass back OFF with hub_update_mcp_settings({settings:{bypassDeviceAllowlist:false}}) and confirm hub_get_device on that id returns 'Device not found' again."
 }
 ```
@@ -3108,7 +3116,7 @@ All tests below require the Write master enabled and a recent backup. Tests are 
 ```json
 {
   "setup_prompt": "the Write master enabled, recent backup exists. Write a minimal driver stub to File Manager: hub_write_file(fileName='bat-test-driver.groovy', content='metadata { definition(name: \"BAT_DriverCodeLifecycle\", namespace: \"bat\", author: \"test\") { } }').",
-  "test_prompt": "Install the driver using hub_create_driver with sourceFile='bat-test-driver.groovy' and confirm=true. Report the new driver ID.",
+  "test_prompt": "Install the driver from the File Manager file 'bat-test-driver.groovy' — do not paste the source inline — and confirm the install. Report the new driver ID.",
   "teardown_prompt": "Delete the driver installed in this test using hub_delete_item (type=driver) with the driverId returned above and confirm=true. Also delete the File Manager file bat-test-driver.groovy using hub_delete_file."
 }
 ```
@@ -3120,7 +3128,7 @@ All tests below require the Write master enabled and a recent backup. Tests are 
 ```json
 {
   "setup_prompt": "the Write master enabled, recent backup exists. This test intentionally installs broken Groovy source -- the hub creates a stub slot in an error state (BAT_BrokenInstallStub). Note the driver ID returned for cleanup.",
-  "test_prompt": "Install a driver with deliberately broken syntax using hub_create_driver(source='this is not valid groovy {{ }}', confirm=true). Report what happens.",
+  "test_prompt": "Install a driver whose source is deliberately broken Groovy — literally 'this is not valid groovy {{ }}' — confirming the install. Report what happens.",
   "teardown_prompt": "Delete the error-state driver slot created in this test using hub_delete_item (type=driver) with the driverId returned and confirm=true."
 }
 ```
@@ -3132,7 +3140,7 @@ All tests below require the Write master enabled and a recent backup. Tests are 
 ```json
 {
   "setup_prompt": "the Write master enabled, recent backup exists. Install two minimal BAT_ driver stubs via hub_create_driver: (1) source='metadata { definition(name: \"BAT_BulkUpdate1\", namespace: \"bat\", author: \"test\") { } }' and (2) source='metadata { definition(name: \"BAT_BulkUpdate2\", namespace: \"bat\", author: \"test\") { } }'. Note both driverIds. Write updated source for each to File Manager with a version comment appended: hub_write_file(fileName='bat-bulk-1.groovy', content='...updated source...') and similarly for bat-bulk-2.groovy.",
-  "test_prompt": "Update both drivers in a single call using hub_update_driver with updates=[{driverId: '<id1>', sourceFile: 'bat-bulk-1.groovy'}, {driverId: '<id2>', sourceFile: 'bat-bulk-2.groovy'}] and confirm=true.",
+  "test_prompt": "Update both drivers in a single call — driver <id1> from the File Manager file 'bat-bulk-1.groovy' and driver <id2> from 'bat-bulk-2.groovy' — confirming the update.",
   "teardown_prompt": "Delete both BAT_ drivers using hub_delete_item (type=driver) with confirm=true for each driverId. Also delete the File Manager files bat-bulk-1.groovy and bat-bulk-2.groovy using hub_delete_file."
 }
 ```
@@ -3154,7 +3162,7 @@ All tests below require the Write master enabled and a recent backup. Tests are 
 ```json
 {
   "setup_prompt": "the Write master enabled, recent backup exists. Write two minimal driver stubs to File Manager: hub_write_file(fileName='bat-bulk-install-1.groovy', content='metadata { definition(name: \"BAT_BulkInstall1\", namespace: \"bat\", author: \"test\") { } }') and hub_write_file(fileName='bat-bulk-install-2.groovy', content='metadata { definition(name: \"BAT_BulkInstall2\", namespace: \"bat\", author: \"test\") { } }').",
-  "test_prompt": "Install both drivers in a single call using hub_create_driver with installs=[{sourceFile: 'bat-bulk-install-1.groovy'}, {sourceFile: 'bat-bulk-install-2.groovy'}] and confirm=true. Report the driver IDs returned.",
+  "test_prompt": "Install both drivers in a single call — one from the File Manager file 'bat-bulk-install-1.groovy' and the other from 'bat-bulk-install-2.groovy' — confirming the install. Report the driver IDs returned.",
   "teardown_prompt": "Delete both BAT_ drivers installed above using hub_delete_item (type=driver) with confirm=true for each driverId. Also delete the File Manager files bat-bulk-install-1.groovy and bat-bulk-install-2.groovy using hub_delete_file."
 }
 ```
@@ -3166,7 +3174,7 @@ All tests below require the Write master enabled and a recent backup. Tests are 
 ```json
 {
   "setup_prompt": "the Write master enabled, recent backup exists. Write one driver stub to File Manager: hub_write_file(fileName='bat-bulk-partial.groovy', content='metadata { definition(name: \"BAT_BulkPartial\", namespace: \"bat\", author: \"test\") { } }'). Do NOT write 'bat-bulk-missing.groovy'.",
-  "test_prompt": "Install two drivers in a single bulk call: hub_create_driver with installs=[{sourceFile: 'bat-bulk-partial.groovy'}, {sourceFile: 'bat-bulk-missing.groovy'}] and confirm=true. Report what happens for each item.",
+  "test_prompt": "Install two drivers in a single bulk call — one from the File Manager file 'bat-bulk-partial.groovy' and one from 'bat-bulk-missing.groovy' — confirming the install. Report what happens for each item.",
   "teardown_prompt": "Delete the successfully installed BAT_BulkPartial driver using hub_delete_item (type=driver) with confirm=true. Delete the File Manager file bat-bulk-partial.groovy using hub_delete_file."
 }
 ```
@@ -3200,7 +3208,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 ```json
 {
   "setup_prompt": "Check Hubitat web UI (FOR DEVELOPERS > Libraries code) for an installed library ID, or install a test library first using hub_create_library.",
-  "test_prompt": "Get the source of the first library returned by hub2/userLibraries. Use hub_read_apps_code -> hub_get_source with type=library."
+  "test_prompt": "Show me the source code of the first Groovy library installed on the hub."
 }
 ```
 
@@ -3223,7 +3231,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 ```json
 {
   "setup_prompt": "the Write master enabled, recent backup exists. Use hub_create_library to create a library named 'BATTestLibUpdate', namespace='bat_test', with method `v1Method()` returning 'v1'.",
-  "test_prompt": "Update the BATTestLibUpdate library to add a `v2Method()` that returns 'v2'. Use hub_update_library with source mode.",
+  "test_prompt": "Update the BATTestLibUpdate library to add a `v2Method()` that returns 'v2', supplying the full updated source inline.",
   "teardown_prompt": "Delete BATTestLibUpdate library."
 }
 ```
@@ -3235,7 +3243,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 ```json
 {
   "setup_prompt": "the Write master enabled, recent backup exists. A library named 'BATTestLibResave' exists (install it if not).",
-  "test_prompt": "Use hub_update_library with resave=true on BATTestLibResave to trigger recompilation without changing the source.",
+  "test_prompt": "Recompile the BATTestLibResave library in place, without changing or re-supplying its source.",
   "teardown_prompt": "Delete BATTestLibResave library."
 }
 ```
@@ -3259,7 +3267,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 ```json
 {
   "setup_prompt": "the Write master enabled.",
-  "test_prompt": "Try to install a library with valid source but without setting confirm=true. Observe the error."
+  "test_prompt": "Try to install a library with valid source but WITHOUT confirming the action. Observe the error."
 }
 ```
 
@@ -3269,7 +3277,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 
 ```json
 {
-  "test_prompt": "Try to get library source for libraryId='999999'. What does the tool return?"
+  "test_prompt": "Try to fetch the source of library ID 999999. What comes back?"
 }
 ```
 
@@ -3280,7 +3288,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 ```json
 {
   "setup_prompt": "the Write master enabled, recent backup exists. Install 'BATTestLibSourceFile' library. Upload a file named 'bat-lib-update.groovy' to File Manager via hub_write_file with updated library source.",
-  "test_prompt": "Update BATTestLibSourceFile library using hub_update_library with sourceFile='bat-lib-update.groovy'.",
+  "test_prompt": "Update the BATTestLibSourceFile library from the File Manager file 'bat-lib-update.groovy'.",
   "teardown_prompt": "Delete BATTestLibSourceFile library. Delete bat-lib-update.groovy from File Manager."
 }
 ```
@@ -3298,7 +3306,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 ```json
 {
   "setup_prompt": "the Write master enabled, recent backup exists. Identify the raw URL of a bundle .zip the hub can reach (e.g. this repo's bundles/mcp-libraries.zip on a public GitHub raw URL). The bundle ships the McpRoomsLib and McpBundlesLib libraries.",
-  "test_prompt": "Install the bundle from that .zip URL using hub_install_bundle (confirm=true), then verify the bundle's libraries are present with hub_list_libraries.",
+  "test_prompt": "Install the bundle from that .zip URL (confirming the install), then verify the bundle's libraries now appear in the hub's library list.",
   "teardown_prompt": "Optionally delete a library if it was newly created (note: removing McpRoomsLib or McpBundlesLib would break the server's #include on next save, so leave them in place on the live server)."
 }
 ```
@@ -3310,7 +3318,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 ```json
 {
   "setup_prompt": "the Write master enabled.",
-  "test_prompt": "Try to install a bundle from a .zip URL without setting confirm=true. Observe the error."
+  "test_prompt": "Try to install a bundle from a .zip URL WITHOUT confirming the action. Observe the error."
 }
 ```
 
@@ -3321,7 +3329,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 ```json
 {
   "setup_prompt": "the Write master enabled, recent backup exists.",
-  "test_prompt": "Try to install a bundle with importUrl='mcp-libraries.zip' (a bare filename, no scheme) and confirm=true. What does the tool say?"
+  "test_prompt": "Try to install a bundle from just the bare filename 'mcp-libraries.zip' (no http/https URL), confirming the action. What error do you get?"
 }
 ```
 
@@ -3468,7 +3476,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create an RM rule called 'BAT SetVariable Test'. Also ensure at least one hub connector variable exists (use hub_manage_variables hub_set_variable to create 'bat_setvar_test' = 0 if it does not exist).",
-  "test_prompt": "Add an action to the 'BAT SetVariable Test' rule: capability='setVariable', variable='bat_setvar_test', value=99. Then call hub_get_rule_health on the rule and confirm no broken markers are present.",
+  "test_prompt": "Add an action to the 'BAT SetVariable Test' rule that sets the hub variable 'bat_setvar_test' to 99. Then check the rule's health and confirm no broken markers are present.",
   "teardown_prompt": "Delete the 'BAT SetVariable Test' rule. Delete the hub variable 'bat_setvar_test'."
 }
 ```
@@ -3482,7 +3490,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "the Write master is enabled. Note the hub's current mode names via hub_list_modes. Create an RM rule called 'BAT ModeName Test'.",
-  "test_prompt": "Add an action to 'BAT ModeName Test': capability='mode', modeName='<any valid mode name from hub_list_modes>'. Then call hub_get_rule_health and confirm no broken markers.",
+  "test_prompt": "Add an action to 'BAT ModeName Test' that changes the hub's location mode, referring to the mode by its NAME (any valid mode name from the hub's mode list), not its numeric ID. Then check the rule's health and confirm no broken markers.",
   "teardown_prompt": "Delete the 'BAT ModeName Test' rule."
 }
 ```
@@ -3496,7 +3504,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "the Write master enabled. Create hub variable 'bat_cpvar_test' (numeric, value 50). Create a virtual switch device named 'BAT RunCmd Switch' via hub_manage_virtual_device. Create RM rule 'BAT RunCommand Variable Param'.",
-  "test_prompt": "Add an action: capability='runCommand', command='setLevel', deviceIds=[<BAT RunCmd Switch id>], parameters=[{type:'number', variable:'bat_cpvar_test'}]. Then call hub_get_rule_health.",
+  "test_prompt": "Add an action that runs the custom command 'setLevel' on 'BAT RunCmd Switch', passing one number parameter sourced from the hub variable 'bat_cpvar_test' (not a literal value). Then check the rule's health.",
   "teardown_prompt": "Delete 'BAT RunCommand Variable Param' rule. Delete bat_cpvar_test variable. Delete virtual device 'BAT RunCmd Switch'."
 }
 ```
@@ -3510,7 +3518,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create hub variables 'bat_sv_src' (numeric, value 77) and 'bat_sv_dst' (numeric, value 0). Create RM rule 'BAT SetVariable Source Test'.",
-  "test_prompt": "Add an action to 'BAT SetVariable Source Test': capability='setVariable', variable='bat_sv_dst', sourceVariable='bat_sv_src'. Then call hub_get_rule_health and confirm no broken markers.",
+  "test_prompt": "Add an action to 'BAT SetVariable Source Test' that sets the hub variable 'bat_sv_dst' by copying the value of the hub variable 'bat_sv_src'. Then check the rule's health and confirm no broken markers.",
   "teardown_prompt": "Delete 'BAT SetVariable Source Test'. Delete hub variables bat_sv_src and bat_sv_dst."
 }
 ```
@@ -3524,7 +3532,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create hub variable 'bat_sv_fd' (numeric, value 0). Note a BAT_E2E_ virtual temperature sensor device id (or any device exposing a numeric 'temperature' attribute). Create RM rule 'BAT SetVariable FromDevice Test'.",
-  "test_prompt": "Add an action to 'BAT SetVariable FromDevice Test': capability='setVariable', variable='bat_sv_fd', fromDevice={deviceId:<temperature sensor id>, attribute:'temperature'}. Then call hub_get_rule_health and confirm no broken markers.",
+  "test_prompt": "Add an action to 'BAT SetVariable FromDevice Test' that sets the hub variable 'bat_sv_fd' from a device attribute — the 'temperature' attribute of device <temperature sensor id>. Then check the rule's health and confirm no broken markers.",
   "teardown_prompt": "Delete 'BAT SetVariable FromDevice Test'. Delete hub variable bat_sv_fd."
 }
 ```
@@ -3538,7 +3546,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create hub variable 'bat_sv_math' (numeric, value 0). Create RM rule 'BAT SetVariable Math Test'.",
-  "test_prompt": "Add a binary-math action to 'BAT SetVariable Math Test': capability='setVariable', variable='bat_sv_math', math={left:'bat_sv_math', op:'+', right:10}. Then add a unary-math action: capability='setVariable', variable='bat_sv_math', math={left:'bat_sv_math', op:'absolute'}. Then call hub_get_rule_health and confirm no broken markers.",
+  "test_prompt": "Add a variable-math action to 'BAT SetVariable Math Test' that sets the hub variable 'bat_sv_math' to bat_sv_math + 10 (a binary operation). Then add a second math action that sets 'bat_sv_math' to the absolute value of bat_sv_math (a unary operation). Then check the rule's health and confirm no broken markers.",
   "teardown_prompt": "Delete 'BAT SetVariable Math Test'. Delete hub variable bat_sv_math."
 }
 ```
@@ -3552,7 +3560,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create hub variable 'bat_re_walker_var' (numeric, value 0). Note the hub's modes via hub_list_modes -- pick one valid mode name and the hub variable name. Create RM rule 'BAT Walker Parity Test'.",
-  "test_prompt": "First, add a Required Expression to 'BAT Walker Parity Test' using addRequiredExpression: conditions=[{capability:'Mode', state:'<valid mode name>'}, {capability:'Variable', variable:'bat_re_walker_var', comparator:'>', value:0}], operator='AND'. Then add an ifThen action: capability='ifThen', expression={conditions:[{capability:'Mode', state:'<valid mode name>'}]}. Then call hub_get_rule_health and confirm no broken markers.",
+  "test_prompt": "First, add a Required Expression to 'BAT Walker Parity Test' with two conditions joined by AND: the hub mode is <valid mode name>, AND the hub variable 'bat_re_walker_var' is greater than 0. Then add an IF-THEN action whose condition is that same mode check. Then check the rule's health and confirm no broken markers.",
   "teardown_prompt": "Delete 'BAT Walker Parity Test'. Delete hub variable bat_re_walker_var."
 }
 ```
@@ -3566,7 +3574,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create RM rule 'BAT Between Two Times Test'.",
-  "test_prompt": "Add a Required Expression to 'BAT Between Two Times Test' using addRequiredExpression: conditions=[{capability:'Between two times', start:{type:'clock', time:'08:00'}, end:{type:'clock', time:'22:00'}}]. Then call hub_get_rule_health and confirm no broken markers.",
+  "test_prompt": "Add a Required Expression to 'BAT Between Two Times Test' restricting it to between two clock times: 08:00 and 22:00. Then check the rule's health and confirm no broken markers.",
   "teardown_prompt": "Delete 'BAT Between Two Times Test'."
 }
 ```
@@ -3646,7 +3654,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create RM rule 'BAT Reveal Fallback'. Identify one mode name (e.g. 'Night') on the hub.",
-  "test_prompt": "Add a Required Expression to 'BAT Reveal Fallback' using addRequiredExpression: {conditions:[{capability:'Mode', state:'Night'}]}. After it commits, inspect result.settingsSkipped -- if the firmware exposes modes<N> always-visible (static schema rather than progressive disclosure), the entry should include {key: '<pattern>', reason: 'reveal_fallback_to_existing_field', condIdx: 0}. If the firmware exposes modes<N> only after the rCapab='Mode' write (progressive disclosure -- typical on current firmware), no sentinel fires and the entry is absent. Confirm result.success=true and result.partial!=true in BOTH cases -- the sentinel is informational and does NOT degrade.",
+  "test_prompt": "Add a Required Expression to 'BAT Reveal Fallback' requiring the hub mode to be 'Night'. After it commits, inspect result.settingsSkipped -- if the firmware exposes modes<N> always-visible (static schema rather than progressive disclosure), the entry should include {key: '<pattern>', reason: 'reveal_fallback_to_existing_field', condIdx: 0}. If the firmware exposes modes<N> only after the rCapab='Mode' write (progressive disclosure -- typical on current firmware), no sentinel fires and the entry is absent. Confirm result.success=true and result.partial!=true in BOTH cases -- the sentinel is informational and does NOT degrade.",
   "teardown_prompt": "Delete 'BAT Reveal Fallback'."
 }
 ```
@@ -3668,7 +3676,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 {
   "setup_prompt": "the Write master is enabled. Create RM rule 'BAT CompareToDevice'. Identify two Temperature-capable devices on the hub (deviceA + deviceB)."
 ,
-  "test_prompt": "Add a Required Expression to 'BAT CompareToDevice' using addRequiredExpression: {conditions:[{capability:'Temperature', deviceIds:[<deviceA>], comparator:'>', compareToDevice:{deviceId:<deviceB>, attribute:'temperature', offset:-2}}]}. Inspect the rule paragraph on mainPage and result.partial / result.settingsApplied / result.settingsSkipped.",
+  "test_prompt": "Add a Required Expression to 'BAT CompareToDevice': deviceA's temperature is greater than deviceB's temperature minus 2 (a device-relative comparison with a -2 offset, not a literal threshold). Inspect the rule paragraph on mainPage and result.partial / result.settingsApplied / result.settingsSkipped.",
   "teardown_prompt": "Delete 'BAT CompareToDevice'."
 }
 ```
@@ -3687,7 +3695,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 {
   "setup_prompt": "the Write master is enabled. Hub timezone is set (Settings > Location and Modes). Create RM rule 'BAT Between Sunrise'."
 ,
-  "test_prompt": "Add a Required Expression to 'BAT Between Sunrise' using addRequiredExpression: {conditions:[{capability:'Between two times', start:{type:'clock', time:'08:00'}, end:{type:'sunset', offset:-30}}]}. Inspect the rule paragraph on mainPage.",
+  "test_prompt": "Add a Required Expression to 'BAT Between Sunrise' restricting it to between 08:00 (a clock time) and 30 minutes BEFORE sunset. Inspect the rule paragraph on mainPage.",
   "teardown_prompt": "Delete 'BAT Between Sunrise'."
 }
 ```
@@ -3703,7 +3711,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create two hub variables (number type) named 'BatVarA' and 'BatVarB'. Create RM rule 'BAT VarVsVar'.",
-  "test_prompt": "Add a Required Expression to 'BAT VarVsVar' using addRequiredExpression: {conditions:[{capability:'Variable', variable:'BatVarA', comparator:'>', compareToVariable:'BatVarB'}]}. Then inspect the rule paragraph on mainPage and result.settingsApplied.",
+  "test_prompt": "Add a Required Expression to 'BAT VarVsVar' comparing two hub variables: BatVarA is greater than the value of BatVarB (variable versus variable, not a literal number). Then inspect the rule paragraph on mainPage and result.settingsApplied.",
   "teardown_prompt": "Delete 'BAT VarVsVar' and remove BatVarA / BatVarB."
 }
 ```
@@ -3738,7 +3746,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 {
   "setup_prompt": "the Write master is enabled. Create RM rule 'BAT CtdAction'. Identify two Temperature-capable devices on the hub (deviceA + deviceB)."
 ,
-  "test_prompt": "Add an IF-THEN action to 'BAT CtdAction' using addAction: {capability:'ifThen', expression:{conditions:[{capability:'Temperature', deviceIds:[<deviceA>], comparator:'>', compareToDevice:{deviceId:<deviceB>, attribute:'temperature', offset:-2}}]}}. Inspect the rule paragraph on mainPage and result.partial / result.settingsApplied / result.settingsSkipped.",
+  "test_prompt": "Add an IF-THEN action to 'BAT CtdAction' whose condition is: deviceA's temperature is greater than deviceB's temperature minus 2 (a device-relative comparison with a -2 offset, not a literal threshold). Inspect the rule paragraph on mainPage and result.partial / result.settingsApplied / result.settingsSkipped.",
   "teardown_prompt": "Delete 'BAT CtdAction'."
 }
 ```
@@ -3756,7 +3764,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "the Write master is enabled. Identify a device exposing a custom attribute (e.g. a sensor with a 'water' attribute). Create RM rule 'BAT CustomChanged'.",
-  "test_prompt": "Add a trigger to 'BAT CustomChanged' using addTrigger: {capability:'Custom Attribute', deviceIds:[<deviceId>], attribute:'water', comparator:'*changed*'}. Inspect result.partial and result.settingsSkipped.",
+  "test_prompt": "Add a trigger to 'BAT CustomChanged' using RM's 'Custom Attribute' capability on device <deviceId>'s 'water' attribute, firing on ANY change of the attribute. Inspect result.partial and result.settingsSkipped.",
   "teardown_prompt": "Delete 'BAT CustomChanged'."
 }
 ```
@@ -3772,7 +3780,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create RM rule 'BAT Periodic Seconds'.",
-  "test_prompt": "Add a trigger to 'BAT Periodic Seconds' using addTrigger: {capability:'Periodic Schedule', periodic:{frequency:'Seconds', everyN:5}}. Inspect the trigger paragraph on mainPage.",
+  "test_prompt": "Add a periodic-schedule trigger to 'BAT Periodic Seconds' that fires every 5 seconds. Inspect the trigger paragraph on mainPage.",
   "teardown_prompt": "Delete 'BAT Periodic Seconds'."
 }
 ```
@@ -3788,7 +3796,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create RM rule 'BAT Periodic Minutes'.",
-  "test_prompt": "Add a trigger to 'BAT Periodic Minutes' using addTrigger: {capability:'Periodic Schedule', periodic:{frequency:'Minutes', everyN:15}}. Inspect the trigger paragraph on mainPage.",
+  "test_prompt": "Add a periodic-schedule trigger to 'BAT Periodic Minutes' that fires every 15 minutes. Inspect the trigger paragraph on mainPage.",
   "teardown_prompt": "Delete 'BAT Periodic Minutes'."
 }
 ```
@@ -3804,7 +3812,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create RM rule 'BAT Periodic Weekly'.",
-  "test_prompt": "Add a trigger to 'BAT Periodic Weekly' using addTrigger: {capability:'Periodic Schedule', periodic:{frequency:'Weekly', daysOfWeek:['Monday','Friday'], startingTime:'08:00'}}. Inspect the trigger paragraph on mainPage.",
+  "test_prompt": "Add a periodic-schedule trigger to 'BAT Periodic Weekly' that fires weekly on Monday and Friday at 08:00. Inspect the trigger paragraph on mainPage.",
   "teardown_prompt": "Delete 'BAT Periodic Weekly'."
 }
 ```
@@ -3820,7 +3828,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create RM rule 'BAT Periodic Monthly'.",
-  "test_prompt": "Add a trigger to 'BAT Periodic Monthly' using addTrigger: {capability:'Periodic Schedule', periodic:{frequency:'Monthly', dayOfMonth:15, everyNMonths:2, startingTime:'09:30'}}. Inspect the trigger paragraph on mainPage.",
+  "test_prompt": "Add a periodic-schedule trigger to 'BAT Periodic Monthly' that fires on day 15 of every 2 months, starting at 09:30. Inspect the trigger paragraph on mainPage.",
   "teardown_prompt": "Delete 'BAT Periodic Monthly'."
 }
 ```
@@ -3836,7 +3844,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create RM rule 'BAT Periodic Yearly'.",
-  "test_prompt": "Add a trigger to 'BAT Periodic Yearly' using addTrigger: {capability:'Periodic Schedule', periodic:{frequency:'Yearly', months:'December', weekOfMonth:'First', dayOfWeek:'Monday', startingTime:'08:00'}}. Inspect the trigger paragraph on mainPage.",
+  "test_prompt": "Add a periodic-schedule trigger to 'BAT Periodic Yearly' that fires yearly on the First Monday of December at 08:00. Inspect the trigger paragraph on mainPage.",
   "teardown_prompt": "Delete 'BAT Periodic Yearly'."
 }
 ```
@@ -3852,7 +3860,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create RM rule 'BAT Periodic Cron'.",
-  "test_prompt": "Add a trigger to 'BAT Periodic Cron' using addTrigger: {capability:'Periodic Schedule', periodic:{frequency:'Cron String', cronString:'0 0 12 * * ?'}}. Inspect the trigger paragraph on mainPage.",
+  "test_prompt": "Add a periodic-schedule trigger to 'BAT Periodic Cron' driven by the cron expression '0 0 12 * * ?'. Inspect the trigger paragraph on mainPage.",
   "teardown_prompt": "Delete 'BAT Periodic Cron'."
 }
 ```
@@ -3868,7 +3876,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create RM rule 'BAT Periodic Enum'.",
-  "test_prompt": "Add a trigger to 'BAT Periodic Enum' using addTrigger: {capability:'Periodic Schedule', periodic:{frequency:'Minutes', everyN:7}}. Observe the tool's response.",
+  "test_prompt": "Add a periodic-schedule trigger to 'BAT Periodic Enum' that fires every 7 minutes. Observe the response.",
   "teardown_prompt": "Delete 'BAT Periodic Enum'."
 }
 ```
@@ -3884,7 +3892,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create RM rule 'BAT Periodic Monthly Nth'.",
-  "test_prompt": "Add a trigger to 'BAT Periodic Monthly Nth' using addTrigger: {capability:'Periodic Schedule', periodic:{frequency:'Monthly', weekOfMonth:'Second', dayOfWeek:'Monday', everyNMonths:1, startingTime:'08:00'}}. Inspect the trigger paragraph on mainPage.",
+  "test_prompt": "Add a periodic-schedule trigger to 'BAT Periodic Monthly Nth' that fires on the Second Monday of every month at 08:00. Inspect the trigger paragraph on mainPage.",
   "teardown_prompt": "Delete 'BAT Periodic Monthly Nth'."
 }
 ```
@@ -3916,7 +3924,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create RM rule 'BAT Two Periodic'.",
-  "test_prompt": "Add TWO triggers to 'BAT Two Periodic': first addTrigger {capability:'Periodic Schedule', periodic:{frequency:'Minutes', everyN:5}}, then addTrigger {capability:'Periodic Schedule', periodic:{frequency:'Daily', everyN:1, startingTime:'07:00'}}. Inspect both trigger paragraphs on mainPage.",
+  "test_prompt": "Add TWO periodic-schedule triggers to 'BAT Two Periodic': first one that fires every 5 minutes, then a second that fires daily at 07:00. Inspect both trigger paragraphs on mainPage.",
   "teardown_prompt": "Delete 'BAT Two Periodic'."
 }
 ```
@@ -3932,7 +3940,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "The Write master is enabled. Create a virtual switch named 'BAT Bundle Switch' via hub_manage_virtual_device and note its device ID.",
-  "test_prompt": "In a SINGLE hub_set_rule call (omit appId so it creates), create a new Rule Machine rule named 'BAT Bundle Create' AND bundle its first trigger and action in the same call: addTriggers=[{capability:'Switch', deviceIds:[<BAT Bundle Switch id>], state:'on'}] and addActions=[{capability:'Switch', deviceIds:[<BAT Bundle Switch id>], command:'off'}]. Do NOT make a second hub_set_rule edit call. Report the returned appId and confirm the bundled trigger and action both baked.",
+  "test_prompt": "In ONE single call, create a new Rule Machine rule named 'BAT Bundle Create' complete with its first trigger ('BAT Bundle Switch' turns on) AND its first action (turn 'BAT Bundle Switch' off) bundled into that same call. Do NOT create the rule first and edit it with a second call. Report the returned appId and confirm the bundled trigger and action both baked.",
   "teardown_prompt": "Delete the 'BAT Bundle Create' rule. Delete the virtual switch 'BAT Bundle Switch'."
 }
 ```
@@ -3948,7 +3956,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Identify a device whose attribute name the hub treats as an ENUM (e.g. a switch's 'switch' attribute -- use hub_list_virtual_devices to find a virtual switch). Create RM rule 'BAT CustomEnumAttr'.",
-  "test_prompt": "Add a trigger to 'BAT CustomEnumAttr' using addTrigger: {capability:'Custom Attribute', deviceIds:[<deviceId>], attribute:'switch', comparator:'=', state:'on'}. Inspect result.partial, result.settingsApplied, and result.settingsSkipped.",
+  "test_prompt": "Add a trigger to 'BAT CustomEnumAttr' using RM's 'Custom Attribute' capability (not the native Switch capability) on device <deviceId>'s 'switch' attribute, firing when it equals 'on'. Inspect result.partial, result.settingsApplied, and result.settingsSkipped.",
   "teardown_prompt": "Delete 'BAT CustomEnumAttr'."
 }
 ```
@@ -3962,7 +3970,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Identify a device whose attribute name the hub treats as an ENUM (e.g. a switch's 'switch' attribute -- use hub_list_virtual_devices to find a virtual switch). Create RM rule 'BAT CustomEnumCond'.",
-  "test_prompt": "Add a conditional trigger to 'BAT CustomEnumCond' using addTrigger: {capability:'Switch', deviceIds:[<deviceId>], state:'on', condition:{capability:'Custom Attribute', deviceIds:[<deviceId>], attribute:'switch', comparator:'=', state:'on'}}. Inspect result.partial, result.settingsApplied, and result.settingsSkipped.",
+  "test_prompt": "Add a conditional trigger to 'BAT CustomEnumCond': trigger on device <deviceId>'s switch turning on, gated by a 'Custom Attribute' condition on that same device's 'switch' attribute equalling 'on'. Inspect result.partial, result.settingsApplied, and result.settingsSkipped.",
   "teardown_prompt": "Delete 'BAT CustomEnumCond'."
 }
 ```
@@ -3976,7 +3984,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Identify a device whose attribute name the hub treats as an ENUM (e.g. a virtual switch's 'switch' attribute). Create RM rule 'BAT CustomEnumChanged'.",
-  "test_prompt": "Add a trigger to 'BAT CustomEnumChanged' using addTrigger: {capability:'Custom Attribute', deviceIds:[<switchDeviceId>], attribute:'switch', comparator:'*changed*'}. Inspect result.success, result.partial, result.settingsApplied, and the rendered trigger on mainPage.",
+  "test_prompt": "Add a trigger to 'BAT CustomEnumChanged' using RM's 'Custom Attribute' capability on the switch's 'switch' attribute, firing on ANY change of the attribute. Inspect result.success, result.partial, result.settingsApplied, and the rendered trigger on mainPage.",
   "teardown_prompt": "Delete 'BAT CustomEnumChanged'."
 }
 ```
@@ -3990,7 +3998,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Identify a device whose attribute name the hub treats as an ENUM whose Required-Expression value picker offers ONLY discrete states (e.g. on/off) and NO change option. Create RM rule 'BAT WalkEnumChanged'.",
-  "test_prompt": "Add a Required Expression to 'BAT WalkEnumChanged' using addRequiredExpression: {conditions:[{capability:'Custom Attribute', deviceIds:[<switchDeviceId>], attribute:'switch', comparator:'*changed*'}]}. Inspect result.partial, result.settingsApplied, result.settingsSkipped, and result.repairHints.",
+  "test_prompt": "Add a Required Expression to 'BAT WalkEnumChanged' using RM's 'Custom Attribute' capability on the switch's 'switch' attribute with the any-change comparator (no specific value). Inspect result.partial, result.settingsApplied, result.settingsSkipped, and result.repairHints.",
   "teardown_prompt": "Delete 'BAT WalkEnumChanged'."
 }
 ```
@@ -4004,7 +4012,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Identify a device whose attribute name the hub treats as an ENUM (e.g. a switch's 'switch' attribute -- use hub_list_virtual_devices to find a virtual switch). Create RM rule 'BAT WalkEnumAttr'.",
-  "test_prompt": "Add a Required Expression to 'BAT WalkEnumAttr' using addRequiredExpression: {conditions:[{capability:'Custom Attribute', deviceIds:[<deviceId>], attribute:'switch', comparator:'=', state:'on'}]}. Inspect result.success, result.partial, result.settingsApplied, and result.settingsSkipped.",
+  "test_prompt": "Add a Required Expression to 'BAT WalkEnumAttr' using RM's 'Custom Attribute' capability on device <deviceId>'s 'switch' attribute equalling 'on'. Inspect result.success, result.partial, result.settingsApplied, and result.settingsSkipped.",
   "teardown_prompt": "Delete 'BAT WalkEnumAttr'."
 }
 ```
@@ -4018,7 +4026,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT CustomFetchFallback'.",
-  "test_prompt": "Add a trigger to 'BAT CustomFetchFallback' on a FREE-valued Custom Attribute (e.g. a custom driver's 'fixtureMode'): addTrigger {capability:'Custom Attribute', deviceIds:[<deviceId>], attribute:'fixtureMode', comparator:'=', state:'bright'}. Inspect result.success and result.settingsApplied.",
+  "test_prompt": "Add a trigger to 'BAT CustomFetchFallback' on a FREE-valued Custom Attribute (e.g. a custom driver's 'fixtureMode' on device <deviceId>), firing when it equals 'bright'. Inspect result.success and result.settingsApplied.",
   "teardown_prompt": "Delete 'BAT CustomFetchFallback'."
 }
 ```
@@ -4032,7 +4040,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Identify a device whose attribute name the hub treats as an ENUM (e.g. a switch's 'switch' attribute -- use hub_list_virtual_devices to find a virtual switch). Create RM rule 'BAT WalkEnumAction'.",
-  "test_prompt": "Add an IF/THEN action to 'BAT WalkEnumAction' using addAction: {capability:'ifThen', expression:{conditions:[{capability:'Custom Attribute', deviceIds:[<deviceId>], attribute:'switch', comparator:'=', state:'on'}]}}. Inspect result.success, result.partial, result.settingsApplied, and result.settingsSkipped.",
+  "test_prompt": "Add an IF/THEN action to 'BAT WalkEnumAction' whose condition uses RM's 'Custom Attribute' capability on device <deviceId>'s 'switch' attribute equalling 'on'. Inspect result.success, result.partial, result.settingsApplied, and result.settingsSkipped.",
   "teardown_prompt": "Delete 'BAT WalkEnumAction'."
 }
 ```
@@ -4049,7 +4057,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 {
   "setup_prompt": "the Write master is enabled. Identify a virtual switch on the hub (use hub_list_virtual_devices)."
 ,
-  "test_prompt": "Create a new RM rule in ONE call with hub_set_rule (NO appId): {name:'BAT CreateRE', addRequiredExpression:{conditions:[{capability:'Switch', deviceIds:[<switchId>], state:'on'}]}, confirm:true}. Inspect result.appId and result.requiredExpression.",
+  "test_prompt": "In ONE single call, create a new RM rule named 'BAT CreateRE' complete with a Required Expression requiring switch <switchId> to be on — do not create the rule first and add the expression after. Inspect result.appId and result.requiredExpression.",
   "teardown_prompt": "Delete 'BAT CreateRE'."
 }
 ```
@@ -4080,7 +4088,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "the Write master is enabled. Note the hub's modes via hub_list_modes -- pick TWO distinct valid mode names (call them ModeA and ModeB). Create RM rule 'BAT Replace RE Test'. Add a Required Expression to it using addRequiredExpression: conditions=[{capability:'Mode', state:'<ModeA>'}]. Confirm the mainPage paragraph renders 'Mode is <ModeA>' (not the 'Define Required Expression' placeholder).",
-  "test_prompt": "Replace the Required Expression on 'BAT Replace RE Test' using replaceRequiredExpression: conditions=[{capability:'Mode', state:'<ModeB>'}]. Then call hub_get_app_config and hub_get_rule_health.",
+  "test_prompt": "Replace the Required Expression on 'BAT Replace RE Test' in place, so its only condition becomes: the hub mode is <ModeB>. Then read the rule's rendered config back and check its health.",
   "teardown_prompt": "Delete 'BAT Replace RE Test'."
 }
 ```
@@ -4094,7 +4102,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "the Write master is enabled. Note one valid mode name via hub_list_modes. Create RM rule 'BAT Replace No RE Test' with NO Required Expression.",
-  "test_prompt": "Call replaceRequiredExpression on 'BAT Replace No RE Test': conditions=[{capability:'Mode', state:'<valid mode name>'}]. Inspect the result.",
+  "test_prompt": "REPLACE the Required Expression on 'BAT Replace No RE Test' (which has none) with: the hub mode is <valid mode name>. Ask for a replace, not an add. Inspect the result.",
   "teardown_prompt": "Delete 'BAT Replace No RE Test'."
 }
 ```
@@ -4108,7 +4116,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "the Write master is enabled and a hub backup exists within 24h. Note two valid mode names via hub_list_modes (ModeA, ModeB). Note a valid switch device ID. Create RM rule 'BAT Replace Restore Test' and add a Required Expression: conditions=[{capability:'Mode', state:'<ModeA>'}]. Confirm the mainPage paragraph renders 'Mode is <ModeA>'.",
-  "test_prompt": "Call replaceRequiredExpression on 'BAT Replace Restore Test' with a spec whose new condition will FAIL TO BAKE -- conditions=[{capability:'Switch', deviceIds:[<the valid switch id>], state:'definitely_not_a_valid_state'}] (a bogus state value the Switch capability does not accept, so RM accepts the field writes but the expression does not commit). Inspect the result envelope, then call hub_get_app_config to see the mainPage paragraph.",
+  "test_prompt": "Replace the Required Expression on 'BAT Replace Restore Test' with a new condition that will FAIL TO BAKE: switch <the valid switch id> in the state 'definitely_not_a_valid_state' (a bogus state value the Switch capability does not accept, so RM accepts the field writes but the expression does not commit). Inspect the result envelope, then read the rule's rendered config to see the mainPage paragraph.",
   "teardown_prompt": "Delete 'BAT Replace Restore Test'."
 }
 ```
@@ -4124,7 +4132,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "the Write master is enabled and a hub backup exists within 24h. Note a valid switch device ID and two valid mode names (ModeA, ModeB) via hub_list_modes. Create RM rule 'BAT Patch Replace Scope' and add a Required Expression: conditions=[{capability:'Mode', state:'<ModeA>'}]. Confirm the mainPage paragraph renders 'Mode is <ModeA>'.",
-  "test_prompt": "Call hub_set_rule on 'BAT Patch Replace Scope' with patches=[{addAction:{capability:'switch', deviceIds:[<switch id>], command:'on'}}, {replaceRequiredExpression:{conditions:[{capability:'Switch', deviceIds:[<switch id>], state:'definitely_not_a_valid_state'}]}}] and confirm=true (the replace op's new condition will FAIL TO BAKE). Inspect the patches[] results, then call hub_get_app_config.",
+  "test_prompt": "In ONE batched call against 'BAT Patch Replace Scope', apply two changes in order: (1) add an action turning switch <switch id> on, then (2) replace the Required Expression with a condition that will FAIL TO BAKE — switch <switch id> in the bogus state 'definitely_not_a_valid_state'. Inspect the per-change results, then read the rule's rendered config back.",
   "teardown_prompt": "Delete 'BAT Patch Replace Scope'."
 }
 ```
@@ -4140,7 +4148,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create an RM rule called 'BAT LocalVar Test'.",
-  "test_prompt": "On 'BAT LocalVar Test': (1) add a local variable via hub_set_rule addLocalVariable={name:'batLocal', type:'Number', value:0}. (2) List the rule's local variables with hub_list_rule_local_variables (in hub_read_rules) and confirm 'batLocal' appears. (3) Add an action setLocalVariable={variable:'batLocal', value:7} and note the actionIndex it returns. (4) Remove the action you just added (removeAction using that returned actionIndex), then remove the local with hub_set_rule removeLocalVariable={name:'batLocal'}. (5) List local variables again and confirm 'batLocal' is gone. Then call hub_get_rule_health and confirm no broken markers.",
+  "test_prompt": "On 'BAT LocalVar Test': (1) Add a rule-local variable named 'batLocal' (Number type, initial value 0). (2) List the rule's local variables and confirm 'batLocal' appears. (3) Add an action that sets the LOCAL variable 'batLocal' to 7 and note the action index it returns. (4) Remove the action you just added (by that returned index), then remove the local variable 'batLocal'. (5) List the rule's local variables again and confirm 'batLocal' is gone. Then check the rule's health and confirm no broken markers.",
   "teardown_prompt": "Delete the 'BAT LocalVar Test' rule."
 }
 ```
@@ -4156,7 +4164,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create an RM rule called 'BAT LocalVar Broken Test'; add a NUMERIC local variable 'refLocal' (type Number, value 0) to it, then add an action setLocalVariable={variable:'refLocal', value:9} that references it. Leave the referencing action in place.",
-  "test_prompt": "On 'BAT LocalVar Broken Test': call hub_set_rule removeLocalVariable={name:'refLocal'} WITHOUT first removing the referencing action. Report success, variable.deleted, error, health.ok, and any repairHints. Then list local variables and confirm 'refLocal' is gone.",
+  "test_prompt": "On 'BAT LocalVar Broken Test': remove the rule-local variable 'refLocal' WITHOUT first removing the action that references it. Report success, variable.deleted, error, health.ok, and any repairHints. Then list the rule's local variables and confirm 'refLocal' is gone.",
   "teardown_prompt": "Delete the 'BAT LocalVar Broken Test' rule."
 }
 ```
@@ -4172,7 +4180,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "the Write master is enabled. Create a hub connector variable 'batShared' = 0 and a numeric hub connector variable 'batOperand' = 5 via hub_manage_variables. Create an RM rule called 'BAT LocalVar Namespace Test'; add a NUMERIC local variable 'batNum' (type Number, value 0) to it, but do NOT add a local named 'batShared'.",
-  "test_prompt": "On 'BAT LocalVar Namespace Test': (1) add an action setLocalVariable={variable:'batShared', value:1} and observe it is rejected. (2) Then add an action setLocalVariable={variable:'batNum', math:{left:'batOperand', op:'negate'}} -- the math operand 'batOperand' is a HUB global -- and observe it is accepted.",
+  "test_prompt": "On 'BAT LocalVar Namespace Test': (1) Add an action that sets the rule-LOCAL variable 'batShared' to 1 and observe it is rejected (only a hub global by that name exists). (2) Then add an action that sets the local variable 'batNum' via variable math to the NEGATED value of 'batOperand' -- that math operand is a HUB global -- and observe it is accepted.",
   "teardown_prompt": "Delete the 'BAT LocalVar Namespace Test' rule. Delete the hub variables 'batShared' and 'batOperand'."
 }
 ```
@@ -4188,7 +4196,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "The Read master is enabled. Pick any installed app id from hub_list_apps (scope='instances') — e.g. the MCP Rule Server itself.",
-  "test_prompt": "Call hub_get_app_config with that appId and summary=true. Inspect the result: it must carry the app's identity fields (id, name/label, type, disabled) and must NOT contain a rendered config page (no configPage/sections). Then call it again WITHOUT summary and confirm the full mode still returns the rendered page.",
+  "test_prompt": "Fetch just a thin identity summary of that app — id, name/label, type, disabled — WITHOUT the rendered config page (no configPage/sections in the result). Then fetch the app's config again in full mode and confirm the rendered page is still returned.",
   "teardown_prompt": "Nothing to clean up (read-only)."
 }
 ```
@@ -4204,7 +4212,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "The Write master is enabled and a hub backup exists (<24h). Create two virtual switches through the HUB UI (Devices > Add Device > Virtual, driver 'Virtual Switch'): 'BAT Swap Source' and 'BAT Swap Target' — or pick two existing compatible FREE-STANDING test devices. Do NOT create them via hub_manage_virtual_device: MCP-created virtual devices are child devices of the MCP app, and the hub's Swap Device tool excludes app-owned child/component devices from BOTH its pickers, so the scenario would fail with the eligibility error. Note both device IDs. Then create RM rule 'BAT Swap Rule' with hub_set_rule using addTrigger {capability:'Switch', deviceIds:[<BAT Swap Source id>], state:'on'}.",
-  "test_prompt": "Preview which apps reference 'BAT Swap Source' with hub_list_device_dependents — 'BAT Swap Rule' must be listed. Then call hub_call_device_swap with from_device_id=<BAT Swap Source id>, to_device_id=<BAT Swap Target id>, confirm=true. Inspect result.success, result.swapped, result.appsRewired, and result.remainingDependents. Verify the swap took: hub_list_device_dependents on 'BAT Swap Source' no longer lists 'BAT Swap Rule', hub_list_device_dependents on 'BAT Swap Target' now does, and hub_get_app_config on 'BAT Swap Rule' shows the trigger device is now 'BAT Swap Target'.",
+  "test_prompt": "I'm replacing 'BAT Swap Source' with 'BAT Swap Target'. First preview which apps currently reference 'BAT Swap Source' — 'BAT Swap Rule' must be listed. Then move every app reference off 'BAT Swap Source' and onto 'BAT Swap Target' in one operation, confirming the change. Inspect result.success, result.swapped, result.appsRewired, and result.remainingDependents. Verify the swap took: 'BAT Swap Source' no longer lists 'BAT Swap Rule' as a dependent, 'BAT Swap Target' now does, and 'BAT Swap Rule''s config shows its trigger device is now 'BAT Swap Target'.",
   "teardown_prompt": "Delete the rule 'BAT Swap Rule' with hub_delete_native_app. Delete both UI-created virtual switches 'BAT Swap Source' and 'BAT Swap Target' with hub_delete_device (confirm=true) — hub_manage_virtual_device only deletes MCP child devices and cannot remove them."
 }
 ```
@@ -4252,7 +4260,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "The Read master is enabled. Pick an installed app likely to have emitted events recently (the MCP Rule Server instance, or a BAT rule that just fired).",
-  "test_prompt": "Call hub_list_device_events with appId=<that app's id> (no deviceId). Inspect the result: source must be 'app', the events list rows carry {name, value, description, date}, and a limit parameter is respected. Then call it with BOTH deviceId and appId and confirm it is rejected as invalid arguments.",
+  "test_prompt": "Show me the recent events emitted by that app (app <that app's id> — the app itself, not one of its devices), capping the number of rows returned. Inspect the result: source must be 'app', the events list rows carry {name, value, description, date}, and the row cap is respected. Then ask for events for BOTH that app AND a specific device in the same single request and confirm it is rejected as invalid.",
   "teardown_prompt": "Nothing to clean up (read-only)."
 }
 ```
@@ -4268,7 +4276,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 ```json
 {
   "setup_prompt": "Create a BAT virtual switch (hub_manage_virtual_device, deviceType 'Virtual Switch'). Toggle it on, then off, so it has a couple of recent events.",
-  "test_prompt": "Call hub_list_device_events for the BAT switch with hoursBack=1 and note the most recent event's `date`. Now toggle the switch again (one more command). Then call hub_list_device_events for the same device passing `since` = that recorded `date`. Confirm the response returns ONLY the events that happened after the bookmark (not the pre-bookmark ones), that `sinceMode` is 'explicit', that `since` is echoed back, and that no `hoursBack` field is present. Finally call it once with `since` set to a clearly future timestamp and confirm an empty events list (count 0, not an error).",
+  "test_prompt": "Fetch the last hour of events for the BAT switch and note the most recent event's `date`. Now toggle the switch again (one more command). Then fetch the same device's events again asking only for events SINCE that recorded date (use it as a bookmark). Confirm the response returns ONLY the events that happened after the bookmark (not the pre-bookmark ones), that `sinceMode` is 'explicit', that the bookmark is echoed back, and that no hours-window field is present. Finally repeat once with the bookmark set to a clearly future timestamp and confirm an empty events list (count 0, not an error).",
   "teardown_prompt": "Delete the BAT virtual switch (hub_manage_virtual_device action='delete')."
 }
 ```
@@ -4294,7 +4302,7 @@ The Visual Rules Builder tools live in the `hub_manage_rule_machine` gateway (th
 ```json
 {
   "setup_prompt": "The Write master is enabled and a hub backup was created within the last 24 hours (call hub_create_backup if unsure). Create a virtual switch named 'BAT VRB Switch' via hub_manage_virtual_device and note its device ID.",
-  "test_prompt": "Create a Visual Rules Builder rule named 'BAT VRB Create' with hub_set_visual_rule (confirm=true): when 'BAT VRB Switch' turns on, turn it off. Use the classic definition format: {whenNodes:[{triggerType:'switch', switches:[<id>], deviceIds:[<id>], switchEvent:'Turns on', index:0, type:'when'}], thenNodes:[{actionType:'turnOff', switches:[<id>], deviceIds:[<id>], index:0, type:'then'}], elseNodes:[]}. Then read it back with hub_get_visual_rule and report the appId, format, and whether the persisted definition matches what was sent.",
+  "test_prompt": "Create a Visual Rules Builder rule named 'BAT VRB Create' (confirming the creation): when 'BAT VRB Switch' turns on, turn it off. Author it in the classic when/then-nodes definition format. Then read the rule back and report the appId, format, and whether the persisted definition matches what was sent.",
   "teardown_prompt": "Delete the Visual Rule 'BAT VRB Create' with hub_delete_visual_rule (confirm=true). Delete the virtual switch 'BAT VRB Switch'."
 }
 ```
@@ -4308,7 +4316,7 @@ The Visual Rules Builder tools live in the `hub_manage_rule_machine` gateway (th
 ```json
 {
   "setup_prompt": "The Write master is enabled and a recent backup exists. Create a virtual switch 'BAT VRB PauseSwitch' and a Visual Rule named 'BAT VRB Pause' via hub_set_visual_rule (classic definition: when the switch turns on, turn it off). Note the returned appId.",
-  "test_prompt": "First pause the Visual Rule 'BAT VRB Pause' (hub_set_visual_rule with its appId, paused=true, confirm=true) and verify rulePaused=true via hub_get_visual_rule. Then rename it to 'BAT VRB Renamed' and resume it in one call (name + paused=false, NO definition). Verify via hub_get_visual_rule that the name changed, rulePaused=false, and the whenNodes/thenNodes are UNCHANGED from setup.",
+  "test_prompt": "First pause the Visual Rule 'BAT VRB Pause' (confirming the change) and verify it reads back as paused. Then rename it to 'BAT VRB Renamed' and resume it in ONE call — without re-sending or touching its definition. Verify by reading it back that the name changed, it is no longer paused, and the when/then nodes are UNCHANGED from setup.",
   "teardown_prompt": "Delete the Visual Rule 'BAT VRB Renamed' with hub_delete_visual_rule (confirm=true). Delete the virtual switch 'BAT VRB PauseSwitch'."
 }
 ```
@@ -4322,7 +4330,7 @@ The Visual Rules Builder tools live in the `hub_manage_rule_machine` gateway (th
 ```json
 {
   "setup_prompt": "The Write master is enabled and a recent backup exists. Create (1) a virtual switch 'BAT VRB DelSwitch', (2) a Visual Rule named 'BAT VRB Delete' via hub_set_visual_rule (classic definition over that switch), and (3) a Rule Machine rule named 'BAT VRB NotVisual' via hub_set_rule. Note both appIds.",
-  "test_prompt": "First call hub_delete_visual_rule on the RM rule 'BAT VRB NotVisual' (confirm=true) and report what happens. Then delete the Visual Rule 'BAT VRB Delete' with hub_delete_visual_rule (confirm=true) and report the verified flag and whether the response includes the pre-delete definition.",
+  "test_prompt": "First try deleting the RM rule 'BAT VRB NotVisual' AS IF it were a Visual Rule — go through the Visual Rule delete path, confirming — and report what happens. Then delete the actual Visual Rule 'BAT VRB Delete' (confirming) and report whether the delete was verified and whether the response includes the pre-delete definition.",
   "teardown_prompt": "Delete the RM rule 'BAT VRB NotVisual' with hub_delete_native_app (confirm=true). Delete the virtual switch 'BAT VRB DelSwitch'. Confirm via hub_get_visual_rule (list mode) that no rule named 'BAT VRB Delete' remains."
 }
 ```
