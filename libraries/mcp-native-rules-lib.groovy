@@ -1215,7 +1215,12 @@ private void _rmValidateDeviceIdsExist(String label, Object ids) {
             }
         }
         if (!exists) {
-            throw new IllegalArgumentException("${label} contains device ID '${idStr}' which does not exist on the hub. Verify the device ID via hub_list_devices.")
+            // Every call site of this validator runs before its operation's first hub write
+            // (single addTrigger/addAction before the wizard opens; the raw-settings and
+            // Required-Expression paths during spec parse), so the refusal carries the
+            // not-touched sentinel to keep the edit-path restoreHint accurate. (Batch callers
+            // catch per item and never consult the sentinel for restoreHint.)
+            throw new IllegalArgumentException("${label} contains device ID '${idStr}' which does not exist on the hub. Verify the device ID via hub_list_devices. RM is not touched.")
         }
     }
 }
@@ -1357,12 +1362,12 @@ private List<String> _rmStateChangeTokenStems() { _rmRhsOptionalComparatorMarker
 // Internal _rm helper -- not part of the tool surface.
 // True when a value looks like a state-change comparator token (wrapped '*changed*' or bare
 // 'changed', 'became true', 'increased', ...). Case-folded substring test so wrapped and bare
-// forms both match. Meaningful only for device-attribute capabilities, where the change
-// semantics belong in comparator:'*changed*' and `state` holds an enum value that never
-// contains a change stem (on/open/active/locked). Mode/Variable/Custom Attribute are EXEMPT
-// from the guard that uses this (see _rmStateChangeGuardExemptCapability) -- their `state`
-// legitimately carries a mode name or comparison/enum value that CAN contain such a stem. A
-// `state` that matches on a non-exempt capability was meant for `comparator`.
+// forms both match. Meaningful only for the capability families the guard applies to (see
+// _rmStateChangeGuardApplies): device-attribute enum and numeric triggers, where the change
+// semantics belong in comparator:'*changed*' and state/value holds an enum value or number
+// that never contains a change stem (on/open/active/locked/42). Other families (Mode,
+// Variable, Custom Attribute, time) legitimately carry a value that CAN contain such a stem,
+// so the guard is scoped away from them rather than relying on this token test alone.
 private boolean _rmLooksLikeStateChangeToken(Object raw) {
     def s = raw?.toString()?.toLowerCase()
     if (!s) return false
@@ -1374,44 +1379,127 @@ private boolean _rmLooksLikeStateChangeToken(Object raw) {
 }
 
 // Internal _rm helper -- not part of the tool surface.
-// Capabilities whose `state` field legitimately carries a value that may contain a change
-// stem, so the state-change guard must NOT fire for them: Mode (state is a mode NAME, e.g.
-// "Day Changed"), Variable (a bare no-comparator Variable already defaults to *changed*, and
-// its value may be any string), and Custom Attribute (state is the attribute's own enum value,
-// e.g. "increased"/"decreased"). The guard's steer-to-comparator hint is wrong for these too
-// (Mode has no comparator; an enum Custom Attribute comparator is not representable). Matches
-// the raw capability string case-insensitively, before canonicalization. Keep the spellings in
-// step with the Mode / Variable / Custom Attribute branches in _rmAddTrigger.
-private boolean _rmStateChangeGuardExemptCapability(String cap) {
-    ["Mode", "Variable", "Custom Attribute"].any { it.equalsIgnoreCase(cap) }
+// Resolve a trigger capability name to its FAMILY as classified in the addTrigger discover
+// schema (the single source of truth). Case-insensitive, alias-aware (e.g. "Door" resolves to
+// the Garage entry's device-state family). Returns null for an unrecognized capability, which
+// callers treat as "unknown -- fail safe". Reuses the discover schema so the family taxonomy
+// has one owner and cannot drift from the documented capability list.
+private String _rmTriggerCapabilityFamily(String cap) {
+    if (!cap) return null
+    def wanted = cap.trim()
+    def match = (_rmTriggerSchemaForDiscover()?.capabilities ?: []).find { c ->
+        (c?.name?.toString()?.equalsIgnoreCase(wanted)) ||
+        (c?.aliases instanceof List && (c.aliases as List).any { it?.toString()?.equalsIgnoreCase(wanted) })
+    }
+    return match?.family?.toString()
+}
+
+// Internal _rm helper -- not part of the tool surface.
+// FAMILY gate for the state-change-token guard: it fires ONLY for capabilities whose state/value
+// routes through the tstate value picker AND that offer *changed* as the correct alternative --
+// i.e. the device-state (enum state) and numeric (value + comparator) families. Every other
+// family is left unguarded: Mode (hub-state) and Variable carry names/arbitrary strings; Custom
+// Attribute's enum value may legitimately BE a change stem (e.g. a trend attribute's
+// "increased"/"decreased"); the Button family's value is an event type (pushed / held /
+// doubleTapped / released), not a comparator-backed state that offers *changed*; the time family
+// (Periodic Schedule / Certain Time / Sunrise / Sunset) exposes no tstate at all, so a
+// state-change steer would be meaningless there. Positive scope,
+// NOT a deny-list: an unrecognized capability (family null) is unguarded -- a missed guard is safer
+// than falsely rejecting a legitimate spec. Single owner shared by the add and modify paths.
+private boolean _rmStateChangeGuardApplies(String cap) {
+    _rmTriggerCapabilityFamily(cap) in ["device-state", "numeric"]
+}
+
+// Internal _rm helper -- not part of the tool surface.
+// Return a human-readable "what is missing" message when a periodic spec is under-specified for
+// its frequency (only whichPeriod would be written -> the row renders "?"/"null"), else null.
+// The required-field sets are derived from the periodic WRITE block's per-frequency dispatch:
+// each frequency must carry at least the field(s) that select its mode, and Monthly/Yearly need
+// their full nth-weekday or by-day combo. A non-empty rawSettings map is the caller's escape
+// hatch (they drive the sub-page fields directly), so the recognized-field requirement is
+// skipped when it is present. Messages are ASCII-only and name the concrete fields.
+private String _rmPeriodicShapeError(String freq, Map per) {
+    if (per?.rawSettings instanceof Map && !(per.rawSettings as Map).isEmpty()) return null
+    switch (freq) {
+        case "Seconds":
+            if (per.everyN == null) return "Periodic Seconds requires everyN (the count enum)."
+            break
+        case "Minutes":
+            if (per.everyN == null && per.selectedMinutes == null) return "Periodic Minutes requires everyN ('every N minutes') or selectedMinutes ('at these minutes')."
+            break
+        case "Hourly":
+            if (per.everyN == null && per.selectedHours == null) return "Periodic Hourly requires everyN ('every N hours') or selectedHours ('at these hours')."
+            break
+        case "Daily":
+            if (per.everyN == null && per.weekdaysOnly != true && per.selectedDaysOfMonth == null) return "Periodic Daily requires everyN ('every N days'), weekdaysOnly:true, or selectedDaysOfMonth."
+            break
+        case "Weekly":
+            if (per.daysOfWeek == null) return "Periodic Weekly requires daysOfWeek (list of weekday names, e.g. ['Monday','Friday'])."
+            break
+        case "Monthly":
+            // Mutual-exclusion of dayOfMonth+weekOfMonth is rejected earlier, so here each mode's
+            // full field set is required: nth-weekday needs dayOfWeek + everyNMonths; by-day needs
+            // everyNMonths; neither present means no mode was selected at all.
+            if (per.weekOfMonth != null) {
+                def missing = []
+                if (per.dayOfWeek == null) missing << "dayOfWeek"
+                if (per.everyNMonths == null) missing << "everyNMonths"
+                if (missing) return "Periodic Monthly nth-weekday (weekOfMonth set) also requires ${missing.join(' and ')}."
+            } else if (per.dayOfMonth != null) {
+                if (per.everyNMonths == null) return "Periodic Monthly by-day (dayOfMonth set) also requires everyNMonths."
+            } else {
+                return "Periodic Monthly requires either dayOfMonth+everyNMonths (by-day) or weekOfMonth+dayOfWeek+everyNMonths (nth-weekday)."
+            }
+            break
+        case "Yearly":
+            def missing = []
+            if (per.weekOfMonth == null) missing << "weekOfMonth"
+            if (per.dayOfWeek == null) missing << "dayOfWeek"
+            if (per.months == null) missing << "months"
+            if (missing) return "Periodic Yearly (always nth-weekday) requires ${missing.join(', ')} (e.g. weekOfMonth:'Second', dayOfWeek:'Monday', months:'December')."
+            break
+        case "Cron String":
+            if (per.cronString == null) return "Periodic Cron String requires cronString (the cron expression, e.g. '0 0 12 * * ?')."
+            break
+        default:
+            // Unrecognized frequency -- the periodic write block's frequency check handles it.
+            return null
+    }
+    return null
 }
 
 private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
-    if (!(triggerSpec instanceof Map)) throw new IllegalArgumentException("addTrigger requires a Map spec")
+    if (!(triggerSpec instanceof Map)) throw new IllegalArgumentException("addTrigger requires a Map spec. RM is not touched.")
     // Discover mode -- return static schema without touching the hub.
     // No capability field required; no Write master gate; no backup.
     if (triggerSpec.discover == true) {
         return _rmTriggerSchemaForDiscover()
     }
     def cap = triggerSpec.capability?.toString()?.trim()
-    if (!cap) throw new IllegalArgumentException("addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema.")
+    if (!cap) throw new IllegalArgumentException("addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema. RM is not touched.")
 
     // Fail loud on the two plausible-but-wrong shapes the wizard would otherwise commit
     // as a broken trigger with success:true. Both checks run before any hub round-trip, so
     // a rejected spec never leaves a half-written trigger editor open.
     //
-    // A state-change token belongs in `comparator`, not `state`. Supplied as `state` on a
-    // numeric or device-state trigger it falls through to the generic tstate path, which the
-    // hub rejects (tstate not_in_schema) and leaves a partial trigger with no hint. Fires only
-    // for device-attribute capabilities and only when no comparator was given -- an explicit
-    // comparator is the correct channel and takes precedence, and Mode/Variable/Custom
-    // Attribute are exempt because their `state` legitimately carries names/enum values.
-    if (triggerSpec.comparator == null && !_rmStateChangeGuardExemptCapability(cap) && _rmLooksLikeStateChangeToken(triggerSpec.state)) {
-        throw new IllegalArgumentException("state:'${triggerSpec.state}' is not a valid state value -- for a state-change trigger use comparator:'*changed*' (or '*became*'/'*increased*'/'*decreased*'), not state. Pass {discover:true} for this capability's field schema. RM is not touched.")
+    // A state-change token belongs in `comparator`, not `state`/`value`. Supplied as either on a
+    // numeric or device-state trigger it falls through to the generic tstate path, which the hub
+    // rejects (tstate not_in_schema) and leaves a partial trigger with no hint. Guard the
+    // EFFECTIVE value -- state, else value, matching the generic sink below (state != null ?
+    // state : value) -- so the numeric-idiomatic `value:'increased'` bypass is caught too. Fires
+    // only when no comparator was given (an explicit comparator is the correct channel and takes
+    // precedence) and only for the families the guard applies to (device-state / numeric); the
+    // family scope leaves Mode / Variable / Custom Attribute and the time family untouched,
+    // because their state/value legitimately carries names, enum values, or nothing.
+    def effState = triggerSpec.state != null ? triggerSpec.state : triggerSpec.value
+    def offendingField = triggerSpec.state != null ? "state" : "value"
+    if (triggerSpec.comparator == null && _rmLooksLikeStateChangeToken(effState) && _rmStateChangeGuardApplies(cap)) {
+        throw new IllegalArgumentException("${offendingField}:'${effState}' is not a valid state value -- for a state-change trigger use comparator:'*changed*' (or '*became*'/'*increased*'/'*decreased*'), not ${offendingField}. Pass {discover:true} for this capability's field schema. RM is not touched.")
     }
 
     // A Periodic Schedule trigger's schedule lives entirely in the periodic map; without it
-    // only tCapab is written, the trigger renders as "null", and the response is success:true.
+    // only tCapab is written, the trigger renders as "?" (the parent renderer cannot reach the
+    // unwritten sub-page state), and the response is success:true.
     // Reject early and name the concrete mistake: a present-but-non-Map `periodic`, else any
     // stray top-level keys the caller passed (e.g. a bare `minutes`). Match on the raw
     // capability string -- the canonical enum value is not resolved until the wizard opens.
@@ -1460,6 +1548,12 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     if (cap.equalsIgnoreCase("Periodic Schedule") && triggerSpec.periodic instanceof Map) {
         def perEarly = triggerSpec.periodic as Map
         def freqEarly = perEarly.frequency?.toString()
+        // frequency is the periodic mode selector -- without it the sub-page never opens and
+        // the row renders as "?". Reject up front (pre-write) instead of the later post-write
+        // throw in the periodic write block (which fires after the trigger editor has opened).
+        if (!freqEarly) {
+            throw new IllegalArgumentException("Periodic Schedule trigger requires periodic.frequency (one of: Seconds, Minutes, Hourly, Daily, Weekly, Monthly, Yearly, 'Cron String'). Pass {discover:true} for the full periodic field schema. RM is not touched.")
+        }
         // Seconds/Minutes count is a restricted RM enum, not a free integer.
         // Fractional values truncate toward zero (5.5 -> 5) and are then
         // range-checked against the enum. Normalize everyN to the truncated
@@ -1473,7 +1567,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
             // both mean "not a usable count" and route to the throw below.
             try { reqCount = perEarly.everyN as Integer } catch (Exception ignored) { reqCount = null }
             if (reqCount == null || !(reqCount in allowedCounts)) {
-                throw new IllegalArgumentException("Periodic ${freqEarly} everyN must be one of ${allowedCounts} (RM restricts the count to this enum); got '${perEarly.everyN}'.")
+                throw new IllegalArgumentException("Periodic ${freqEarly} everyN must be one of ${allowedCounts} (RM restricts the count to this enum); got '${perEarly.everyN}'. RM is not touched.")
             }
             perEarly.everyN = reqCount
         }
@@ -1482,7 +1576,15 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         // spec that mixes them so the caller gets a clear error instead of an
         // unrenderable half-written sub-page.
         if (freqEarly == "Monthly" && perEarly.dayOfMonth != null && perEarly.weekOfMonth != null) {
-            throw new IllegalArgumentException("Periodic Monthly: dayOfMonth and weekOfMonth are mutually exclusive -- dayOfMonth selects a calendar day (e.g. the 15th), weekOfMonth selects the Nth weekday (e.g. the Second Monday). Pass one mode's fields, not both.")
+            throw new IllegalArgumentException("Periodic Monthly: dayOfMonth and weekOfMonth are mutually exclusive -- dayOfMonth selects a calendar day (e.g. the 15th), weekOfMonth selects the Nth weekday (e.g. the Second Monday). Pass one mode's fields, not both. RM is not touched.")
+        }
+        // Each frequency needs its mode-defining field(s) or only whichPeriod is written and
+        // the row renders unusable (a phantom "?"/"null"). Fail loud on an under-specified
+        // shape so the family, not just the missing-map case, is covered by the fail-loud
+        // contract. Pre-write, so it carries the not-touched sentinel.
+        def shapeErr = _rmPeriodicShapeError(freqEarly, perEarly)
+        if (shapeErr) {
+            throw new IllegalArgumentException("${shapeErr} Pass {discover:true} for the full periodic field schema. RM is not touched.")
         }
     }
 
@@ -2561,10 +2663,10 @@ private Map _rmTriggerSchemaForDiscover() {
                 requiredFields: [
                     [name: "periodic", type: "Map", description: "{frequency, everyN?, startingTime?, weekdaysOnly?, selectedHours?, selectedMinutes?, selectedDaysOfMonth?, daysOfWeek?, dayOfWeek?, dayOfMonth?, everyNMonths?, months?, weekOfMonth?, minutesOffset?, cronString?, rawSettings?}"]
                 ],
-                notes: "frequency values: 'Seconds', 'Minutes', 'Hourly', 'Daily', 'Weekly', 'Monthly', 'Yearly', 'Cron String'. everyN is REQUIRED even when =1 for Daily AND Hourly -- omitting it renders 'null'. For Seconds and Minutes, everyN is a restricted enum -- one of [1,2,3,4,5,6,10,12,15,20,30] and must be a whole number (firmware-imposed; Hourly/Daily accept any positive integer. Fractional values truncate, e.g. 5.5 -> 5; anything outside the set fails). Seconds exposes ONLY the count enum -- no toggle and no startingTime. For Hourly-everyN, pass startingTime too -- omitting it renders a cosmetic trailing 'starting at ' blank. Monthly has TWO mutually-exclusive modes: by-day (dayOfMonth + everyNMonths) and nth-weekday (weekOfMonth + dayOfWeek + everyNMonths) -- passing both dayOfMonth and weekOfMonth is rejected. Monthly by-day needs BOTH dayOfMonth AND everyNMonths or it renders 'null'. Monthly 'specific months' ('on day N of selected months') is NOT yet supported (an order-sensitive third sub-mode) -- use rawSettings if needed. Yearly is ALWAYS nth-weekday: weekOfMonth + dayOfWeek + months (single month) -- because RM 5.1 exposes no by-day calendar-day field for Yearly, only the nth-weekday picker; the month alone never completes. A Periodic Schedule spec with no periodic map is rejected up front (success=false, naming the stray keys) rather than committing a phantom '?' row. The helper walks the periodic sub-page automatically.",
+                notes: "frequency values: 'Seconds', 'Minutes', 'Hourly', 'Daily', 'Weekly', 'Monthly', 'Yearly', 'Cron String'. everyN is REQUIRED even when =1 for Daily's 'every N days' mode -- omitting it renders 'null'; Hourly accepts everyN OR selectedHours. For Seconds and Minutes, everyN is a restricted enum -- one of [1,2,3,4,5,6,10,12,15,20,30] and must be a whole number (firmware-imposed; Hourly/Daily accept any positive integer. Fractional values truncate, e.g. 5.5 -> 5; anything outside the set fails). Seconds exposes ONLY the count enum -- no toggle and no startingTime. For Hourly-everyN, pass startingTime too -- omitting it renders a cosmetic trailing 'starting at ' blank. Monthly has TWO mutually-exclusive modes: by-day (dayOfMonth + everyNMonths) and nth-weekday (weekOfMonth + dayOfWeek + everyNMonths) -- passing both dayOfMonth and weekOfMonth is rejected. Monthly by-day needs BOTH dayOfMonth AND everyNMonths or it renders 'null'. Monthly 'specific months' ('on day N of selected months') is NOT yet supported (an order-sensitive third sub-mode) -- use rawSettings if needed. Yearly is ALWAYS nth-weekday: weekOfMonth + dayOfWeek + months (single month) -- because RM 5.1 exposes no by-day calendar-day field for Yearly, only the nth-weekday picker; the month alone never completes. A Periodic Schedule spec with no periodic map is rejected up front (success=false, naming the stray keys) rather than committing a phantom '?' row. The helper walks the periodic sub-page automatically.",
                 periodicShape: [
                     frequency: "Seconds | Minutes | Hourly | Daily | Weekly | Monthly | Yearly | Cron String",
-                    everyN: "Integer -- 'every N <unit>' mode (Seconds/Minutes/Hourly/Daily). REQUIRED even when =1 for Daily AND Hourly (omitting renders null). For Seconds/Minutes restricted to a whole number in [1,2,3,4,5,6,10,12,15,20,30] (firmware-imposed; Hourly/Daily accept any positive integer. Fractional values truncate, e.g. 5.5 -> 5).",
+                    everyN: "Integer -- 'every N <unit>' mode (Seconds/Minutes/Hourly/Daily). REQUIRED even when =1 for Daily's 'every N days' mode (omitting renders null); Hourly accepts everyN OR selectedHours. For Seconds/Minutes restricted to a whole number in [1,2,3,4,5,6,10,12,15,20,30] (firmware-imposed; Hourly/Daily accept any positive integer. Fractional values truncate, e.g. 5.5 -> 5).",
                     startingTime: "HH:mm -- start time (Hourly/Daily/Weekly/Monthly/Yearly; Seconds has none). For Hourly-everyN, pass it -- omitting renders a cosmetic trailing 'starting at ' blank.",
                     weekdaysOnly: "Boolean -- Daily only",
                     selectedHours: "List<Integer> -- Hourly only, alternative to everyN",
@@ -3260,6 +3362,26 @@ private List _rmCollectTriggerIndices(Integer appId) {
     return out
 }
 
+// Scan an RM rule's appSettings for tCapab<N> entries and return a Map of
+// trigger index -> committed capability string, read from the SAME statusJson
+// the index scan uses. tCapab is an enum picker, so its appSettings value is the
+// plain capability string (unlike device pickers, whose value is null with the
+// ids in deviceIdsForDeviceList). Lets a caller resolve both the live trigger set
+// and a trigger's capability from ONE hub fetch; a tCapab entry with an absent
+// value maps to null, which the family guard treats as unresolved -- fail safe.
+private Map _rmCollectTriggerCapabilities(Integer appId) {
+    def status = _rmFetchStatusJson(appId)
+    def out = [:]
+    (status?.appSettings ?: []).each { s ->
+        def n = s?.name?.toString()
+        if (n) {
+            def m = (n =~ /^tCapab(\d+)$/)
+            if (m.matches()) out[(m[0][1] as Integer)] = s?.value?.toString()
+        }
+    }
+    return out
+}
+
 // Scan an RM rule's appSettings for actType.<N> entries and return the
 // list of action indices in DISPLAY ORDER. Used by _rmAddAction to pick
 // the next free index and by _rmMoveAction to verify position shifts.
@@ -3454,7 +3576,7 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
 private Map _rmRemoveTrigger(Integer appId, Integer triggerIdx) {
     def beforeIndices = _rmCollectTriggerIndices(appId)
     if (!beforeIndices.contains(triggerIdx)) {
-        throw new IllegalArgumentException("removeTrigger.index ${triggerIdx} not found in rule ${appId}. Existing indices: ${beforeIndices.sort().join(', ')}")
+        throw new IllegalArgumentException("removeTrigger.index ${triggerIdx} not found in rule ${appId}. Existing indices: ${beforeIndices.sort().join(', ')}. RM is not touched.")
     }
     // The trigger-row Delete button on selectTriggers requires a TWO-POST
     // sequence to actually delete (verified live via Chrome XHR
@@ -3540,18 +3662,30 @@ private Map _rmModifyTrigger(Integer appId, Integer triggerIdx, Map mods) {
     if (!mods.containsKey("state")) {
         throw new IllegalArgumentException("modifyTrigger.mods must include 'state'. Supported fields: state.")
     }
-    // A state-change token belongs in a comparator, but modifyTrigger only edits an existing
-    // device-state trigger's tstate value and has NO comparator channel (the standing scope
-    // limit above). So a change token in mods.state can only ever commit as a literal state
-    // that silently never matches. Reject up front, before any hub round-trip, steering to the
-    // removeTrigger + addTrigger path where a comparator CAN be set. Shares the single
-    // _rmLooksLikeStateChangeToken predicate with addTrigger so the token family has one owner.
-    if (_rmLooksLikeStateChangeToken(mods.state)) {
-        throw new IllegalArgumentException("modifyTrigger.mods.state:'${mods.state}' looks like a state-change comparator token, but modifyTrigger only edits a device-state trigger's value and cannot set a comparator. For a state-change trigger use removeTrigger then addTrigger with comparator:'*changed*' (or '*became*'/'*increased*'/'*decreased*'). RM is not touched.")
+    // Single statusJson read shared by the index-existence check AND the
+    // state-change-token guard below (index -> committed capability). Before this,
+    // the guard did a SECOND GET (configure/json) purely to read tCapab<idx>,
+    // duplicating the read statusJson already carries.
+    def triggerCaps = _rmCollectTriggerCapabilities(appId)
+    if (!triggerCaps.containsKey(triggerIdx)) {
+        throw new IllegalArgumentException("modifyTrigger.index ${triggerIdx} not found in rule ${appId}. Existing indices: ${triggerCaps.keySet().sort().join(', ')}. RM is not touched.")
     }
-    def existingIndices = _rmCollectTriggerIndices(appId)
-    if (!existingIndices.contains(triggerIdx)) {
-        throw new IllegalArgumentException("modifyTrigger.index ${triggerIdx} not found in rule ${appId}. Existing indices: ${existingIndices.sort().join(', ')}")
+    // A state-change token belongs in a comparator, but modifyTrigger only edits an existing
+    // trigger's tstate value and has NO comparator channel (the standing scope limit above), so a
+    // change token in mods.state could only ever commit as a literal state that silently never
+    // matches. Reject up front, before any hub round-trip, steering to the removeTrigger +
+    // addTrigger path where a comparator CAN be set. But the guard applies ONLY to the families
+    // whose value picker is a plain tstate with *changed* as the alternative (device-state /
+    // numeric) -- NOT Custom Attribute (its enum value may legitimately BE a change stem like
+    // "increased"/"decreased"), Mode, Variable, or the time family. The committed capability comes
+    // from the shared triggerCaps map (the SAME statusJson as the index check -- no extra fetch);
+    // apply the shared guard predicate and fail SAFE (do not reject) when the capability is
+    // unresolved (null) -- a missed guard beats falsely rejecting a legitimate edit.
+    if (_rmLooksLikeStateChangeToken(mods.state)) {
+        def committedCap = triggerCaps[triggerIdx]
+        if (_rmStateChangeGuardApplies(committedCap)) {
+            throw new IllegalArgumentException("modifyTrigger.mods.state:'${mods.state}' looks like a state-change comparator token, but modifyTrigger only edits a device-state trigger's value and cannot set a comparator. For a state-change trigger use removeTrigger then addTrigger with comparator:'*changed*' (or '*became*'/'*increased*'/'*decreased*'). RM is not touched.")
+        }
     }
     // Open the edit-condition wizard for this trigger.
     _rmClickAppButton(appId, triggerIdx.toString(), "editCond", "selectTriggers")

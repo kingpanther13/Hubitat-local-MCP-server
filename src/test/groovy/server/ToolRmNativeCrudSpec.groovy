@@ -95,7 +95,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     // Minimal RM rule config JSON. Schema inputs drive _rmBuildSettingsBody's
     // 3-field group logic, so tests shape the sections/inputs as needed.
-    private String ruleConfigJson(int ruleId, String label = "BAT-RM-test", List inputs = [], Integer parentAppId = null) {
+    private String ruleConfigJson(int ruleId, String label = "BAT-RM-test", List inputs = [], Integer parentAppId = null, Map settings = [:]) {
         def app = [id: ruleId, name: "Rule-5.1", label: label, trueLabel: label, installed: true,
                    appType: [name: "Rule-5.1", namespace: "hubitat"]]
         if (parentAppId != null) app.parentAppId = parentAppId
@@ -104,7 +104,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null, sections: [
                 [title: "", input: inputs]
             ]],
-            settings: [:],
+            settings: settings,
             childApps: []
         ])
     }
@@ -2310,6 +2310,65 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         thrownEx.message.contains("Unstubbed hubInternalGet")
     }
 
+    def "addTrigger Periodic Schedule with a bare capability (no periodic, no stray keys) is rejected without an empty detail clause"() {
+        // Pins the empty-detail branch: a bare {capability:'Periodic Schedule'} has no stray key
+        // and no periodic key, so the message names the required periodic map WITHOUT a
+        // 'Received keys: []' or 'not a Map' clause that would tell the caller nothing.
+        when: "Periodic Schedule is requested with nothing else"
+        script._rmAddTrigger(100, [capability: "Periodic Schedule"])
+
+        then: "the reject names the required periodic map with no empty stray-key or type clause"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("periodic:")
+        !ex.message.contains("Received")
+        !ex.message.contains("not a Map")
+        ex.message.contains("RM is not touched")
+    }
+
+    def "addTrigger Periodic '#label' under-specified for its frequency is rejected naming the missing field(s)"() {
+        // A frequency present but missing its mode-defining field(s) writes only whichPeriod and
+        // renders a phantom row -- fail loud, pre-write, naming the concrete missing field. The
+        // Seconds/Minutes rows pin _rmPeriodicShapeError's sole guard for a bare frequency (the
+        // everyN-enum guard only runs when everyN != null). The final row instead pins the earlier
+        // frequency-required pre-check (a periodic map with no frequency at all).
+        when: "an under-specified periodic map is supplied"
+        script._rmAddTrigger(100, [capability: "Periodic Schedule", periodic: periodic])
+
+        then: "the shape is rejected up front, naming the missing field and carrying the sentinel"
+        def ex = thrown(IllegalArgumentException)
+        needle.every { ex.message.contains(it) }
+        ex.message.contains("RM is not touched")
+
+        where:
+        label                       | periodic                                      | needle
+        "Seconds no everyN"         | [frequency: "Seconds"]                        | ["Seconds", "everyN"]
+        "Minutes neither"           | [frequency: "Minutes"]                        | ["Minutes", "everyN"]
+        "Hourly no everyN"          | [frequency: "Hourly"]                         | ["Hourly", "everyN"]
+        "Daily no mode"             | [frequency: "Daily"]                          | ["Daily", "everyN"]
+        "Weekly no days"            | [frequency: "Weekly"]                         | ["Weekly", "daysOfWeek"]
+        "Monthly no mode"           | [frequency: "Monthly"]                        | ["Monthly", "by-day"]
+        "Monthly by-day"            | [frequency: "Monthly", dayOfMonth: 15]        | ["Monthly", "everyNMonths"]
+        "Monthly nth-wkday"         | [frequency: "Monthly", weekOfMonth: "Second"] | ["Monthly", "dayOfWeek", "everyNMonths"]
+        "Yearly incomplete"         | [frequency: "Yearly", weekOfMonth: "First"]   | ["Yearly", "dayOfWeek", "months"]
+        "Cron no expr"              | [frequency: "Cron String"]                    | ["Cron String", "cronString"]
+        "missing frequency (pre-check)" | [everyN: 5]                               | ["frequency"]
+    }
+
+    def "addTrigger Periodic under-specified frequency with rawSettings escape hatch is NOT rejected by the shape guard"() {
+        // rawSettings means the caller drives the sub-page fields directly, so the
+        // recognized-field requirement is skipped -- the guard must not false-reject it.
+        when: "an otherwise-bare frequency is paired with a non-empty rawSettings map"
+        Exception thrownEx = null
+        try {
+            script._rmAddTrigger(100, [capability: "Periodic Schedule", periodic: [frequency: "Hourly", rawSettings: [everyNHC1: 3]]])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "the shape guard does not fire; execution reaches the unmocked hub layer instead"
+        thrownEx != null
+        !thrownEx.message.contains("requires everyN")
+        thrownEx.message.contains("Unstubbed hubInternalGet")
+    }
+
     def "addTrigger state-change token '#token' in state without a comparator is rejected steering to comparator"() {
         when: "a numeric/device-state trigger passes a state-change token as state with no comparator"
         script._rmAddTrigger(100, [capability: "Temperature", deviceIds: [8], state: token])
@@ -2323,7 +2382,26 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.contains("RM is not touched")
 
         where:
-        token << ["changed", "became", "increased", "decreased"]
+        // Mixed-case rows ('Changed', 'INCREASED') pin the INPUT-side .toLowerCase() in
+        // _rmLooksLikeStateChangeToken: delete it and the guard stops matching a mixed-case
+        // token, so these rows go RED (no exception thrown).
+        token << ["changed", "became", "increased", "decreased", "Changed", "INCREASED", "Became true"]
+    }
+
+    def "addTrigger state-change token in the 'value' alias (not 'state') is rejected steering to comparator"() {
+        // The generic sink is (state != null ? state : value), so a change token supplied as
+        // `value` -- the field numeric capabilities most naturally use -- would otherwise sail
+        // past a state-only guard and commit a literal-'increased' trigger. The guard checks the
+        // EFFECTIVE value and names the offending field.
+        when: "a numeric trigger passes a state-change token as value with no comparator"
+        script._rmAddTrigger(100, [capability: "Temperature", deviceIds: [8], value: "increased"])
+
+        then: "the value-alias bypass is rejected up front, naming value and steering to comparator"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("value:'increased'")
+        ex.message.contains("is not a valid state value")
+        ex.message.contains("comparator")
+        ex.message.contains("RM is not touched")
     }
 
     def "addTrigger with an explicit comparator is not rejected even when state also looks like a change token"() {
@@ -2374,11 +2452,37 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         cap                | stateVal
         "Mode"             | "Changed"
         "Mode"             | "Day Changed"
+        // Lowercase capability pins the case-insensitive family classification (matches "Mode").
+        "mode"             | "changed"
         "Variable"         | "increased"
         "Custom Attribute" | "decreased"
     }
 
-    def "modifyTrigger with a state-change token '#token' in mods.state is rejected steering to removeTrigger + addTrigger"() {
+    def "addTrigger Periodic Schedule with a stray state-change token is NOT rejected by the state guard (no tstate family)"() {
+        // The state guard must not fire for a capability with no tstate value picker. A Periodic
+        // Schedule with a valid periodic map plus a stray state:'changed' proceeds past the guard;
+        // the stray key surfaces later as a not_in_schema skip, NOT a comparator-steer rejection
+        // that is meaningless for a schedule.
+        when: "a well-formed periodic trigger also carries a stray state-change token"
+        Exception thrownEx = null
+        try {
+            script._rmAddTrigger(100, [capability: "Periodic Schedule", periodic: [frequency: "Minutes", everyN: 5], state: "changed"])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "neither the state guard nor the periodic-shape guard fires; execution reaches the unmocked hub layer"
+        thrownEx != null
+        !thrownEx.message.contains("is not a valid state value")
+        !thrownEx.message.contains("requires periodic:")
+        thrownEx.message.contains("Unstubbed hubInternalGet")
+    }
+
+    def "modifyTrigger with a state-change token '#token' on a guarded-family trigger is rejected steering to removeTrigger + addTrigger"() {
+        given: "an existing numeric (guarded-family) trigger at index 1"
+        // The index-existence check reads statusJson; the capability read reads configure/json.
+        // Both must expose tCapab1 so the guard resolves the committed capability BEFORE any write.
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "tCapab1", value: "Temperature"]]) }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, [tCapab1: "Temperature"]) }
+
         when: "an existing trigger's state is edited to a state-change token (modify has no comparator channel)"
         script._rmModifyTrigger(100, 1, [state: token])
 
@@ -2392,6 +2496,31 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         where:
         token << ["changed", "became", "increased", "decreased"]
+    }
+
+    def "modifyTrigger with a stem value on a Custom Attribute trigger is NOT rejected (exempt family)"() {
+        // A trend Custom Attribute's own enum value can legitimately BE a change stem
+        // ('increased'/'decreased'). The guard reads the committed tCapab1='Custom Attribute',
+        // finds it is not a guarded family, and lets the edit proceed -- it must NOT reject. A
+        // POST sentinel deterministically marks that execution reached the editCond wizard click
+        // PAST the guard, so the assertion is not a fragile 'reached some unstubbed hub op'.
+        given: "an existing Custom Attribute trigger at index 1; the first hub write throws a sentinel"
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "tCapab1", value: "Custom Attribute"]]) }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, [tCapab1: "Custom Attribute"]) }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            throw new IllegalStateException("REACHED_EDITCOND_POST")
+        }
+
+        when: "the trigger's value is edited to a trend enum value that contains a change stem"
+        Exception thrownEx = null
+        try {
+            script._rmModifyTrigger(100, 1, [state: "increased"])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "the guard does not fire; execution proceeds past it to the wizard-open POST"
+        thrownEx != null
+        !thrownEx.message.contains("looks like a state-change comparator token")
+        thrownEx.message.contains("REACHED_EDITCOND_POST")
     }
 
     def "modifyTrigger with a normal enum state is not rejected by the state-change guard"() {
@@ -2458,8 +2587,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             posts << [path: path, body: body]
             [status: 200, location: null, data: '']
         }
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Plain", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, []) }
+        // The refusal is now capability-aware: index 1 must exist AND resolve to a guarded family --
+        // both now come from the SAME statusJson (tCapab1 value='Temperature'), the single fetch
+        // _rmModifyTrigger uses for the index check and the capability guard, so the guard fires
+        // instead of a bare index-not-found error. (configure/json is still registered because the
+        // outer toolSetRule wrapper reads it for the pre-write backup/version context.)
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Plain", [], null, [tCapab1: "Temperature"]) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "tCapab1", value: "Temperature"]]) }
 
         when: "a modifyTrigger passes a state-change token as mods.state (a pre-flight shape refusal)"
         def result = script.toolSetRule([appId: 100, modifyTrigger: [index: 1, mods: [state: "changed"]], confirm: true])
@@ -17799,6 +17933,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // "Existing indices: 2" comes from _rmRemoveTrigger's
         // sort().join(', ') formatter on the not-found throw.
         result.error?.contains("Existing indices: 2")
+
+        and: "the pre-write index-not-found refusal carries the not-touched sentinel + accurate restoreHint (regression guard -- both-ways pending orchestrator)"
+        // The index check runs after the index-collect GET but before any wizard mutation, so the
+        // sentinel keeps the edit-path restoreHint from falsely prompting a 'Backup saved before
+        // write' restore for a rule that was never touched.
+        result.error?.contains("RM is not touched")
+        result.restoreHint?.contains("RM was not touched")
+        !result.restoreHint?.contains("Backup saved before write")
     }
 
     def "removeTrigger retry path: trigger disappears on second check after race recovery"() {
@@ -18033,6 +18175,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // not-found throw; a loose .contains("2") would also match coincidental
         // digit overlap (e.g. modifyTrigger.index 7 -> two-digit hits).
         result.error?.contains("Existing indices: 2")
+
+        and: "the pre-write index-not-found refusal carries the not-touched sentinel + accurate restoreHint (regression guard -- both-ways pending orchestrator)"
+        // The index check runs after the shared statusJson read but before any wizard mutation, so
+        // the sentinel keeps the edit-path restoreHint from falsely prompting a 'Backup saved before
+        // write' restore for a rule that was never touched.
+        result.error?.contains("RM is not touched")
+        result.restoreHint?.contains("RM was not touched")
+        !result.restoreHint?.contains("Backup saved before write")
     }
 
     def "modifyTrigger returns success: false on unsupported mods fields (capability or deviceIds) with workaround hint"() {
