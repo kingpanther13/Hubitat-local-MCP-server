@@ -1639,6 +1639,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v3.1.2** - build(deps): bump the gradle-dependencies group with 2 updates ([#332](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/332), @app/dependabot); fix: fail loud on wrong-shaped addTrigger specs instead of silently committing a broken trigger. PRs: [#332](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/332), [#334](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/334)
 - **v3.1.1** - feat: add bypassDeviceAllowlist toggle for full device-tool parity on unlisted devices. PRs: [#330](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/330)
 - **v3.1.0** - refactor: shrink flat tools/list catalog + Anthropic best-practice tool audit (#296). PRs: [#331](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/331)
 - **v3.0.2** - docs: correct device-edit endpoint notes — drop unsupported firmware-causation claim; feat: hub_set_system_settings dark mode + network config; rename hub_call_destructive_radio → hub_call_destructive_ops (adds network/cloud). PRs: [#328](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/328), [#329](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/329)
