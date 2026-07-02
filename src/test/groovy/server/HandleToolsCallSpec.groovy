@@ -82,6 +82,22 @@ class HandleToolsCallSpec extends ToolSpecBase {
         !inner.error.contains('hub_manage_rooms')
     }
 
+    def "non-serializable tool result on a gateway-routed call blames the failing sub-tool, not the gateway"() {
+        given: 'a leaf handler returning Double.NaN (JsonOutput throws "Number value is Not-a-Number"), reached through its gateway'
+        settingsMap.useGateways = true
+        script.metaClass.toolListRooms = { a -> [rooms: [], bad: Double.NaN] }
+
+        when:
+        def response = mcpDriver.callTool('hub_manage_rooms', [tool: 'hub_list_rooms', args: [:]])
+
+        then: 'isError envelope whose error names the SUB-TOOL (same reactiveToolName resolution as the null branch)'
+        response.result.isError == true
+        def inner = mcpDriver.parseInner(response)
+        inner.isError == true
+        inner.error.contains('hub_list_rooms')
+        !inner.error.contains('hub_manage_rooms')
+    }
+
     def "successful tool call returns wrapped content as JSON text"() {
         given: 'Read tools enabled + a stubbed /logs/past/json returning empty logs'
         settingsMap.enableRead = true

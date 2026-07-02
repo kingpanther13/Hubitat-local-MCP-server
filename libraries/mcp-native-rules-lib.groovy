@@ -7759,8 +7759,14 @@ def _isSetRuleSchemaOnlyCall(args) {
         def op = args.operation.toString()
         return (op == 'guide' || op == 'discover' || args.confirm != true)
     }
-    // Legacy (no-operation) form: these meta flags short-circuit inside the handler with NO
-    // mutation (the discover/guide early-returns), so they are genuinely schema-only.
+    // Legacy (no-operation) form: toolSetRule dispatches buttonRule to
+    // _createButtonRuleViaController (a REAL write) BEFORE the meta-call shortcuts,
+    // and that flow's exclusivity gate does not reject a stray guide flag -- so a
+    // guide/discover flag riding a buttonRule call must never read as schema-only
+    // (it would bypass the Write master and actually create the button rule).
+    if (args.buttonRule != null) return false
+    // Remaining meta flags short-circuit inside the handler with NO mutation (the
+    // discover/guide early-returns), so they are genuinely schema-only.
     if (args.guide == true) return true
     if (args.addTrigger instanceof Map && args.addTrigger.discover == true) return true
     if (args.addAction instanceof Map && args.addAction.discover == true) return true
@@ -7771,12 +7777,12 @@ def _isSetRuleSchemaOnlyCall(args) {
 // schema returns, no mutation, before requireDestructiveConfirm), so those meta-calls are
 // schema-only exactly like hub_set_rule's legacy form. Consumed by the same three gates
 // that exempt hub_set_rule (handleGateway's required-param pre-check, the Write master,
-// the mandatory-BPS gate). UNLIKE toolSetRule (whose guide shortcut sits at the very top
-// of the handler), the shortcuts here live only in the EDIT engine -- toolSetNativeApp
-// routes buttonRule and no-appId calls to WRITE paths first -- so a call is schema-only
-// ONLY when it is edit-shaped (appId present, no buttonRule) AND carries a meta flag.
-// A guide flag on a create-shaped call must NOT bypass any gate: the create arm would
-// really execute.
+// the mandatory-BPS gate). UNLIKE toolSetRule (which guards its create arm with an
+// isMetaCall check, so a meta flag WITHOUT appId still falls through to the shared edit
+// engine and short-circuits there), toolSetNativeApp routes buttonRule and no-appId
+// calls to WRITE paths first -- so a call is schema-only ONLY when it is edit-shaped
+// (appId present, no buttonRule) AND carries a meta flag. A guide flag on a
+// create-shaped call must NOT bypass any gate: the create arm would really execute.
 def _isNativeAppSchemaOnlyCall(args) {
     if (!(args instanceof Map)) return false
     if (args.appId == null || args.buttonRule != null) return false

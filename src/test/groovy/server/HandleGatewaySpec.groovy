@@ -135,6 +135,21 @@ class HandleGatewaySpec extends ToolSpecBase {
         e.message.contains('disabled in Advanced settings')
     }
 
+    def "missing-param pre-check falls through to the canonical refusal for a custom-engine-hidden sub-tool"() {
+        // The third hiding source getHiddenToolNames() folds in (readonly mode hides the
+        // write-side custom_rule tools). The fourth, dev-mode-only, has no gateway member
+        // today (hub_update_package is top-level), so it has no gateway surface to pin.
+        given: 'engine OFF + Read master ON = readonly mode; hub_delete_custom_rule is hidden'
+        settingsMap.enableCustomRuleEngine = false
+
+        when:
+        script.handleGateway('hub_manage_custom_rules', 'hub_delete_custom_rule', [:])
+
+        then: "the custom-engine refusal, not hub_delete_custom_rule's parameter schema"
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('not available in read-only mode')
+    }
+
     // Both-ways pending (orchestrator).
     def "missing two required parameters reports 'parameters' plural (count-aware)"() {
         when:

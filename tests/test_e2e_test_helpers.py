@@ -209,6 +209,7 @@ def test_route_map_tolerates_missing_schema_and_enum():
         {"name": "hub_weird"},
         {"name": "hub_no_props", "inputSchema": {"type": "object"}},
         {"name": "hub_no_enum", "inputSchema": {"type": "object", "properties": {"tool": {"type": "string"}, "args": {"type": "object"}}}},
+        {"name": "hub_nondict_tool", "inputSchema": {"type": "object", "properties": {"tool": None, "args": {"type": "object"}}}},
         _gw("hub_manage_rooms", ["hub_create_room"]),
     ])
     assert route == {"hub_create_room": "hub_manage_rooms"}

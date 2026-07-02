@@ -839,7 +839,9 @@ def handleToolsCall(msg) {
     // `args instanceof Map` guards a malformed non-object `arguments` (e.g. a JSON string): probing
     // .tool on a String here (before the try below) would throw and surface as a -32603 instead of
     // the handled path -- fall back to the gateway name and let the try block report it cleanly.
-    def reactiveToolName = (getGatewayConfig().containsKey(toolName) && args instanceof Map && args.tool instanceof String) ? args.tool : toolName
+    // The truthiness check keeps an empty-string tool (catalog mode) attributed to the
+    // gateway name -- the catalog IS the gateway's own surface.
+    def reactiveToolName = (getGatewayConfig().containsKey(toolName) && args instanceof Map && args.tool instanceof String && args.tool) ? args.tool : toolName
 
     if (!toolName) {
         return jsonRpcError(msg.id, -32602, "Invalid params: tool name required")
@@ -876,7 +878,7 @@ def handleToolsCall(msg) {
             try {
                 _applyReactiveBpsWarning(reactiveToolName, args, result)
             } catch (Exception bpErr) {
-                mcpLog("warn", "server", "Reactive BPS hint failed for ${toolName}: ${bpErr.message}", null, [details: [tool: toolName]])
+                mcpLog("warn", "server", "Reactive BPS hint failed for ${reactiveToolName}: ${bpErr.message}", null, [details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null]])
             }
         }
         def jsonText
@@ -926,15 +928,13 @@ def handleToolsCall(msg) {
         int wireBytes = candidateJson.getBytes("UTF-8").length
         final int responseSizeLimit = hubResponseCapBytes() - 11072  // =120000; ~11 KB headroom under the 131072-byte (128 KiB) hub cap
         if (wireBytes > responseSizeLimit) {
-            // Gateway calls (manage_*) carry the real sub-tool name in args.tool; the
-            // gateway-config whitelist check rules out a non-gateway caller who happens
-            // to pass a stray `tool` arg, which would otherwise mis-route the suggestion.
-            boolean isGateway = getGatewayConfig().containsKey(toolName)
-            String hintTool = (isGateway && args?.tool instanceof String && args.tool) ? args.tool : toolName
-            mcpLog("warn", "server", "Tool ${hintTool} response too large (${wireBytes} > ${responseSizeLimit} bytes) -- returning response_too_large envelope", null, [
-                details: [tool: hintTool, gateway: (hintTool != toolName) ? toolName : null, bytes: wireBytes, limit: responseSizeLimit]
+            // reactiveToolName already resolved the real sub-tool for a gateway call
+            // (args.tool, whitelist-checked against getGatewayConfig), so the size
+            // suggestion routes to the failing tool, not the gateway.
+            mcpLog("warn", "server", "Tool ${reactiveToolName} response too large (${wireBytes} > ${responseSizeLimit} bytes) -- returning response_too_large envelope", null, [
+                details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null, bytes: wireBytes, limit: responseSizeLimit]
             ])
-            return jsonRpcResult(msg.id, [content: [[type: "text", text: groovy.json.JsonOutput.toJson(_responseTooLargeEnvelope(hintTool, wireBytes, responseSizeLimit))]]])
+            return jsonRpcResult(msg.id, [content: [[type: "text", text: groovy.json.JsonOutput.toJson(_responseTooLargeEnvelope(reactiveToolName as String, wireBytes, responseSizeLimit))]]])
         }
         // Single-message verbatim-passthrough: handleMcpRequest's single-Map branch detects
         // this sentinel and renders __preserialized as-is (no re-encode). The batch-collect
@@ -958,7 +958,7 @@ def handleToolsCall(msg) {
                 def w = _reactiveBpsWarning(reactiveToolName, args, e.message)
                 if (w) msgText = "${e.message} ${w}"
             } catch (Exception bpErr) {
-                mcpLog("warn", "server", "Reactive BPS hint failed for ${toolName}: ${bpErr.message}", null, [details: [tool: toolName]])
+                mcpLog("warn", "server", "Reactive BPS hint failed for ${reactiveToolName}: ${bpErr.message}", null, [details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null]])
             }
         }
         return jsonRpcError(msg.id, -32602, "Invalid params: ${msgText}")

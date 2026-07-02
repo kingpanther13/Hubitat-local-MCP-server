@@ -92,8 +92,11 @@ def _gateway_route_from_catalog(tools: list) -> dict[str, str]:
         props = (entry.get("inputSchema") or {}).get("properties") or {}
         if "tool" not in props or "args" not in props:
             continue   # leaf/core tool, not a gateway envelope
+        tool_prop = props["tool"]
+        if not isinstance(tool_prop, dict):
+            continue   # malformed schema -- the catalog is external hub input
         gw = entry["name"]
-        for leaf in props["tool"].get("enum") or []:
+        for leaf in tool_prop.get("enum") or []:
             if leaf not in route or (
                 gw.startswith("hub_read_") and not route[leaf].startswith("hub_read_")
             ):
@@ -316,11 +319,19 @@ class HubitatMcpClient:
 
     def _route_for(self, name: str) -> str | None:
         """Owning gateway for a non-core leaf tool, or None (core/flat top-level tools
-        and gateway names pass through). The reverse map builds once, lazily, from the
-        live gateway-mode catalog -- list_tools() goes over _send, so building it never
-        re-enters call_tool."""
+        and gateway names pass through). The reverse map builds lazily from the live
+        gateway-mode catalog -- list_tools() goes over _send, so building it never
+        re-enters call_tool. Only a NON-EMPTY map is cached: a transiently degraded /
+        truncated catalog (or a rare pre-infrastructure first call) would yield an empty
+        map, and caching that would silently flat-dispatch every leaf for the rest of the
+        run. Leaving it uncached retries on the next call; the e2e hub is pinned to
+        gateway mode, so a persistently empty map means the affected leaves fail loudly
+        at their own gate rather than routing wrong."""
         if self._gateway_route is None:
-            self._gateway_route = _gateway_route_from_catalog(self.list_tools()["tools"])
+            route = _gateway_route_from_catalog(self.list_tools().get("tools", []))
+            if not route:
+                return None   # don't poison the cache with a degraded/flat catalog
+            self._gateway_route = route
         return self._gateway_route.get(name)
 
     def call_tool(self, name: str, arguments: dict | None = None, *, flat: bool = False) -> Any:
@@ -2653,12 +2664,13 @@ class TestRunner:
         Hub Variables, basic rules) AND hub_list_rules (RM rules surface there by
         name/label). Returns the id as a string, or None if the create truly failed."""
         try:
-            # hub_list_apps lives in hub_read_apps_code; routing it through
-            # hub_manage_native_rules_and_apps threw the gateway membership error on
-            # every call, silently killing this lookup leg (latent #319-class bug).
-            listed = self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_list_apps", "args": {"scope": "instances", "filter": "user"},
-            })
+            # Leaf-name call so the client's reverse map picks the owning gateway. A
+            # hard-coded gateway here once silently killed this leg: hub_list_apps was
+            # routed through hub_manage_native_rules_and_apps (not a member), the
+            # membership error was swallowed by the WARN below, and the lookup always
+            # fell through (latent #319-class bug).
+            listed = self.client.call_tool(
+                "hub_list_apps", {"scope": "instances", "filter": "user"})
             apps = listed if isinstance(listed, list) else (listed.get("apps") or listed.get("instances") or [])
             for a in apps:
                 if not isinstance(a, dict):
@@ -2668,7 +2680,7 @@ class TestRunner:
         except (McpError, McpToolError, requests.HTTPError) as exc:
             print(f"    [WARN] hub_list_apps lookup for {label!r} failed: {exc}")
         try:
-            rules = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
+            rules = self.client.call_tool("hub_list_rules")
             rule_list = rules if isinstance(rules, list) else (rules.get("rules") or [])
             for r in rule_list:
                 if isinstance(r, dict) and label in (r.get("label") or r.get("name") or ""):
@@ -7152,20 +7164,23 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
     @test("developer_mode")
     def test_t223_update_mcp_settings_reconnect_hint(self) -> None:
         """T223: response message includes a client-reconnect hint."""
-        result = self.client.call_tool("hub_manage_mcp", {
-            "tool": "hub_update_mcp_settings",
-            "args": {"settings": {"enableCustomRuleEngine": False}, "confirm": True},
-        })
-        assert result.get("success") is True
-        msg = result.get("message") or ""
-        assert "reconnect" in msg.lower(), f"message missing 'reconnect' hint: {msg}"
-        assert "tool schemas" in msg, f"message missing 'tool schemas' phrase: {msg}"
-        # Restore so the rest of the suite (rule_crud etc.) keeps working.
-        restore = self.client.call_tool("hub_manage_mcp", {
-            "tool": "hub_update_mcp_settings",
-            "args": {"settings": {"enableCustomRuleEngine": True}, "confirm": True},
-        })
-        assert restore.get("success") is True
+        try:
+            result = self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings",
+                "args": {"settings": {"enableCustomRuleEngine": False}, "confirm": True},
+            })
+            assert result.get("success") is True
+            msg = result.get("message") or ""
+            assert "reconnect" in msg.lower(), f"message missing 'reconnect' hint: {msg}"
+            assert "tool schemas" in msg, f"message missing 'tool schemas' phrase: {msg}"
+        finally:
+            # Restore in a finally so an assertion failure above cannot leave the custom
+            # engine OFF and cascade "…tools are disabled" through the rest of the suite.
+            restore = self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings",
+                "args": {"settings": {"enableCustomRuleEngine": True}, "confirm": True},
+            })
+            assert restore.get("success") is True
 
     @test("developer_mode")
     def test_t223c_update_mcp_settings_enable_read_allowlisted(self) -> None:
@@ -7178,21 +7193,24 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         toggles. Restore enableRead:true so the rest of the suite keeps its
         read tools.
         """
-        result = self.client.call_tool("hub_manage_mcp", {
-            "tool": "hub_update_mcp_settings",
-            "args": {"settings": {"enableRead": False}, "confirm": True},
-        })
-        assert result.get("success") is True, f"enableRead flip did not succeed: {result}"
-        assert result.get("updated") == {"enableRead": False}, f"updated field mismatch: {result}"
-        msg = result.get("message") or ""
-        assert "reconnect" in msg.lower(), f"message missing 'reconnect' hint: {msg}"
-        assert "tool schemas" in msg, f"message missing 'tool schemas' phrase: {msg}"
-        # Restore so the rest of the suite keeps its read tools.
-        restore = self.client.call_tool("hub_manage_mcp", {
-            "tool": "hub_update_mcp_settings",
-            "args": {"settings": {"enableRead": True}, "confirm": True},
-        })
-        assert restore.get("success") is True
+        try:
+            result = self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings",
+                "args": {"settings": {"enableRead": False}, "confirm": True},
+            })
+            assert result.get("success") is True, f"enableRead flip did not succeed: {result}"
+            assert result.get("updated") == {"enableRead": False}, f"updated field mismatch: {result}"
+            msg = result.get("message") or ""
+            assert "reconnect" in msg.lower(), f"message missing 'reconnect' hint: {msg}"
+            assert "tool schemas" in msg, f"message missing 'tool schemas' phrase: {msg}"
+        finally:
+            # Restore in a finally so an assertion failure above cannot leave the Read
+            # master OFF and cascade "Read tools are disabled" through the rest of the suite.
+            restore = self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings",
+                "args": {"settings": {"enableRead": True}, "confirm": True},
+            })
+            assert restore.get("success") is True
 
     @test("developer_mode")
     def test_t224_delete_variable_round_trip(self) -> None:
