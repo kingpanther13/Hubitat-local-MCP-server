@@ -229,29 +229,40 @@ class GatewayToggleSpec extends ToolSpecBase {
         settingsMap.enableCustomRuleEngine = true
         def pairs = script.getGatewayConfig().collectMany { gw, cfg -> cfg.tools.collect { [gw, it] } }
 
+        and: 'the routing-layer helpers the wrapper calls BEFORE any handler must not themselves throw'
+        // Guards against the per-pair tolerant catch below MASKING a routing-layer crash
+        // (a bug in requiredParamsByTool()/getHiddenToolNames()/getGatewayConfig() would
+        // throw for every pair and be swallowed as "reached the handler"). Calling them
+        // here surfaces such a crash loudly instead (#319: no silent bypass).
+        script.getGatewayConfig()
+        script.getHiddenToolNames()
+        script.requiredParamsByTool()
+
         expect:
         pairs.every { pair ->
             def (gw, st) = pair
             boolean routed = true
-            def result = null
             try {
-                result = script.handleGateway(gw, st, [:])
+                script.handleGateway(gw, st, [:])
             } catch (IllegalArgumentException e) {
-                // Gate/validation IAEs (confirm, dev-mode, custom-engine, bad args) prove the
-                // re-entry reached a handler. Fatal = the membership check or the re-entry
-                // dispatch fell through.
+                // Gate/validation IAEs (missing-param pre-check, confirm, dev-mode,
+                // custom-engine, bad args) prove the re-entry reached a handler/gate. Fatal =
+                // the membership check or the re-entry dispatch fell through.
                 routed = !(e.message.startsWith("Unknown gateway:") ||
                            e.message.startsWith("Unknown tool '") ||
                            e.message.startsWith("Unknown tool: ${st}"))
-            } catch (Exception ignored) {
-                // Hub-side failures (unstubbed endpoints etc.) also mean dispatch reached the handler.
+                // When the missing-param pre-check fires it names the sub-tool it validated --
+                // proof the required-param memo knows this tool (a real definition backs it).
+                if (e.message.startsWith('Missing required parameter')) {
+                    assert e.message.contains(st), "pre-check for '${st}' named a different tool: ${e.message}"
+                }
+            } catch (MissingMethodException | MissingPropertyException | IllegalStateException | NullPointerException ignored) {
+                // The ONLY tolerated non-IAE classes: a handler that RAN and hit an unstubbed
+                // hub endpoint / null device. Any OTHER exception type is NOT caught here, so it
+                // propagates out of the closure and FAILS the test -- surfacing a suspected
+                // routing-layer failure instead of masking it.
             }
             assert routed, "handleGateway('${gw}', '${st}') failed to route -- gateway membership/dispatch drift"
-            // The missing-required pre-check names the tool it validated -- when it fires, the
-            // required-param memo knows this sub-tool, i.e. a real definition backs it.
-            if (result instanceof Map && result.isError && result.containsKey('tool')) {
-                assert result.tool == st
-            }
             routed
         }
     }

@@ -8149,11 +8149,21 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
     @test("protocol")
     def test_initialize_returns_instructions(self) -> None:
         """initialize advertises a non-empty instructions string (gateway +
-        pagination usage hint) so MCP clients can surface server guidance."""
+        pagination usage hint) so MCP clients can surface server guidance.
+
+        The e2e hub runs gateway mode (mcp_setup_env pins useGateways=true), so the
+        gateway-mode prose must be present: it names the gateway-call convention AND
+        clarifies that hub_manage_virtual_device / hub_manage_mode are direct tools
+        (not gateways) despite matching the hub_manage_* pattern (#319)."""
         result = self.client.initialize()
         instructions = result.get("instructions")
         assert isinstance(instructions, str) and instructions.strip(), \
             f"Expected non-empty instructions string, got: {instructions!r}"
+        assert "gateway" in instructions.lower(), f"gateway-mode instructions missing the gateway convention: {instructions!r}"
+        assert "pagination" in instructions.lower(), f"instructions missing the pagination hint: {instructions!r}"
+        # The direct-tool clarification (the #319 addition) must be present in gateway mode.
+        assert "hub_manage_virtual_device" in instructions and "hub_manage_mode" in instructions, \
+            f"gateway-mode instructions missing the direct-tool clarification: {instructions!r}"
 
     @test("protocol")
     def test_batch_too_large_rejected(self) -> None:
