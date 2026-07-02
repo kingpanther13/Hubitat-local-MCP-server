@@ -76,6 +76,31 @@ def _op_key(name: str, arguments: dict | None) -> str:
     return key
 
 
+def _gateway_route_from_catalog(tools: list) -> dict[str, str]:
+    """Build the leaf-tool -> owning-gateway reverse map from a gateway-mode tools/list
+    catalog (issue #319). A gateway entry is recognized by its envelope inputSchema
+    (properties tool + args -- leaf tools never have that pair); its visible sub-tools
+    are the `tool` enum, the same visibility-filtered set the gateway's no-args catalog
+    disclosure returns (test_gateway_route_map_matches_catalog_disclosure pins that),
+    at zero extra round-trips. Derived at runtime from the live catalog so it cannot go
+    stale as tools move between gateways. A tool listed in several gateways prefers a
+    pure-read hub_read_* home (reads route through the read surface); otherwise the
+    first gateway in catalog order wins. A flat-mode catalog has no gateway entries and
+    yields an empty map. Pure dict logic (unit-tested in test_e2e_test_helpers.py)."""
+    route: dict[str, str] = {}
+    for entry in tools:
+        props = (entry.get("inputSchema") or {}).get("properties") or {}
+        if "tool" not in props or "args" not in props:
+            continue   # leaf/core tool, not a gateway envelope
+        gw = entry["name"]
+        for leaf in props["tool"].get("enum") or []:
+            if leaf not in route or (
+                gw.startswith("hub_read_") and not route[leaf].startswith("hub_read_")
+            ):
+                route[leaf] = gw
+    return route
+
+
 class HubitatMcpClient:
     """Thin client for the Hubitat MCP Server JSON-RPC 2.0 endpoint."""
 
@@ -104,6 +129,9 @@ class HubitatMcpClient:
         # the only place real per-operation cost (RM create vs edit vs delete, etc.) is visible, since
         # the >> call traces are verbose-gated and never reach the CI log.
         self.op_timings: list[tuple[str, float]] = []
+        # Leaf-tool -> owning-gateway reverse map (issue #319), built lazily on the
+        # first leaf call from the live catalog by _route_for. None = not built yet.
+        self._gateway_route: dict[str, str] | None = None
         # Mask token for safe logging: show first 4 chars only
         self._masked_token = access_token[:4] + "..." if len(access_token) > 4 else "****"
 
@@ -286,12 +314,35 @@ class HubitatMcpClient:
             params = {"cursor": next_cursor}
         raise McpError("tools/list pagination did not terminate within 20 pages")
 
-    def call_tool(self, name: str, arguments: dict | None = None) -> Any:
-        """Call an MCP tool. Returns parsed content text (dict/list/str)."""
+    def _route_for(self, name: str) -> str | None:
+        """Owning gateway for a non-core leaf tool, or None (core/flat top-level tools
+        and gateway names pass through). The reverse map builds once, lazily, from the
+        live gateway-mode catalog -- list_tools() goes over _send, so building it never
+        re-enters call_tool."""
+        if self._gateway_route is None:
+            self._gateway_route = _gateway_route_from_catalog(self.list_tools()["tools"])
+        return self._gateway_route.get(name)
+
+    def call_tool(self, name: str, arguments: dict | None = None, *, flat: bool = False) -> Any:
+        """Call an MCP tool. Returns parsed content text (dict/list/str).
+
+        Gateway mode is the PRIMARY invocation path (issue #319): a non-core leaf tool
+        is rewritten to route through its owning gateway as {tool, args} -- the wire
+        shape a real gateway-mode client produces -- so every leaf call exercises the
+        handleGateway wrapper (required-param pre-check, per-sub-tool re-entry gating,
+        the #299 reactive hint resolution) instead of the flat executeTool shortcut.
+        Gateway names and core/flat top-level tools are sent as-is. flat=True forces
+        direct leaf-name dispatch for the small deliberate flat-dispatch proof tests
+        (executeTool resolves leaf names by name in any mode)."""
         args = arguments or {}
-        op_key = _op_key(name, args)   # gateway sub-tool / flat name; hub_set_rule split create-vs-edit
+        wire_name, wire_args = name, args
+        if not flat:
+            gateway = self._route_for(name)
+            if gateway:
+                wire_name, wire_args = gateway, {"tool": name, "args": args}
+        op_key = _op_key(wire_name, wire_args)   # gateway sub-tool / flat name; hub_set_rule split create-vs-edit
         _t0 = time.monotonic()
-        result = self._send("tools/call", {"name": name, "arguments": args})
+        result = self._send("tools/call", {"name": wire_name, "arguments": wire_args})
         self.op_timings.append((op_key, time.monotonic() - _t0))
 
         # Check for tool-level error
@@ -1105,6 +1156,58 @@ class TestRunner:
         rooms = next((e for e in entries if e.get("name") == "hub_list_rooms"), None)
         assert rooms is not None, "hub_list_rooms not found in catalog"
         assert rooms["title"] == "List Rooms", f"hub_list_rooms catalog title unexpected: {rooms['title']!r}"
+
+    @test("infrastructure")
+    def test_gateway_route_map_covers_every_gateway_sub_tool(self) -> None:
+        # Issue #319: gateway mode is the PRIMARY invocation path -- call_tool routes
+        # every non-core leaf through its owning gateway via the runtime-derived reverse
+        # map (leaf -> gateway, from each gateway entry's `tool` enum on tools/list, so
+        # it cannot go stale as tools move between gateways). Pin the map's load-bearing
+        # properties: it is populated, every value is a real gateway entry, reads prefer
+        # the pure-read surface, and no top-level tool is ever routed.
+        tools = self.client.list_tools().get("tools", [])
+        route = _gateway_route_from_catalog(tools)
+        assert route, "reverse map is empty -- tools/list has no gateway envelopes?"
+        top_level = {t.get("name") for t in tools}
+        gateway_names = {
+            t["name"] for t in tools
+            if {"tool", "args"} <= set((t.get("inputSchema") or {}).get("properties") or {})
+        }
+        bad = {leaf: gw for leaf, gw in route.items() if gw not in gateway_names}
+        assert not bad, f"leaf tools routed to non-gateway entries: {bad}"
+        overlap = set(route) & top_level
+        assert not overlap, f"top-level tools must never be gateway-routed: {sorted(overlap)}"
+        # Multi-gateway reads ride the pure-read surface; writes their manage gateway.
+        assert route.get("hub_list_devices") == "hub_read_devices", \
+            f"hub_list_devices should route via hub_read_devices, got {route.get('hub_list_devices')}"
+        assert route.get("hub_call_device_command") == "hub_manage_devices", \
+            f"hub_call_device_command should route via hub_manage_devices, got {route.get('hub_call_device_command')}"
+        assert len(route) >= 60, f"suspiciously small reverse map ({len(route)} leaf tools): {sorted(route)}"
+
+    @test("infrastructure")
+    def test_gateway_route_map_matches_catalog_disclosure(self) -> None:
+        # The reverse map derives from the tools/list `tool` enum at zero extra
+        # round-trips; the #319 design sketch derived it from each gateway's no-args
+        # catalog. Prove the two disclosure surfaces agree (same config, same
+        # visibility filtering) on a deterministic exemplar gateway, so the cheaper
+        # enum derivation is sound.
+        tools = self.client.list_tools().get("tools", [])
+        entry = next((t for t in tools if t.get("name") == "hub_read_rooms"), None)
+        assert entry is not None, "hub_read_rooms gateway missing from tools/list"
+        enum = (((entry.get("inputSchema") or {}).get("properties") or {}).get("tool") or {}).get("enum") or []
+        catalog = self._get_rooms_catalog()
+        catalog_names = [e.get("name") for e in catalog.get("tools", [])]
+        assert sorted(enum) == sorted(catalog_names), \
+            f"tools/list enum and no-args catalog disagree: {sorted(enum)} vs {sorted(catalog_names)}"
+
+    @test("infrastructure")
+    def test_flat_leaf_dispatch_still_works(self) -> None:
+        # Deliberate FLAT dispatch proof (issue #319 keeps a small set of these):
+        # executeTool resolves leaf names by name in any mode, so a stale/flat client
+        # calling a gateway sub-tool by its leaf name still works even though gateway
+        # mode is the catalog default and the primary e2e invocation path.
+        rooms = self.client.call_tool("hub_list_rooms", flat=True)
+        assert isinstance(rooms, dict) and "rooms" in rooms, f"flat hub_list_rooms dispatch failed: {rooms!r}"
 
     @test("infrastructure")
     def test_search_tools_counts_distinct_not_gateway_rows(self) -> None:
@@ -2536,7 +2639,10 @@ class TestRunner:
         Hub Variables, basic rules) AND hub_list_rules (RM rules surface there by
         name/label). Returns the id as a string, or None if the create truly failed."""
         try:
-            listed = self.client.call_tool("hub_manage_native_rules_and_apps", {
+            # hub_list_apps lives in hub_read_apps_code; routing it through
+            # hub_manage_native_rules_and_apps threw the gateway membership error on
+            # every call, silently killing this lookup leg (latent #319-class bug).
+            listed = self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_list_apps", "args": {"scope": "instances", "filter": "user"},
             })
             apps = listed if isinstance(listed, list) else (listed.get("apps") or listed.get("instances") or [])

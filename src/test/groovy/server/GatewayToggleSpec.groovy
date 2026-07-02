@@ -218,6 +218,68 @@ class GatewayToggleSpec extends ToolSpecBase {
         }
     }
 
+    def "every gateway membership routes through handleGateway (derived from getGatewayConfig -- no drift)"() {
+        // The two derived guards above prove FLAT dispatch (executeTool by leaf name) and
+        // gateway-NAME routing, but neither exercises the handleGateway wrapper path a real
+        // gateway-mode client rides: the per-gateway membership check, the required-param
+        // pre-check, and the sub-tool re-entry. A membership/routing break specific to the
+        // gateway path would pass both and previously only surfaced in the full e2e lane.
+        given:
+        settingsMap.useGateways = true
+        settingsMap.enableCustomRuleEngine = true
+        def pairs = script.getGatewayConfig().collectMany { gw, cfg -> cfg.tools.collect { [gw, it] } }
+
+        expect:
+        pairs.every { pair ->
+            def (gw, st) = pair
+            boolean routed = true
+            def result = null
+            try {
+                result = script.handleGateway(gw, st, [:])
+            } catch (IllegalArgumentException e) {
+                // Gate/validation IAEs (confirm, dev-mode, custom-engine, bad args) prove the
+                // re-entry reached a handler. Fatal = the membership check or the re-entry
+                // dispatch fell through.
+                routed = !(e.message.startsWith("Unknown gateway:") ||
+                           e.message.startsWith("Unknown tool '") ||
+                           e.message.startsWith("Unknown tool: ${st}"))
+            } catch (Exception ignored) {
+                // Hub-side failures (unstubbed endpoints etc.) also mean dispatch reached the handler.
+            }
+            assert routed, "handleGateway('${gw}', '${st}') failed to route -- gateway membership/dispatch drift"
+            // The missing-required pre-check names the tool it validated -- when it fires, the
+            // required-param memo knows this sub-tool, i.e. a real definition backs it.
+            if (result instanceof Map && result.isError && result.containsKey('tool')) {
+                assert result.tool == st
+            }
+            routed
+        }
+    }
+
+    def "every gateway's no-args catalog discloses a complete entry for every configured sub-tool"() {
+        // A config.tools name with no matching definition in getAllToolDefinitions() would
+        // disclose description:null / inputSchema:null on the catalog surface (previously
+        // pinned only for hub_manage_rooms). All narrowing toggles ON so the catalog equals
+        // the full config membership and every entry must be complete.
+        given:
+        settingsMap.useGateways = true
+        settingsMap.enableCustomRuleEngine = true
+        settingsMap.enableDeveloperMode = true
+
+        expect:
+        script.getGatewayConfig().every { gw, cfg ->
+            def catalog = script.handleGateway(gw, null, null)
+            assert catalog.mode == 'catalog'
+            assert (catalog.tools*.name as Set) == (cfg.tools as Set),
+                   "gateway '${gw}' catalog disclosure drifted from its getGatewayConfig membership"
+            catalog.tools.every { entry ->
+                assert entry.description && entry.inputSchema instanceof Map,
+                       "gateway '${gw}' sub-tool '${entry.name}' disclosed an incomplete entry (definition missing from getAllToolDefinitions?)"
+                true
+            }
+        }
+    }
+
     def "useGateways=false: dispatch still works for a sub-tool called by its real name"() {
         given:
         settingsMap.useGateways = false
