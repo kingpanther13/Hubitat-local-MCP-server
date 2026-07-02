@@ -108,7 +108,8 @@ Each domain has its own gateway pair — call the gateway with no args for its s
 - **Diagnostics & logs**: `hub_read_diagnostics` (pure-read), `hub_manage_logs`, `hub_manage_diagnostics`, `hub_manage_radio`
 - **Files**: `hub_manage_files` / `hub_read_files` — files live at `http://<HUB_IP>/local/<filename>`
 - **Hub variables**: `hub_manage_variables` / `hub_read_variables`
-- **Apps, drivers, libraries, bundles, backups, HPM state**: `hub_read_apps_code` (read), `hub_manage_code` (write). Source code is automatically backed up before modify/delete operations; restore via `hub_restore_backup`.
+- **Apps, drivers, libraries, bundles, HPM state**: `hub_read_apps_code` (read), `hub_manage_code` (write). Source code is automatically backed up before modify/delete operations.
+- **Backups**: `hub_manage_backup` — list, restore, and delete hub-database and code backups (create is the flat core tool `hub_create_backup`)
 - **Native rules & classic apps**: `hub_manage_native_rules_and_apps`, `hub_manage_rule_machine`
 - **Dashboards**: `hub_manage_dashboards` / `hub_read_dashboards`
 - **Modes & HSM**: flat core tools (`hub_list_modes`, `hub_manage_mode`, `hub_set_mode_manager`, `hub_get_hsm_status`, `hub_set_hsm`), alongside `hub_get_info`, `hub_create_backup`, `hub_update_firmware`, and `hub_report_issue`
@@ -126,7 +127,7 @@ Each domain has its own gateway pair — call the gateway with no args for its s
 
 ## On-Demand Reference
 
-`hub_get_tool_guide` serves the single consolidated tool reference directly from the MCP server — always in lockstep with the server you are talking to, and the authoritative source for per-tool detail, wire formats, and worked examples. Pass a `section` key (see the tool's enum) to fetch just the topic you need. The same content is mirrored in the repository as `TOOL_GUIDE.md` for human readers.
+`hub_get_tool_guide` serves the single consolidated tool reference directly from the MCP server — always in lockstep with the server you are talking to, and the authoritative source for per-tool detail, wire formats, and worked examples. Pass a `section` key (see the tool's enum) to fetch just the topic you need. The same content is mirrored in the repository as [TOOL_GUIDE.md](https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/TOOL_GUIDE.md) for human readers.
 
 For additional reference material bundled with this skill:
 - [rule-patterns.md](rule-patterns.md) - Complete rule structure with all trigger, condition, and action types
