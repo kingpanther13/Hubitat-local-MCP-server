@@ -1282,6 +1282,18 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 **Expected**: Action 1 (single waitEvents with `events: [{capability: 'Contact', deviceIds: [<WC1>], state: 'open'}, {capability: 'Contact', deviceIds: [<WC2>], state: 'open'}]`) commits cleanly. [INV-1] `configPage.error == null`. [INV-3] **CRITICAL**: contact-sensor inputs preserve `multiple == true` flags (Wait-for-Events multi-device slots are a flag-poisoning vector on the action side, same bug class as tDev triggers). The second `addAction(waitEvents=...)` call returns `success: false` with `error` containing `"RM 5.1 platform limitation: only one Wait for Events action is supported per rule"` — verifying the fail-loud guard. **Why one action, not multiple**: RM 5.1 has no per-action storage for Wait for Events configuration; every waitEvents action shares global per-rule scratch settings (`tCapab-N`/`tDev-N`/`tstate-N`). Adding a second waitEvents action causes its wizard to inherit action 1's events as defaults, and any field change silently overwrites action 1's events. The Hubitat web UI exhibits the same bug — verified live 2026-05-04 via Chrome XHR capture. Until Hubitat fixes this at the platform level, the MCP tool refuses the second addition rather than corrupt the rule. **Variants NOT covered here** (timeout, And-Stays duration, Elapsed Time only, "All of these" semantics): each requires its own rule (one waitEvents action per rule, by RM 5.1 design), so cover them as separate scenarios T412a/T412b/etc. when needed.
 
+### T412b — Wait for Events: mixed device + Mode event array (mode picker, never tstate)
+
+```json
+{
+  "setup_prompt": "Create a virtual switch BAT-RM-WSw. Note an existing hub mode name (e.g. 'Night') from hub_list_modes.",
+  "test_prompt": "Create rule 'BAT-RM-WaitEventsMode' triggered by BAT-RM-WSw turning on. Action 1: Wait for Events with two events in one array — (a) BAT-RM-WSw turns off (device event), (b) the hub Mode becomes 'Night' (Mode event, any-of semantics). Read back and verify BOTH events are bound: the device event and the Mode event.",
+  "teardown_prompt": "Force-delete 'BAT-RM-WaitEventsMode'. Remove BAT-RM-WSw."
+}
+```
+
+**Expected**: Action 1 commits cleanly with `events: [{capability: 'Switch', deviceIds: [<WSw>], state: 'off'}, {capability: 'Mode', state: 'Night'}]`. [INV-1] `configPage.error == null`. The Mode event writes the discovered mode-picker field (`modesX-<N>` family, keyed by mode ID) carrying the resolved mode ID — NOT `tstate-<N>` (writing the mode name to `tstate` is silently ignored by RM and drops the event with a dangling OR). No `tstate` field holds the mode name. Both events render without a dangling OR / Broken marker. `modeIds:[...]` is accepted as an alternative to `state` (IDs from `hub_list_modes`). An unknown mode name, or a mode ID the live picker does not offer, fails loud before the row commits.
+
 ### T413 — Wait for Expression: basic, timeout, Use Duration
 
 ```json

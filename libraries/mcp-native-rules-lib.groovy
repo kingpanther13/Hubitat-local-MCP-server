@@ -3255,7 +3255,7 @@ private Map _rmActionSchemaForDiscover() {
                 name: "waitEvents",
                 family: "flow",
                 requiredFields: [
-                    [name: "events", type: "List<Map>", description: "Each: {capability, deviceIds, state, andStays?}"]
+                    [name: "events", type: "List<Map>", description: "Each: {capability, deviceIds, state, andStays?}. Mode event: {capability:'Mode', state:<mode name or list of names>} or {capability:'Mode', modeIds:[...]} -- no deviceIds; the mode value is written to the mode picker, not tstate."]
                 ],
                 optionalFields: [
                     [name: "rawSettings", type: "Map"]
@@ -5742,7 +5742,10 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
     //   repeatActs/getWhile — Repeat While Expression
     //   delayActs/getWaitRule — Wait for Expression
     // Wait for Events: walk each event row using tCapab-<N>/tDev-<N>/
-    // tstate-<N> (dash-separated index). After tstate-<N> is written,
+    // tstate-<N> (dash-separated index). A Mode event is the exception:
+    // it uses a discovered modesX-<N>-family picker (mode IDs) with no
+    // tDev-<N>/tstate-<N>, same as the trigger/condition Mode paths.
+    // After the event's value field is written,
     // a hasAll button appears ("Done with this Wait Event"). Click it
     // to commit the event and reveal tCapab-<N+1> for the next event.
     // Without the hasAll click, multi-event rules fail because tCapab-2
@@ -5782,12 +5785,93 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
             if (!canon) {
                 throw new IllegalArgumentException("waitEvents.events[${evIdx}].capability '${evCap}' not in option list. Valid: ${opts.collect { it.toString() }.sort().join(', ')}")
             }
-            _rmWriteSettingOnPage(appId, "doActPage", "tCapab-${n}", canon, applied, null, skipped)
-            if (ev.deviceIds != null) {
-                _rmWriteSettingOnPage(appId, "doActPage", "tDev-${n}", ev.deviceIds, applied, null, skipped)
+            // A Mode event is resolved + validated BEFORE any wizard write:
+            // resolve its mode input up front so an invalid or absent mode fails
+            // loud before the tCapab-<N> POST, never leaving a half-written event
+            // row. Resolution needs only location.modes, not the revealed schema,
+            // so it can run ahead of the tCapab write.
+            def isMode = canon.toString().equalsIgnoreCase("Mode")
+            def modeIds = null
+            if (isMode) {
+                // Mode is hub-state, not device-based -- reject deviceIds rather
+                // than silently ignoring them (matches the trigger/condition Mode
+                // paths' no-tDev rule and the fail-loud theme).
+                if (ev.deviceIds != null) {
+                    throw new IllegalArgumentException("waitEvents.events[${evIdx}]: a Mode event is hub-state, not device-based -- remove 'deviceIds'.")
+                }
+                if (ev.modeIds != null) {
+                    modeIds = _rmResolveModeIds((ev.modeIds instanceof List) ? (ev.modeIds as List) : [ev.modeIds])
+                } else if (ev.state != null) {
+                    modeIds = _rmResolveModeIds((ev.state instanceof List) ? (ev.state as List) : [ev.state])
+                }
+                if (!modeIds) {
+                    throw new IllegalArgumentException("waitEvents.events[${evIdx}]: Mode event requires a non-empty 'state' (mode name or list of names) or 'modeIds' (list of mode IDs).")
+                }
             }
-            if (ev.state != null) {
-                _rmWriteSettingOnPage(appId, "doActPage", "tstate-${n}", ev.state, applied, null, skipped)
+            _rmWriteSettingOnPage(appId, "doActPage", "tCapab-${n}", canon, applied, null, skipped)
+            if (isMode) {
+                // Mode event: RM does NOT use tstate-<N>. Writing tCapab-<N>=Mode
+                // reveals a mode picker keyed by mode ID (dash-indexed for the
+                // waitEvents row, mirroring the trigger's modesX<N> and the
+                // condition's modes<N>). Writing tstate-<N> here is silently
+                // ignored, leaving the event with no mode selected -- the wait
+                // renders with a dangling OR and that event effectively drops.
+                // The exact field name is firmware-assigned. DISCOVER it from the
+                // post-tCapab schema rather than hardcoding, because a firmware
+                // rename then fails loud (below) instead of silently dropping the
+                // event. The reveal-trigger write (tCapab-<N>=Mode) was already
+                // issued above, so a direct re-fetch finds the now-visible picker
+                // -- no _rmRevealStep round-trip is needed here. Same retry
+                // rationale as the tCapab-<N> discovery (the prior write's
+                // re-render can lag one fetch behind the click that reveals it).
+                def modeField = null
+                def modeOptions = null
+                def modeInputs = []
+                for (int attempt = 0; attempt < 4; attempt++) {
+                    def modeCfg = _rmFetchConfigJson(appId, "doActPage")
+                    modeInputs = (modeCfg?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+                    def modeInput = modeInputs.find { it?.name?.toString()?.matches("modes[A-Za-z]*-${n}".toString()) }
+                    if (modeInput) { modeField = modeInput.name.toString(); modeOptions = modeInput.options; break }
+                    if (attempt < 3) pauseExecution(250)
+                }
+                if (!modeField) {
+                    throw new IllegalStateException("waitEvents.events[${evIdx}]: Mode picker (expected a modesX-${n} family field) did not appear after writing tCapab-${n}=Mode. Schema seen: ${modeInputs.empty ? "(none returned)" : modeInputs.collect { it?.name }.findAll { it }.join(', ')}")
+                }
+                // Cross-check each resolved mode ID against the discovered picker's
+                // options (the option keys ARE the mode IDs). _rmResolveModeIds
+                // passes integer IDs through unvalidated, so an ID the picker does
+                // not offer would otherwise be silently skipped -- committing a
+                // Mode row with no mode selected, the same dangling-OR drop the
+                // discovery guard prevents. Validate against the PICKER options
+                // (not location.modes) so a valid ID the hub offers still works.
+                def pickerIds = []
+                if (modeOptions instanceof Map) {
+                    pickerIds = (modeOptions as Map).keySet().collect { it?.toString() }
+                } else if (modeOptions instanceof List) {
+                    (modeOptions as List).each { o ->
+                        if (o instanceof Map) { if (o.id != null) pickerIds << o.id.toString() }
+                        else if (o != null) pickerIds << o.toString()
+                    }
+                }
+                // Fail SAFE: only validate when the picker actually exposed its options.
+                // On a live hub the mode picker can reveal with an empty/not-yet-populated
+                // options list; treating that as "no valid IDs" would false-reject every
+                // legitimate mode. Skip the cross-check when we could not read any option.
+                def badIds = pickerIds.isEmpty() ? [] : modeIds.findAll { !pickerIds.contains(it?.toString()) }
+                if (!badIds.isEmpty()) {
+                    throw new IllegalArgumentException("waitEvents.events[${evIdx}]: mode ID(s) ${badIds.join(', ')} not offered by the ${modeField} picker. Valid IDs: ${pickerIds.sort().join(', ')}")
+                }
+                // Mode is hub-state, not device-based -- no tDev-<N> (matches the
+                // trigger and condition Mode paths). Write the resolved mode ID
+                // list to the discovered picker.
+                _rmWriteSettingOnPage(appId, "doActPage", modeField, modeIds, applied, null, skipped)
+            } else {
+                if (ev.deviceIds != null) {
+                    _rmWriteSettingOnPage(appId, "doActPage", "tDev-${n}", ev.deviceIds, applied, null, skipped)
+                }
+                if (ev.state != null) {
+                    _rmWriteSettingOnPage(appId, "doActPage", "tstate-${n}", ev.state, applied, null, skipped)
+                }
             }
             // Optional 'and stays for' duration.
             if (ev.andStays == true) {
