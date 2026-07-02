@@ -723,7 +723,7 @@ For machine-readable per-field schemas (with `action` enums and per-action requi
   - `repeat` + `hours`/`minutes`/`seconds` + optional `times` + `stoppable`
   - `repeatWhile` + `expression={conditions:[...], operator?:..., operators?:[...]}` + optional `hours`/`minutes`/`seconds`/`times`/`stoppable`
   - `waitExpression` + `expression={...}` + optional `delay={hours,minutes,seconds}` + `useDuration=true|false`
-  - `waitEvents` + `events=[{capability, deviceIds, state, andStays?}, ...]`. A **Mode** event uses `{capability:'Mode', state:<mode name or list of names>}` or `{capability:'Mode', modeIds:[...]}` (no `deviceIds`; the mode is written to RM's mode picker, not `tstate`). **LIMIT**: only ONE `waitEvents` action per rule; RM 5.1 stores wait events in global per-rule settings (not per-action), so a second `waitEvents` action silently overwrites the first. Combine multiple waits into one action's `events` array, or split into chained sub-rules.
+  - `waitEvents` + `events=[{capability, deviceIds, state, andStays?}, ...]`. A **Mode** event uses `{capability:'Mode', state:<mode name or list of names>}` or `{capability:'Mode', modeIds:[...]}` (`deviceIds` is rejected on a Mode event; the mode is written to RM's mode picker, not `tstate`). **LIMIT**: only ONE `waitEvents` action per rule; RM 5.1 stores wait events in global per-rule settings (not per-action), so a second `waitEvents` action silently overwrites the first. Combine multiple waits into one action's `events` array, or split into chained sub-rules.
   - `ifThen` + `expression={...}` (opens IF block; close with `endIf`)
   - `elseIf` + `expression={...}` (continues IF block; needs preceding `ifThen`)
   - `else` (no fields; needs preceding `ifThen` or `elseIf`)
