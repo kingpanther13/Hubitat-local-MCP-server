@@ -2404,6 +2404,32 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.contains("RM is not touched")
     }
 
+    def "addTrigger state-change token on an UNLISTED device-state/numeric capability '#cap' is guarded (deny-list, not positive-family)"() {
+        // The live tCapab picker accepts many device-state/numeric caps the curated discover schema
+        // omits (Energy, Water, Voltage, Smoke, ...); those resolve to family=null. A POSITIVE
+        // device-state/numeric family scope would leave them UNGUARDED, committing a broken trigger;
+        // the deny-list guards every non-exempt family, including null. Reverting
+        // _rmStateChangeGuardApplies to `family in ["device-state","numeric"]` turns these rows RED
+        // (family null -> not guarded -> no exception; execution falls through to the unstubbed hub).
+        when: "an unlisted-capability trigger passes a state-change token with no comparator"
+        def spec = [capability: cap, deviceIds: [8]]
+        spec[field] = "increased"
+        script._rmAddTrigger(100, spec)
+
+        then: "the deny-list guards the unlisted cap up front, steering to comparator"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains(offending)
+        ex.message.contains("is not a valid state value")
+        ex.message.contains("comparator")
+        ex.message.contains("RM is not touched")
+
+        where:
+        cap       | field   | offending
+        "Energy"  | "value" | "value:'increased'"
+        "Water"   | "state" | "state:'increased'"
+        "Voltage" | "value" | "value:'increased'"
+    }
+
     def "addTrigger with an explicit comparator is not rejected even when state also looks like a change token"() {
         when: "the trigger supplies BOTH a change-token state AND an explicit comparator (comparator wins)"
         Exception thrownEx = null
@@ -2496,6 +2522,52 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         where:
         token << ["changed", "became", "increased", "decreased"]
+    }
+
+    def "modifyTrigger with a state-change token on an UNLISTED capability trigger is guarded (deny-list, not positive-family)"() {
+        // The committed capability ('Energy') is accepted by the live tCapab picker but absent from
+        // the curated discover schema, so it resolves to family=null. Under the deny-list a non-null
+        // committed capability of an unrecognized family is GUARDED. Reverting
+        // _rmStateChangeGuardApplies to `family in ["device-state","numeric"]` makes this go RED
+        // (family null -> guard skipped -> the reject message is never thrown).
+        given: "an existing trigger whose committed capability is unlisted in the discover schema"
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "tCapab1", value: "Energy"]]) }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, [tCapab1: "Energy"]) }
+
+        when: "the trigger's state is edited to a state-change token (modify has no comparator channel)"
+        script._rmModifyTrigger(100, 1, [state: "increased"])
+
+        then: "the deny-list guards the unlisted cap up front, before any hub round-trip"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("looks like a state-change comparator token")
+        ex.message.contains("removeTrigger")
+        ex.message.contains("RM is not touched")
+    }
+
+    def "modifyTrigger fail-safe: an UNREADABLE committed capability (null) SKIPS the guard rather than rejecting"() {
+        // containsKey(index) is true (tCapab1 is present) but its value is null -- the capability
+        // could not be read. The deny-list returns TRUE for a null family, so the guard would fire
+        // and falsely reject a legitimate edit UNLESS the explicit `committedCap != null` null-guard
+        // skips it. This pins that fail-safe: with the null-guard the edit proceeds PAST the
+        // state-change guard to the wizard-open POST; dropping the null-guard rejects here instead
+        // (the `!contains("looks like a state-change comparator token")` assertion goes RED).
+        given: "an existing trigger at index 1 whose tCapab1 value is null (capability unreadable)"
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "tCapab1", value: null]]) }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, [:]) }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            throw new IllegalStateException("REACHED_EDITCOND_POST")
+        }
+
+        when: "the trigger's state is edited to a state-change token"
+        Exception thrownEx = null
+        try {
+            script._rmModifyTrigger(100, 1, [state: "increased"])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "the guard is skipped (fail-safe); execution proceeds past it to the wizard-open POST"
+        thrownEx != null
+        !thrownEx.message.contains("looks like a state-change comparator token")
+        thrownEx.message.contains("REACHED_EDITCOND_POST")
     }
 
     def "modifyTrigger with a stem value on a Custom Attribute trigger is NOT rejected (exempt family)"() {
@@ -18208,6 +18280,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == false
         result.error?.contains("modifyTrigger currently only supports changing the trigger's state field")
         result.error?.contains("removeTrigger + addTrigger")
+
+        and: "the pre-write input-shape refusal carries the not-touched sentinel so the edit-path restoreHint stays accurate"
+        result.error?.contains("RM is not touched")
+        result.restoreHint?.contains("RM was not touched")
+        !result.restoreHint?.contains("Backup saved before write")
     }
 
     def "modifyTrigger throws when mods is empty (no state field)"() {
@@ -18232,6 +18309,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "returns success: false because mods lacks the required 'state' key"
         result.success == false
         result.error?.contains("must include 'state'")
+
+        and: "the pre-write input-shape refusal carries the not-touched sentinel so the edit-path restoreHint stays accurate"
+        result.error?.contains("RM is not touched")
+        result.restoreHint?.contains("RM was not touched")
+        !result.restoreHint?.contains("Backup saved before write")
     }
 
     def "modifyTrigger returns success: false when trigger has no state field in schema (Time/Periodic trigger)"() {

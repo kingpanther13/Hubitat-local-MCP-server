@@ -1215,11 +1215,10 @@ private void _rmValidateDeviceIdsExist(String label, Object ids) {
             }
         }
         if (!exists) {
-            // Every call site of this validator runs before its operation's first hub write
-            // (single addTrigger/addAction before the wizard opens; the raw-settings and
-            // Required-Expression paths during spec parse), so the refusal carries the
-            // not-touched sentinel to keep the edit-path restoreHint accurate. (Batch callers
-            // catch per item and never consult the sentinel for restoreHint.)
+            // The not-touched sentinel is correct only where this validator runs before the
+            // operation's first hub write; it is called pre-write on every current path, so the
+            // refusal keeps the edit-path restoreHint accurate. (Batch callers catch per item and
+            // never consult the sentinel for restoreHint.)
             throw new IllegalArgumentException("${label} contains device ID '${idStr}' which does not exist on the hub. Verify the device ID via hub_list_devices. RM is not touched.")
         }
     }
@@ -1365,9 +1364,9 @@ private List<String> _rmStateChangeTokenStems() { _rmRhsOptionalComparatorMarker
 // forms both match. Meaningful only for the capability families the guard applies to (see
 // _rmStateChangeGuardApplies): device-attribute enum and numeric triggers, where the change
 // semantics belong in comparator:'*changed*' and state/value holds an enum value or number
-// that never contains a change stem (on/open/active/locked/42). Other families (Mode,
-// Variable, Custom Attribute, time) legitimately carry a value that CAN contain such a stem,
-// so the guard is scoped away from them rather than relying on this token test alone.
+// that never contains a change stem (on/open/active/locked/42). The families the guard exempts
+// (Mode, Variable, Custom Attribute, Button, time) legitimately carry a value that CAN contain
+// such a stem, so the guard is scoped away from them rather than relying on this token test alone.
 private boolean _rmLooksLikeStateChangeToken(Object raw) {
     def s = raw?.toString()?.toLowerCase()
     if (!s) return false
@@ -1395,19 +1394,21 @@ private String _rmTriggerCapabilityFamily(String cap) {
 }
 
 // Internal _rm helper -- not part of the tool surface.
-// FAMILY gate for the state-change-token guard: it fires ONLY for capabilities whose state/value
-// routes through the tstate value picker AND that offer *changed* as the correct alternative --
-// i.e. the device-state (enum state) and numeric (value + comparator) families. Every other
-// family is left unguarded: Mode (hub-state) and Variable carry names/arbitrary strings; Custom
-// Attribute's enum value may legitimately BE a change stem (e.g. a trend attribute's
-// "increased"/"decreased"); the Button family's value is an event type (pushed / held /
-// doubleTapped / released), not a comparator-backed state that offers *changed*; the time family
-// (Periodic Schedule / Certain Time / Sunrise / Sunset) exposes no tstate at all, so a
-// state-change steer would be meaningless there. Positive scope,
-// NOT a deny-list: an unrecognized capability (family null) is unguarded -- a missed guard is safer
-// than falsely rejecting a legitimate spec. Single owner shared by the add and modify paths.
+// FAMILY gate for the state-change-token guard. Guard EVERY trigger capability EXCEPT the families
+// whose value has no comparator channel or may legitimately be a change stem: Mode (hub-state) and
+// Variable carry names/arbitrary strings; Custom Attribute's enum value may legitimately BE a change
+// stem (e.g. a trend attribute's "increased"/"decreased"); the time family (Periodic Schedule /
+// Certain Time / Sunrise / Sunset) exposes no tstate at all, so a state-change steer is meaningless
+// there; the Button family's value is an event type (pushed / held / doubleTapped / released), not a
+// comparator-backed state that offers *changed*. A DENY-LIST, not a positive device-state/numeric
+// scope: an unrecognized capability (family null) is GUARDED, because the live tCapab picker accepts
+// device-state/numeric caps the curated discover schema omits (Water, Smoke, Voltage, Acceleration,
+// ...) and a change token on those is always the mis-supplied-comparator mistake this guard catches.
+// The deny-list and a positive device-state/numeric list agree on every capability the schema
+// enumerates; they differ ONLY for unlisted caps, which the deny-list correctly guards. Single owner
+// shared by the add and modify paths.
 private boolean _rmStateChangeGuardApplies(String cap) {
-    _rmTriggerCapabilityFamily(cap) in ["device-state", "numeric"]
+    !(_rmTriggerCapabilityFamily(cap) in ["hub-state", "variable", "custom-attribute", "time", "button"])
 }
 
 // Internal _rm helper -- not part of the tool surface.
@@ -3657,15 +3658,13 @@ private Map _rmRemoveTrigger(Integer appId, Integer triggerIdx) {
 private Map _rmModifyTrigger(Integer appId, Integer triggerIdx, Map mods) {
     def unsupported = mods.keySet() - ["state"]
     if (unsupported) {
-        throw new IllegalArgumentException("modifyTrigger currently only supports changing the trigger's state field. Unsupported fields: ${unsupported.sort().join(', ')}. To change capability or deviceIds, use removeTrigger + addTrigger.")
+        throw new IllegalArgumentException("modifyTrigger currently only supports changing the trigger's state field. Unsupported fields: ${unsupported.sort().join(', ')}. To change capability or deviceIds, use removeTrigger + addTrigger. RM is not touched.")
     }
     if (!mods.containsKey("state")) {
-        throw new IllegalArgumentException("modifyTrigger.mods must include 'state'. Supported fields: state.")
+        throw new IllegalArgumentException("modifyTrigger.mods must include 'state'. Supported fields: state. RM is not touched.")
     }
-    // Single statusJson read shared by the index-existence check AND the
-    // state-change-token guard below (index -> committed capability). Before this,
-    // the guard did a SECOND GET (configure/json) purely to read tCapab<idx>,
-    // duplicating the read statusJson already carries.
+    // One statusJson read serves both the index-existence check and the family guard below
+    // (index -> committed capability) -- no second fetch.
     def triggerCaps = _rmCollectTriggerCapabilities(appId)
     if (!triggerCaps.containsKey(triggerIdx)) {
         throw new IllegalArgumentException("modifyTrigger.index ${triggerIdx} not found in rule ${appId}. Existing indices: ${triggerCaps.keySet().sort().join(', ')}. RM is not touched.")
@@ -3683,7 +3682,12 @@ private Map _rmModifyTrigger(Integer appId, Integer triggerIdx, Map mods) {
     // unresolved (null) -- a missed guard beats falsely rejecting a legitimate edit.
     if (_rmLooksLikeStateChangeToken(mods.state)) {
         def committedCap = triggerCaps[triggerIdx]
-        if (_rmStateChangeGuardApplies(committedCap)) {
+        // committedCap != null distinguishes "capability read successfully but unlisted" (a
+        // non-null string the deny-list guards) from "capability could not be read" (statusJson
+        // carried no tCapab value -> null -> SKIP the guard, fail safe). The deny-list returns TRUE
+        // for a null family, so without this explicit null-guard an unreadable capability would flip
+        // the fail-safe and falsely reject a legitimate edit.
+        if (committedCap != null && _rmStateChangeGuardApplies(committedCap)) {
             throw new IllegalArgumentException("modifyTrigger.mods.state:'${mods.state}' looks like a state-change comparator token, but modifyTrigger only edits a device-state trigger's value and cannot set a comparator. For a state-change trigger use removeTrigger then addTrigger with comparator:'*changed*' (or '*became*'/'*increased*'/'*decreased*'). RM is not touched.")
         }
     }
