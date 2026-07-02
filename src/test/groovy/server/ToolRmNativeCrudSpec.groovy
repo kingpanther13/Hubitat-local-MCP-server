@@ -95,7 +95,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     // Minimal RM rule config JSON. Schema inputs drive _rmBuildSettingsBody's
     // 3-field group logic, so tests shape the sections/inputs as needed.
-    private String ruleConfigJson(int ruleId, String label = "BAT-RM-test", List inputs = [], Integer parentAppId = null) {
+    private String ruleConfigJson(int ruleId, String label = "BAT-RM-test", List inputs = [], Integer parentAppId = null, Map settings = [:]) {
         def app = [id: ruleId, name: "Rule-5.1", label: label, trueLabel: label, installed: true,
                    appType: [name: "Rule-5.1", namespace: "hubitat"]]
         if (parentAppId != null) app.parentAppId = parentAppId
@@ -104,7 +104,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null, sections: [
                 [title: "", input: inputs]
             ]],
-            settings: [:],
+            settings: settings,
             childApps: []
         ])
     }
@@ -2258,6 +2258,429 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error?.contains("does not exist")
 
         and: "no /installedapp/update/json POST went out (validation runs pre-write)"
+        !posts.any { it.path == "/installedapp/update/json" }
+    }
+
+    // Fail-loud shape validation. The THROWING cases reject before any hub round-trip, so
+    // they need no schema/POST mocks. The NEGATIVE ("guard does NOT fire") cases run past the
+    // guard into the unmocked hub layer: HubInternalGetMock throws "Unstubbed hubInternalGet"
+    // on the first real call (_rmCollectTriggerIndices -> _rmFetchStatusJson). Each negative
+    // spec therefore asserts BOTH that the guard message is ABSENT and that the "Unstubbed
+    // hubInternalGet" downstream error IS present -- so it goes RED (not vacuously green) if the
+    // guard wrongly fires and rejects the input up front. deviceIds are omitted from the
+    // negative specs so the sole downstream call is the statusJson read.
+
+    def "addTrigger Periodic Schedule without a periodic map is rejected naming periodic and the stray key"() {
+        when: "Periodic Schedule is requested with a bare minutes key instead of a periodic map"
+        script._rmAddTrigger(100, [capability: "Periodic Schedule", minutes: 1])
+
+        then: "the shape is rejected up front, naming the required periodic map and the stray key"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("periodic:")
+        ex.message.contains("minutes")
+
+        and: "the pre-flight refusal carries the not-touched sentinel so the edit-path restoreHint stays accurate"
+        ex.message.contains("RM is not touched")
+    }
+
+    def "addTrigger Periodic Schedule with a non-Map periodic is rejected naming the type mistake"() {
+        when: "periodic is supplied but is a bare string, not a Map of schedule fields"
+        script._rmAddTrigger(100, [capability: "Periodic Schedule", periodic: "every minute"])
+
+        then: "the reject names the type mistake, not an empty stray-key list"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("periodic:")
+        ex.message.contains("not a Map")
+        !ex.message.contains("Received")
+
+        and: "the pre-flight refusal carries the not-touched sentinel so the edit-path restoreHint stays accurate"
+        ex.message.contains("RM is not touched")
+    }
+
+    def "addTrigger Periodic Schedule with a valid periodic map is not rejected by the shape guard"() {
+        when: "a well-formed periodic map is supplied (no mocks -- execution runs past the guard)"
+        Exception thrownEx = null
+        try {
+            script._rmAddTrigger(100, [capability: "Periodic Schedule", periodic: [frequency: "Minutes", everyN: 1]])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "the periodic shape guard does not fire; execution reaches the unmocked hub layer instead"
+        thrownEx != null
+        !thrownEx.message.contains("requires periodic:")
+        thrownEx.message.contains("Unstubbed hubInternalGet")
+    }
+
+    def "addTrigger Periodic Schedule with a bare capability (no periodic, no stray keys) is rejected without an empty detail clause"() {
+        // Pins the empty-detail branch: a bare {capability:'Periodic Schedule'} has no stray key
+        // and no periodic key, so the message names the required periodic map WITHOUT a
+        // 'Received keys: []' or 'not a Map' clause that would tell the caller nothing.
+        when: "Periodic Schedule is requested with nothing else"
+        script._rmAddTrigger(100, [capability: "Periodic Schedule"])
+
+        then: "the reject names the required periodic map with no empty stray-key or type clause"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("periodic:")
+        !ex.message.contains("Received")
+        !ex.message.contains("not a Map")
+        ex.message.contains("RM is not touched")
+    }
+
+    def "addTrigger Periodic '#label' under-specified for its frequency is rejected naming the missing field(s)"() {
+        // A frequency present but missing its mode-defining field(s) writes only whichPeriod and
+        // renders a phantom row -- fail loud, pre-write, naming the concrete missing field. The
+        // Seconds/Minutes rows pin _rmPeriodicShapeError's sole guard for a bare frequency (the
+        // everyN-enum guard only runs when everyN != null). The final row instead pins the earlier
+        // frequency-required pre-check (a periodic map with no frequency at all).
+        when: "an under-specified periodic map is supplied"
+        script._rmAddTrigger(100, [capability: "Periodic Schedule", periodic: periodic])
+
+        then: "the shape is rejected up front, naming the missing field and carrying the sentinel"
+        def ex = thrown(IllegalArgumentException)
+        needle.every { ex.message.contains(it) }
+        ex.message.contains("RM is not touched")
+
+        where:
+        label                       | periodic                                      | needle
+        "Seconds no everyN"         | [frequency: "Seconds"]                        | ["Seconds", "everyN"]
+        "Minutes neither"           | [frequency: "Minutes"]                        | ["Minutes", "everyN"]
+        "Hourly no everyN"          | [frequency: "Hourly"]                         | ["Hourly", "everyN"]
+        "Daily no mode"             | [frequency: "Daily"]                          | ["Daily", "everyN"]
+        "Weekly no days"            | [frequency: "Weekly"]                         | ["Weekly", "daysOfWeek"]
+        "Monthly no mode"           | [frequency: "Monthly"]                        | ["Monthly", "by-day"]
+        "Monthly by-day"            | [frequency: "Monthly", dayOfMonth: 15]        | ["Monthly", "everyNMonths"]
+        "Monthly nth-wkday"         | [frequency: "Monthly", weekOfMonth: "Second"] | ["Monthly", "dayOfWeek", "everyNMonths"]
+        "Yearly incomplete"         | [frequency: "Yearly", weekOfMonth: "First"]   | ["Yearly", "dayOfWeek", "months"]
+        "Cron no expr"              | [frequency: "Cron String"]                    | ["Cron String", "cronString"]
+        "missing frequency (pre-check)" | [everyN: 5]                               | ["frequency"]
+    }
+
+    def "addTrigger Periodic under-specified frequency with rawSettings escape hatch is NOT rejected by the shape guard"() {
+        // rawSettings means the caller drives the sub-page fields directly, so the
+        // recognized-field requirement is skipped -- the guard must not false-reject it.
+        when: "an otherwise-bare frequency is paired with a non-empty rawSettings map"
+        Exception thrownEx = null
+        try {
+            script._rmAddTrigger(100, [capability: "Periodic Schedule", periodic: [frequency: "Hourly", rawSettings: [everyNHC1: 3]]])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "the shape guard does not fire; execution reaches the unmocked hub layer instead"
+        thrownEx != null
+        !thrownEx.message.contains("requires everyN")
+        thrownEx.message.contains("Unstubbed hubInternalGet")
+    }
+
+    def "addTrigger state-change token '#token' in state without a comparator is rejected steering to comparator"() {
+        when: "a numeric/device-state trigger passes a state-change token as state with no comparator"
+        script._rmAddTrigger(100, [capability: "Temperature", deviceIds: [8], state: token])
+
+        then: "the shape is rejected up front, steering to comparator"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("is not a valid state value")
+        ex.message.contains("comparator")
+
+        and: "the pre-flight refusal carries the not-touched sentinel so the edit-path restoreHint stays accurate"
+        ex.message.contains("RM is not touched")
+
+        where:
+        // Mixed-case rows ('Changed', 'INCREASED') pin the INPUT-side .toLowerCase() in
+        // _rmLooksLikeStateChangeToken: delete it and the guard stops matching a mixed-case
+        // token, so these rows go RED (no exception thrown).
+        token << ["changed", "became", "increased", "decreased", "Changed", "INCREASED", "Became true"]
+    }
+
+    def "addTrigger state-change token in the 'value' alias (not 'state') is rejected steering to comparator"() {
+        // The generic sink is (state != null ? state : value), so a change token supplied as
+        // `value` -- the field numeric capabilities most naturally use -- would otherwise sail
+        // past a state-only guard and commit a literal-'increased' trigger. The guard checks the
+        // EFFECTIVE value and names the offending field.
+        when: "a numeric trigger passes a state-change token as value with no comparator"
+        script._rmAddTrigger(100, [capability: "Temperature", deviceIds: [8], value: "increased"])
+
+        then: "the value-alias bypass is rejected up front, naming value and steering to comparator"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("value:'increased'")
+        ex.message.contains("is not a valid state value")
+        ex.message.contains("comparator")
+        ex.message.contains("RM is not touched")
+    }
+
+    def "addTrigger state-change token on an UNLISTED device-state/numeric capability '#cap' is guarded (deny-list, not positive-family)"() {
+        // The live tCapab picker accepts many device-state/numeric caps the curated discover schema
+        // omits (Energy, Water, Voltage, Smoke, ...); those resolve to family=null. A POSITIVE
+        // device-state/numeric family scope would leave them UNGUARDED, committing a broken trigger;
+        // the deny-list guards every non-exempt family, including null. Reverting
+        // _rmStateChangeGuardApplies to `family in ["device-state","numeric"]` turns these rows RED
+        // (family null -> not guarded -> no exception; execution falls through to the unstubbed hub).
+        when: "an unlisted-capability trigger passes a state-change token with no comparator"
+        def spec = [capability: cap, deviceIds: [8]]
+        spec[field] = "increased"
+        script._rmAddTrigger(100, spec)
+
+        then: "the deny-list guards the unlisted cap up front, steering to comparator"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains(offending)
+        ex.message.contains("is not a valid state value")
+        ex.message.contains("comparator")
+        ex.message.contains("RM is not touched")
+
+        where:
+        cap       | field   | offending
+        "Energy"  | "value" | "value:'increased'"
+        "Water"   | "state" | "state:'increased'"
+        "Voltage" | "value" | "value:'increased'"
+    }
+
+    def "addTrigger with an explicit comparator is not rejected even when state also looks like a change token"() {
+        when: "the trigger supplies BOTH a change-token state AND an explicit comparator (comparator wins)"
+        Exception thrownEx = null
+        try {
+            script._rmAddTrigger(100, [capability: "Temperature", state: "changed", comparator: "*changed*"])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "the state-change guard defers to the explicit comparator; execution reaches the unmocked hub layer"
+        thrownEx != null
+        !thrownEx.message.contains("is not a valid state value")
+        thrownEx.message.contains("Unstubbed hubInternalGet")
+    }
+
+    def "addTrigger enum state '#stateVal' on '#cap' is not mistaken for a state-change token"() {
+        when: "a device-state trigger uses a legitimate enum state with no comparator"
+        Exception thrownEx = null
+        try {
+            script._rmAddTrigger(100, [capability: cap, state: stateVal])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "the state-change guard does not over-fire; execution reaches the unmocked hub layer"
+        thrownEx != null
+        !thrownEx.message.contains("is not a valid state value")
+        thrownEx.message.contains("Unstubbed hubInternalGet")
+
+        where:
+        cap       | stateVal
+        "Switch"  | "on"
+        "Contact" | "open"
+        "Motion"  | "active"
+    }
+
+    def "addTrigger exempt capability '#cap' state '#stateVal' is not mistaken for a state-change token"() {
+        when: "an exempt capability carries a state that contains a change stem, with no comparator"
+        Exception thrownEx = null
+        try {
+            script._rmAddTrigger(100, [capability: cap, state: stateVal])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "the guard is skipped for Mode/Variable/Custom Attribute -- their state carries names/enum values"
+        thrownEx != null
+        !thrownEx.message.contains("is not a valid state value")
+        thrownEx.message.contains("Unstubbed hubInternalGet")
+
+        where:
+        cap                | stateVal
+        "Mode"             | "Changed"
+        "Mode"             | "Day Changed"
+        // Lowercase capability pins the case-insensitive family classification (matches "Mode").
+        "mode"             | "changed"
+        "Variable"         | "increased"
+        "Custom Attribute" | "decreased"
+    }
+
+    def "addTrigger Periodic Schedule with a stray state-change token is NOT rejected by the state guard (no tstate family)"() {
+        // The state guard must not fire for a capability with no tstate value picker. A Periodic
+        // Schedule with a valid periodic map plus a stray state:'changed' proceeds past the guard;
+        // the stray key surfaces later as a not_in_schema skip, NOT a comparator-steer rejection
+        // that is meaningless for a schedule.
+        when: "a well-formed periodic trigger also carries a stray state-change token"
+        Exception thrownEx = null
+        try {
+            script._rmAddTrigger(100, [capability: "Periodic Schedule", periodic: [frequency: "Minutes", everyN: 5], state: "changed"])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "neither the state guard nor the periodic-shape guard fires; execution reaches the unmocked hub layer"
+        thrownEx != null
+        !thrownEx.message.contains("is not a valid state value")
+        !thrownEx.message.contains("requires periodic:")
+        thrownEx.message.contains("Unstubbed hubInternalGet")
+    }
+
+    def "modifyTrigger with a state-change token '#token' on a guarded-family trigger is rejected steering to removeTrigger + addTrigger"() {
+        given: "an existing numeric (guarded-family) trigger at index 1"
+        // The index-existence check reads statusJson; the capability read reads configure/json.
+        // Both must expose tCapab1 so the guard resolves the committed capability BEFORE any write.
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "tCapab1", value: "Temperature"]]) }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, [tCapab1: "Temperature"]) }
+
+        when: "an existing trigger's state is edited to a state-change token (modify has no comparator channel)"
+        script._rmModifyTrigger(100, 1, [state: token])
+
+        then: "the modify path rejects it up front, before any hub round-trip"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("removeTrigger")
+        ex.message.contains("comparator")
+
+        and: "the pre-flight refusal carries the not-touched sentinel so the edit-path restoreHint stays accurate"
+        ex.message.contains("RM is not touched")
+
+        where:
+        token << ["changed", "became", "increased", "decreased"]
+    }
+
+    def "modifyTrigger with a state-change token on an UNLISTED capability trigger is guarded (deny-list, not positive-family)"() {
+        // The committed capability ('Energy') is accepted by the live tCapab picker but absent from
+        // the curated discover schema, so it resolves to family=null. Under the deny-list a non-null
+        // committed capability of an unrecognized family is GUARDED. Reverting
+        // _rmStateChangeGuardApplies to `family in ["device-state","numeric"]` makes this go RED
+        // (family null -> guard skipped -> the reject message is never thrown).
+        given: "an existing trigger whose committed capability is unlisted in the discover schema"
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "tCapab1", value: "Energy"]]) }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, [tCapab1: "Energy"]) }
+
+        when: "the trigger's state is edited to a state-change token (modify has no comparator channel)"
+        script._rmModifyTrigger(100, 1, [state: "increased"])
+
+        then: "the deny-list guards the unlisted cap up front, before any hub round-trip"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("looks like a state-change comparator token")
+        ex.message.contains("removeTrigger")
+        ex.message.contains("RM is not touched")
+    }
+
+    def "modifyTrigger fail-safe: an UNREADABLE committed capability (null) SKIPS the guard rather than rejecting"() {
+        // containsKey(index) is true (tCapab1 is present) but its value is null -- the capability
+        // could not be read. The deny-list returns TRUE for a null family, so the guard would fire
+        // and falsely reject a legitimate edit UNLESS the explicit `committedCap != null` null-guard
+        // skips it. This pins that fail-safe: with the null-guard the edit proceeds PAST the
+        // state-change guard to the wizard-open POST; dropping the null-guard rejects here instead
+        // (the `!contains("looks like a state-change comparator token")` assertion goes RED).
+        given: "an existing trigger at index 1 whose tCapab1 value is null (capability unreadable)"
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "tCapab1", value: null]]) }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, [:]) }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            throw new IllegalStateException("REACHED_EDITCOND_POST")
+        }
+
+        when: "the trigger's state is edited to a state-change token"
+        Exception thrownEx = null
+        try {
+            script._rmModifyTrigger(100, 1, [state: "increased"])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "the guard is skipped (fail-safe); execution proceeds past it to the wizard-open POST"
+        thrownEx != null
+        !thrownEx.message.contains("looks like a state-change comparator token")
+        thrownEx.message.contains("REACHED_EDITCOND_POST")
+    }
+
+    def "modifyTrigger with a stem value on a Custom Attribute trigger is NOT rejected (exempt family)"() {
+        // A trend Custom Attribute's own enum value can legitimately BE a change stem
+        // ('increased'/'decreased'). The guard reads the committed tCapab1='Custom Attribute',
+        // finds it is not a guarded family, and lets the edit proceed -- it must NOT reject. A
+        // POST sentinel deterministically marks that execution reached the editCond wizard click
+        // PAST the guard, so the assertion is not a fragile 'reached some unstubbed hub op'.
+        given: "an existing Custom Attribute trigger at index 1; the first hub write throws a sentinel"
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "tCapab1", value: "Custom Attribute"]]) }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, [tCapab1: "Custom Attribute"]) }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            throw new IllegalStateException("REACHED_EDITCOND_POST")
+        }
+
+        when: "the trigger's value is edited to a trend enum value that contains a change stem"
+        Exception thrownEx = null
+        try {
+            script._rmModifyTrigger(100, 1, [state: "increased"])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "the guard does not fire; execution proceeds past it to the wizard-open POST"
+        thrownEx != null
+        !thrownEx.message.contains("looks like a state-change comparator token")
+        thrownEx.message.contains("REACHED_EDITCOND_POST")
+    }
+
+    def "modifyTrigger with a normal enum state is not rejected by the state-change guard"() {
+        when: "an existing trigger's state is edited to a normal enum value (no mocks)"
+        Exception thrownEx = null
+        try {
+            script._rmModifyTrigger(100, 1, [state: "on"])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "the state-change guard does not fire; execution reaches the unmocked hub layer instead"
+        thrownEx != null
+        !thrownEx.message.contains("looks like a state-change comparator token")
+        thrownEx.message.contains("Unstubbed hubInternalGet")
+    }
+
+    def "addTrigger pre-flight shape refusal on the edit path yields a not-touched restoreHint, not a restore prompt"() {
+        // A fail-loud shape guard throws before any hub round-trip. On the edit path the throw
+        // is caught and routed through _rmBuildUpdateErrorResponse, which keys off the
+        // 'RM is not touched' sentinel in the message to report that the saved backup is
+        // identical to the current rule -- NOT the misleading "Backup saved before write; call
+        // hub_restore_backup" hint for a mutation that never ran. This is the end-to-end pin
+        // for that restoreHint accuracy; the message-level specs above pin the sentinel itself.
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Plain", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, []) }
+
+        when: "an addTrigger passes a state-change token as state (a pre-flight shape refusal)"
+        def result = script.toolSetRule([appId: 100, addTrigger: [capability: "Temperature", state: "changed"], confirm: true])
+
+        then: "the edit path surfaces the refusal, carrying the sentinel into the error"
+        result.success == false
+        result.error?.contains("is not a valid state value")
+        result.error?.contains("RM is not touched")
+
+        and: "restoreHint is the pre-flight (not-touched) form, NOT the misleading 'Backup saved before write' restore prompt"
+        result.restoreHint?.contains("Pre-flight refusal")
+        result.restoreHint?.contains("RM was not touched")
+        !result.restoreHint?.contains("Backup saved before write")
+
+        and: "no rule-write POST committed -- the refusal happened before any hub round-trip"
+        !posts.any { it.path == "/installedapp/update/json" }
+    }
+
+    def "modifyTrigger pre-flight shape refusal on the edit path yields a not-touched restoreHint, not a restore prompt"() {
+        // Sibling of the addTrigger spec above, on the trigger-mutation branch.
+        // modifyTrigger's mods.state state-change-token guard throws before any
+        // hub round-trip, carrying the 'RM is not touched' sentinel. The trigger-
+        // mutation catch keeps a legacy-flat error shape (not _rmBuildUpdateError-
+        // Response), so it must detect the sentinel itself and emit the not-touched
+        // wording -- otherwise it falsely prompts a "Backup saved before write;
+        // call hub_restore_backup" restore for a mutation that never ran.
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        // The refusal is now capability-aware: index 1 must exist AND resolve to a guarded family --
+        // both now come from the SAME statusJson (tCapab1 value='Temperature'), the single fetch
+        // _rmModifyTrigger uses for the index check and the capability guard, so the guard fires
+        // instead of a bare index-not-found error. (configure/json is still registered because the
+        // outer toolSetRule wrapper reads it for the pre-write backup/version context.)
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Plain", [], null, [tCapab1: "Temperature"]) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "tCapab1", value: "Temperature"]]) }
+
+        when: "a modifyTrigger passes a state-change token as mods.state (a pre-flight shape refusal)"
+        def result = script.toolSetRule([appId: 100, modifyTrigger: [index: 1, mods: [state: "changed"]], confirm: true])
+
+        then: "the edit path surfaces the refusal, carrying the sentinel into the error"
+        result.success == false
+        result.error?.contains("looks like a state-change comparator token")
+        result.error?.contains("RM is not touched")
+
+        and: "restoreHint is the pre-flight (not-touched) form, NOT the misleading 'Backup saved before write' restore prompt"
+        result.restoreHint?.contains("Pre-flight refusal")
+        result.restoreHint?.contains("RM was not touched")
+        !result.restoreHint?.contains("Backup saved before write")
+
+        and: "no rule-write POST committed -- the refusal happened before any hub round-trip"
         !posts.any { it.path == "/installedapp/update/json" }
     }
 
@@ -17582,6 +18005,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // "Existing indices: 2" comes from _rmRemoveTrigger's
         // sort().join(', ') formatter on the not-found throw.
         result.error?.contains("Existing indices: 2")
+
+        and: "the pre-write index-not-found refusal carries the not-touched sentinel + accurate restoreHint (regression guard -- both-ways pending orchestrator)"
+        // The index check runs after the index-collect GET but before any wizard mutation, so the
+        // sentinel keeps the edit-path restoreHint from falsely prompting a 'Backup saved before
+        // write' restore for a rule that was never touched.
+        result.error?.contains("RM is not touched")
+        result.restoreHint?.contains("RM was not touched")
+        !result.restoreHint?.contains("Backup saved before write")
     }
 
     def "removeTrigger retry path: trigger disappears on second check after race recovery"() {
@@ -17816,6 +18247,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // not-found throw; a loose .contains("2") would also match coincidental
         // digit overlap (e.g. modifyTrigger.index 7 -> two-digit hits).
         result.error?.contains("Existing indices: 2")
+
+        and: "the pre-write index-not-found refusal carries the not-touched sentinel + accurate restoreHint (regression guard -- both-ways pending orchestrator)"
+        // The index check runs after the shared statusJson read but before any wizard mutation, so
+        // the sentinel keeps the edit-path restoreHint from falsely prompting a 'Backup saved before
+        // write' restore for a rule that was never touched.
+        result.error?.contains("RM is not touched")
+        result.restoreHint?.contains("RM was not touched")
+        !result.restoreHint?.contains("Backup saved before write")
     }
 
     def "modifyTrigger returns success: false on unsupported mods fields (capability or deviceIds) with workaround hint"() {
@@ -17841,6 +18280,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == false
         result.error?.contains("modifyTrigger currently only supports changing the trigger's state field")
         result.error?.contains("removeTrigger + addTrigger")
+
+        and: "the pre-write input-shape refusal carries the not-touched sentinel so the edit-path restoreHint stays accurate"
+        result.error?.contains("RM is not touched")
+        result.restoreHint?.contains("RM was not touched")
+        !result.restoreHint?.contains("Backup saved before write")
     }
 
     def "modifyTrigger throws when mods is empty (no state field)"() {
@@ -17865,6 +18309,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "returns success: false because mods lacks the required 'state' key"
         result.success == false
         result.error?.contains("must include 'state'")
+
+        and: "the pre-write input-shape refusal carries the not-touched sentinel so the edit-path restoreHint stays accurate"
+        result.error?.contains("RM is not touched")
+        result.restoreHint?.contains("RM was not touched")
+        !result.restoreHint?.contains("Backup saved before write")
     }
 
     def "modifyTrigger returns success: false when trigger has no state field in schema (Time/Periodic trigger)"() {

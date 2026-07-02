@@ -2616,6 +2616,60 @@ class TestRunner:
         self._untrack_native_app(app_id)
 
     @test("native_apps")
+    def test_set_rule_failloud_wrong_trigger_shape(self) -> None:
+        # Fail-loud validation: a plausible-but-wrong addTrigger shape must return a clear
+        # error steering to the correct field, NOT silently commit a broken trigger. The
+        # edit engine CATCHES the guard's IllegalArgumentException and returns a structured
+        # {success:false, error:...} map (no isError), so call_tool returns NORMALLY -- assert
+        # on the RETURNED ENVELOPE, not a raised exception. confirm:True is required: a
+        # confirm-less edit returns only a schema probe ("no rule was changed"), so the guard
+        # never runs. Throwaway rule: a rejected spec never mutates, so nothing orphans.
+        app_id = self._create_native_rule("FailLoud", {
+            "addActions": [{"capability": "log", "message": "E2E fail-loud base"}],
+        })
+        try:
+            # Periodic Schedule needs periodic:{frequency,everyN}; a bare `minutes` is unrecognized.
+            periodic = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "addTrigger": {"capability": "Periodic Schedule", "minutes": 1},
+                         "confirm": True}})
+            assert periodic.get("success") is False and "periodic" in str(periodic.get("error", "")).lower(), \
+                f"Periodic Schedule minutes:1 should fail loud steering to periodic, got: {periodic}"
+            # The pre-flight refusal mutated nothing, so the edit-path restoreHint must report
+            # that RM was not touched -- NOT the misleading "Backup saved before write; call
+            # hub_restore_backup" prompt for a write that never ran.
+            assert "not touched" in str(periodic.get("restoreHint", "")).lower() \
+                and "backup saved before write" not in str(periodic.get("restoreHint", "")).lower(), \
+                f"periodic pre-flight refusal should carry a not-touched restoreHint, got: {periodic.get('restoreHint')!r}"
+            # A state-change token belongs in comparator, not state.
+            state_changed = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "addTrigger": {"capability": "Temperature", "state": "changed"},
+                         "confirm": True}})
+            assert state_changed.get("success") is False and "comparator" in str(state_changed.get("error", "")).lower(), \
+                f"Temperature state:'changed' should fail loud steering to comparator, got: {state_changed}"
+            assert "not touched" in str(state_changed.get("restoreHint", "")).lower() \
+                and "backup saved before write" not in str(state_changed.get("restoreHint", "")).lower(), \
+                f"state-change pre-flight refusal should carry a not-touched restoreHint, got: {state_changed.get('restoreHint')!r}"
+            # Same mistake via the `value` alias (the field numeric capabilities most naturally
+            # use) -- the guard checks the effective value, so this bypass is caught too.
+            value_alias = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "addTrigger": {"capability": "Temperature", "value": "increased"},
+                         "confirm": True}})
+            assert value_alias.get("success") is False and "comparator" in str(value_alias.get("error", "")).lower(), \
+                f"Temperature value:'increased' should fail loud steering to comparator, got: {value_alias}"
+            # An under-specified periodic shape (frequency present, mode field absent) would
+            # commit a phantom '?' row -- reject it up front naming the missing field.
+            under_periodic = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "addTrigger": {"capability": "Periodic Schedule",
+                         "periodic": {"frequency": "Hourly"}}, "confirm": True}})
+            assert under_periodic.get("success") is False and "everyn" in str(under_periodic.get("error", "")).lower(), \
+                f"Periodic Hourly with no everyN should fail loud naming everyN, got: {under_periodic}"
+            assert "not touched" in str(under_periodic.get("restoreHint", "")).lower() \
+                and "backup saved before write" not in str(under_periodic.get("restoreHint", "")).lower(), \
+                f"under-specified periodic pre-flight refusal should carry a not-touched restoreHint, got: {under_periodic.get('restoreHint')!r}"
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
     def test_set_native_app_lifecycle(self) -> None:
         # hub_set_native_app: the GENERIC create-or-edit upsert. Create via the
         # registry-driven create path, rename via a raw settings write, then delete.
@@ -3410,6 +3464,18 @@ class TestRunner:
                 assert mod.get("verifiedState") == "off", \
                     (f"modifyTrigger verifiedState should echo the persisted new state 'off', "
                      f"got {mod.get('verifiedState')!r}: {mod}")
+            # A state-change token in mods.state can only commit as a literal that never matches --
+            # modifyTrigger has no comparator channel. On this device-state (guarded-family)
+            # trigger the capability-aware guard reads the committed tCapab, fires, and steers to
+            # removeTrigger + addTrigger, carrying the accurate not-touched restoreHint (no write).
+            rejected = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "modifyTrigger": {"index": tidx, "mods": {"state": "changed"}},
+                         "confirm": True}})
+            assert rejected.get("success") is False and "removetrigger" in str(rejected.get("error", "")).lower(), \
+                f"modifyTrigger mods.state:'changed' on a Switch trigger should fail loud steering to removeTrigger, got: {rejected}"
+            assert "not touched" in str(rejected.get("restoreHint", "")).lower() \
+                and "backup saved before write" not in str(rejected.get("restoreHint", "")).lower(), \
+                f"modifyTrigger pre-flight refusal should carry a not-touched restoreHint, got: {rejected.get('restoreHint')!r}"
             self._set_rule(app_id, {"removeTrigger": {"index": tidx}}, strict=True)
             self._assert_rule_healthy(app_id)
         finally:
