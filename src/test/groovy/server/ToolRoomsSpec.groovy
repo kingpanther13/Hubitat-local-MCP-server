@@ -508,25 +508,27 @@ class ToolRoomsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "gateway missing-required-param refusal sets top-level isError on the envelope, not just content (#209)"() {
-        // handleGateway pre-validates a sub-tool's required params and RETURNS an isError envelope
-        // (rather than throwing). handleToolsCall must flag that on the JSON-RPC result's top-level
-        // isError so a spec-compliant client -- one that checks top-level isError, not the content
-        // JSON -- sees a refused destructive call as an error and routes a retry. This is the
-        // file-wide contract ("handleToolsCall flags isError on the JSON-RPC envelope"); regression
-        // guard for the bug where a returned isError stayed invisible top-level.
-        given: 'gateway mode pinned -- this exercises handleGateway pre-validation, which only runs when useGateways is ON (the CI flat-matrix dimension defaults it OFF, where the gateway is disabled and returns a different refusal)'
-        settingsMap.useGateways = true
-        enableWrite()
+    def "a RETURNED isError sets top-level isError on the JSON-RPC envelope, not just content (#209)"() {
+        // File-wide contract: a handler that RETURNS [isError:true, ...] (a native-wizard
+        // soft failure, the flat-mode gateway-disabled refusal, etc.) MUST be flagged on the
+        // JSON-RPC result's top-level isError so a spec-compliant client -- one that checks
+        // top-level isError, not the content JSON -- routes a retry. Regression guard for the
+        // bug where a returned isError stayed invisible top-level.
+        //
+        // Vehicle: the flat-mode gateway-name refusal, a genuine RETURNED isError. (The old
+        // vehicle -- the gateway missing-required-param pre-check -- is no longer a returner:
+        // issue #319 made it THROW -> -32602 for shape parity with flat dispatch, so it is now
+        // covered by the -32602 assertions in HandleGatewaySpec instead.)
+        given: 'flat mode: a gateway-NAME call returns the "useGateways is OFF" isError envelope'
+        settingsMap.useGateways = false
 
-        when: 'hub_create_room is invoked via the hub_manage_rooms gateway with confirm omitted'
-        def response = mcpDriver.callTool('hub_manage_rooms', [tool: 'hub_create_room', args: [name: 'EnvErr']])
+        when:
+        def response = mcpDriver.callTool('hub_manage_rooms', [tool: 'hub_list_rooms', args: [:]])
 
-        then: 'the refusal is on the TOP-LEVEL envelope (isError), carrying the helpful content'
+        then: 'the returned isError is flagged on the TOP-LEVEL envelope, carrying the helpful content'
         response.error == null
         response.result.isError == true
-        response.result.content[0].text.contains('Missing required parameter')
-        response.result.content[0].text.contains('confirm')
+        response.result.content[0].text.contains('useGateways is OFF')
     }
 
     def "hub_create_room throws when the Write master is disabled"() {

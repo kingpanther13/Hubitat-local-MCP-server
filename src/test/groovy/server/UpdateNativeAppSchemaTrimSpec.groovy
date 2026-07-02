@@ -591,29 +591,28 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
     }
 
     def "missing-param hint surface for hub_set_rule strips marker tokens but keeps wrapped capability prose"() {
-        given: 'gateway dispatch to hub_set_rule without required appId triggers the missing-param hint path'
+        given: 'gateway dispatch to hub_set_rule without required confirm triggers the missing-param hint path'
         settingsMap.useGateways = true
         enableEveryToggle()
 
         when:
-        def result = script.handleGateway('hub_manage_rule_machine', 'hub_set_rule', [:])
+        Exception ex = null
+        try { script.handleGateway('hub_manage_rule_machine', 'hub_set_rule', [:]) } catch (Exception e) { ex = e }
 
-        then: 'pre-validation surfaces a structured error envelope'
-        result instanceof Map
-        result.isError == true
-        result.error?.contains('Missing required parameter')
+        then: 'pre-validation throws the missing-param error (#319: same -32602 shape as flat)'
+        ex instanceof IllegalArgumentException
+        ex.message.contains('Missing required parameter')
 
-        and: 'parameter description text in the hint has no leaking marker tokens'
-        result.parameters instanceof String
-        !((String) result.parameters).contains(OPEN_MARKER)
-        !((String) result.parameters).contains(CLOSE_MARKER)
+        and: 'parameter description text in the thrown message has no leaking marker tokens'
+        !ex.message.contains(OPEN_MARKER)
+        !ex.message.contains(CLOSE_MARKER)
 
         and: 'the capability-name summary + guide pointers from BOTH addTrigger and addRequiredExpression survive'
         // The exhaustive families moved to the set_rule_reference guide; the param
         // descriptions retain the capability-name summary + guide pointer, which is what the
         // hint surfaces (token-only strip). An AND assertion catches one going stale.
-        ((String) result.parameters).contains('Periodic Schedule')      // addTrigger name summary
-        ((String) result.parameters).contains("hub_get_tool_guide(section='set_rule_reference')")  // addRequiredExpression guide pointer
+        ex.message.contains('Periodic Schedule')      // addTrigger name summary
+        ex.message.contains("hub_get_tool_guide(section='set_rule_reference')")  // addRequiredExpression guide pointer
     }
 
     def "guide:true through the gateway bypasses the required-param pre-validation and returns the reference"() {

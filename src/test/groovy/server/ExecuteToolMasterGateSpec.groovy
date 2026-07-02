@@ -88,4 +88,64 @@ class ExecuteToolMasterGateSpec extends ToolSpecBase {
         def e = thrown(IllegalArgumentException)
         e.message.contains("Read tools are disabled")
     }
+
+    def "hub_set_native_app schema-only guide call (edit-shaped) is exempt from the Write master (mirrors hub_set_rule)"() {
+        given:
+        settingsMap.enableWrite = false
+        script.metaClass.toolGetToolGuide = { s -> [section: s, stubbed: true] }
+
+        when: "guide meta-call on an existing app -- static reference content, no mutation"
+        def result = script.executeTool("hub_set_native_app", [appId: 123, guide: true])
+
+        then:
+        noExceptionThrown()
+        result.stubbed == true
+    }
+
+    def "hub_set_native_app guide flag on a CREATE-shaped call (no appId) stays Write-master blocked"() {
+        given:
+        settingsMap.enableWrite = false
+
+        when: "no appId -> the create arm would really execute; the schema-only exemption must not apply"
+        script.executeTool("hub_set_native_app", [guide: true, appType: "rule_machine", name: "X"])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("Write tools are disabled")
+    }
+
+    def "hub_set_rule guide flag alongside buttonRule stays Write-master blocked"() {
+        // toolSetRule dispatches buttonRule to _createButtonRuleViaController (a real
+        // write) BEFORE the meta-call shortcuts, and that flow's exclusivity gate does
+        // not reject a stray guide flag -- so _isSetRuleSchemaOnlyCall must refuse the
+        // schema-only exemption whenever buttonRule is present, or this call would
+        // bypass the gate and actually create a button rule.
+        given:
+        settingsMap.enableWrite = false
+
+        when:
+        script.executeTool("hub_set_rule",
+            [guide: true, buttonRule: [controllerId: 1, buttonNumber: 1, event: "pushed"], confirm: true])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("Write tools are disabled")
+    }
+
+    def "hub_set_native_app guide flag alongside buttonRule stays Write-master blocked"() {
+        // toolSetNativeApp routes buttonRule to _createButtonRuleViaController (a real
+        // write) BEFORE any guide short-circuit, so _isNativeAppSchemaOnlyCall must
+        // refuse the exemption whenever buttonRule is present -- dropping that clause
+        // would let this call bypass the gate and actually create a button rule.
+        given:
+        settingsMap.enableWrite = false
+
+        when:
+        script.executeTool("hub_set_native_app",
+            [appId: 123, guide: true, buttonRule: [controllerId: 1, buttonNumber: 1, event: "pushed"]])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("Write tools are disabled")
+    }
 }

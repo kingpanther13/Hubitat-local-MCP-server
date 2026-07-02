@@ -6,11 +6,12 @@ import support.ToolSpecBase
  * Spec for hubitat-mcp-server.groovy::handleGateway.
  *
  * Covers catalog mode (no toolName), unknown-gateway and unknown-tool
- * errors, the effective rejection of gateway-as-tool, missing-required
- * soft error (Option D: isError response, not an exception), valid
- * dispatch delegating to executeTool, and the defensive JSON-string parse
- * for inner {@code args} (some MCP clients, e.g. Sonnet subagents, serialize
- * {@code args} as a JSON-encoded string rather than a Map object).
+ * errors, the effective rejection of gateway-as-tool, the Option D
+ * required-param pre-check (throws -> -32602 with the full param list, the
+ * SAME shape flat dispatch gives -- issue #319), valid dispatch delegating
+ * to executeTool, and the defensive JSON-string parse for inner {@code args}
+ * (some MCP clients, e.g. Sonnet subagents, serialize {@code args} as a
+ * JSON-encoded string rather than a Map object).
  */
 class HandleGatewaySpec extends ToolSpecBase {
 
@@ -82,37 +83,107 @@ class HandleGatewaySpec extends ToolSpecBase {
         ex.message.contains('Available:')
     }
 
-    def "missing required parameters returns isError response (does NOT throw)"() {
+    def "missing required param throws -32602 with the full param list (same shape as flat; #319)"() {
         when:
-        // hub_get_room requires `room`; omit it.
-        def result = script.handleGateway('hub_manage_rooms', 'hub_get_room', [:])
+        // hub_get_room requires `room`; omit it. The pre-check throws (not a soft return)
+        // so a missing-arg error has the SAME shape gateway and flat (both -> -32602).
+        script.handleGateway('hub_manage_rooms', 'hub_get_room', [:])
 
-        then: 'Option D behaviour: soft error response, not an exception'
-        notThrown(IllegalArgumentException)
-        result.isError == true
-        result.tool == 'hub_get_room'
-        // Pin the singular form (W-missingRequired-singular): a regression that drops
-        // the count-aware ternary at L1337 would emit "parameters" for 1 missing arg.
-        result.error.contains('Missing required parameter:')
-        !result.error.contains('Missing required parameters:')
-        result.error.contains('room')
-        result.parameters.contains('room')
+        then: 'thrown IllegalArgumentException -> handleToolsCall maps it to -32602'
+        def e = thrown(IllegalArgumentException)
+        // Singular form (W-missingRequired-singular): a regression dropping the count-aware
+        // ternary would emit "parameters" for 1 missing arg.
+        e.message.contains('Missing required parameter for hub_get_room:')
+        !e.message.contains('Missing required parameters')
+        e.message.contains('room')
+        // The full param list rides in the message (no content lost vs the old field).
+        e.message.contains('All parameters:')
     }
 
-    // Both-ways pending (orchestrator).
+    def "missing-param error is the SAME SHAPE gateway and flat (both -32602; #319)"() {
+        // The user-facing #319 fix: the same mistake yields the same error CATEGORY both
+        // ways. flat's handler validation throws (-> -32602); the gateway pre-check now
+        // throws too (was a soft isError envelope). The gateway TEXT is additionally
+        // richer (lists every param), never poorer -- no information is dropped.
+        when: 'flat: executeTool by leaf name -> the handler throws its own message'
+        def flatEx = null
+        try { script.executeTool('hub_get_room', [:]) } catch (Exception ex) { flatEx = ex }
+
+        and: 'gateway: handleGateway to the same sub-tool -> the pre-check throws (all params)'
+        def gwEx = null
+        try { script.handleGateway('hub_manage_rooms', 'hub_get_room', [:]) } catch (Exception ex) { gwEx = ex }
+
+        then: 'both throw IllegalArgumentException (same JSON-RPC -32602 category)'
+        flatEx instanceof IllegalArgumentException
+        gwEx instanceof IllegalArgumentException
+
+        and: 'the gateway still names the missing param -- no information lost, plus the full list'
+        gwEx.message.contains('room')
+        gwEx.message.contains('All parameters:')
+    }
+
+    def "hub_set_native_app schema-only meta-call bypasses the required-param pre-check (mirrors hub_set_rule)"() {
+        given:
+        script.metaClass.toolGetToolGuide = { s -> [section: s, stubbed: true] }
+
+        when: "guide meta-call routed through the gateway WITHOUT confirm (its only required param)"
+        def result = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_set_native_app', [appId: 123, guide: true])
+
+        then: 'the pre-check does not reject for missing confirm; the guide short-circuit answers'
+        notThrown(IllegalArgumentException)
+        result.stubbed == true
+    }
+
+    def "missing-param pre-check falls through to the canonical refusal for a master-hidden sub-tool"() {
+        given: 'Write master OFF hides hub_delete_room'
+        settingsMap.enableWrite = false
+
+        when: 'missing-params call to the hidden write sub-tool through its gateway'
+        script.handleGateway('hub_manage_rooms', 'hub_delete_room', [:])
+
+        then: "executeTool's canonical refusal fires instead of the parameter-schema dump"
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('Write tools are disabled')
+    }
+
+    def "missing-param pre-check falls through to the canonical refusal for a #114-disabled sub-tool"() {
+        given:
+        settingsMap.disabled_tools = ['hub_delete_room']
+
+        when:
+        script.handleGateway('hub_manage_rooms', 'hub_delete_room', [:])
+
+        then: 'the Advanced-overrides refusal, not a schema dump implying the tool is callable'
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('disabled in Advanced settings')
+    }
+
+    def "missing-param pre-check falls through to the canonical refusal for a custom-engine-hidden sub-tool"() {
+        // The third hiding source getHiddenToolNames() folds in (readonly mode hides the
+        // write-side custom_rule tools). The fourth, dev-mode-only, has no gateway member
+        // today (hub_update_package is top-level), so it has no gateway surface to pin.
+        given: 'engine OFF + Read master ON = readonly mode; hub_delete_custom_rule is hidden'
+        settingsMap.enableCustomRuleEngine = false
+
+        when:
+        script.handleGateway('hub_manage_custom_rules', 'hub_delete_custom_rule', [:])
+
+        then: "the custom-engine refusal, not hub_delete_custom_rule's parameter schema"
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('not available in read-only mode')
+    }
+
     def "missing two required parameters reports 'parameters' plural (count-aware)"() {
         when:
         // hub_create_room requires both `name` and `confirm`; omit both.
-        def result = script.handleGateway('hub_manage_rooms', 'hub_create_room', [:])
+        script.handleGateway('hub_manage_rooms', 'hub_create_room', [:])
 
-        then: 'plural form fired by the count-aware ternary at L1337'
-        notThrown(IllegalArgumentException)
-        result.isError == true
-        result.tool == 'hub_create_room'
-        result.error.contains('Missing required parameters:')
-        !result.error.contains('Missing required parameter:')
-        result.error.contains('name')
-        result.error.contains('confirm')
+        then: 'plural form fired by the count-aware ternary'
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('Missing required parameters for hub_create_room:')
+        !e.message.contains('Missing required parameter for')
+        e.message.contains('name')
+        e.message.contains('confirm')
     }
 
     def "valid dispatch delegates to executeTool"() {
@@ -228,59 +299,59 @@ class HandleGatewaySpec extends ToolSpecBase {
     // handleGateway no longer rebuilds the full ~111-tool catalog for the required-param
     // pre-check; it reads from the memoized requiredParamsByTool() map cached in atomicState.
 
-    def "memo is populated in atomicState after the first gateway call; a repeat call returns the identical missing-param error"() {
+    def "memo is populated in atomicState after the first gateway call; a repeat call throws the identical missing-param error"() {
         given: 'a clean atomicState so the memo builds fresh on the first call'
         atomicStateMap.remove('requiredParamsByTool')
 
         when: 'first call with a missing required param (hub_get_room requires room)'
-        def first = script.handleGateway('hub_manage_rooms', 'hub_get_room', [:])
+        def firstEx = null
+        try { script.handleGateway('hub_manage_rooms', 'hub_get_room', [:]) } catch (Exception e) { firstEx = e }
 
-        then: 'soft missing-param error AND the memo is now cached in atomicState'
-        first.isError == true
-        first.tool == 'hub_get_room'
-        first.error.contains('Missing required parameter:')
-        first.error.contains('room')
+        then: 'thrown missing-param error AND the memo is now cached in atomicState'
+        firstEx instanceof IllegalArgumentException
+        firstEx.message.contains('Missing required parameter for hub_get_room:')
+        firstEx.message.contains('room')
         atomicStateMap.requiredParamsByTool instanceof Map
         atomicStateMap.requiredParamsByTool['hub_get_room'] == ['room']
         // omission contract: a no-required-param tool is absent from the map
         !atomicStateMap.requiredParamsByTool.containsKey('hub_list_rooms')
 
         when: 'a second identical call now served from the cached memo'
-        def second = script.handleGateway('hub_manage_rooms', 'hub_get_room', [:])
+        def secondEx = null
+        try { script.handleGateway('hub_manage_rooms', 'hub_get_room', [:]) } catch (Exception e) { secondEx = e }
 
-        then: 'byte-identical error response -- the memo read is behavior-preserving'
-        second == first
+        then: 'identical error message -- the memo read is behavior-preserving'
+        secondEx.message == firstEx.message
     }
 
-    def "the missing-param hint stays intact (no FLAT_TRIM leak) even after a flat-mode tools/list strip"() {
+    def "the missing-param message stays intact (no FLAT_TRIM leak) even after a flat-mode tools/list strip"() {
         given: 'flat mode drives the in-place [[FLAT_TRIM]] strip path; clean memo'
         settingsMap.useGateways = false
         atomicStateMap.remove('requiredParamsByTool')
 
         when: 'run the flat strip path first (mutates fresh def copies in place), then a gateway missing-param call'
         script.getToolDefinitions()
-        def result = script.handleGateway('hub_manage_rooms', 'hub_get_room', [:])
+        script.handleGateway('hub_manage_rooms', 'hub_get_room', [:])
 
-        then: 'the missing-param hint is fully intact -- no marker leakage'
-        result.isError == true
-        result.error.contains('room')
-        result.parameters.contains('room')
-        !result.parameters.contains('FLAT_TRIM')
+        then: 'the thrown param list is fully intact -- no marker leakage'
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('room')
+        !e.message.contains('FLAT_TRIM')
     }
 
-    def "two-missing-required path still rebuilds the full catalog for the hint and caches the two-element required list"() {
+    def "two-missing-required path rebuilds the full catalog for the hint and caches the two-element required list"() {
         given:
         atomicStateMap.remove('requiredParamsByTool')
 
         when: 'hub_create_room requires both name and confirm; omit both'
-        def result = script.handleGateway('hub_manage_rooms', 'hub_create_room', [:])
+        Exception ex = null
+        try { script.handleGateway('hub_manage_rooms', 'hub_create_room', [:]) } catch (Exception e) { ex = e }
 
         then: 'plural form + both names; memo cached the two-element required list (order-independent)'
-        result.isError == true
-        result.tool == 'hub_create_room'
-        result.error.contains('Missing required parameters:')
-        result.error.contains('name')
-        result.error.contains('confirm')
+        ex instanceof IllegalArgumentException
+        ex.message.contains('Missing required parameters for hub_create_room:')
+        ex.message.contains('name')
+        ex.message.contains('confirm')
         (atomicStateMap.requiredParamsByTool['hub_create_room'] as Set) == (['name', 'confirm'] as Set)
     }
 
@@ -307,13 +378,13 @@ class HandleGatewaySpec extends ToolSpecBase {
         atomicStateMap.requiredParamsByToolFingerprint = 'stale-fingerprint-from-an-older-same-version-build'
 
         when: 'a gateway call omits everything'
-        def result = script.handleGateway('hub_manage_rooms', 'hub_get_room', [:])
+        Exception ex = null
+        try { script.handleGateway('hub_manage_rooms', 'hub_get_room', [:]) } catch (Exception e) { ex = e }
 
         then: 'the fingerprint mismatch forces a rebuild -- rejection names the LIVE required param, never the stale one'
-        result.isError == true
-        result.tool == 'hub_get_room'
-        result.error.contains('room')
-        !result.error.contains('legacy_param')
+        ex instanceof IllegalArgumentException
+        ex.message.contains('room')
+        !ex.message.contains('legacy_param')
 
         and: 'the memo + fingerprint were healed to the live catalog (live required restored)'
         atomicStateMap.requiredParamsByToolFingerprint == script.requiredParamsCatalogFingerprint(script.getAllToolDefinitions())
@@ -337,8 +408,8 @@ class HandleGatewaySpec extends ToolSpecBase {
         when: 'supply only the live-required param, omitting the stale extra'
         def result = script.handleGateway('hub_manage_rooms', 'hub_get_room', [room: 'Kitchen'])
 
-        then: 'the pre-check passes (no missing-param rejection) -- dispatch reached the impl and returned the room'
-        !(result instanceof Map && result.isError == true && result.error?.toString()?.startsWith('Missing required'))
+        then: 'the pre-check passes (no missing-param throw) -- dispatch reached the impl and returned the room'
+        notThrown(IllegalArgumentException)
         result.name == 'Kitchen'
 
         and: 'the memo healed to the live shape (the stale extra param is gone)'
@@ -373,12 +444,12 @@ class HandleGatewaySpec extends ToolSpecBase {
         atomicStateMap.requiredParamsByToolFingerprint = script.requiredParamsCatalogFingerprint(script.getAllToolDefinitions())
 
         when: 'omit the sentinel param the cached (matching-fingerprint) memo lists as required'
-        def result = script.handleGateway('hub_manage_rooms', 'hub_get_room', [:])
+        Exception ex = null
+        try { script.handleGateway('hub_manage_rooms', 'hub_get_room', [:]) } catch (Exception e) { ex = e }
 
         then: 'the matching-fingerprint cache is honored verbatim -- the sentinel rejection fires (no rebuild)'
-        result.isError == true
-        result.tool == 'hub_get_room'
-        result.error.contains('sentinel_param')
+        ex instanceof IllegalArgumentException
+        ex.message.contains('sentinel_param')
         atomicStateMap.requiredParamsByTool['hub_get_room'] == ['sentinel_param']
     }
 }
