@@ -4343,15 +4343,16 @@ The Visual Rules Builder tools live in the `hub_manage_rule_machine` gateway (th
 
 ---
 
-## Section 17: Easy Dashboard Tests (hub_manage_dashboards / hub_read_dashboards)
+## Section 17: Dashboard Tests — Easy & legacy Hubitat® (hub_manage_dashboards / hub_read_dashboards)
 
-Easy Dashboard CRUD (issue #259 item #9). The 6 tools live in the `hub_manage_dashboards` gateway; the two reads (`hub_list_dashboards`, `hub_get_dashboard`) are also surfaced in the pure-read `hub_read_dashboards` gateway. Reads require the Read master; create/update/clone require the Write master; delete additionally requires `confirm=true` + a hub backup within 24h. Easy Dashboards are classic child apps of the Easy Dashboard Parent, driven by `GET /dashboard/*` endpoints. The list endpoint may be pinToken-gated on some hubs (an unexpectedly-empty list is the tell).
+Dashboard CRUD across BOTH Easy Dashboards and legacy Hubitat® Dashboards (issue #259 item #9; legacy coverage issue #326). The 6 tools live in the `hub_manage_dashboards` gateway; the two reads (`hub_list_dashboards`, `hub_get_dashboard`) are also surfaced in the pure-read `hub_read_dashboards` gateway. Reads require the Read master; create/update/clone require the Write master; delete additionally requires `confirm=true` + a hub backup within 24h. Every list entry carries a `type` (`easy` or `legacy`). Easy Dashboards are classic child apps of the Easy Dashboard Parent, driven by `GET /dashboard/*` endpoints and configured with tile toggles/theme; legacy Hubitat® Dashboards are child apps of the built-in Hubitat® Dashboard parent, whose design lives in a nested `layout` (tiles + grid + colors) edited wholesale or via granular tile ops. The list endpoint may be pinToken-gated on some hubs (an unexpectedly-empty list is the tell).
 
 ### Safety Rules for Section 17
 
 - Only create/edit/delete **BAT-prefixed** dashboards created within the same scenario — never touch existing dashboards
 - Dashboards only ever reference BAT-created virtual switches
 - Deleting a dashboard does NOT delete its devices
+- Legacy scenarios additionally require the built-in **Hubitat® Dashboard** parent app to be installed on the hub; a create that reports the parent app missing is a hub-provisioning gap, not a tool failure (skip and note it)
 
 ### T720 — Create an Easy Dashboard, read it back, then delete it
 
@@ -4394,6 +4395,48 @@ Easy Dashboard CRUD (issue #259 item #9). The 6 tools live in the `hub_manage_da
 **Expected**: the AI routes to `hub_manage_dashboards(tool=hub_clone_dashboard)` with the source `id`; the response returns `success=true`, `sourceId`, and (when the hub provides it) `newId`. `hub_list_dashboards` shows both the source and the clone.
 
 **Failure modes**: clone called without an `id` (rejected -32602). The clone is reported successful but never appears in the list (verify with `hub_list_dashboards` — the clone may need a pinToken to surface).
+
+### T723 — Create a legacy Hubitat® Dashboard, add a tile, read it back, then delete it
+
+```json
+{
+  "setup_prompt": "The Write master is enabled and a hub backup was created within the last 24 hours (call hub_create_backup if unsure), and the built-in Hubitat® Dashboard app is installed. Create a virtual switch named 'BAT Legacy Switch' and note its device ID.",
+  "test_prompt": "Create a legacy Hubitat® Dashboard called 'BAT Legacy Dash' authorized for the 'BAT Legacy Switch' device. Add a clock tile to its top-left cell, then show me the dashboard and confirm the clock tile is on its layout.",
+  "teardown_prompt": "Delete the legacy Hubitat® Dashboard 'BAT Legacy Dash'. Delete the virtual switch 'BAT Legacy Switch'."
+}
+```
+
+**Expected**: the AI routes to `hub_manage_dashboards(tool=hub_create_dashboard)` with `name='BAT Legacy Dash'`, `type='legacy'`, `deviceIds=[<id>]` — a legacy dashboard starts with an EMPTY layout, so no `options`/tile toggles are passed. The response returns `success=true`, `type='legacy'`, and the new dashboard `id`. The AI then calls `hub_update_dashboard(id=N, addTiles=[{template:'clock', col:1, row:1}])`; the response has `success=true`, `type='legacy'`, `tileCount>=1`, and the saved `layout` echo. A follow-up `hub_get_dashboard(id=N)` returns `type='legacy'` with a nested `layout` object whose `tiles` array contains the clock tile.
+
+**Failure modes**: the AI passes `options` or Easy tile toggles like `showClockTile` on the legacy create (rejected -32602 — a legacy dashboard's look lives in its layout, not `options`). The built-in Hubitat® Dashboard parent app is not installed, so create returns `success=false` with an error naming the parent app (a hub-provisioning precondition, not a wire-format bug — install the app and retry). `hub_get_dashboard` called without an id (rejected -32602).
+
+### T724 — Edit a legacy dashboard's layout granularly (add tile + set grid/color options)
+
+```json
+{
+  "setup_prompt": "The Write master is enabled and a recent backup exists, and the built-in Hubitat® Dashboard app is installed. Create a virtual switch 'BAT Legacy EditSwitch' and a legacy Hubitat® Dashboard 'BAT Legacy Edit' authorized for that switch with a clock tile already on it. Note the dashboard id.",
+  "test_prompt": "On the legacy dashboard 'BAT Legacy Edit', add a tile for the 'BAT Legacy EditSwitch' device next to the clock, and change the dashboard's background color to dark grey and its grid to 4 columns. Then read it back and confirm the new device tile, the background color, and the column count.",
+  "teardown_prompt": "Delete the legacy Hubitat® Dashboard 'BAT Legacy Edit'. Delete the virtual switch 'BAT Legacy EditSwitch'."
+}
+```
+
+**Expected**: a legacy dashboard's design is edited GRANULARLY (not wholesale), so the AI calls `hub_update_dashboard(id=N, addTiles=[{template:<switch template>, device:<id>, col:.., row:..}], setOptions={bgColor:'#333333', cols:4})` — removals → updates → adds → options all apply in ONE save. The response returns `success=true`, `type='legacy'`, an updated `tileCount`, and the saved `layout` echo. The read-back's `layout` shows both tiles, the new `bgColor`, and `cols=4`.
+
+**Failure modes**: the AI passes `layout` (wholesale) AND granular ops (`addTiles`/`setOptions`) in the same call (rejected -32602 — pass one or the other). The device tile references a device the dashboard hasn't authorized (accepted, but the response carries a `warnings` entry that the tile will show no data until the device is authorized via `deviceIds`). The AI puts grid/color settings in `options` instead of `setOptions` (rejected -32602 — `options` is Easy-only).
+
+### T725 — Clone a legacy Hubitat® Dashboard
+
+```json
+{
+  "setup_prompt": "The Write master is enabled and a recent backup exists, and the built-in Hubitat® Dashboard app is installed. Create a virtual switch 'BAT Legacy CloneSwitch' and a legacy Hubitat® Dashboard 'BAT Legacy CloneSrc' authorized for that switch with a couple of tiles on it. Note the dashboard id.",
+  "test_prompt": "Make a copy of the legacy Hubitat® Dashboard 'BAT Legacy CloneSrc', including its tiles. Then list the dashboards and confirm a legacy copy now exists alongside the original.",
+  "teardown_prompt": "Delete both the original 'BAT Legacy CloneSrc' and its copy. Delete the virtual switch 'BAT Legacy CloneSwitch'."
+}
+```
+
+**Expected**: the AI routes to `hub_manage_dashboards(tool=hub_clone_dashboard)` with the source `id`; for a legacy source the clone is BY VALUE — a fresh legacy dashboard with the source's layout copied in, leaving the source untouched. The response returns `success=true`, `type='legacy'`, `sourceId`, and `newId`. `hub_list_dashboards` shows both, each with `type='legacy'`, and the copy's layout carries the source's tiles.
+
+**Failure modes**: clone called without an `id` (rejected -32602). The copy is created but its layout write fails (the response reports `success=false` WITH the `newId` and a note to re-apply the layout via `hub_update_dashboard`). The clone never appears in the list (verify with `hub_list_dashboards` — it may need a pinToken to surface).
 
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: hubitat-mcp-server
-description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 117 tools (36 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, Easy Dashboard CRUD, HPM package state introspection, and Developer Mode self-administration.
+description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 117 tools (36 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, Easy and legacy Hubitat® Dashboard CRUD, HPM package state introspection, and Developer Mode self-administration.
 license: MIT
 ---
 
@@ -117,7 +117,7 @@ Read gateways (`hub_read_*`, every sub-tool read-only):
 | `hub_read_rooms` | 2 | Room list + get (read-only) |
 | `hub_read_rules` | 6 | Custom-engine rule get/test, native rule list, rule health, rule local variables, Visual Rules Builder rule list/read (read-only) |
 | `hub_read_variables` | 3 | Hub connector and rule engine variable list/get + change history (read-only) |
-| `hub_read_dashboards` | 2 | Easy Dashboard list + get config by id (read-only) |
+| `hub_read_dashboards` | 2 | Dashboard list + get config by id, covering both Easy and legacy Hubitat® Dashboards (read-only) |
 
 Manage gateways (`hub_manage_*`, contain at least one write):
 | Gateway | Tools | Domain |
@@ -136,7 +136,7 @@ Manage gateways (`hub_manage_*`, contain at least one write):
 | `hub_manage_native_rules_and_apps` | 11 | Rule Machine RMUtils interop (list/run/set-paused/boolean) + generic admin-layer CRUD on any classic SmartApp (`hub_set_native_app` create/edit, `hub_set_app_disabled`, delete, clone, export, import + `hub_get_rule_health` — Room Lighting, Button Controllers, Basic Rules, Notifier, etc.). RM rule authoring (`hub_set_rule`) lives in `hub_manage_rule_machine`. |
 | `hub_manage_rule_machine` | 11 | Rule Machine authoring (`hub_set_rule` create/edit) + RMUtils interop (list/run/set-paused/boolean) + rule health + local-variable list (`hub_list_rule_local_variables`) + delete (`hub_delete_native_app`) + Visual Rules Builder CRUD (`hub_get_visual_rule` / `hub_set_visual_rule` / `hub_delete_visual_rule`) |
 | `hub_manage_mcp` | 1 | Developer Mode self-administration — update MCP rule app's own settings, including the device-access scope `selectedDevices` (allowlist-gated; requires `enableDeveloperMode`) |
-| `hub_manage_dashboards` | 6 | Easy Dashboard CRUD — list/get + create/update (wholesale replace)/delete/clone touch-friendly device dashboards (write) |
+| `hub_manage_dashboards` | 6 | Dashboard CRUD for both Easy and legacy Hubitat® Dashboards — list/get + create/update/delete/clone touch-friendly device dashboards; Easy update replaces the config wholesale, legacy update edits the nested layout wholesale or via granular tile ops (write) |
 
 `hub_set_rule` `clearActions` / `replaceActions` shortcuts: the trashActs delete commits synchronously via a full selectActions page-form submit (the complete form-action envelope plus serialized page state, mirroring the native UI), which runs RM's `trashActs` submitOnChange handler in-band -- the actions are gone by the time the call returns. A thin defensive verify-retry remains: on the rare residual where verification still sees the actions (stuck `state.editAct`, or an uncommon firmware commit lag) the tool returns `partial:true, asyncCommitLikely:true` with a `stage` discriminator and a `safeRecovery` block. Verify via `hub_get_app_config` rather than rolling back if that fires. See TOOL_GUIDE.md for the full response shape.
 
