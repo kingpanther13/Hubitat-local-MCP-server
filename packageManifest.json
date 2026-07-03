@@ -1,12 +1,12 @@
 {
     "packageName": "MCP Rule Server",
     "author": "kingpanther13",
-    "version": "3.2.0",
+    "version": "3.2.1",
     "minimumHEVersion": "2.3.0",
-    "dateReleased": "2026-07-02",
+    "dateReleased": "2026-07-03",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/README.md",
     "communityLink": "",
-    "releaseNotes": "v3.2.0 - 2026-07-02\n- feat: extend the dashboard tools to cover legacy Hubitat® Dashboards (#339)\n  - The dashboard tools now cover the legacy Hubitat® Dashboard app, not just Easy Dashboards: list and inspect them (full tile layout), create new ones, edit tiles granularly (add/move/resize/remove), change grid/colors/fonts, rename, authorize devices, clone, and delete — all through the same six dashboard tools.",
+    "releaseNotes": "v3.2.1 - 2026-07-03\n- fix: route waitEvents Mode events to the mode picker, not tstate (#337)\n  - Fixed: a `Mode` event inside a `Wait for Events` action is no longer silently dropped —\n\nv3.2.0 - 2026-07-02\n- feat: extend the dashboard tools to cover legacy Hubitat® Dashboards (#339)\n  - The dashboard tools now cover the legacy Hubitat® Dashboard app, not just Easy Dashboards: list and inspect them (full tile layout), create new ones, edit tiles granularly (add/move/resize/remove), change grid/colors/fonts, rename, authorize devices, clone, and delete — all through the same six dashboard tools.",
     "apps": [
         {
             "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
