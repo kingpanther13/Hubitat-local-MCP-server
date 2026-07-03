@@ -191,11 +191,11 @@ Deep reference (per-capability field specs, extended condition shapes, periodic 
                     ],
                     addRequiredExpression: [
                         type: "object",
-                        description: """Add an RM 5.1 Required Expression (the pre-trigger gate that conditions whether the rule may fire); returns conditionIndices. Spec: {conditions:[{capability, deviceIds?, state?, comparator?, value?, attribute?, not?, rawSettings?}, ...], operator:'AND'|'OR'|'XOR' OR operators:[...] (one per gap, for mixed expressions; equal precedence, left-to-right)}. comparator is REQUIRED with attribute (Custom Attribute) and with variable+value (Variable); ASCII !=/<>/== auto-map to RM glyphs. STPage capability list and extended shapes (Mode, Between two times, Variable incl. compareToVariable, device-relative compareToDevice, nested subExpression): guide:true or hub_get_tool_guide(section='set_rule_reference')."""
+                        description: """Add an RM 5.1 Required Expression (the pre-trigger gate that conditions whether the rule may fire); returns conditionIndices. Spec: {conditions:[{capability, deviceIds?, state?, comparator?, value?, attribute?, not?, rawSettings?}, ...], operator:'AND'|'OR'|'XOR' OR operators:[...] (one per gap, for mixed expressions; equal precedence, left-to-right)}. comparator is REQUIRED with attribute (Custom Attribute) and with variable+value (Variable); ASCII !=/<>/== auto-map to RM glyphs, and a free-valued (String) variable/attribute offers `*contains*` (substring match; negate with not:true). STPage capability list and extended shapes (Mode, Between two times, Variable incl. compareToVariable, device-relative compareToDevice, nested subExpression): guide:true or hub_get_tool_guide(section='set_rule_reference')."""
                     ],
                     replaceRequiredExpression: [
                         type: "object",
-                        description: """Replace the rule's existing Required Expression in place (same appId). Same spec as addRequiredExpression ({conditions:[...], operator|operators}); use addRequiredExpression to ADD one when the rule has none (this refuses with requiredExpressionMissing). The whole spec is validated BEFORE the destructive delete (a malformed spec leaves the existing expression intact), and any post-delete failure auto-restores the pre-op backup (requiredExpressionRestored) — a failed replace is always reported, never silent data loss."""
+                        description: """Replace the rule's existing Required Expression in place (same appId). Same spec as addRequiredExpression ({conditions:[...], operator|operators}, incl. `*contains*` substring match on a free-valued String variable/attribute -- negate with not:true); use addRequiredExpression to ADD one when the rule has none (this refuses with requiredExpressionMissing). The whole spec is validated BEFORE the destructive delete (a malformed spec leaves the existing expression intact), and any post-delete failure auto-restores the pre-op backup (requiredExpressionRestored) — a failed replace is always reported, never silent data loss."""
                     ],
 
                     addActions: [
@@ -247,7 +247,7 @@ Deep reference (per-capability field specs, extended condition shapes, periodic 
                     ],
                     addAction: [
                         type: "object",
-                        description: """Add an RM ACTION (structured). DISCRIMINATOR: use `capability` NOT `type` (`{type:'log'}` is rejected); returns actionIndex (no trailing updateRule — doActPage self-bakes). Capability names: switch, dimmer, color, colorTemp, button, runCommand, lock, thermostat, shade, fan, mode, setVariable/setLocalVariable, log, notification, httpGet, httpPost, ping, volume, mute, chime, siren, privateBoolean, runRule, cancelTimers, pauseRule, capture, restore, refresh, poll, disableDevice, fileWrite/fileAppend/fileDelete, zwavePoll; flow control — delay, delayPerMode, cancelDelay, repeat, stopRepeat, repeatWhile, waitExpression, waitEvents, ifThen, elseIf, else, endIf, exitRule, comment. Expression-based ones (ifThen/elseIf/repeatWhile/waitExpression) take expression={conditions:[...], operator|operators}. LIMIT: only ONE waitEvents per rule. Per-condition shape: {capability, deviceIds:[N], state?, comparator?, value?, attribute?, not?, rawSettings?} (deviceIds MUST be an array — a bare integer silently stores {N:null}); nested subExpression not supported here (use addRequiredExpression). Optional: delay {hours, minutes, seconds, cancelable}; rawSettings {field:value} with @N = the auto action index (e.g. {'flashRate.@N':750}). Per-field specs + extended shapes (Mode, Between two times, Variable, compareToDevice, variable-sourced values): pass {discover: true} for the live schema, hub_get_tool_guide(section='set_rule_reference'), or docs/rm_action_subtype_schemas.md."""
+                        description: """Add an RM ACTION (structured). DISCRIMINATOR: use `capability` NOT `type` (`{type:'log'}` is rejected); returns actionIndex (no trailing updateRule — doActPage self-bakes). Capability names: switch, dimmer, color, colorTemp, button, runCommand, lock, thermostat, hsm, shade, fan, mode, setVariable/setLocalVariable, log, notification, httpGet, httpPost, ping, volume, mute, chime, siren, privateBoolean, runRule, cancelTimers, pauseRule, capture, restore, refresh, poll, disableDevice, fileWrite/fileAppend/fileDelete, zwavePoll; flow control — delay, delayPerMode, cancelDelay, repeat, stopRepeat, repeatWhile, waitExpression, waitEvents, ifThen, elseIf, else, endIf, exitRule, comment. Expression-based ones (ifThen/elseIf/repeatWhile/waitExpression) take expression={conditions:[...], operator|operators}. LIMIT: only ONE waitEvents per rule. Per-condition shape: {capability, deviceIds:[N], state?, comparator?, value?, attribute?, not?, rawSettings?} (deviceIds MUST be an array — a bare integer silently stores {N:null}); nested subExpression not supported here (use addRequiredExpression). Optional: delay {hours, minutes, seconds, cancelable}; rawSettings {field:value} with @N = the auto action index (e.g. {'flashRate.@N':750}). Per-field specs + extended shapes (Mode, Between two times, Variable, compareToDevice, variable-sourced values): pass {discover: true} for the live schema, hub_get_tool_guide(section='set_rule_reference'), or docs/rm_action_subtype_schemas.md."""
                     ],
                     guide: [type: "boolean", description: "Set true to return the full hub_set_rule capability reference inline (same content as hub_get_tool_guide(section='set_rule_reference')), without a separate call. Makes NO change to any rule."],
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller: {controllerId, buttonNumber, event}. Returns buttonRuleId with the Button trigger auto-seeded — then author actions via addAction on that appId. The controller must already have a button device.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
@@ -1178,8 +1178,98 @@ private List _rmInformationalSkippedReasons() {
     // ('*changed*'/'*became*') was requested on an enum attribute ALONGSIDE an explicit
     // state/value. The value lands and the rule works as an equals-check, so the dropped
     // change-comparator intent is reported informationally, NOT as a partial degradation.
+    //
+    // device_list_committed_schema_unchanged: a device-picker field (its committed value is
+    // a List of device IDs stored in the hub's deviceIdsForDeviceList side-structure, not in
+    // settings[<key>]) is the LAST write of an action and reveals no further schema, so none
+    // of _rmWriteSettingOnPage's four landing detectors fire and it tags silent_rejection --
+    // even though the IDs committed. The re-tag is value-echo-gated (see
+    // _rmReclassifyDeviceListSkips): it only applies when the requested IDs are actually
+    // present in the committed echo, so a genuine device-write FAILURE (IDs absent) keeps the
+    // silent_rejection reason and still flips partial.
     return ["reveal_fallback_to_existing_field", "useST_idempotent_noop",
-            "state_change_comparator_ignored_explicit_value"]
+            "state_change_comparator_ignored_explicit_value",
+            "device_list_committed_schema_unchanged"]
+}
+
+// Authoritative predicate for the "device-list field" class: a classic-app setting whose
+// committed value is a List of device IDs the hub stores in a deviceIdsForDeviceList (or
+// deviceList id->label) side-structure, leaving settings[<key>] null. This is the echo
+// STRUCTURE, not a field-name allow-list -- it recognises every device picker (switch, lock,
+// shade, thermostat, fan, ...) without enumerating each field name, and it is the single
+// source of truth _rmReclassifyDeviceListSkips uses to reclassify a cosmetic device-write
+// silent_rejection. Takes a status appSettings entry (the {name, value, deviceIdsForDeviceList,
+// deviceList} shape from statusJson), not a config input descriptor.
+private boolean _rmStatusEntryIsDeviceList(Object entry) {
+    if (!(entry instanceof Map)) return false
+    def e = entry as Map
+    return (e.deviceIdsForDeviceList instanceof List) || (e.deviceList instanceof Map)
+}
+
+// The committed device IDs for a device-list status entry, as a Set of Strings. Reads
+// a non-empty deviceIdsForDeviceList (the authoritative id list); when that is empty or absent
+// it falls back to the deviceList map's keys (id->label) -- the two shapes are treated
+// interchangeably, matching _rmStatusEntryIsDeviceList. Empty Set when no IDs are committed --
+// which, for a requested non-empty write, means the write did NOT land (keeps the skip partial).
+private Set _rmStatusEntryDeviceIds(Object entry) {
+    if (!(entry instanceof Map)) return [] as Set
+    def e = entry as Map
+    def direct = (e.deviceIdsForDeviceList instanceof List) ? (((e.deviceIdsForDeviceList as List).collect { it?.toString() }.findAll { it }) as Set) : ([] as Set)
+    if (direct) return direct
+    if (e.deviceList instanceof Map) {
+        return ((e.deviceList as Map).keySet().collect { it?.toString() }.findAll { it }) as Set
+    }
+    return direct
+}
+
+// Reclassify cosmetic device-list-write silent_rejections in `skipped` to the informational
+// device_list_committed_schema_unchanged reason so they do not flip partial -- but ONLY when
+// the requested IDs actually committed (value-echo-gated against statusJson). A device-picker
+// field is often an action's LAST write and reveals no further schema, so _rmWriteSettingOnPage
+// cannot see it land and tags silent_rejection even on success. This mutates the entries of
+// `skipped` in place. A skip is left untouched (stays partial) when: it is not a
+// silent_rejection, its value is not a device-id List, its status entry is absent or is not a
+// device-list entry, or the requested IDs are not all present in the committed echo (a genuine
+// partial/failed device write). One statusJson fetch, made only when a candidate skip exists;
+// a fetch failure leaves every skip untouched (conservative -- unverifiable stays partial).
+// Only a device-list picker that is an action's LAST write (revealing no further schema) earns
+// the cosmetic silent_rejection this re-tags; a condition/trigger device picker advances the
+// schema (a later field reveals after the pick), so it never gets the cosmetic skip.
+private void _rmReclassifyDeviceListSkips(Integer appId, List skipped) {
+    if (!skipped) return
+    def candidates = skipped.findAll {
+        it instanceof Map && it.reason == "silent_rejection" && it.value instanceof List
+    }
+    if (candidates.isEmpty()) return
+    def status
+    try {
+        status = _rmFetchStatusJson(appId)
+    } catch (Exception statusExc) {
+        // Null-guard the identity: an exception with no message renders "(null)" from a bare
+        // ${e.message}; ?: falls back to toString(), which carries the class name.
+        mcpLog("warn", "rm-native", "_rmReclassifyDeviceListSkips: statusJson fetch for app ${appId} failed (${statusExc.message ?: statusExc}) -- device-list silent_rejections left as-is (stay partial)")
+        return
+    }
+    // Defensive: a malformed appSettings shape (a scalar where a List/Map is expected, etc.)
+    // must never bubble an exception up through _rmAddAction's partial computation. On any
+    // post-fetch anomaly, log and leave every skip as-is (stays partial -- the conservative side).
+    try {
+        def byName = (status?.appSettings ?: []).findAll { it instanceof Map && it.name != null }
+            .collectEntries { [(it.name.toString()): it] }
+        candidates.each { sk ->
+            def entry = byName[(sk.key?.toString())]
+            if (!_rmStatusEntryIsDeviceList(entry)) return
+            def requested = ((sk.value as List).collect { it?.toString() }.findAll { it }) as Set
+            if (requested.isEmpty()) return
+            def committed = _rmStatusEntryDeviceIds(entry)
+            if (committed.containsAll(requested)) {
+                sk.reason = "device_list_committed_schema_unchanged"
+                sk.committedDeviceIds = committed.toList().sort()
+            }
+        }
+    } catch (Exception reclassExc) {
+        mcpLog("warn", "rm-native", "_rmReclassifyDeviceListSkips: post-fetch reclassification for app ${appId} failed (${reclassExc.message ?: reclassExc}) -- device-list silent_rejections left as-is (stay partial)")
+    }
 }
 
 // Validate that every device ID in `ids` resolves on the hub. RM 5.1
@@ -1235,7 +1325,24 @@ String _rmNormalizeComparator(Object raw) {
     def s = raw.toString()
     if (s == "!=" || s == "<>") return "≠"
     if (s == "==") return "="
+    // Bare 'contains' is never a valid RM comparator; the wizard enum offers the
+    // asterisk-wrapped '*contains*' (substring match). Accept the intuitive bare
+    // form (case-insensitive) so a caller who guesses it does not silently build a
+    // broken rule -- an already-wrapped '*contains*' falls through unchanged.
+    // Bare 'contains' is never a valid RM comparator; the wizard enum offers the
+    // asterisk-wrapped '*contains*' (substring match). Accept the intuitive bare
+    // form (case-insensitive) so a caller who guesses it does not silently build a
+    // broken rule -- an already-wrapped '*contains*' falls through unchanged.
+    if (s.equalsIgnoreCase("contains")) return "*contains*"
     return s
+}
+
+// Single source of truth for the Hubitat Safety Monitor action command set (actType
+// lockActs, actSubType getSetHSM, field alarm.<N>). Bare tokens exactly as RM's alarm
+// enum offers them -- NOT the vue hsmArm* tokens. The handler, the validation error, and
+// the discover schema must all agree on this list. No 'armAll': use 'armRules'.
+private List _rmHsmCommands() {
+    ["armAway", "armHome", "armNight", "disarm", "rearm", "disarmAll", "armRules", "cancelAlerts"]
 }
 
 // Internal _rm helper -- not part of the tool surface.
@@ -2644,10 +2751,11 @@ private Map _rmTriggerSchemaForDiscover() {
                 requiredFields: [
                     [name: "deviceIds", type: "List<Integer>"],
                     [name: "attribute", type: "String", description: "The attribute name on the device"],
-                    [name: "comparator", type: "enum", values: ["=", "<", ">", "<=", ">=", "*changed*"]],
-                    [name: "value", type: "String or Number"]
+                    [name: "comparator", type: "enum", values: ["=", "≠ (or !=)", "<", ">", "<=", ">=", "*changed*", "*contains*"], description: "Numeric attributes use =/</>/etc.; a free-valued (String) attribute also offers '*contains*' (substring match, written verbatim -- keep the asterisks). There is NO 'does not contain': express negation with not:true + '*contains*'."],
+                    [name: "value", type: "String or Number", description: "Comparison value (the substring for '*contains*'; omit for '*changed*')."]
                 ],
                 optionalFields: [
+                    [name: "not", type: "Boolean", description: "Negate the condition (e.g. not:true + comparator:'*contains*' == does-not-contain)."],
                     [name: "andStays", type: "Map"],
                     [name: "rawSettings", type: "Map"]
                 ]
@@ -2708,8 +2816,8 @@ private Map _rmTriggerSchemaForDiscover() {
                     [name: "variable", type: "String", description: "Hub variable name. Use hub_list_variables to discover."]
                 ],
                 optionalFields: [
-                    [name: "comparator", type: "enum", values: ["=", "!= (or ≠)", "<", ">", "<=", ">=", "in", "*changed*", "*increased*", "*decreased*", "*increased by over*", "*decreased by over*"], description: "Default: *changed*. ASCII '!=' / '<>' map to Unicode '≠'."],
-                    [name: "value", type: "Number or String", description: "Comparison value (omit for *changed* family)"],
+                    [name: "comparator", type: "enum", values: ["=", "!= (or ≠)", "<", ">", "<=", ">=", "in", "*contains*", "*changed*", "*increased*", "*decreased*", "*increased by over*", "*decreased by over*"], description: "Default: *changed*. ASCII '!=' / '<>' map to Unicode '≠'. '*contains*' (substring match, written verbatim -- keep the asterisks) is for a free-valued (String) variable; a numeric variable uses =/</>/etc. instead."],
+                    [name: "value", type: "Number or String", description: "Comparison value (the substring for '*contains*'; omit for the *changed* family)"],
                     [name: "conditional", type: "Boolean"],
                     [name: "condition", type: "Map", description: "Inline conditional gate. For 'Variable A changed ONLY IF A != B': {capability: 'Variable', variable: 'A', comparator: '!=', compareToVariable: 'B'}. condition fields: capability, variable, comparator, value | compareToVariable, not?, rawSettings?."],
                     [name: "rawSettings", type: "Map", description: "Escape hatch -- '@N' token in field names is replaced with the trigger index (e.g. {'xVar@N': 'myVar'})."]
@@ -2739,10 +2847,11 @@ private Map _rmActionSchemaForDiscover() {
                 ],
                 optionalFields: [
                     [name: "perMode", type: "Map", description: "For setPerMode: {modeIdOrName: 'on'|'off', ...}. For choosePerMode: {modeIdOrName: {on: [devIds], off: [devIds]}, ...}"],
+                    [name: "onlyOn", type: "Boolean", description: "For on/off: RM's 'command only switches that are on?' toggle -- writes optSwitch. When true, the command is sent ONLY to switches currently ON: action='off' turns off just the on switches (skips already-off ones); action='on' re-sends on only to already-on switches (a no-op refresh)."],
                     [name: "delay", type: "Map", description: "{hours?, minutes?, seconds?, cancelable?}"],
                     [name: "rawSettings", type: "Map"]
                 ],
-                notes: "flash starts a flash schedule; use capability='runCommand' with command='flashOff' to stop it.",
+                notes: "flash starts a flash schedule; use capability='runCommand' with command='flashOff' to stop it. onlyOn applies to on/off only.",
                 conditionalRequired: [
                     setPerMode: "perMode",
                     choosePerMode: "perMode"
@@ -2831,6 +2940,18 @@ private Map _rmActionSchemaForDiscover() {
                 requiredFields: [
                     [name: "action", type: "enum", values: ["lock", "unlock"]],
                     [name: "deviceIds", type: "List<Integer>"]
+                ],
+                optionalFields: [
+                    [name: "delay", type: "Map"],
+                    [name: "rawSettings", type: "Map"]
+                ]
+            ],
+            [
+                name: "hsm",
+                family: "hub",
+                notes: "Hubitat Safety Monitor arm/disarm/alert-cancel. No deviceIds. getSetHSM appears only when HSM is installed on the hub. There is no 'armAll' -- use 'armRules'.",
+                requiredFields: [
+                    [name: "command", type: "enum", values: _rmHsmCommands(), description: "HSM command. Labels: Arm Away / Arm Home / Arm Night / Disarm / Re-Arm Water-Smoke-Gas-CO / Disarm All / Arm All HSM Rules / Cancel All Alerts."]
                 ],
                 optionalFields: [
                     [name: "delay", type: "Map"],
@@ -3261,7 +3382,7 @@ private Map _rmActionSchemaForDiscover() {
                 name: "waitEvents",
                 family: "flow",
                 requiredFields: [
-                    [name: "events", type: "List<Map>", description: "Each: {capability, deviceIds, state, andStays?}. Mode event: {capability:'Mode', state:<mode name or list of names>} or {capability:'Mode', modeIds:[...]} -- deviceIds is rejected on a Mode event; the mode value is written to the mode picker, not tstate."]
+                    [name: "events", type: "List<Map>", description: "Each: {capability, deviceIds, state, andStays?}. andStays is either true (wait until the state has held, zero extra duration; an empty map {} is equivalent) OR {hours?, minutes?, seconds?} to require it hold that long (writes SHours-/SMins-/SSecs-<N>). Mode event: {capability:'Mode', state:<mode name or list of names>} or {capability:'Mode', modeIds:[...]} -- deviceIds is rejected on a Mode event; the mode value is written to the mode picker, not tstate."]
                 ],
                 optionalFields: [
                     [name: "rawSettings", type: "Map"]
@@ -4667,10 +4788,15 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
             case "on":
                 actSubType = "getOnOffSwitch"
                 fields = ["onOffSwitch.@N": deviceIds, "onOff.@N": true]
+                // optSwitch ("command only switches that are on/off") reveals ONLY after a
+                // device is selected in onOffSwitch, so it must be written AFTER it -- keep
+                // it last in the insertion-ordered fields map.
+                if (actionSpec.onlyOn == true) fields["optSwitch.@N"] = true
                 break
             case "off":
                 actSubType = "getOnOffSwitch"
                 fields = ["onOffSwitch.@N": deviceIds, "onOff.@N": false]
+                if (actionSpec.onlyOn == true) fields["optSwitch.@N"] = true
                 break
             case "toggle":
                 actSubType = "getToggleSwitch"
@@ -4951,6 +5077,17 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
         if (actionSpec.adjustHeating != null)     fields["thermoAdjHeat.@N"] = actionSpec.adjustHeating
         if (actionSpec.coolingSetpoint != null)   fields["thermoSetCool.@N"] = actionSpec.coolingSetpoint
         if (actionSpec.adjustCooling != null)     fields["thermoAdjCool.@N"] = actionSpec.adjustCooling
+    } else if (cap == "hsm") {
+        // Hubitat Safety Monitor arm/disarm. lockActs/getSetHSM; the single revealed
+        // field is alarm.<N>, an enum of bare HSM command tokens (NOT the vue hsmArm*
+        // tokens). getSetHSM is present only when HSM is installed on the hub.
+        actType = "lockActs"
+        actSubType = "getSetHSM"
+        def hsmCmd = actionSpec.command?.toString()
+        if (!(hsmCmd in _rmHsmCommands())) {
+            throw new IllegalArgumentException("hsm action requires 'command' as one of: ${_rmHsmCommands().join(', ')}. Got '${hsmCmd}'. (No 'armAll' -- use 'armRules'. getSetHSM appears only when HSM is installed on the hub.)")
+        }
+        fields = ["alarm.@N": hsmCmd]
     } else if (cap == "shade") {
         // shadeRL.<N>: true=CLOSE, false=Open (verified live --
         // boolean is inverted relative to field-name intuition).
@@ -5701,7 +5838,7 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
         actSubType = "getEndIf"
         fields = [:]
     } else {
-        throw new IllegalArgumentException("Unsupported capability '${cap}' -- supported: switch, dimmer, color, colorTemp, lock, thermostat, shade, fan, mode, setVariable, setLocalVariable, runCommand, log, notification, httpGet, httpPost, ping, volume, mute, chime, siren, privateBoolean, runRule, cancelTimers, pauseRule, capture, restore, refresh, poll, disableDevice, delay, cancelDelay, exitRule, comment, repeat, stopRepeat, repeatWhile, ifThen, elseIf, else, endIf, waitExpression, waitEvents. For not-yet-mapped subtypes (per-mode/per-button/etc.), use rawSettings={fieldName: value, ...} with @N placeholder.")
+        throw new IllegalArgumentException("Unsupported capability '${cap}' -- supported: switch, dimmer, color, colorTemp, lock, thermostat, hsm, shade, fan, mode, setVariable, setLocalVariable, runCommand, log, notification, httpGet, httpPost, ping, volume, mute, chime, siren, privateBoolean, runRule, cancelTimers, pauseRule, capture, restore, refresh, poll, disableDevice, delay, cancelDelay, exitRule, comment, repeat, stopRepeat, repeatWhile, ifThen, elseIf, else, endIf, waitExpression, waitEvents. For not-yet-mapped subtypes (per-mode/per-button/etc.), use rawSettings={fieldName: value, ...} with @N placeholder.")
     }
 
     // Open the new-action editor.
@@ -5913,9 +6050,20 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
                     _rmWriteSettingOnPage(appId, "doActPage", "tstate-${n}", ev.state, applied, null, skipped)
                 }
             }
-            // Optional 'and stays for' duration.
-            if (ev.andStays == true) {
+            // Optional 'and stays that way for' duration. Accept either a bare `true`
+            // (toggle on, zero duration) or a {hours,minutes,seconds} Map. Writing
+            // stays-<N>=true reveals three DASH-indexed duration fields SHours-/SMins-/
+            // SSecs-<N> (the trigger's andStays uses the no-dash SHours<N>, because the
+            // doActPage and selectTriggers wizards name these fields differently); write all
+            // three (default 0) for a clean total-wait computation even though waitEvents,
+            // unlike the trigger, does not NPE on a partial duration.
+            def andStays = ev.andStays
+            if (andStays == true || andStays instanceof Map) {
                 _rmWriteSettingOnPage(appId, "doActPage", "stays-${n}", true, applied, "bool", skipped)
+                def dur = (andStays instanceof Map) ? (andStays as Map) : [:]
+                _rmWriteSettingOnPage(appId, "doActPage", "SHours-${n}", dur.hours != null ? dur.hours : 0, applied, null, skipped)
+                _rmWriteSettingOnPage(appId, "doActPage", "SMins-${n}", dur.minutes != null ? dur.minutes : 0, applied, null, skipped)
+                _rmWriteSettingOnPage(appId, "doActPage", "SSecs-${n}", dur.seconds != null ? dur.seconds : 0, applied, null, skipped)
             }
             // Click hasAll to commit this event. Verified live:
             // after hasAll, the schema replaces tCapab-<N>/tDev/tstate
@@ -6525,6 +6673,12 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
     // "INFORMATIONAL -- does NOT flip partial by itself" contract. Set sourced
     // from _rmInformationalSkippedReasons() so a future addition lands in one
     // place rather than requiring lockstep edits in both helpers.
+    // A device picker written last in an action's field sequence reveals no further schema,
+    // so _rmWriteSettingOnPage tags it silent_rejection even when the IDs committed. Re-tag
+    // those to an informational reason (value-echo-gated against statusJson) BEFORE the
+    // partial computation, so a fully-baked shade/lock/switch/thermostat action does not
+    // report a cosmetic partial while a genuinely-failed device write still does.
+    _rmReclassifyDeviceListSkips(appId, skipped)
     def informationalReasons = _rmInformationalSkippedReasons()
     def genuineSkipped = (skipped ?: []).findAll {
         !(it instanceof Map) || it.reason == null || !(it.reason in informationalReasons)

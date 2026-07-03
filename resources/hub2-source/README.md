@@ -71,6 +71,42 @@ above (`appUI.js` / `main.js`) is the client that drives that `dynamicPage`
 flow, so the RM wizard's submit / button / page-transition protocol **is**
 documented here — on the classic side, not the Vue side.
 
+### RM 5.1 action / condition field wire formats (live-probed)
+
+Field names live-discovered by driving the `doActPage` wizard on a test hub
+(the picker option values survive minification but the field-reveal ORDER does
+not — each is `submitOnChange`-gated on the field before it). All indices are
+per-action; `<N>` is the action index unless noted.
+
+- **HSM as an action** — actType `lockActs` ("Control HSM, Garage Doors,
+  Locks, Valves or Thermostats"), actSubType `getSetHSM` ("Control Hubitat
+  Safety Monitor"). Command field `alarm.<N>` (enum, dotted index). Option
+  values are BARE tokens (not the Vue `hsmArm*` tokens): `armAway`, `armHome`,
+  `armNight`, `disarm`, `rearm`, `disarmAll`, `armRules`, `cancelAlerts`. There
+  is no `armAll` value. `getSetHSM` appears in the subtype list only when HSM is
+  installed on the hub. The only other revealed field is the generic
+  `delayAct.<N>` ("Delay?").
+- **Switch "only switches that are on/off"** — the on/off subtype
+  (`switchActs`/`getOnOffSwitch`) reveals `optSwitch.<N>` (bool, "Command only
+  switches that are on?") ONLY AFTER a device is selected in `onOffSwitch.<N>`
+  — so it must be written after the device picker. Sibling bool that also
+  reveals: `trackSwitch.<N>` ("Track event switch?").
+- **Wait for Events per-event "and stays for" duration** — the per-event
+  `stays-<N>` toggle (bool) reveals THREE DASH-indexed duration fields
+  `SHours-<N>`, `SMins-<N>`, `SSecs-<N>` (number). Note the DASH index differs
+  from the trigger's no-dash `SHours<N>`. `<N>` is the 1-based per-event index
+  (same dash-index as `tCapab-<N>`/`tDev-<N>`/`tstate-<N>`). waitEvents does not
+  NPE on a partial duration the way the trigger does, but all three are written
+  (default 0) for a clean total-wait computation.
+- **String `*contains*` comparator** — for a STRING-typed variable or a
+  free-valued Custom Attribute, the comparator field (`RelrDev_<N>` on the
+  condition wizard, `ReltDev<N>` on the trigger row) offers `=`, `≠` (the
+  U+2260 glyph, NOT ASCII `!=`), `*contains*`, `*changed*`. The
+  contains value is the literal asterisk-wrapped `*contains*` (written verbatim,
+  not bare `contains`). There is NO "does not contain"/"starts with"/"ends
+  with" — negation is the `not<N>` toggle + `*contains*`. A numeric variable
+  gets numeric comparators instead.
+
 ## Vue SPA (`vue-hub2.min.js`)
 
 The production Vue 3 SPA — ~548 named components. Notable groups: app/driver/
