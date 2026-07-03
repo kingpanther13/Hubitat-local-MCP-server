@@ -3944,6 +3944,82 @@ class TestRunner:
             self._delete_native(app_id)
 
     @test("native_apps")
+    def test_set_rule_wait_events_mode_event(self) -> None:
+        # Wire-format invariant: a Mode event inside a waitEvents action must write
+        # RM's mode picker (modesX-<N> family, keyed by mode ID), NOT tstate-<N> (mode
+        # name). Writing the mode NAME to tstate-<N> is silently
+        # ignored, leaving the wait event with no mode selected -- a dangling OR that
+        # drops the event. Spock proves the routing against a mocked schema; only this
+        # live run confirms the REAL firmware mode-picker field name and that both events
+        # commit without a dangling OR.
+        sw = int(self.get_test_switch_id())
+        modes = self.client.call_tool("hub_list_modes").get("modes") or []
+        assert modes, "hub_list_modes returned no modes -- cannot exercise a Mode wait event"
+        mode = modes[0]
+        mode_name = mode.get("name")
+        mode_id = str(mode.get("id"))
+        assert mode_name and mode_id, f"first mode missing name/id: {mode}"
+
+        app_id = self._create_native_rule("WaitEventsMode")
+        try:
+            # Two events: a device event (Switch) THEN a Mode event. The device event
+            # exercises the unchanged tstate-<N> path; the Mode event exercises the fix.
+            res = self._rm_call_soft({
+                "appId": app_id,
+                "addAction": {"capability": "waitEvents", "events": [
+                    {"capability": "Switch", "deviceIds": [sw], "state": "on"},
+                    {"capability": "Mode", "state": mode_name},
+                ]},
+                "confirm": True,
+            }, strict=True)
+            assert res.get("success") is not False, f"addAction waitEvents reported failure: {res}"
+            # A dropped Mode event would flag the write partial (mode field skipped) -- the
+            # fix writes the discovered mode picker so the action commits cleanly.
+            assert not res.get("partial"), f"waitEvents action falsely flagged partial: {res}"
+
+            # Read the committed settings back: the mode-picker field (modesX-<N> family,
+            # discovered live) carries the mode ID, and NO tstate field holds the mode
+            # NAME (the old-bug signature / dangling OR).
+            cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}})
+            settings = cfg.get("settings") or {}
+            mode_setting_keys = [k for k in settings if k.startswith("modes") and "-" in k]
+            assert mode_setting_keys, \
+                f"no mode-picker setting persisted for the Mode wait event (mode written to tstate instead of the picker drops the event): {sorted(settings)}"
+
+            # Exact per-value match, not a substring of a joined string: a loose
+            # `mode_id in " ".join(...)` would let id "1" pass on a picker holding
+            # "11"/"12". Normalize each modes*-<N> value (a JSON-list like ["3"] or a
+            # bare scalar) to a list of string ids and require an exact element match.
+            def _mode_id_values(raw: Any) -> list[str]:
+                if isinstance(raw, list):
+                    return [str(x) for x in raw]
+                s = str(raw).strip()
+                if s.startswith("["):
+                    try:
+                        parsed = json.loads(s)
+                    except (ValueError, TypeError):
+                        parsed = None
+                    if isinstance(parsed, list):
+                        return [str(x) for x in parsed]
+                return [s]
+
+            mode_id_carried = any(
+                mode_id in _mode_id_values(settings[k]) for k in mode_setting_keys)
+            assert mode_id_carried, \
+                f"no mode-picker setting exactly carries the selected mode id {mode_id}: " \
+                f"{ {k: settings[k] for k in mode_setting_keys} }"
+            tstate_holds_mode_name = [k for k in settings
+                                      if k.startswith("tstate-") and str(settings[k]) == mode_name]
+            assert not tstate_holds_mode_name, \
+                f"mode name leaked into a tstate field (a Mode event must write the mode picker, never tstate): {tstate_holds_mode_name}"
+
+            # Both events committed with no dangling OR / broken marker.
+            self._assert_rule_healthy(app_id)
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
     def test_set_rule_remove_referenced_local_breaks_rule(self) -> None:
         # removeLocalVariable broken-after-delete contract: RM does NOT refuse to delete a
         # local that an action still references -- it DELETES the local and leaves the

@@ -1855,6 +1855,12 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         if (rawModeIds.isEmpty()) {
             throw new IllegalArgumentException("addTrigger Mode: no mode IDs resolved -- pass state with valid mode name(s) or modeIds with mode ID(s)")
         }
+        // A directly-passed integer ID skips the name-resolution check above, so
+        // reject any ID no hub mode carries before it commits a mode-less row.
+        def modeCheck = _rmBadModeIds(rawModeIds, null)
+        if (modeCheck.bad) {
+            throw new IllegalArgumentException("addTrigger Mode: mode ID(s) ${modeCheck.bad.join(', ')} not offered by ${modeCheck.source}. Valid IDs: ${modeCheck.valid.sort().join(', ')}")
+        }
         writeIfPresent("modesX${idx}", rawModeIds)
     } else {
         // tstate<N> covers both enum-state ("on"/"active") and numeric value
@@ -3255,7 +3261,7 @@ private Map _rmActionSchemaForDiscover() {
                 name: "waitEvents",
                 family: "flow",
                 requiredFields: [
-                    [name: "events", type: "List<Map>", description: "Each: {capability, deviceIds, state, andStays?}"]
+                    [name: "events", type: "List<Map>", description: "Each: {capability, deviceIds, state, andStays?}. Mode event: {capability:'Mode', state:<mode name or list of names>} or {capability:'Mode', modeIds:[...]} -- deviceIds is rejected on a Mode event; the mode value is written to the mode picker, not tstate."]
                 ],
                 optionalFields: [
                     [name: "rawSettings", type: "Map"]
@@ -4385,6 +4391,28 @@ private List _rmResolveModeIds(Collection keys) {
         throw new IllegalArgumentException("Unknown mode '${s}' -- must be an integer mode ID or one of: ${nameToId.keySet().sort().join(', ')}")
     }
     return out
+}
+
+// Cross-check already-resolved mode IDs against the valid set so a raw integer
+// ID that no hub mode carries fails loud instead of committing a Mode row with
+// no mode selected. Prefer the picker's option keys when the caller discovered a
+// non-empty set; otherwise fall back to the hub's location.modes IDs. Returns
+// the offending IDs, the valid set, and a human-readable source for the message.
+private Map _rmBadModeIds(List resolvedIds, Object pickerOptions) {
+    def pickerIds = []
+    if (pickerOptions instanceof Map) {
+        pickerIds = (pickerOptions as Map).keySet().collect { it?.toString() }
+    } else if (pickerOptions instanceof List) {
+        (pickerOptions as List).each { o ->
+            if (o instanceof Map) { if (o.id != null) pickerIds << o.id.toString() }
+            else if (o != null) pickerIds << o.toString()
+        }
+    }
+    def hasPicker = !pickerIds.isEmpty()
+    def validIds = hasPicker ? pickerIds : (location?.modes ?: []).collect { it?.id?.toString() }.findAll { it }
+    def source = hasPicker ? "the mode picker" : "hub modes"
+    def bad = resolvedIds.findAll { !validIds.contains(it?.toString()) }
+    return [valid: validIds, bad: bad, source: source]
 }
 
 // Resolve a collection of mode keys (IDs or names) into a List of mode NAMES
@@ -5742,7 +5770,10 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
     //   repeatActs/getWhile — Repeat While Expression
     //   delayActs/getWaitRule — Wait for Expression
     // Wait for Events: walk each event row using tCapab-<N>/tDev-<N>/
-    // tstate-<N> (dash-separated index). After tstate-<N> is written,
+    // tstate-<N> (dash-separated index). A Mode event is the exception:
+    // it uses a discovered modesX-<N>-family picker (mode IDs) with no
+    // tDev-<N>/tstate-<N>, same as the trigger/condition Mode paths.
+    // After the event's value field is written,
     // a hasAll button appears ("Done with this Wait Event"). Click it
     // to commit the event and reveal tCapab-<N+1> for the next event.
     // Without the hasAll click, multi-event rules fail because tCapab-2
@@ -5782,12 +5813,105 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
             if (!canon) {
                 throw new IllegalArgumentException("waitEvents.events[${evIdx}].capability '${evCap}' not in option list. Valid: ${opts.collect { it.toString() }.sort().join(', ')}")
             }
-            _rmWriteSettingOnPage(appId, "doActPage", "tCapab-${n}", canon, applied, null, skipped)
-            if (ev.deviceIds != null) {
-                _rmWriteSettingOnPage(appId, "doActPage", "tDev-${n}", ev.deviceIds, applied, null, skipped)
+            // A Mode event's INPUT checks (neither-provided, deviceIds-rejection,
+            // mode NAME resolution) run BEFORE the tCapab-<N> POST -- they need
+            // only location.modes, not the revealed schema, so an invalid or
+            // absent mode fails loud without leaving a half-written event row.
+            // The schema-dependent guards (the picker-missing throw and the
+            // resolved-ID cross-check) necessarily run AFTER the tCapab-<N>=Mode
+            // write, since they need the revealed picker; both stay fail-loud, and
+            // a backup exists.
+            def isMode = canon.toString().equalsIgnoreCase("Mode")
+            def modeIds = null
+            if (isMode) {
+                // Mode is hub-state, not device-based -- reject deviceIds rather
+                // than silently ignoring them (matches the trigger/condition Mode
+                // paths' no-tDev rule and the fail-loud theme).
+                if (ev.deviceIds != null) {
+                    throw new IllegalArgumentException("waitEvents.events[${evIdx}]: a Mode event is hub-state, not device-based -- remove 'deviceIds'.")
+                }
+                if (ev.modeIds != null) {
+                    modeIds = _rmResolveModeIds((ev.modeIds instanceof List) ? (ev.modeIds as List) : [ev.modeIds])
+                } else if (ev.state != null) {
+                    modeIds = _rmResolveModeIds((ev.state instanceof List) ? (ev.state as List) : [ev.state])
+                }
+                if (!modeIds) {
+                    throw new IllegalArgumentException("waitEvents.events[${evIdx}]: Mode event requires a non-empty 'state' (mode name or list of names) or 'modeIds' (list of mode IDs).")
+                }
             }
-            if (ev.state != null) {
-                _rmWriteSettingOnPage(appId, "doActPage", "tstate-${n}", ev.state, applied, null, skipped)
+            _rmWriteSettingOnPage(appId, "doActPage", "tCapab-${n}", canon, applied, null, skipped)
+            if (isMode) {
+                // Mode event: RM does NOT use tstate-<N>. Writing tCapab-<N>=Mode
+                // reveals a mode picker keyed by mode ID (dash-indexed for the
+                // waitEvents row, mirroring the trigger's modesX<N> and the
+                // condition's modes<N>). Writing tstate-<N> here is silently
+                // ignored, leaving the event with no mode selected -- the wait
+                // renders with a dangling OR and that event effectively drops.
+                // The exact field name is firmware-assigned. DISCOVER it from the
+                // post-tCapab schema rather than hardcoding, because a firmware
+                // rename then fails loud (below) instead of silently dropping the
+                // event. The reveal-trigger write (tCapab-<N>=Mode) was already
+                // issued above, so a direct re-fetch finds the now-visible picker
+                // -- no _rmRevealStep round-trip is needed here. Same retry
+                // rationale as the tCapab-<N> discovery (the prior write's
+                // re-render can lag one fetch behind the click that reveals it).
+                def modeField = null
+                def modeOptions = null
+                def modeInputs = []
+                for (int attempt = 0; attempt < 4; attempt++) {
+                    def modeCfg = _rmFetchConfigJson(appId, "doActPage")
+                    modeInputs = (modeCfg?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+                    def modeInput = modeInputs.find { it?.name?.toString()?.matches("modes[A-Za-z]*-${n}".toString()) }
+                    if (modeInput) { modeField = modeInput.name.toString(); modeOptions = modeInput.options; break }
+                    if (attempt < 3) pauseExecution(250)
+                }
+                if (!modeField) {
+                    throw new IllegalStateException("waitEvents.events[${evIdx}]: Mode picker (expected a modesX-${n} family field) did not appear after writing tCapab-${n}=Mode. Schema seen: ${modeInputs.empty ? "(none returned)" : modeInputs.collect { it?.name }.findAll { it }.join(', ')}")
+                }
+                // Cross-check each resolved mode ID against the valid ID set.
+                // _rmResolveModeIds passes integer IDs through unvalidated, so an
+                // ID no real mode carries would otherwise be silently skipped --
+                // committing a Mode row with no mode selected, the same dangling-OR
+                // drop the discovery guard prevents. Two-tier validation, fail SAFE:
+                // prefer the discovered picker's options (the option keys ARE the
+                // mode IDs). On a live hub the picker can reveal with an empty/
+                // not-yet-populated options list; rather than skip the check (which
+                // would let a bogus integer ID through), fall back to the hub's own
+                // location.modes IDs. Names are already resolved+validated above, so
+                // the fallback only needs to catch raw integer IDs passed directly.
+                def pickerIds = []
+                if (modeOptions instanceof Map) {
+                    pickerIds = (modeOptions as Map).keySet().collect { it?.toString() }
+                } else if (modeOptions instanceof List) {
+                    (modeOptions as List).each { o ->
+                        if (o instanceof Map) { if (o.id != null) pickerIds << o.id.toString() }
+                        else if (o != null) pickerIds << o.toString()
+                    }
+                }
+                def validIds
+                def validSource
+                if (!pickerIds.isEmpty()) {
+                    validIds = pickerIds.collect { it?.toString() }
+                    validSource = "${modeField} picker"
+                } else {
+                    validIds = (location?.modes ?: []).collect { it?.id?.toString() }.findAll { it }
+                    validSource = "hub modes"
+                }
+                def badIds = modeIds.findAll { !validIds.contains(it?.toString()) }
+                if (!badIds.isEmpty()) {
+                    throw new IllegalArgumentException("waitEvents.events[${evIdx}]: mode ID(s) ${badIds.join(', ')} not offered by the ${validSource}. Valid IDs: ${validIds.sort().join(', ')}")
+                }
+                // Mode is hub-state, not device-based -- no tDev-<N> (matches the
+                // trigger and condition Mode paths). Write the resolved mode ID
+                // list to the discovered picker.
+                _rmWriteSettingOnPage(appId, "doActPage", modeField, modeIds, applied, null, skipped)
+            } else {
+                if (ev.deviceIds != null) {
+                    _rmWriteSettingOnPage(appId, "doActPage", "tDev-${n}", ev.deviceIds, applied, null, skipped)
+                }
+                if (ev.state != null) {
+                    _rmWriteSettingOnPage(appId, "doActPage", "tstate-${n}", ev.state, applied, null, skipped)
+                }
             }
             // Optional 'and stays for' duration.
             if (ev.andStays == true) {
@@ -9347,6 +9471,14 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             throw new IllegalStateException("conditions[${condIdx}]: Mode: expected modes<N> picker after rCapab='Mode' but it did not appear. Visible fields: ${visible}")
         }
         def modesField = modesReveal.input.name.toString()
+        // A directly-passed integer ID skips _rmResolveModeIds' name check, so
+        // reject any ID the revealed picker (or location.modes) does not offer
+        // before it commits a mode-less condition row.
+        def modeCheck = _rmBadModeIds(modeIdsToWrite, modesReveal.input.options)
+        if (modeCheck.bad) {
+            cancelInFlightCond()
+            throw new IllegalArgumentException("conditions[${condIdx}]: Mode: mode ID(s) ${modeCheck.bad.join(', ')} not offered by ${modeCheck.source}. Valid IDs: ${modeCheck.valid.sort().join(', ')}")
+        }
         writeST(hrefParams, modesField, modeIdsToWrite)
         if (cond.not == true) {
             writeST(hrefParams, "not${cIdx}".toString(), true)

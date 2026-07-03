@@ -437,7 +437,7 @@ Note: only ONE `waitEvents` action is supported per rule (RM 5.1 platform limita
 
 | Field | Type | Notes |
 |---|---|---|
-| `events` | List\<Map\> | Required. Each: `{capability, deviceIds, state, andStays?}` |
+| `events` | List\<Map\> | Required. Each device event: `{capability, deviceIds, state, andStays?}`. A **Mode** event is the exception: `{capability:'Mode', state:'Night'}` or `{capability:'Mode', state:['Away','Night']}` (mode name(s) -- must match an existing hub mode) or `{capability:'Mode', modeIds:['3']}` / `modeIds:['3','5']` (IDs from `hub_list_modes`). A Mode event rejects `deviceIds` (it is hub-state, not device-based); the mode value is written to the discovered mode picker (`modesX-<N>` family, keyed by mode ID), never to `tstate-<N>`. The resolved IDs are validated against the live picker options (or `location.modes` IDs when the picker exposes no options) -- an unknown mode or an ID no real hub mode carries fails loud. |
 | `rawSettings` | Map | |
 
 ### ifThen

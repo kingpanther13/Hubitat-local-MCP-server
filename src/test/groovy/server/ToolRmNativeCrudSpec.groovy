@@ -17505,9 +17505,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addTrigger Mode + modeIds list writes modesX<N> directly without name resolution"() {
         given:
         enableWrite()
-        // Pass IDs directly -- location.modes is NOT consulted (no name resolution).
-        // Even if location.modes is empty, the write should succeed.
-        sharedLocation.modes = []  // would cause NPE/error if consulted
+        // Pass IDs directly -- no name resolution. The integer IDs are still
+        // cross-checked against location.modes (an ID no mode carries is rejected),
+        // so the fixture lists the modes whose IDs (3, 5) are supplied below.
+        sharedLocation.modes = [[id: "3", name: "Night"], [id: "5", name: "Day"]]
 
         def modesXWritten = []
         def fetchCount = 0
@@ -17669,6 +17670,761 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "modesX WAS written"
         !modesXWrites.isEmpty()
+    }
+
+    def "addTrigger Mode with an integer modeId no hub mode carries fails loud, naming it and the hub-mode IDs"() {
+        // Parity with the waitEvents/condition Mode paths: a directly-passed
+        // integer ID skips name resolution, so it must be cross-checked against
+        // the valid set before modesX1 commits a mode-less (Broken) trigger row.
+        // location.modes offers 1/2/3; id 9 belongs to no mode. Both-ways pending (orchestrator).
+        given:
+        enableWrite()
+        sharedLocation.modes = [[id: "1", name: "Home"], [id: "2", name: "Away"], [id: "3", name: "Night"]]
+
+        def modesXWritten = []
+        def fetchCount = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchCount++
+            // tCapab1 is enough to reach the Mode block; the direct-ID validation
+            // throws before modesX1 would ever be written, so no modesX1 reveal.
+            def inputs = fetchCount >= 2
+                ? [[name: "tCapab1", type: "enum", options: ["Mode", "Switch"]],
+                   [name: "isCondTrig.1", type: "bool"],
+                   [name: "hasAll", type: "button"]]
+                : []
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["fetch ${fetchCount}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            body?.each { k, v -> if (k?.toString()?.startsWith("settings[modesX")) modesXWritten << [key: k, value: v] }
+            [status: 200, location: null, data: '']
+        }
+
+        when: "an integer modeId that no hub mode carries is passed"
+        script._rmAddTrigger(100, [capability: "Mode", modeIds: [9]])
+
+        then: "the unknown ID fails loud, naming it, the hub-modes source, and the valid IDs"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("9")
+        ex.message.contains("not offered")
+        // No picker is discovered on the trigger path, so the message names the
+        // location.modes fallback as the source and lists its IDs -- dropping the
+        // fallback (or the cross-check) is caught here.
+        ex.message.contains("hub modes")
+        ex.message.contains("1, 2, 3")
+
+        and: "no modesX write was issued for the rejected trigger (no silent mode-less commit)"
+        modesXWritten.isEmpty()
+    }
+
+    def "addTrigger Mode with a valid integer modeId still writes modesX<N> (anti-regression companion)"() {
+        // Must-NOT-catch pair for the reject spec above: modeIds:[2] IS a real hub
+        // mode, so the cross-check must ACCEPT it and write the picker -- never
+        // false-reject a legitimate directly-passed ID. Both-ways pending (orchestrator).
+        given:
+        enableWrite()
+        sharedLocation.modes = [[id: "1", name: "Home"], [id: "2", name: "Away"], [id: "3", name: "Night"]]
+
+        def modesXWritten = []
+        def fetchCount = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchCount++
+            def inputs = []
+            if (fetchCount >= 2) {
+                inputs = [[name: "tCapab1", type: "enum", options: ["Mode", "Switch"]],
+                          [name: "isCondTrig.1", type: "bool"],
+                          [name: "hasAll", type: "button"]]
+            }
+            if (fetchCount >= 3) {
+                inputs = [[name: "tCapab1", type: "enum", options: ["Mode", "Switch"]],
+                          [name: "modesX1", type: "enum", multiple: true,
+                           options: ["1": "Home", "2": "Away", "3": "Night"]],
+                          [name: "isCondTrig.1", type: "bool"],
+                          [name: "hasAll", type: "button"]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectTriggers", title: "T", install: false, error: null,
+                             sections: [[title: "", input: inputs,
+                                         paragraphs: ["fetch ${fetchCount}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            body?.each { k, v -> if (k?.toString()?.startsWith("settings[modesX")) modesXWritten << [key: k, value: v] }
+            [status: 200, location: null, data: '']
+        }
+
+        when: "a valid integer modeId is passed"
+        script._rmAddTrigger(100, [capability: "Mode", modeIds: [2]])
+
+        then: "the valid ID passes the cross-check and lands on modesX1 (exact JSON wire form)"
+        modesXWritten.any { it.value?.toString() == '["2"]' }
+    }
+
+    // ---------- waitEvents Mode event: mode picker (modesX-N) not tstate-N ----------
+    //
+    // A Mode event inside a waitEvents action does NOT use tstate-<N>. After
+    // tCapab-<N>=Mode is written, RM exposes a dash-indexed mode picker
+    // (modesX-<N> family) keyed by mode ID. The pre-fix code wrote the mode NAME
+    // to tstate-<N>, which RM silently ignores -- the event rendered with no mode
+    // selected (a dangling OR) and effectively dropped. The fix resolves the mode
+    // name(s)/ID(s) via _rmResolveModeIds and writes the DISCOVERED picker field,
+    // never tstate-<N>, and skips tDev-<N> (Mode is hub-state, not device-based).
+    //
+    // These specs assert the WIRE writes (which field, which value). The mock
+    // supplies the field name 'modesX-<N>'; only the live e2e can confirm the
+    // real firmware field name and that the committed rule renders both events
+    // without a dangling OR. The invariant under test: a Mode event inside a
+    // waitEvents action must write the mode picker, never tstate -- a wire-format
+    // contract the mock cannot self-prove against real firmware.
+
+    def "waitEvents Mode event writes the discovered mode picker (modesX-N) with resolved IDs, never tstate-N"() {
+        given:
+        enableWrite()
+        sharedLocation.modes = [[id: "1", name: "Home"], [id: "2", name: "Away"], [id: "3", name: "Night"]]
+
+        // Static doActPage schema: every field the waitEvents Mode path touches is
+        // present on every fetch, so each schema-gated write issues its POST. The
+        // mode picker uses the dash-indexed modesX-1 (the waitEvents row's dash
+        // convention applied to the trigger's modesX<N> family).
+        def doActInputs = [
+            [name: "actType.1", type: "enum", options: ["delayActs": "Delay, Wait, Exit or Comment"]],
+            [name: "actSubType.1", type: "enum", options: ["getWaitEvents": "Wait for Events"]],
+            [name: "tCapab-1", type: "enum", options: ["Mode", "Switch", "Motion"]],
+            [name: "tDev-1", type: "enum", multiple: true, options: [:]],
+            [name: "tstate-1", type: "enum", options: ["active": "active"]],
+            [name: "modesX-1", type: "enum", multiple: true, options: ["1": "Home", "2": "Away", "3": "Night"]],
+            [name: "hasAll", type: "button"],
+            [name: "anotherWait", type: "button"],
+            [name: "doneWaits", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", doActInputs) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def modesXWritten = []
+        def tstateWritten = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            body?.each { k, v ->
+                def ks = k?.toString()
+                if (ks?.startsWith("settings[modesX-")) modesXWritten << [key: ks, value: v?.toString()]
+                if (ks?.startsWith("settings[tstate-")) tstateWritten << [key: ks, value: v?.toString()]
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        script._rmAddAction(100, [capability: "waitEvents", events: [[capability: "Mode", state: "Night"]]])
+
+        then: "the resolved mode ID list landed on modesX-1 (exact JSON wire form)"
+        // Exact-equality wire-value check: production writes the multi-enum as a
+        // JSON list ['3']. A loose .contains('3') would also match '30'/'13'.
+        modesXWritten.any { it.value == '["3"]' }
+
+        and: "tstate-1 was NEVER written for the Mode event -- writing tstate for a Mode event silently drops it"
+        tstateWritten.isEmpty()
+    }
+
+    def "waitEvents with a device event AND a Mode event writes BOTH -- second event is not dropped"() {
+        given:
+        enableWrite()
+        sharedLocation.modes = [[id: "1", name: "Home"], [id: "2", name: "Away"], [id: "3", name: "Night"]]
+
+        // Both event rows present statically: event 1 (device: Motion) uses
+        // tDev-1/tstate-1; event 2 (Mode) uses modesX-2. If the Mode event were
+        // dropped (old behaviour: tstate-2=<name>, silently ignored), modesX-2
+        // would never be written -- that is the dangling-OR regression.
+        def doActInputs = [
+            [name: "actType.1", type: "enum", options: ["delayActs": "Delay, Wait, Exit or Comment"]],
+            [name: "actSubType.1", type: "enum", options: ["getWaitEvents": "Wait for Events"]],
+            [name: "tCapab-1", type: "enum", options: ["Mode", "Switch", "Motion"]],
+            [name: "tDev-1", type: "enum", multiple: true, options: ["8": "M1"]],
+            [name: "tstate-1", type: "enum", options: ["active": "active", "inactive": "inactive"]],
+            [name: "tCapab-2", type: "enum", options: ["Mode", "Switch", "Motion"]],
+            [name: "tDev-2", type: "enum", multiple: true, options: [:]],
+            [name: "tstate-2", type: "enum", options: ["active": "active"]],
+            [name: "modesX-2", type: "enum", multiple: true, options: ["1": "Home", "2": "Away", "3": "Night"]],
+            [name: "hasAll", type: "button"],
+            [name: "anotherWait", type: "button"],
+            [name: "doneWaits", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", doActInputs) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"M1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def writes = []
+        def clicks = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn") clicks << body?.name?.toString()
+            body?.each { k, v ->
+                def ks = k?.toString()
+                if (ks?.startsWith("settings[")) writes << [key: ks, value: v?.toString()]
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        script._rmAddAction(100, [capability: "waitEvents", events: [
+            [capability: "Motion", deviceIds: [8], state: "active"],
+            [capability: "Mode", state: "Night"]
+        ]])
+
+        then: "event 1 (device) wrote its state to tstate-1"
+        writes.any { it.key == "settings[tstate-1]" && it.value == "active" }
+
+        and: "event 1 (device) did NOT enter the Mode branch (no modesX for event 1)"
+        !writes.any { it.key.startsWith("settings[modesX-") && it.key.endsWith("-1]") }
+
+        and: "event 2 (Mode) wrote the mode ID list to modesX-2 -- NOT tstate-2"
+        writes.any { it.key == "settings[modesX-2]" && it.value == '["3"]' }
+        !writes.any { it.key == "settings[tstate-2]" }
+
+        and: "the loop advanced across both events (one anotherWait between two hasAll commits)"
+        clicks.count { it == "anotherWait" } == 1
+        clicks.count { it == "hasAll" } == 2
+    }
+
+    def "waitEvents Mode event with an unknown mode name throws listing valid modes"() {
+        given:
+        enableWrite()
+        sharedLocation.modes = [[id: "1", name: "Home"], [id: "2", name: "Away"], [id: "3", name: "Night"]]
+
+        def doActInputs = [
+            [name: "actType.1", type: "enum", options: ["delayActs": "Delay, Wait, Exit or Comment"]],
+            [name: "actSubType.1", type: "enum", options: ["getWaitEvents": "Wait for Events"]],
+            [name: "tCapab-1", type: "enum", options: ["Mode", "Switch", "Motion"]],
+            [name: "modesX-1", type: "enum", multiple: true, options: ["1": "Home", "2": "Away", "3": "Night"]],
+            [name: "hasAll", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", doActInputs) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+
+        when:
+        script._rmAddAction(100, [capability: "waitEvents", events: [[capability: "Mode", state: "NotAMode"]]])
+
+        then: "the resolution error names the bad mode and lists EVERY valid mode"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("NotAMode")
+        ex.message.contains("Home")
+        ex.message.contains("Away")
+        ex.message.contains("Night")
+    }
+
+    def "waitEvents Mode event with neither state nor modeIds throws requiring one of them"() {
+        given:
+        enableWrite()
+        sharedLocation.modes = [[id: "1", name: "Home"], [id: "2", name: "Away"], [id: "3", name: "Night"]]
+
+        // Same static doActPage schema as the sibling Mode specs so tCapab-1=Mode
+        // writes; the guard fires before any mode picker is touched, so the Mode
+        // event carrying NEITHER state nor modeIds must be rejected up front.
+        def doActInputs = [
+            [name: "actType.1", type: "enum", options: ["delayActs": "Delay, Wait, Exit or Comment"]],
+            [name: "actSubType.1", type: "enum", options: ["getWaitEvents": "Wait for Events"]],
+            [name: "tCapab-1", type: "enum", options: ["Mode", "Switch", "Motion"]],
+            [name: "modesX-1", type: "enum", multiple: true, options: ["1": "Home", "2": "Away", "3": "Night"]],
+            [name: "hasAll", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", doActInputs) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+
+        when:
+        script._rmAddAction(100, [capability: "waitEvents", events: [[capability: "Mode"]]])
+
+        then: "a Mode event lacking both state and modeIds is rejected before any write"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("Mode event requires a non-empty")
+    }
+
+    def "waitEvents Mode event with an empty state collection is rejected up front"() {
+        given:
+        enableWrite()
+        sharedLocation.modes = [[id: "1", name: "Home"], [id: "2", name: "Away"], [id: "3", name: "Night"]]
+
+        def doActInputs = [
+            [name: "actType.1", type: "enum", options: ["delayActs": "Delay, Wait, Exit or Comment"]],
+            [name: "actSubType.1", type: "enum", options: ["getWaitEvents": "Wait for Events"]],
+            [name: "tCapab-1", type: "enum", options: ["Mode", "Switch", "Motion"]],
+            [name: "modesX-1", type: "enum", multiple: true, options: ["1": "Home", "2": "Away", "3": "Night"]],
+            [name: "hasAll", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", doActInputs) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+
+        when:
+        script._rmAddAction(100, [capability: "waitEvents", events: [[capability: "Mode", state: []]]])
+
+        then: "an empty mode collection resolves to no IDs and is rejected as non-empty-required"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("Mode event requires a non-empty")
+    }
+
+    def "waitEvents Mode event with deviceIds is rejected -- Mode is hub-state, not device-based"() {
+        given:
+        enableWrite()
+        sharedLocation.modes = [[id: "1", name: "Home"], [id: "2", name: "Away"], [id: "3", name: "Night"]]
+
+        def doActInputs = [
+            [name: "actType.1", type: "enum", options: ["delayActs": "Delay, Wait, Exit or Comment"]],
+            [name: "actSubType.1", type: "enum", options: ["getWaitEvents": "Wait for Events"]],
+            [name: "tCapab-1", type: "enum", options: ["Mode", "Switch", "Motion"]],
+            [name: "modesX-1", type: "enum", multiple: true, options: ["1": "Home", "2": "Away", "3": "Night"]],
+            [name: "hasAll", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", doActInputs) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+
+        when:
+        script._rmAddAction(100, [capability: "waitEvents", events: [[capability: "Mode", state: "Night", deviceIds: [8]]]])
+
+        then: "a Mode event carrying deviceIds is rejected rather than silently ignored"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("hub-state, not device-based")
+    }
+
+    def "waitEvents Mode event with modeIds writes the resolved IDs to the picker, never tstate"() {
+        given:
+        enableWrite()
+        sharedLocation.modes = [[id: "1", name: "Home"], [id: "2", name: "Away"], [id: "3", name: "Night"]]
+
+        def doActInputs = [
+            [name: "actType.1", type: "enum", options: ["delayActs": "Delay, Wait, Exit or Comment"]],
+            [name: "actSubType.1", type: "enum", options: ["getWaitEvents": "Wait for Events"]],
+            [name: "tCapab-1", type: "enum", options: ["Mode", "Switch", "Motion"]],
+            [name: "modesX-1", type: "enum", multiple: true, options: ["1": "Home", "2": "Away", "3": "Night"]],
+            [name: "hasAll", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", doActInputs) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def modesXWritten = []
+        def tstateWritten = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            body?.each { k, v ->
+                def ks = k?.toString()
+                if (ks?.startsWith("settings[modesX-")) modesXWritten << [key: ks, value: v?.toString()]
+                if (ks?.startsWith("settings[tstate-")) tstateWritten << [key: ks, value: v?.toString()]
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        script._rmAddAction(100, [capability: "waitEvents", events: [[capability: "Mode", modeIds: [3]]]])
+
+        then: "the modeIds input landed on modesX-1 (exact JSON wire form), no name resolution needed"
+        modesXWritten.any { it.value == '["3"]' }
+
+        and: "tstate-1 was never written for the Mode event"
+        tstateWritten.isEmpty()
+    }
+
+    def "waitEvents Mode event with a multi-ID modeIds list writes every ID to the picker"() {
+        given:
+        enableWrite()
+        sharedLocation.modes = [[id: "1", name: "Home"], [id: "3", name: "Night"], [id: "5", name: "Vacation"]]
+
+        // Picker offers ids 1/3/5 so the [3,5] list validates against the live
+        // options; the wire value must carry BOTH ids in insertion order.
+        def doActInputs = [
+            [name: "actType.1", type: "enum", options: ["delayActs": "Delay, Wait, Exit or Comment"]],
+            [name: "actSubType.1", type: "enum", options: ["getWaitEvents": "Wait for Events"]],
+            [name: "tCapab-1", type: "enum", options: ["Mode", "Switch", "Motion"]],
+            [name: "modesX-1", type: "enum", multiple: true, options: ["1": "Home", "3": "Night", "5": "Vacation"]],
+            [name: "hasAll", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", doActInputs) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def modesXWritten = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            body?.each { k, v ->
+                def ks = k?.toString()
+                if (ks?.startsWith("settings[modesX-")) modesXWritten << [key: ks, value: v?.toString()]
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        script._rmAddAction(100, [capability: "waitEvents", events: [[capability: "Mode", modeIds: [3, 5]]]])
+
+        then: "both IDs landed on modesX-1 in insertion order (exact JSON wire form)"
+        modesXWritten.any { it.value == '["3","5"]' }
+    }
+
+    def "waitEvents Mode event fails loud when the mode picker never appears -- no silent tstate fallback"() {
+        given:
+        enableWrite()
+        sharedLocation.modes = [[id: "1", name: "Home"], [id: "2", name: "Away"], [id: "3", name: "Night"]]
+
+        // doActPage schema with tCapab-1=Mode present but NO modes*-1 picker field
+        // -- the firmware-field-rename signature the discovery guard exists to
+        // catch. tstate-1 IS present, so a (wrong) fallback write into it would be
+        // observable on the wire; the guard must throw instead.
+        def doActInputs = [
+            [name: "actType.1", type: "enum", options: ["delayActs": "Delay, Wait, Exit or Comment"]],
+            [name: "actSubType.1", type: "enum", options: ["getWaitEvents": "Wait for Events"]],
+            [name: "tCapab-1", type: "enum", options: ["Mode", "Switch", "Motion"]],
+            [name: "tstate-1", type: "enum", options: ["Home": "Home", "Away": "Away", "Night": "Night"]],
+            [name: "hasAll", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", doActInputs) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def tstateWritten = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            body?.each { k, v ->
+                def ks = k?.toString()
+                if (ks?.startsWith("settings[tstate-")) tstateWritten << [key: ks, value: v?.toString()]
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        script._rmAddAction(100, [capability: "waitEvents", events: [[capability: "Mode", state: "Night"]]])
+
+        then: "the missing picker fails loud rather than falling back to a tstate write"
+        def ex = thrown(IllegalStateException)
+        ex.message.contains("did not appear")
+
+        and: "the mode name was NEVER written to tstate-1 (no silent fallback drop)"
+        !tstateWritten.any { it.value == "Night" }
+    }
+
+    def "waitEvents Mode event fails loud when a resolved mode ID is not offered by the picker"() {
+        given:
+        enableWrite()
+        sharedLocation.modes = [[id: "1", name: "Home"], [id: "2", name: "Away"], [id: "3", name: "Night"]]
+
+        // Picker offers ids 1/2/3 only. modeIds:[9] passes _rmResolveModeIds
+        // (integer passthrough) but is NOT in the live picker options, so the
+        // options cross-check must reject it before the row commits -- otherwise
+        // the write is silently skipped and the Mode row dangles with no mode.
+        def doActInputs = [
+            [name: "actType.1", type: "enum", options: ["delayActs": "Delay, Wait, Exit or Comment"]],
+            [name: "actSubType.1", type: "enum", options: ["getWaitEvents": "Wait for Events"]],
+            [name: "tCapab-1", type: "enum", options: ["Mode", "Switch", "Motion"]],
+            [name: "modesX-1", type: "enum", multiple: true, options: ["1": "Home", "2": "Away", "3": "Night"]],
+            [name: "hasAll", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", doActInputs) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def modesXWritten = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            body?.each { k, v ->
+                def ks = k?.toString()
+                if (ks?.startsWith("settings[modesX-")) modesXWritten << [key: ks, value: v?.toString()]
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        script._rmAddAction(100, [capability: "waitEvents", events: [[capability: "Mode", modeIds: [9]]]])
+
+        then: "the invalid ID fails loud, naming it and the valid picker IDs"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("9")
+        ex.message.contains("not offered")
+
+        and: "no mode-picker write was issued for the rejected event (no silent applied+partial commit)"
+        modesXWritten.isEmpty()
+    }
+
+    def "waitEvents Mode event with a multi-NAME state list writes every resolved ID to the picker"() {
+        given:
+        enableWrite()
+        sharedLocation.modes = [[id: "1", name: "Home"], [id: "2", name: "Away"], [id: "3", name: "Night"]]
+
+        def doActInputs = [
+            [name: "actType.1", type: "enum", options: ["delayActs": "Delay, Wait, Exit or Comment"]],
+            [name: "actSubType.1", type: "enum", options: ["getWaitEvents": "Wait for Events"]],
+            [name: "tCapab-1", type: "enum", options: ["Mode", "Switch", "Motion"]],
+            [name: "modesX-1", type: "enum", multiple: true, options: ["1": "Home", "2": "Away", "3": "Night"]],
+            [name: "hasAll", type: "button"],
+            [name: "anotherWait", type: "button"],
+            [name: "doneWaits", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", doActInputs) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def modesXWritten = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            body?.each { k, v ->
+                def ks = k?.toString()
+                if (ks?.startsWith("settings[modesX-")) modesXWritten << [key: ks, value: v?.toString()]
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when: "the caller passes a list of two mode names"
+        script._rmAddAction(100, [capability: "waitEvents", events: [[capability: "Mode", state: ["Away", "Night"]]]])
+
+        then: "both names resolve (Away->2, Night->3) and land on modesX-1 in insertion order (exact JSON wire form)"
+        modesXWritten.any { it.value == '["2","3"]' }
+    }
+
+    def "waitEvents Mode event with empty picker options falls back to location.modes and rejects an unknown ID"() {
+        given:
+        enableWrite()
+        sharedLocation.modes = [[id: "1", name: "Home"], [id: "2", name: "Away"], [id: "3", name: "Night"]]
+
+        // The picker reveals (name matches modesX-1) but exposes NO options -- the
+        // live edge case the fail-safe was added for. modeIds:[9] passes the
+        // integer passthrough; with no picker options, validation must fall back to
+        // location.modes IDs (1/2/3), which lack 9, and fail loud rather than skip.
+        def doActInputs = [
+            [name: "actType.1", type: "enum", options: ["delayActs": "Delay, Wait, Exit or Comment"]],
+            [name: "actSubType.1", type: "enum", options: ["getWaitEvents": "Wait for Events"]],
+            [name: "tCapab-1", type: "enum", options: ["Mode", "Switch", "Motion"]],
+            [name: "modesX-1", type: "enum", multiple: true, options: [:]],
+            [name: "hasAll", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", doActInputs) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def modesXWritten = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            body?.each { k, v ->
+                def ks = k?.toString()
+                if (ks?.startsWith("settings[modesX-")) modesXWritten << [key: ks, value: v?.toString()]
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        script._rmAddAction(100, [capability: "waitEvents", events: [[capability: "Mode", modeIds: [9]]]])
+
+        then: "with no picker options exposed, the location.modes fallback rejects the unknown ID"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("9")
+        ex.message.contains("not offered")
+
+        and: "the message names the location.modes fallback as the source and lists its IDs -- distinguishes the fallback from a bare empty-picker reject, so dropping the fallback is caught here too"
+        ex.message.contains("hub modes")
+        ex.message.contains("1, 2, 3")
+
+        and: "no mode-picker write was issued for the rejected event"
+        modesXWritten.isEmpty()
+    }
+
+    def "waitEvents Mode event with empty picker options still writes a VALID location.modes ID (no false-reject)"() {
+        given:
+        enableWrite()
+        sharedLocation.modes = [[id: "1", name: "Home"], [id: "2", name: "Away"], [id: "3", name: "Night"]]
+
+        // Same empty-picker edge case, but modeIds:[3] IS a real hub mode. The
+        // fallback must ACCEPT it and write the picker -- the empty-options path
+        // must not false-reject a legitimate ID.
+        def doActInputs = [
+            [name: "actType.1", type: "enum", options: ["delayActs": "Delay, Wait, Exit or Comment"]],
+            [name: "actSubType.1", type: "enum", options: ["getWaitEvents": "Wait for Events"]],
+            [name: "tCapab-1", type: "enum", options: ["Mode", "Switch", "Motion"]],
+            [name: "modesX-1", type: "enum", multiple: true, options: [:]],
+            [name: "hasAll", type: "button"],
+            [name: "anotherWait", type: "button"],
+            [name: "doneWaits", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", doActInputs) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def modesXWritten = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            body?.each { k, v ->
+                def ks = k?.toString()
+                if (ks?.startsWith("settings[modesX-")) modesXWritten << [key: ks, value: v?.toString()]
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        script._rmAddAction(100, [capability: "waitEvents", events: [[capability: "Mode", modeIds: [3]]]])
+
+        then: "id 3 is a real hub mode, so the empty-picker fallback accepts it and writes modesX-1"
+        modesXWritten.any { it.value == '["3"]' }
+    }
+
+    def "waitEvents with two Mode events writes each to its own dash-indexed picker and advances the loop"() {
+        given:
+        enableWrite()
+        sharedLocation.modes = [[id: "1", name: "Home"], [id: "2", name: "Away"], [id: "3", name: "Night"]]
+
+        // Both Mode rows present statically: event 1 uses modesX-1, event 2 uses
+        // modesX-2. Neither may touch tstate. The loop must advance (one anotherWait
+        // between two hasAll commits) so event 2 is not dropped.
+        def doActInputs = [
+            [name: "actType.1", type: "enum", options: ["delayActs": "Delay, Wait, Exit or Comment"]],
+            [name: "actSubType.1", type: "enum", options: ["getWaitEvents": "Wait for Events"]],
+            [name: "tCapab-1", type: "enum", options: ["Mode", "Switch", "Motion"]],
+            [name: "modesX-1", type: "enum", multiple: true, options: ["1": "Home", "2": "Away", "3": "Night"]],
+            [name: "tCapab-2", type: "enum", options: ["Mode", "Switch", "Motion"]],
+            [name: "modesX-2", type: "enum", multiple: true, options: ["1": "Home", "2": "Away", "3": "Night"]],
+            [name: "hasAll", type: "button"],
+            [name: "anotherWait", type: "button"],
+            [name: "doneWaits", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", doActInputs) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def writes = []
+        def clicks = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn") clicks << body?.name?.toString()
+            body?.each { k, v ->
+                def ks = k?.toString()
+                if (ks?.startsWith("settings[")) writes << [key: ks, value: v?.toString()]
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        script._rmAddAction(100, [capability: "waitEvents", events: [
+            [capability: "Mode", state: "Home"],
+            [capability: "Mode", state: "Night"]
+        ]])
+
+        then: "event 1 (Mode) wrote modesX-1=[1] and event 2 (Mode) wrote modesX-2=[3]"
+        writes.any { it.key == "settings[modesX-1]" && it.value == '["1"]' }
+        writes.any { it.key == "settings[modesX-2]" && it.value == '["3"]' }
+
+        and: "neither Mode event wrote tstate"
+        !writes.any { it.key.startsWith("settings[tstate-") }
+
+        and: "the loop advanced across both events (one anotherWait between two hasAll commits)"
+        clicks.count { it == "anotherWait" } == 1
+        clicks.count { it == "hasAll" } == 2
+    }
+
+    def "waitEvents with a Mode event FIRST then a device event writes the picker then tstate (order-independent)"() {
+        given:
+        enableWrite()
+        sharedLocation.modes = [[id: "1", name: "Home"], [id: "2", name: "Away"], [id: "3", name: "Night"]]
+
+        // Mode event is event 1 (modesX-1), device event is event 2 (tDev-2/
+        // tstate-2). Reverses the existing device-first ordering to prove the Mode
+        // branch is index-driven, not position-driven.
+        def doActInputs = [
+            [name: "actType.1", type: "enum", options: ["delayActs": "Delay, Wait, Exit or Comment"]],
+            [name: "actSubType.1", type: "enum", options: ["getWaitEvents": "Wait for Events"]],
+            [name: "tCapab-1", type: "enum", options: ["Mode", "Switch", "Motion"]],
+            [name: "modesX-1", type: "enum", multiple: true, options: ["1": "Home", "2": "Away", "3": "Night"]],
+            [name: "tCapab-2", type: "enum", options: ["Mode", "Switch", "Motion"]],
+            [name: "tDev-2", type: "enum", multiple: true, options: ["8": "M1"]],
+            [name: "tstate-2", type: "enum", options: ["active": "active", "inactive": "inactive"]],
+            [name: "hasAll", type: "button"],
+            [name: "anotherWait", type: "button"],
+            [name: "doneWaits", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", doActInputs) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"M1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def writes = []
+        def clicks = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn") clicks << body?.name?.toString()
+            body?.each { k, v ->
+                def ks = k?.toString()
+                if (ks?.startsWith("settings[")) writes << [key: ks, value: v?.toString()]
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        script._rmAddAction(100, [capability: "waitEvents", events: [
+            [capability: "Mode", state: "Night"],
+            [capability: "Motion", deviceIds: [8], state: "active"]
+        ]])
+
+        then: "event 1 (Mode) wrote modesX-1 -- never tstate-1"
+        writes.any { it.key == "settings[modesX-1]" && it.value == '["3"]' }
+        !writes.any { it.key == "settings[tstate-1]" }
+
+        and: "event 2 (device) wrote tstate-2 and did NOT enter the Mode branch"
+        writes.any { it.key == "settings[tstate-2]" && it.value == "active" }
+        !writes.any { it.key.startsWith("settings[modesX-") && it.key.endsWith("-2]") }
+
+        and: "the loop advanced across both events"
+        clicks.count { it == "anotherWait" } == 1
+        clicks.count { it == "hasAll" } == 2
     }
 
     // ---------- Pattern 1 (mirror): settingsLanded in _rmWriteSubPageField ----------
@@ -24189,6 +24945,174 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "state_1 was NOT written for Mode-by-modeIds (picker write, not state_N) -- parity with doActPage sibling"
         !writtenFields.containsKey("state_1")
+    }
+
+    def "addRequiredExpression Mode condition with an integer modeId the picker does not offer fails loud"() {
+        // Parity with the waitEvents/trigger Mode paths: a directly-passed integer
+        // ID skips name resolution, so it must be cross-checked against the revealed
+        // picker before modes1 commits a mode-less Broken Condition. The picker
+        // offers 1/3; id 9 is not among them. Both-ways pending (orchestrator).
+        given:
+        enableWrite()
+        sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
+        def rCapabWritten = false
+        def writtenFields = [:]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "rCapab_1") rCapabWritten = true
+                    }
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph", description: "IF Mode is 9"]]]]],
+                settings: [useST: "true"], childApps: []
+            ])
+        }
+        def stFetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            stFetchSeq++
+            def inputs = [
+                [name: "cond", type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1", type: "enum", options: ["Mode", "Switch"]],
+                [name: "hasAll", type: "button"],
+                [name: "doneST", type: "button"]
+            ]
+            if (rCapabWritten) {
+                // Picker offers ids 1/3 only -- id 9 must be rejected.
+                inputs = inputs + [[name: "modes1", type: "enum", options: ["1": "Day", "3": "Night"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                             sections: [[title: "", input: inputs, paragraphs: ["seq ${stFetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "an integer modeId the revealed picker does not offer is passed"
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[capability: "Mode", modeIds: [9]]]],
+            confirm: true
+        ])
+
+        then: "fail-loud surfaces as success:false, naming the bad ID, the picker source, and the valid IDs"
+        // Reaches modes1 (picker revealed with options), so the source is the mode
+        // picker -- distinct from the trigger path's location.modes fallback.
+        result.success == false
+        result.error?.toString()?.contains("9")
+        result.error?.toString()?.contains("not offered")
+        result.error?.toString()?.contains("the mode picker")
+        result.error?.toString()?.contains("1, 3")
+
+        and: "no modes1 write was issued for the rejected condition (no silent mode-less commit)"
+        !writtenFields.containsKey("modes1")
+    }
+
+    def "addRequiredExpression Mode condition with a valid integer modeId still writes the picker (anti-regression companion)"() {
+        // Must-NOT-catch pair for the reject spec above: modeIds:[3] IS offered by
+        // the revealed picker, so the cross-check must ACCEPT it and write modes1 --
+        // never false-reject a legitimate directly-passed ID. Both-ways pending (orchestrator).
+        given:
+        enableWrite()
+        sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
+        def rCapabWritten = false
+        def writtenFields = [:]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        writtenFields[key] = v
+                        if (key == "rCapab_1") rCapabWritten = true
+                    }
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph", description: "IF Mode is Night"]]]]],
+                settings: [useST: "true"], childApps: []
+            ])
+        }
+        def stFetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            stFetchSeq++
+            def inputs = [
+                [name: "cond", type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1", type: "enum", options: ["Mode", "Switch"]],
+                [name: "hasAll", type: "button"],
+                [name: "doneST", type: "button"]
+            ]
+            if (rCapabWritten) {
+                inputs = inputs + [[name: "modes1", type: "enum", options: ["1": "Day", "3": "Night"]]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "Required Expression", install: false, error: null,
+                             sections: [[title: "", input: inputs, paragraphs: ["seq ${stFetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "a valid integer modeId (offered by the picker) is passed"
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[capability: "Mode", modeIds: [3]]]],
+            confirm: true
+        ])
+
+        then: "success and the valid ID lands on modes1 (exact JSON wire form)"
+        result.success == true
+        writtenFields["modes1"] == '["3"]'
     }
 
     def "addRequiredExpression Mode condition: fail-loud when modes picker not revealed"() {
