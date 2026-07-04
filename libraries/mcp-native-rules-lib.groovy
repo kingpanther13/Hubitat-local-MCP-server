@@ -1329,10 +1329,6 @@ String _rmNormalizeComparator(Object raw) {
     // asterisk-wrapped '*contains*' (substring match). Accept the intuitive bare
     // form (case-insensitive) so a caller who guesses it does not silently build a
     // broken rule -- an already-wrapped '*contains*' falls through unchanged.
-    // Bare 'contains' is never a valid RM comparator; the wizard enum offers the
-    // asterisk-wrapped '*contains*' (substring match). Accept the intuitive bare
-    // form (case-insensitive) so a caller who guesses it does not silently build a
-    // broken rule -- an already-wrapped '*contains*' falls through unchanged.
     if (s.equalsIgnoreCase("contains")) return "*contains*"
     return s
 }
@@ -6058,6 +6054,15 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
             // three (default 0) for a clean total-wait computation even though waitEvents,
             // unlike the trigger, does not NPE on a partial duration.
             def andStays = ev.andStays
+            // RM only honours andStays as a toggle (true) or a duration Map. A number,
+            // string, or any other value would fall through the write below and be
+            // silently dropped (no stays row, no error) -- reject it loudly so the
+            // caller learns the duration was ignored instead of shipping a rule that
+            // waits with no dwell time. Matches the codebase's fail-loud-on-bad-arg
+            // convention.
+            if (andStays != null && andStays != true && !(andStays instanceof Map)) {
+                throw new IllegalArgumentException("waitEvents.events[${evIdx}].andStays must be boolean true or a {hours,minutes,seconds} map; got '${andStays}'. A numeric or other value is silently ignored by RM -- pass andStays:true for a zero dwell or andStays:{seconds:5} for a duration.")
+            }
             if (andStays == true || andStays instanceof Map) {
                 _rmWriteSettingOnPage(appId, "doActPage", "stays-${n}", true, applied, "bool", skipped)
                 def dur = (andStays instanceof Map) ? (andStays as Map) : [:]
@@ -6711,6 +6716,13 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
                 repairHints << "WARNING: doActPage may have rendered with an error (configPageError=${err}, or skipped items have empty available list). This is a hub-side issue, not a wire-format problem. The action partially committed; consider removeAction(${idx}) to clear the broken row, then retry with different deviceIds or a different action shape."
             }
             repairHints << "If retries still fail, removeAction(index:${idx}) to clean up, then call addAction again with corrections."
+        }
+        // getSetHSM reveals its single alarm.<N> command field ONLY when Hubitat Safety
+        // Monitor is installed on the hub. Without HSM the field never enters the schema,
+        // so the lockActs row is stranded with no command and the generic "didn't land"
+        // hint above cannot name the cause. Name it here so the operator knows why.
+        if (cap == "hsm" && genuineSkipped.any { it instanceof Map && it.key?.toString()?.startsWith("alarm.") }) {
+            repairHints << "The HSM command field (alarm.${idx}) never appeared in the schema. HSM may not be installed: getSetHSM reveals its command field only when Hubitat Safety Monitor is installed on the hub, so the lockActs action row is stranded with no command. Install the built-in Hubitat Safety Monitor app, then removeAction(${idx}) and re-add the hsm action; or removeAction(${idx}) to clear the empty row if HSM is not wanted."
         }
         if (!forceWrittenKeys.isEmpty()) {
             def cmpWord = forceWrittenKeys.size() == 1 ? "Comparator" : "Comparators"

@@ -1,7 +1,8 @@
 # RM 5.1 Action Capability Reference
 
-Generated from `_rmActionSchemaForDiscover()` in `libraries/mcp-native-rules-lib.groovy`.
-Use `addAction({discover: true})` to retrieve this schema live from the current code.
+Hand-maintained copy of `_rmActionSchemaForDiscover()` in `libraries/mcp-native-rules-lib.groovy`;
+keep it in step with that method. Use `addAction({discover: true})` to retrieve the schema live
+from the current code (the authoritative source when this doc and the code disagree).
 
 The `capability` field (case-insensitive) is the discriminator. Pass it as
 `addAction.capability` in real calls. `action` is required for multi-variant

@@ -37755,6 +37755,35 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.actSubType == "getSetHSM"
     }
 
+    def "addAction hsm repair hint names 'HSM may not be installed' when the alarm field never reveals"() {
+        // getSetHSM exposes alarm.<N> only when HSM is installed. Simulate a hub WITHOUT HSM by
+        // omitting alarm.1 from the doActPage schema: the alarm write lands not_in_schema (partial)
+        // and the row is stranded with no command. The repair hint must name the root cause so the
+        // operator is not left guessing why the lockActs row is empty.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        def seq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["lockActs": "Control HSM..."]]])
+        }
+        // alarm.1 intentionally absent -- HSM not installed, so getSetHSM never reveals its command field.
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            seq++; doActPageWith(100, seq, [[name: "actType.1", type: "enum"], [name: "actSubType.1", type: "enum"], [name: "actionDone", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> bakedMainPage(100) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addAction: [capability: "hsm", command: "armAway"], confirm: true])
+
+        then: "partial is flagged and the repair hint names the missing-HSM root cause"
+        result.partial == true
+        (result.repairHints as List).any { it?.toString()?.contains("HSM may not be installed") }
+    }
+
     // ---------- switch off "only switches that are on" ----------
 
     def "addAction switch #action with onlyOn writes optSwitch AFTER the device picker"() {
@@ -37852,6 +37881,42 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.toolSetRule([appId: 100, addAction: [capability: "switch", action: "off", deviceIds: [8], onlyOn: false], confirm: true])
 
         then:
+        !posts.any { it.body.containsKey("settings[optSwitch.1]") }
+    }
+
+    def "addAction switch toggle with onlyOn:true writes no optSwitch (non-on/off negative pin)"() {
+        // onlyOn is meaningful only for the on/off subtypes -- toggle uses getToggleSwitch,
+        // which has no optSwitch field. The write lives INSIDE the on/off case branches; a
+        // refactor hoisting `if (onlyOn == true) fields[optSwitch.@N]=true` into shared code
+        // would silently write an invalid field on toggle. The doActPage schema below DOES
+        // expose optSwitch.1, so a wrongly-written value would land and be captured here --
+        // the pin goes RED if optSwitch is ever written on toggle.
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '']
+        }
+        def seq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["switchActs": "Switches"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            seq++; doActPageWith(100, seq, [[name: "actType.1", type: "enum"], [name: "actSubType.1", type: "enum"],
+                [name: "toggleSwitch.1", type: "capability.switch", multiple: true],
+                [name: "optSwitch.1", type: "bool"], [name: "actionDone", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> bakedMainPage(100) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        script.toolSetRule([appId: 100, addAction: [capability: "switch", action: "toggle", deviceIds: [8], onlyOn: true], confirm: true])
+
+        then: "toggleSwitch.1 lands but optSwitch.1 is never written"
+        posts.any { it.body.containsKey("settings[toggleSwitch.1]") }
         !posts.any { it.body.containsKey("settings[optSwitch.1]") }
     }
 
@@ -38002,6 +38067,46 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { it.body.containsKey("settings[SSecs-1]") }
     }
 
+    def "addAction waitEvents andStays as a bare number is rejected loudly (silent-drop guard)"() {
+        // RM honours andStays only as a toggle (true) or a duration Map. A number would
+        // fall through the reveal gate and be silently dropped -- no stays row, no error.
+        // The guard rejects it up front so the caller learns the dwell was ignored; this
+        // pin asserts the EXACT reject reason, so a regression that drops the guard (and
+        // resumes silently swallowing the value) fails here.
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '']
+        }
+        def seq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["delayActs": "Delay, Wait..."]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            seq++; doActPageWith(100, seq, [[name: "actType.1", type: "enum"], [name: "actSubType.1", type: "enum"],
+                [name: "tCapab-1", type: "enum", options: ["Switch"]], [name: "tDev-1", type: "capability.switch", multiple: true],
+                [name: "tstate-1", type: "enum", options: ["on", "off"]], [name: "stays-1", type: "bool"],
+                [name: "SHours-1", type: "number"], [name: "SMins-1", type: "number"], [name: "SSecs-1", type: "number"],
+                [name: "actionDone", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> bakedMainPage(100) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when: "the single-addAction edit path catches the validation throw and surfaces it"
+        def result = script.toolSetRule([appId: 100, addAction: [capability: "waitEvents",
+            events: [[capability: "Switch", deviceIds: [8], state: "on", andStays: 5]]], confirm: true])
+
+        then: "the exact reject names andStays and the true/map contract, and no stays fields were written"
+        result.success == false
+        result.error?.toString()?.contains("andStays must be boolean true or a {hours,minutes,seconds} map")
+        result.error?.toString()?.contains("silently ignored by RM")
+        !posts.any { it.body.containsKey("settings[stays-1]") }
+    }
+
     // ---------- string *contains* comparator ----------
 
     def "_rmNormalizeComparator passes *contains* and the Unicode glyph through verbatim (no strip/map)"() {
@@ -38062,6 +38167,65 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def cmp = (variable.optionalFields as List).find { (it as Map).name == "comparator" }
         ((cmp as Map).values as List).contains("*contains*")
         !((cmp as Map).values as List).contains("*is empty*")
+    }
+
+    def "condition Variable *contains* with not:true co-writes the comparator AND the not toggle"() {
+        // not:true + *contains* is the documented ONLY way to express "does not contain".
+        // If the not toggle ever failed to co-write, the rule would silently invert to a
+        // plain "contains" -- the exact bug this pins. Assert BOTH wire fields land: the
+        // comparator (RelrDev_1=*contains*) AND the negation (not1=true).
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "isCondTrig.1", type: "bool"], [name: "condTrig.1", type: "enum"],
+                [name: "rCapab_1", type: "enum", options: ["Variable"]], [name: "xVar_1", type: "enum", options: ["myVar"]],
+                [name: "RelrDev_1", type: "enum", options: ["=", "*contains*"]], [name: "state_1", type: "text"],
+                [name: "not1", type: "bool"], [name: "hasAll", type: "button"]
+            ])
+        }
+
+        when:
+        script._rmBuildCondition(100, 1, [capability: "Variable", variable: "myVar",
+            comparator: "*contains*", value: "foo", not: true], [], [])
+
+        then: "the comparator is written verbatim and the not toggle co-writes true"
+        posts.any { it.body["settings[RelrDev_1]"] == "*contains*" }
+        posts.any { it.body["settings[not1]"]?.toString() == "true" }
+    }
+
+    def "condition Custom Attribute *contains* writes the comparator on the wire"() {
+        // The Custom Attribute half of the *contains* contract: a Custom Attribute condition
+        // with comparator:'*contains*' must write RelrDev_<N>=*contains* once the value-vs-
+        // comparator re-render exposes the comparator field. Pins the CA wire write directly
+        // (the Variable half is covered above and end-to-end in e2e).
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "isCondTrig.1", type: "bool"], [name: "condTrig.1", type: "enum"],
+                [name: "rCapab_1", type: "enum", options: ["Custom Attribute"]],
+                [name: "rDev_1", type: "capability.*", multiple: true],
+                [name: "rCustomAttr_1", type: "text"],
+                [name: "RelrDev_1", type: "enum", options: ["=", "*contains*"]], [name: "state_1", type: "text"],
+                [name: "hasAll", type: "button"]
+            ])
+        }
+
+        when:
+        script._rmBuildCondition(100, 1, [capability: "Custom Attribute", deviceId: 8,
+            attribute: "myAttr", comparator: "*contains*", value: "foo"], [], [])
+
+        then: "RelrDev_1 carries the *contains* comparator verbatim"
+        posts.any { it.body["settings[RelrDev_1]"] == "*contains*" }
     }
 
     def "addAction switch discover lists onlyOn in optionalFields"() {
