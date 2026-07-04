@@ -73,6 +73,7 @@ Teardown prompts SHOULD explicitly call `hub_delete_native_app(appId=<id>, force
 | T350–T387 (38 tests; T388–T399 reserved) | §3 Actions across all categories | Every action category (switches, dimmers, shades/fans, HSM, thermostats, messages/HTTP, audio, variables, cross-rule, state-mgmt, repeat, delay/wait/exit) |
 | T400–T429 (30 tests) | §4 Expressions, variables, private boolean, control flow | Expression operators + nesting, IF-THEN-ELSE chains, REPEAT variants, local+hub variables, variable math, built-in `%var%` substitution, Private Boolean |
 | T430–T452 (23 tests) | §5 HTTP endpoints + edge cases | Local/Cloud Endpoint triggers + verbs, setHubVariable endpoints, orphan cleanup, flag-poisoning recovery, stale `editCond` recovery, negative paths (update/delete on bogus IDs), MCP feature-flag gating |
+| T460–T464 (5 tests) | §6 RM recreation bundle | HSM as an action, switch "only switches that are on/off", waitEvents per-event "and stays for" duration, string `*contains*` comparator, cosmetic device-list `partial` re-tag |
 
 Each section below lives in its own `## Section N` heading. Sections are appended in order; don't rely on global ordering within a section being monotonic after renumbers.
 
@@ -1888,3 +1889,65 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```
 
 **Expected**: `hub_get_rule_health` does NOT reject either app. The Basic Rule returns `ruleFormat: "basic-rule"` and the Button Controller `ruleFormat: "button-controller"`, both with `broken: null` (no compiled boolean for non-RM classic apps), `source: "configPage"`, and the generic classic-app checks present (`configPageError`, `multipleFlagPoison` — the same multi-flag-poison failure mode RM has). Both `hub_set_native_app` create responses also carry a `health` block. SAFETY: only BAT-prefixed apps are touched.
+
+## Section 6: RM recreation bundle (T460–T464)
+
+### T460 — HSM as an action (arm/disarm)
+
+```json
+{
+  "setup_prompt": "Verify HSM is installed via hub_list_apps. Create a Rule Machine rule named 'BAT-RM-T460-HSM' PAUSED at creation, with a harmless year-2099 Certain Time trigger (e.g. 2099-01-01) so the action never fires. Remember its appId.",
+  "test_prompt": "Add an action to the paused rule that arms Hubitat Safety Monitor in Away mode. Read the rule back and confirm the action renders as an HSM arm-away command. Then try to add a second HSM action using the command 'armEverything' and report the error verbatim.",
+  "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=..., force=true)."
+}
+```
+
+**Expected**: `hub_set_rule(appId, addAction={capability:'hsm', command:'armAway'})` commits (actType `lockActs`, actSubType `getSetHSM`, `alarm.<N>=armAway`); the response carries `actSubType: "getSetHSM"` and `success:true`. The bogus-command call returns `success:false` with an `error` naming the eight valid tokens (armAway/armHome/armNight/disarm/rearm/disarmAll/armRules/cancelAlerts) and stating there is no `armAll`. `hub_get_app_config` shows the arm-away action row. Requires HSM installed on the hub (getSetHSM only appears then). SAFETY: per the HSM-arming safety rule -- the rule is paused with a year-2099 trigger so the live HSM state is NEVER actually armed (the action is stored, not executed).
+
+### T461 — Switch off "only switches that are on"
+
+```json
+{
+  "setup_prompt": "Create a Rule Machine rule named 'BAT-RM-T461-OnlyOn' with a Certain Time trigger at 11:30 PM, targeting a BAT virtual switch. Remember its appId and the switch's deviceId.",
+  "test_prompt": "Add an action that turns the BAT switch OFF but ONLY commands switches that are currently on. Read the rule back and confirm the 'command only switches that are on' option is set on the off action.",
+  "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=..., force=true)."
+}
+```
+
+**Expected**: `hub_set_rule(appId, addAction={capability:'switch', action:'off', deviceIds:[<id>], onlyOn:true})` commits; the wire writes `optSwitch.<N>=true` AFTER `onOffSwitch.<N>` (its reveal gate). `partial:false`. `hub_get_app_config` shows the off action with the "only switches that are on" qualifier. SAFETY: only BAT-prefixed devices/rules touched.
+
+### T462 — waitEvents per-event "and stays that way for" duration
+
+```json
+{
+  "setup_prompt": "Create a Rule Machine rule named 'BAT-RM-T462-WaitStays' with a Certain Time trigger at 11:40 PM, and a BAT virtual contact sensor. Remember its appId and the contact deviceId.",
+  "test_prompt": "Add a single Wait for Events action that waits for the BAT contact to be open AND stays open for 5 minutes. Read the rule back and confirm the wait renders 'and stays that way for 0:05:00'.",
+  "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=..., force=true)."
+}
+```
+
+**Expected**: `hub_set_rule(appId, addAction={capability:'waitEvents', events:[{capability:'Contact', deviceIds:[<id>], state:'open', andStays:{minutes:5}}]})` commits; the wire writes `stays-1=true` then the DASH-indexed `SHours-1=0`, `SMins-1=5`, `SSecs-1=0` (all three written). `hub_get_app_config` mainPage paragraph renders "...and stays that way for: 0:05:00". `andStays:true` (bool) also works and writes the zero-duration triple. SAFETY: only BAT-prefixed devices/rules touched.
+
+### T463 — String `*contains*` comparator on a Custom Attribute / String variable
+
+```json
+{
+  "setup_prompt": "Create a String hub variable 'BAT-RM-T463-Msg' with a non-empty initial value. Create a Rule Machine rule named 'BAT-RM-T463-Contains'. Remember its appId.",
+  "test_prompt": "Add a Required Expression to the rule that is true when the String variable BAT-RM-T463-Msg contains the substring 'error'. Read the rule back and confirm the comparator is '*contains*' (asterisks included, verbatim) with value 'error' and that it is NOT mapped to some other operator.",
+  "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=..., force=true); delete the variable."
+}
+```
+
+**Expected**: `hub_set_rule(appId, addRequiredExpression={conditions:[{capability:'Variable', variable:'BAT-RM-T463-Msg', comparator:'*contains*', value:'error'}]})` commits with the comparator written VERBATIM as `*contains*` (asterisks kept, not stripped/mapped). `hub_get_app_config` shows the contains comparator with value 'error'. There is no "does not contain" -- negation would be `not:true` + `*contains*`. SAFETY: only BAT-prefixed variable/rule touched.
+
+### T464 — Shade action does NOT report a cosmetic `partial`
+
+```json
+{
+  "setup_prompt": "Create a Rule Machine rule named 'BAT-RM-T464-Shade' with a Certain Time trigger at 11:50 PM and a BAT virtual shade device. Remember its appId and the shade deviceId.",
+  "test_prompt": "Add an action that OPENS the BAT shade. Report the full response including success, partial, settingsApplied, and settingsSkipped. Then read the rule back and confirm the open-shade action baked.",
+  "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=..., force=true)."
+}
+```
+
+**Expected**: `hub_set_rule(appId, addAction={capability:'shade', action:'open', deviceIds:[<id>]})` returns `success:true` and **`partial:false`** — the `shadeOpenClose.<N>` device write commits even though the wizard reveals no further schema, so it must NOT be reported as a cosmetic partial. If a device-list write genuinely fails (IDs not committed), `partial:true` still fires. `hub_get_app_config` shows the open-shade action baked. Same class covers the sibling `onOffSwitch`/`lockLockUnlock`/`fanRL` device pickers. SAFETY: only BAT-prefixed devices/rules touched.

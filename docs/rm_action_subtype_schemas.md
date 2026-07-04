@@ -1,7 +1,8 @@
 # RM 5.1 Action Capability Reference
 
-Generated from `_rmActionSchemaForDiscover()` in `libraries/mcp-native-rules-lib.groovy`.
-Use `addAction({discover: true})` to retrieve this schema live from the current code.
+Hand-maintained copy of `_rmActionSchemaForDiscover()` in `libraries/mcp-native-rules-lib.groovy`;
+keep it in step with that method. Use `addAction({discover: true})` to retrieve the schema live
+from the current code (the authoritative source when this doc and the code disagree).
 
 The `capability` field (case-insensitive) is the discriminator. Pass it as
 `addAction.capability` in real calls. `action` is required for multi-variant
@@ -18,6 +19,7 @@ Actions: `on`, `off`, `toggle`, `flash`, `setPerMode`, `choosePerMode`
 |---|---|---|
 | `action` | enum | Required |
 | `deviceIds` | List\<Integer\> | Required for all actions |
+| `onlyOn` | Boolean | For `on`/`off`: RM's "command only switches that are on?" toggle -- writes `optSwitch.<N>` (revealed only after a device is selected in `onOffSwitch.<N>`, so it is written after the device picker). When `true`, the command is sent ONLY to switches currently ON: `action='off'` turns off just the on switches (skips already-off ones); `action='on'` re-sends on only to already-on switches (a no-op refresh). |
 | `perMode` | Map | For setPerMode: `{modeIdOrName: 'on'|'off', ...}`. For choosePerMode: `{modeIdOrName: {on: [devIds], off: [devIds]}, ...}` |
 | `delay` | Map | `{hours?, minutes?, seconds?, cancelable?}` |
 | `rawSettings` | Map | Escape hatch |
@@ -98,6 +100,15 @@ Note: `lockRL.<N>` field -- `true`=UNLOCK, `false`=Lock (inverted relative to fi
 | `delay` | Map | |
 | `rawSettings` | Map | |
 
+### hsm
+Hubitat Safety Monitor arm/disarm/alert-cancel. No `deviceIds` (**because** HSM is a hub-level service, not device-based). Wire: actType `lockActs`, actSubType `getSetHSM`, field `alarm.<N>`. `getSetHSM` appears in the subtype list only when HSM is installed on the hub.
+
+| Field | Type | Notes |
+|---|---|---|
+| `command` | enum | Required. One of `armAway`, `armHome`, `armNight`, `disarm`, `rearm`, `disarmAll`, `armRules`, `cancelAlerts` (Arm Away / Arm Home / Arm Night / Disarm / Re-Arm Water-Smoke-Gas-CO / Disarm All / Arm All HSM Rules / Cancel All Alerts). There is no `armAll` -- use `armRules`. |
+| `delay` | Map | |
+| `rawSettings` | Map | |
+
 ### shade
 Actions: `open`, `close`, `stop`, `setPosition`
 
@@ -110,6 +121,8 @@ Actions: `open`, `close`, `stop`, `setPosition`
 | `rawSettings` | Map | |
 
 Note: `shadeRL.<N>` field -- `true`=CLOSE, `false`=Open (inverted relative to field name).
+
+Note: a device-picker field (`shadeOpenClose.<N>`, and the sibling `onOffSwitch`/`lockLockUnlock`/`fanRL` pickers) stores its value in the hub's `deviceIdsForDeviceList` side-structure and often reveals no further schema, so the wizard cannot see it "advance." The action still commits; the tool value-echo-checks the committed IDs and does NOT report a cosmetic `partial` when they landed (a genuine failed device write still does).
 
 ### fan
 Actions: `setSpeed`, `cycle`
@@ -438,6 +451,7 @@ Note: only ONE `waitEvents` action is supported per rule (RM 5.1 platform limita
 | Field | Type | Notes |
 |---|---|---|
 | `events` | List\<Map\> | Required. Each device event: `{capability, deviceIds, state, andStays?}`. A **Mode** event is the exception: `{capability:'Mode', state:'Night'}` or `{capability:'Mode', state:['Away','Night']}` (mode name(s) -- must match an existing hub mode) or `{capability:'Mode', modeIds:['3']}` / `modeIds:['3','5']` (IDs from `hub_list_modes`). A Mode event rejects `deviceIds` (it is hub-state, not device-based); the mode value is written to the discovered mode picker (`modesX-<N>` family, keyed by mode ID), never to `tstate-<N>`. The resolved IDs are validated against the live picker options (or `location.modes` IDs when the picker exposes no options) -- an unknown mode or an ID no real hub mode carries fails loud. |
+| `events[].andStays` | Boolean or Map | Per-event "and stays that way for" hold. `true` = wait until the state has held (zero extra duration); `{hours?, minutes?, seconds?}` = require it hold that long. Wire: writes `stays-<N>=true`, then the DASH-indexed `SHours-<N>`/`SMins-<N>`/`SSecs-<N>` (all three written, default 0). Note the dash index differs from the trigger's no-dash `SHours<N>` (**because** the doActPage and selectTriggers wizards use different field-name conventions for this slot). |
 | `rawSettings` | Map | |
 
 ### ifThen
@@ -515,7 +529,7 @@ Exactly one of `operator` or `operators` must be supplied when `conditions.size(
 | `capability` | String | Required. See STPage capability list in TOOL_GUIDE.md. |
 | `deviceIds` | List\<Integer\> | Required for device-backed capabilities (Switch, Motion, Temperature, etc.). Omit for Mode, Private Boolean, Last Event Device, time-based capabilities. Convenience: pass singular `deviceId: N` (integer) instead -- the dispatcher normalizes to `deviceIds: [N]`. If both `deviceId` and `deviceIds` are provided, `deviceIds` wins. Applies recursively inside nested `subExpression.conditions[]`. |
 | `state` | String | Enum value for the capability (e.g. `'on'`/`'off'` for Switch, `'active'`/`'inactive'` for Motion, `'open'`/`'closed'` for Contact, `'locked'`/`'unlocked'` for Lock, `'present'`/`'not present'` for Presence). Omit for numeric comparator path. |
-| `comparator` | String | For numeric, Variable, and Custom Attribute capabilities: `'='`, `'<'`, `'>'`, `'<='`, `'>='`, `'!='`. ASCII forms `'!='` / `'<>'` / `'=='` are accepted and auto-mapped to RM's Unicode glyphs `'≠'` / `'='`. Required together with `attribute` for Custom Attribute conditions; required together with `variable` and `value` for Variable conditions. State-change comparators (`'*changed*'` / `'*became*'`) are the only exemption from the RHS-value requirement on Variable conditions. |
+| `comparator` | String | For numeric, Variable, and Custom Attribute capabilities: `'='`, `'<'`, `'>'`, `'<='`, `'>='`, `'!='`. ASCII forms `'!='` / `'<>'` / `'=='` are accepted and auto-mapped to RM's Unicode glyphs `'≠'` / `'='`. A **free-valued (String) Variable or Custom Attribute** additionally accepts the STRING comparator `'*contains*'` (substring match) -- pass it verbatim, asterisks included; it is written to the comparator field unchanged (not stripped or mapped). There is **no** "does not contain": express negation with `not: true` + `comparator: '*contains*'`. `'*contains*'` requires a `value` (the substring); the state-change comparators (`'*changed*'` / `'*became*'`) take no RHS value. Required together with `attribute` for Custom Attribute conditions; required together with `variable` and `value` for Variable conditions. |
 | `value` | Number | Numeric threshold paired with `comparator`. |
 | `attribute` | String | For `capability='Custom Attribute'`: the attribute name (e.g. `'humidity'`). Required together with `comparator`. |
 | `variable` | String | For `capability='Variable'`: the hub variable name. Required together with `comparator` and `value`. The walker validates against the live schema's enum options. |

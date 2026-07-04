@@ -37651,4 +37651,674 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         editArgs?.appId == 555
         result.appId == 555
     }
+
+    // ==================================================================
+    // RM recreation bundle: HSM action, switch onlyOn, waitEvents
+    // duration, string *contains* comparator, device-list partial re-tag.
+    // ==================================================================
+
+    // doActPage schema JSON carrying an arbitrary input set, with an
+    // incrementing paragraph so every _rmWriteSettingOnPage routes to
+    // `applied` (renderShifted=true) -- lets a wire test assert the POSTs
+    // without simulating each field's individual reveal.
+    private String doActPageWith(int ruleId, int seqNum, List inputs) {
+        JsonOutput.toJson([
+            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
+            configPage: [name: "doActPage", title: "T", install: false, error: null,
+                         sections: [[title: "", input: inputs, paragraphs: ["seq ${seqNum}".toString()]]]],
+            settings: [:], childApps: []
+        ])
+    }
+
+    private String bakedMainPage(int ruleId) {
+        JsonOutput.toJson([
+            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
+            configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                         sections: [[title: "", input: [], paragraphs: ["action row baked"]]]],
+            settings: [:], childApps: []
+        ])
+    }
+
+    // ---------- HSM as an action ----------
+
+    def "addAction hsm discover lists getSetHSM commands"() {
+        when:
+        def result = script.toolSetRule([addAction: [discover: true]])
+
+        then:
+        def caps = result?.capabilities as List
+        def hsm = caps.find { (it as Map)?.name == "hsm" }
+        hsm != null
+        def cmdField = (hsm.requiredFields as List).find { (it as Map).name == "command" }
+        def vals = (cmdField as Map).values as List
+        (vals as Set) == (script._rmHsmCommands() as Set)
+        !vals.contains("armAll")
+    }
+
+    def "_rmHsmCommands is the single source of truth for the eight HSM tokens"() {
+        expect:
+        script._rmHsmCommands() == ["armAway", "armHome", "armNight", "disarm", "rearm", "disarmAll", "armRules", "cancelAlerts"]
+    }
+
+    def "addAction hsm rejects an unknown command with the valid list"() {
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["lockActs": "Control HSM..."]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            doActPageWith(100, 1, [[name: "actType.1", type: "enum"], [name: "actSubType.1", type: "enum"], [name: "alarm.1", type: "enum"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "the single-addAction edit path catches the validation throw and surfaces it"
+        def result = script.toolSetRule([appId: 100, addAction: [capability: "hsm", command: "armEverything"], confirm: true])
+
+        then:
+        result.success == false
+        result.error?.toString()?.contains("armAway")
+        result.error?.toString()?.contains("armRules")
+        result.error?.toString()?.contains("armEverything")
+    }
+
+    def "addAction hsm writes actSubType=getSetHSM and alarm=<command>"() {
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '']
+        }
+        def seq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["lockActs": "Control HSM..."]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            seq++; doActPageWith(100, seq, [[name: "actType.1", type: "enum"], [name: "actSubType.1", type: "enum"], [name: "alarm.1", type: "enum"], [name: "actionDone", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> bakedMainPage(100) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addAction: [capability: "hsm", command: "armAway"], confirm: true])
+
+        then: "the wire carries the lockActs/getSetHSM subtype and the bare command in alarm.1"
+        posts.any { it.body["settings[actSubType.1]"] == "getSetHSM" }
+        posts.any { it.body["settings[alarm.1]"] == "armAway" }
+        result.success == true
+        result.actSubType == "getSetHSM"
+    }
+
+    def "addAction hsm repair hint names 'HSM may not be installed' when the alarm field never reveals"() {
+        // getSetHSM exposes alarm.<N> only when HSM is installed. Simulate a hub WITHOUT HSM by
+        // omitting alarm.1 from the doActPage schema: the alarm write lands not_in_schema (partial)
+        // and the row is stranded with no command. The repair hint must name the root cause so the
+        // operator is not left guessing why the lockActs row is empty.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        def seq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["lockActs": "Control HSM..."]]])
+        }
+        // alarm.1 intentionally absent -- HSM not installed, so getSetHSM never reveals its command field.
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            seq++; doActPageWith(100, seq, [[name: "actType.1", type: "enum"], [name: "actSubType.1", type: "enum"], [name: "actionDone", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> bakedMainPage(100) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addAction: [capability: "hsm", command: "armAway"], confirm: true])
+
+        then: "partial is flagged and the repair hint names the missing-HSM root cause"
+        result.partial == true
+        (result.repairHints as List).any { it?.toString()?.contains("HSM may not be installed") }
+    }
+
+    // ---------- switch off "only switches that are on" ----------
+
+    def "addAction switch #action with onlyOn writes optSwitch AFTER the device picker"() {
+        // Both on and off honor onlyOn -- the optSwitch reveal/write path is identical for the
+        // two directions (the `on` branch is a separate case from the tested `off` one).
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '']
+        }
+        def seq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["switchActs": "Switches"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            seq++; doActPageWith(100, seq, [[name: "actType.1", type: "enum"], [name: "actSubType.1", type: "enum"],
+                [name: "onOffSwitch.1", type: "capability.switch", multiple: true], [name: "onOff.1", type: "bool"],
+                [name: "optSwitch.1", type: "bool"], [name: "actionDone", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> bakedMainPage(100) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        script.toolSetRule([appId: 100, addAction: [capability: "switch", action: action, deviceIds: [8], onlyOn: true], confirm: true])
+
+        then: "optSwitch.1 is written, and only after onOffSwitch.1 (its reveal gate)"
+        def devIdx = posts.findIndexOf { it.body.containsKey("settings[onOffSwitch.1]") }
+        def optIdx = posts.findIndexOf { it.body.containsKey("settings[optSwitch.1]") }
+        devIdx >= 0
+        optIdx >= 0
+        optIdx > devIdx
+
+        where:
+        action << ["off", "on"]
+    }
+
+    def "addAction switch off without onlyOn writes no optSwitch"() {
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '']
+        }
+        def seq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["switchActs": "Switches"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            seq++; doActPageWith(100, seq, [[name: "actType.1", type: "enum"], [name: "actSubType.1", type: "enum"],
+                [name: "onOffSwitch.1", type: "capability.switch", multiple: true], [name: "onOff.1", type: "bool"],
+                [name: "optSwitch.1", type: "bool"], [name: "actionDone", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> bakedMainPage(100) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        script.toolSetRule([appId: 100, addAction: [capability: "switch", action: "off", deviceIds: [8]], confirm: true])
+
+        then:
+        !posts.any { it.body.containsKey("settings[optSwitch.1]") }
+    }
+
+    def "addAction switch off with onlyOn:false writes no optSwitch (negative pin)"() {
+        // The optSwitch write is gated on `onlyOn == true`; a looser `if (onlyOn != null)`
+        // wrong-impl would write it for an explicit false. Pins the exact-true gate.
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '']
+        }
+        def seq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["switchActs": "Switches"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            seq++; doActPageWith(100, seq, [[name: "actType.1", type: "enum"], [name: "actSubType.1", type: "enum"],
+                [name: "onOffSwitch.1", type: "capability.switch", multiple: true], [name: "onOff.1", type: "bool"],
+                [name: "optSwitch.1", type: "bool"], [name: "actionDone", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> bakedMainPage(100) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        script.toolSetRule([appId: 100, addAction: [capability: "switch", action: "off", deviceIds: [8], onlyOn: false], confirm: true])
+
+        then:
+        !posts.any { it.body.containsKey("settings[optSwitch.1]") }
+    }
+
+    def "addAction switch toggle with onlyOn:true writes no optSwitch (non-on/off negative pin)"() {
+        // onlyOn is meaningful only for the on/off subtypes -- toggle uses getToggleSwitch,
+        // which has no optSwitch field. The write lives INSIDE the on/off case branches; a
+        // refactor hoisting `if (onlyOn == true) fields[optSwitch.@N]=true` into shared code
+        // would silently write an invalid field on toggle. The doActPage schema below DOES
+        // expose optSwitch.1, so a wrongly-written value would land and be captured here --
+        // the pin goes RED if optSwitch is ever written on toggle.
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '']
+        }
+        def seq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["switchActs": "Switches"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            seq++; doActPageWith(100, seq, [[name: "actType.1", type: "enum"], [name: "actSubType.1", type: "enum"],
+                [name: "toggleSwitch.1", type: "capability.switch", multiple: true],
+                [name: "optSwitch.1", type: "bool"], [name: "actionDone", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> bakedMainPage(100) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        script.toolSetRule([appId: 100, addAction: [capability: "switch", action: "toggle", deviceIds: [8], onlyOn: true], confirm: true])
+
+        then: "toggleSwitch.1 lands but optSwitch.1 is never written"
+        posts.any { it.body.containsKey("settings[toggleSwitch.1]") }
+        !posts.any { it.body.containsKey("settings[optSwitch.1]") }
+    }
+
+    // ---------- waitEvents per-event "and stays for" duration ----------
+
+    def "addAction waitEvents andStays Map writes dash-indexed SHours/SMins/SSecs after stays"() {
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '']
+        }
+        def seq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["delayActs": "Delay, Wait..."]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            seq++; doActPageWith(100, seq, [[name: "actType.1", type: "enum"], [name: "actSubType.1", type: "enum"],
+                [name: "tCapab-1", type: "enum", options: ["Switch"]], [name: "tDev-1", type: "capability.switch", multiple: true],
+                [name: "tstate-1", type: "enum", options: ["on", "off"]], [name: "stays-1", type: "bool"],
+                [name: "SHours-1", type: "number"], [name: "SMins-1", type: "number"], [name: "SSecs-1", type: "number"],
+                [name: "actionDone", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> bakedMainPage(100) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        script.toolSetRule([appId: 100, addAction: [capability: "waitEvents",
+            events: [[capability: "Switch", deviceIds: [8], state: "on", andStays: [minutes: 5]]]], confirm: true])
+
+        then: "stays toggle then all three dash-indexed durations land, with the requested minutes"
+        def staysIdx = posts.findIndexOf { it.body.containsKey("settings[stays-1]") }
+        staysIdx >= 0
+        posts.any { it.body["settings[SHours-1]"]?.toString() == "0" }
+        posts.any { it.body["settings[SMins-1]"]?.toString() == "5" }
+        posts.any { it.body["settings[SSecs-1]"]?.toString() == "0" }
+        posts.findIndexOf { it.body.containsKey("settings[SMins-1]") } > staysIdx
+    }
+
+    def "addAction waitEvents andStays true writes zero-duration triple"() {
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '']
+        }
+        def seq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["delayActs": "Delay, Wait..."]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            seq++; doActPageWith(100, seq, [[name: "actType.1", type: "enum"], [name: "actSubType.1", type: "enum"],
+                [name: "tCapab-1", type: "enum", options: ["Switch"]], [name: "tDev-1", type: "capability.switch", multiple: true],
+                [name: "tstate-1", type: "enum", options: ["on", "off"]], [name: "stays-1", type: "bool"],
+                [name: "SHours-1", type: "number"], [name: "SMins-1", type: "number"], [name: "SSecs-1", type: "number"],
+                [name: "actionDone", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> bakedMainPage(100) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        script.toolSetRule([appId: 100, addAction: [capability: "waitEvents",
+            events: [[capability: "Switch", deviceIds: [8], state: "on", andStays: true]]], confirm: true])
+
+        then:
+        posts.any { it.body.containsKey("settings[stays-1]") }
+        posts.any { it.body["settings[SHours-1]"]?.toString() == "0" }
+        posts.any { it.body["settings[SMins-1]"]?.toString() == "0" }
+        posts.any { it.body["settings[SSecs-1]"]?.toString() == "0" }
+    }
+
+    def "addAction waitEvents andStays empty map writes zero-duration triple (empty map equals true)"() {
+        // Docs pin `{}` as equivalent to `true`. The reveal gate is `andStays == true ||
+        // andStays instanceof Map`; a `if (andStays)` truthy refactor would drop the empty
+        // map (an empty Map is falsy in Groovy), silently losing the stays-hold.
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '']
+        }
+        def seq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["delayActs": "Delay, Wait..."]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            seq++; doActPageWith(100, seq, [[name: "actType.1", type: "enum"], [name: "actSubType.1", type: "enum"],
+                [name: "tCapab-1", type: "enum", options: ["Switch"]], [name: "tDev-1", type: "capability.switch", multiple: true],
+                [name: "tstate-1", type: "enum", options: ["on", "off"]], [name: "stays-1", type: "bool"],
+                [name: "SHours-1", type: "number"], [name: "SMins-1", type: "number"], [name: "SSecs-1", type: "number"],
+                [name: "actionDone", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> bakedMainPage(100) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        script.toolSetRule([appId: 100, addAction: [capability: "waitEvents",
+            events: [[capability: "Switch", deviceIds: [8], state: "on", andStays: [:]]]], confirm: true])
+
+        then: "stays toggle present and the zero-duration triple lands"
+        posts.any { it.body.containsKey("settings[stays-1]") }
+        posts.any { it.body["settings[SHours-1]"]?.toString() == "0" }
+        posts.any { it.body["settings[SMins-1]"]?.toString() == "0" }
+        posts.any { it.body["settings[SSecs-1]"]?.toString() == "0" }
+    }
+
+    def "addAction waitEvents event without andStays writes no stays-1 or duration fields"() {
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '']
+        }
+        def seq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["delayActs": "Delay, Wait..."]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            seq++; doActPageWith(100, seq, [[name: "actType.1", type: "enum"], [name: "actSubType.1", type: "enum"],
+                [name: "tCapab-1", type: "enum", options: ["Switch"]], [name: "tDev-1", type: "capability.switch", multiple: true],
+                [name: "tstate-1", type: "enum", options: ["on", "off"]], [name: "stays-1", type: "bool"],
+                [name: "SHours-1", type: "number"], [name: "SMins-1", type: "number"], [name: "SSecs-1", type: "number"],
+                [name: "actionDone", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> bakedMainPage(100) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        script.toolSetRule([appId: 100, addAction: [capability: "waitEvents",
+            events: [[capability: "Switch", deviceIds: [8], state: "on"]]], confirm: true])
+
+        then: "no stays toggle and no duration fields are written when andStays is omitted"
+        !posts.any { it.body.containsKey("settings[stays-1]") }
+        !posts.any { it.body.containsKey("settings[SHours-1]") }
+        !posts.any { it.body.containsKey("settings[SMins-1]") }
+        !posts.any { it.body.containsKey("settings[SSecs-1]") }
+    }
+
+    def "addAction waitEvents andStays as a bare number is rejected loudly (silent-drop guard)"() {
+        // RM honours andStays only as a toggle (true) or a duration Map. A number would
+        // fall through the reveal gate and be silently dropped -- no stays row, no error.
+        // The guard rejects it up front so the caller learns the dwell was ignored; this
+        // pin asserts the EXACT reject reason, so a regression that drops the guard (and
+        // resumes silently swallowing the value) fails here.
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '']
+        }
+        def seq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["delayActs": "Delay, Wait..."]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            seq++; doActPageWith(100, seq, [[name: "actType.1", type: "enum"], [name: "actSubType.1", type: "enum"],
+                [name: "tCapab-1", type: "enum", options: ["Switch"]], [name: "tDev-1", type: "capability.switch", multiple: true],
+                [name: "tstate-1", type: "enum", options: ["on", "off"]], [name: "stays-1", type: "bool"],
+                [name: "SHours-1", type: "number"], [name: "SMins-1", type: "number"], [name: "SSecs-1", type: "number"],
+                [name: "actionDone", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> bakedMainPage(100) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when: "the single-addAction edit path catches the validation throw and surfaces it"
+        def result = script.toolSetRule([appId: 100, addAction: [capability: "waitEvents",
+            events: [[capability: "Switch", deviceIds: [8], state: "on", andStays: 5]]], confirm: true])
+
+        then: "the exact reject names andStays and the true/map contract, and no stays fields were written"
+        result.success == false
+        result.error?.toString()?.contains("andStays must be boolean true or a {hours,minutes,seconds} map")
+        result.error?.toString()?.contains("silently ignored by RM")
+        !posts.any { it.body.containsKey("settings[stays-1]") }
+    }
+
+    // ---------- string *contains* comparator ----------
+
+    def "_rmNormalizeComparator passes *contains* and the Unicode glyph through verbatim (no strip/map)"() {
+        expect:
+        script._rmNormalizeComparator("*contains*") == "*contains*"
+        // Already-glyph inputs are pass-through (only ASCII !=/<>/== get mapped).
+        script._rmNormalizeComparator("≠") == "≠"
+    }
+
+    def "_rmNormalizeComparator maps bare 'contains' (any case) to the wrapped '*contains*'"() {
+        // Bare 'contains' is never a valid RM comparator, but it is the intuitive
+        // guess -- cold callers reach for it and RM then stores a non-enum value that
+        // never evaluates (a silently-broken rule). Normalizing the bare form to the
+        // asterisk-wrapped enum value the wizard offers kills that class. The already-
+        // wrapped value and unrelated comparators must pass through untouched.
+        expect:
+        script._rmNormalizeComparator(input) == expected
+
+        where:
+        input        || expected
+        "contains"   || "*contains*"
+        "CONTAINS"   || "*contains*"
+        "Contains"   || "*contains*"
+        "*contains*" || "*contains*"
+        "="          || "="
+    }
+
+    def "*contains* is not treated as a no-RHS state-change comparator"() {
+        // *contains* needs a right-hand value (the substring), so it must NOT be
+        // classified RHS-optional the way *changed*/*became* are.
+        expect:
+        !script._rmComparatorIsRhsOptional("*contains*")
+    }
+
+    def "Custom Attribute discover lists *contains* and documents the not-toggle negation"() {
+        when:
+        def result = script.toolSetRule([addTrigger: [discover: true]])
+
+        then:
+        def caps = result?.capabilities as List
+        def ca = caps.find { (it as Map)?.name == "Custom Attribute" }
+        def cmp = (ca.requiredFields as List).find { (it as Map).name == "comparator" }
+        ((cmp as Map).values as List).contains("*contains*")
+        (cmp as Map).description?.contains("not:true")
+    }
+
+    def "Variable discover lists *contains* for a free-valued String variable (not *is empty*)"() {
+        // The Variable capability's comparator surface must also advertise *contains* -- it is
+        // the LHS of a String-variable Required Expression condition (the addRequiredExpression
+        // path has no discover mode; addTrigger discover is the shared Variable-schema surface).
+        // *is empty* is intentionally NOT offered (it is unwired: no omit-value support).
+        when:
+        def result = script.toolSetRule([addTrigger: [discover: true]])
+
+        then:
+        def caps = result?.capabilities as List
+        def variable = caps.find { (it as Map)?.name == "Variable" }
+        def cmp = (variable.optionalFields as List).find { (it as Map).name == "comparator" }
+        ((cmp as Map).values as List).contains("*contains*")
+        !((cmp as Map).values as List).contains("*is empty*")
+    }
+
+    def "condition Variable *contains* with not:true co-writes the comparator AND the not toggle"() {
+        // not:true + *contains* is the documented ONLY way to express "does not contain".
+        // If the not toggle ever failed to co-write, the rule would silently invert to a
+        // plain "contains" -- the exact bug this pins. Assert BOTH wire fields land: the
+        // comparator (RelrDev_1=*contains*) AND the negation (not1=true).
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "isCondTrig.1", type: "bool"], [name: "condTrig.1", type: "enum"],
+                [name: "rCapab_1", type: "enum", options: ["Variable"]], [name: "xVar_1", type: "enum", options: ["myVar"]],
+                [name: "RelrDev_1", type: "enum", options: ["=", "*contains*"]], [name: "state_1", type: "text"],
+                [name: "not1", type: "bool"], [name: "hasAll", type: "button"]
+            ])
+        }
+
+        when:
+        script._rmBuildCondition(100, 1, [capability: "Variable", variable: "myVar",
+            comparator: "*contains*", value: "foo", not: true], [], [])
+
+        then: "the comparator is written verbatim and the not toggle co-writes true"
+        posts.any { it.body["settings[RelrDev_1]"] == "*contains*" }
+        posts.any { it.body["settings[not1]"]?.toString() == "true" }
+    }
+
+    def "condition Custom Attribute *contains* writes the comparator on the wire"() {
+        // The Custom Attribute half of the *contains* contract: a Custom Attribute condition
+        // with comparator:'*contains*' must write RelrDev_<N>=*contains* once the value-vs-
+        // comparator re-render exposes the comparator field. Pins the CA wire write directly
+        // (the Variable half is covered above and end-to-end in e2e).
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "isCondTrig.1", type: "bool"], [name: "condTrig.1", type: "enum"],
+                [name: "rCapab_1", type: "enum", options: ["Custom Attribute"]],
+                [name: "rDev_1", type: "capability.*", multiple: true],
+                [name: "rCustomAttr_1", type: "text"],
+                [name: "RelrDev_1", type: "enum", options: ["=", "*contains*"]], [name: "state_1", type: "text"],
+                [name: "hasAll", type: "button"]
+            ])
+        }
+
+        when:
+        script._rmBuildCondition(100, 1, [capability: "Custom Attribute", deviceId: 8,
+            attribute: "myAttr", comparator: "*contains*", value: "foo"], [], [])
+
+        then: "RelrDev_1 carries the *contains* comparator verbatim"
+        posts.any { it.body["settings[RelrDev_1]"] == "*contains*" }
+    }
+
+    def "addAction switch discover lists onlyOn in optionalFields"() {
+        // Mirrors the hsm/*contains* discover-surface assertions: the machine-readable
+        // schema an agent probes must advertise the onlyOn toggle.
+        when:
+        def result = script.toolSetRule([addAction: [discover: true]])
+
+        then:
+        def caps = result?.capabilities as List
+        def sw = caps.find { (it as Map)?.name == "switch" }
+        sw != null
+        ((sw.optionalFields as List)*.name).contains("onlyOn")
+    }
+
+    // ---------- cosmetic device-list partial re-tag (class-fix) ----------
+
+    def "_rmReclassifyDeviceListSkips re-tags an echoed device-list write (not partial) but not a failed one (#scenario)"() {
+        given:
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, appSettings) }
+        def skipped = [[key: "shadeOpenClose.1", reason: "silent_rejection", value: skipValue, schemaUnchanged: true]]
+
+        when:
+        script._rmReclassifyDeviceListSkips(100, skipped)
+
+        then:
+        skipped[0].reason == expectedReason
+        // The re-tagged skip carries the committed IDs (Strings, sorted); a stays-partial
+        // skip must NOT gain the field.
+        skipped[0].committedDeviceIds == expectedCommittedIds
+        // downstream partial gate excludes only the informational reason
+        def informational = script._rmInformationalSkippedReasons()
+        (skipped[0].reason in informational) == notPartial
+
+        where:
+        // The re-tag gate is committed.containsAll(requested). The boundary rows below straddle
+        // it in BOTH directions (empty commit, partial-superset commit) so an arg-swap wrong-impl
+        // (requested.containsAll(committed)) is caught -- it would wrongly re-tag those two.
+        // The deviceList-map row proves the committed-id fallback reads MAP KEYS (ids), not values.
+        // The empty-requested row pins the `if (requested.isEmpty()) return` guard: dropping it makes
+        // containsAll(emptyset) vacuously true, wrongly re-tagging a deviceIds:[] write.
+        scenario                          | appSettings                                                        | skipValue    || expectedReason                              | notPartial | expectedCommittedIds
+        "ids echoed -> informational"     | [[name: "shadeOpenClose.1", deviceIdsForDeviceList: [479]]]         | [479]        || "device_list_committed_schema_unchanged"     | true       | ["479"]
+        "deviceList map keys fallback"    | [[name: "shadeOpenClose.1", deviceList: ["479": "Shade"]]]          | [479]        || "device_list_committed_schema_unchanged"     | true       | ["479"]
+        "empty ids falls to deviceList"   | [[name: "shadeOpenClose.1", deviceIdsForDeviceList: [], deviceList: ["479": "Shade"]]] | [479] || "device_list_committed_schema_unchanged"     | true       | ["479"]
+        "ids missing -> stays partial"    | [[name: "shadeOpenClose.1", deviceIdsForDeviceList: [999]]]         | [479]        || "silent_rejection"                           | false      | null
+        "entry absent -> stays partial"   | []                                                                 | [479]        || "silent_rejection"                           | false      | null
+        "not a device entry -> partial"   | [[name: "shadeOpenClose.1", value: "nope"]]                        | [479]        || "silent_rejection"                           | false      | null
+        "empty commit -> stays partial"   | [[name: "shadeOpenClose.1", deviceIdsForDeviceList: []]]            | [479]        || "silent_rejection"                           | false      | null
+        "partial commit -> stays partial" | [[name: "shadeOpenClose.1", deviceIdsForDeviceList: [479]]]         | [479, 500]   || "silent_rejection"                           | false      | null
+        "empty requested -> stays partial"| [[name: "shadeOpenClose.1", deviceIdsForDeviceList: []]]            | []           || "silent_rejection"                           | false      | null
+    }
+
+    def "_rmReclassifyDeviceListSkips leaves skips partial and logs the exception identity when the statusJson fetch throws (null-message safe)"() {
+        given:
+        // A no-message exception must NOT log "(null)"; the ?: fallback renders its class name.
+        def warnLogs = []
+        script.metaClass.mcpLog = { String lvl, String comp, String m -> if (lvl == "warn") warnLogs << m }
+        script.metaClass.hubInternalGet = { String path, Map q = null, Integer t = 30 ->
+            throw new IllegalStateException()   // null message
+        }
+        def skipped = [[key: "shadeOpenClose.1", reason: "silent_rejection", value: [479], schemaUnchanged: true]]
+
+        when:
+        script._rmReclassifyDeviceListSkips(100, skipped)
+
+        then: "the unverifiable skip stays silent_rejection (partial), no exception escapes, and the warn carries the class identity"
+        noExceptionThrown()
+        skipped[0].reason == "silent_rejection"
+        warnLogs.any { it.contains("statusJson fetch") && it.contains("IllegalStateException") }
+    }
+
+    def "_rmReclassifyDeviceListSkips leaves non-silent_rejection and non-List skips untouched"() {
+        given:
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "onOffSwitch.1", deviceIdsForDeviceList: [8]]]) }
+        def skipped = [
+            [key: "onOffSwitch.1", reason: "not_in_schema", value: [8]],
+            [key: "onOff.1", reason: "silent_rejection", value: true]
+        ]
+
+        when:
+        script._rmReclassifyDeviceListSkips(100, skipped)
+
+        then: "not_in_schema is left alone; a non-List (bool) silent_rejection is not a device-list write"
+        skipped[0].reason == "not_in_schema"
+        skipped[1].reason == "silent_rejection"
+    }
+
+    def "_rmStatusEntryIsDeviceList recognises the device-picker echo structure only"() {
+        expect:
+        script._rmStatusEntryIsDeviceList([name: "x", deviceIdsForDeviceList: [1]])
+        script._rmStatusEntryIsDeviceList([name: "x", deviceList: [1: "L1"]])
+        !script._rmStatusEntryIsDeviceList([name: "x", value: "plain"])
+        !script._rmStatusEntryIsDeviceList(null)
+    }
 }

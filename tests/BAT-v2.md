@@ -3353,12 +3353,12 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 ```json
 {
   "setup_prompt": "the Write master enabled. Identify an installed bundle's id with hub_list_bundles (e.g. the mcp libraries bundle).",
-  "test_prompt": "Export that bundle's zip to the File Manager and tell me where to download it.",
+  "test_prompt": "Export that bundle's zip to the File Manager, confirm the file actually landed, and tell me where to download it.",
   "teardown_prompt": "Optionally delete the exported .zip from the File Manager with hub_delete_file."
 }
 ```
 
-**Expected**: AI calls `hub_manage_code(tool='hub_export_bundle', args={bundleId:<id>})`. Result `{success:true, fileName:'<name>.zip', bytes:>0, directDownload:'/local/<name>.zip'}`; AI points the user at the `/local/...` URL. No `confirm` is required — export is a non-destructive write (it only creates a File Manager file).
+**Expected**: AI calls `hub_manage_code(tool='hub_export_bundle', args={bundleId:<id>})`. Result `{success:true, fileName:'<name>.zip', bytes:>0, directDownload:'/local/<name>.zip'}`; a follow-up `hub_list_files` shows `<name>.zip` present, confirming the write landed (a complete export round-trip); AI points the user at the `/local/...` URL. No `confirm` is required — export is a non-destructive write (it only creates a File Manager file). This is the standing manual proof that `hub_export_bundle` works end-to-end: the e2e `test_export_bundle` asserts the same success envelope programmatically and only soft-passes when a late-run relay 504 makes the File Manager listing unverifiable (never on any other failure).
 
 ### T514 — hub_delete_bundle removes a bundle container (DESTRUCTIVE)
 
