@@ -1654,6 +1654,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v3.2.2** - feat: HSM action, switch onlyOn, waitEvents duration, *contains* comparator, and device-list partial fix. PRs: [#340](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/340)
 - **v3.2.1** - fix: route waitEvents Mode events to the mode picker, not tstate. PRs: [#337](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/337)
 - **v3.2.0** - feat: extend the dashboard tools to cover legacy Hubitat® Dashboards. PRs: [#339](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/339)
 - **v3.1.3** - test: reframe BAT test_prompts goal-first — state goals, not tool names; fix: consolidate the consumer skill and TOOL_GUIDE into one reference; fix: gateway-path parity bugs surfaced by making gateway mode the primary e2e invocation path. PRs: [#335](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/335), [#336](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/336), [#338](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/338)
