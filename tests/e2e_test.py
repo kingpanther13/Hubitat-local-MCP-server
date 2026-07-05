@@ -7553,6 +7553,35 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         self._mcp_bundle_id = str(mcp_bundle["id"])
         print(f"    BUNDLES_LIST ok -- '{mcp_bundle.get('name')}' contains {(mcp_bundle.get('contains') or {}).get('libraries')}")
 
+    def _list_all_file_names(self) -> tuple[list, bool]:
+        """Enumerate ALL File Manager file names via cursor pagination -> (names, authoritative).
+
+        A no-cursor hub_list_files returns the UNBOUNDED list, so on a file-heavy hub the
+        response trips the 120KB size guard and comes back as a response_too_large envelope
+        with NO files key -- which naive callers misread as an authoritative empty listing
+        (that false 'absent' verdict failed test_export_bundle on a hub whose file list had
+        grown past the cap). Cursor pages (size 100) each stay under the guard, so this
+        enumeration is authoritative regardless of how much cruft the hub carries."""
+        names: list = []
+        cursor = ""
+        for _ in range(100):  # hard stop: 100 pages x 100 files
+            try:
+                page = self.client.call_tool(
+                    "hub_read_files", {"tool": "hub_list_files", "args": {"cursor": cursor}})
+            except (McpError, McpToolError, requests.RequestException):
+                return [], False
+            if not isinstance(page, dict) or page.get("response_too_large"):
+                return [], False
+            page_names = [f.get("name") for f in page.get("files", [])]
+            if not page_names and (page.get("message") or page.get("error")):
+                return [], False  # degraded blind-empty page under load
+            names.extend(n for n in page_names if isinstance(n, str))
+            nxt = page.get("nextCursor")
+            if not nxt:
+                return names, True
+            cursor = str(nxt)
+        return names, False  # pathological page loop -> treat as non-authoritative
+
     @test("system_tools")
     def test_export_bundle(self) -> None:
         """hub_export_bundle saves a bundle's .zip to the File Manager (independently confirmed via
@@ -7574,27 +7603,15 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         fname = f"{PREFIX}bundle_export_{bid}.zip"
 
         def _list_files_once() -> tuple[list, bool]:
-            # One listing read -> (names, authoritative). Under peak load hub_list_files
-            # DEGRADES rather than errors: both internal File Manager endpoints fail
-            # hub-side and it returns files:[] with a message/error marker and no MCP
-            # error -- an empty page that proves nothing about the export. A relay 504
-            # on the read is equally inconclusive. Only a listing that enumerated files
-            # (or a clean, marker-free empty one) is evidence of presence/absence.
-            try:
-                files = self.client.call_tool("hub_read_files", {"tool": "hub_list_files"})
-            except (McpError, McpToolError, requests.RequestException):
-                # ANY listing-read failure (504, 502/503, timeout, reset, MCP error) is a
-                # NON-AUTHORITATIVE read -- the listing surface being unreachable proves
-                # nothing about the export. The only fail verdict ('absent') requires an
-                # authoritative listing, and the sanctioned skip is gated on the WRITE's
-                # relay 504, so swallowing read errors here cannot widen the skip; it only
-                # stops a load-artifact listing error from hard-failing the test.
-                return [], False
-            if not isinstance(files, dict):
-                return [], False
-            names = [f.get("name") for f in files.get("files", [])]
-            degraded = not names and bool(files.get("message") or files.get("error"))
-            return names, not degraded
+            # One paginated enumeration -> (names, authoritative). Under peak load
+            # hub_list_files DEGRADES rather than errors (blind empty page with a
+            # message/error marker), a relay 504 is equally inconclusive, and a
+            # NO-CURSOR listing on a file-heavy hub trips the 120KB size guard into a
+            # response_too_large envelope that reads as a false authoritative-empty.
+            # _list_all_file_names handles all three: only a listing that enumerated
+            # every page (or a clean, marker-free empty one) is evidence of
+            # presence/absence.
+            return self._list_all_file_names()
 
         def _poll_export(window: float) -> str:
             # 'found' | 'absent' (>=1 authoritative listing, file in none of them)
@@ -7681,9 +7698,8 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             except Exception as exc:
                 print(f"  [WARN] bundle export cleanup: delete {fname} failed: {exc}")
             try:
-                files = self.client.call_tool("hub_read_files", {"tool": "hub_list_files"})
-                for nm in [f.get("name") for f in (files.get("files", []) if isinstance(files, dict) else [])]:
-                    if isinstance(nm, str) and nm.startswith(f"{PREFIX}bundle_export_") and "_backup_" in nm:
+                for nm in self._list_all_file_names()[0]:
+                    if nm.startswith(f"{PREFIX}bundle_export_") and "_backup_" in nm:
                         self.client.call_tool("hub_manage_files", {
                             "tool": "hub_delete_file", "args": {"fileName": nm, "confirm": True},
                         })
@@ -8866,6 +8882,7 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         6. Rooms (prefix sweep)
         7. Throwaway bundle + library (mcptest namespace)
         8. Easy Dashboards (tracked + prefix sweep)
+        9. File Manager files (prefix sweep, originals then their _backup_ spawn)
         """
         print("\n--- Cleanup ---")
 
@@ -9176,6 +9193,33 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                         print(f"  [WARN] Dashboard sweep delete failed for '{dname}': {exc}")
         except Exception as exc:
             print(f"  [WARN] Dashboard sweep failed: {exc}")
+
+        # Layer 9: File Manager files with the BAT_E2E_ prefix. hub_delete_file auto-backs-up
+        # every non-backup file it deletes ("<base>_backup_<ts>.<ext>"), so BAT file litter
+        # COMPOUNDS across runs unless the backups are swept too -- unswept, the hub's file
+        # list eventually outgrows the 120KB response guard and every no-cursor
+        # hub_list_files degrades to a response_too_large envelope (the false-'absent'
+        # failure mode test_export_bundle hit). Two passes: originals first (each delete
+        # spawns a fresh backup), then re-list and sweep the _backup_ files (deleting a
+        # _backup_ file spawns no backup-of-backup). Paginated listing keeps this sweep
+        # working no matter how crufty the hub already is.
+        for backups_pass in (False, True):
+            try:
+                names, authoritative = self._list_all_file_names()
+                if not authoritative:
+                    print("  [WARN] File sweep: listing not authoritative; skipping this pass")
+                    continue
+                for nm in names:
+                    if not nm.startswith(PREFIX) or ("_backup_" in nm) != backups_pass:
+                        continue
+                    try:
+                        print(f"  Sweep: deleting file '{nm}'")
+                        self.client.call_tool("hub_manage_files", {
+                            "tool": "hub_delete_file", "args": {"fileName": nm, "confirm": True}})
+                    except Exception as exc:
+                        print(f"  [WARN] File sweep delete failed for '{nm}': {exc}")
+            except Exception as exc:
+                print(f"  [WARN] File sweep pass failed: {exc}")
 
         print("--- Cleanup complete ---\n")
 
