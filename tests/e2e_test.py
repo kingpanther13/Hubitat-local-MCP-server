@@ -1242,10 +1242,14 @@ class TestRunner:
         generic failure while the hub logs success. Also pins the wire form: emitted
         schemas carry no `required` arrays, so the runtime error contract
         ([success:false, ...]) validates too. ALWAYS restores the toggle OFF."""
-        self.client.call_tool("hub_manage_mcp", {
-            "tool": "hub_update_mcp_settings",
-            "args": {"settings": {"publishOutputSchemas": True}, "confirm": True}})
         try:
+            # INSIDE the try on purpose: hub_update_mcp_settings is replay-safe but its
+            # RESPONSE can still be lost (relay 504) after the mutation committed
+            # hub-side. If this call raises outside the try, the finally never runs and
+            # the toggle leaks ON for every test after this one.
+            self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings",
+                "args": {"settings": {"publishOutputSchemas": True}, "confirm": True}})
             tools = self.client.list_tools().get("tools", [])
             with_schema = [t for t in tools if "outputSchema" in t]
             assert with_schema, "publishOutputSchemas ON: no tools/list entry advertises outputSchema"
@@ -7561,7 +7565,11 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         with NO files key -- which naive callers misread as an authoritative empty listing
         (that false 'absent' verdict failed test_export_bundle on a hub whose file list had
         grown past the cap). Cursor pages (size 100) each stay under the guard, so this
-        enumeration is authoritative regardless of how much cruft the hub carries."""
+        enumeration is authoritative regardless of how much cruft the hub carries.
+
+        Contract (same in every branch): `names` is everything enumerated before any
+        failure -- PRESENCE in it is trustworthy evidence even when partial; ABSENCE is
+        only meaningful when `authoritative` is True (every page enumerated cleanly)."""
         names: list = []
         cursor = ""
         for _ in range(100):  # hard stop: 100 pages x 100 files
@@ -7569,12 +7577,12 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                 page = self.client.call_tool(
                     "hub_read_files", {"tool": "hub_list_files", "args": {"cursor": cursor}})
             except (McpError, McpToolError, requests.RequestException):
-                return [], False
+                return names, False
             if not isinstance(page, dict) or page.get("response_too_large"):
-                return [], False
+                return names, False
             page_names = [f.get("name") for f in page.get("files", [])]
             if not page_names and (page.get("message") or page.get("error")):
-                return [], False  # degraded blind-empty page under load
+                return names, False  # degraded blind-empty page under load
             names.extend(n for n in page_names if isinstance(n, str))
             nxt = page.get("nextCursor")
             if not nxt:

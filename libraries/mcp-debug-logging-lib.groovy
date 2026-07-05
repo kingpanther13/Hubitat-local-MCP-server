@@ -261,11 +261,12 @@ private Map _bugReportEnvironmentSummary(args, String privacyMode) {
         logLevel: getConfiguredLogLevel(),
         // Tool-surface shape the client sees on tools/list: gateway (hub_manage_*/hub_read_*
         // consolidation, the default) vs flat (every tool advertised individually). A client's
-        // failure mode can differ by mode, so a bug report must carry it. publishOutputSchemas
-        // is included because a strict client rejects an advertised outputSchema returned
-        // without structuredContent — a known client-visible failure class.
+        // failure mode can differ by mode, so a bug report must carry it.
+        // outputSchemasPublished reports whether schemas are ACTUALLY advertised, not just
+        // the toggle: flat mode never emits outputSchema, so toggle-ON + flat is still
+        // "not advertised" (schema advertising is a known client-visible failure class).
         toolMode: (settings.useGateways == false) ? "flat" : "gateway",
-        outputSchemasPublished: (settings.publishOutputSchemas == true),
+        outputSchemasPublished: (settings.publishOutputSchemas == true && settings.useGateways != false),
         customMcpRuleCount: getChildApps()?.size() ?: 0,
         nativeRm: _bugReportNativeRmStatus(),
         deviceCount: selectedDevices?.size() ?: 0,

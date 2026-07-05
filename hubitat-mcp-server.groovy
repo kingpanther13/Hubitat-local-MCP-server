@@ -373,7 +373,7 @@ def confirmRegenerateTokenPage() {
 // they never drift. The two list settings (disabled_tools / disabled_gateways) feed
 // getHiddenToolNames() (catalog + search) and the executeTool dispatch guard.
 def advancedOverridesPage() {
-    dynamicPage(name: "advancedOverridesPage", title: "Advanced: Per-tool Overrides") {
+    dynamicPage(name: "advancedOverridesPage", title: "Advanced: Per-tool Overrides & Expert Settings") {
         section {
             // Enum multi-select inputs render through the SumoSelect picker, whose
             // stylesheet clamps every dropdown option to one ellipsized line
@@ -955,7 +955,19 @@ def handleToolsCall(msg) {
             mcpLog("warn", "server", "Tool ${reactiveToolName} response too large (${wireBytes} > ${responseSizeLimit} bytes) -- returning response_too_large envelope", null, [
                 details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null, bytes: wireBytes, limit: responseSizeLimit]
             ])
-            return jsonRpcResult(msg.id, [content: [[type: "text", text: groovy.json.JsonOutput.toJson(_responseTooLargeEnvelope(reactiveToolName as String, wireBytes, responseSizeLimit))]]])
+            def tooLargeBody = [content: [[type: "text", text: groovy.json.JsonOutput.toJson(_responseTooLargeEnvelope(reactiveToolName as String, wireBytes, responseSizeLimit))]]]
+            // A schema-advertised tool's NON-ERROR result must carry structuredContent (the
+            // spec MUST behind issue #342), and this fallback deliberately replaces the real
+            // result with a text-only envelope. Flag it isError so spec-validating clients
+            // treat it as the error it is (validation is skipped on error results) instead
+            // of rejecting a schema-noncompliant "success" with the same generic failure
+            // #342 was filed about. Non-advertised tools keep the long-standing non-error
+            // shape (#174: the model reads the suggestion and retries narrower).
+            if (settings.publishOutputSchemas == true && settings.useGateways != false
+                    && _advertisesOutputSchema(toolName)) {
+                tooLargeBody.isError = true
+            }
+            return jsonRpcResult(msg.id, tooLargeBody)
         }
         // Single-message verbatim-passthrough: handleMcpRequest's single-Map branch detects
         // this sentinel and renders __preserialized as-is (no re-encode). The batch-collect
@@ -997,11 +1009,13 @@ def handleToolsCall(msg) {
     }
 }
 
-// True only for a tool advertised on the current gateway-mode tools/list WITH an
-// outputSchema (the issue #290 base-tool surface): callers of those tools are entitled to
-// spec-validate results, so handleToolsCall must attach structuredContent (issue #342).
-// Gateway names and gateway-folded sub-tools are never advertised with a schema, and flat
-// mode always strips outputSchema, so those paths never attach it.
+// True when toolName is a base tool (not a gateway, not gateway-folded) whose DEFINITION
+// declares an outputSchema -- the shape of the issue #290 advertised surface. This checks
+// the catalog shape ONLY: it does NOT check publishOutputSchemas or useGateways, so every
+// caller must additionally gate on `settings.publishOutputSchemas == true &&
+// settings.useGateways != false` (both handleToolsCall sites do). With those gates, it
+// answers "is this tool currently advertised with a schema", which is what obligates
+// structuredContent on results (issue #342).
 def _advertisesOutputSchema(toolName) {
     def gwConfig = getGatewayConfig()
     if (gwConfig.containsKey(toolName)) return false

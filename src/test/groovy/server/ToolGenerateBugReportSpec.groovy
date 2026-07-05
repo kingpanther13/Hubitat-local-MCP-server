@@ -115,6 +115,23 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         result.report.contains('**Tool mode:** gateway (outputSchemas advertised on tools/list)')
     }
 
+    def "env summary does NOT claim schemas are advertised in flat mode, even with the toggle ON"() {
+        // Flat tools/list never emits outputSchema, so toggle-ON + flat is still
+        // "not advertised" -- the report line must describe the wire, not the setting.
+        given:
+        sharedLocation.hub = new TestHub()
+        settingsMap.useGateways = false
+        settingsMap.publishOutputSchemas = true
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.report.contains('**Tool mode:** flat')
+        !result.report.contains('outputSchemas advertised')
+    }
+
     def "_stripLibraryMarkers removes HPM include-library line markers that a multi-line string literal captures"() {
         expect:
         script._stripLibraryMarkers(input) == expected

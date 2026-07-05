@@ -136,6 +136,34 @@ class HandleToolsCallSpec extends ToolSpecBase {
         !response.result.containsKey('structuredContent')
     }
 
+    def "publishOutputSchemas ON: an oversized schema-advertised result returns the too-large envelope AS AN ERROR"() {
+        given: 'gateway mode + schemas published, and a base tool returning >120KB'
+        settingsMap.useGateways = true
+        settingsMap.publishOutputSchemas = true
+        script.metaClass.toolGetHubInfo = { a -> [blob: 'x' * 130000] }
+
+        when:
+        def response = mcpDriver.callTool('hub_get_info', [:])
+
+        then: 'isError=true -- a text-only NON-error result of a schema-advertised tool violates the spec MUST (structuredContent), so spec-validating clients would reject it with the same generic failure #342 was filed about; error results are exempt from validation'
+        response.result.isError == true
+        response.result.content[0].text.contains('response_too_large')
+        !response.result.containsKey('structuredContent')
+    }
+
+    def "publishOutputSchemas OFF: an oversized result keeps the long-standing non-error too-large envelope"() {
+        given:
+        settingsMap.useGateways = true
+        script.metaClass.toolGetHubInfo = { a -> [blob: 'x' * 130000] }
+
+        when:
+        def response = mcpDriver.callTool('hub_get_info', [:])
+
+        then: 'no schema is advertised, so the #174 non-error shape (model reads the suggestion and retries) is unchanged'
+        !response.result.containsKey('isError')
+        response.result.content[0].text.contains('response_too_large')
+    }
+
     def "_wireOutputSchema strips required arrays recursively but keeps a property literally named 'required'"() {
         given:
         def schema = [
