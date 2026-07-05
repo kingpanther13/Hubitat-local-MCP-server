@@ -75,7 +75,8 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
     }
 
     def "env summary reports gateway tool-mode by default (useGateways unset)"() {
-        given:
+        given: 'a genuinely-unset useGateways (the flat CI matrix presets it false in setup)'
+        settingsMap.remove('useGateways')
         sharedLocation.hub = new TestHub()
         seedLogs([])
 
@@ -101,7 +102,8 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
     }
 
     def "env summary flags publishOutputSchemas when advertised"() {
-        given:
+        given: 'gateway mode pinned (flat CI matrix presets useGateways=false) + the toggle ON'
+        settingsMap.useGateways = true
         sharedLocation.hub = new TestHub()
         settingsMap.publishOutputSchemas = true
         seedLogs([])

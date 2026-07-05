@@ -789,9 +789,9 @@ def serverInstructions() {
 // Protocol versions this server can speak, newest first. Echo-allowlist:
 // handleInitialize honors the client's requested version when it is one of
 // these, else falls back to the default. outputSchema (a 2025-06-18 feature) is
-// declared on every tool but, by default, NOT advertised on the wire (issue #290:
-// strict clients reject an advertised schema returned without structuredContent);
-// enable publishOutputSchemas to advertise it.
+// declared on every tool but, by default, NOT advertised on the wire (issue #290);
+// enabling publishOutputSchemas advertises it in wire form AND attaches
+// structuredContent to advertised tools' results per the spec MUST (issue #342).
 def supportedProtocolVersions() { ["2025-06-18", "2025-03-26", "2024-11-05"] }
 def defaultProtocolVersion() { "2024-11-05" }
 
@@ -2226,8 +2226,8 @@ def getToolDefinitions() {
     def transformed = applyDescriptionTransform(baseTools + gatewayTools, false)
     // outputSchema is opt-in (issue #290): the flat path above always strips it; on this
     // gateway-mode base-tool surface (and the gateway catalog) it is emitted only when the
-    // advanced publishOutputSchemas setting is on. OFF by default so strict clients (e.g.
-    // Claude Desktop) that reject an outputSchema returned without structuredContent work.
+    // advanced publishOutputSchemas setting is on (wire form -- see _wireOutputSchema; and
+    // handleToolsCall then attaches structuredContent per the spec MUST, issue #342).
     boolean publishSchemas = settings.publishOutputSchemas == true
     return transformed.collect { tool ->
         // Gateway entries already carry annotations (incl. readOnlyHint) from the

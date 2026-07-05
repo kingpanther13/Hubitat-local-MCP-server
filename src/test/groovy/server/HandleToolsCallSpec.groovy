@@ -73,7 +73,8 @@ class HandleToolsCallSpec extends ToolSpecBase {
     // call read as a generic client failure while the hub logged success.
 
     def "publishOutputSchemas ON: base-tool result carries structuredContent alongside the text block"() {
-        given:
+        given: 'gateway mode pinned -- the schema-advertised surface exists only there (flat CI matrix presets useGateways=false)'
+        settingsMap.useGateways = true
         settingsMap.publishOutputSchemas = true
         script.metaClass.toolGetHubInfo = { a -> [model: 'C-8', ok: true] }
 
