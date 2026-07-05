@@ -3085,8 +3085,8 @@ class TestRunner:
 
     @test("native_apps")
     def test_set_rule_failloud_wrong_trigger_shape(self) -> None:
-        # Fail-loud validation: a plausible-but-wrong addTrigger shape must return a clear
-        # error steering to the correct field, NOT silently commit a broken trigger. The
+        # Fail-loud validation: a plausible-but-wrong addTrigger OR addAction shape must return
+        # a clear error steering to the correct field, NOT silently commit a broken rule. The
         # edit engine CATCHES the guard's IllegalArgumentException and returns a structured
         # {success:false, error:...} map (no isError), so call_tool returns NORMALLY -- assert
         # on the RETURNED ENVELOPE, not a raised exception. confirm:True is required: a
@@ -3134,6 +3134,19 @@ class TestRunner:
             assert "not touched" in str(under_periodic.get("restoreHint", "")).lower() \
                 and "backup saved before write" not in str(under_periodic.get("restoreHint", "")).lower(), \
                 f"under-specified periodic pre-flight refusal should carry a not-touched restoreHint, got: {under_periodic.get('restoreHint')!r}"
+            # Fail-loud parity on the addAction surface: a switch action selects its operation via
+            # action: (on/off/toggle), not the trigger-style state:. Passing state: leaves action
+            # null and is rejected pre-write, steering to action: -- the same success:false +
+            # not-touched contract as the trigger rejects above. Reuses this same throwaway rule
+            # (a rejected spec mutates nothing, so nothing accumulates on it).
+            action_state = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "addAction": {"capability": "switch", "state": "on"},
+                         "confirm": True}})
+            assert action_state.get("success") is False and "action:" in str(action_state.get("error", "")).lower(), \
+                f"switch addAction with state: should fail loud steering to action:, got: {action_state}"
+            assert "not touched" in str(action_state.get("restoreHint", "")).lower() \
+                and "backup saved before write" not in str(action_state.get("restoreHint", "")).lower(), \
+                f"switch state: pre-flight refusal should carry a not-touched restoreHint, got: {action_state.get('restoreHint')!r}"
         finally:
             self._delete_native(app_id)
 
@@ -4011,6 +4024,56 @@ class TestRunner:
                 f"unexpected RelrDev_<N> not_in_schema skip on the condition path: {cond_bad}"
             assert not cond_result.get("partial"), \
                 f"conditional trigger falsely flagged partial: {cond_result}"
+            self._assert_rule_healthy(app_id)
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_trigger_state_change_comparator(self) -> None:
+        # A device-state trigger (Switch/Motion/Contact/Lock/...) has NO comparator field: the
+        # value picker tstate<N> carries the state enum AND a change option. A
+        # comparator:'*changed*' therefore has to ride the value picker -- writing the (absent)
+        # ReltDev<N> comparator field instead lands not_in_schema and the trigger renders "turns
+        # null" (fires on any event). This proves, end-to-end against a live hub, that the change
+        # token ROUTES into tstate<N>: the write echoes a tstate<N> key in settingsApplied, no
+        # ReltDev skip is produced (so partial stays false), and the persisted setting reads back
+        # as the change token with the rule healthy -- the "Switch changed" render, not the broken
+        # "turns null" orphan.
+        sw = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("ChangedTrig")
+        try:
+            result = self._rm_call_soft({
+                "appId": app_id,
+                "addTrigger": {"capability": "Switch", "deviceIds": [sw], "comparator": "*changed*"},
+                "confirm": True,
+            }, strict=True)
+            # This path expects a clean, non-partial success (asserted below), so require
+            # success is True exactly -- is not False would let an absent/None success slip past.
+            assert result.get("success") is True, \
+                f"device-state *changed* addTrigger did not cleanly succeed: {result}"
+            # The change token landed in the value picker (tstate<N>) ...
+            applied = result.get("settingsApplied") or []
+            assert any(str(k).startswith("tstate") for k in applied), \
+                f"the *changed* token did not land in a tstate value picker; settingsApplied={applied}"
+            # ... and the absent comparator field was NOT written, so no ReltDev skip was produced
+            # -- the "turns null" render this guards writes ReltDev<N> and never tstate<N>.
+            skipped = result.get("settingsSkipped") or []
+            bad = [s for s in skipped if isinstance(s, dict) and (s.get("key") or "").startswith("ReltDev")]
+            assert not bad, \
+                f"unexpected ReltDev skip on the device-state *changed* path (the turns-null bug): {bad}"
+            assert not result.get("partial"), \
+                f"device-state *changed* trigger falsely flagged partial: {result}"
+
+            # Read the PERSISTED settings back via the read-only hub_get_app_config: the change
+            # token is stored in tstate<N> (asterisk-wrapped live), the behavioural proof it
+            # renders as a change trigger rather than the "turns null" orphan.
+            cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}})
+            settings = cfg.get("settings") or {}
+            change_tstate = {k: v for k, v in settings.items()
+                             if str(k).startswith("tstate") and "changed" in str(v).lower()}
+            assert change_tstate, \
+                f"persisted tstate<N> does not carry the *changed* token (turns-null render): settings={settings}"
             self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)

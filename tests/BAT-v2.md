@@ -2595,7 +2595,7 @@ All 117 distinct tools are covered by at least one test, excluding the destructi
 
 Sections 1-9 each target a specific tool — named in the test's title and **Expected** criteria while the `test_prompt` stays goal-first (see Prompt style above). Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 262 test scenarios** (124 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 3 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 5 read-side convergence + 1 multi-device convergence + 3 MCP device-access scope) plus 13 excluded destructive operations documented for manual testing
+**Total: 264 test scenarios** (124 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 3 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 2 device-state state-change / fail-loud authoring parity + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 5 read-side convergence + 1 multi-device convergence + 3 MCP device-access scope) plus 13 excluded destructive operations documented for manual testing
 
 ---
 
@@ -4286,6 +4286,34 @@ Tools in this section require **the Read master** and HPM itself must be install
 **Expected**: with `since` supplied the result routes to history mode, `sinceMode='explicit'`, `since` is echoed, `hoursBack` is omitted, `sinceTimestamp` equals the supplied bookmark, and only post-bookmark events are returned. A future `since` yields `count: 0` with an empty list (valid, not an error). A returned `date` fed straight back as `since` parses cleanly (round-trip). An unparseable `since` would be rejected with -32602.
 
 **Failure modes**: `since` ignored and recent-N or full-hoursBack events returned; `hoursBack` still echoed as if it bounded the window; future `since` throwing instead of returning empty; a returned `date` failing to parse when fed back as `since` (format drift); `sinceMode` missing.
+
+### T657 — addTrigger device-state '*changed*' comparator routes into the value picker (not the turns-null orphan)
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create a BAT virtual switch (hub_manage_virtual_device, deviceType 'Virtual Switch'). Create RM rule 'BAT SwitchChanged'.",
+  "test_prompt": "Add a trigger to 'BAT SwitchChanged' using RM's 'Switch' capability on the BAT switch, firing on ANY change of the switch (comparator '*changed*', no specific state). Inspect result.success, result.partial, result.settingsApplied, result.settingsSkipped, then read the rule back and check how the trigger renders on mainPage.",
+  "teardown_prompt": "Delete 'BAT SwitchChanged' and the BAT virtual switch."
+}
+```
+
+**Expected**: the change token ROUTES cleanly into the value picker. A device-state capability (Switch/Motion/Contact/Lock/...) has no comparator field, so the live wizard exposes the `tstate<N>` value picker (with a change-equivalent option) and no `ReltDev<N>`. The routing is decided by which field the live schema renders (value picker vs comparator field), so it covers every device-state capability, not just the seven the discover schema enumerates. Result: `success=true`, `partial=false`, `settingsApplied` carries `tstate<N>` with the change token, NO `ReltDev<N>` skip, and mainPage renders "switch changed" -- NOT the broken "turns null" orphan (which is what writing the absent `ReltDev<N>` would produce).
+
+**Failure modes**: `ReltDev<N>` written and the trigger renders "turns null" / fires on every event (the pre-fix misroute); `partial=true` with a `change_comparator_not_representable_for_device_state` skip on a picker that actually offers the change option; a numeric capability (e.g. Temperature `*changed*`) wrongly routed to the value picker instead of `ReltDev<N>`.
+
+### T658 — addAction switch with state: (not action:) is refused pre-write, steering to action:
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT ActionShape'.",
+  "test_prompt": "Add a switch action to 'BAT ActionShape' but (deliberately, to test the guard) express the operation as state:'on' instead of action:'on'. Inspect result.success, result.error, and result.restoreHint. Try the same with a title-case capability 'Switch'.",
+  "teardown_prompt": "Delete 'BAT ActionShape'."
+}
+```
+
+**Expected**: both the lowercase `switch` and the title-case `Switch` spec are rejected pre-write (the guard is case-insensitive). `success=false`, `error` names that the operation goes in `action:` not `state:` (e.g. "uses action: (not state:)"), and `restoreHint` states RM was not touched (no "backup saved before write"). The rule stays empty -- nothing committed, no broken action row.
+
+**Failure modes**: the title-case `Switch` slipping past a case-sensitive guard and committing a broken action; the opaque "Unknown switch action 'null'" surfacing instead of the actionable steer; a partial commit that leaves a broken action row on the rule.
 
 ---
 

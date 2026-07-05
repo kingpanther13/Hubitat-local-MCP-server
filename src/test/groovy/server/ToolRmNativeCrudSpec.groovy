@@ -2684,6 +2684,409 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { it.path == "/installedapp/update/json" }
     }
 
+    // ---- Fail-loud authoring parity: plausible-but-wrong authoring shapes reject or
+    //      route explicitly instead of silently committing a broken rule ----
+
+    def "addTrigger device-state capability with a *changed* comparator routes the change token to the tstate value picker (not ReltDev)"() {
+        // Regression guard: a device-state trigger (Switch/Motion/Contact/Lock/...) has NO
+        // comparator field -- the value picker tstate<N> carries the state enum AND a 'changed'
+        // option. A *changed*-family comparator must ride tstate<N>; writing ReltDev<N> for it
+        // lands not_in_schema and the trigger renders "turns null" (fires on any event). The route
+        // discovers the picker's actual change option live rather than hardcoding it.
+        // Both-ways: reverting the fix writes ReltDev1 and never sets tstate1, so the primary
+        // assertion (tstate1 == the routed change option) goes RED.
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "tCapab1", type: "enum", options: ["Switch"]],
+                [name: "tDev1", type: "capability.switch", multiple: true],
+                [name: "tstate1", type: "enum", options: ["on", "off", "*changed*"]],
+                [name: "isCondTrig.1", type: "bool"],
+                [name: "hasAll", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "a Switch trigger requests comparator:'*changed*' with no explicit state"
+        try {
+            script.toolSetRule([
+                appId: 100,
+                addTrigger: [capability: "Switch", deviceIds: [8], comparator: "*changed*"],
+                confirm: true
+            ])
+        } catch (Exception ignored) { /* partial schema is fine for the routing invariant */ }
+
+        then: "the change token is routed into the tstate1 value picker as the picker's own '*changed*' option (live value is asterisk-wrapped)"
+        def tstateWrite = posts.find { it.path == "/installedapp/update/json" && it.body.containsKey("settings[tstate1]") }
+        tstateWrite != null
+        tstateWrite.body["settings[tstate1]"] == "*changed*"
+
+        and: "the *changed* comparator is NOT written to the (absent) ReltDev1 comparator field"
+        !posts.any { it.path == "/installedapp/update/json" && it.body.containsKey("settings[ReltDev1]") }
+    }
+
+    def "addTrigger device-state *changed* comparator with no matching value-picker option emits a genuine tstate skip that flips partial (not a silent ReltDev not_in_schema)"() {
+        // Regression guard: when the device-state value picker (tstate<N>) offers no change
+        // option matching the requested *changed*-family comparator, the code records a GENUINE
+        // skip keyed on tstate<N> (reason change_comparator_not_representable_for_device_state) --
+        // which flips partial -- rather than silently writing the comparator to the absent
+        // ReltDev<N> field (which would land not_in_schema and mask the drop). _rmWriteSettingOnPage
+        // is stubbed to route the skeleton writes to applied so the only skip left is the branch's
+        // own. Both-ways: reverting the else-branch to a ReltDev write removes the tstate-keyed
+        // skip, reding the skip-present assertion.
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "tCapab1", type: "enum", options: ["Switch"]],
+                [name: "tDev1", type: "capability.switch", multiple: true],
+                [name: "tstate1", type: "enum", options: ["on", "off"]],
+                [name: "isCondTrig.1", type: "bool"],
+                [name: "hasAll", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        // Route the skeleton field writes straight to applied so the only remaining skip is the
+        // device-state branch's own (this test is about that branch, not the write-landing detector).
+        script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String key, Object value, List applied, String typeHint = null, List skipped = null, Map cache = null ->
+            applied << key
+        }
+
+        when: "a Switch trigger requests comparator:'*changed*' but the picker offers only on/off"
+        def result = script._rmAddTrigger(100, [capability: "Switch", deviceIds: [8], comparator: "*changed*"])
+
+        then: "a genuine tstate-keyed skip is recorded"
+        def skip = result.settingsSkipped.find { it.reason == "change_comparator_not_representable_for_device_state" }
+        skip != null
+        skip.key == "tstate1"
+
+        and: "the comparator was NOT force-written to the absent ReltDev1 field, and partial is flagged"
+        // Real discriminator: reverting the routing to a ReltDev write routes ReltDev1 into
+        // settingsApplied (the stub sends every write there), reding this assertion. Checking
+        // settingsSkipped for ReltDev1 would be vacuous -- the stub never routes to skipped.
+        !result.settingsApplied.contains("ReltDev1")
+        result.partial == true
+    }
+
+    def "addTrigger device-state with an explicit state AND a *changed* comparator keeps the explicit value and records an informational skip that does NOT flip partial"() {
+        // Fail-loud parity: a contradictory device-state spec (explicit state + change comparator)
+        // lets the explicit value win into tstate<N> and records the dropped change intent via an
+        // INFORMATIONAL skip (reason state_change_comparator_ignored_explicit_value) keyed on a
+        // SYNTHETIC comparator@tstate<N> -- NOT the real tstate<N> field, which is written to
+        // settingsApplied, so the applied/skipped-disjoint invariant holds. The skip is exempt
+        // from the partial computation. Both-ways: moving that reason out of
+        // _rmInformationalSkippedReasons() (or reporting it as a genuine skip) flips result.partial
+        // true; keying the skip back on the real tstate1 field reds the disjoint assertion.
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "tCapab1", type: "enum", options: ["Switch"]],
+                [name: "tDev1", type: "capability.switch", multiple: true],
+                [name: "tstate1", type: "enum", options: ["on", "off", "*changed*"]],
+                [name: "isCondTrig.1", type: "bool"],
+                [name: "hasAll", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        def writes = []
+        script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String key, Object value, List applied, String typeHint = null, List skipped = null, Map cache = null ->
+            writes << [key: key, value: value]
+            applied << key
+        }
+
+        when: "a Switch trigger passes both state:'on' and comparator:'*changed*'"
+        def result = script._rmAddTrigger(100, [capability: "Switch", deviceIds: [8], state: "on", comparator: "*changed*"])
+
+        then: "the explicit value wins into tstate1"
+        writes.find { it.key == "tstate1" }?.value == "on"
+
+        and: "an informational skip records the dropped change comparator keyed on a synthetic non-field key"
+        def skip = result.settingsSkipped.find { it.reason == "state_change_comparator_ignored_explicit_value" }
+        skip != null
+        skip.key == "comparator@tstate1"
+
+        and: "tstate1 is NOT double-listed in both settingsApplied and settingsSkipped (disjoint invariant)"
+        result.settingsApplied.contains("tstate1")
+        !result.settingsSkipped.any { it.key == "tstate1" }
+
+        and: "the informational skip does NOT flip partial"
+        result.partial == false
+    }
+
+    def "addAction #cap with a top-level conditions array (no expression wrapper) is rejected naming the expression shape"() {
+        // Fail-loud parity: the condition-bearing action subtypes read their conditions from
+        // expression:{conditions:[...]}; a flat top-level conditions array is never consumed.
+        // Pre-write reject (RM is not touched). Both-ways: reverting the guard lets the flat
+        // conditions fall through and the run reaches the hub layer / generic expression error,
+        // so the 'not a top-level conditions array' phrase is absent.
+        when:
+        script._rmAddAction(100, [capability: cap, conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("takes expression:{conditions:")
+        ex.message.contains("not a top-level conditions array")
+        ex.message.contains("RM is not touched")
+
+        where:
+        cap << ["ifThen", "elseIf", "repeatWhile", "waitExpression"]
+    }
+
+    def "addAction #cap with state: instead of action: is rejected naming the action field"() {
+        // Fail-loud parity: switch/fan/shade actions select the operation via action:, not the
+        // trigger-style state:. Pre-write reject (RM is not touched) that names the real mistake
+        // rather than the opaque "Unknown <cap> action 'null'". The guard is case-insensitive so a
+        // title-case capability (the addTrigger convention carried into addAction) still trips it.
+        // Both-ways: reverting the guard falls through to device validation / the capability
+        // switch() and never emits the 'uses action: (not state:)' phrase; making the guard
+        // case-sensitive again lets the title-case rows slip past.
+        when:
+        script._rmAddAction(100, [capability: cap, deviceIds: [8], state: stateVal])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("uses action: (not state:)")
+        ex.message.contains("RM is not touched")
+
+        where:
+        cap      | stateVal
+        "switch" | "on"
+        "fan"    | "low"
+        "shade"  | "open"
+        "Switch" | "on"
+        "Fan"    | "low"
+        "Shade"  | "open"
+    }
+
+    def "addAction #cap with a top-level conditions array is rejected case-insensitively (title-case)"() {
+        // Companion to the lowercase expression-wrapper spec: the case-insensitive guard also trips
+        // on the title-case forms a caller might carry over from the addTrigger convention.
+        // Both-ways: a case-sensitive guard lets these title-case caps slip past to the generic
+        // expression error, dropping the 'not a top-level conditions array' phrase.
+        when:
+        script._rmAddAction(100, [capability: cap, conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("not a top-level conditions array")
+        ex.message.contains("RM is not touched")
+
+        where:
+        cap << ["IfThen", "ElseIf", "RepeatWhile", "WaitExpression"]
+    }
+
+    def "addTrigger unknown capability display-name fails loud with a did-you-mean suggestion (not a broken trigger)"() {
+        // Fail-loud parity: an unrecognized trigger capability is rejected against the LIVE tCapab
+        // options (which admit device-state/numeric caps the discover schema omits, so this stays
+        // the authoritative accept/reject). The message now suggests the closest curated-schema
+        // name. Both-ways: reverting the suggestion helper drops the 'Did you mean' clause.
+        given:
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [[name: "tCapab1", type: "enum", options: ["Contact", "Switch"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "a trigger uses a near-miss capability display-name"
+        script._rmAddTrigger(100, [capability: "Contact Sensor"])
+
+        then: "the live-options validation fails loud, naming the valid list and the closest match"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("not in Hubitat's trigger capability list")
+        ex.message.contains("Did you mean 'Contact'?")
+    }
+
+    def "_rmSuggestTriggerCapability unions live-only options and does not false-match a short canonical name"() {
+        // Pins the did-you-mean helper: it suggests curated schema names, ALSO suggests a
+        // near-miss on a LIVE-ONLY capability the discover schema omits (via the live-options
+        // union), and must NOT suggest a short canonical/live name that is merely a substring of
+        // an unrelated request.
+        expect: "a curated schema name is suggested for a near-miss display-name"
+        script._rmSuggestTriggerCapability("Contact Sensor") == "Contact"
+
+        and: "a near-miss on a LIVE-ONLY capability (absent from the curated schema) still suggests via the union"
+        // Both-ways: dropping the live-options union reverts this to a schema-only search that
+        // cannot see the live-only name, so the suggestion goes null.
+        script._rmSuggestTriggerCapability("Zztest Capabilit", ["Zztest Capability"]) == "Zztest Capability"
+
+        and: "a short live/canonical name is NOT matched as a spurious substring of an unrelated request"
+        // Both-ways: removing the n.length() >= 4 guard lets 'CO' match inside 'scope', reding this.
+        script._rmSuggestTriggerCapability("scope", ["CO"]) == null
+
+        and: "a blank capability yields no suggestion"
+        script._rmSuggestTriggerCapability("  ", ["Switch"]) == null
+    }
+
+    def "_rmCommaJoinedModeHint steers a comma-joined mode string to the list shape and passes a normal name through"() {
+        // Pins the shared comma-joined-mode detector consulted by both the trigger Mode path and
+        // _rmResolveModeIds (conditions/waitEvents/perMode). Both-ways: reverting the callers to
+        // the bare unknown-mode throw removes the hint, but this unit pin still guards the detector.
+        expect:
+        script._rmCommaJoinedModeHint("Day,Evening", ["Day", "Evening", "Night"])?.contains("comma-joined list")
+        script._rmCommaJoinedModeHint("Day,Evening", ["Day", "Evening"])?.contains("state:['Day','Evening']")
+        script._rmCommaJoinedModeHint("Night", ["Day", "Night"]) == null
+        script._rmCommaJoinedModeHint(null, ["Day"]) == null
+    }
+
+    def "_rmResolveModeIds rejects a comma-joined mode string with a list-shape hint, not an opaque unknown-mode"() {
+        // Covers the shared resolver used by Mode conditions, waitEvents, and per-mode actions.
+        // Both-ways: reverting the _rmResolveModeIds comma branch throws the bare "Unknown mode".
+        given:
+        sharedLocation.modes = [[id: "1", name: "Day"], [id: "2", name: "Evening"]]
+
+        when:
+        script._rmResolveModeIds(["Day,Evening"])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("comma-joined list")
+        !ex.message.contains("Unknown mode")
+    }
+
+    def "_rmBuildCondition rejects Between two times on the conditional-trigger path pointing at the reveal-walker surfaces"() {
+        // Fail-loud parity: the static selectTriggers condition builder has no start/end
+        // reveal-walk, so a 'Between two times' conditional-trigger condition would write only
+        // rCapab_<N> and commit a broken condition. Reject it, pointing at the surfaces that DO
+        // implement it. Both-ways: reverting the guard proceeds to the isCondTrig_ write and the
+        // run hits the hub layer instead of this message.
+        when:
+        script._rmBuildCondition(100, 1, [capability: "Between two times",
+                                          start: [type: "clock", time: "22:00"],
+                                          end: [type: "sunrise", offset: 0]], [])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("not supported as a conditional-trigger condition")
+        ex.message.contains("addRequiredExpression")
+        ex.message.contains("ifThen")
+    }
+
+    def "_rmBuildCondition rejects #cap (unimplemented on every surface) steering to the raw wizard escape hatch"() {
+        // Fail-loud parity: these date/day-window condition capabilities are modelled on NO
+        // structured surface (not this static path, not the reveal-walker), so unlike 'Between
+        // two times' there is no supported shortcut to steer to. They would write rCapab_<N> and
+        // leave the date/day fields unset, committing a broken condition. Reject up front and
+        // point at rawSettings/walkStep. Both-ways: reverting the guard proceeds to the
+        // isCondTrig_ write and the run hits the hub layer instead of this message.
+        when:
+        script._rmBuildCondition(100, 1, [capability: cap], [])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("not yet supported via the structured condition shortcut on any surface")
+        ex.message.contains(cap)
+        // Steers to the raw wizard escape hatches, the only paths that CAN author these.
+        ex.message.contains("rawSettings")
+        ex.message.contains("walkStep")
+
+        where:
+        cap << ["Between two dates", "Days of week", "On a Day"]
+    }
+
+    def "addRequiredExpression Between two times with a bare-string start (not a Map) fails loud with the Map form"() {
+        // Regression pin for the ALREADY-implemented reveal-walker shape validation: a bare
+        // 'start' string (not a {type,time} Map) is rejected before any reveal write, naming the
+        // required Map form. Guards against a future regression of the walker's Map guard.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "cond", type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1", type: "enum", options: ["Between two times", "Switch"]],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["s1"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "start is a bare HH:mm string instead of a {type,time} Map"
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[capability: "Between two times", start: "06:00", end: [type: "clock", time: "07:00"]]]],
+            confirm: true
+        ])
+
+        then: "the walker rejects the shape, naming the required start/end Map form"
+        result.success == false
+        result.error?.contains("requires 'start' and 'end' Maps")
+    }
+
+    def "addRequiredExpression #cap (date/day-window, unmodelled everywhere) fails loud on the reveal-walker too"() {
+        // Fail-loud parity across surfaces: the date/day-window capabilities are unimplemented on
+        // the reveal-walker (addRequiredExpression / ifThen) as well as the static conditional-
+        // trigger path. Without a walker guard they throw an OPAQUE IllegalStateException mid-walk;
+        // the guard rejects them up front with the same uniform steer. Both-ways: removing the
+        // pre-walker guard lets the walk proceed and the message is NOT the shared date/day steer.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "cond", type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1", type: "enum", options: [cap, "Switch"]],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["s1"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "a date/day-window capability is authored on the Required Expression surface"
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[capability: cap]]],
+            confirm: true
+        ])
+
+        then: "the walker rejects it with the shared date/day steer, uniform with the static path"
+        result.success == false
+        result.error?.contains("not yet supported via the structured condition shortcut on any surface")
+        result.error?.contains("rawSettings")
+
+        where:
+        cap << ["Between two dates", "Days of week", "On a Day"]
+    }
+
     def "patches batch outer success rolls up inner sub-item success"() {
         given:
         enableWrite()
