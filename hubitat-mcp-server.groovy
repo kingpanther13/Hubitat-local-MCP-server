@@ -1005,7 +1005,7 @@ def handleToolsCall(msg) {
 def _advertisesOutputSchema(toolName) {
     def gwConfig = getGatewayConfig()
     if (gwConfig.containsKey(toolName)) return false
-    if (gwConfig.values().any { it.tools.contains(toolName) }) return false
+    if (gwConfig.values().any { it.tools?.contains(toolName) }) return false
     return getAllToolDefinitions().find { it.name == toolName }?.outputSchema != null
 }
 
