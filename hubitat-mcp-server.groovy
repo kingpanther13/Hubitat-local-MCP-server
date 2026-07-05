@@ -174,8 +174,8 @@ def mainPage() {
                 paragraph "<i>Write tools are OFF — the MCP client sees only read tools.</i>"
             }
             href name: "advancedOverrides", page: "advancedOverridesPage",
-                 title: "Advanced: Per-tool Overrides",
-                 description: "Disable individual tools or whole gateways below the Read/Write masters (deny-only)."
+                 title: "Advanced: Per-tool Overrides & expert settings",
+                 description: "Disable individual tools or whole gateways below the Read/Write masters (deny-only), and expert wire-format settings (output schema publication)."
         }
 
         section("Best-Practice Guidance") {
@@ -270,9 +270,6 @@ def mainPage() {
             input "useGateways", "bool", title: "Consolidate tools behind category gateways",
                   description: "When ON (default): tools are organized behind domain-named category gateways so tools/list stays compact for clients that struggle with long tool lists. When OFF: every tool is exposed individually as a top-level MCP tool and hub_search_tools is hidden because its only purpose is finding tools hidden behind gateways. Most LLM clients perform better with the gateway list; turn this off only if your client has its own progressive-disclosure / tool-search layer. Note: other settings (the Read/Write masters, the Custom Rule Engine, and Advanced per-tool/per-gateway overrides) also add or remove entries from tools/list independently of this setting.",
                   defaultValue: true
-            input "publishOutputSchemas", "bool", title: "Publish tool output schemas (advanced)",
-                  description: "Leave OFF (default). When OFF, the server never advertises a tool's outputSchema on any tools/list surface or the gateway catalog, so strict MCP clients (e.g. Claude Desktop) that require structured content work normally. When ON, outputSchema is re-added to gateway-mode base tools and the gateway catalog as a documentation aid -- but because this server returns text-only results, strict clients will then reject every tool call with JSON-RPC -32600 ('has an output schema but did not return structured content'). The flat tool list never advertises outputSchema regardless of this setting.",
-                  defaultValue: false
             input "mcpLogLevel", "enum", title: "MCP Debug Log Level",
                   description: "Controls MCP-accessible debug logs (default: errors only)",
                   options: ["debug": "Debug (verbose)", "info": "Info (normal)", "warn": "Warnings only", "error": "Errors only (recommended)"],
@@ -402,6 +399,17 @@ def advancedOverridesPage() {
             input "disabled_tools", "enum", title: "Tools to disable",
                   description: "Each tool is listed once; disabling it removes it from every gateway it belongs to.",
                   options: overrideOptions.tools, multiple: true, required: false, submitOnChange: true
+        }
+        // publishOutputSchemas lives on this Advanced sub-page on purpose (issue #342):
+        // it changes the wire contract with spec-validating clients, so it must not sit
+        // in the main settings where a curious user flips it without reading.
+        section("Output schema publication") {
+            paragraph "<b>Recommended: leave OFF unless you know what you're doing — especially with Claude Desktop.</b> " +
+                      "Turning this ON advertises each base tool's outputSchema on tools/list and the gateway catalog, and the server then also returns structuredContent (a second, structured copy of the result) on every successful call to those tools, roughly doubling their response size. " +
+                      "Spec-validating clients hold the server to the advertised schema on every call, so any schema inaccuracy surfaces as a failed tool call on those clients. OFF is always the safe choice; nothing requires this setting."
+            input "publishOutputSchemas", "bool", title: "Publish tool output schemas",
+                  description: "Leave OFF (default). ON: gateway-mode base tools and the gateway catalog advertise outputSchema (wire form, no required arrays) and successful results carry structuredContent per the MCP spec. The flat tool list never advertises outputSchema regardless of this setting.",
+                  defaultValue: false
         }
         section {
             def dt = (settings.disabled_tools ?: []).size()
