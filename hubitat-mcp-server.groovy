@@ -918,6 +918,18 @@ def handleToolsCall(msg) {
         def envelopeBody = [content: [[type: "text", text: jsonText]]]
         if (result instanceof Map && result.isError == true) {
             envelopeBody.isError = true
+        } else if (settings.publishOutputSchemas == true && settings.useGateways != false
+                && result instanceof Map && _advertisesOutputSchema(toolName)) {
+            // MCP spec (2025-06-18 server/tools): "If an output schema is provided: Servers
+            // MUST provide structured results that conform to this schema." With
+            // publishOutputSchemas ON, the gateway-mode base tools advertise outputSchema,
+            // and spec-validating clients (Claude Desktop's TS SDK, mcp-proxy's Python SDK)
+            // REQUIRE structuredContent on every non-error result of an advertised tool.
+            // Text-only results made every successful call to those tools read as a generic
+            // client-side failure while the hub logged success (issue #342). The text block
+            // above stays: the spec says structured results SHOULD also carry the
+            // serialized JSON for backwards compatibility.
+            envelopeBody.structuredContent = result
         }
         def candidateResponse = jsonRpcResult(msg.id, envelopeBody)
         // Serialize the wire form ONCE here. We measure its byte length for the inner cap,
@@ -975,6 +987,18 @@ def handleToolsCall(msg) {
         // MCP spec: tool execution errors are returned as successful results with isError flag
         return jsonRpcResult(msg.id, [content: [[type: "text", text: "Tool error: ${e.message}"]], isError: true])
     }
+}
+
+// True only for a tool advertised on the current gateway-mode tools/list WITH an
+// outputSchema (the issue #290 base-tool surface): callers of those tools are entitled to
+// spec-validate results, so handleToolsCall must attach structuredContent (issue #342).
+// Gateway names and gateway-folded sub-tools are never advertised with a schema, and flat
+// mode always strips outputSchema, so those paths never attach it.
+def _advertisesOutputSchema(toolName) {
+    def gwConfig = getGatewayConfig()
+    if (gwConfig.containsKey(toolName)) return false
+    if (gwConfig.values().any { it.tools.contains(toolName) }) return false
+    return getAllToolDefinitions().find { it.name == toolName }?.outputSchema != null
 }
 
 // Returned in place of the real result when handleToolsCall trips the size guard. Shape
@@ -1877,10 +1901,11 @@ def handleGateway(gatewayName, toolName, toolArgs) {
                 def title = displayMeta[name]?.title
                 if (title) entry.title = title as String
                 // Forward outputSchema only when the advanced publishOutputSchemas
-                // setting is on (issue #290) -- OFF by default so strict clients (e.g.
-                // Claude Desktop) that reject an outputSchema returned without
-                // structuredContent work. The flat tools/list path never emits it (size).
-                if (settings.publishOutputSchemas == true && d?.outputSchema != null) entry.outputSchema = d.outputSchema
+                // setting is on (issue #290) -- OFF by default. Wire form (required
+                // stripped, see _wireOutputSchema) matches the tools/list emission so
+                // spec-validating clients accept both result shapes (issue #342). The
+                // flat tools/list path never emits it (size).
+                if (settings.publishOutputSchemas == true && d?.outputSchema != null) entry.outputSchema = _wireOutputSchema(d.outputSchema)
                 entry
             }
         ]
@@ -2003,8 +2028,23 @@ def handleGateway(gatewayName, toolName, toolArgs) {
 //
 // The transform operates in place on the fresh Map literals returned by
 // `getAllToolDefinitions()`; no caching means each call gets a clean copy.
+// Remove HPM #include line markers that a multi-line string literal in a library captures.
+// The hub appends " // library marker <namespace>.<Class>, line <N>" to every physical line
+// of an #include'd library at compile time, so any multi-line """ string in a library file
+// carries them into its runtime value (issue #342 found them polluting three tool
+// descriptions and the hub_report_issue report body). Generic helper (main file per the
+// AGENTS.md placement rule): consumed by stripFlatTrim below and _bugReportBuildMarkdown.
+def _stripLibraryMarkers(String s) {
+    if (s == null || !s.contains('// library marker')) return s
+    return s.replaceAll(/ *\/\/ library marker [\w.]+, line \d+/, '')
+}
+
 def stripFlatTrim(String text, boolean dropContent) {
     if (text == null) return null
+    // #include line markers captured by multi-line library string literals are wire noise
+    // on every description surface (flat + gateway tools/list, gateway catalog disclosure,
+    // missing-param hints, search corpus) -- strip them before the FLAT_TRIM handling.
+    text = _stripLibraryMarkers(text)
     // Markers must be balanced and non-nested. The two branches handle the
     // unbalanced case asymmetrically by design:
     //
@@ -2058,6 +2098,27 @@ def applyDescriptionTransform(List tools, boolean dropContent) {
         }
     }
     return tools
+}
+
+// Wire form of a published outputSchema (issue #342): strip `required` arrays recursively.
+// The definitions' `required` arrays document the SUCCESS shape, but the runtime error
+// contract ([success:false, error, note]) legitimately omits those keys, and per MCP spec
+// (2025-06-18 server/tools: servers MUST return structured results that CONFORM to a
+// published schema) spec-validating clients jsonschema-validate every non-isError result
+// against the advertised schema. Stripping `required` on the wire lets both shapes
+// validate; the success-shape documentation stays intact in the definitions and in
+// hub_get_tool_guide. The `v instanceof List` guard keeps a PROPERTY literally named
+// "required" (a Map under `properties`) intact -- only schema-keyword arrays are dropped.
+def _wireOutputSchema(schema) {
+    if (!(schema instanceof Map)) return schema
+    def out = [:]
+    schema.each { k, v ->
+        if (k == 'required' && v instanceof List) return
+        if (v instanceof Map) out[k] = _wireOutputSchema(v)
+        else if (v instanceof List) out[k] = v.collect { it instanceof Map ? _wireOutputSchema(it) : it }
+        else out[k] = v
+    }
+    return out
 }
 
 // When a feature toggle is off, its tools are REMOVED from tools/list — not just gated
@@ -2167,7 +2228,11 @@ def getToolDefinitions() {
         // readOnlyHint (not just the annotations map) is the load-bearing signal -- and
         // have their outputSchema stripped unless publishOutputSchemas is on.
         if (tool.annotations?.containsKey('readOnlyHint')) return tool
-        def leaf = publishSchemas ? tool : tool.findAll { it.key != 'outputSchema' }
+        // Published schemas go out in wire form (required stripped -- see _wireOutputSchema)
+        // so spec-validating clients accept success AND error result shapes.
+        def leaf = (publishSchemas && tool.outputSchema != null)
+            ? tool.collectEntries { k, v -> [(k): (k == 'outputSchema' ? _wireOutputSchema(v) : v)] }
+            : tool.findAll { it.key != 'outputSchema' }
         leaf + [annotations: (leaf.annotations ?: [:]) + annotationsForLeaf(leaf.name as String, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
     }
 }

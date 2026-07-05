@@ -220,6 +220,20 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         !addRequiredExpression.contains(OPEN_MARKER) && !addRequiredExpression.contains(CLOSE_MARKER)
     }
 
+    def "stripFlatTrim strips include-library line markers on every description surface (issue #342)"() {
+        // The hub appends "// library marker mcp.<Lib>, line N" to every physical line of
+        // an #include'd library, so a multi-line \"\"\" string in a library file (three tool
+        // descriptions had them) carries the markers into its runtime value on a real hub.
+        // The harness re-inlines libraries WITHOUT markers, so catalog-level tests can't
+        // see the leak -- pin the chokepoint helper in both dropContent modes instead.
+        expect:
+        script.stripFlatTrim('Create a device. // library marker mcp.McpVirtualDevicesLib, line 295\nNext line. // library marker mcp.McpVirtualDevicesLib, line 296', dropContent) ==
+            'Create a device.\nNext line.'
+
+        where:
+        dropContent << [true, false]
+    }
+
     def "stripFlatTrim helper handles own-line and inline markers correctly"() {
         when: 'own-line block, dropContent=true: marker lines + content removed, surrounding paragraphs separated by one blank line'
         def ownLineDropped = script.stripFlatTrim(

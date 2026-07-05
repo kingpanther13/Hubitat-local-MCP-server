@@ -1037,12 +1037,15 @@ def _getAllToolDefinitions_partSystem() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    status: [type: "string", description: "Current HSM status (disarmed/armedAway/armedHome/armedNight); may be null if HSM is disabled or hasn't reported yet"],
+                    // status/alert are genuinely null on hubs where HSM is disabled or has
+                    // never reported -- the schema must say so, or a spec-validating client
+                    // (issue #342) rejects a real success result against it.
+                    status: [type: ["string", "null"], description: "Current HSM status (disarmed/armedAway/armedHome/armedNight); null if HSM is disabled or hasn't reported yet"],
                     statusText: [type: "string", description: "Human-readable status; interprets a null/empty status"],
-                    alert: [type: "string", description: "Current HSM alert, if any"],
+                    alert: [type: ["string", "null"], description: "Current HSM alert, if any"],
                     armCommands: [type: "array", description: "Valid arm commands for hub_set_hsm (NOT hub Day/Night/Away location modes)", items: [type: "string"]]
                 ],
-                required: ["status", "statusText", "armCommands"]
+                required: ["statusText", "armCommands"]
             ]
         ],
         [

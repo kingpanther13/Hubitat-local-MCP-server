@@ -259,6 +259,13 @@ private Map _bugReportEnvironmentSummary(args, String privacyMode) {
         hubFirmware: hubFirmware,
         timeZone: privacyMode == "public" ? "<time-zone>" : timeZone,
         logLevel: getConfiguredLogLevel(),
+        // Tool-surface shape the client sees on tools/list: gateway (hub_manage_*/hub_read_*
+        // consolidation, the default) vs flat (every tool advertised individually). A client's
+        // failure mode can differ by mode, so a bug report must carry it. publishOutputSchemas
+        // is included because a strict client rejects an advertised outputSchema returned
+        // without structuredContent — a known client-visible failure class.
+        toolMode: (settings.useGateways == false) ? "flat" : "gateway",
+        outputSchemasPublished: (settings.publishOutputSchemas == true),
         customMcpRuleCount: getChildApps()?.size() ?: 0,
         nativeRm: _bugReportNativeRmStatus(),
         deviceCount: selectedDevices?.size() ?: 0,
@@ -414,7 +421,7 @@ private String _bugReportBuildMarkdown(Map params) {
         }
     }
 
-    return """# ${heading}: ${args.title}
+    def md = """# ${heading}: ${args.title}
 
 **Generated:** ${formatTimestamp(now())}
 **MCP Server Version:** ${env.version}
@@ -427,6 +434,7 @@ private String _bugReportBuildMarkdown(Map params) {
 - **Hub firmware:** ${env.hubFirmware}
 - **Time zone:** ${env.timeZone}
 - **MCP log level:** ${env.logLevel}
+- **Tool mode:** ${env.toolMode}${env.outputSchemasPublished ? ' (outputSchemas advertised on tools/list)' : ''}
 - **Rules in legacy custom rule engine:** ${env.customMcpRuleCount}
 - ${env.nativeRm.installed == false ? "**Native Rule Machine:** not installed (Rule Machine not detected on this hub)" : "**Native Rule Machine rules:** ${env.nativeRm.count}${env.nativeRm.error ? ' (RMUtils partial failure — count may be inaccurate)' : ''}"}
 - **Devices exposed to MCP:** ${env.deviceCount}
@@ -445,6 +453,13 @@ ${logSection}
 ## Additional Context
 _Add any other context, screenshots, or transcripts when filing._
 """
+    // The hub appends "// library marker mcp.<Lib>, line N" to every physical line of an
+    // #include'd library at compile time; lines INSIDE this (and ruleSection's) multi-line
+    // """ string literal capture those markers into the runtime text. Strip them so the
+    // user-facing report is clean on bundle-deployed hubs (found via issue #342). This also
+    // catches any marker that rode in through the interpolated ${ruleSection} block.
+    // _stripLibraryMarkers lives in the main app (it also cleans tool descriptions).
+    return _stripLibraryMarkers(md)
 }
 
 def _getAllToolDefinitions_partDebugLogging() {

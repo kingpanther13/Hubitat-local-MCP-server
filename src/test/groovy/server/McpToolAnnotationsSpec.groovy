@@ -682,6 +682,10 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         gwOn?.outputSchema instanceof Map
         gwOn.outputSchema.type == 'object'
 
+        and: 'the emitted schema is the WIRE form: no required arrays anywhere (issue #342 — spec-validating clients must accept error-shaped results too)'
+        !gwOn.outputSchema.containsKey('required')
+        gwOn.outputSchema.properties.values().every { !(it instanceof Map) || !(it.required instanceof List) }
+
         and: 'flat mode never emits outputSchema, regardless of the toggle'
         flatOn != null
         flatOn.containsKey('outputSchema') == false

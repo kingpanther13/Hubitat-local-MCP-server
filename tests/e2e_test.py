@@ -1234,6 +1234,70 @@ class TestRunner:
         assert isinstance(info, dict) and info, "hub_get_info call must still return data"
 
     @test("infrastructure")
+    def test_published_output_schema_round_trip(self) -> None:
+        """Issue #342: with publishOutputSchemas ON, a schema-advertising base tool's
+        result MUST carry structuredContent (MCP 2025-06-18: a published outputSchema
+        obligates conforming structured results) or spec-validating clients (Claude
+        Desktop's TS SDK, mcp-proxy's Python SDK) report every successful call as a
+        generic failure while the hub logs success. Also pins the wire form: emitted
+        schemas carry no `required` arrays, so the runtime error contract
+        ([success:false, ...]) validates too. ALWAYS restores the toggle OFF."""
+        self.client.call_tool("hub_manage_mcp", {
+            "tool": "hub_update_mcp_settings",
+            "args": {"settings": {"publishOutputSchemas": True}, "confirm": True}})
+        try:
+            tools = self.client.list_tools().get("tools", [])
+            with_schema = [t for t in tools if "outputSchema" in t]
+            assert with_schema, "publishOutputSchemas ON: no tools/list entry advertises outputSchema"
+            assert any(t.get("name") == "hub_get_info" for t in with_schema), \
+                "hub_get_info (base tool) must advertise outputSchema when the toggle is ON"
+            def _has_required(schema: Any) -> bool:
+                if isinstance(schema, dict):
+                    if isinstance(schema.get("required"), list):
+                        return True
+                    return any(_has_required(v) for v in schema.values())
+                if isinstance(schema, list):
+                    return any(_has_required(v) for v in schema)
+                return False
+            bad = [t["name"] for t in with_schema if _has_required(t["outputSchema"])]
+            assert not bad, f"emitted outputSchema must be the wire form (no required arrays): {bad}"
+            # Gateway envelopes never advertise a schema.
+            gw_with_schema = [t["name"] for t in with_schema
+                              if {"tool", "args"} <= set((t.get("inputSchema") or {}).get("properties") or {})]
+            assert not gw_with_schema, f"gateway envelopes must not advertise outputSchema: {gw_with_schema}"
+
+            # The core assertion: a schema-advertised tool's RESULT carries structuredContent
+            # mirroring the text block (raw envelope access -- call_tool strips it).
+            raw = self.client._send("tools/call", {"name": "hub_get_info", "arguments": {}})
+            sc = raw.get("structuredContent")
+            assert isinstance(sc, dict) and sc, \
+                f"hub_get_info result must carry structuredContent when its schema is advertised, got: {type(sc)}"
+            text_obj = json.loads(next(c["text"] for c in raw.get("content", []) if c.get("type") == "text"))
+            assert sc == text_obj, "structuredContent must mirror the serialized text block"
+
+            # A gateway-routed call carries NO structuredContent (no schema advertised there).
+            raw_gw = self.client._send("tools/call", {
+                "name": "hub_read_rooms", "arguments": {"tool": "hub_list_rooms", "args": {}}})
+            assert "structuredContent" not in raw_gw, \
+                "gateway-routed results must not carry structuredContent"
+        finally:
+            restored = False
+            last: Any = None
+            for _ in range(3):
+                try:
+                    self.client.call_tool("hub_manage_mcp", {
+                        "tool": "hub_update_mcp_settings",
+                        "args": {"settings": {"publishOutputSchemas": False}, "confirm": True}})
+                    tools = self.client.list_tools().get("tools", [])
+                    if not any("outputSchema" in t for t in tools):
+                        restored = True
+                        break
+                except (McpError, McpToolError, requests.HTTPError) as exc:
+                    last = exc
+                time.sleep(1.0)
+            assert restored, f"CRITICAL: could not restore publishOutputSchemas=OFF: {last}"
+
+    @test("infrastructure")
     def test_gateway_catalog_titles(self) -> None:
         # Issue #245: the gateway no-arg catalog disclosure also surfaces each
         # sub-tool's friendly title next to its bare name and schema. Shared (identical deterministic
