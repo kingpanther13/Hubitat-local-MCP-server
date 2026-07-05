@@ -174,8 +174,8 @@ def mainPage() {
                 paragraph "<i>Write tools are OFF — the MCP client sees only read tools.</i>"
             }
             href name: "advancedOverrides", page: "advancedOverridesPage",
-                 title: "Advanced: Per-tool Overrides",
-                 description: "Disable individual tools or whole gateways below the Read/Write masters (deny-only)."
+                 title: "Advanced: Per-tool Overrides & expert settings",
+                 description: "Disable individual tools or whole gateways below the Read/Write masters (deny-only), and expert wire-format settings (output schema publication)."
         }
 
         section("Best-Practice Guidance") {
@@ -270,9 +270,6 @@ def mainPage() {
             input "useGateways", "bool", title: "Consolidate tools behind category gateways",
                   description: "When ON (default): tools are organized behind domain-named category gateways so tools/list stays compact for clients that struggle with long tool lists. When OFF: every tool is exposed individually as a top-level MCP tool and hub_search_tools is hidden because its only purpose is finding tools hidden behind gateways. Most LLM clients perform better with the gateway list; turn this off only if your client has its own progressive-disclosure / tool-search layer. Note: other settings (the Read/Write masters, the Custom Rule Engine, and Advanced per-tool/per-gateway overrides) also add or remove entries from tools/list independently of this setting.",
                   defaultValue: true
-            input "publishOutputSchemas", "bool", title: "Publish tool output schemas (advanced)",
-                  description: "Leave OFF (default). When OFF, the server never advertises a tool's outputSchema on any tools/list surface or the gateway catalog, so strict MCP clients (e.g. Claude Desktop) that require structured content work normally. When ON, outputSchema is re-added to gateway-mode base tools and the gateway catalog as a documentation aid -- but because this server returns text-only results, strict clients will then reject every tool call with JSON-RPC -32600 ('has an output schema but did not return structured content'). The flat tool list never advertises outputSchema regardless of this setting.",
-                  defaultValue: false
             input "mcpLogLevel", "enum", title: "MCP Debug Log Level",
                   description: "Controls MCP-accessible debug logs (default: errors only)",
                   options: ["debug": "Debug (verbose)", "info": "Info (normal)", "warn": "Warnings only", "error": "Errors only (recommended)"],
@@ -376,7 +373,7 @@ def confirmRegenerateTokenPage() {
 // they never drift. The two list settings (disabled_tools / disabled_gateways) feed
 // getHiddenToolNames() (catalog + search) and the executeTool dispatch guard.
 def advancedOverridesPage() {
-    dynamicPage(name: "advancedOverridesPage", title: "Advanced: Per-tool Overrides") {
+    dynamicPage(name: "advancedOverridesPage", title: "Advanced: Per-tool Overrides & Expert Settings") {
         section {
             // Enum multi-select inputs render through the SumoSelect picker, whose
             // stylesheet clamps every dropdown option to one ellipsized line
@@ -402,6 +399,17 @@ def advancedOverridesPage() {
             input "disabled_tools", "enum", title: "Tools to disable",
                   description: "Each tool is listed once; disabling it removes it from every gateway it belongs to.",
                   options: overrideOptions.tools, multiple: true, required: false, submitOnChange: true
+        }
+        // publishOutputSchemas lives on this Advanced sub-page on purpose (issue #342):
+        // it changes the wire contract with spec-validating clients, so it must not sit
+        // in the main settings where a curious user flips it without reading.
+        section("Output schema publication") {
+            paragraph "<b>Recommended: leave OFF unless you know what you're doing — especially with Claude Desktop.</b> " +
+                      "Turning this ON advertises each base tool's outputSchema on tools/list and the gateway catalog, and the server then also returns structuredContent (a second, structured copy of the result) on every successful call to those tools, roughly doubling their response size. " +
+                      "Spec-validating clients hold the server to the advertised schema on every call, so any schema inaccuracy surfaces as a failed tool call on those clients. OFF is always the safe choice; nothing requires this setting."
+            input "publishOutputSchemas", "bool", title: "Publish tool output schemas",
+                  description: "Leave OFF (default). ON: gateway-mode base tools and the gateway catalog advertise outputSchema (wire form, no required arrays) and successful results carry structuredContent per the MCP spec. The flat tool list never advertises outputSchema regardless of this setting.",
+                  defaultValue: false
         }
         section {
             def dt = (settings.disabled_tools ?: []).size()
@@ -781,9 +789,9 @@ def serverInstructions() {
 // Protocol versions this server can speak, newest first. Echo-allowlist:
 // handleInitialize honors the client's requested version when it is one of
 // these, else falls back to the default. outputSchema (a 2025-06-18 feature) is
-// declared on every tool but, by default, NOT advertised on the wire (issue #290:
-// strict clients reject an advertised schema returned without structuredContent);
-// enable publishOutputSchemas to advertise it.
+// declared on every tool but, by default, NOT advertised on the wire (issue #290);
+// enabling publishOutputSchemas advertises it in wire form AND attaches
+// structuredContent to advertised tools' results per the spec MUST (issue #342).
 def supportedProtocolVersions() { ["2025-06-18", "2025-03-26", "2024-11-05"] }
 def defaultProtocolVersion() { "2024-11-05" }
 
@@ -918,6 +926,18 @@ def handleToolsCall(msg) {
         def envelopeBody = [content: [[type: "text", text: jsonText]]]
         if (result instanceof Map && result.isError == true) {
             envelopeBody.isError = true
+        } else if (settings.publishOutputSchemas == true && settings.useGateways != false
+                && result instanceof Map && _advertisesOutputSchema(toolName)) {
+            // MCP spec (2025-06-18 server/tools): "If an output schema is provided: Servers
+            // MUST provide structured results that conform to this schema." With
+            // publishOutputSchemas ON, the gateway-mode base tools advertise outputSchema,
+            // and spec-validating clients (Claude Desktop's TS SDK, mcp-proxy's Python SDK)
+            // REQUIRE structuredContent on every non-error result of an advertised tool.
+            // Text-only results made every successful call to those tools read as a generic
+            // client-side failure while the hub logged success (issue #342). The text block
+            // above stays: the spec says structured results SHOULD also carry the
+            // serialized JSON for backwards compatibility.
+            envelopeBody.structuredContent = result
         }
         def candidateResponse = jsonRpcResult(msg.id, envelopeBody)
         // Serialize the wire form ONCE here. We measure its byte length for the inner cap,
@@ -935,7 +955,19 @@ def handleToolsCall(msg) {
             mcpLog("warn", "server", "Tool ${reactiveToolName} response too large (${wireBytes} > ${responseSizeLimit} bytes) -- returning response_too_large envelope", null, [
                 details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null, bytes: wireBytes, limit: responseSizeLimit]
             ])
-            return jsonRpcResult(msg.id, [content: [[type: "text", text: groovy.json.JsonOutput.toJson(_responseTooLargeEnvelope(reactiveToolName as String, wireBytes, responseSizeLimit))]]])
+            def tooLargeBody = [content: [[type: "text", text: groovy.json.JsonOutput.toJson(_responseTooLargeEnvelope(reactiveToolName as String, wireBytes, responseSizeLimit))]]]
+            // A schema-advertised tool's NON-ERROR result must carry structuredContent (the
+            // spec MUST behind issue #342), and this fallback deliberately replaces the real
+            // result with a text-only envelope. Flag it isError so spec-validating clients
+            // treat it as the error it is (validation is skipped on error results) instead
+            // of rejecting a schema-noncompliant "success" with the same generic failure
+            // #342 was filed about. Non-advertised tools keep the long-standing non-error
+            // shape (#174: the model reads the suggestion and retries narrower).
+            if (settings.publishOutputSchemas == true && settings.useGateways != false
+                    && _advertisesOutputSchema(toolName)) {
+                tooLargeBody.isError = true
+            }
+            return jsonRpcResult(msg.id, tooLargeBody)
         }
         // Single-message verbatim-passthrough: handleMcpRequest's single-Map branch detects
         // this sentinel and renders __preserialized as-is (no re-encode). The batch-collect
@@ -975,6 +1007,20 @@ def handleToolsCall(msg) {
         // MCP spec: tool execution errors are returned as successful results with isError flag
         return jsonRpcResult(msg.id, [content: [[type: "text", text: "Tool error: ${e.message}"]], isError: true])
     }
+}
+
+// True when toolName is a base tool (not a gateway, not gateway-folded) whose DEFINITION
+// declares an outputSchema -- the shape of the issue #290 advertised surface. This checks
+// the catalog shape ONLY: it does NOT check publishOutputSchemas or useGateways, so every
+// caller must additionally gate on `settings.publishOutputSchemas == true &&
+// settings.useGateways != false` (both handleToolsCall sites do). With those gates, it
+// answers "is this tool currently advertised with a schema", which is what obligates
+// structuredContent on results (issue #342).
+def _advertisesOutputSchema(toolName) {
+    def gwConfig = getGatewayConfig()
+    if (gwConfig.containsKey(toolName)) return false
+    if (gwConfig.values().any { it.tools?.contains(toolName) }) return false
+    return getAllToolDefinitions().find { it.name == toolName }?.outputSchema != null
 }
 
 // Returned in place of the real result when handleToolsCall trips the size guard. Shape
@@ -1877,10 +1923,11 @@ def handleGateway(gatewayName, toolName, toolArgs) {
                 def title = displayMeta[name]?.title
                 if (title) entry.title = title as String
                 // Forward outputSchema only when the advanced publishOutputSchemas
-                // setting is on (issue #290) -- OFF by default so strict clients (e.g.
-                // Claude Desktop) that reject an outputSchema returned without
-                // structuredContent work. The flat tools/list path never emits it (size).
-                if (settings.publishOutputSchemas == true && d?.outputSchema != null) entry.outputSchema = d.outputSchema
+                // setting is on (issue #290) -- OFF by default. Wire form (required
+                // stripped, see _wireOutputSchema) matches the tools/list emission so
+                // spec-validating clients accept both result shapes (issue #342). The
+                // flat tools/list path never emits it (size).
+                if (settings.publishOutputSchemas == true && d?.outputSchema != null) entry.outputSchema = _wireOutputSchema(d.outputSchema)
                 entry
             }
         ]
@@ -2003,8 +2050,23 @@ def handleGateway(gatewayName, toolName, toolArgs) {
 //
 // The transform operates in place on the fresh Map literals returned by
 // `getAllToolDefinitions()`; no caching means each call gets a clean copy.
+// Remove HPM #include line markers that a multi-line string literal in a library captures.
+// The hub appends " // library marker <namespace>.<Class>, line <N>" to every physical line
+// of an #include'd library at compile time, so any multi-line """ string in a library file
+// carries them into its runtime value (issue #342 found them polluting three tool
+// descriptions and the hub_report_issue report body). Generic helper (main file per the
+// AGENTS.md placement rule): consumed by stripFlatTrim below and _bugReportBuildMarkdown.
+def _stripLibraryMarkers(String s) {
+    if (s == null || !s.contains('// library marker')) return s
+    return s.replaceAll(/ *\/\/ library marker [\w.]+, line \d+/, '')
+}
+
 def stripFlatTrim(String text, boolean dropContent) {
     if (text == null) return null
+    // #include line markers captured by multi-line library string literals are wire noise
+    // on every description surface (flat + gateway tools/list, gateway catalog disclosure,
+    // missing-param hints, search corpus) -- strip them before the FLAT_TRIM handling.
+    text = _stripLibraryMarkers(text)
     // Markers must be balanced and non-nested. The two branches handle the
     // unbalanced case asymmetrically by design:
     //
@@ -2058,6 +2120,27 @@ def applyDescriptionTransform(List tools, boolean dropContent) {
         }
     }
     return tools
+}
+
+// Wire form of a published outputSchema (issue #342): strip `required` arrays recursively.
+// The definitions' `required` arrays document the SUCCESS shape, but the runtime error
+// contract ([success:false, error, note]) legitimately omits those keys, and per MCP spec
+// (2025-06-18 server/tools: servers MUST return structured results that CONFORM to a
+// published schema) spec-validating clients jsonschema-validate every non-isError result
+// against the advertised schema. Stripping `required` on the wire lets both shapes
+// validate; the success-shape documentation stays intact in the definitions and in
+// hub_get_tool_guide. The `v instanceof List` guard keeps a PROPERTY literally named
+// "required" (a Map under `properties`) intact -- only schema-keyword arrays are dropped.
+def _wireOutputSchema(schema) {
+    if (!(schema instanceof Map)) return schema
+    def out = [:]
+    schema.each { k, v ->
+        if (k == 'required' && v instanceof List) return
+        if (v instanceof Map) out[k] = _wireOutputSchema(v)
+        else if (v instanceof List) out[k] = v.collect { it instanceof Map ? _wireOutputSchema(it) : it }
+        else out[k] = v
+    }
+    return out
 }
 
 // When a feature toggle is off, its tools are REMOVED from tools/list — not just gated
@@ -2157,8 +2240,8 @@ def getToolDefinitions() {
     def transformed = applyDescriptionTransform(baseTools + gatewayTools, false)
     // outputSchema is opt-in (issue #290): the flat path above always strips it; on this
     // gateway-mode base-tool surface (and the gateway catalog) it is emitted only when the
-    // advanced publishOutputSchemas setting is on. OFF by default so strict clients (e.g.
-    // Claude Desktop) that reject an outputSchema returned without structuredContent work.
+    // advanced publishOutputSchemas setting is on (wire form -- see _wireOutputSchema; and
+    // handleToolsCall then attaches structuredContent per the spec MUST, issue #342).
     boolean publishSchemas = settings.publishOutputSchemas == true
     return transformed.collect { tool ->
         // Gateway entries already carry annotations (incl. readOnlyHint) from the
@@ -2167,7 +2250,11 @@ def getToolDefinitions() {
         // readOnlyHint (not just the annotations map) is the load-bearing signal -- and
         // have their outputSchema stripped unless publishOutputSchemas is on.
         if (tool.annotations?.containsKey('readOnlyHint')) return tool
-        def leaf = publishSchemas ? tool : tool.findAll { it.key != 'outputSchema' }
+        // Published schemas go out in wire form (required stripped -- see _wireOutputSchema)
+        // so spec-validating clients accept success AND error result shapes.
+        def leaf = (publishSchemas && tool.outputSchema != null)
+            ? tool.collectEntries { k, v -> [(k): (k == 'outputSchema' ? _wireOutputSchema(v) : v)] }
+            : tool.findAll { it.key != 'outputSchema' }
         leaf + [annotations: (leaf.annotations ?: [:]) + annotationsForLeaf(leaf.name as String, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
     }
 }

@@ -1234,6 +1234,74 @@ class TestRunner:
         assert isinstance(info, dict) and info, "hub_get_info call must still return data"
 
     @test("infrastructure")
+    def test_published_output_schema_round_trip(self) -> None:
+        """Issue #342: with publishOutputSchemas ON, a schema-advertising base tool's
+        result MUST carry structuredContent (MCP 2025-06-18: a published outputSchema
+        obligates conforming structured results) or spec-validating clients (Claude
+        Desktop's TS SDK, mcp-proxy's Python SDK) report every successful call as a
+        generic failure while the hub logs success. Also pins the wire form: emitted
+        schemas carry no `required` arrays, so the runtime error contract
+        ([success:false, ...]) validates too. ALWAYS restores the toggle OFF."""
+        try:
+            # INSIDE the try on purpose: hub_update_mcp_settings is replay-safe but its
+            # RESPONSE can still be lost (relay 504) after the mutation committed
+            # hub-side. If this call raises outside the try, the finally never runs and
+            # the toggle leaks ON for every test after this one.
+            self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings",
+                "args": {"settings": {"publishOutputSchemas": True}, "confirm": True}})
+            tools = self.client.list_tools().get("tools", [])
+            with_schema = [t for t in tools if "outputSchema" in t]
+            assert with_schema, "publishOutputSchemas ON: no tools/list entry advertises outputSchema"
+            assert any(t.get("name") == "hub_get_info" for t in with_schema), \
+                "hub_get_info (base tool) must advertise outputSchema when the toggle is ON"
+            def _has_required(schema: Any) -> bool:
+                if isinstance(schema, dict):
+                    if isinstance(schema.get("required"), list):
+                        return True
+                    return any(_has_required(v) for v in schema.values())
+                if isinstance(schema, list):
+                    return any(_has_required(v) for v in schema)
+                return False
+            bad = [t["name"] for t in with_schema if _has_required(t["outputSchema"])]
+            assert not bad, f"emitted outputSchema must be the wire form (no required arrays): {bad}"
+            # Gateway envelopes never advertise a schema.
+            gw_with_schema = [t["name"] for t in with_schema
+                              if {"tool", "args"} <= set((t.get("inputSchema") or {}).get("properties") or {})]
+            assert not gw_with_schema, f"gateway envelopes must not advertise outputSchema: {gw_with_schema}"
+
+            # The core assertion: a schema-advertised tool's RESULT carries structuredContent
+            # mirroring the text block (raw envelope access -- call_tool strips it).
+            raw = self.client._send("tools/call", {"name": "hub_get_info", "arguments": {}})
+            sc = raw.get("structuredContent")
+            assert isinstance(sc, dict) and sc, \
+                f"hub_get_info result must carry structuredContent when its schema is advertised, got: {type(sc)}"
+            text_obj = json.loads(next(c["text"] for c in raw.get("content", []) if c.get("type") == "text"))
+            assert sc == text_obj, "structuredContent must mirror the serialized text block"
+
+            # A gateway-routed call carries NO structuredContent (no schema advertised there).
+            raw_gw = self.client._send("tools/call", {
+                "name": "hub_read_rooms", "arguments": {"tool": "hub_list_rooms", "args": {}}})
+            assert "structuredContent" not in raw_gw, \
+                "gateway-routed results must not carry structuredContent"
+        finally:
+            restored = False
+            last: Any = None
+            for _ in range(3):
+                try:
+                    self.client.call_tool("hub_manage_mcp", {
+                        "tool": "hub_update_mcp_settings",
+                        "args": {"settings": {"publishOutputSchemas": False}, "confirm": True}})
+                    tools = self.client.list_tools().get("tools", [])
+                    if not any("outputSchema" in t for t in tools):
+                        restored = True
+                        break
+                except (McpError, McpToolError, requests.HTTPError) as exc:
+                    last = exc
+                time.sleep(1.0)
+            assert restored, f"CRITICAL: could not restore publishOutputSchemas=OFF: {last}"
+
+    @test("infrastructure")
     def test_gateway_catalog_titles(self) -> None:
         # Issue #245: the gateway no-arg catalog disclosure also surfaces each
         # sub-tool's friendly title next to its bare name and schema. Shared (identical deterministic
@@ -7489,6 +7557,39 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         self._mcp_bundle_id = str(mcp_bundle["id"])
         print(f"    BUNDLES_LIST ok -- '{mcp_bundle.get('name')}' contains {(mcp_bundle.get('contains') or {}).get('libraries')}")
 
+    def _list_all_file_names(self) -> tuple[list, bool]:
+        """Enumerate ALL File Manager file names via cursor pagination -> (names, authoritative).
+
+        A no-cursor hub_list_files returns the UNBOUNDED list, so on a file-heavy hub the
+        response trips the 120KB size guard and comes back as a response_too_large envelope
+        with NO files key -- which naive callers misread as an authoritative empty listing
+        (that false 'absent' verdict failed test_export_bundle on a hub whose file list had
+        grown past the cap). Cursor pages (size 100) each stay under the guard, so this
+        enumeration is authoritative regardless of how much cruft the hub carries.
+
+        Contract (same in every branch): `names` is everything enumerated before any
+        failure -- PRESENCE in it is trustworthy evidence even when partial; ABSENCE is
+        only meaningful when `authoritative` is True (every page enumerated cleanly)."""
+        names: list = []
+        cursor = ""
+        for _ in range(100):  # hard stop: 100 pages x 100 files
+            try:
+                page = self.client.call_tool(
+                    "hub_read_files", {"tool": "hub_list_files", "args": {"cursor": cursor}})
+            except (McpError, McpToolError, requests.RequestException):
+                return names, False
+            if not isinstance(page, dict) or page.get("response_too_large"):
+                return names, False
+            page_names = [f.get("name") for f in page.get("files", [])]
+            if not page_names and (page.get("message") or page.get("error")):
+                return names, False  # degraded blind-empty page under load
+            names.extend(n for n in page_names if isinstance(n, str))
+            nxt = page.get("nextCursor")
+            if not nxt:
+                return names, True
+            cursor = str(nxt)
+        return names, False  # pathological page loop -> treat as non-authoritative
+
     @test("system_tools")
     def test_export_bundle(self) -> None:
         """hub_export_bundle saves a bundle's .zip to the File Manager (independently confirmed via
@@ -7510,27 +7611,15 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         fname = f"{PREFIX}bundle_export_{bid}.zip"
 
         def _list_files_once() -> tuple[list, bool]:
-            # One listing read -> (names, authoritative). Under peak load hub_list_files
-            # DEGRADES rather than errors: both internal File Manager endpoints fail
-            # hub-side and it returns files:[] with a message/error marker and no MCP
-            # error -- an empty page that proves nothing about the export. A relay 504
-            # on the read is equally inconclusive. Only a listing that enumerated files
-            # (or a clean, marker-free empty one) is evidence of presence/absence.
-            try:
-                files = self.client.call_tool("hub_read_files", {"tool": "hub_list_files"})
-            except (McpError, McpToolError, requests.RequestException):
-                # ANY listing-read failure (504, 502/503, timeout, reset, MCP error) is a
-                # NON-AUTHORITATIVE read -- the listing surface being unreachable proves
-                # nothing about the export. The only fail verdict ('absent') requires an
-                # authoritative listing, and the sanctioned skip is gated on the WRITE's
-                # relay 504, so swallowing read errors here cannot widen the skip; it only
-                # stops a load-artifact listing error from hard-failing the test.
-                return [], False
-            if not isinstance(files, dict):
-                return [], False
-            names = [f.get("name") for f in files.get("files", [])]
-            degraded = not names and bool(files.get("message") or files.get("error"))
-            return names, not degraded
+            # One paginated enumeration -> (names, authoritative). Under peak load
+            # hub_list_files DEGRADES rather than errors (blind empty page with a
+            # message/error marker), a relay 504 is equally inconclusive, and a
+            # NO-CURSOR listing on a file-heavy hub trips the 120KB size guard into a
+            # response_too_large envelope that reads as a false authoritative-empty.
+            # _list_all_file_names handles all three: only a listing that enumerated
+            # every page (or a clean, marker-free empty one) is evidence of
+            # presence/absence.
+            return self._list_all_file_names()
 
         def _poll_export(window: float) -> str:
             # 'found' | 'absent' (>=1 authoritative listing, file in none of them)
@@ -7617,9 +7706,8 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             except Exception as exc:
                 print(f"  [WARN] bundle export cleanup: delete {fname} failed: {exc}")
             try:
-                files = self.client.call_tool("hub_read_files", {"tool": "hub_list_files"})
-                for nm in [f.get("name") for f in (files.get("files", []) if isinstance(files, dict) else [])]:
-                    if isinstance(nm, str) and nm.startswith(f"{PREFIX}bundle_export_") and "_backup_" in nm:
+                for nm in self._list_all_file_names()[0]:
+                    if nm.startswith(f"{PREFIX}bundle_export_") and "_backup_" in nm:
                         self.client.call_tool("hub_manage_files", {
                             "tool": "hub_delete_file", "args": {"fileName": nm, "confirm": True},
                         })
@@ -8802,6 +8890,7 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         6. Rooms (prefix sweep)
         7. Throwaway bundle + library (mcptest namespace)
         8. Easy Dashboards (tracked + prefix sweep)
+        9. File Manager files (prefix sweep, originals then their _backup_ spawn)
         """
         print("\n--- Cleanup ---")
 
@@ -9112,6 +9201,33 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                         print(f"  [WARN] Dashboard sweep delete failed for '{dname}': {exc}")
         except Exception as exc:
             print(f"  [WARN] Dashboard sweep failed: {exc}")
+
+        # Layer 9: File Manager files with the BAT_E2E_ prefix. hub_delete_file auto-backs-up
+        # every non-backup file it deletes ("<base>_backup_<ts>.<ext>"), so BAT file litter
+        # COMPOUNDS across runs unless the backups are swept too -- unswept, the hub's file
+        # list eventually outgrows the 120KB response guard and every no-cursor
+        # hub_list_files degrades to a response_too_large envelope (the false-'absent'
+        # failure mode test_export_bundle hit). Two passes: originals first (each delete
+        # spawns a fresh backup), then re-list and sweep the _backup_ files (deleting a
+        # _backup_ file spawns no backup-of-backup). Paginated listing keeps this sweep
+        # working no matter how crufty the hub already is.
+        for backups_pass in (False, True):
+            try:
+                names, authoritative = self._list_all_file_names()
+                if not authoritative:
+                    print("  [WARN] File sweep: listing not authoritative; skipping this pass")
+                    continue
+                for nm in names:
+                    if not nm.startswith(PREFIX) or ("_backup_" in nm) != backups_pass:
+                        continue
+                    try:
+                        print(f"  Sweep: deleting file '{nm}'")
+                        self.client.call_tool("hub_manage_files", {
+                            "tool": "hub_delete_file", "args": {"fileName": nm, "confirm": True}})
+                    except Exception as exc:
+                        print(f"  [WARN] File sweep delete failed for '{nm}': {exc}")
+            except Exception as exc:
+                print(f"  [WARN] File sweep pass failed: {exc}")
 
         print("--- Cleanup complete ---\n")
 

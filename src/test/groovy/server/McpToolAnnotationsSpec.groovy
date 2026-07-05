@@ -682,11 +682,53 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         gwOn?.outputSchema instanceof Map
         gwOn.outputSchema.type == 'object'
 
+        and: 'the emitted schema is the WIRE form: no required arrays anywhere (issue #342 — spec-validating clients must accept error-shaped results too)'
+        !gwOn.outputSchema.containsKey('required')
+        gwOn.outputSchema.properties.values().every { !(it instanceof Map) || !(it.required instanceof List) }
+
         and: 'flat mode never emits outputSchema, regardless of the toggle'
         flatOn != null
         flatOn.containsKey('outputSchema') == false
         flatOff != null
         flatOff.containsKey('outputSchema') == false
+    }
+
+    def "_advertisesOutputSchema agrees with the actual gateway-mode emitted surface for every tool (issue #342)"() {
+        // _advertisesOutputSchema re-derives the emission logic (base tool + declared
+        // schema) by hand for the structuredContent attach; this exhaustive cross-check
+        // keeps the two from drifting: for EVERY entry the gateway-mode toggle-ON
+        // tools/list emits, the helper must equal "carries outputSchema on the wire"
+        // (gateways false/absent, schema-declaring base tools true/present).
+        given:
+        settingsMap.useGateways = true
+        settingsMap.publishOutputSchemas = true
+        settingsMap.enableCustomRuleEngine = true
+
+        when:
+        def emitted = script.getToolDefinitions()
+
+        then: 'helper verdict == wire presence, for every emitted entry'
+        emitted.every { t -> script._advertisesOutputSchema(t.name) == t.containsKey('outputSchema') }
+
+        and: 'non-vacuity: the surface has both kinds'
+        emitted.any { it.containsKey('outputSchema') }
+        emitted.any { !it.containsKey('outputSchema') }
+    }
+
+    def "hub_get_hsm_status outputSchema declares nullable status/alert and requires neither (issue #342)"() {
+        // On hubs where HSM is disabled or has never reported, toolGetHsmStatus returns
+        // status:null (and alert is routinely null) -- a spec-validating client checks the
+        // ADVERTISED schema against real results, so these fields must be declared
+        // nullable and status must not be required (a real success failed validation
+        // against the old non-null string declaration).
+        given:
+        def d = script.getAllToolDefinitions().find { it.name == 'hub_get_hsm_status' }
+
+        expect:
+        d.outputSchema.properties.status.type == ['string', 'null']
+        d.outputSchema.properties.alert.type == ['string', 'null']
+        !d.outputSchema.required.contains('status')
+        d.outputSchema.required.containsAll(['statusText', 'armCommands'])
     }
 
     def "getAllToolDefinitions() returns a FRESH list each call -- mutating one return must not leak to the next"() {

@@ -278,3 +278,78 @@ def test_membership_guard_skipped_for_flat_calls():
     c.op_timings = []
     # A leaf name with flat=True is never treated as a gateway envelope; no guard, no raise.
     c.call_tool("hub_list_rooms", flat=True)
+
+
+# ---------------------------------------------------------------------------
+# TestRunner._list_all_file_names (issue #342: size-guard-immune paginated listing)
+# ---------------------------------------------------------------------------
+
+class _PagedFilesClient:
+    """Stub client: hub_read_files/hub_list_files pops one canned page per call."""
+
+    def __init__(self, pages):
+        self._pages = list(pages)
+        self.calls = []
+
+    def call_tool(self, name, arguments=None, **_kw):
+        self.calls.append((name, arguments))
+        item = self._pages.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+def _list_files_via(pages):
+    runner = object.__new__(et.TestRunner)  # no __init__: only .client is needed
+    runner.client = _PagedFilesClient(pages)
+    return et.TestRunner._list_all_file_names(runner), runner.client
+
+
+def test_list_all_file_names_accumulates_across_pages_and_forwards_cursor():
+    """Names accumulate across pages; each nextCursor is forwarded verbatim."""
+    (names, authoritative), client = _list_files_via([
+        {"files": [{"name": "a.txt"}, {"name": "b.txt"}], "nextCursor": "2"},
+        {"files": [{"name": "c.txt"}]},
+    ])
+    assert names == ["a.txt", "b.txt", "c.txt"]
+    assert authoritative is True
+    assert client.calls[0][1]["args"]["cursor"] == ""
+    assert client.calls[1][1]["args"]["cursor"] == "2"
+
+
+def test_list_all_file_names_response_too_large_is_non_authoritative():
+    """A response_too_large envelope must NOT read as an authoritative empty listing
+    (the false-'absent' verdict that failed test_export_bundle)."""
+    (names, authoritative), _ = _list_files_via([
+        {"files": [{"name": "a.txt"}], "nextCursor": "1"},
+        {"response_too_large": True, "truncated": True},
+    ])
+    assert authoritative is False
+    assert names == ["a.txt"]  # partial names kept: presence evidence stays usable
+
+
+def test_list_all_file_names_degraded_blind_empty_page_is_non_authoritative():
+    """A blind empty page with a message/error marker (File Manager degraded under
+    load) is non-authoritative."""
+    (names, authoritative), _ = _list_files_via([
+        {"files": [], "message": "File Manager unavailable"},
+    ])
+    assert authoritative is False
+    assert names == []
+
+
+def test_list_all_file_names_clean_empty_listing_is_authoritative():
+    """A marker-free empty page is a real (authoritative) empty File Manager."""
+    (names, authoritative), _ = _list_files_via([{"files": []}])
+    assert authoritative is True
+    assert names == []
+
+
+def test_list_all_file_names_transport_error_is_non_authoritative():
+    """A transport-level failure mid-enumeration keeps partial names, drops authority."""
+    (names, authoritative), _ = _list_files_via([
+        {"files": [{"name": "a.txt"}], "nextCursor": "1"},
+        et.McpError("relay 504"),
+    ])
+    assert authoritative is False
+    assert names == ["a.txt"]

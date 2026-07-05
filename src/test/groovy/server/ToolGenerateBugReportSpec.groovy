@@ -74,6 +74,88 @@ class ToolGenerateBugReportSpec extends ToolSpecBase {
         result.logs.hint == null
     }
 
+    def "env summary reports gateway tool-mode by default (useGateways unset)"() {
+        given: 'a genuinely-unset useGateways (the flat CI matrix presets it false in setup)'
+        settingsMap.remove('useGateways')
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.report.contains('**Tool mode:** gateway')
+        !result.report.contains('outputSchemas advertised')
+    }
+
+    def "env summary reports flat tool-mode when useGateways=false"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        settingsMap.useGateways = false
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.report.contains('**Tool mode:** flat')
+    }
+
+    def "env summary flags publishOutputSchemas when advertised"() {
+        given: 'gateway mode pinned (flat CI matrix presets useGateways=false) + the toggle ON'
+        settingsMap.useGateways = true
+        sharedLocation.hub = new TestHub()
+        settingsMap.publishOutputSchemas = true
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.report.contains('**Tool mode:** gateway (outputSchemas advertised on tools/list)')
+    }
+
+    def "env summary does NOT claim schemas are advertised in flat mode, even with the toggle ON"() {
+        // Flat tools/list never emits outputSchema, so toggle-ON + flat is still
+        // "not advertised" -- the report line must describe the wire, not the setting.
+        given:
+        sharedLocation.hub = new TestHub()
+        settingsMap.useGateways = false
+        settingsMap.publishOutputSchemas = true
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs())
+
+        then:
+        result.report.contains('**Tool mode:** flat')
+        !result.report.contains('outputSchemas advertised')
+    }
+
+    def "_stripLibraryMarkers removes HPM include-library line markers that a multi-line string literal captures"() {
+        expect:
+        script._stripLibraryMarkers(input) == expected
+
+        where:
+        input                                                                      | expected
+        'foo // library marker mcp.McpDebugLoggingLib, line 417'                    | 'foo'
+        '# Bug Report: x // library marker mcp.McpDebugLoggingLib, line 419\nnext'  | '# Bug Report: x\nnext'
+        'no markers here'                                                           | 'no markers here'
+        null                                                                       | null
+    }
+
+    def "generated report never contains a leaked library marker"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        seedLogs([])
+
+        when:
+        def result = script.toolGenerateBugReport(baseArgs(ruleId: '99'))
+
+        then:
+        !result.report.contains('library marker')
+    }
+
     def "env summary uses 'Rules in legacy custom rule engine' (not 'Custom MCP rules') so users don't read it as 'MCP can't see my RM rules'"() {
         given:
         sharedLocation.hub = new TestHub()
