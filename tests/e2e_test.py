@@ -3147,6 +3147,24 @@ class TestRunner:
             assert "not touched" in str(action_state.get("restoreHint", "")).lower() \
                 and "backup saved before write" not in str(action_state.get("restoreHint", "")).lower(), \
                 f"switch state: pre-flight refusal should carry a not-touched restoreHint, got: {action_state.get('restoreHint')!r}"
+            # Fail-loud parity on the CONDITION surface (addRequiredExpression): a date/day-window
+            # condition capability is unmodelled on every structured condition surface, and a
+            # state-change comparator has no meaning on a point-in-time condition. Both are rejected
+            # with a clear steer rather than committing a broken condition.
+            date_cond = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "addRequiredExpression": {"conditions": [{"capability": "Days of week"}]},
+                         "confirm": True}})
+            assert date_cond.get("success") is False \
+                and "structured condition shortcut" in str(date_cond.get("error", "")).lower(), \
+                f"date/day-window condition should fail loud steering to the raw wizard, got: {date_cond}"
+            change_cond = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "addRequiredExpression": {"conditions": [
+                         {"capability": "Switch", "deviceIds": [int(self.get_test_switch_id())],
+                          "comparator": "*changed*"}]}, "confirm": True}})
+            assert change_cond.get("success") is False \
+                and "not valid as a condition" in str(change_cond.get("error", "")).lower() \
+                and "trigger row" in str(change_cond.get("error", "")).lower(), \
+                f"state-change comparator on a device-state condition should fail loud steering to a trigger row, got: {change_cond}"
         finally:
             self._delete_native(app_id)
 

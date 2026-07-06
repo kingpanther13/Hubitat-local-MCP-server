@@ -2855,13 +2855,16 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addAction #cap with state: instead of action: is rejected naming the action field"() {
-        // Fail-loud parity: switch/fan/shade actions select the operation via action:, not the
+        // Fail-loud parity: an action-driven capability selects the operation via action:, not the
         // trigger-style state:. Pre-write reject (RM is not touched) that names the real mistake
-        // rather than the opaque "Unknown <cap> action 'null'". The guard is case-insensitive so a
-        // title-case capability (the addTrigger convention carried into addAction) still trips it.
-        // Both-ways: reverting the guard falls through to device validation / the capability
-        // switch() and never emits the 'uses action: (not state:)' phrase; making the guard
-        // case-sensitive again lets the title-case rows slip past.
+        // rather than the opaque "Unknown <cap> action 'null'". The action-driven set is derived
+        // from the action schema (every capability with an action enum), so the guard fires for
+        // ALL of them -- lock/dimmer/... and the 'Window Shade' display name -- not just a
+        // hardcoded few. The guard is case-insensitive so a title-case capability (the addTrigger
+        // convention carried into addAction) still trips it. Both-ways: reverting to a hardcoded
+        // ["switch","fan","shade"] list drops the lock/dimmer/Window Shade rows (they slip past to
+        // the capability branch and never emit the 'uses action: (not state:)' phrase); making the
+        // guard case-sensitive again lets the title-case rows slip past.
         when:
         script._rmAddAction(100, [capability: cap, deviceIds: [8], state: stateVal])
 
@@ -2871,13 +2874,19 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.contains("RM is not touched")
 
         where:
-        cap      | stateVal
-        "switch" | "on"
-        "fan"    | "low"
-        "shade"  | "open"
-        "Switch" | "on"
-        "Fan"    | "low"
-        "Shade"  | "open"
+        cap            | stateVal
+        "switch"       | "on"
+        "fan"          | "low"
+        "shade"        | "open"
+        "Switch"       | "on"
+        "Fan"          | "low"
+        "Shade"        | "open"
+        // Schema-derived coverage the old hardcoded list missed:
+        "lock"         | "lock"
+        "dimmer"       | "setLevel"
+        "color"        | "setColor"
+        "button"       | "push"
+        "Window Shade" | "open"
     }
 
     def "addAction #cap with a top-level conditions array is rejected case-insensitively (title-case)"() {
@@ -2920,21 +2929,30 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.contains("Did you mean 'Contact'?")
     }
 
-    def "_rmSuggestTriggerCapability unions live-only options and does not false-match a short canonical name"() {
-        // Pins the did-you-mean helper: it suggests curated schema names, ALSO suggests a
-        // near-miss on a LIVE-ONLY capability the discover schema omits (via the live-options
-        // union), and must NOT suggest a short canonical/live name that is merely a substring of
-        // an unrelated request.
-        expect: "a curated schema name is suggested for a near-miss display-name"
+    def "_rmSuggestTriggerCapability draws only from the live options when supplied and does not false-match a short name in either direction"() {
+        // Pins the did-you-mean helper: when a LIVE options list is supplied it is the
+        // authoritative candidate set (the suggestion can never name a value the shown list would
+        // reject), the curated schema is only a fallback when no live list is given, and neither
+        // containment direction matches on a substring shorter than 4 chars.
+        expect: "with no live list, a curated schema name is suggested for a near-miss display-name"
         script._rmSuggestTriggerCapability("Contact Sensor") == "Contact"
 
-        and: "a near-miss on a LIVE-ONLY capability (absent from the curated schema) still suggests via the union"
-        // Both-ways: dropping the live-options union reverts this to a schema-only search that
-        // cannot see the live-only name, so the suggestion goes null.
+        and: "a near-miss against a LIVE options list suggests the live name (a value the picker accepts)"
+        // Both-ways: dropping the live-first candidate selection reverts to a schema-only search
+        // that cannot see the live-only name, so the suggestion goes null.
         script._rmSuggestTriggerCapability("Zztest Capabilit", ["Zztest Capability"]) == "Zztest Capability"
 
-        and: "a short live/canonical name is NOT matched as a spurious substring of an unrelated request"
-        // Both-ways: removing the n.length() >= 4 guard lets 'CO' match inside 'scope', reding this.
+        and: "a schema name absent from a supplied live list is NOT suggested (never name a value the shown list rejects)"
+        // Both-ways: reverting to the schema-UNION search would suggest 'Contact' even though the
+        // live picker (Switch/Motion only) does not offer it -- a self-contradicting hint.
+        script._rmSuggestTriggerCapability("Contact Sensor", ["Switch", "Motion"]) == null
+
+        and: "a short REQUEST is NOT matched as a spurious substring of a longer candidate (forward-direction guard)"
+        // Both-ways: without the want.length() >= 4 guard on the n.contains(want) direction, 'on'
+        // would match inside 'Motion'/'Notification'.
+        script._rmSuggestTriggerCapability("on", ["Motion", "Notification"]) == null
+
+        and: "a short live/canonical name is NOT matched as a spurious substring of an unrelated request (reverse-direction guard)"
         script._rmSuggestTriggerCapability("scope", ["CO"]) == null
 
         and: "a blank capability yields no suggestion"
@@ -3085,6 +3103,359 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         where:
         cap << ["Between two dates", "Days of week", "On a Day"]
+    }
+
+    def "addTrigger numeric capability *changed* routes the change token to ReltDev, NOT tstate, when BOTH fields render (comparator-field-first ordering)"() {
+        // Fix A: a numeric (comparator-bearing) capability carries '*changed*' as a real ReltDev<N>
+        // option; when the live schema renders BOTH ReltDev<N> and tstate<N>, the change token must
+        // ride the comparator field, never the value picker. hasComparatorField is the load-bearing
+        // discriminator. Both-ways: reordering to check the value picker first would route a numeric
+        // '*changed*' to tstate (or, since tstate here has no matching option, produce a skip) and
+        // leave ReltDev unwritten -- the ReltDev1 write assertion reds.
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "tCapab1", type: "enum", options: ["Temperature"]],
+                [name: "ReltDev1", type: "enum", options: ["<", ">", "=", "*changed*"]],
+                [name: "tstate1", type: "enum", options: ["on", "off"]],
+                [name: "isCondTrig.1", type: "bool"],
+                [name: "hasAll", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        def writes = []
+        script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String key, Object value, List applied, String typeHint = null, List skipped = null, Map cache = null ->
+            writes << [key: key, value: value]; applied << key
+        }
+
+        when: "a Temperature trigger requests comparator:'*changed*' with no explicit value"
+        script._rmAddTrigger(100, [capability: "Temperature", comparator: "*changed*"])
+
+        then: "the change token lands in the ReltDev1 comparator field (normalized)"
+        writes.find { it.key == "ReltDev1" }?.value == "*changed*"
+
+        and: "it is NOT written to the tstate1 value picker (that is the device-state route)"
+        !writes.any { it.key == "tstate1" }
+    }
+
+    def "addTrigger device-state *changed*: a THROWING routing re-fetch degrades to state_change_route_unverified_fetch_failed (partial) with its hint promoted to repairHints"() {
+        // Fix B: the post-write selectTriggers re-fetch (needed to decide which field the wizard
+        // renders) throws transiently. A device-state family cannot force-write (its change token
+        // rides a value picker whose option string is only knowable from the failed fetch), so it
+        // degrades to a genuine unverified-route skip that flips partial, and the skip's precise
+        // hint is surfaced in repairHints. Both-ways: reverting the degrade path (e.g. aborting or
+        // silently writing ReltDev) removes the state_change_route_unverified_fetch_failed skip.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            if (fetchSeq == 3) throw new RuntimeException("simulated transient routing re-fetch failure")
+            ruleConfigJson(100, "r", [
+                [name: "tCapab1", type: "enum", options: ["Switch"]],
+                [name: "tstate1", type: "enum", options: ["on", "off"]],
+                [name: "isCondTrig.1", type: "bool"],
+                [name: "hasAll", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String key, Object value, List applied, String typeHint = null, List skipped = null, Map cache = null -> applied << key }
+
+        when: "the post-write selectTriggers re-fetch throws while routing the change comparator"
+        def result = script._rmAddTrigger(100, [capability: "Switch", comparator: "*changed*"])
+
+        then: "the change token degrades to a genuine unverified-route skip, keyed on the synthetic field, flipping partial"
+        def skip = result.settingsSkipped.find { it.reason == "state_change_route_unverified_fetch_failed" }
+        skip != null
+        skip.key == "comparator@tstate1"
+        result.partial == true
+
+        and: "the skip's precise verify-and-repair hint is surfaced in repairHints"
+        result.repairHints.any { it.contains("could not be re-fetched") && it.contains("walkStep") }
+    }
+
+    def "addTrigger numeric *changed* with a THROWING routing re-fetch force-writes ReltDev (numeric infallibility), NOT the device-state degrade"() {
+        // Fix C: on a transient routing re-fetch failure a NUMERIC capability keeps its pre-redesign
+        // infallibility -- it force-writes ReltDev<N> best-effort (comparator_force_written_unverified)
+        // rather than degrading to the device-state unverified-route skip. Both-ways: dropping the
+        // numeric branch degrades to state_change_route_unverified_fetch_failed instead, so ReltDev1
+        // is absent from settingsApplied and the force-written skip is missing.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            if (fetchSeq == 3) throw new RuntimeException("simulated transient routing re-fetch failure")
+            ruleConfigJson(100, "r", [
+                [name: "tCapab1", type: "enum", options: ["Temperature"]],
+                [name: "ReltDev1", type: "enum", options: ["<", ">", "=", "*changed*"]],
+                [name: "isCondTrig.1", type: "bool"],
+                [name: "hasAll", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String key, Object value, List applied, String typeHint = null, List skipped = null, Map cache = null -> applied << key }
+
+        when: "a Temperature trigger's routing re-fetch throws"
+        def result = script._rmAddTrigger(100, [capability: "Temperature", comparator: "*changed*"])
+
+        then: "the comparator is force-written to ReltDev1 (in applied) and flagged unverified (partial)"
+        (result.settingsApplied as List).contains("ReltDev1")
+        result.settingsSkipped.any { it.reason == "comparator_force_written_unverified" && it.key == "ReltDev1" }
+        result.partial == true
+
+        and: "it did NOT take the device-state degrade path (that is for non-numeric families)"
+        !result.settingsSkipped.any { it.reason == "state_change_route_unverified_fetch_failed" }
+    }
+
+    def "addTrigger device-state *changed* WITH an explicit value but NEITHER field rendered does NOT falsely claim the value committed"() {
+        // Fix D: the old branch emitted an INFORMATIONAL 'value committed' skip whenever an explicit
+        // value was supplied and neither field rendered -- but when tstate<N> is absent the value
+        // canNOT commit, so that claim was a lie (and the downstream write would flag not_in_schema).
+        // The fix surfaces the specific device-state reason on the synthetic key and never the
+        // informational one. Both-ways: reverting to the informational skip re-emits
+        // state_change_comparator_ignored_explicit_value (exempt), so partial goes false and the
+        // informational-absent assertion reds.
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "tCapab1", type: "enum", options: ["Switch"]],
+                [name: "isCondTrig.1", type: "bool"],
+                [name: "hasAll", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String key, Object value, List applied, String typeHint = null, List skipped = null, Map cache = null -> applied << key }
+
+        when: "a Switch trigger passes state:'on' + comparator:'*changed*' but the schema renders neither ReltDev1 nor tstate1"
+        def result = script._rmAddTrigger(100, [capability: "Switch", state: "on", comparator: "*changed*"])
+
+        then: "NO informational 'value committed' skip is emitted (it would contradict the absent value picker)"
+        !result.settingsSkipped.any { it.reason == "state_change_comparator_ignored_explicit_value" }
+
+        and: "the specific device-state reason is recorded on the synthetic key, flipping partial"
+        def skip = result.settingsSkipped.find { it.reason == "change_comparator_not_representable_for_device_state" }
+        skip?.key == "comparator@tstate1"
+        result.partial == true
+    }
+
+    def "addTrigger Mode with a *changed* comparator does NOT write a phantom ReltDev (the Mode path owns the change semantics)"() {
+        // Fix F: a Mode (hub-state) trigger with comparator:'*changed*' reaches the neither-field-
+        // rendered branch; it must NOT write a phantom ReltDev<N> (which lands not_in_schema/partial)
+        // before the Mode path commits modesX<N> cleanly. Both-ways: reverting the hub-state guard
+        // writes ReltDev1, so it appears in settingsApplied (the write stub routes there).
+        given:
+        enableWrite()
+        sharedLocation.modes = [[id: "1", name: "Day"]]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "tCapab1", type: "enum", options: ["Mode"]],
+                [name: "modesX1", type: "enum", options: ["1"]],
+                [name: "isCondTrig.1", type: "bool"],
+                [name: "hasAll", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String key, Object value, List applied, String typeHint = null, List skipped = null, Map cache = null -> applied << key }
+
+        when: "a Mode trigger passes modeIds + a stray comparator:'*changed*'"
+        def result = script._rmAddTrigger(100, [capability: "Mode", modeIds: ["1"], comparator: "*changed*"])
+
+        then: "no phantom ReltDev1 comparator write -- neither applied nor skipped"
+        !(result.settingsApplied as List).contains("ReltDev1")
+        !result.settingsSkipped.any { it.key == "ReltDev1" }
+
+        and: "the Mode selection itself landed"
+        (result.settingsApplied as List).contains("modesX1")
+    }
+
+    def "_rmComparatorIsRhsOptional is token-anchored and does not false-match substrings like 'unchanged'"() {
+        // Fix P: the no-RHS state-change family gate strips the '*...*' wrapping then matches an
+        // exact marker or a 'marker <word>' form, so a comparator that merely CONTAINS a marker as a
+        // substring does not falsely route through the change branch. Both-ways: reverting to the
+        // bare c.contains(marker) test matches 'unchanged' / 'last changed date'.
+        expect: "genuine no-RHS state-change comparators match (wrapped or bare)"
+        script._rmComparatorIsRhsOptional("*changed*")
+        script._rmComparatorIsRhsOptional("changed")
+        script._rmComparatorIsRhsOptional("*became true*")
+        script._rmComparatorIsRhsOptional("became false")
+
+        and: "comparators that merely CONTAIN a marker as a substring do NOT match"
+        !script._rmComparatorIsRhsOptional("unchanged")
+        !script._rmComparatorIsRhsOptional("last changed date")
+
+        and: "null and non-change comparators do not match"
+        !script._rmComparatorIsRhsOptional(null)
+        !script._rmComparatorIsRhsOptional(">")
+    }
+
+    def "_rmBuildCondition rejects a state-change comparator on a device-state condition, steering to the trigger row"() {
+        // Fix M (static condition surface): a '*changed*'/'*became*' comparator with no value is a
+        // trigger concept, not a condition (conditions are point-in-time). Reject up front, steering
+        // to a trigger row. Both-ways: reverting the guard proceeds to the isCondTrig write and the
+        // run hits the hub layer instead of this message.
+        when:
+        script._rmBuildCondition(100, 1, [capability: "Switch", comparator: "*changed*"], [])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("not valid as a condition")
+        ex.message.contains("TRIGGER row")
+    }
+
+    def "addRequiredExpression rejects a state-change comparator on a device-state condition (reveal-walker parity)"() {
+        // Fix M (reveal-walker surface): the same change-comparator-on-condition reject fires on the
+        // STPage reveal-walker, uniform with the static path. Both-ways: removing the pre-walker
+        // guard lets the walk proceed and the message is NOT the shared change-comparator steer.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "cond", type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1", type: "enum", options: ["Switch", "Motion"]],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["s1"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "a device-state condition carries comparator:'*changed*' with no value"
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[capability: "Switch", comparator: "*changed*"]]],
+            confirm: true
+        ])
+
+        then: "the walker rejects it, steering to a trigger row"
+        result.success == false
+        result.error?.contains("not valid as a condition")
+        result.error?.contains("TRIGGER row")
+    }
+
+    def "addRequiredExpression unknown condition capability fails loud with a did-you-mean drawn from the live STPage options"() {
+        // Fix L (STPage throw site): the unrecognized-capability reject now appends a closest-match
+        // suggestion from the live rCapab_ option list. Both-ways: reverting the suggestion helper
+        // wiring drops the 'Did you mean' clause.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "cond", type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1", type: "enum", options: ["Switch", "Contact"]],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["s1"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "a condition uses a near-miss capability display-name"
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[capability: "Switc"]]],
+            confirm: true
+        ])
+
+        then: "the STPage validation fails loud with the closest live-option match"
+        result.success == false
+        result.error?.contains("not in STPage option list")
+        result.error?.contains("Did you mean 'Switch'?")
+    }
+
+    def "addAction ifThen unknown condition capability fails loud with a did-you-mean drawn from the live doActPage options"() {
+        // Fix L (doActPage throw site): the ifThen-expression condition capability reject appends a
+        // closest-match suggestion from the live rCapab_ option list. Both-ways: reverting the
+        // suggestion wiring drops the 'Did you mean' clause.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        def fetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            fetchSeq++
+            doActPageCondSchemaJson(100, fetchSeq)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], paragraphs: ["IF ..."]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "an ifThen expression condition uses a near-miss capability display-name"
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "ifThen", expression: [conditions: [[capability: "Switc"]]]],
+            confirm: true
+        ])
+
+        then: "the doActPage validation fails loud with the closest live-option match"
+        result.success == false
+        result.error?.contains("not in doActPage option list")
+        result.error?.contains("Did you mean 'Switch'?")
+    }
+
+    def "_rmResolveModeNames rejects a comma-joined mode string with a list-shape hint, not an opaque unknown-mode"() {
+        // Fix L (per-mode name resolver): the shared name-form resolver also steers a comma-joined
+        // string to the list shape. Both-ways: reverting the comma branch throws the bare
+        // "Unknown mode".
+        given:
+        sharedLocation.modes = [[id: "1", name: "Day"], [id: "2", name: "Evening"]]
+
+        when:
+        script._rmResolveModeNames(["Day,Evening"])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("comma-joined list")
+        !ex.message.contains("Unknown mode")
     }
 
     def "patches batch outer success rolls up inner sub-item success"() {

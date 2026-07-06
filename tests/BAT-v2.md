@@ -2595,7 +2595,7 @@ All 117 distinct tools are covered by at least one test, excluding the destructi
 
 Sections 1-9 each target a specific tool — named in the test's title and **Expected** criteria while the `test_prompt` stays goal-first (see Prompt style above). Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 264 test scenarios** (124 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 3 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 2 device-state state-change / fail-loud authoring parity + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 5 read-side convergence + 1 multi-device convergence + 3 MCP device-access scope) plus 13 excluded destructive operations documented for manual testing
+**Total: 265 test scenarios** (124 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 3 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 3 device-state state-change / fail-loud authoring parity + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 5 read-side convergence + 1 multi-device convergence + 3 MCP device-access scope) plus 13 excluded destructive operations documented for manual testing
 
 ---
 
@@ -4314,6 +4314,20 @@ Tools in this section require **the Read master** and HPM itself must be install
 **Expected**: both the lowercase `switch` and the title-case `Switch` spec are rejected pre-write (the guard is case-insensitive). `success=false`, `error` names that the operation goes in `action:` not `state:` (e.g. "uses action: (not state:)"), and `restoreHint` states RM was not touched (no "backup saved before write"). The rule stays empty -- nothing committed, no broken action row.
 
 **Failure modes**: the title-case `Switch` slipping past a case-sensitive guard and committing a broken action; the opaque "Unknown switch action 'null'" surfacing instead of the actionable steer; a partial commit that leaves a broken action row on the rule.
+
+### T659 — condition-surface fail-loud rejects (date/day-window + state-change comparator)
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create a BAT virtual switch (hub_manage_virtual_device, deviceType 'Virtual Switch'). Create RM rule 'BAT CondReject'.",
+  "test_prompt": "Attempt two deliberately-wrong Required Expression conditions on 'BAT CondReject', one at a time: (1) a 'Days of week' condition, and (2) a 'Switch' condition on the BAT switch with comparator '*changed*' and no state. For each, inspect result.success and result.error.",
+  "teardown_prompt": "Delete 'BAT CondReject' and the BAT virtual switch."
+}
+```
+
+**Expected**: both are rejected pre-write with a clear steer -- nothing is committed. (1) `Days of week` (a date/day-window capability) is unmodelled on every structured condition surface: `success=false`, `error` names it is not supported "via the structured condition shortcut on any surface" and points at `rawSettings`/`walkStep`. (2) A `*changed*`/`*became*` state-change comparator on a device-state condition is invalid because conditions are point-in-time: `success=false`, `error` says it is "not valid as a condition" and steers to a TRIGGER row (where device-state change events ARE supported). The same rejects fire identically on `addTrigger.condition` and `addAction` `ifThen` expressions.
+
+**Failure modes**: either condition silently committing a broken/`null` condition row; the change-comparator condition being accepted and rendering meaninglessly; the date/day reject surfacing an opaque `IllegalStateException` mid-walk instead of the uniform steer.
 
 ---
 
