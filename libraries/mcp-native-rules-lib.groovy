@@ -1357,13 +1357,17 @@ private List<String> _rmRhsOptionalComparatorMarkers() { ["changed", "became"] }
 // FAMILY gate for the no-RHS state-change comparator family. Used both to relax the
 // RHS-required guards (a missing value is legitimate here) and to detect when such a
 // comparator is being routed to an enum-valued attribute whose value picker cannot
-// represent it. This is intentionally a fuzzy substring test: it answers "no-RHS
-// comparator?" only. Choosing WHICH picker option to route a request to is the job of
-// _rmComparatorTokensMatch (exact-token equality), never this gate.
+// represent it. It answers "no-RHS comparator?" only. Choosing WHICH picker option to
+// route a request to is the job of _rmComparatorTokensMatch (exact-token equality), never
+// this gate. Matching is token-anchored, NOT a bare substring: strip the '*...*' wrapping,
+// then accept only an exact marker ('changed') or a marker followed by a word ('became
+// true'/'became false'). A bare-substring test misfires on unrelated comparators that
+// merely CONTAIN a marker -- 'unchanged' and 'last changed date' both contain 'changed'
+// but are not no-RHS state-change comparators.
 boolean _rmComparatorIsRhsOptional(Object rawComparator) {
-    def c = rawComparator?.toString()?.toLowerCase()
-    if (c == null) return false
-    return _rmRhsOptionalComparatorMarkers().any { c.contains(it) }
+    def token = _rmComparatorToken(rawComparator)
+    if (token == null) return false
+    return _rmRhsOptionalComparatorMarkers().any { m -> token == m || token.startsWith(m + " ") }
 }
 
 // Internal _rm helper -- not part of the tool surface.
@@ -1494,6 +1498,32 @@ private String _rmTriggerCapabilityFamily(String cap) {
         (c?.aliases instanceof List && (c.aliases as List).any { it?.toString()?.equalsIgnoreCase(wanted) })
     }
     return match?.family?.toString()
+}
+
+// Internal _rm helper -- not part of the tool surface.
+// Best-effort "did you mean" for an unrecognized capability name. When a live options list is
+// supplied (the picker/enum the caller was actually shown) it is the AUTHORITATIVE candidate
+// set -- the suggestion is drawn only from it, so the "did you mean" can never name a value the
+// shown list would reject (a self-contradiction). The curated discover-schema names/aliases are
+// a fallback used ONLY when no live list is supplied. Exact case-fold first, then containment
+// either direction (so "Contact Sensor" -> "Contact"). Both containment directions require the
+// SUBSTRING to be at least 4 chars, so a short name/token ('co'/'on'/'fan') never matches as a
+// spurious substring of an unrelated request. Advisory only -- it enriches an already-throwing
+// message and never gates a valid capability.
+private String _rmSuggestTriggerCapability(String cap, Collection liveOptions = null) {
+    def want = cap?.trim()?.toLowerCase()
+    if (!want) return null
+    def live = (liveOptions ?: []).collect { it?.toString() }.findAll { it }
+    def schemaNames = (_rmTriggerSchemaForDiscover()?.capabilities ?: []).collectMany { c ->
+        def out = []
+        if (c?.name != null) out << c.name.toString()
+        if (c?.aliases instanceof List) (c.aliases as List).each { if (it != null) out << it.toString() }
+        out
+    }
+    def candidates = (live ? live : schemaNames).findAll { it }.unique()
+    def exact = candidates.find { it.toLowerCase() == want }
+    if (exact) return exact
+    return candidates.find { def n = it.toLowerCase(); (want.length() >= 4 && n.contains(want)) || (n.length() >= 4 && want.contains(n)) }
 }
 
 // Internal _rm helper -- not part of the tool surface.
@@ -1776,7 +1806,9 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     def capOptions = (capInput.options ?: []) as List
     def capCanonical = capOptions.find { it.toString().equalsIgnoreCase(cap) }
     if (!capCanonical) {
-        throw new IllegalArgumentException("addTrigger.capability '${cap}' not in Hubitat's trigger capability list. Valid options: ${capOptions.collect { it.toString() }.sort().join(', ')}. Pass {discover: true} to get the per-capability field schema for each of these.")
+        def suggestion = _rmSuggestTriggerCapability(cap, capOptions)
+        def didYouMean = suggestion ? " Did you mean '${suggestion}'?" : ""
+        throw new IllegalArgumentException("addTrigger.capability '${cap}' not in Hubitat's trigger capability list.${didYouMean} Valid options: ${capOptions.collect { it.toString() }.sort().join(', ')}. Pass {discover: true} to get the per-capability field schema for each of these.")
     }
     _rmWriteSettingOnPage(appId, "selectTriggers", "tCapab${idx}", capCanonical, applied, null, skipped)
 
@@ -1900,8 +1932,115 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
                     }
                 }
             }
+        } else if (_rmComparatorIsRhsOptional(triggerSpec.comparator)) {
+            // An RHS-optional (state-change) comparator on a non-Custom-Attribute capability.
+            // Route the change token by what the LIVE wizard renders for this trigger index,
+            // NOT the curated family taxonomy: the taxonomy lists only seven device-state caps,
+            // so gating on it misroutes every OTHER live device-state cap (Water/Smoke/CO/...)
+            // to ReltDev<N>, which lands not_in_schema and renders the trigger
+            // "turns null" (fires on any event). The presence of the ReltDev<N> comparator field
+            // IS the authoritative "this cap takes a comparator" signal (numeric/text caps expose
+            // it -- '*changed*' is a real option there; a device-state enum cap does NOT -- its
+            // change option rides the tstate<N> value picker). Deciding on the rendered field
+            // means this route covers EVERY capability the F9 state-change guard steers, and
+            // cannot disagree with that guard's deny-list -- neither now relies on the family list.
+            def explicitVal = triggerSpec.state != null ? triggerSpec.state : triggerSpec.value
+            def dsCfg = null
+            try {
+                dsCfg = _rmFetchConfigJson(appId, "selectTriggers")
+            } catch (Exception dsEx) {
+                // Never abort on a transient re-fetch (the F9 contract) -- degrade below.
+                mcpLog("warn", "rm-native", "addTrigger: re-fetch of selectTriggers after device write failed for app ${appId} (${dsEx.message ?: dsEx}); state-change comparator ${_rmNormalizeComparator(triggerSpec.comparator)} routed unverified (partial)")
+            }
+            def dsInputs = dsCfg == null ? null : (dsCfg?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+            def hasComparatorField = dsInputs != null && dsInputs.any { it?.name == "ReltDev${idx}".toString() }
+            def dsPicker = dsInputs == null ? null : dsInputs.find { it?.name == "tstate${idx}".toString() }
+            if (hasComparatorField) {
+                // Numeric/text comparator cap: '*changed*' is a real ReltDev<N> option -- write it.
+                writeIfPresent("ReltDev${idx}", _rmNormalizeComparator(triggerSpec.comparator))
+            } else if (dsPicker != null) {
+                // Device-state enum cap: the tstate<N> value picker carries the change option.
+                if (explicitVal != null) {
+                    // Contradictory request: an explicit state AND a change comparator. The value
+                    // lands in tstate<N> below and wins, so the change intent is dropped -- report
+                    // it via an INFORMATIONAL skip that does NOT flip partial (matches the enum
+                    // Custom Attribute sibling). Key on a SYNTHETIC comparator@tstate<N> so the
+                    // real tstate<N> field is never listed in BOTH settingsApplied and
+                    // settingsSkipped (the applied/skipped-disjoint invariant).
+                    skipped << [key: "comparator@tstate${idx}".toString(), reason: "state_change_comparator_ignored_explicit_value",
+                                value: _rmNormalizeComparator(triggerSpec.comparator), capability: capCanonical?.toString()]
+                } else {
+                    // Match the requested token against the picker's actual options rather than
+                    // hardcoding a literal (RM may store it wrapped, e.g. '*changed*'). Read the
+                    // option strings ONCE. Route the EXACT match into tstate<N> via the generic
+                    // write below.
+                    def reqToken = _rmComparatorToken(triggerSpec.comparator)
+                    def pickerOptions = _rmReadPickerOptionStrings(dsPicker)
+                    def changeOption = pickerOptions.find { _rmComparatorTokenMatchesOption(reqToken, it) }
+                    if (changeOption != null) {
+                        triggerSpec.state = changeOption
+                    } else {
+                        // The value picker offers no matching change option -- surface a GENUINE
+                        // skip (-> partial) keyed on the real tstate<N> field (which received no
+                        // value, so no applied/skipped collision) rather than silently landing
+                        // ReltDev<N> not_in_schema. The skip carries its own precise walkStep hint.
+                        skipped << [key: "tstate${idx}".toString(), reason: "change_comparator_not_representable_for_device_state",
+                                    value: _rmNormalizeComparator(triggerSpec.comparator), capability: capCanonical?.toString(),
+                                    pickerOptions: pickerOptions,
+                                    hint: "The '${capCanonical}' value picker (tstate${idx}) offers no option matching the change comparator '${_rmNormalizeComparator(triggerSpec.comparator)}' (options: ${pickerOptions}). Write tstate${idx} directly via a walkStep call if the picker uses a change token that this route does not match."]
+                    }
+                }
+            } else {
+                // Neither the comparator field (ReltDev<N>, numeric caps) nor the value picker
+                // (tstate<N>, device-state enum caps) rendered for this row. Route by curated
+                // family and fetch outcome.
+                def capFamily = _rmTriggerCapabilityFamily(capCanonical?.toString())
+                if (dsInputs == null) {
+                    // Transient re-fetch failure: the rendered field is unknown. A numeric
+                    // (comparator-bearing) capability takes '*changed*' as a real ReltDev<N>
+                    // option, so force-write it to preserve the pre-redesign infallibility
+                    // (mirrors the Custom Attribute fetch-failure force-write). Device-state and
+                    // unknown families ride a value picker whose exact option string is only
+                    // knowable from the fetch that just failed, so a false write is worse than a
+                    // flagged partial -- degrade with a verify-and-repair hint (never abort, the
+                    // F9 contract).
+                    if (capFamily == "numeric") {
+                        _rmForceWriteEnumField(appId, "selectTriggers", "ReltDev${idx}".toString(), _rmNormalizeComparator(triggerSpec.comparator), applied, skipped)
+                    } else if (capFamily == "hub-state") {
+                        // Mode (hub-state) carries its change semantics through modesX<N>, written
+                        // by the Mode path below -- so a stray change comparator here has no route
+                        // to place regardless of the failed re-fetch. Recording the unverified-route
+                        // skip would flip partial before that clean commit; leave it for the Mode
+                        // path (mirrors the fetch-success neither-field hub-state no-op below).
+                    } else {
+                        // Unlike the other genuine skips, this one keys on a SYNTHETIC
+                        // comparator@tstate<N> rather than the real field name (the fetch failed,
+                        // so the real field -- tstate<N> vs ReltDev<N> -- is unknown). The repair
+                        // target therefore lives in the hint, not the key; TOOL_GUIDE / the served
+                        // guide say the same.
+                        skipped << [key: "comparator@tstate${idx}".toString(), reason: "state_change_route_unverified_fetch_failed",
+                                    value: _rmNormalizeComparator(triggerSpec.comparator), capability: capCanonical?.toString(),
+                                    hint: "The selectTriggers schema could not be re-fetched to place the state-change comparator '${_rmNormalizeComparator(triggerSpec.comparator)}'. Verify via hub_get_app_config(appId); if the change did not land, write tstate${idx} (device-state enum caps) or ReltDev${idx} (numeric caps) directly via a walkStep call."]
+                    }
+                } else if (capFamily == "hub-state") {
+                    // Mode (hub-state) carries its change semantics through modesX<N>, written by
+                    // the Mode path below -- a phantom ReltDev<N> here would record not_in_schema
+                    // (partial) before that clean commit. Leave it for the Mode path.
+                } else {
+                    // Schema rendered but neither field present (an unexpected wizard state for a
+                    // device-state capability). The change token cannot be placed, and any
+                    // explicit value cannot ride the absent tstate<N> -- so do NOT claim it
+                    // committed. Surface the specific device-state reason (keyed on the synthetic
+                    // comparator@tstate<N> so a downstream tstate<N> value write, when an explicit
+                    // value was supplied, is never double-listed) rather than a bare ReltDev<N>
+                    // not_in_schema whose generic "introspect and re-write" advice would misdirect.
+                    skipped << [key: "comparator@tstate${idx}".toString(), reason: "change_comparator_not_representable_for_device_state",
+                                value: _rmNormalizeComparator(triggerSpec.comparator), capability: capCanonical?.toString(),
+                                hint: "The '${capCanonical}' trigger rendered neither a comparator field (ReltDev${idx}) nor a value picker (tstate${idx}) for the state-change comparator '${_rmNormalizeComparator(triggerSpec.comparator)}'. Re-fetch via hub_get_app_config(appId) and author the change directly via a walkStep call."]
+                }
+            }
         } else {
-            // No attribute (numeric/text comparator path on a standard capability) --
+            // Non-RHS-optional numeric/text comparator (>, <, =, ...) on a standard capability --
             // the comparator field is already in the schema; write it directly.
             writeIfPresent("ReltDev${idx}", _rmNormalizeComparator(triggerSpec.comparator))
         }
@@ -1950,6 +2089,8 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
             modeNames.each { mn ->
                 def matched = allModes.find { it?.name?.toString()?.equalsIgnoreCase(mn?.toString()) }
                 if (!matched) {
+                    def commaHint = _rmCommaJoinedModeHint(mn, validModeNames, "addTrigger Mode")
+                    if (commaHint) throw new IllegalArgumentException(commaHint)
                     throw new IllegalArgumentException("addTrigger Mode: mode name '${mn}' not found. Valid modes: ${validModeNames.sort().join(', ')}")
                 }
                 rawModeIds << matched.id.toString()
@@ -2492,12 +2633,16 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         // confirm it failed transiently. Telling the caller it "didn't land" / to re-write
         // it would be wrong, so split those keys out into a verify-don't-rewrite hint.
         def forceWrittenKeys = genuineSkipped.findAll { it instanceof Map && it.reason == "comparator_force_written_unverified" }*.key.findAll { it != null }
-        // Both comparator_force_written_unverified (written-but-unverified) and
-        // comparator_not_representable_for_enum_attribute (genuinely unrepresentable)
-        // get their OWN specific hint below, so exclude them from the generic
-        // "didn't land -- introspect and re-write" hint -- that advice does not apply
-        // to either and would mislead.
-        def specificHintReasons = ["comparator_force_written_unverified", "comparator_not_representable_for_enum_attribute"]
+        // Every reason here carries its OWN specific hint below, so exclude them from the
+        // generic "didn't land -- introspect and re-write" hint -- that advice does not apply
+        // and would mislead. comparator_force_written_unverified is written-but-unverified;
+        // comparator_not_representable_for_enum_attribute is genuinely unrepresentable; the two
+        // device-state state-change reasons (no matching picker option / unverifiable re-fetch)
+        // are unrepresentable-or-unverified on the value-picker path -- following the generic
+        // "write the missing tstate field" advice would send the caller to write a token the
+        // picker rejected (a repair loop).
+        def specificHintReasons = ["comparator_force_written_unverified", "comparator_not_representable_for_enum_attribute",
+                                   "change_comparator_not_representable_for_device_state", "state_change_route_unverified_fetch_failed"]
         def lostSkipped = genuineSkipped.findAll { !(it instanceof Map && it.reason in specificHintReasons) }
         if (!lostSkipped.isEmpty()) {
             def skippedKeys = lostSkipped*.key.findAll { it != null }.join(', ')
@@ -2513,6 +2658,13 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         notRepresentable.each { sk ->
             repairHints << _rmNotRepresentableEnumComparatorHint(
                 (sk instanceof Map ? sk.attribute : null), (sk instanceof Map ? sk.value : null))
+        }
+        // Device-state change-comparator skips (no matching picker option, or an unverifiable
+        // re-fetch) carry their own precise walkStep hint on the skip -- surface it directly so
+        // the caller gets the accurate device-state repair path, not the generic one above.
+        genuineSkipped.findAll { it instanceof Map &&
+                (it.reason == "change_comparator_not_representable_for_device_state" || it.reason == "state_change_route_unverified_fetch_failed") }.each { sk ->
+            if (sk.hint) repairHints << sk.hint.toString()
         }
         if (hasBrokenLabel) {
             repairHints << "Trigger row has *BROKEN* marker -- capability '${cap}' likely needs a capability-specific field (Mode: pass state='ModeName' or modeIds=['id'], NOT rawSettings.tstate; Periodic: pass periodic={} sub-spec). Re-add the trigger with the correct fields."
@@ -4494,6 +4646,23 @@ private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, 
 // "Away") into a List of mode IDs as Strings, in insertion order. Used by
 // per-mode action subtypes to write the modes list field. The hub's mode
 // IDs come from location.modes.
+// A mode multi-select is a LIST: RM stores one mode ID per element, so a single
+// comma-joined string ("Day,Evening") is looked up as one nonexistent mode. When a
+// name fails to resolve AND contains a comma, steer to the list shape rather than the
+// opaque "unknown mode" so the caller stops comma-joining. Returns the hint message,
+// or null when the value is not a comma-joined string (caller falls through to its
+// normal unknown-mode error). Only consulted on the not-found path, so a real
+// comma-bearing mode name that DID resolve is never second-guessed. The body carries NO
+// surface word -- each caller passes its own `context` (e.g. "addTrigger Mode",
+// "conditions[2]") so the message is prefixed once, never doubled. ASCII-only.
+private String _rmCommaJoinedModeHint(Object rawName, Collection validNames, String context = "") {
+    def s = rawName?.toString()
+    if (s == null || !s.contains(",")) return null
+    def valid = (validNames ?: []).collect { it?.toString() }.findAll { it }.sort().join(', ')
+    def prefix = context ? "${context}: " : ""
+    return "${prefix}'${s}' looks like a comma-joined list -- pass a list instead, one entry per mode (e.g. state:['Day','Evening']), not a single comma-separated string. Valid modes: ${valid}"
+}
+
 private List _rmResolveModeIds(Collection keys) {
     def hubModes = location?.modes ?: []
     def nameToId = [:]
@@ -4505,6 +4674,8 @@ private List _rmResolveModeIds(Collection keys) {
         if (s.isInteger()) { out << s; return }
         def mapped = nameToId[s]
         if (mapped) { out << mapped; return }
+        def commaHint = _rmCommaJoinedModeHint(s, nameToId.keySet(), "Mode")
+        if (commaHint) throw new IllegalArgumentException(commaHint)
         throw new IllegalArgumentException("Unknown mode '${s}' -- must be an integer mode ID or one of: ${nameToId.keySet().sort().join(', ')}")
     }
     return out
@@ -4553,6 +4724,8 @@ private List _rmResolveModeNames(Collection keys) {
         if (!s) return
         if (s.isInteger() && idToName[s]) { out << idToName[s]; return }
         if (nameSet.contains(s)) { out << s; return }
+        def commaHint = _rmCommaJoinedModeHint(s, nameSet, "Mode")
+        if (commaHint) throw new IllegalArgumentException(commaHint)
         throw new IllegalArgumentException("Unknown mode '${s}' -- must be an integer mode ID or one of: ${nameSet.sort().join(', ')}")
     }
     return out
@@ -4610,6 +4783,25 @@ private void _rmInitSelectActionsPage(Integer appId) {
 }
 
 // High-level structured action creation for Rule Machine 5.1.
+// Internal _rm helper -- not part of the tool surface.
+// True when an action capability selects its operation via an action verb (on/off/open/close/
+// lock/setSpeed/...) rather than a trigger-style state value. Sourced from the action discover
+// schema: any capability entry declaring an `action` enum requiredField is action-driven, so the
+// set covers every such capability (switch, dimmer, color, colorTemp, lock, shade, fan, button,
+// ...) rather than a hardcoded few. The Window Shade display name resolves to the shade
+// operation picker, so it is recognized too. Case-insensitive. Advisory-only -- used to steer a
+// caller who passed state: where action: belongs.
+private boolean _rmActionCapUsesActionVerb(String capRaw) {
+    def want = capRaw?.trim()?.toLowerCase()
+    if (!want) return false
+    def actionEnumCaps = (_rmActionSchemaForDiscover()?.capabilities ?: []).findAll { c ->
+        (c?.requiredFields instanceof List) && (c.requiredFields as List).any { it?.name == "action" && it?.type == "enum" }
+    }.collect { it.name.toString().toLowerCase() }
+    // Actuator display name that names the same operation picker as the shade schema entry.
+    def resolved = (want == "window shade" || want == "windowshade") ? "shade" : want
+    return resolved in actionEnumCaps
+}
+
 // Replaces the 6-7 manual wizard calls with one orchestrated call.
 // Wire-format quirks and capability families: docs/rm_wire_format.md#_rmAddAction.
 //
@@ -4635,6 +4827,29 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
     // capabilities (log, mode, delay, comment, exitRule, capture, restore,
     // refresh, poll, runRule, cancelTimers, etc.) accept a null/missing
     // action — each capability's branch validates as needed.
+
+    // Fail loud on two plausible-but-wrong action shapes before any hub round-trip, so a rejected
+    // spec never opens the action editor (both are pre-write, hence "RM is not touched"). First:
+    // the condition-bearing action subtypes take their conditions INSIDE an expression wrapper
+    // (expression:{conditions:[...], operator|operators}); a flat top-level conditions array is
+    // never read, so name that mistake rather than surfacing only the generic "requires
+    // expression=..." from the capability branch further down. Compare case-insensitively so a
+    // caller carrying the addTrigger title-case convention (capability:'Switch') still trips it.
+    def capLc = cap?.toLowerCase()
+    def expressionBearingCaps = ["ifthen", "elseif", "repeatwhile", "waitexpression"]
+    if (capLc in expressionBearingCaps && actionSpec.conditions != null && !(actionSpec.expression instanceof Map)) {
+        throw new IllegalArgumentException("${cap} action takes expression:{conditions:[...], operator|operators}, not a top-level conditions array. Wrap them: expression:{conditions:[...], operator:'AND'}. Pass {discover:true} for the expression shape. RM is not touched.")
+    }
+
+    // Second: an action-driven capability selects its operation via action: (on/off/toggle;
+    // setSpeed/cycle; open/close/...), not the trigger-style state:. Passing state: leaves action
+    // null and the capability branch rejects with an opaque "Unknown <cap> action 'null'"; name
+    // the real mistake so the caller moves the value to action:. The action-driven set is derived
+    // from the action schema (every capability with an action enum), so the steer covers all of
+    // them -- not just a hardcoded few.
+    if (action == null && actionSpec.state != null && _rmActionCapUsesActionVerb(cap)) {
+        throw new IllegalArgumentException("${cap} action uses action: (not state:) to select the operation -- e.g. addAction(capability:'${cap}', action:'${actionSpec.state}', ...). Pass {discover:true} for this capability's action list. RM is not touched.")
+    }
 
     // Pre-flight: refuse closers (endIf / stopRepeat) and orphan branch
     // keywords (elseIf / else) that would render as orphaned because they
@@ -5135,6 +5350,8 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
             if (!matched) {
                 def available = hubModes.collect { it?.name }.findAll { it }.sort().join(', ')
                 def availableDisplay = available ?: "(none -- hub returned no modes; verify hub state via hub_list_modes)"
+                def commaHint = _rmCommaJoinedModeHint(name, hubModes.collect { it?.name }, "mode action")
+                if (commaHint) throw new IllegalArgumentException(commaHint)
                 throw new IllegalArgumentException("mode action: modeName '${name}' not found. Available modes: ${availableDisplay}")
             }
             modeValue = matched.id
@@ -5944,7 +6161,9 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
             def opts = (capInput.options ?: []) as List
             def canon = opts.find { it.toString().equalsIgnoreCase(evCap) }
             if (!canon) {
-                throw new IllegalArgumentException("waitEvents.events[${evIdx}].capability '${evCap}' not in option list. Valid: ${opts.collect { it.toString() }.sort().join(', ')}")
+                def suggestion = _rmSuggestTriggerCapability(evCap, opts)
+                def didYouMean = suggestion ? " Did you mean '${suggestion}'?" : ""
+                throw new IllegalArgumentException("waitEvents.events[${evIdx}].capability '${evCap}' not in option list.${didYouMean} Valid: ${opts.collect { it.toString() }.sort().join(', ')}")
             }
             // A Mode event's INPUT checks (neither-provided, deviceIds-rejection,
             // mode NAME resolution) run BEFORE the tCapab-<N> POST -- they need
@@ -6230,7 +6449,9 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
             def capCanonical = capOptions.find { it.toString().equalsIgnoreCase(ccap) }
             if (!capCanonical) {
                 cancelInFlightActCond()
-                throw new IllegalArgumentException("${cap}.expression.conditions[${i}].capability '${ccap}' not in doActPage option list. Valid: ${capOptions.collect { it.toString() }.sort().join(', ')}")
+                def suggestion = _rmSuggestTriggerCapability(ccap, capOptions)
+                def didYouMean = suggestion ? " Did you mean '${suggestion}'?" : ""
+                throw new IllegalArgumentException("${cap}.expression.conditions[${i}].capability '${ccap}' not in doActPage option list.${didYouMean} Valid: ${capOptions.collect { it.toString() }.sort().join(', ')}")
             }
             actCancelledByWalker = false
             try {
@@ -6790,9 +7011,69 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
 // attribute (for Custom Attribute conditions)
 // not (bool, default false) — sets not<N>=true to negate the condition
 // rawSettings (escape hatch for advanced fields)
+// Internal _rm helper -- not part of the tool surface.
+// The date/day-window condition capabilities that are modelled on NO structured condition
+// surface (not the static selectTriggers path, not the reveal-walker used by
+// addRequiredExpression / ifThen): their date/day pickers are unimplemented everywhere.
+// Single source of truth so the trigger-condition guard and the walker guard reject the same
+// set and cannot drift.
+private List _rmUnsupportedDateDayConditionCaps() { ["Between two dates", "Days of week", "On a Day"] }
+
+// Internal _rm helper -- not part of the tool surface.
+// Shared fail-loud message for a date/day-window condition capability. Surface-agnostic (it
+// names every structured surface -- the reveal-walker serves all four addAction expression
+// subtypes), so both the conditional-trigger builder and the reveal-walker throw identical,
+// uniform guidance. ASCII-only.
+private String _rmUnsupportedDateDayConditionMessage(String cap) {
+    "'${cap}' is not yet supported via the structured condition shortcut on any surface (addTrigger.condition, addRequiredExpression, or the addAction expression subtypes ifThen/elseIf/repeatWhile/waitExpression); its date/day picker is not modelled. Author it directly against the wizard via rawSettings or a walkStep call."
+}
+
+// Internal _rm helper -- not part of the tool surface.
+// Shared fail-loud message for a state-change comparator ('*changed*'/'*became*') requested on
+// a device-state CONDITION capability with no explicit value. A condition is evaluated
+// point-in-time (is the state X right now?), so a change comparator has no meaning there -- it
+// belongs on a trigger row. Single source of truth so the static condition builder and the
+// reveal-walker steer identically. ASCII-only.
+private String _rmChangeComparatorConditionMessage(String cap, Integer condIdx) {
+    def where = condIdx != null ? "conditions[${condIdx}]: " : ""
+    "${where}capability '${cap}' with a state-change comparator ('*changed*'/'*became*') is not valid as a condition -- conditions are evaluated point-in-time (is the state X right now?), so a change comparator has nowhere to apply. Author it as a TRIGGER row instead (addTrigger.capability with comparator:'*changed*'), where device-state change events ARE supported; for a condition, pass an explicit state (e.g. state:'on')."
+}
+
 private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List applied, List skipped = null) {
     def condCap = condSpec.capability?.toString()?.trim()
     if (!condCap) throw new IllegalArgumentException("condition.capability is required")
+
+    // Capabilities whose wizard needs progressive reveal-walking (the start/end time-picker
+    // chain) are implemented only on the reveal-walker condition surfaces. On this static
+    // selectTriggers condition path they would write rCapab_<N> and then have no field
+    // handling, committing a broken condition; fail loud pointing at the supported surfaces.
+    if (condCap.equalsIgnoreCase("Between two times")) {
+        throw new IllegalArgumentException("'Between two times' is not supported as a conditional-trigger condition (addTrigger.condition); its start/end time-picker walk is implemented only for Required Expressions (addRequiredExpression) and IF actions (addAction capability:'ifThen'). Use one of those instead.")
+    }
+
+    // Date/day-window condition capabilities are unimplemented on EVERY structured
+    // condition surface -- unlike 'Between two times', neither this static path nor the
+    // reveal-walker (addRequiredExpression / ifThen) handles their date/day pickers, so
+    // there is no supported shortcut to steer to. They would write rCapab_<N> and then
+    // leave the date/day fields unset, committing a broken condition. Fail loud and point
+    // at the raw wizard escape hatches instead.
+    def unsupportedDateDay = _rmUnsupportedDateDayConditionCaps().find { it.equalsIgnoreCase(condCap) }
+    if (unsupportedDateDay) {
+        throw new IllegalArgumentException(_rmUnsupportedDateDayConditionMessage(unsupportedDateDay))
+    }
+
+    // A state-change comparator ('*changed*'/'*became*') with no explicit value is a trigger
+    // concept, not a condition (conditions are point-in-time). It would commit a meaningless
+    // condition; fail loud and steer to the trigger row. The family gate is the deny-list
+    // (_rmStateChangeGuardApplies) the trigger side uses, NOT a positive device-state match:
+    // the live picker admits many device-state/enum caps the curated schema omits (Water,
+    // Smoke, Thermostat mode, ...) whose null family a positive match would leave UNGUARDED,
+    // silently committing a lost/broken comparator. The exempt families (hub-state / variable /
+    // custom-attribute / time / button) keep their own handling below.
+    if (_rmComparatorIsRhsOptional(condSpec.comparator) && condSpec.state == null && condSpec.value == null && condSpec.attribute == null
+            && _rmStateChangeGuardApplies(condCap)) {
+        throw new IllegalArgumentException(_rmChangeComparatorConditionMessage(condCap, null))
+    }
 
     // Toggle conditional + open the new-condition picker.
     _rmWriteSettingOnPage(appId, "selectTriggers", "isCondTrig.${idx}", true, applied, null, skipped)
@@ -9584,8 +9865,13 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         "Tamper alert":                ["detected", "clear"],
         "Acceleration":                ["active", "inactive"]
     ]
+    // The RHS-optional ('*changed*'/'*became*') subset is left to the change-comparator guard
+    // below so a change token on a discrete cap gets the same "author it as a trigger row" steer
+    // as every other condition surface; the discrete-event guard owns only the numeric-shape comparator (>, =, <, ...)
+    // with no value, whose recovery is a state value.
     def discreteValid = DISCRETE_EVENT_CAPS[capCanonical]
-    if (discreteValid != null && cond.comparator != null && cond.state == null && cond.value == null) {
+    if (discreteValid != null && cond.comparator != null && !_rmComparatorIsRhsOptional(cond.comparator)
+            && cond.state == null && cond.value == null) {
         cancelInFlightCond()
         def validValues = discreteValid.collect { "'${it}'" }.join(" or ")
         throw new IllegalArgumentException("conditions[${condIdx}]: ${capCanonical} is a discrete-event capability -- pass state: ${validValues} instead of a comparator+value pair. The comparator-without-value shape silently degrades on RM 5.1 (no broken marker, but the condition is functionally meaningless). See rCapab_<N> capability list for the full state-value table.")
@@ -9605,6 +9891,36 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice (device-relative RHS) is only supported with numeric device capabilities (e.g. Temperature, Humidity, Illuminance); capability '${capCanonical}' does not support it. Capabilities with dedicated handling instead: Mode, Between two times, Variable, Custom Attribute.")
     }
 
+    // ---- Pre-walker guard: date/day-window condition capabilities ----
+    // Between two dates / Days of week / On a Day are modelled on NO structured condition
+    // surface -- their date/day pickers are not walked here, so they would write rCapab_<N>
+    // and commit a broken condition with the date/day fields unset. Reject up front (mirrors
+    // _rmBuildCondition's static-path guard) so fail-loud is uniform across every condition
+    // surface, including this reveal-walker (addRequiredExpression / ifThen). Cancel the
+    // in-flight condition first, like the sibling pre-walker guards.
+    def unsupportedDateDay = _rmUnsupportedDateDayConditionCaps().find { it.equalsIgnoreCase(capCanonical) }
+    if (unsupportedDateDay) {
+        cancelInFlightCond()
+        throw new IllegalArgumentException("conditions[${condIdx}]: " + _rmUnsupportedDateDayConditionMessage(unsupportedDateDay))
+    }
+
+    // ---- Pre-walker guard: state-change comparator on a device-state condition ----
+    // A '*changed*'/'*became*' comparator with no explicit value is a trigger concept, not a
+    // condition (conditions are point-in-time). Reject up front (mirrors _rmBuildCondition's
+    // static-path guard) so the steer is uniform across every condition surface. The family gate
+    // is the deny-list (_rmStateChangeGuardApplies), not a positive device-state match, so the
+    // non-curated device-state/enum caps the live picker admits (Water, Smoke, Thermostat mode,
+    // ...) are guarded too rather than silently committing a broken/lost comparator. The discrete-event
+    // guard above yields the RHS-optional shape here, so the two never double-reject.
+    // Between two times is a supported condition capability that takes no comparator (its start/end
+    // handler below ignores one) but has null trigger family, so exempt it here rather than
+    // mis-reporting a valid condition surface as invalid.
+    if (_rmComparatorIsRhsOptional(cond.comparator) && cond.state == null && cond.value == null && cond.attribute == null && !"Between two times".equalsIgnoreCase(capCanonical)
+            && _rmStateChangeGuardApplies(capCanonical)) {
+        cancelInFlightCond()
+        throw new IllegalArgumentException(_rmChangeComparatorConditionMessage(capCanonical, condIdx))
+    }
+
     // ---- Mode capability ----
     // RM reveals a modes<cIdx> picker (e.g. modes6) after rCapab is committed --
     // the exact name is firmware-assigned and must be discovered, not hardcoded.
@@ -9619,6 +9935,13 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             // Resolve name(s) to IDs via _rmResolveModeIds.
             def stateVal = cond.state
             def names = (stateVal instanceof List) ? (stateVal as List) : [stateVal]
+            // A comma-joined single string is a common mistake -- steer to the list shape with
+            // this surface's own context before the shared resolver throws its generic form.
+            def hubModeNames = (location?.modes ?: []).collect { it?.name }.findAll { it }
+            names.each { nm ->
+                def commaHint = _rmCommaJoinedModeHint(nm, hubModeNames, "conditions[${condIdx}]")
+                if (commaHint) { cancelInFlightCond(); throw new IllegalArgumentException(commaHint) }
+            }
             modeIdsToWrite = _rmResolveModeIds(names)
         }
         if (!modeIdsToWrite) {
@@ -10840,7 +11163,9 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec, boolean preVal
                     def capOptions = (rCapabInput.options ?: []) as List
                     def capCanonical = capOptions.find { it.toString().equalsIgnoreCase(cap) }
                     if (!capCanonical) {
-                        throw new IllegalArgumentException("conditions[${i}].capability '${cap}' not in STPage option list. Valid: ${capOptions.collect { it.toString() }.sort().join(', ')}")
+                        def suggestion = _rmSuggestTriggerCapability(cap, capOptions)
+                        def didYouMean = suggestion ? " Did you mean '${suggestion}'?" : ""
+                        throw new IllegalArgumentException("conditions[${i}].capability '${cap}' not in STPage option list.${didYouMean} Valid: ${capOptions.collect { it.toString() }.sort().join(', ')}")
                     }
                     // Steps 3-N: write the capability, devices, comparator chain, and state
                     // in the correct progressive-disclosure order, then click hasAll.
