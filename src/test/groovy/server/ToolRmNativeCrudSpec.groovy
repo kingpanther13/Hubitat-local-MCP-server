@@ -3291,6 +3291,79 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         (result.settingsApplied as List).contains("modesX1")
     }
 
+    def "addTrigger Mode with a comma-joined mode string steers to the list shape (addTrigger Mode context)"() {
+        // The addTrigger-Mode inline name-resolution loop consults _rmCommaJoinedModeHint so a
+        // single comma-joined string steers to the per-entry list shape rather than an opaque
+        // unknown-mode error. Both-ways: removing the hint call at this site falls back to the
+        // generic 'mode name not found' message with no list-shape steer.
+        given:
+        enableWrite()
+        sharedLocation.modes = [[id: "1", name: "Day"], [id: "2", name: "Evening"]]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "tCapab1", type: "enum", options: ["Mode"]],
+                [name: "modesX1", type: "enum", options: ["1", "2"]],
+                [name: "isCondTrig.1", type: "bool"],
+                [name: "hasAll", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String key, Object value, List applied, String typeHint = null, List skipped = null, Map cache = null -> applied << key }
+
+        when: "a Mode trigger passes a single comma-joined mode string"
+        script._rmAddTrigger(100, [capability: "Mode", state: "Day,Evening"])
+
+        then: "the reject steers to the list shape with the addTrigger Mode context prefix"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("addTrigger Mode:")
+        ex.message.contains("comma-joined list")
+        ex.message.contains("state:['Day','Evening']")
+    }
+
+    def "addTrigger Mode *changed* with a THROWING routing re-fetch does NOT record the unverified-route skip (hub-state rides modesX)"() {
+        // Fix C region hub-state carve-out: a Mode (hub-state) trigger carrying a stray
+        // comparator:'*changed*' whose post-device-write selectTriggers re-fetch throws must NOT
+        // record state_change_route_unverified_fetch_failed -- Mode commits its change semantics
+        // via modesX<N> in the Mode path, so a stray comparator has no route to place regardless of
+        // the failed fetch. Both-ways: without the hub-state carve-out in the dsInputs==null branch,
+        // the else records the skip and flips partial (its hint names tstate/ReltDev, neither of
+        // which applies to Mode).
+        given:
+        enableWrite()
+        sharedLocation.modes = [[id: "1", name: "Day"]]
+        def fetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            fetchSeq++
+            if (fetchSeq == 3) throw new RuntimeException("simulated transient routing re-fetch failure")
+            ruleConfigJson(100, "r", [
+                [name: "tCapab1", type: "enum", options: ["Mode"]],
+                [name: "modesX1", type: "enum", options: ["1"]],
+                [name: "isCondTrig.1", type: "bool"],
+                [name: "hasAll", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String key, Object value, List applied, String typeHint = null, List skipped = null, Map cache = null -> applied << key }
+
+        when: "a Mode trigger passes modeIds + a stray comparator:'*changed*' and the routing re-fetch throws"
+        def result = script._rmAddTrigger(100, [capability: "Mode", modeIds: ["1"], comparator: "*changed*"])
+
+        then: "no unverified-route skip is recorded and partial stays false"
+        !result.settingsSkipped.any { it.reason == "state_change_route_unverified_fetch_failed" }
+        result.partial == false
+
+        and: "the Mode selection itself landed via modesX1"
+        (result.settingsApplied as List).contains("modesX1")
+    }
+
     def "_rmComparatorIsRhsOptional is token-anchored and does not false-match substrings like 'unchanged'"() {
         // Fix P: the no-RHS state-change family gate strips the '*...*' wrapping then matches an
         // exact marker or a 'marker <word>' form, so a comparator that merely CONTAINS a marker as a
@@ -3361,6 +3434,74 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == false
         result.error?.contains("not valid as a condition")
         result.error?.contains("TRIGGER row")
+    }
+
+    @spock.lang.Unroll
+    def "_rmBuildCondition rejects a *changed* comparator on a NON-CURATED device-state/enum condition capability '#cap' (deny-list, not positive device-state match)"() {
+        // Deny-list posture: the live rCapab picker admits device-state/enum caps the curated
+        // discover schema omits (Water sensor, Thermostat mode, ...), for which
+        // _rmTriggerCapabilityFamily returns null. A positive == "device-state" match would leave
+        // these UNGUARDED and let the change comparator commit a broken/lost condition; the
+        // deny-list (_rmStateChangeGuardApplies) guards them. Both-ways: reverting to the positive
+        // == "device-state" match lets the null-family cap commit through, so the reject would not
+        // fire.
+        when:
+        script._rmBuildCondition(100, 1, [capability: cap, comparator: "*changed*"], [])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("not valid as a condition")
+        ex.message.contains("TRIGGER row")
+
+        where:
+        cap << ["Water sensor", "Thermostat mode"]
+    }
+
+    @spock.lang.Unroll
+    def "addRequiredExpression rejects a *changed* comparator on a NON-CURATED device-state/enum condition capability '#cap' (reveal-walker deny-list)"() {
+        // Reveal-walker parity for the deny-list, on STPage. For Water sensor the F18 discrete-event
+        // guard yields the RHS-optional shape to the change-comparator guard, so the message stays
+        // the uniform trigger-row steer (NOT the discrete-event one). Both-ways: reverting to the
+        // positive == "device-state" match lets the null-family cap fall through (F18 also yields
+        // the *changed* shape), so the walk proceeds instead of this reject.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "cond", type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1", type: "enum", options: ["Switch", "Water sensor", "Thermostat mode"]],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["s1"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "a non-curated device-state/enum condition carries comparator:'*changed*' with no value"
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[capability: cap, comparator: "*changed*"]]],
+            confirm: true
+        ])
+
+        then: "the walker rejects it with the uniform trigger-row steer"
+        result.success == false
+        result.error?.contains("not valid as a condition")
+        result.error?.contains("TRIGGER row")
+
+        and: "not the F18 discrete-event message (the change-comparator guard owns the *changed* shape)"
+        !(result.error?.toString()?.contains("discrete-event capability"))
+
+        where:
+        cap << ["Water sensor", "Thermostat mode"]
     }
 
     def "addRequiredExpression unknown condition capability fails loud with a did-you-mean drawn from the live STPage options"() {
@@ -18681,6 +18822,35 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         clicks.count { it == "hasAll" } == 2
     }
 
+    def "waitEvents unknown capability fails loud with a did-you-mean drawn from the live tCapab options"() {
+        // The waitEvents capability-not-in-options reject appends a closest-match suggestion drawn
+        // from the live tCapab-<N> option list (containment-matched). Both-ways: removing the
+        // _rmSuggestTriggerCapability call at this site drops the 'Did you mean' clause.
+        given:
+        enableWrite()
+        def doActInputs = [
+            [name: "actType.1", type: "enum", options: ["delayActs": "Delay, Wait, Exit or Comment"]],
+            [name: "actSubType.1", type: "enum", options: ["getWaitEvents": "Wait for Events"]],
+            [name: "tCapab-1", type: "enum", options: ["Switch", "Motion", "Contact"]],
+            [name: "hasAll", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", doActInputs) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+
+        when: "a waitEvents event names a near-miss capability typo"
+        script._rmAddAction(100, [capability: "waitEvents", events: [[capability: "Switc"]]])
+
+        then: "the reject carries a containment-matched did-you-mean from the live options"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("not in option list")
+        ex.message.contains("Did you mean 'Switch'?")
+    }
+
     def "waitEvents Mode event with an unknown mode name throws listing valid modes"() {
         given:
         enableWrite()
@@ -24305,6 +24475,39 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error?.contains("Away")
     }
 
+    def "addAction mode with a comma-joined mode string steers to the list shape (mode action context)"() {
+        // The 'mode' action modeName resolver consults _rmCommaJoinedModeHint so a single
+        // comma-joined string steers to the per-entry list shape rather than an opaque
+        // unknown-mode error. Both-ways: removing the hint call at this site falls back to the
+        // generic 'modeName not found' message with no list-shape steer.
+        given:
+        enableWrite()
+        sharedLocation.modes = [[id: "1", name: "Day"], [id: "2", name: "Evening"]]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["modeActs": "Set Mode"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "mode", modeName: "Day,Evening"],
+            confirm: true
+        ])
+
+        then: "the reject steers to the list shape with the mode action context prefix"
+        result.success == false
+        result.error?.contains("mode action:")
+        result.error?.contains("comma-joined list")
+        result.error?.contains("state:['Day','Evening']")
+    }
+
     def "addAction mode with modeName is case-insensitive"() {
         // Resolve 'night' (lowercase) -> ID '3' for mode named 'Night'.
         // Day(id=1) is listed FIRST so a first-entry-bias bug would return '1', not '3';
@@ -26102,6 +26305,118 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "endSunriseOffset1 written with 30 (consequence-gated: appeared only after ending1)"
         writtenFields["endSunriseOffset1"].toString() == "30"
+    }
+
+    def "addRequiredExpression Between two times with a stray *changed* comparator is EXEMPT from the change-comparator condition guard (flows to its start/end handler, not the invalid-condition reject)"() {
+        // C-1 regression guard: Between two times has null trigger family, so the deny-list
+        // change-comparator guard would otherwise catch a stray comparator:*changed* and
+        // mis-report a valid condition surface as invalid. BTT takes no comparator; it is exempt
+        // and flows to its start/end handler (the stray comparator is ignored). Both-ways:
+        // removing the BTT exemption makes the guard fire, flipping success:false with the
+        // not-valid-as-a-condition error and no starting1 write.
+        // Both-ways pending (orchestrator).
+        given:
+        enableWrite()
+        def rCapabWritten = false
+        def startingWritten = false
+        def startingAWritten = false
+        def endingWritten = false
+        def writtenFields = [:]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            // Skip wizard-Done submit: Hubitat sends empty placeholders on Done.
+            if (path == "/installedapp/update/json" && body["_action_previous"] != "Done") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key != null) {
+                        def fieldName = key
+                        writtenFields[fieldName] = v
+                        if (fieldName == "rCapab_1")  rCapabWritten = true
+                        if (fieldName == "starting1") startingWritten = true
+                        if (fieldName == "startingA1") startingAWritten = true
+                        if (fieldName == "ending1")   endingWritten = true
+                    }
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, "r", [[name: "useST", type: "bool"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]],
+                                         body: [[element: "paragraph", description: "IF Between 22:00 and sunrise"]]]]],
+                settings: [useST: "true"], childApps: []
+            ])
+        }
+        def stFetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            stFetchSeq++
+            def inputs = [
+                [name: "cond", type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1", type: "enum", options: ["Between two times", "Switch"]],
+                [name: "hasAll", type: "button"],
+                [name: "doneST", type: "button"]
+            ]
+            // Firmware field names: starting<cIdx>, startingA<cIdx>, ending<cIdx>, endSunriseOffset<cIdx>
+            if (rCapabWritten) {
+                inputs = inputs + [[name: "starting1", type: "enum",
+                    options: ["A specific time": "A specific time", "Sunrise": "Sunrise", "Sunset": "Sunset"]]]
+            }
+            if (startingWritten) {
+                inputs = inputs + [[name: "startingA1", type: "time"]]
+            }
+            if (startingAWritten) {
+                inputs = inputs + [[name: "ending1", type: "enum",
+                    options: ["A specific time": "A specific time", "Sunrise": "Sunrise", "Sunset": "Sunset"]]]
+            }
+            if (endingWritten) {
+                inputs = inputs + [[name: "endSunriseOffset1", type: "number"]]
+            }
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: inputs, paragraphs: ["seq ${stFetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "N", type: "button"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actSubType.1", type: "enum", options: ["getIfThen": "IF Expression THEN"]],
+                [name: "actionCancel", type: "button"]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[
+                capability: "Between two times",
+                comparator: "*changed*",
+                start: [type: "clock", time: "22:00"],
+                end: [type: "sunrise", offset: 30]
+            ]]],
+            confirm: true
+        ])
+
+        then: "not rejected as an invalid condition surface -- BTT is exempt and flows to its handler"
+        result.success == true
+        !(result.error?.toString()?.contains("not valid as a condition"))
+
+        and: "the start/end fields still commit (the stray comparator is ignored, not the deny-list reject)"
+        writtenFields["starting1"] == "A specific time"
+        writtenFields["startingA1"] == "2000-01-01T22:00:00.000+0000"
+        writtenFields["ending1"] == "Sunrise"
     }
 
     def "addRequiredExpression Between two times clock+clock: static-schema fallback sentinels do NOT flip partial:true (B6 false-positive guard)"() {

@@ -3165,6 +3165,18 @@ class TestRunner:
                 and "not valid as a condition" in str(change_cond.get("error", "")).lower() \
                 and "trigger row" in str(change_cond.get("error", "")).lower(), \
                 f"state-change comparator on a device-state condition should fail loud steering to a trigger row, got: {change_cond}"
+            # Deny-list parity: a NON-CURATED device-state/enum capability -- one the curated
+            # discover schema omits but the live condition picker admits -- must get the SAME
+            # pre-write reject as Switch, not a silent broken/lost-comparator commit. Water Sensor
+            # is such a capability. No deviceIds needed: the pre-walker guard fires on the
+            # capability + change comparator before any device write.
+            noncurated_change_cond = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "addRequiredExpression": {"conditions": [
+                         {"capability": "Water Sensor", "comparator": "*changed*"}]}, "confirm": True}})
+            assert noncurated_change_cond.get("success") is False \
+                and "not valid as a condition" in str(noncurated_change_cond.get("error", "")).lower() \
+                and "trigger row" in str(noncurated_change_cond.get("error", "")).lower(), \
+                f"state-change comparator on a NON-CURATED device-state condition should fail loud steering to a trigger row, got: {noncurated_change_cond}"
         finally:
             self._delete_native(app_id)
 

@@ -1936,8 +1936,8 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
             // An RHS-optional (state-change) comparator on a non-Custom-Attribute capability.
             // Route the change token by what the LIVE wizard renders for this trigger index,
             // NOT the curated family taxonomy: the taxonomy lists only seven device-state caps,
-            // so gating on it misroutes every OTHER live device-state cap (Water/Smoke/Valve/
-            // Door/CO/...) to ReltDev<N>, which lands not_in_schema and renders the trigger
+            // so gating on it misroutes every OTHER live device-state cap (Water/Smoke/CO/...)
+            // to ReltDev<N>, which lands not_in_schema and renders the trigger
             // "turns null" (fires on any event). The presence of the ReltDev<N> comparator field
             // IS the authoritative "this cap takes a comparator" signal (numeric/text caps expose
             // it -- '*changed*' is a real option there; a device-state enum cap does NOT -- its
@@ -2006,6 +2006,12 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
                     // F9 contract).
                     if (capFamily == "numeric") {
                         _rmForceWriteEnumField(appId, "selectTriggers", "ReltDev${idx}".toString(), _rmNormalizeComparator(triggerSpec.comparator), applied, skipped)
+                    } else if (capFamily == "hub-state") {
+                        // Mode (hub-state) carries its change semantics through modesX<N>, written
+                        // by the Mode path below -- so a stray change comparator here has no route
+                        // to place regardless of the failed re-fetch. Recording the unverified-route
+                        // skip would flip partial before that clean commit; leave it for the Mode
+                        // path (mirrors the fetch-success neither-field hub-state no-op below).
                     } else {
                         // Unlike the other genuine skips, this one keys on a SYNTHETIC
                         // comparator@tstate<N> rather than the real field name (the fetch failed,
@@ -7057,10 +7063,15 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
     }
 
     // A state-change comparator ('*changed*'/'*became*') with no explicit value is a trigger
-    // concept, not a condition (conditions are point-in-time). On a device-state condition
-    // capability it would commit a meaningless condition; fail loud and steer to the trigger row.
-    if (_rmComparatorIsRhsOptional(condSpec.comparator) && condSpec.state == null && condSpec.value == null
-            && _rmTriggerCapabilityFamily(condCap) == "device-state") {
+    // concept, not a condition (conditions are point-in-time). It would commit a meaningless
+    // condition; fail loud and steer to the trigger row. The family gate is the deny-list
+    // (_rmStateChangeGuardApplies) the trigger side uses, NOT a positive device-state match:
+    // the live picker admits many device-state/enum caps the curated schema omits (Water,
+    // Smoke, Thermostat mode, ...) whose null family a positive match would leave UNGUARDED,
+    // silently committing a lost/broken comparator. The exempt families (hub-state / variable /
+    // custom-attribute / time / button) keep their own handling below.
+    if (_rmComparatorIsRhsOptional(condSpec.comparator) && condSpec.state == null && condSpec.value == null && condSpec.attribute == null
+            && _rmStateChangeGuardApplies(condCap)) {
         throw new IllegalArgumentException(_rmChangeComparatorConditionMessage(condCap, null))
     }
 
@@ -9854,8 +9865,13 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         "Tamper alert":                ["detected", "clear"],
         "Acceleration":                ["active", "inactive"]
     ]
+    // The RHS-optional ('*changed*'/'*became*') subset is left to the change-comparator guard
+    // below so a change token on a discrete cap gets the same "author it as a trigger row" steer
+    // as every other condition surface; the discrete-event guard owns only the numeric-shape comparator (>, =, <, ...)
+    // with no value, whose recovery is a state value.
     def discreteValid = DISCRETE_EVENT_CAPS[capCanonical]
-    if (discreteValid != null && cond.comparator != null && cond.state == null && cond.value == null) {
+    if (discreteValid != null && cond.comparator != null && !_rmComparatorIsRhsOptional(cond.comparator)
+            && cond.state == null && cond.value == null) {
         cancelInFlightCond()
         def validValues = discreteValid.collect { "'${it}'" }.join(" or ")
         throw new IllegalArgumentException("conditions[${condIdx}]: ${capCanonical} is a discrete-event capability -- pass state: ${validValues} instead of a comparator+value pair. The comparator-without-value shape silently degrades on RM 5.1 (no broken marker, but the condition is functionally meaningless). See rCapab_<N> capability list for the full state-value table.")
@@ -9891,9 +9907,16 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
     // ---- Pre-walker guard: state-change comparator on a device-state condition ----
     // A '*changed*'/'*became*' comparator with no explicit value is a trigger concept, not a
     // condition (conditions are point-in-time). Reject up front (mirrors _rmBuildCondition's
-    // static-path guard) so the steer is uniform across every condition surface.
-    if (_rmComparatorIsRhsOptional(cond.comparator) && cond.state == null && cond.value == null
-            && _rmTriggerCapabilityFamily(capCanonical) == "device-state") {
+    // static-path guard) so the steer is uniform across every condition surface. The family gate
+    // is the deny-list (_rmStateChangeGuardApplies), not a positive device-state match, so the
+    // non-curated device-state/enum caps the live picker admits (Water, Smoke, Thermostat mode,
+    // ...) are guarded too rather than silently committing a broken/lost comparator. The discrete-event
+    // guard above yields the RHS-optional shape here, so the two never double-reject.
+    // Between two times is a supported condition capability that takes no comparator (its start/end
+    // handler below ignores one) but has null trigger family, so exempt it here rather than
+    // mis-reporting a valid condition surface as invalid.
+    if (_rmComparatorIsRhsOptional(cond.comparator) && cond.state == null && cond.value == null && cond.attribute == null && !"Between two times".equalsIgnoreCase(capCanonical)
+            && _rmStateChangeGuardApplies(capCanonical)) {
         cancelInFlightCond()
         throw new IllegalArgumentException(_rmChangeComparatorConditionMessage(capCanonical, condIdx))
     }
