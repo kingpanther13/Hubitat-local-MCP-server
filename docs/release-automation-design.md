@@ -95,6 +95,8 @@ If a contributor wants richer prose than their PR title, they add a `## Release 
 
 The release label is NOT required to merge. Unlabeled PRs merge normally — they just don't trigger a version bump. The next labeled PR merge produces a release whose notes include all PRs merged since the previous `vX.Y.Z` tag (labeled and unlabeled alike).
 
+If a release-worthy change merges unlabeled and you want it shipped as its own version, open a small follow-up PR carrying the intended `release:*` label — its merge cuts the tag and the release notes still cover the earlier unlabeled PR (everything since the last tag), so nothing is lost.
+
 Flow:
 - **Labeled PR merge** → bot gathers all PRs merged since last tag, writes CHANGELOG entry, propagates to manifest + README, bumps versions, tags.
 - **Unlabeled PR merge** → code lands on main, no version bump; PR is picked up in the next labeled release's notes.
