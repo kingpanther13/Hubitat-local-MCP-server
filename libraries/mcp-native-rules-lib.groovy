@@ -138,7 +138,7 @@ Requires the Write master + confirm=true + recent hub backup.""",
                 properties: [
                     success: [type: "boolean", description: "Whether the create/edit succeeded"],
                     appId: [type: "integer", description: "App ID created or edited"],
-                    ruleId: [type: ["integer", "null"], description: "create (rule_machine only): the same value as appId, surfaced under the name the ruleId-taking downstream tools use (hub_call_rule, hub_set_rule_paused, hub_set_rule_private_boolean) so a create can be chained directly. Null/absent for non-RM app types."],
+                    ruleId: [type: ["integer", "null"], description: "on create: the same value as appId, surfaced under the name the ruleId-taking downstream tools use (hub_call_rule, hub_set_rule_paused, hub_set_rule_private_boolean) so a create can be chained directly. Null for a non-RM app type; absent on edit."],
                     buttonRuleId: [type: "integer", description: "buttonRule: appId of the created Button Rule (author its actions via hub_set_rule)"],
                     controllerId: [type: "integer", description: "buttonRule: parent Button Controller appId"],
                     appType: [type: "string", description: "create: app type created"],
@@ -261,7 +261,7 @@ Deep reference (per-capability field specs, extended condition shapes, periodic 
                 properties: [
                     success: [type: "boolean", description: "Whether the update succeeded (absent in discover mode)"],
                     appId: [type: "integer", description: "App ID updated"],
-                    ruleId: [type: ["integer", "null"], description: "create: the same value as appId (a hub_set_rule create is always a rule_machine rule), surfaced under the name the ruleId-taking downstream tools use (hub_call_rule, hub_set_rule_paused, hub_set_rule_private_boolean) so a create can be chained directly. Null/absent on edit."],
+                    ruleId: [type: ["integer", "null"], description: "create: the same value as appId (a hub_set_rule create is always a rule_machine rule), surfaced under the name the ruleId-taking downstream tools use (hub_call_rule, hub_set_rule_paused, hub_set_rule_private_boolean) so a create can be chained directly. Absent on edit."],
                     buttonRuleId: [type: "integer", description: "buttonRule: appId of the created Button Rule (author its actions via addAction on this id)"],
                     controllerId: [type: "integer", description: "buttonRule: parent Button Controller appId"],
                     backup: [type: "object", description: "Pre-update backup metadata (backupKey, type, fileName, ...)"],
@@ -9032,9 +9032,12 @@ def _createNativeAppShell(args) {
         // For RM rules the app id IS the rule id -- the ruleId-taking downstream tools (hub_call_rule,
         // hub_set_rule_paused, hub_set_rule_private_boolean) take ruleId, so surface it explicitly under
         // that name too so an agent can chain a create straight into them without re-deriving it. Only
-        // rule_machine apps get it: a non-RM classic app has no ruleId.
+        // rule_machine apps get the real id; a non-RM classic app has none, so it is surfaced as an
+        // explicit null to keep the field present for strict output-schema validators.
         if (appType == "rule_machine") {
             result.ruleId = newId
+        } else {
+            result.ruleId = null
         }
         // Surface a missed session-end Done. For commitButton:null app types
         // (Basic Rule, Button Controller) the Done is the session's ONLY

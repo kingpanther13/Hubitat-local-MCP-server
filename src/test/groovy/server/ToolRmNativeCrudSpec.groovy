@@ -38048,6 +38048,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         createCalls.any { it == "/installedapp/createchild/hubitat/Notifier/parent/42" }
         result.appId == 990
         result.appType == "notifier"
+
+        and: "ruleId is present-but-null for a non-RM create (uniform output shape, not silently absent)"
+        // Both-ways: dropping the else-null branch makes ruleId absent and containsKey false.
+        result.containsKey("ruleId")
+        result.ruleId == null
     }
 
     def "hub_set_native_app ALLOWS walkStep (and RM-format authoring params) -- routes to the shared edit engine, no longer rejected (issue #185)"() {
