@@ -3157,6 +3157,40 @@ class TestRunner:
             assert date_cond.get("success") is False \
                 and "structured condition shortcut" in str(date_cond.get("error", "")).lower(), \
                 f"date/day-window condition should fail loud steering to the raw wizard, got: {date_cond}"
+            # Non-condition capability parity: Last Event Device is a valid STPage picker option but is
+            # not usable as a condition (it references the device that fired the trigger, an action-side ref). As a Required Expression
+            # condition it must fail loud (not a condition), NOT commit a broken condition.
+            last_event_cond = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "addRequiredExpression": {"conditions": [{"capability": "Last Event Device"}]},
+                         "confirm": True}})
+            assert last_event_cond.get("success") is False \
+                and "not usable as a condition" in str(last_event_cond.get("error", "")).lower() \
+                and "in actions" in str(last_event_cond.get("error", "")).lower(), \
+                f"Last Event Device condition should fail loud as a non-condition, got: {last_event_cond}"
+            # The rejected condition mutated nothing, so the rule must still have zero committed RE --
+            # verify via the config read that no broken condition was left behind.
+            after_reject = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
+                "args": {"appId": app_id}})
+            # Positive precondition: the read must actually have returned THIS rule's config. A read that
+            # degrades to an error/empty envelope under load carries no BROKEN marker either, so the
+            # absence check below would pass vacuously -- assert success plus the app-id round-trip so a
+            # degraded read fails loud instead of green-passing.
+            after_app = after_reject.get("app") or {}
+            assert after_reject.get("success") is True and str(after_app.get("id")) == str(app_id), \
+                f"post-reject config read did not return rule {app_id}'s config (degraded/empty?), cannot verify broken-marker absence: {after_reject}"
+            assert "*BROKEN*" not in str(after_reject) and "Broken Condition" not in str(after_reject), \
+                f"Last Event Device reject must not leave a broken condition on the rule, got: {after_reject}"
+            # Unconfigurable-condition parity: Lock codes IS a valid condition type, but authoring one
+            # needs a lock device plus a specific code name the tool's condition path cannot set -- it
+            # would commit an incomplete, non-functional condition (health.ok stays true, so no broken
+            # marker catches it). Must fail loud steering to the RM UI, NOT commit garbage.
+            lock_codes_cond = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "addRequiredExpression": {"conditions": [{"capability": "Lock codes"}]},
+                         "confirm": True}})
+            assert lock_codes_cond.get("success") is False \
+                and "lock device" in str(lock_codes_cond.get("error", "")).lower() \
+                and "code name" in str(lock_codes_cond.get("error", "")).lower(), \
+                f"Lock codes condition should fail loud as an unconfigurable condition, got: {lock_codes_cond}"
             change_cond = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
                 "args": {"appId": app_id, "addRequiredExpression": {"conditions": [
                          {"capability": "Switch", "deviceIds": [int(self.get_test_switch_id())],

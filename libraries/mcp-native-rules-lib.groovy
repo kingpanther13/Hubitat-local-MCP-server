@@ -138,6 +138,7 @@ Requires the Write master + confirm=true + recent hub backup.""",
                 properties: [
                     success: [type: "boolean", description: "Whether the create/edit succeeded"],
                     appId: [type: "integer", description: "App ID created or edited"],
+                    ruleId: [type: ["integer", "null"], description: "create (rule_machine only): the same value as appId, surfaced under the name the ruleId-taking downstream tools use (hub_call_rule, hub_set_rule_paused, hub_set_rule_private_boolean) so a create can be chained directly. Null/absent for non-RM app types."],
                     buttonRuleId: [type: "integer", description: "buttonRule: appId of the created Button Rule (author its actions via hub_set_rule)"],
                     controllerId: [type: "integer", description: "buttonRule: parent Button Controller appId"],
                     appType: [type: "string", description: "create: app type created"],
@@ -175,7 +176,7 @@ Deep reference (per-capability field specs, extended condition shapes, periodic 
                 type: "object",
                 properties: [
                     appId: [type: "integer", description: "RM rule ID (the rule's installed-app id). OMIT to CREATE a new rule (then `name` is required); PROVIDE to EDIT an existing rule."],
-                    name: [type: "string", description: "Label for the new rule (shown in Hubitat's Rule Machine app list). Required on CREATE (when appId is omitted); ignored when appId is provided."],
+                    name: [type: "string", description: "Label for the new rule (shown in Hubitat's Rule Machine app list). Required on CREATE (when appId is omitted); ignored when appId is provided. To RENAME an existing rule, do not pass name -- write the new label as a setting: settings:{origLabel:'New Name'} (a mainPage settings write auto-commits via updateRule, which copies origLabel to the display label; passing button:'updateRule' too is harmless but redundant)."],
                     settings: [type: "object", description: "Map {inputName: value}: scalars for bool/enum/text/number inputs, list of device IDs for capability.* multi-device inputs (the multiple=true 3-field contract is emitted and verified automatically — you don't manage it)."],
                     button: [type: "string", description: "Page-transition button name (e.g. updateRule, editCond, pausRule for RM; discover others via hub_get_app_config)."],
                     pageName: [type: "string", description: "Optional sub-page for schema introspection + settings POST."],
@@ -205,7 +206,7 @@ Deep reference (per-capability field specs, extended condition shapes, periodic 
                     ],
                     addLocalVariable: [
                         type: "object",
-                        description: "Add a local variable. Spec: {name, type, value}; type ∈ Number/Decimal/String/Boolean/DateTime (case-insensitive; DateTime wants an ISO timestamp, e.g. 2026-05-06T12:00:00) and value must match the type. Use as %name% in actions/expressions."
+                        description: "Add a local variable. Spec: {name, type, value} -- ALL THREE are REQUIRED (value is not optional: RM auto-commits the variable only when the value is written, so a missing value is rejected up front). type is one of Number/Decimal/String/Boolean/DateTime (case-insensitive; DateTime wants an ISO timestamp, e.g. 2026-05-06T12:00:00) and value must match the type. This differs from the setLocalVariable ACTION, which takes exactly one of value/sourceVariable/fromDevice/math. Use as %name% in actions/expressions."
                     ],
                     removeLocalVariable: [
                         type: "object",
@@ -260,6 +261,7 @@ Deep reference (per-capability field specs, extended condition shapes, periodic 
                 properties: [
                     success: [type: "boolean", description: "Whether the update succeeded (absent in discover mode)"],
                     appId: [type: "integer", description: "App ID updated"],
+                    ruleId: [type: ["integer", "null"], description: "create: the same value as appId (a hub_set_rule create is always a rule_machine rule), surfaced under the name the ruleId-taking downstream tools use (hub_call_rule, hub_set_rule_paused, hub_set_rule_private_boolean) so a create can be chained directly. Null/absent on edit."],
                     buttonRuleId: [type: "integer", description: "buttonRule: appId of the created Button Rule (author its actions via addAction on this id)"],
                     controllerId: [type: "integer", description: "buttonRule: parent Button Controller appId"],
                     backup: [type: "object", description: "Pre-update backup metadata (backupKey, type, fileName, ...)"],
@@ -860,8 +862,33 @@ private Map sendRmAction(Integer ruleId, String rmAction, String logContext) {
         // double-fire the action if the first call partially succeeded.
         def m = e.message ?: e.toString()
         mcpLog("error", "rm-interop", "${logContext} failed for rule ${ruleId}: ${m}")
-        return [success: false, error: "RMUtils.sendAction failed: ${m}", note: "Verify the ruleId is valid (use hub_list_rules) and Rule Machine is installed."]
+        return [success: false, error: "RMUtils.sendAction failed: ${m}", note: _rmSendActionErrorNote(rmAction, ruleId, m)]
     }
+}
+
+// Single source of truth for the RMUtils load-limiter marker substring (matched
+// case-insensitively). RMUtils surfaces this text when the hub's per-app load limiter
+// has tripped; centralized so a wording change is one edit, not a scatter of literals.
+private String _rmExcessiveLoadMarker() { "excessive hub load" }
+
+// Build the actionable note for a failed RMUtils.sendAction. When RMUtils reports the hub's
+// per-app load limiter, steer recovery correctly: that limiter is STICKY -- it does NOT lift
+// when hub load drains, only a hub reboot or an app disable/enable clears it, so an immediate
+// retry of the same call just fails again. On a pause/resume call the direct page-button escape
+// bypasses RMUtils and is load-immune, so it IS the real recovery -- and pause and resume are
+// DISTINCT page buttons (pausRule / resRule), not one toggle, so each steers to its own button.
+// Substring is scoped tightly to RMUtils' load-message text so unrelated failures keep the plain note.
+private String _rmSendActionErrorNote(String rmAction, Integer ruleId, String message) {
+    def base = "Verify the ruleId is valid (use hub_list_rules) and Rule Machine is installed."
+    if (message && message.toLowerCase().contains(_rmExcessiveLoadMarker())) {
+        if (rmAction == "pauseRule" || rmAction == "resumeRule") {
+            def verb = (rmAction == "resumeRule") ? "resume" : "pause"
+            def btn = (rmAction == "resumeRule") ? "resRule" : "pausRule"
+            return "RMUtils hit the hub's per-app load limiter (sticky -- it clears only on a hub reboot or an app disable/enable, not by retrying). To ${verb} the rule now, drive the page button directly with hub_set_rule(appId=${ruleId}, button:'${btn}', confirm:true), which bypasses RMUtils and is load-immune. ${base}"
+        }
+        return "RMUtils hit the hub's per-app load limiter. It is sticky -- it does NOT lift when load drains and an immediate retry fails the same way; it clears only on a hub reboot or an app disable/enable. Clear it, then reissue. ${base}"
+    }
+    return base
 }
 
 // 3-arg fallback invoked only when the 4-arg sendAction raised a signature-mismatch
@@ -877,7 +904,7 @@ private Map sendRmActionFallback(Integer ruleId, String rmAction, String appLabe
         def m1 = original.message ?: original.toString()
         def m2 = e2.message ?: e2.toString()
         mcpLog("error", "rm-interop", "${logContext} failed for rule ${ruleId}: 4-arg=${m1}, 3-arg=${m2}")
-        return [success: false, error: "RMUtils.sendAction failed: ${m2}", note: "4-arg attempt also failed: ${m1}. Verify the ruleId is valid (use hub_list_rules) and Rule Machine is installed."]
+        return [success: false, error: "RMUtils.sendAction failed: ${m2}", note: "4-arg attempt also failed: ${m1}. ${_rmSendActionErrorNote(rmAction, ruleId, m2)}"]
     }
 }
 
@@ -2711,6 +2738,9 @@ private Map _rmTriggerSchemaForDiscover() {
     return [
         discriminator: "capability",
         note: "Pass the chosen capability name (case-insensitive) as addTrigger.capability in the real call.",
+        conditionFields: [
+            [name: "not", type: "Boolean", description: "Applies inside a CONDITION list only (addTrigger.condition, addRequiredExpression.conditions[], addAction expression conditions[]) -- NOT the trigger row itself. not:true negates the condition (e.g. Time NOT between, mode is NOT Night, does-not-contain via not:true + comparator:'*contains*')."]
+        ],
         capabilities: [
             [
                 name: "Switch",
@@ -2984,6 +3014,9 @@ private Map _rmActionSchemaForDiscover() {
     return [
         discriminator: "capability",
         note: "Pass the chosen capability name (case-insensitive) as addAction.capability in the real call. 'action' is required for multi-variant capabilities (switch, dimmer, etc.); optional or absent for single-variant ones (log, mode, delay, etc.).",
+        conditionFields: [
+            [name: "not", type: "Boolean", description: "Applies inside an expression CONDITION list (addAction expression conditions[] for ifThen/elseIf/repeatWhile/waitExpression, and addRequiredExpression.conditions[]). not:true negates the condition (e.g. Time NOT between, mode is NOT Night, does-not-contain via not:true + comparator:'*contains*')."]
+        ],
         capabilities: [
             [
                 name: "switch",
@@ -7039,6 +7072,36 @@ private String _rmChangeComparatorConditionMessage(String cap, Integer condIdx) 
     "${where}capability '${cap}' with a state-change comparator ('*changed*'/'*became*') is not valid as a condition -- conditions are evaluated point-in-time (is the state X right now?), so a change comparator has nowhere to apply. Author it as a TRIGGER row instead (addTrigger.capability with comparator:'*changed*'), where device-state change events ARE supported; for a condition, pass an explicit state (e.g. state:'on')."
 }
 
+// Internal _rm helper -- not part of the tool surface.
+// Capabilities the STPage condition picker lists but that cannot be used as a condition: Last Event
+// Device references the device that fired the rule's trigger (an action-side device reference, e.g.
+// run a command on the triggering device), not a testable state -- and it is not a trigger capability
+// either. On a condition surface it would write rCapab_<N> with no field handling, committing a broken
+// condition. Distinct from the date/day list (unmodelled everywhere); single source of truth so the
+// static condition builder and the reveal-walker reject the same set; extend it if more such caps surface.
+private List _rmNonConditionCaps() { ["Last Event Device"] }
+
+// Internal _rm helper -- not part of the tool surface.
+// Shared fail-loud message for a picker capability that is not usable as a condition. ASCII-only.
+private String _rmNonConditionMessage(String cap) {
+    "'${cap}' is not usable as a condition -- it references the device that fired the rule's trigger and is only meaningful in actions (e.g. run a command on the triggering device), not as a state to test in a Required Expression or condition. Remove it from the expression."
+}
+
+// Internal _rm helper -- not part of the tool surface.
+// Real condition capabilities that this tool's condition path cannot FULLY author -- distinct from
+// _rmNonConditionCaps (which are not conditions at all). Lock codes IS a valid condition type, but it
+// needs a lock device plus a specific code name, and this path exposes no field for either, so it
+// would commit an incomplete condition (the render is "Last lock code entered on null: null") that the
+// health guard does not flag. Single source of truth so the static condition builder and the reveal-
+// walker reject the same set; extend it (and the message) if more such caps surface.
+private List _rmUnconfigurableConditionCaps() { ["Lock codes"] }
+
+// Internal _rm helper -- not part of the tool surface.
+// Shared fail-loud message for a real condition capability this tool cannot fully configure. ASCII-only.
+private String _rmUnconfigurableConditionMessage(String cap) {
+    "'${cap}' conditions require selecting a lock device and a specific code name, which this tool's condition path cannot set -- it would commit an incomplete, non-functional condition. Author this condition in the Rule Machine UI, or use a different testable capability."
+}
+
 private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List applied, List skipped = null) {
     def condCap = condSpec.capability?.toString()?.trim()
     if (!condCap) throw new IllegalArgumentException("condition.capability is required")
@@ -7060,6 +7123,24 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
     def unsupportedDateDay = _rmUnsupportedDateDayConditionCaps().find { it.equalsIgnoreCase(condCap) }
     if (unsupportedDateDay) {
         throw new IllegalArgumentException(_rmUnsupportedDateDayConditionMessage(unsupportedDateDay))
+    }
+
+    // Non-condition capabilities (Last Event Device) are listed in the STPage condition picker but
+    // reference the device that fired the rule's trigger -- an action-side reference, meaningless as
+    // a point-in-time condition, and not a trigger capability either. Fires before the rCapab_<N>
+    // write below so no broken condition is committed.
+    def nonCond = _rmNonConditionCaps().find { it.equalsIgnoreCase(condCap) }
+    if (nonCond) {
+        throw new IllegalArgumentException(_rmNonConditionMessage(nonCond))
+    }
+
+    // Real condition capabilities this path cannot fully author (Lock codes needs a lock device plus a
+    // specific code name, with no field for either) -- unlike the non-condition caps above, these ARE
+    // valid conditions, but authoring one here would write rCapab_<N> and commit an incomplete condition
+    // the health guard does not catch. Fires before that write so nothing is committed.
+    def unconfigurableCond = _rmUnconfigurableConditionCaps().find { it.equalsIgnoreCase(condCap) }
+    if (unconfigurableCond) {
+        throw new IllegalArgumentException(_rmUnconfigurableConditionMessage(unconfigurableCond))
     }
 
     // A state-change comparator ('*changed*'/'*became*') with no explicit value is a trigger
@@ -8948,6 +9029,13 @@ def _createNativeAppShell(args) {
                 "Created ${appType} app (id=${newId}) with ${triggerResults.count { it?.success == true }}/${triggerSpecs.size()} triggers + ${actionResults.count { it?.success == true }}/${actionSpecs.size()} actions${reSpec != null ? " + Required Expression (${reFailed ? "failed" : (rePartial ? "partial" : "applied")})" : ""} FULLY committed${partialTriggers || partialActions || reFailed || rePartial ? " (some partial -- see partialTriggers/partialActions/requiredExpression for repair)" : ""}. updateRule fired to commit each section${reSpec != null ? (reResult?.updateRuleFailed ? " but the Required Expression re-init updateRule was REJECTED -- the expression may not be live (see requiredExpression.updateRuleError)" : " (including a trailing updateRule after the Required Expression so it is live)") : ""}." :
                 "Empty ${appType} app created (id=${newId}). Use hub_set_rule (RM rules) or hub_set_native_app (other classic apps) to populate, or hub_get_app_config to inspect."
         ]
+        // For RM rules the app id IS the rule id -- the ruleId-taking downstream tools (hub_call_rule,
+        // hub_set_rule_paused, hub_set_rule_private_boolean) take ruleId, so surface it explicitly under
+        // that name too so an agent can chain a create straight into them without re-deriving it. Only
+        // rule_machine apps get it: a non-RM classic app has no ruleId.
+        if (appType == "rule_machine") {
+            result.ruleId = newId
+        }
         // Surface a missed session-end Done. For commitButton:null app types
         // (Basic Rule, Button Controller) the Done is the session's ONLY
         // lifecycle event, so a swallowed miss would be a false-clean create.
@@ -9902,6 +9990,30 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
     if (unsupportedDateDay) {
         cancelInFlightCond()
         throw new IllegalArgumentException("conditions[${condIdx}]: " + _rmUnsupportedDateDayConditionMessage(unsupportedDateDay))
+    }
+
+    // ---- Pre-walker guard: non-condition capabilities ----
+    // Last Event Device is in the STPage condition picker but references the device that fired the
+    // rule's trigger (an action-side reference, not a trigger capability either); as a condition it
+    // would write rCapab_<N> and commit a broken condition with no handler. Reject up front (mirrors
+    // _rmBuildCondition's static-path guard). Cancel the in-flight condition first, like the sibling
+    // pre-walker guards.
+    def nonCond = _rmNonConditionCaps().find { it.equalsIgnoreCase(capCanonical) }
+    if (nonCond) {
+        cancelInFlightCond()
+        throw new IllegalArgumentException("conditions[${condIdx}]: " + _rmNonConditionMessage(nonCond))
+    }
+
+    // ---- Pre-walker guard: unconfigurable condition capabilities ----
+    // Lock codes IS a valid condition type, but it needs a lock device plus a specific code name and
+    // this walker exposes no field for either -- the default enum path below would write rCapab_<N> and
+    // commit an incomplete condition (rendered "on null: null") that the health guard does not flag.
+    // Reject up front, uniform with _rmBuildCondition's static-path guard. Cancel the in-flight
+    // condition first, like the sibling pre-walker guards.
+    def unconfigurableCond = _rmUnconfigurableConditionCaps().find { it.equalsIgnoreCase(capCanonical) }
+    if (unconfigurableCond) {
+        cancelInFlightCond()
+        throw new IllegalArgumentException("conditions[${condIdx}]: " + _rmUnconfigurableConditionMessage(unconfigurableCond))
     }
 
     // ---- Pre-walker guard: state-change comparator on a device-state condition ----

@@ -250,6 +250,33 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.parentAppId == 21
     }
 
+    def "create_rm_rule surfaces ruleId as an alias of the new appId for chaining into ruleId-taking tools"() {
+        // A rule_machine create returns ruleId as an alias of appId so an agent can chain the create
+        // straight into the ruleId-taking tools (hub_call_rule / hub_set_rule_paused /
+        // hub_set_rule_private_boolean) without re-deriving it. Pins the alias: without it ruleId is
+        // absent (null) and the assertions below do not hold.
+        given:
+        enableWrite()
+        hubGet.register('/hub2/appsList') { params -> appsListJson(21) }
+        hubGet.register('/installedapp/configure/json/974') { params -> ruleConfigJson(974, "", [[name: "origLabel", type: "text"]]) }
+        hubGet.register('/installedapp/statusJson/974') { params -> statusJson(974) }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/installedapp/configure/974", data: ""]
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolSetRule([name: "BAT-RM-demo", confirm: true])
+
+        then: "ruleId is emitted and equals the created appId"
+        result.success == true
+        result.appType == "rule_machine"
+        result.ruleId == 974
+        result.ruleId == result.appId
+    }
+
     def "_discoverParentAppId bootstraps a missing built-in parent via sysApp, then re-discovers it by type -- primary path, no commit needed (issue #185)"() {
         given:
         // Verified live: the sysApp GET creates the parent server-side and it appears in
@@ -3103,6 +3130,157 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         where:
         cap << ["Between two dates", "Days of week", "On a Day"]
+    }
+
+    def "_rmBuildCondition rejects Last Event Device (non-condition) fails loud steering to actions"() {
+        // Last Event Device is listed in the STPage condition picker but is an action-side reference to
+        // the device that fired the rule's trigger -- it has no point-in-time-condition meaning and is
+        // NOT a trigger capability either. On the static conditional-trigger path it would write
+        // rCapab_<N> and commit a broken condition. Reject up front, steering to ACTIONS (where the
+        // triggering-device reference is usable). Both-ways: reverting the guard proceeds to the
+        // isCondTrig_ write and the run hits the hub layer instead of this message.
+        when:
+        script._rmBuildCondition(100, 1, [capability: "Last Event Device"], [])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("not usable as a condition")
+        ex.message.contains("Last Event Device")
+        // Steers to actions (the triggering-device reference), not a condition.
+        ex.message.contains("in actions")
+    }
+
+    def "addRequiredExpression Last Event Device (non-condition) fails loud on the reveal-walker too"() {
+        // Fail-loud parity across surfaces: Last Event Device is a valid STPage picker option but an
+        // action-side reference to the device that fired the trigger -- not usable as a condition, and
+        // NOT a trigger capability either. Without a pre-walker guard the walk would write rCapab_<N>
+        // and commit a broken condition. The guard rejects it up front, uniform with the static path,
+        // steering to ACTIONS. Both-ways: removing the pre-walker guard lets the walk proceed and the
+        // message is NOT the non-condition steer.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "cond", type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1", type: "enum", options: ["Last Event Device", "Switch"]],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["s1"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "a non-condition (action-side) capability is authored on the Required Expression surface"
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[capability: "Last Event Device"]]],
+            confirm: true
+        ])
+
+        then: "the walker rejects it with the non-condition reject, uniform with the static path"
+        result.success == false
+        result.error?.contains("not usable as a condition")
+        result.error?.contains("in actions")
+        result.error?.contains("Last Event Device")
+    }
+
+    def "_rmBuildCondition rejects Lock codes (unconfigurable condition) fails loud steering to the RM UI"() {
+        // Lock codes IS a valid condition type, but authoring one needs a lock device plus a specific
+        // code name and the static condition path has no field for either -- it would write rCapab_<N>
+        // and commit an incomplete condition (renders "on null: null") the health guard does not catch.
+        // Reject up front, before any condition write, steering to the Rule Machine UI. Distinct from the
+        // non-condition caps: Lock codes IS a real condition, just not fully authorable here. Both-ways:
+        // reverting the guard proceeds to the isCondTrig_ write and the run hits the hub layer instead.
+        when:
+        script._rmBuildCondition(100, 1, [capability: "Lock codes"], [])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("Lock codes")
+        ex.message.contains("lock device")
+        ex.message.contains("code name")
+        ex.message.contains("Rule Machine UI")
+    }
+
+    def "addRequiredExpression Lock codes (unconfigurable condition) fails loud on the reveal-walker too"() {
+        // Fail-loud parity across surfaces: Lock codes is a valid STPage picker option and a real
+        // condition type, but it needs a lock device plus a specific code name the walker cannot set --
+        // without a pre-walker guard the walk would write rCapab_<N> and commit an incomplete condition
+        // (renders "on null: null"). The guard rejects it up front, uniform with the static path, steering
+        // to the RM UI. Both-ways: removing the pre-walker guard lets the walk proceed and the message is
+        // NOT the unconfigurable-condition steer.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "cond", type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1", type: "enum", options: ["Lock codes", "Switch"]],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["s1"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "an unconfigurable condition capability is authored on the Required Expression surface"
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[capability: "Lock codes"]]],
+            confirm: true
+        ])
+
+        then: "the walker rejects it with the unconfigurable-condition reject, uniform with the static path"
+        result.success == false
+        result.error?.contains("Lock codes")
+        result.error?.contains("lock device")
+        result.error?.contains("code name")
+        result.error?.contains("Rule Machine UI")
+    }
+
+    def "_rmSendActionErrorNote steers a load-failed pause/resume to its own page button (resume to resRule)"() {
+        // Pause and resume are DISTINCT page buttons (pause=pausRule, resume=resRule), not one toggle, so a
+        // load-failed resume must steer to resRule -- steering it to pausRule would tell the caller to pause
+        // an already-paused rule. The per-app load limiter is sticky (clears only on reboot / app disable-
+        // enable), so the note must not advise a bare retry. A non-load failure keeps the plain note. Both-
+        // ways: hardcoding one button makes the resume case emit pausRule; dropping the sticky wording drops
+        // it from the note; dropping the marker gate makes an unrelated error emit the load steer.
+        expect: "a load-failed resume steers to resRule and never pausRule, with sticky-limiter wording"
+        def resumeNote = script._rmSendActionErrorNote("resumeRule", 100, "App 100 generates excessive hub load")
+        resumeNote.contains("resRule")
+        !resumeNote.contains("pausRule")
+        resumeNote.contains("sticky")
+
+        and: "a load-failed pause steers to pausRule and never resRule"
+        def pauseNote = script._rmSendActionErrorNote("pauseRule", 100, "App 100 generates excessive hub load")
+        pauseNote.contains("pausRule")
+        !pauseNote.contains("resRule")
+
+        and: "a non-pause/resume load failure gets the sticky-limiter note with no page button"
+        def genNote = script._rmSendActionErrorNote("runRuleAct", 100, "App 100 generates excessive hub load")
+        genNote.contains("sticky")
+        !genNote.contains("resRule")
+        !genNote.contains("pausRule")
+
+        and: "an unrelated (non-load) failure keeps the plain note -- the marker gate is closed"
+        def plain = script._rmSendActionErrorNote("resumeRule", 100, "some other error")
+        !plain.contains("resRule")
+        !plain.contains("sticky")
     }
 
     def "addTrigger numeric capability *changed* routes the change token to ReltDev, NOT tstate, when BOTH fields render (comparator-field-first ordering)"() {
