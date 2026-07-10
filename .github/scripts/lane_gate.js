@@ -30,8 +30,9 @@ const FULL = ['release:patch', 'release:minor', 'release:major', 'e2e:full'];
 
 function decide(eventName, payload, runAttempt) {
   payload = payload || {};
-  // Manual re-run override: attempt > 1 means a human clicked "Re-run all jobs" on this run -- an
-  // explicit ask for e2e that the frozen event payload could otherwise never grant (see header).
+  // Manual re-run override: attempt > 1 means this run was manually re-run (EVERY re-run type
+  // increments the counter; any re-run that re-executes this gate is an explicit ask for e2e that
+  // the frozen event payload could otherwise never grant -- see header).
   if (Number(runAttempt) > 1) return true;
   const action = payload.action;
   // Non-label events (opened/synchronize/reopened/dispatch) always run.
