@@ -18,14 +18,15 @@
 // the same frozen payload. A human clicking "Re-run all jobs" is an explicit request for a run,
 // not a label webhook; honor it (GITHUB_RUN_ATTEMPT > 1 -> run; the gate step still picks the lane
 // from the LIVE label list). This needs "Re-run all jobs" -- re-running only the skipped e2e job
-// keeps the prior lane-gate outputs and still skips. Concurrency stays safe: a no-op label run's
-// group was isolated-<run_id> at trigger time and a re-run keeps its run_id, so it can never
+// keeps the prior lane-gate outputs and still skips. Concurrency stays safe: hub-e2e.yml routes
+// EVERY re-run (github.run_attempt > 1) to the isolated per-run group, so a re-run can never
 // cancel or evict another run, and the e2e job still queues FIFO in hub-e2e-serialized.
 //
 // This MUST stay in lockstep with the concurrency GROUP expression in hub-e2e.yml: its "shares the
 // per-branch group" test keys on the same first-full-label set and must remain a strict SUBSET of
 // this decision (so a shared run never cancels a run that then skips) -- the re-run override only
-// WIDENS the decision, so the subset invariant holds. cancel-in-progress is `true`.
+// WIDENS the decision, and the group expression's attempt==1 guard only SHRINKS the shared set,
+// so the subset invariant holds. cancel-in-progress is `true`.
 const FULL = ['release:patch', 'release:minor', 'release:major', 'e2e:full'];
 
 function decide(eventName, payload, runAttempt) {
