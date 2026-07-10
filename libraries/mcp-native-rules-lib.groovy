@@ -4890,6 +4890,22 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
     def cap = actionSpec.capability?.toString()?.trim()
     def action = actionSpec.action?.toString()?.trim()
     if (!cap) throw new IllegalArgumentException("addAction.capability is required (e.g. 'switch'). Common values: switch, dimmer, color, log, notification, mode, setVariable, runCommand, delay, repeat, ifThen. Pass {discover: true} to get the full structured schema.")
+
+    // Pre-flight, zero hub round-trips: for an expression-bearing action, reject an unwalkable
+    // condition capability (Last Event Device / Lock codes / date-day pickers) from the RAW
+    // requested name BEFORE any wizard write or opener commit. These caps are decidable from the
+    // requested name alone -- no hub state -- so refusing here keeps the reject atomic by
+    // construction: it never commits the IF-block opener that the expression-block rollback path
+    // (below) would then have to unwind. That open -> reject -> rollback sequence is enough
+    // sequential wizard round-trips (each POST re-renders the full rule page) to cross the cloud
+    // relay's per-call timeout, so hoisting the decidable-from-name reject up front is the cheap
+    // path. The rollback wrapper stays for the OTHER mid-expression throws that genuinely commit an
+    // opener before failing (device-not-found, operators-length mismatch, live-picker misses).
+    // Mirrors the pre-write reject already applied on the addRequiredExpression and static
+    // addTrigger.condition surfaces. This top-of-function hoist is the catch-all for the
+    // intra-batch and patch paths that do not pass through the dispatcher's single/bulk pre-flight.
+    _rmRejectUnwalkableExpressionConditions(actionSpec)
+
     // 'action' is required only for capabilities that have multiple action
     // variants (e.g. switch needs on/off/toggle/flash). Single-action
     // capabilities (log, mode, delay, comment, exitRule, capture, restore,
@@ -6522,11 +6538,13 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
             }
             def ccap = cond.capability?.toString()?.trim()
             if (!ccap) throw new IllegalArgumentException("${cap}.expression.conditions[${i}].capability is required")
-            // Reject the unwalkable condition caps (Last Event Device, Lock codes, date/day) against the
-            // RAW requested name BEFORE the cond=a write and the live-picker resolution below -- the picker
-            // does not carry every such capability on every firmware, so resolving it first would throw the
-            // generic "not in option list" and hide the tailored steer. The just-opened action opener is
-            // rolled back by the expression-block catch, keeping the reject atomic.
+            // Defense-in-depth backstop: the top-of-function pre-flight hoist already rejects these
+            // unwalkable caps (Last Event Device, Lock codes, date/day) from the raw requested name
+            // before any opener commit, so this walker-side reject is normally unreachable. It stays
+            // as a backstop so the tailored steer -- not the generic "not in option list" the picker
+            // resolution below would otherwise throw -- is guaranteed even if a caller reaches the walk
+            // with an unwalkable cap the hoist did not see. If it does fire here, the just-opened action
+            // opener is rolled back by the expression-block catch, keeping the reject atomic.
             _rmRejectUnwalkableConditionCapability(ccap)
             _rmWriteSettingOnPage(appId, "doActPage", "cond", "a", applied, null, skipped)
             // A condition slot is now open on doActPage -- a throw before it is committed/cancelled below
@@ -7205,6 +7223,22 @@ private void _rmRejectUnwalkableConditionCapability(String requestedCap) {
     if (unconfigurableCond) throw new IllegalArgumentException(_rmUnconfigurableConditionMessage(unconfigurableCond) + " RM is not touched.")
 }
 
+// Pre-flight reject for the unwalkable condition capabilities inside an expression-bearing action
+// (IF/THEN). Iterates the requested expression conditions and throws the tailored steer for any
+// date/day, non-condition (Last Event Device), or unconfigurable-condition (Lock codes) cap -- all
+// decidable from the raw requested name with zero hub state. Shared by the _rmAddAction
+// top-of-function pre-flight (the intra-batch / patch catch-all) and the _applyNativeAppEdit
+// single/bulk addAction dispatch, so an unwalkable cap is refused before ANY snapshot or opener
+// commit. No-op for a non-expression action.
+private void _rmRejectUnwalkableExpressionConditions(Map actionSpec) {
+    if (!(actionSpec?.expression instanceof Map)) return
+    def conds = (actionSpec.expression as Map).conditions
+    if (!(conds instanceof List)) return
+    (conds as List).each { c ->
+        if (c instanceof Map) _rmRejectUnwalkableConditionCapability((c as Map).capability?.toString()?.trim())
+    }
+}
+
 private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List applied, List skipped = null) {
     def condCap = condSpec.capability?.toString()?.trim()
     if (!condCap) throw new IllegalArgumentException("condition.capability is required")
@@ -7554,7 +7588,7 @@ private List _rmStructuralSequenceFromSpecList(List specList) {
 // path and the legacy-flat trigger-mutation catch reuse this so the two
 // surfaces stay word-identical.
 private String _rmPreflightRestoreHint() {
-    "Pre-flight refusal -- RM was not touched; the saved backup is identical to the current rule and does not need to be restored."
+    "Pre-flight refusal -- RM was not touched; nothing needs to be restored (a pre-flight reject writes nothing -- no backup taken, or one identical to the current rule)."
 }
 
 // Build the standard error response shape for _applyNativeAppEdit catch
@@ -12358,8 +12392,24 @@ def _applyNativeAppEdit(args) {
         throw new IllegalArgumentException("Editing an app requires one of: 'settings' (Map) or 'button' (String) for any classic app; or, for Rule Machine rules via hub_set_rule, a structured shortcut -- 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), 'addActions' (List), 'addRequiredExpression' (Map), 'replaceRequiredExpression' (Map), 'addLocalVariable' (Map), 'removeLocalVariable' ({name}), 'patches' (List of sub-specs), 'removeAction' ({index:N}), 'clearActions' (true), 'replaceActions' (List), 'moveAction' ({index:N, direction:up|down}), 'removeTrigger' ({index:N}), 'modifyTrigger' ({index:N, mods:{state:...}}), or 'walkStep' ({page, operation, write?, click?, navigate?, validateEnum?}) -- none provided.")
     }
 
-    // Always snapshot before writing. No exceptions — this is the
-    // restore channel if anything downstream goes wrong.
+    // Pre-flight reject, before any snapshot: an addAction whose expression carries an unwalkable
+    // condition capability (Last Event Device / Lock codes / date-day picker) is refused here from
+    // the raw requested name -- decidable without a mutating hub round-trip, so it never reaches
+    // the snapshot or the wizard. Covers the single addAction and bulk addActions dispatch cases;
+    // the patch / createRule intra-batch paths are caught by the _rmAddAction top-of-function
+    // hoist. Return the structured refusal envelope (with a null backup -- nothing was snapshotted)
+    // rather than letting the exception escape to a bare JSON-RPC -32602, so the caller still gets
+    // the tailored steer + the not-touched restoreHint that the other pre-flight refusals carry.
+    try {
+        if (addActionSpec) _rmRejectUnwalkableExpressionConditions(addActionSpec)
+        addActionsList?.each { if (it instanceof Map) _rmRejectUnwalkableExpressionConditions(it as Map) }
+    } catch (IllegalArgumentException preflightExc) {
+        return _rmBuildUpdateErrorResponse(appId, preflightExc.message, null)
+    }
+
+    // Always snapshot before WRITING -- the restore channel if anything downstream goes wrong. The
+    // one carve-out is a decidable-from-name pre-flight reject (above): it writes nothing, so it
+    // needs no snapshot and has already returned its refusal envelope before this point.
     def backupReason = button ? "pre-button-${button}" :
         (addTriggerSpec ? "pre-addTrigger" :
         (addActionSpec ? "pre-addAction" :

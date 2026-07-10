@@ -3212,45 +3212,12 @@ class TestRunner:
                 and "trigger row" in str(noncurated_change_cond.get("error", "")).lower(), \
                 f"state-change comparator on a NON-CURATED device-state condition should fail loud steering to a trigger row, got: {noncurated_change_cond}"
 
-            # ATOMIC reject on the addAction IF-EXPRESSION surface. The ifThen action commits the IF-block
-            # opener (actType/actSubType) BEFORE the expression's conditions are walked, so a rejected
-            # condition capability must ROLL THE OPENER BACK -- otherwise the success:false call leaves an
-            # orphan IF block ("opened but never closed"), a structural imbalance. Lock codes is unconfigurable
-            # on every surface. On current firmware the doActPage picker does NOT even list Lock codes, so this
-            # also proves the reject is FIRMWARE-INDEPENDENT: the tailored steer fires (not the generic "not in
-            # doActPage option list") because the guard runs against the raw requested capability before picker
-            # resolution.
-            if_lock = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
-                "args": {"appId": app_id, "addAction": {"capability": "ifThen",
-                         "expression": {"conditions": [{"capability": "Lock codes"}]}}, "confirm": True}})
-            assert if_lock.get("success") is False \
-                and "lock device" in str(if_lock.get("error", "")).lower() \
-                and "code name" in str(if_lock.get("error", "")).lower() \
-                and "not in doactpage option list" not in str(if_lock.get("error", "")).lower(), \
-                f"ifThen Lock codes condition should fail loud with the tailored unconfigurable steer, got: {if_lock}"
-            assert "not touched" in str(if_lock.get("restoreHint", "")).lower(), \
-                f"ifThen Lock codes reject should carry a not-touched restoreHint after the opener rollback, got: {if_lock.get('restoreHint')!r}"
-            # THE atomic-reject proof: the rolled-back reject must leave NO orphan IF block. The
-            # ruleBuilderJson health read reports ok:true even with the orphan (it does not see the
-            # imbalance), so the configPage-derived structuralIssues list is the load-bearing signal --
-            # it must be empty, with no missing-END-IF / never-closed marker anywhere in the health.
-            health_after_if = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_get_rule_health", "args": {"appId": app_id}})
-            assert not health_after_if.get("structuralIssues"), \
-                f"ifThen Lock codes reject left an orphan block opener (structuralIssues not empty): {health_after_if}"
-            assert "never closed" not in str(health_after_if).lower() and "end-if" not in str(health_after_if).lower(), \
-                f"ifThen Lock codes reject left a missing-END-IF structural marker: {health_after_if}"
-            # Non-condition parity on the same IF-expression surface: Last Event Device rolls back the same way.
-            if_lastevent = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
-                "args": {"appId": app_id, "addAction": {"capability": "ifThen",
-                         "expression": {"conditions": [{"capability": "Last Event Device"}]}}, "confirm": True}})
-            assert if_lastevent.get("success") is False \
-                and "not usable as a condition" in str(if_lastevent.get("error", "")).lower(), \
-                f"ifThen Last Event Device condition should fail loud as a non-condition, got: {if_lastevent}"
-            health_after_le = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_get_rule_health", "args": {"appId": app_id}})
-            assert not health_after_le.get("structuralIssues"), \
-                f"ifThen Last Event Device reject left an orphan block opener (structuralIssues not empty): {health_after_le}"
+            # (The addAction IF-EXPRESSION unwalkable-cap rejects -- ifThen Lock codes / Last Event Device --
+            # live in their own small per-concern test, test_set_rule_action_expression_reject_is_pre_write,
+            # so no single rule's per-call wizard budget grows. They are now PRE-WRITE: the top-of-function
+            # hoist rejects the unwalkable condition capability before any opener commit, so there is no
+            # open -> reject -> rollback cycle to cross the cloud relay's per-call timeout.)
+
             # Conditional-TRIGGER surface parity (static condition path): the same caps reject through the
             # real tool, leaving the rule untouched (the condition guard fires before any trigger/condition write).
             trig_lock = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
@@ -3262,6 +3229,69 @@ class TestRunner:
                 f"addTrigger.condition Lock codes should fail loud as an unconfigurable condition, got: {trig_lock}"
             assert "not touched" in str(trig_lock.get("restoreHint", "")).lower(), \
                 f"addTrigger.condition Lock codes reject should carry a not-touched restoreHint, got: {trig_lock.get('restoreHint')!r}"
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_action_expression_reject_is_pre_write(self) -> None:
+        # An unwalkable condition capability inside an addAction IF-expression (ifThen / elseIf /
+        # repeatWhile / waitExpression) is rejected PRE-WRITE by the top-of-function hoist: the reject is
+        # decidable from the raw requested capability name, so it fires BEFORE any IF-block opener is
+        # committed. There is no open -> reject -> rollback cycle -- that cycle is enough sequential wizard
+        # round-trips (each POST re-renders the full rule page) to cross the cloud relay's per-call timeout,
+        # so this is split into its own small rule to keep every per-call budget well under the ceiling.
+        # Lock codes is unconfigurable on every surface; Last Event Device is a non-condition action-side
+        # reference. On current firmware the doActPage picker does not even LIST these caps, so the tailored
+        # steer (not the generic "not in doActPage option list") also proves the reject is FIRMWARE-
+        # INDEPENDENT: the guard matches the raw requested name before picker resolution. Because nothing is
+        # written, the reject leaves NO orphan IF block -- structuralIssues must stay empty on a clean rule.
+        app_id = self._create_native_rule("ActExprReject", {
+            "addActions": [{"capability": "log", "message": "E2E act-expr base"}],
+        })
+        try:
+            # Lock codes: tailored unconfigurable-condition steer, not the generic picker miss, and a
+            # not-touched restoreHint (pre-write: no opener committed, so nothing to restore).
+            if_lock = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "addAction": {"capability": "ifThen",
+                         "expression": {"conditions": [{"capability": "Lock codes"}]}}, "confirm": True}})
+            assert if_lock.get("success") is False \
+                and "lock device" in str(if_lock.get("error", "")).lower() \
+                and "code name" in str(if_lock.get("error", "")).lower() \
+                and "not in doactpage option list" not in str(if_lock.get("error", "")).lower(), \
+                f"ifThen Lock codes condition should fail loud with the tailored unconfigurable steer, got: {if_lock}"
+            assert "not touched" in str(if_lock.get("restoreHint", "")).lower(), \
+                f"ifThen Lock codes pre-write reject should carry a not-touched restoreHint, got: {if_lock.get('restoreHint')!r}"
+            # Truly pre-write: the dispatcher rejects the unwalkable cap BEFORE the pre-write snapshot,
+            # so the refusal envelope carries NO backup (nothing was snapshotted -- no opener, no
+            # rollback). A non-null backup here would mean the reject still round-tripped a snapshot.
+            assert if_lock.get("backup") is None, \
+                f"ifThen Lock codes pre-write reject must take NO backup (snapshot is post-reject), got: {if_lock.get('backup')!r}"
+            # Pre-write proof: the rejected call must leave NO orphan IF block. ruleBuilderJson health reports
+            # ok:true even with an orphan (it does not see the imbalance), so the configPage-derived
+            # structuralIssues list is the load-bearing signal -- it must be empty, with no missing-END-IF /
+            # never-closed marker anywhere in the health.
+            health_after_if = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_get_rule_health", "args": {"appId": app_id}})
+            assert not health_after_if.get("structuralIssues"), \
+                f"ifThen Lock codes reject left an orphan block opener (structuralIssues not empty): {health_after_if}"
+            assert "never closed" not in str(health_after_if).lower() and "end-if" not in str(health_after_if).lower(), \
+                f"ifThen Lock codes reject left a missing-END-IF structural marker: {health_after_if}"
+            # Non-condition parity on the same IF-expression surface: Last Event Device is rejected the same
+            # pre-write way, leaving no orphan block.
+            if_lastevent = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "addAction": {"capability": "ifThen",
+                         "expression": {"conditions": [{"capability": "Last Event Device"}]}}, "confirm": True}})
+            assert if_lastevent.get("success") is False \
+                and "not usable as a condition" in str(if_lastevent.get("error", "")).lower(), \
+                f"ifThen Last Event Device condition should fail loud as a non-condition, got: {if_lastevent}"
+            assert "not touched" in str(if_lastevent.get("restoreHint", "")).lower(), \
+                f"ifThen Last Event Device pre-write reject should carry a not-touched restoreHint, got: {if_lastevent.get('restoreHint')!r}"
+            assert if_lastevent.get("backup") is None, \
+                f"ifThen Last Event Device pre-write reject must take NO backup (snapshot is post-reject), got: {if_lastevent.get('backup')!r}"
+            health_after_le = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_get_rule_health", "args": {"appId": app_id}})
+            assert not health_after_le.get("structuralIssues"), \
+                f"ifThen Last Event Device reject left an orphan block opener (structuralIssues not empty): {health_after_le}"
         finally:
             self._delete_native(app_id)
 

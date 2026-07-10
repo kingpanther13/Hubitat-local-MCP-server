@@ -3253,15 +3253,16 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error?.contains("Rule Machine UI")
     }
 
-    def "addAction ifThen Lock codes fails loud firmware-independently (picker lacks the cap) and rolls the opener back"() {
+    def "addAction ifThen Lock codes fails loud firmware-independently (picker lacks the cap) PRE-WRITE (no opener committed)"() {
         // The doActPage condition picker does NOT list Lock codes here (mirrors current firmware, where the
         // capability dropped out of the picker). The reject must still fire the TAILORED unconfigurable-
-        // condition steer -- not the generic "not in doActPage option list" -- because the guard runs against
-        // the RAW requested capability BEFORE picker resolution. The action-block opener (actType/actSubType)
-        // was already committed above the expression walk, so the reject also rolls it back (a cancelAct
-        // click is issued) to keep the reject atomic. The message carries "RM is not touched", accurate net
-        // of the rollback. Regression guard (both-ways proof orchestrator-owned): reverting the early guard
-        // reds the tailored-message assertions; reverting the rollback wrapper reds the cancelAct assertion.
+        // condition steer -- not the generic "not in doActPage option list" -- because it is decided from
+        // the RAW requested capability name, ahead of the pre-write snapshot and any wizard write. So NO
+        // opener is committed and NO cond=a write hits the hub: nothing to roll back, and "RM is not
+        // touched" is accurate with zero wizard round-trips. The posts assertions below prove no wizard
+        // write occurred (no actType opener, no cond=a, no cancelAct rollback). Both-ways proof is
+        // orchestrator-owned; the no-backup property of the pre-snapshot reject is asserted at the
+        // integration level in the e2e suite.
         given:
         enableWrite()
         def posts = []
@@ -3305,22 +3306,32 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error?.contains("Rule Machine UI")
         !result.error?.contains("not in doActPage option list")
 
-        and: "the reject reports the rule as untouched (opener rolled back)"
+        and: "the reject reports the rule as untouched (pre-write hoist -- opener never committed)"
         result.error?.contains("RM is not touched")
 
-        and: "the rollback aborted the in-flight action editor (cancelAct click issued)"
-        posts.any { it.path == "/installedapp/btn" && it.body?.name == "cancelAct" }
+        and: "the pre-write hoist fired: no opener (actType) write, no cond=a write, and no rollback cancelAct click was needed"
+        !posts.any { it.body instanceof Map && (it.body as Map).any { k, v -> k?.toString()?.startsWith("settings[actType.") } }
+        !posts.any { it.body instanceof Map && (it.body as Map).containsKey("settings[cond]") }
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "cancelAct" }
     }
 
-    def "addAction ifThen Last Event Device fails loud firmware-independently (picker lacks the cap)"() {
-        // Companion to the Lock codes case on the non-condition (action-side reference) capability. The
-        // doActPage picker does not list Last Event Device here; the tailored "not usable as a condition"
-        // steer must still fire via the raw-name guard ahead of picker resolution. Both-ways: reverting the
-        // early guard yields the generic picker-miss message instead of the action-side steer.
+    def "addAction ifThen Last Event Device fails loud PRE-WRITE via the top-of-function hoist (no opener/cond=a write)"() {
+        // Companion to the Lock codes case on the non-condition (action-side reference) capability: the
+        // tailored "not usable as a condition" steer is decided from the raw requested name ahead of the
+        // pre-write snapshot and any wizard write, so NO IF-block opener is committed and NO cond=a write
+        // reaches the hub -- distinct from the rollback path, which would commit the opener first and then
+        // unwind it. The posts assertions below prove no wizard write occurred (no actType opener, no cond=a,
+        // no cancelAct rollback); the tailored-message assertion distinguishes the raw-name steer from the
+        // generic picker miss. Both-ways proof is orchestrator-owned; the no-backup property of the
+        // pre-snapshot reject is asserted at the integration level in the e2e suite.
         given:
         enableWrite()
+        def posts = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
         def fetchSeq = 0
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -3355,6 +3366,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error?.contains("in actions")
         result.error?.contains("RM is not touched")
         !result.error?.contains("not in doActPage option list")
+
+        and: "the pre-write hoist fired: no opener (actType) write, no cond=a write, and no rollback cancelAct click"
+        !posts.any { it.body instanceof Map && (it.body as Map).any { k, v -> k?.toString()?.startsWith("settings[actType.") } }
+        !posts.any { it.body instanceof Map && (it.body as Map).containsKey("settings[cond]") }
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "cancelAct" }
     }
 
     def "addRequiredExpression Lock codes fails loud even when the STPage picker OMITS the capability (firmware-independent)"() {
