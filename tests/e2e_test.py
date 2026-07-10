@@ -3211,6 +3211,57 @@ class TestRunner:
                 and "not valid as a condition" in str(noncurated_change_cond.get("error", "")).lower() \
                 and "trigger row" in str(noncurated_change_cond.get("error", "")).lower(), \
                 f"state-change comparator on a NON-CURATED device-state condition should fail loud steering to a trigger row, got: {noncurated_change_cond}"
+
+            # ATOMIC reject on the addAction IF-EXPRESSION surface. The ifThen action commits the IF-block
+            # opener (actType/actSubType) BEFORE the expression's conditions are walked, so a rejected
+            # condition capability must ROLL THE OPENER BACK -- otherwise the success:false call leaves an
+            # orphan IF block ("opened but never closed"), a structural imbalance. Lock codes is unconfigurable
+            # on every surface. On current firmware the doActPage picker does NOT even list Lock codes, so this
+            # also proves the reject is FIRMWARE-INDEPENDENT: the tailored steer fires (not the generic "not in
+            # doActPage option list") because the guard runs against the raw requested capability before picker
+            # resolution.
+            if_lock = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "addAction": {"capability": "ifThen",
+                         "expression": {"conditions": [{"capability": "Lock codes"}]}}, "confirm": True}})
+            assert if_lock.get("success") is False \
+                and "lock device" in str(if_lock.get("error", "")).lower() \
+                and "code name" in str(if_lock.get("error", "")).lower() \
+                and "not in doactpage option list" not in str(if_lock.get("error", "")).lower(), \
+                f"ifThen Lock codes condition should fail loud with the tailored unconfigurable steer, got: {if_lock}"
+            assert "not touched" in str(if_lock.get("restoreHint", "")).lower(), \
+                f"ifThen Lock codes reject should carry a not-touched restoreHint after the opener rollback, got: {if_lock.get('restoreHint')!r}"
+            # THE atomic-reject proof: the rolled-back reject must leave NO orphan IF block. The
+            # ruleBuilderJson health read reports ok:true even with the orphan (it does not see the
+            # imbalance), so the configPage-derived structuralIssues list is the load-bearing signal --
+            # it must be empty, with no missing-END-IF / never-closed marker anywhere in the health.
+            health_after_if = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_get_rule_health", "args": {"appId": app_id}})
+            assert not health_after_if.get("structuralIssues"), \
+                f"ifThen Lock codes reject left an orphan block opener (structuralIssues not empty): {health_after_if}"
+            assert "never closed" not in str(health_after_if).lower() and "end-if" not in str(health_after_if).lower(), \
+                f"ifThen Lock codes reject left a missing-END-IF structural marker: {health_after_if}"
+            # Non-condition parity on the same IF-expression surface: Last Event Device rolls back the same way.
+            if_lastevent = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "addAction": {"capability": "ifThen",
+                         "expression": {"conditions": [{"capability": "Last Event Device"}]}}, "confirm": True}})
+            assert if_lastevent.get("success") is False \
+                and "not usable as a condition" in str(if_lastevent.get("error", "")).lower(), \
+                f"ifThen Last Event Device condition should fail loud as a non-condition, got: {if_lastevent}"
+            health_after_le = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_get_rule_health", "args": {"appId": app_id}})
+            assert not health_after_le.get("structuralIssues"), \
+                f"ifThen Last Event Device reject left an orphan block opener (structuralIssues not empty): {health_after_le}"
+            # Conditional-TRIGGER surface parity (static condition path): the same caps reject through the
+            # real tool, leaving the rule untouched (the condition guard fires before any trigger/condition write).
+            trig_lock = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "addTrigger": {"capability": "Switch",
+                         "deviceIds": [int(self.get_test_switch_id())], "state": "on",
+                         "condition": {"capability": "Lock codes"}}, "confirm": True}})
+            assert trig_lock.get("success") is False \
+                and "lock device" in str(trig_lock.get("error", "")).lower(), \
+                f"addTrigger.condition Lock codes should fail loud as an unconfigurable condition, got: {trig_lock}"
+            assert "not touched" in str(trig_lock.get("restoreHint", "")).lower(), \
+                f"addTrigger.condition Lock codes reject should carry a not-touched restoreHint, got: {trig_lock.get('restoreHint')!r}"
         finally:
             self._delete_native(app_id)
 
@@ -3561,6 +3612,11 @@ class TestRunner:
                 "addTrigger", "addTriggers", "addAction", "addActions", "addRequiredExpression")):
             assert created.get("success") is not False and not created.get("partial"), \
                 f"create-time authoring shortcut did not fully commit (partial or failed): {created}"
+        # A native RM create surfaces ruleId under the ruleId-taking downstream tools' name; for a
+        # rule_machine app it equals appId so a create can chain straight into hub_call_rule etc.
+        if created is not None:
+            assert created.get("ruleId") == app_id, \
+                f"native create did not surface ruleId==appId (got ruleId={created.get('ruleId')}, appId={app_id})"
         self.created_native_app_ids.append(str(app_id))
         return app_id
 
@@ -5454,6 +5510,18 @@ class TestRunner:
         })
         blob = str(result)
         assert "capability" in blob, f"addTrigger discover did not return a schema: {blob[:200]}"
+        # The discover payload exposes a top-level conditionFields list carrying the `not` negation
+        # flag -- the machine-readable place an agent learns a condition can be negated. Assert it in
+        # BOTH the trigger and action discover schemas (parse conditionFields, not a loose substring).
+        trig_cond_fields = result.get("conditionFields") or []
+        assert any(f.get("name") == "not" for f in trig_cond_fields), \
+            f"addTrigger discover conditionFields missing the 'not' field: {trig_cond_fields}"
+        act = self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_set_rule", "args": {"addAction": {"discover": True}},
+        })
+        act_cond_fields = act.get("conditionFields") or []
+        assert any(f.get("name") == "not" for f in act_cond_fields), \
+            f"addAction discover conditionFields missing the 'not' field: {act_cond_fields}"
 
     @test("native_apps")
     def test_delete_native_app_from_native_gateway(self) -> None:

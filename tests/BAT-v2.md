@@ -4599,8 +4599,8 @@ Non-zero exit code if any probe fails (useful as CI gate).
 | `settings` | Raw settings map write |
 | `button` | Page-transition button click by name |
 | `setLabel` | Set rule title (shorthand for `settings: {ruleTitle: ...}`) |
-| `pauseRule: true` | Click pausRule button |
-| `resumeRule: true` | Click resRule button |
+| `pauseRule: true` | Click the pausRule toggle button (pauses a running rule) |
+| `resumeRule: true` | Click the same pausRule toggle button (resumes a paused rule -- pause/resume share one toggle, like stopRule) |
 | `updateRule: true` | Click updateRule button |
 | `getAppConfig: true` | Read-only snapshot (no mutation) |
 

@@ -3253,23 +3253,214 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error?.contains("Rule Machine UI")
     }
 
-    def "_rmSendActionErrorNote steers a load-failed pause/resume to its own page button (resume to resRule)"() {
-        // Pause and resume are DISTINCT page buttons (pause=pausRule, resume=resRule), not one toggle, so a
-        // load-failed resume must steer to resRule -- steering it to pausRule would tell the caller to pause
-        // an already-paused rule. The per-app load limiter is sticky (clears only on reboot / app disable-
-        // enable), so the note must not advise a bare retry. A non-load failure keeps the plain note. Both-
-        // ways: hardcoding one button makes the resume case emit pausRule; dropping the sticky wording drops
-        // it from the note; dropping the marker gate makes an unrelated error emit the load steer.
-        expect: "a load-failed resume steers to resRule and never pausRule, with sticky-limiter wording"
+    def "addAction ifThen Lock codes fails loud firmware-independently (picker lacks the cap) and rolls the opener back"() {
+        // The doActPage condition picker does NOT list Lock codes here (mirrors current firmware, where the
+        // capability dropped out of the picker). The reject must still fire the TAILORED unconfigurable-
+        // condition steer -- not the generic "not in doActPage option list" -- because the guard runs against
+        // the RAW requested capability BEFORE picker resolution. The action-block opener (actType/actSubType)
+        // was already committed above the expression walk, so the reject also rolls it back (a cancelAct
+        // click is issued) to keep the reject atomic. The message carries "RM is not touched", accurate net
+        // of the rollback. Regression guard (both-ways proof orchestrator-owned): reverting the early guard
+        // reds the tailored-message assertions; reverting the rollback wrapper reds the cancelAct assertion.
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        def fetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            fetchSeq++
+            doActPageCondSchemaJson(100, fetchSeq)  // rCapab_1 options are Custom Attribute/Switch/Motion -- NO Lock codes
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], paragraphs: ["IF ..."]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "an ifThen expression condition uses the unconfigurable Lock codes capability"
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "ifThen", expression: [conditions: [[capability: "Lock codes"]]]],
+            confirm: true
+        ])
+
+        then: "the reject is the tailored unconfigurable-condition steer, NOT the generic picker miss"
+        result.success == false
+        result.error?.contains("Lock codes")
+        result.error?.contains("lock device")
+        result.error?.contains("code name")
+        result.error?.contains("Rule Machine UI")
+        !result.error?.contains("not in doActPage option list")
+
+        and: "the reject reports the rule as untouched (opener rolled back)"
+        result.error?.contains("RM is not touched")
+
+        and: "the rollback aborted the in-flight action editor (cancelAct click issued)"
+        posts.any { it.path == "/installedapp/btn" && it.body?.name == "cancelAct" }
+    }
+
+    def "addAction ifThen Last Event Device fails loud firmware-independently (picker lacks the cap)"() {
+        // Companion to the Lock codes case on the non-condition (action-side reference) capability. The
+        // doActPage picker does not list Last Event Device here; the tailored "not usable as a condition"
+        // steer must still fire via the raw-name guard ahead of picker resolution. Both-ways: reverting the
+        // early guard yields the generic picker-miss message instead of the action-side steer.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        def fetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            fetchSeq++
+            doActPageCondSchemaJson(100, fetchSeq)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], paragraphs: ["IF ..."]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "an ifThen expression condition uses the non-condition Last Event Device capability"
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "ifThen", expression: [conditions: [[capability: "Last Event Device"]]]],
+            confirm: true
+        ])
+
+        then: "the reject is the tailored non-condition steer, NOT the generic picker miss"
+        result.success == false
+        result.error?.contains("Last Event Device")
+        result.error?.contains("not usable as a condition")
+        result.error?.contains("in actions")
+        result.error?.contains("RM is not touched")
+        !result.error?.contains("not in doActPage option list")
+    }
+
+    def "addRequiredExpression Lock codes fails loud even when the STPage picker OMITS the capability (firmware-independent)"() {
+        // Required-Expression walker: with Lock codes ABSENT from the STPage picker
+        // (rCapab_1 options are Switch/Contact only), the old flow would resolve the picker first and throw
+        // the generic "not in STPage option list". The raw-name guard ahead of picker resolution keeps the
+        // tailored unconfigurable-condition steer firing regardless of firmware. Both-ways: reverting the
+        // early guard produces the generic picker-miss message.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "cond", type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1", type: "enum", options: ["Switch", "Contact"]],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["s1"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "Lock codes is authored on the Required Expression surface whose picker lacks it"
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[capability: "Lock codes"]]],
+            confirm: true
+        ])
+
+        then: "the tailored unconfigurable-condition reject fires, not the generic picker miss"
+        result.success == false
+        result.error?.contains("Lock codes")
+        result.error?.contains("lock device")
+        result.error?.contains("RM is not touched")
+        !result.error?.contains("not in STPage option list")
+    }
+
+    def "addTrigger.condition Lock codes fails loud through the real tool (static condition path)"() {
+        // Real-wiring reject on the conditional-trigger surface: hub_set_rule(addTrigger:{condition:{Lock
+        // codes}}) routes into _rmBuildCondition, whose raw-name guard rejects before any condition/trigger
+        // write, so the rule is left untouched. Both-ways: reverting the guard proceeds into the wizard writes
+        // and the message is NOT the unconfigurable-condition steer.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when: "a conditional trigger binds a Lock codes condition"
+        def result = script.toolSetRule([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [8], state: "on",
+                         condition: [capability: "Lock codes"]],
+            confirm: true
+        ])
+
+        then: "the tailored unconfigurable-condition reject fires and the rule is reported untouched"
+        result.success == false
+        result.error?.contains("Lock codes")
+        result.error?.contains("lock device")
+        result.error?.contains("RM is not touched")
+    }
+
+    def "both discover payloads expose the 'not' condition field so an agent can find the negation flag"() {
+        // The addTrigger and addAction discover schemas each carry a top-level conditionFields list that must
+        // include the `not` negation flag -- the only machine-readable place an agent learns a condition can be
+        // negated. Both-ways: deleting the `not` entry from either payload's conditionFields reds this guard.
+        expect: "the trigger discover payload lists a 'not' condition field"
+        def trigFields = script._rmTriggerSchemaForDiscover().conditionFields
+        trigFields.any { it.name == "not" }
+
+        and: "the action discover payload lists a 'not' condition field"
+        def actFields = script._rmActionSchemaForDiscover().conditionFields
+        actFields.any { it.name == "not" }
+    }
+
+    def "_rmSendActionErrorNote steers a load-failed pause AND resume to the single pausRule toggle button"() {
+        // Pause and resume share ONE toggle page button, pausRule, whose title flips with the rule's run
+        // state (like stopRule) -- clicking pausRule on a paused rule resumes it. There is no resRule button,
+        // so BOTH the pause and resume notes must steer to pausRule and neither may mention resRule. The
+        // per-app load limiter is sticky (clears only on reboot / app disable-enable), so the note must not
+        // advise a bare retry. A non-load failure keeps the plain note. Both-ways: re-introducing a resRule
+        // steer for resume makes the resume assertion red; dropping the sticky wording drops it from the
+        // note; dropping the marker gate makes an unrelated error emit the load steer.
+        expect: "a load-failed resume steers to the pausRule toggle and never resRule, with sticky-limiter wording"
         def resumeNote = script._rmSendActionErrorNote("resumeRule", 100, "App 100 generates excessive hub load")
-        resumeNote.contains("resRule")
-        !resumeNote.contains("pausRule")
+        resumeNote.contains("pausRule")
+        !resumeNote.contains("resRule")
         resumeNote.contains("sticky")
 
-        and: "a load-failed pause steers to pausRule and never resRule"
+        and: "a load-failed pause steers to the same pausRule toggle and never resRule"
         def pauseNote = script._rmSendActionErrorNote("pauseRule", 100, "App 100 generates excessive hub load")
         pauseNote.contains("pausRule")
         !pauseNote.contains("resRule")
+        pauseNote.contains("sticky")
 
         and: "a non-pause/resume load failure gets the sticky-limiter note with no page button"
         def genNote = script._rmSendActionErrorNote("runRuleAct", 100, "App 100 generates excessive hub load")
@@ -3279,6 +3470,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "an unrelated (non-load) failure keeps the plain note -- the marker gate is closed"
         def plain = script._rmSendActionErrorNote("resumeRule", 100, "some other error")
+        !plain.contains("pausRule")
         !plain.contains("resRule")
         !plain.contains("sticky")
     }

@@ -420,7 +420,8 @@ def execute_step(client: HubitatMcpClient, app_id: int,
     elif op == "pauseRule":
         args["button"] = "pausRule"
     elif op == "resumeRule":
-        args["button"] = "resRule"
+        # Pause and resume share ONE toggle button (pausRule); clicking it on a paused rule resumes it.
+        args["button"] = "pausRule"
     elif op == "updateRule":
         args["button"] = "updateRule"
     elif op == "getAppConfig":
