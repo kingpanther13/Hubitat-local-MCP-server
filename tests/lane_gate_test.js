@@ -11,12 +11,12 @@
 'use strict';
 const { decide } = require('../.github/scripts/lane_gate.js');
 
-function run(eventName, action, prLabels, evLabel) {
+function run(eventName, action, prLabels, evLabel, attempt) {
   return decide(eventName, {
     action,
     label: evLabel ? { name: evLabel } : null,
     pull_request: { labels: (prLabels || []).map(n => ({ name: n })) },
-  }) ? 'true' : 'false';
+  }, attempt) ? 'true' : 'false';
 }
 
 let fail = 0;
@@ -40,6 +40,14 @@ check('unlabeled LAST full -> demote',    run('pull_request_target', 'unlabeled'
 check('unlabeled LAST full webhook-incl', run('pull_request_target', 'unlabeled', ['e2e:full'], 'e2e:full'), 'true');
 check('unlabeled one-of-many remains',    run('pull_request_target', 'unlabeled', ['release:patch'], 'e2e:full'), 'false');
 check('unlabeled non-lane (bug)',         run('pull_request_target', 'unlabeled', ['e2e:full'], 'bug'), 'false');
+
+// Manual re-run override (attempt > 1): a human clicking "Re-run all jobs" on a skipped no-op
+// label run is an explicit ask for e2e -- the frozen event payload must not re-derive skip.
+// Both-ways: the attempt-1 rows above pin that the override does NOT leak into first runs.
+check('RERUN attempt=2 redundant 2nd full',  run('pull_request_target', 'labeled', ['e2e:full', 'release:patch'], 'release:patch', 2), 'true');
+check('RERUN attempt=2 non-lane (bug)',      run('pull_request_target', 'labeled', ['e2e:full', 'bug'], 'bug', 2), 'true');
+check('RERUN attempt=3 unlabeled remains',   run('pull_request_target', 'unlabeled', ['release:patch'], 'e2e:full', 3), 'true');
+check('attempt=1 explicit stays no-op',      run('pull_request_target', 'labeled', ['e2e:full', 'release:patch'], 'release:patch', 1), 'false');
 
 console.log(fail === 0 ? '\nlane-gate decision guard: PASS' : `\nlane-gate decision guard: FAIL (${fail})`);
 process.exit(fail === 0 ? 0 : 1);
