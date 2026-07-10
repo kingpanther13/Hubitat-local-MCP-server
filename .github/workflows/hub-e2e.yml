@@ -113,15 +113,24 @@ permissions:
 # last full label re-runs focused in its OWN isolated group (never evicted); it does not cancel the
 # in-flight full run, just queues behind it in the e2e job's hub-e2e-serialized group and posts the
 # pending gate after it.
+# MANUAL RE-RUNS (github.run_attempt > 1) take the ISOLATED group too, for EVERY event type: a
+# re-run replays a FROZEN payload, so an old superseded commit run re-entering the shared per-branch
+# group would cancel the CURRENT head's in-flight run (cancel-in-progress) or evict a pending one
+# (queue:single) -- an obsolete run must never displace a live one. Isolated, the re-run cancels
+# nothing and just queues FIFO in the e2e job's hub-e2e-serialized group; lane-gate honors it via
+# the attempt>1 override in lane_gate.js. The attempt==1 guard only SHRINKS the shared set, so the
+# subset invariant above still holds. If run_attempt were ever stale at re-run time the expression
+# degrades to the old per-event grouping -- never a new hazard.
 concurrency:
   group: >-
-    ${{ (github.event_name != 'pull_request_target'
+    ${{ (github.run_attempt == 1
+    && (github.event_name != 'pull_request_target'
     || (github.event.action != 'labeled' && github.event.action != 'unlabeled')
     || (github.event.action == 'labeled' && (
     (github.event.label.name == 'release:patch' && !contains(github.event.pull_request.labels.*.name, 'release:minor') && !contains(github.event.pull_request.labels.*.name, 'release:major') && !contains(github.event.pull_request.labels.*.name, 'e2e:full'))
     || (github.event.label.name == 'release:minor' && !contains(github.event.pull_request.labels.*.name, 'release:patch') && !contains(github.event.pull_request.labels.*.name, 'release:major') && !contains(github.event.pull_request.labels.*.name, 'e2e:full'))
     || (github.event.label.name == 'release:major' && !contains(github.event.pull_request.labels.*.name, 'release:patch') && !contains(github.event.pull_request.labels.*.name, 'release:minor') && !contains(github.event.pull_request.labels.*.name, 'e2e:full'))
-    || (github.event.label.name == 'e2e:full' && !contains(github.event.pull_request.labels.*.name, 'release:patch') && !contains(github.event.pull_request.labels.*.name, 'release:minor') && !contains(github.event.pull_request.labels.*.name, 'release:major')))))
+    || (github.event.label.name == 'e2e:full' && !contains(github.event.pull_request.labels.*.name, 'release:patch') && !contains(github.event.pull_request.labels.*.name, 'release:minor') && !contains(github.event.pull_request.labels.*.name, 'release:major'))))))
     && format('hub-e2e-{0}-{1}', github.event.pull_request.head.repo.full_name || github.repository, github.head_ref || github.ref_name)
     || format('hub-e2e-{0}-{1}-isolated-{2}', github.event.pull_request.head.repo.full_name || github.repository, github.head_ref || github.ref_name, github.run_id) }}
   cancel-in-progress: true
