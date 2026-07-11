@@ -3739,23 +3739,48 @@ class TestRunner:
         self._cache_write_health(app_id, result)
         return result
 
-    def _rm_call_soft(self, args: dict, strict: bool = False) -> Any:
+    def _rm_call_soft(self, args: dict, strict: bool = False, recover_504: bool = False) -> Any:
         """Direct hub_set_rule call (full response: settingsApplied/settingsSkipped/partial,
         triggerIndex/actionIndex -- shapes _set_rule's success-only contract doesn't carry).
 
         Default (soft): same relay-504 soft contract as _set_rule. strict=True: the 504
         raises so _run_one's test-level retry re-runs the small test on a fresh rule (see
-        _set_rule)."""
+        _set_rule).
+
+        strict=True + recover_504=True -- recover-by-config-verify, for composite ops that
+        sit STRUCTURALLY at the cloud relay's fixed ~10s ceiling. For those a 504 is
+        deterministic: the test-level re-run re-rolls the same-length op and 504s again,
+        while the hub has ALREADY committed the write (measured hub-side: the hub finishes
+        and serializes at ~10s as the relay gives up; only the RESPONSE is lost). So
+        instead of raising, confirm the committed rule renders and hand back the sentinel
+        {"success": True, "recovered504": True}. The caller MUST then prove the wire
+        format from the re-fetched committed config (its normal hub_get_app_config
+        readback). The sentinel deliberately carries NO relayDropped/partial keys, so no
+        relayDropped bail can fire on it and every config-side assertion still runs --
+        the lost RESPONSE is recovered from committed state, no wire-format assertion is
+        skipped. If the write never actually landed, the caller's readback fails loudly."""
         try:
             result = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": args})
             self._cache_write_health(args.get("appId"), result)
             return result
         except (McpError, McpToolError, requests.HTTPError) as exc:
-            if strict or "504" not in str(exc):
+            if "504" not in str(exc):
                 raise
-            print(f"    hub_set_rule(appId={args.get('appId')}) response lost to relay 504 -- "
+            if strict and not recover_504:
+                raise
+            app_id = args.get("appId")
+            if strict:
+                op_keys = [k for k in args if k not in ("appId", "confirm")]
+                print(f"    [RECOVER-504] hub_set_rule(appId={app_id}, ops={op_keys}): "
+                      "response lost to relay 504 -- op commits hub-side; "
+                      "wire format will be verified from the committed config")
+                time.sleep(3.0)   # settle: hub serializes the committed rule right at the ceiling
+                self._assert_rule_renders(app_id)
+                self._last_write_health = None   # sentinel has no health -> live fetch downstream
+                return {"success": True, "recovered504": True}
+            print(f"    hub_set_rule(appId={app_id}) response lost to relay 504 -- "
                   "soft contract: verifying rule health instead of hard-failing")
-            self._assert_rule_renders(args.get("appId"))
+            self._assert_rule_renders(app_id)
             self._last_write_health = None
             return {"success": True, "asyncCommitLikely": True, "relayDropped": True}
 
@@ -3815,7 +3840,19 @@ class TestRunner:
         # deleting inline regardless.
         if self.defer_native_deletes:
             return
-        self.client.call_tool(gateway, {"tool": "hub_delete_native_app", "args": {"appId": app_id, "force": True, "confirm": True}})
+        try:
+            self.client.call_tool(gateway, {"tool": "hub_delete_native_app", "args": {"appId": app_id, "force": True, "confirm": True}})
+        except (McpError, McpToolError, requests.HTTPError) as exc:
+            if "504" not in str(exc):
+                raise
+            # Teardown-only tolerance: the relay dropped the delete's RESPONSE, but the hub
+            # still commits the delete. Every wire-format assertion already ran by this point,
+            # so failing here would be a transport false-red on a passed test. Keep the app
+            # tracked -- the end-of-run cleanup sweep re-checks and reaps it if the delete
+            # truly never landed.
+            print(f"    [RECOVER-504] delete appId={app_id}: response lost to relay 504 -- "
+                  "delete commits hub-side; leaving it tracked for the cleanup sweep")
+            return
         self._untrack_native_app(app_id)
 
     # ---- per-concern RM wire-format tests (the former single mega-test, split) ----
@@ -4362,7 +4399,11 @@ class TestRunner:
                     {"capability": "Mode", "state": mode_name},
                 ]},
                 "confirm": True,
-            }, strict=True)
+            }, strict=True, recover_504=True)
+            # On a recovered 504 the response is lost, so these two response-level asserts
+            # pass against the sentinel; the config readback below is the authoritative
+            # wire-format proof and runs on BOTH paths (a skipped/failed mode write would
+            # leave the mode-picker setting missing there and fail loudly).
             assert res.get("success") is not False, f"addAction waitEvents reported failure: {res}"
             # A dropped Mode event would flag the write partial (mode field skipped) -- the
             # fix writes the discovered mode picker so the action commits cleanly.
@@ -4488,9 +4529,11 @@ class TestRunner:
                     {"capability": "Switch", "deviceIds": [sw], "state": "on", "andStays": {"minutes": 5}},
                 ]},
                 "confirm": True,
-            }, strict=True)
-            if res.get("relayDropped"):
-                return
+            }, strict=True, recover_504=True)
+            # No relayDropped bail here: strict never returns a relayDropped envelope, and a
+            # recovered-504 sentinel must FALL THROUGH to the config readback below -- returning
+            # early would soft-skip the stays-/SMins- wire-format proof, which the readback
+            # asserts from the committed config on both the clean and recovered paths.
             assert res.get("success") is not False, f"waitEvents andStays addAction reported failure: {res}"
             assert not res.get("partial"), f"waitEvents andStays action falsely flagged partial: {res}"
 
@@ -5243,14 +5286,18 @@ class TestRunner:
                     ],
                 },
                 "confirm": True,
-            }, strict=True)
+            }, strict=True, recover_504=True)
             assert result.get("success") is not False, \
                 f"multi-condition addRequiredExpression reported failure (the gap-oper cache regression): {result}"
             # ALL THREE condition slots must have allocated -- before the fix a `cond=a` after a
-            # gap-operator no-op'd, so the walker threw and not every slot landed.
-            cidx = result.get("conditionIndices") or []
-            assert len(cidx) == 3, \
-                f"multi-condition RE did not allocate all three condition slots (expected 3 conditionIndices): {result}"
+            # gap-operator no-op'd, so the walker threw and not every slot landed. On a recovered
+            # 504 the response (and its conditionIndices) is lost -- the same len-3 fact is then
+            # proven from the committed config below: three rendered Temperature conditions means
+            # three allocated slots (a no-op'd cond=a would have dropped one from the render).
+            if not result.get("recovered504"):
+                cidx = result.get("conditionIndices") or []
+                assert len(cidx) == 3, \
+                    f"multi-condition RE did not allocate all three condition slots (expected 3 conditionIndices): {result}"
             self._assert_rule_healthy(app_id)
             # The rule renders all THREE Temperature conditions joined by AND.
             cfg = self.client.call_tool("hub_read_apps_code", {
@@ -5283,14 +5330,28 @@ class TestRunner:
                     ],
                 },
                 "confirm": True,
-            }, strict=True)
+            }, strict=True, recover_504=True)
             assert sub.get("success") is not False, \
                 f"sub-expression addRequiredExpression reported failure (close-paren/outer-oper cache regression): {sub}"
-            # Two inner + one outer condition slot must all allocate.
-            scidx = sub.get("conditionIndices") or []
-            assert len(scidx) == 3, \
-                f"sub-expression RE did not allocate all three condition slots (2 inner + 1 outer): {sub}"
+            # Two inner + one outer condition slot must all allocate. On a recovered 504 the
+            # response (and its conditionIndices) is lost -- the same len-3 fact is then proven
+            # by the committed-config readback below.
+            if not sub.get("recovered504"):
+                scidx = sub.get("conditionIndices") or []
+                assert len(scidx) == 3, \
+                    f"sub-expression RE did not allocate all three condition slots (2 inner + 1 outer): {sub}"
             self._assert_rule_healthy(sub_app_id)
+            # Committed-config proof (both paths): all three Temperature conditions render
+            # (2 inner + 1 outer -- a no-op'd outer cond=a would drop one) and the inner OR
+            # join is present.
+            sub_cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": sub_app_id},
+            })
+            sub_blob = str(sub_cfg)
+            assert sub_blob.lower().count("temperature of") >= 3, \
+                f"sub-expression rule does not render all three Temperature conditions: {sub_blob[:800]}"
+            assert "OR" in sub_blob, \
+                f"sub-expression rule does not render the inner OR joining operator: {sub_blob[:800]}"
         finally:
             self._delete_native(sub_app_id)
 
