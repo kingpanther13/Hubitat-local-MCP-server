@@ -3373,6 +3373,79 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { it.path == "/installedapp/btn" && it.body?.name == "cancelAct" }
     }
 
+    def "patches addAction ifThen Lock codes fails loud PRE-WRITE via the _rmAddAction top-of-function hoist (dispatcher-bypass path)"() {
+        // The two specs above route through hub_set_rule's single addAction, which the dispatcher
+        // (_applyNativeAppEdit) refuses in its pre-write pre-flight BEFORE _rmAddAction is entered.
+        // A patches[] sub-op does NOT pass through that pre-flight -- it calls _rmAddAction directly --
+        // so the ONLY pre-write protection here is the top-of-function hoist inside _rmAddAction. This
+        // pins it: reverting the hoist lets the reject fall back to the open -> reject -> rollback cycle
+        // (atomic via the rollback backstop, but back over the cloud relay budget). The tailored
+        // unconfigurable-condition steer must still fire from the RAW requested capability name, so NO
+        // IF-block opener is committed and NO cond=a write reaches the hub -- proven by the posts
+        // assertions below (no actType opener, no cond=a, no cancelAct rollback). Unlike the dispatcher
+        // path, a patches sub-op reports its refusal in the per-op patches[] entry (patchErr stays null),
+        // so the tailored steer is asserted on the addAction patch entry's error, not the top-level error.
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        def fetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            fetchSeq++
+            doActPageCondSchemaJson(100, fetchSeq)  // rCapab_1 options omit Lock codes -- reject must not depend on the picker
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], paragraphs: ["IF ..."]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "a patches sub-op adds an ifThen action whose expression uses the unconfigurable Lock codes capability"
+        def result = script.toolSetRule([
+            appId: 100,
+            patches: [[addAction: [capability: "ifThen", expression: [conditions: [[capability: "Lock codes"]]]]]],
+            confirm: true
+        ])
+
+        then: "the batch fails and is marked partial (one op refused pre-write)"
+        result.success == false
+        result.partial == true
+
+        and: "the refusal rides on the addAction patch entry as the tailored steer, NOT the generic picker miss"
+        // The distinguishing invariant of the patches path vs the dispatcher path: the reject is
+        // reported on the per-op entry and top-level patchErr stays null. Pinning it here catches a
+        // regression that reroutes the reject through the outer catch (which would set result.error,
+        // drop addPatch.error, and still pass success:false + partial:true -- a false green).
+        result.error == null
+        def addPatch = (result.patches as List).find { it instanceof Map && it.op == "addAction" }
+        addPatch != null
+        addPatch.success == false
+        addPatch.error?.contains("Lock codes")
+        addPatch.error?.contains("lock device")
+        addPatch.error?.contains("code name")
+        addPatch.error?.contains("Rule Machine UI")
+        addPatch.error?.contains("RM is not touched")
+        !addPatch.error?.contains("not in doActPage option list")
+
+        and: "the pre-write hoist fired: no opener (actType) write, no cond=a write, and no rollback cancelAct click"
+        !posts.any { it.body instanceof Map && (it.body as Map).any { k, v -> k?.toString()?.startsWith("settings[actType.") } }
+        !posts.any { it.body instanceof Map && (it.body as Map).containsKey("settings[cond]") }
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "cancelAct" }
+    }
+
     def "addRequiredExpression Lock codes fails loud even when the STPage picker OMITS the capability (firmware-independent)"() {
         // Required-Expression walker: with Lock codes ABSENT from the STPage picker
         // (rCapab_1 options are Switch/Contact only), the old flow would resolve the picker first and throw
