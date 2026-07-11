@@ -137,10 +137,15 @@ class HubitatMcpClient:
         # handshake (~300-500ms each over the cloud relay) across every MCP call instead of
         # paying it per request.
         self.session = requests.Session()
-        # Per-op wall-clock timings (op_key, seconds) for the end-of-run "Per-op wall-clock" summary --
-        # the only place real per-operation cost (RM create vs edit vs delete, etc.) is visible, since
-        # the >> call traces are verbose-gated and never reach the CI log.
-        self.op_timings: list[tuple[str, float]] = []
+        # Per-op wall-clock timings (op_key, seconds, test, ok) for the end-of-run "Per-op wall-clock"
+        # summary -- the only place real per-operation cost (RM create vs edit vs delete, etc.) is
+        # visible, since the >> call traces are verbose-gated and never reach the CI log. ok=False rows
+        # are FAILED-op latencies (a 504'd/errored call) -- otherwise never recorded, yet they are the
+        # tail that brackets the relay's effective per-call ceiling, which the avg cannot show.
+        self.op_timings: list[tuple[str, float, str, bool]] = []
+        self._active_test = ""            # set by the runner per test, for slow-op attribution
+        self._transport_retries = 0       # silent read-side transport retries (504/network), verbose-gated
+        self._last_op: tuple[str, float, bool] | None = None   # (op_key, seconds, ok) of the most recent call
         # Catalog-derived maps (issue #319), built lazily together from the live
         # gateway-mode catalog; None = not built yet. _gateway_members (gateway -> its
         # sub-tools) backs the membership guard; _gateway_route (leaf -> owning gateway)
@@ -227,6 +232,7 @@ class HubitatMcpClient:
                     last_exc = requests.HTTPError(f"{resp.status_code} {resp.reason} on {method}")
                     if not replay_safe:
                         raise last_exc   # write: unknown-commit -- surface, never replay
+                    self._transport_retries += 1
                     self._log(f"<< HTTP {resp.status_code} (attempt {attempt + 1}/3) — retrying")
                     # Exponential backoff with jitter to avoid thundering-herd if
                     # multiple consumers ever retry simultaneously.
@@ -247,6 +253,7 @@ class HubitatMcpClient:
                         snippet = f" body[:200]={resp.text[:200]!r}"
                     except Exception:
                         pass
+                self._transport_retries += 1
                 self._log(f"<< network/decode error (attempt {attempt + 1}/3): {exc}{snippet} -- retrying")
                 time.sleep((2 ** attempt) + random.uniform(0, 1))
         else:
@@ -384,8 +391,20 @@ class HubitatMcpClient:
                 wire_name, wire_args = gateway, {"tool": name, "args": args}
         op_key = _op_key(wire_name, wire_args)   # gateway sub-tool / flat name; hub_set_rule split create-vs-edit
         _t0 = time.monotonic()
-        result = self._send("tools/call", {"name": wire_name, "arguments": wire_args})
-        self.op_timings.append((op_key, time.monotonic() - _t0))
+        _op_ok = True
+        try:
+            result = self._send("tools/call", {"name": wire_name, "arguments": wire_args})
+        except BaseException:
+            _op_ok = False   # record the FAILED-op latency too -- a 504'd write is otherwise invisible
+            raise
+        finally:
+            _dur = time.monotonic() - _t0
+            self.op_timings.append((op_key, _dur, self._active_test, _op_ok))
+            self._last_op = (op_key, _dur, _op_ok)   # for the FULL-FAILURE line in _run_one
+            # Flag any call within ~75% of the measured ~10s relay ceiling -- these flake/504 on cloud.
+            if _dur >= 7.5:
+                print(f"  [SLOW] {_dur:4.1f}s  {op_key}  ({self._active_test or '?'})"
+                      f"{'' if _op_ok else '  [err/504]'}")
 
         # Check for tool-level error
         if result.get("isError"):
@@ -863,9 +882,44 @@ class TestRunner:
             "duration": duration,
         })
 
+    def _last_op_str(self) -> str:
+        """The most recent MCP call + its elapsed, for the FULL-FAILURE line -- so a 504 names the
+        exact op that hit the ~10s ceiling in one log read, even when the exception text doesn't."""
+        lo = getattr(self.client, "_last_op", None)
+        if not lo:
+            return "unknown"
+        op_key, dur, ok = lo
+        return f"{op_key} {dur:.1f}s{'' if ok else ' [err]'}"
+
+    def _settle_before_504_retry(self, name: str) -> None:
+        """A relay 504 means a heavy op crossed the ~10s cloud ceiling; an immediate re-run re-rolls
+        the same near-ceiling op straight back into the same window. Back off, then poll a trivial
+        call until it round-trips fast, so the single re-run starts from a settled transport. Only
+        ever runs on a 504, so a green run's wall-clock is unchanged."""
+        print(f"    [BACKOFF] {name}: relay 504 -- settling before the single re-run "
+              "(polling hub_get_info until it round-trips fast)")
+        time.sleep(60.0)
+        deadline = time.monotonic() + 30.0   # up to ~90s total, then re-run regardless
+        while time.monotonic() < deadline:
+            _p0 = time.monotonic()
+            try:
+                # Raw _send, NOT call_tool: a liveness probe must not enter op_timings / [SLOW] /
+                # _last_op (it would mislabel this test's telemetry and clobber the 504-causing op's
+                # identity), and must skip the catalog-map load that call_tool can trigger.
+                self.client._send("tools/call", {"name": "hub_get_info", "arguments": {}})
+                rtt = time.monotonic() - _p0
+                if rtt < 3.0:
+                    print(f"    [BACKOFF] {name}: transport healthy (hub_get_info {rtt:.1f}s) -- re-running")
+                    return
+            except Exception:
+                pass
+            time.sleep(5.0)
+        print(f"    [BACKOFF] {name}: settle window elapsed -- re-running anyway")
+
     def _run_one(self, group: str, name: str, method_name: str) -> None:
         method = getattr(self, method_name)
         self._current_test = f"{group}/{name}"
+        self.client._active_test = self._current_test   # so per-op timings attribute to this test
         t0 = time.monotonic()
         # Maintainer policy: a transient-caused failure gets ONE full test re-run before being
         # declared failed -- the test re-creates its own fixtures and the verify-by-label helpers
@@ -896,10 +950,14 @@ class TestRunner:
                 if "504" in str(exc) and attempt == 1:
                     retry_reason = "relay 504"
                     print(f"    [RETRY] {name} aborted by relay 504 -- re-running the test once")
+                    self._settle_before_504_retry(name)
                     continue
                 if "504" in str(exc):
-                    print(f"    FULL-FAILURE {name}: persistent relay 504 across retry: {exc}")
-                    self._record(name, group, "fail", message=f"persistent relay 504: {exc}"[:200], duration=elapsed)
+                    print(f"    FULL-FAILURE {name}: persistent relay 504 across retry "
+                          f"(last op {self._last_op_str()}): {exc}")
+                    self._record(name, group, "fail",
+                                 message=f"persistent relay 504 [{self._last_op_str()}]: {exc}"[:200],
+                                 duration=elapsed)
                 else:
                     self._record(name, group, "skip", message=str(exc), duration=elapsed)
                 return
@@ -909,6 +967,7 @@ class TestRunner:
                 if "504" in es and attempt == 1:
                     retry_reason = "relay 504"
                     print(f"    [RETRY] {name} failed on a relay 504 -- re-running the test once")
+                    self._settle_before_504_retry(name)
                     continue
                 # Server 5xx that is NOT a 504 (500/501/502/503): suspected per-app load limiter.
                 # Bounce/recover the app (which escalates to a reboot at the configured threshold),
@@ -924,8 +983,9 @@ class TestRunner:
                 # failure goes to the run log here -- a truncated structured response
                 # (error/repairHints/settingsSkipped all cut off) has repeatedly forced an
                 # extra run just to learn why a test failed.
-                print(f"    FULL-FAILURE {name}: {exc}")
-                self._record(name, group, "fail", message=str(exc)[:200], duration=elapsed)
+                print(f"    FULL-FAILURE {name} (last op {self._last_op_str()}): {exc}")
+                self._record(name, group, "fail",
+                             message=f"[{self._last_op_str()}] {exc}"[:200], duration=elapsed)
                 return
         # Inter-test breathing room for the hub's per-app load limiter. The limiter has
         # tripped MID-RUN on a freshly-booted hub, and the suite's recent speedups all
@@ -9618,14 +9678,39 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         # optimization: how much is RM create vs edit vs delete vs reads). Aggregated by op key.
         ops = getattr(self.client, "op_timings", [])
         if ops:
+            # Aggregate per op key, keeping every per-sample duration so max / p95 (the tail that
+            # decides pass-vs-504 against the relay's effective per-call ceiling) is visible, not just
+            # the avg -- a mean near 6s hides a bimodal op class sitting at the ceiling.
             agg: dict[str, list[float]] = {}
-            for op_key, dur in ops:
-                slot = agg.setdefault(op_key, [0, 0.0])
-                slot[0] += 1
-                slot[1] += dur
-            print("\n  Per-op wall-clock (total / count / avg, slowest total first):")
-            for op_key, (cnt, tot) in sorted(agg.items(), key=lambda kv: kv[1][1], reverse=True)[:20]:
-                print(f"    {tot:6.1f}s  {int(cnt):3d}x  {tot / cnt:4.1f}s avg  {op_key}")
+            for op_key, dur, _test, _ok in ops:
+                agg.setdefault(op_key, []).append(dur)
+
+            def _p95(xs: list[float]) -> float:
+                s = sorted(xs)
+                return s[min(len(s) - 1, round(0.95 * (len(s) - 1)))]
+
+            print("\n  Per-op wall-clock (total / count / avg / max / p95, slowest total first):")
+            for op_key, xs in sorted(agg.items(), key=lambda kv: sum(kv[1]), reverse=True)[:20]:
+                tot, cnt = sum(xs), len(xs)
+                print(f"    {tot:6.1f}s  {cnt:3d}x  {tot / cnt:4.1f}s avg  {max(xs):4.1f}s max  {_p95(xs):4.1f}s p95  {op_key}")
+            # Slowest INDIVIDUAL calls with test attribution -- the enumeration of near-ceiling ops
+            # (which specific call in which test). An [err] row is a failed-op latency (504/error),
+            # which brackets the relay's effective ceiling directly.
+            print("\n  Slowest individual calls (dur / op / test / [err] if the call failed):")
+            for op_key, dur, test, ok in sorted(ops, key=lambda t: t[1], reverse=True)[:15]:
+                print(f"    {dur:5.1f}s  {op_key:28s}  {test or '?'}{'' if ok else '  [err]'}")
+            print(f"\n  [TRANSPORT] silent read-side retries (504/network, verbose-gated): "
+                  f"{getattr(self.client, '_transport_retries', 0)}")
+            # Near-ceiling flag: the relay's effective per-call budget is ~10s (measured), so any op
+            # whose p95 clears ~7s on a HEALTHY hub is one relay-window jitter away from a 504 -- and
+            # a max over ~10s already 504s deterministically. Surfacing them here catches a newly-added
+            # near-ceiling op at introduction, with attribution, instead of as roulette several PRs later.
+            near = [(k, xs) for k, xs in agg.items() if _p95(xs) > 7.0]
+            if near:
+                print("\n  [NEAR-CEILING] ops with p95 > 7s (relay ceiling ~10s -- flake/504 risk on cloud):")
+                for k, xs in sorted(near, key=lambda kv: _p95(kv[1]), reverse=True):
+                    flag = "  <-- max over ceiling, 504s deterministically" if max(xs) > 10.0 else ""
+                    print(f"    p95 {_p95(xs):4.1f}s  max {max(xs):4.1f}s  {k}{flag}")
 
         # List failures
         failures = [r for r in self.results if r["status"] == "fail"]
