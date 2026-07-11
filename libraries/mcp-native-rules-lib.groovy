@@ -138,6 +138,7 @@ Requires the Write master + confirm=true + recent hub backup.""",
                 properties: [
                     success: [type: "boolean", description: "Whether the create/edit succeeded"],
                     appId: [type: "integer", description: "App ID created or edited"],
+                    ruleId: [type: ["integer", "null"], description: "on create: the same value as appId, surfaced under the name the ruleId-taking downstream tools use (hub_call_rule, hub_set_rule_paused, hub_set_rule_private_boolean) so a create can be chained directly. Null for a non-RM app type; absent on edit."],
                     buttonRuleId: [type: "integer", description: "buttonRule: appId of the created Button Rule (author its actions via hub_set_rule)"],
                     controllerId: [type: "integer", description: "buttonRule: parent Button Controller appId"],
                     appType: [type: "string", description: "create: app type created"],
@@ -175,7 +176,7 @@ Deep reference (per-capability field specs, extended condition shapes, periodic 
                 type: "object",
                 properties: [
                     appId: [type: "integer", description: "RM rule ID (the rule's installed-app id). OMIT to CREATE a new rule (then `name` is required); PROVIDE to EDIT an existing rule."],
-                    name: [type: "string", description: "Label for the new rule (shown in Hubitat's Rule Machine app list). Required on CREATE (when appId is omitted); ignored when appId is provided."],
+                    name: [type: "string", description: "Label for the new rule (shown in Hubitat's Rule Machine app list). Required on CREATE (when appId is omitted); ignored when appId is provided. To RENAME an existing rule, do not pass name -- write the new label as a setting: settings:{origLabel:'New Name'} (a mainPage settings write auto-commits via updateRule, which copies origLabel to the display label; passing button:'updateRule' too is harmless but redundant)."],
                     settings: [type: "object", description: "Map {inputName: value}: scalars for bool/enum/text/number inputs, list of device IDs for capability.* multi-device inputs (the multiple=true 3-field contract is emitted and verified automatically — you don't manage it)."],
                     button: [type: "string", description: "Page-transition button name (e.g. updateRule, editCond, pausRule for RM; discover others via hub_get_app_config)."],
                     pageName: [type: "string", description: "Optional sub-page for schema introspection + settings POST."],
@@ -205,7 +206,7 @@ Deep reference (per-capability field specs, extended condition shapes, periodic 
                     ],
                     addLocalVariable: [
                         type: "object",
-                        description: "Add a local variable. Spec: {name, type, value}; type ∈ Number/Decimal/String/Boolean/DateTime (case-insensitive; DateTime wants an ISO timestamp, e.g. 2026-05-06T12:00:00) and value must match the type. Use as %name% in actions/expressions."
+                        description: "Add a local variable. Spec: {name, type, value} -- ALL THREE are REQUIRED (value is not optional: RM auto-commits the variable only when the value is written, so a missing value is rejected up front). type is one of Number/Decimal/String/Boolean/DateTime (case-insensitive; DateTime wants an ISO timestamp, e.g. 2026-05-06T12:00:00) and value must match the type. This differs from the setLocalVariable ACTION, which takes exactly one of value/sourceVariable/fromDevice/math. Use as %name% in actions/expressions."
                     ],
                     removeLocalVariable: [
                         type: "object",
@@ -260,6 +261,7 @@ Deep reference (per-capability field specs, extended condition shapes, periodic 
                 properties: [
                     success: [type: "boolean", description: "Whether the update succeeded (absent in discover mode)"],
                     appId: [type: "integer", description: "App ID updated"],
+                    ruleId: [type: ["integer", "null"], description: "create: the same value as appId (a hub_set_rule create is always a rule_machine rule), surfaced under the name the ruleId-taking downstream tools use (hub_call_rule, hub_set_rule_paused, hub_set_rule_private_boolean) so a create can be chained directly. Absent on edit."],
                     buttonRuleId: [type: "integer", description: "buttonRule: appId of the created Button Rule (author its actions via addAction on this id)"],
                     controllerId: [type: "integer", description: "buttonRule: parent Button Controller appId"],
                     backup: [type: "object", description: "Pre-update backup metadata (backupKey, type, fileName, ...)"],
@@ -860,8 +862,34 @@ private Map sendRmAction(Integer ruleId, String rmAction, String logContext) {
         // double-fire the action if the first call partially succeeded.
         def m = e.message ?: e.toString()
         mcpLog("error", "rm-interop", "${logContext} failed for rule ${ruleId}: ${m}")
-        return [success: false, error: "RMUtils.sendAction failed: ${m}", note: "Verify the ruleId is valid (use hub_list_rules) and Rule Machine is installed."]
+        return [success: false, error: "RMUtils.sendAction failed: ${m}", note: _rmSendActionErrorNote(rmAction, ruleId, m)]
     }
+}
+
+// Single source of truth for the RMUtils load-limiter marker substring (matched
+// case-insensitively). RMUtils surfaces this text when the hub's per-app load limiter
+// has tripped; centralized so a wording change is one edit, not a scatter of literals.
+private String _rmExcessiveLoadMarker() { "excessive hub load" }
+
+// Build the actionable note for a failed RMUtils.sendAction. When RMUtils reports the hub's
+// per-app load limiter, steer recovery correctly: that limiter is STICKY -- it does NOT lift
+// when hub load drains, only a hub reboot or an app disable/enable clears it, so an immediate
+// retry of the same call just fails again. On a pause/resume call the direct page-button escape
+// bypasses RMUtils and is load-immune, so it IS the real recovery. Pause and resume share a
+// SINGLE toggle button, pausRule, whose title flips between "Pause" and "Resume" with the rule's
+// current run state (the same one-button toggle pattern as stopRule); clicking pausRule on a
+// paused rule resumes it, so both the pause and resume cases steer to the same pausRule button.
+// Substring is scoped tightly to RMUtils' load-message text so unrelated failures keep the plain note.
+private String _rmSendActionErrorNote(String rmAction, Integer ruleId, String message) {
+    def base = "Verify the ruleId is valid (use hub_list_rules) and Rule Machine is installed."
+    if (message && message.toLowerCase().contains(_rmExcessiveLoadMarker())) {
+        if (rmAction == "pauseRule" || rmAction == "resumeRule") {
+            def verb = (rmAction == "resumeRule") ? "resume" : "pause"
+            return "RMUtils hit the hub's per-app load limiter (sticky -- it clears only on a hub reboot or an app disable/enable, not by retrying). To ${verb} the rule now, drive the page button directly with hub_set_rule(appId=${ruleId}, button:'pausRule', confirm:true), which bypasses RMUtils and is load-immune (pausRule is a single toggle -- clicking it on a paused rule resumes it). ${base}"
+        }
+        return "RMUtils hit the hub's per-app load limiter. It is sticky -- it does NOT lift when load drains and an immediate retry fails the same way; it clears only on a hub reboot or an app disable/enable. Clear it, then reissue. ${base}"
+    }
+    return base
 }
 
 // 3-arg fallback invoked only when the 4-arg sendAction raised a signature-mismatch
@@ -877,7 +905,7 @@ private Map sendRmActionFallback(Integer ruleId, String rmAction, String appLabe
         def m1 = original.message ?: original.toString()
         def m2 = e2.message ?: e2.toString()
         mcpLog("error", "rm-interop", "${logContext} failed for rule ${ruleId}: 4-arg=${m1}, 3-arg=${m2}")
-        return [success: false, error: "RMUtils.sendAction failed: ${m2}", note: "4-arg attempt also failed: ${m1}. Verify the ruleId is valid (use hub_list_rules) and Rule Machine is installed."]
+        return [success: false, error: "RMUtils.sendAction failed: ${m2}", note: "4-arg attempt also failed: ${m1}. ${_rmSendActionErrorNote(rmAction, ruleId, m2)}"]
     }
 }
 
@@ -2711,6 +2739,9 @@ private Map _rmTriggerSchemaForDiscover() {
     return [
         discriminator: "capability",
         note: "Pass the chosen capability name (case-insensitive) as addTrigger.capability in the real call.",
+        conditionFields: [
+            [name: "not", type: "Boolean", description: "Applies inside a CONDITION list only (addTrigger.condition, addRequiredExpression.conditions[], addAction expression conditions[]) -- NOT the trigger row itself. not:true negates the condition (e.g. Time NOT between, mode is NOT Night, does-not-contain via not:true + comparator:'*contains*')."]
+        ],
         capabilities: [
             [
                 name: "Switch",
@@ -2984,6 +3015,9 @@ private Map _rmActionSchemaForDiscover() {
     return [
         discriminator: "capability",
         note: "Pass the chosen capability name (case-insensitive) as addAction.capability in the real call. 'action' is required for multi-variant capabilities (switch, dimmer, etc.); optional or absent for single-variant ones (log, mode, delay, etc.).",
+        conditionFields: [
+            [name: "not", type: "Boolean", description: "Applies inside an expression CONDITION list (addAction expression conditions[] for ifThen/elseIf/repeatWhile/waitExpression, and addRequiredExpression.conditions[]). not:true negates the condition (e.g. Time NOT between, mode is NOT Night, does-not-contain via not:true + comparator:'*contains*')."]
+        ],
         capabilities: [
             [
                 name: "switch",
@@ -4802,6 +4836,40 @@ private boolean _rmActionCapUsesActionVerb(String capRaw) {
     return resolved in actionEnumCaps
 }
 
+// Internal _rm helper -- not part of the tool surface.
+// Roll back a just-opened action-expression opener (ifThen / elseIf / repeatWhile / waitExpression)
+// whose expression build threw, so the reject is ATOMIC: the rule returns to its exact pre-call
+// state with no orphan block opener (which would otherwise leave a "block opened but never closed"
+// structural imbalance -- a success:false call that mutated the rule). Returns true when the opener
+// is confirmed gone, false when it may persist (the caller then surfaces a stuck-orphan marker so the
+// envelope points at recovery). Every step is tolerant -- a rollback must never mask the original
+// error, and "nothing to cancel/delete" is a benign no-op.
+private boolean _rmRollbackInFlightExpressionAction(Integer appId, Integer idx, boolean condWizardOpen = false) {
+    // 1. Close the in-flight condition wizard ONLY when one is genuinely open and not already cancelled.
+    //    On the walker-thrown path the walker's cancelInFlightActCond already issued the single allowed
+    //    cancelCapab (condWizardOpen is false by then), and on the early-guard path the reject throws
+    //    before cond=a so no wizard exists -- in both cases a cancelCapab here would be a forbidden second
+    //    fire / a spurious no-op click. delAct is a silent no-op while an in-flight capability edit is open,
+    //    so this only runs on paths that opened a slot and threw before it was cancelled (e.g. the schema
+    //    did not render rCapab_<N>).
+    if (condWizardOpen) {
+        try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") } catch (Exception ignored) { /* nothing to cancel */ }
+    }
+    // 2. Abort the action editor so state.editAct clears -- RM silently no-ops delAct while it is set.
+    //    RM's doActPage Cancel discards a not-yet-committed new action; on some firmware this alone
+    //    removes the opener row.
+    try { _rmClickAppButton(appId, "cancelAct", null, "doActPage") } catch (Exception ignored) { /* editor may already be closed */ }
+    // 3. If the opener row still persists in settings (actType.<idx> written by this call), delete it.
+    try {
+        if (!_rmCollectActionIndices(appId).contains(idx)) return true
+        _rmDeleteAction(appId, idx)
+        return !_rmCollectActionIndices(appId).contains(idx)
+    } catch (Exception delExc) {
+        mcpLog("warn", "rm-native", "_rmAddAction: rollback of orphan action ${idx} failed for app ${appId} (${delExc.message ?: delExc.toString()}) -- the expression block opener may persist; caller surfaces a stuck-orphan marker so the response points at recovery")
+        return false
+    }
+}
+
 // Replaces the 6-7 manual wizard calls with one orchestrated call.
 // Wire-format quirks and capability families: docs/rm_wire_format.md#_rmAddAction.
 //
@@ -4822,6 +4890,22 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
     def cap = actionSpec.capability?.toString()?.trim()
     def action = actionSpec.action?.toString()?.trim()
     if (!cap) throw new IllegalArgumentException("addAction.capability is required (e.g. 'switch'). Common values: switch, dimmer, color, log, notification, mode, setVariable, runCommand, delay, repeat, ifThen. Pass {discover: true} to get the full structured schema.")
+
+    // Pre-flight, zero hub round-trips: for an expression-bearing action, reject an unwalkable
+    // condition capability (Last Event Device / Lock codes / date-day pickers) from the RAW
+    // requested name BEFORE any wizard write or opener commit. These caps are decidable from the
+    // requested name alone -- no hub state -- so refusing here keeps the reject atomic by
+    // construction: it never commits the IF-block opener that the expression-block rollback path
+    // (below) would then have to unwind. That open -> reject -> rollback sequence is enough
+    // sequential wizard round-trips (each POST re-renders the full rule page) to cross the cloud
+    // relay's per-call timeout, so hoisting the decidable-from-name reject up front is the cheap
+    // path. The rollback wrapper stays for the OTHER mid-expression throws that genuinely commit an
+    // opener before failing (device-not-found, operators-length mismatch, live-picker misses).
+    // Mirrors the pre-write reject already applied on the addRequiredExpression and static
+    // addTrigger.condition surfaces. This top-of-function hoist is the catch-all for the
+    // intra-batch and patch paths that do not pass through the dispatcher's single/bulk pre-flight.
+    _rmRejectUnwalkableExpressionConditions(actionSpec)
+
     // 'action' is required only for capabilities that have multiple action
     // variants (e.g. switch needs on/off/toggle/flash). Single-action
     // capabilities (log, mode, delay, comment, exitRule, capture, restore,
@@ -6314,6 +6398,22 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
     }
 
     def expressionSubtypes = ["getIfThen", "getElseIf", "getWhile", "getWaitRule"]
+    // Atomic-reject wrapper: the action opener (actType/actSubType) is already committed above, so ANY
+    // throw while building the expression (a rejected condition capability, a device that does not
+    // exist, an operators-length mismatch, ...) would otherwise leave an orphan block opener -- a
+    // success:false call that mutated the rule into a structural imbalance. On a throw, roll the opener
+    // back so the reject is atomic, then re-raise. If the rollback cannot confirm removal, strip any
+    // "RM is not touched" claim (it is no longer true) and mark the orphan stuck so the response steers
+    // to recovery. Applies to all four expression-bearing subtypes (they share this block).
+    //
+    // Tracks whether a condition sub-wizard is currently OPEN and NOT yet cancelled, so the rollback
+    // issues its own cancelCapab ONLY when one genuinely needs closing. It flips true right after cond=a
+    // opens a condition slot and false the moment that slot is cancelled (walker/outer-catch path) or
+    // committed. Without it the rollback would fire a SECOND cancelCapab on the walker-thrown path (the
+    // walker already issued exactly one) or a spurious no-op click on the early-guard path (which throws
+    // before cond=a, so no wizard is open).
+    def actCondWizardOpen = false
+    try {
     if (expressionSubtypes.contains(actSubType)) {
         // Pre-expression timeout/duration writes for getWaitRule. The
         // wizard's schema shows cond + durChoice + delayAct together
@@ -6408,6 +6508,10 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
                 actWizardCleanupErr = cancelExc.message
                 mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId} on doActPage at conditions[${currentActCondIdx}]: ${cancelExc.message} -- wizard may stay open and confuse subsequent edits; result will carry wizardStuck=true")
             }
+            // This cancelCapab is the ONE the invariant allows -- the rollback must not re-issue it.
+            // Cleared even on a failed click: re-trying a stuck cancelCapab is the double-fire the spec
+            // forbids (a failed cancel is surfaced via actWizardCleanupFailed -> wizardStuck instead).
+            actCondWizardOpen = false
         }
         // doActPage condition-wizard walk: write cond=a, discover the firmware-assigned
         // cIdx from the schema (the slot number RM assigns is unpredictable), validate
@@ -6434,7 +6538,18 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
             }
             def ccap = cond.capability?.toString()?.trim()
             if (!ccap) throw new IllegalArgumentException("${cap}.expression.conditions[${i}].capability is required")
+            // Defense-in-depth backstop: the top-of-function pre-flight hoist already rejects these
+            // unwalkable caps (Last Event Device, Lock codes, date/day) from the raw requested name
+            // before any opener commit, so this walker-side reject is normally unreachable. It stays
+            // as a backstop so the tailored steer -- not the generic "not in option list" the picker
+            // resolution below would otherwise throw -- is guaranteed even if a caller reaches the walk
+            // with an unwalkable cap the hoist did not see. If it does fire here, the just-opened action
+            // opener is rolled back by the expression-block catch, keeping the reject atomic.
+            _rmRejectUnwalkableConditionCapability(ccap)
             _rmWriteSettingOnPage(appId, "doActPage", "cond", "a", applied, null, skipped)
+            // A condition slot is now open on doActPage -- a throw before it is committed/cancelled below
+            // leaves a wizard the rollback must close (see actCondWizardOpen).
+            actCondWizardOpen = true
             // Discover the live condition index from the schema.
             def cfg = _rmFetchConfigJson(appId, "doActPage")
             def cInputs = (cfg?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
@@ -6482,6 +6597,10 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
                 }
                 throw perCondExc
             }
+            // The walker committed this condition (its hasAll click closed the slot), so no wizard is
+            // open going into the next iteration -- a later throw must not make the rollback cancelCapab
+            // a slot this one already sealed.
+            actCondWizardOpen = false
             // Joining operator for non-last conditions.
             if (i < conditions.size() - 1) {
                 def gapOp = opsList ? opsList[i] : operator
@@ -6513,6 +6632,20 @@ private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = fal
 
         // (Timeout/durChoice for getWaitRule are written BEFORE the
         // expression walk above — see pre-expression block.)
+    }
+    } catch (Exception exprExc) {
+        // Roll the just-opened block opener back so the reject is atomic. On confirmed removal the
+        // original exception re-raises unchanged (a capability-name reject already carries the
+        // "RM is not touched" sentinel, now accurate net of the rollback). If removal cannot be
+        // confirmed, the opener may persist: drop the "RM is not touched" claim so the envelope does
+        // not falsely promise an untouched rule, and add a wizardStuck-style marker pointing at
+        // hub_get_app_config + removeAction / hub_restore_backup.
+        def rolledBack = _rmRollbackInFlightExpressionAction(appId, idx, actCondWizardOpen)
+        if (rolledBack) {
+            throw exprExc
+        }
+        def stuckMsg = (exprExc.message ?: exprExc.toString()).replace(" RM is not touched.", "")
+        throw new IllegalStateException("${stuckMsg} [wizardStuck -- orphan action ${idx} (the expression block opener) could not be automatically rolled back and may persist; verify via hub_get_app_config(appId=${appId}) and remove it with hub_set_rule(removeAction:{index:${idx}}, confirm:true) or restore the pre-write backup]")
     }
 
     // Optional Delay? modifier on an action. Verified live:
@@ -7039,6 +7172,73 @@ private String _rmChangeComparatorConditionMessage(String cap, Integer condIdx) 
     "${where}capability '${cap}' with a state-change comparator ('*changed*'/'*became*') is not valid as a condition -- conditions are evaluated point-in-time (is the state X right now?), so a change comparator has nowhere to apply. Author it as a TRIGGER row instead (addTrigger.capability with comparator:'*changed*'), where device-state change events ARE supported; for a condition, pass an explicit state (e.g. state:'on')."
 }
 
+// Internal _rm helper -- not part of the tool surface.
+// Capabilities the STPage condition picker lists but that cannot be used as a condition: Last Event
+// Device references the device that fired the rule's trigger (an action-side device reference, e.g.
+// run a command on the triggering device), not a testable state -- and it is not a trigger capability
+// either. On a condition surface it would write rCapab_<N> with no field handling, committing a broken
+// condition. Distinct from the date/day list (unmodelled everywhere); single source of truth so the
+// static condition builder and the reveal-walker reject the same set; extend it if more such caps surface.
+private List _rmNonConditionCaps() { ["Last Event Device"] }
+
+// Internal _rm helper -- not part of the tool surface.
+// Shared fail-loud message for a picker capability that is not usable as a condition. ASCII-only.
+private String _rmNonConditionMessage(String cap) {
+    "'${cap}' is not usable as a condition -- it references the device that fired the rule's trigger and is only meaningful in actions (e.g. run a command on the triggering device), not as a state to test in a Required Expression or condition. Remove it from the expression."
+}
+
+// Internal _rm helper -- not part of the tool surface.
+// Real condition capabilities that this tool's condition path cannot FULLY author -- distinct from
+// _rmNonConditionCaps (which are not conditions at all). Lock codes IS a valid condition type, but it
+// needs a lock device plus a specific code name, and this path exposes no field for either, so it
+// would commit an incomplete condition (the render is "Last lock code entered on null: null") that the
+// health guard does not flag. Single source of truth so the static condition builder and the reveal-
+// walker reject the same set; extend it (and the message) if more such caps surface.
+private List _rmUnconfigurableConditionCaps() { ["Lock codes"] }
+
+// Internal _rm helper -- not part of the tool surface.
+// Shared fail-loud message for a real condition capability this tool cannot fully configure. ASCII-only.
+private String _rmUnconfigurableConditionMessage(String cap) {
+    "'${cap}' conditions require selecting a lock device and a specific code name, which this tool's condition path cannot set -- it would commit an incomplete, non-functional condition. Author this condition in the Rule Machine UI, or use a different testable capability."
+}
+
+// Internal _rm helper -- not part of the tool surface.
+// Reject, against the RAW requested capability name, a condition capability that this tool cannot
+// author on ANY condition surface (date/day-window, non-condition action-side references, and
+// unconfigurable-condition caps). Matches the requested name rather than a live-picker option, so the
+// tailored steer fires regardless of whether the current firmware's condition picker happens to list
+// the capability -- the walker paths otherwise resolve the picker FIRST and throw a generic
+// "not in option list" before these caps' handling would run, making the tailored message
+// firmware-dependent. Carries the "RM is not touched" sentinel: on the static and Required-Expression
+// surfaces the throw precedes every wizard write, and on the action-expression surface the caller rolls
+// the in-flight opener back, so the reject is atomic in each case. ASCII-only. Returns without throwing
+// when the capability is walkable (the caller proceeds to picker resolution + the normal walk).
+private void _rmRejectUnwalkableConditionCapability(String requestedCap) {
+    if (!requestedCap) return
+    def dateDay = _rmUnsupportedDateDayConditionCaps().find { it.equalsIgnoreCase(requestedCap) }
+    if (dateDay) throw new IllegalArgumentException(_rmUnsupportedDateDayConditionMessage(dateDay) + " RM is not touched.")
+    def nonCond = _rmNonConditionCaps().find { it.equalsIgnoreCase(requestedCap) }
+    if (nonCond) throw new IllegalArgumentException(_rmNonConditionMessage(nonCond) + " RM is not touched.")
+    def unconfigurableCond = _rmUnconfigurableConditionCaps().find { it.equalsIgnoreCase(requestedCap) }
+    if (unconfigurableCond) throw new IllegalArgumentException(_rmUnconfigurableConditionMessage(unconfigurableCond) + " RM is not touched.")
+}
+
+// Pre-flight reject for the unwalkable condition capabilities inside an expression-bearing action
+// (IF/THEN). Iterates the requested expression conditions and throws the tailored steer for any
+// date/day, non-condition (Last Event Device), or unconfigurable-condition (Lock codes) cap -- all
+// decidable from the raw requested name with zero hub state. Shared by the _rmAddAction
+// top-of-function pre-flight (the intra-batch / patch catch-all) and the _applyNativeAppEdit
+// single/bulk addAction dispatch, so an unwalkable cap is refused before ANY snapshot or opener
+// commit. No-op for a non-expression action.
+private void _rmRejectUnwalkableExpressionConditions(Map actionSpec) {
+    if (!(actionSpec?.expression instanceof Map)) return
+    def conds = (actionSpec.expression as Map).conditions
+    if (!(conds instanceof List)) return
+    (conds as List).each { c ->
+        if (c instanceof Map) _rmRejectUnwalkableConditionCapability((c as Map).capability?.toString()?.trim())
+    }
+}
+
 private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List applied, List skipped = null) {
     def condCap = condSpec.capability?.toString()?.trim()
     if (!condCap) throw new IllegalArgumentException("condition.capability is required")
@@ -7048,19 +7248,15 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
     // selectTriggers condition path they would write rCapab_<N> and then have no field
     // handling, committing a broken condition; fail loud pointing at the supported surfaces.
     if (condCap.equalsIgnoreCase("Between two times")) {
-        throw new IllegalArgumentException("'Between two times' is not supported as a conditional-trigger condition (addTrigger.condition); its start/end time-picker walk is implemented only for Required Expressions (addRequiredExpression) and IF actions (addAction capability:'ifThen'). Use one of those instead.")
+        throw new IllegalArgumentException("'Between two times' is not supported as a conditional-trigger condition (addTrigger.condition); its start/end time-picker walk is implemented only for Required Expressions (addRequiredExpression) and IF actions (addAction capability:'ifThen'). Use one of those instead. RM is not touched.")
     }
 
-    // Date/day-window condition capabilities are unimplemented on EVERY structured
-    // condition surface -- unlike 'Between two times', neither this static path nor the
-    // reveal-walker (addRequiredExpression / ifThen) handles their date/day pickers, so
-    // there is no supported shortcut to steer to. They would write rCapab_<N> and then
-    // leave the date/day fields unset, committing a broken condition. Fail loud and point
-    // at the raw wizard escape hatches instead.
-    def unsupportedDateDay = _rmUnsupportedDateDayConditionCaps().find { it.equalsIgnoreCase(condCap) }
-    if (unsupportedDateDay) {
-        throw new IllegalArgumentException(_rmUnsupportedDateDayConditionMessage(unsupportedDateDay))
-    }
+    // Capabilities this tool cannot author on any condition surface -- date/day-window pickers
+    // (unmodelled everywhere), non-condition action-side references (Last Event Device), and
+    // unconfigurable-condition caps (Lock codes). Shared with the reveal-walker so the reject set
+    // and the tailored steers cannot drift across surfaces. Matched against the raw requested name
+    // and fired before the rCapab_<N> write below, so no broken condition is committed.
+    _rmRejectUnwalkableConditionCapability(condCap)
 
     // A state-change comparator ('*changed*'/'*became*') with no explicit value is a trigger
     // concept, not a condition (conditions are point-in-time). It would commit a meaningless
@@ -7392,7 +7588,7 @@ private List _rmStructuralSequenceFromSpecList(List specList) {
 // path and the legacy-flat trigger-mutation catch reuse this so the two
 // surfaces stay word-identical.
 private String _rmPreflightRestoreHint() {
-    "Pre-flight refusal -- RM was not touched; the saved backup is identical to the current rule and does not need to be restored."
+    "Pre-flight refusal -- RM was not touched; nothing needs to be restored (a pre-flight reject writes nothing -- no backup taken, or one identical to the current rule)."
 }
 
 // Build the standard error response shape for _applyNativeAppEdit catch
@@ -8948,6 +9144,16 @@ def _createNativeAppShell(args) {
                 "Created ${appType} app (id=${newId}) with ${triggerResults.count { it?.success == true }}/${triggerSpecs.size()} triggers + ${actionResults.count { it?.success == true }}/${actionSpecs.size()} actions${reSpec != null ? " + Required Expression (${reFailed ? "failed" : (rePartial ? "partial" : "applied")})" : ""} FULLY committed${partialTriggers || partialActions || reFailed || rePartial ? " (some partial -- see partialTriggers/partialActions/requiredExpression for repair)" : ""}. updateRule fired to commit each section${reSpec != null ? (reResult?.updateRuleFailed ? " but the Required Expression re-init updateRule was REJECTED -- the expression may not be live (see requiredExpression.updateRuleError)" : " (including a trailing updateRule after the Required Expression so it is live)") : ""}." :
                 "Empty ${appType} app created (id=${newId}). Use hub_set_rule (RM rules) or hub_set_native_app (other classic apps) to populate, or hub_get_app_config to inspect."
         ]
+        // For RM rules the app id IS the rule id -- the ruleId-taking downstream tools (hub_call_rule,
+        // hub_set_rule_paused, hub_set_rule_private_boolean) take ruleId, so surface it explicitly under
+        // that name too so an agent can chain a create straight into them without re-deriving it. Only
+        // rule_machine apps get the real id; a non-RM classic app has none, so it is surfaced as an
+        // explicit null to keep the field present for strict output-schema validators.
+        if (appType == "rule_machine") {
+            result.ruleId = newId
+        } else {
+            result.ruleId = null
+        }
         // Surface a missed session-end Done. For commitButton:null app types
         // (Basic Rule, Button Controller) the Done is the session's ONLY
         // lifecycle event, so a swallowed miss would be a false-clean create.
@@ -9898,10 +10104,38 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
     // _rmBuildCondition's static-path guard) so fail-loud is uniform across every condition
     // surface, including this reveal-walker (addRequiredExpression / ifThen). Cancel the
     // in-flight condition first, like the sibling pre-walker guards.
+    // Defense-in-depth: both walker callers now run _rmRejectUnwalkableConditionCapability on the
+    // raw requested name BEFORE picker resolution, so these three guards (date/day, non-condition,
+    // unconfigurable) normally reject earlier and firmware-independently; they stay here to guard any
+    // path that reaches the walker with a picker-resolved capCanonical in this set.
     def unsupportedDateDay = _rmUnsupportedDateDayConditionCaps().find { it.equalsIgnoreCase(capCanonical) }
     if (unsupportedDateDay) {
         cancelInFlightCond()
         throw new IllegalArgumentException("conditions[${condIdx}]: " + _rmUnsupportedDateDayConditionMessage(unsupportedDateDay))
+    }
+
+    // ---- Pre-walker guard: non-condition capabilities ----
+    // Last Event Device is in the STPage condition picker but references the device that fired the
+    // rule's trigger (an action-side reference, not a trigger capability either); as a condition it
+    // would write rCapab_<N> and commit a broken condition with no handler. Reject up front (mirrors
+    // _rmBuildCondition's static-path guard). Cancel the in-flight condition first, like the sibling
+    // pre-walker guards.
+    def nonCond = _rmNonConditionCaps().find { it.equalsIgnoreCase(capCanonical) }
+    if (nonCond) {
+        cancelInFlightCond()
+        throw new IllegalArgumentException("conditions[${condIdx}]: " + _rmNonConditionMessage(nonCond))
+    }
+
+    // ---- Pre-walker guard: unconfigurable condition capabilities ----
+    // Lock codes IS a valid condition type, but it needs a lock device plus a specific code name and
+    // this walker exposes no field for either -- the default enum path below would write rCapab_<N> and
+    // commit an incomplete condition (rendered "on null: null") that the health guard does not flag.
+    // Reject up front, uniform with _rmBuildCondition's static-path guard. Cancel the in-flight
+    // condition first, like the sibling pre-walker guards.
+    def unconfigurableCond = _rmUnconfigurableConditionCaps().find { it.equalsIgnoreCase(capCanonical) }
+    if (unconfigurableCond) {
+        cancelInFlightCond()
+        throw new IllegalArgumentException("conditions[${condIdx}]: " + _rmUnconfigurableConditionMessage(unconfigurableCond))
     }
 
     // ---- Pre-walker guard: state-change comparator on a device-state condition ----
@@ -11139,6 +11373,12 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec, boolean preVal
                 if (!cap) {
                     throw new IllegalArgumentException("conditions[${i}].capability is required")
                 }
+                // Reject the unwalkable condition caps (Last Event Device, Lock codes, date/day) against the
+                // RAW requested name BEFORE the cond=a write and the live-picker resolution below. The picker
+                // does not carry every such capability on every firmware, so resolving it first would throw
+                // the generic "not in option list" and hide the tailored steer. addRequiredExpression
+                // pre-commits nothing, so this reject precedes all wizard writes -- RM is untouched.
+                _rmRejectUnwalkableConditionCapability(cap)
                 writeST(hrefParams, "cond", "a", "cond")
                 cancelledByWalker = false
                 try {
@@ -12152,8 +12392,24 @@ def _applyNativeAppEdit(args) {
         throw new IllegalArgumentException("Editing an app requires one of: 'settings' (Map) or 'button' (String) for any classic app; or, for Rule Machine rules via hub_set_rule, a structured shortcut -- 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), 'addActions' (List), 'addRequiredExpression' (Map), 'replaceRequiredExpression' (Map), 'addLocalVariable' (Map), 'removeLocalVariable' ({name}), 'patches' (List of sub-specs), 'removeAction' ({index:N}), 'clearActions' (true), 'replaceActions' (List), 'moveAction' ({index:N, direction:up|down}), 'removeTrigger' ({index:N}), 'modifyTrigger' ({index:N, mods:{state:...}}), or 'walkStep' ({page, operation, write?, click?, navigate?, validateEnum?}) -- none provided.")
     }
 
-    // Always snapshot before writing. No exceptions — this is the
-    // restore channel if anything downstream goes wrong.
+    // Pre-flight reject, before any snapshot: an addAction whose expression carries an unwalkable
+    // condition capability (Last Event Device / Lock codes / date-day picker) is refused here from
+    // the raw requested name -- decidable without a mutating hub round-trip, so it never reaches
+    // the snapshot or the wizard. Covers the single addAction and bulk addActions dispatch cases;
+    // the patch / createRule intra-batch paths are caught by the _rmAddAction top-of-function
+    // hoist. Return the structured refusal envelope (with a null backup -- nothing was snapshotted)
+    // rather than letting the exception escape to a bare JSON-RPC -32602, so the caller still gets
+    // the tailored steer + the not-touched restoreHint that the other pre-flight refusals carry.
+    try {
+        if (addActionSpec) _rmRejectUnwalkableExpressionConditions(addActionSpec)
+        addActionsList?.each { if (it instanceof Map) _rmRejectUnwalkableExpressionConditions(it as Map) }
+    } catch (IllegalArgumentException preflightExc) {
+        return _rmBuildUpdateErrorResponse(appId, preflightExc.message, null)
+    }
+
+    // Always snapshot before WRITING -- the restore channel if anything downstream goes wrong. The
+    // one carve-out is a decidable-from-name pre-flight reject (above): it writes nothing, so it
+    // needs no snapshot and has already returned its refusal envelope before this point.
     def backupReason = button ? "pre-button-${button}" :
         (addTriggerSpec ? "pre-addTrigger" :
         (addActionSpec ? "pre-addAction" :

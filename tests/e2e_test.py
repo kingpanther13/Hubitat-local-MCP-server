@@ -137,10 +137,15 @@ class HubitatMcpClient:
         # handshake (~300-500ms each over the cloud relay) across every MCP call instead of
         # paying it per request.
         self.session = requests.Session()
-        # Per-op wall-clock timings (op_key, seconds) for the end-of-run "Per-op wall-clock" summary --
-        # the only place real per-operation cost (RM create vs edit vs delete, etc.) is visible, since
-        # the >> call traces are verbose-gated and never reach the CI log.
-        self.op_timings: list[tuple[str, float]] = []
+        # Per-op wall-clock timings (op_key, seconds, test, ok) for the end-of-run "Per-op wall-clock"
+        # summary -- the only place real per-operation cost (RM create vs edit vs delete, etc.) is
+        # visible, since the >> call traces are verbose-gated and never reach the CI log. ok=False rows
+        # are FAILED-op latencies (a 504'd/errored call) -- otherwise never recorded, yet they are the
+        # tail that brackets the relay's effective per-call ceiling, which the avg cannot show.
+        self.op_timings: list[tuple[str, float, str, bool]] = []
+        self._active_test = ""            # set by the runner per test, for slow-op attribution
+        self._transport_retries = 0       # silent read-side transport retries (504/network), verbose-gated
+        self._last_op: tuple[str, float, bool] | None = None   # (op_key, seconds, ok) of the most recent call
         # Catalog-derived maps (issue #319), built lazily together from the live
         # gateway-mode catalog; None = not built yet. _gateway_members (gateway -> its
         # sub-tools) backs the membership guard; _gateway_route (leaf -> owning gateway)
@@ -227,6 +232,7 @@ class HubitatMcpClient:
                     last_exc = requests.HTTPError(f"{resp.status_code} {resp.reason} on {method}")
                     if not replay_safe:
                         raise last_exc   # write: unknown-commit -- surface, never replay
+                    self._transport_retries += 1
                     self._log(f"<< HTTP {resp.status_code} (attempt {attempt + 1}/3) — retrying")
                     # Exponential backoff with jitter to avoid thundering-herd if
                     # multiple consumers ever retry simultaneously.
@@ -247,6 +253,7 @@ class HubitatMcpClient:
                         snippet = f" body[:200]={resp.text[:200]!r}"
                     except Exception:
                         pass
+                self._transport_retries += 1
                 self._log(f"<< network/decode error (attempt {attempt + 1}/3): {exc}{snippet} -- retrying")
                 time.sleep((2 ** attempt) + random.uniform(0, 1))
         else:
@@ -384,8 +391,20 @@ class HubitatMcpClient:
                 wire_name, wire_args = gateway, {"tool": name, "args": args}
         op_key = _op_key(wire_name, wire_args)   # gateway sub-tool / flat name; hub_set_rule split create-vs-edit
         _t0 = time.monotonic()
-        result = self._send("tools/call", {"name": wire_name, "arguments": wire_args})
-        self.op_timings.append((op_key, time.monotonic() - _t0))
+        _op_ok = True
+        try:
+            result = self._send("tools/call", {"name": wire_name, "arguments": wire_args})
+        except BaseException:
+            _op_ok = False   # record the FAILED-op latency too -- a 504'd write is otherwise invisible
+            raise
+        finally:
+            _dur = time.monotonic() - _t0
+            self.op_timings.append((op_key, _dur, self._active_test, _op_ok))
+            self._last_op = (op_key, _dur, _op_ok)   # for the FULL-FAILURE line in _run_one
+            # Flag any call within ~75% of the measured ~10s relay ceiling -- these flake/504 on cloud.
+            if _dur >= 7.5:
+                print(f"  [SLOW] {_dur:4.1f}s  {op_key}  ({self._active_test or '?'})"
+                      f"{'' if _op_ok else '  [err/504]'}")
 
         # Check for tool-level error
         if result.get("isError"):
@@ -863,9 +882,44 @@ class TestRunner:
             "duration": duration,
         })
 
+    def _last_op_str(self) -> str:
+        """The most recent MCP call + its elapsed, for the FULL-FAILURE line -- so a 504 names the
+        exact op that hit the ~10s ceiling in one log read, even when the exception text doesn't."""
+        lo = getattr(self.client, "_last_op", None)
+        if not lo:
+            return "unknown"
+        op_key, dur, ok = lo
+        return f"{op_key} {dur:.1f}s{'' if ok else ' [err]'}"
+
+    def _settle_before_504_retry(self, name: str) -> None:
+        """A relay 504 means a heavy op crossed the ~10s cloud ceiling; an immediate re-run re-rolls
+        the same near-ceiling op straight back into the same window. Back off, then poll a trivial
+        call until it round-trips fast, so the single re-run starts from a settled transport. Only
+        ever runs on a 504, so a green run's wall-clock is unchanged."""
+        print(f"    [BACKOFF] {name}: relay 504 -- settling before the single re-run "
+              "(polling hub_get_info until it round-trips fast)")
+        time.sleep(60.0)
+        deadline = time.monotonic() + 30.0   # up to ~90s total, then re-run regardless
+        while time.monotonic() < deadline:
+            _p0 = time.monotonic()
+            try:
+                # Raw _send, NOT call_tool: a liveness probe must not enter op_timings / [SLOW] /
+                # _last_op (it would mislabel this test's telemetry and clobber the 504-causing op's
+                # identity), and must skip the catalog-map load that call_tool can trigger.
+                self.client._send("tools/call", {"name": "hub_get_info", "arguments": {}})
+                rtt = time.monotonic() - _p0
+                if rtt < 3.0:
+                    print(f"    [BACKOFF] {name}: transport healthy (hub_get_info {rtt:.1f}s) -- re-running")
+                    return
+            except Exception:
+                pass
+            time.sleep(5.0)
+        print(f"    [BACKOFF] {name}: settle window elapsed -- re-running anyway")
+
     def _run_one(self, group: str, name: str, method_name: str) -> None:
         method = getattr(self, method_name)
         self._current_test = f"{group}/{name}"
+        self.client._active_test = self._current_test   # so per-op timings attribute to this test
         t0 = time.monotonic()
         # Maintainer policy: a transient-caused failure gets ONE full test re-run before being
         # declared failed -- the test re-creates its own fixtures and the verify-by-label helpers
@@ -896,10 +950,14 @@ class TestRunner:
                 if "504" in str(exc) and attempt == 1:
                     retry_reason = "relay 504"
                     print(f"    [RETRY] {name} aborted by relay 504 -- re-running the test once")
+                    self._settle_before_504_retry(name)
                     continue
                 if "504" in str(exc):
-                    print(f"    FULL-FAILURE {name}: persistent relay 504 across retry: {exc}")
-                    self._record(name, group, "fail", message=f"persistent relay 504: {exc}"[:200], duration=elapsed)
+                    print(f"    FULL-FAILURE {name}: persistent relay 504 across retry "
+                          f"(last op {self._last_op_str()}): {exc}")
+                    self._record(name, group, "fail",
+                                 message=f"persistent relay 504 [{self._last_op_str()}]: {exc}"[:200],
+                                 duration=elapsed)
                 else:
                     self._record(name, group, "skip", message=str(exc), duration=elapsed)
                 return
@@ -909,6 +967,7 @@ class TestRunner:
                 if "504" in es and attempt == 1:
                     retry_reason = "relay 504"
                     print(f"    [RETRY] {name} failed on a relay 504 -- re-running the test once")
+                    self._settle_before_504_retry(name)
                     continue
                 # Server 5xx that is NOT a 504 (500/501/502/503): suspected per-app load limiter.
                 # Bounce/recover the app (which escalates to a reboot at the configured threshold),
@@ -924,8 +983,9 @@ class TestRunner:
                 # failure goes to the run log here -- a truncated structured response
                 # (error/repairHints/settingsSkipped all cut off) has repeatedly forced an
                 # extra run just to learn why a test failed.
-                print(f"    FULL-FAILURE {name}: {exc}")
-                self._record(name, group, "fail", message=str(exc)[:200], duration=elapsed)
+                print(f"    FULL-FAILURE {name} (last op {self._last_op_str()}): {exc}")
+                self._record(name, group, "fail",
+                             message=f"[{self._last_op_str()}] {exc}"[:200], duration=elapsed)
                 return
         # Inter-test breathing room for the hub's per-app load limiter. The limiter has
         # tripped MID-RUN on a freshly-booted hub, and the suite's recent speedups all
@@ -3157,6 +3217,40 @@ class TestRunner:
             assert date_cond.get("success") is False \
                 and "structured condition shortcut" in str(date_cond.get("error", "")).lower(), \
                 f"date/day-window condition should fail loud steering to the raw wizard, got: {date_cond}"
+            # Non-condition capability parity: Last Event Device is a valid STPage picker option but is
+            # not usable as a condition (it references the device that fired the trigger, an action-side ref). As a Required Expression
+            # condition it must fail loud (not a condition), NOT commit a broken condition.
+            last_event_cond = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "addRequiredExpression": {"conditions": [{"capability": "Last Event Device"}]},
+                         "confirm": True}})
+            assert last_event_cond.get("success") is False \
+                and "not usable as a condition" in str(last_event_cond.get("error", "")).lower() \
+                and "in actions" in str(last_event_cond.get("error", "")).lower(), \
+                f"Last Event Device condition should fail loud as a non-condition, got: {last_event_cond}"
+            # The rejected condition mutated nothing, so the rule must still have zero committed RE --
+            # verify via the config read that no broken condition was left behind.
+            after_reject = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
+                "args": {"appId": app_id}})
+            # Positive precondition: the read must actually have returned THIS rule's config. A read that
+            # degrades to an error/empty envelope under load carries no BROKEN marker either, so the
+            # absence check below would pass vacuously -- assert success plus the app-id round-trip so a
+            # degraded read fails loud instead of green-passing.
+            after_app = after_reject.get("app") or {}
+            assert after_reject.get("success") is True and str(after_app.get("id")) == str(app_id), \
+                f"post-reject config read did not return rule {app_id}'s config (degraded/empty?), cannot verify broken-marker absence: {after_reject}"
+            assert "*BROKEN*" not in str(after_reject) and "Broken Condition" not in str(after_reject), \
+                f"Last Event Device reject must not leave a broken condition on the rule, got: {after_reject}"
+            # Unconfigurable-condition parity: Lock codes IS a valid condition type, but authoring one
+            # needs a lock device plus a specific code name the tool's condition path cannot set -- it
+            # would commit an incomplete, non-functional condition (health.ok stays true, so no broken
+            # marker catches it). Must fail loud steering to the RM UI, NOT commit garbage.
+            lock_codes_cond = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "addRequiredExpression": {"conditions": [{"capability": "Lock codes"}]},
+                         "confirm": True}})
+            assert lock_codes_cond.get("success") is False \
+                and "lock device" in str(lock_codes_cond.get("error", "")).lower() \
+                and "code name" in str(lock_codes_cond.get("error", "")).lower(), \
+                f"Lock codes condition should fail loud as an unconfigurable condition, got: {lock_codes_cond}"
             change_cond = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
                 "args": {"appId": app_id, "addRequiredExpression": {"conditions": [
                          {"capability": "Switch", "deviceIds": [int(self.get_test_switch_id())],
@@ -3177,6 +3271,87 @@ class TestRunner:
                 and "not valid as a condition" in str(noncurated_change_cond.get("error", "")).lower() \
                 and "trigger row" in str(noncurated_change_cond.get("error", "")).lower(), \
                 f"state-change comparator on a NON-CURATED device-state condition should fail loud steering to a trigger row, got: {noncurated_change_cond}"
+
+            # (The addAction IF-EXPRESSION unwalkable-cap rejects -- ifThen Lock codes / Last Event Device --
+            # live in their own small per-concern test, test_set_rule_action_expression_reject_is_pre_write,
+            # so no single rule's per-call wizard budget grows. They are now PRE-WRITE: the top-of-function
+            # hoist rejects the unwalkable condition capability before any opener commit, so there is no
+            # open -> reject -> rollback cycle to cross the cloud relay's per-call timeout.)
+
+            # Conditional-TRIGGER surface parity (static condition path): the same caps reject through the
+            # real tool, leaving the rule untouched (the condition guard fires before any trigger/condition write).
+            trig_lock = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "addTrigger": {"capability": "Switch",
+                         "deviceIds": [int(self.get_test_switch_id())], "state": "on",
+                         "condition": {"capability": "Lock codes"}}, "confirm": True}})
+            assert trig_lock.get("success") is False \
+                and "lock device" in str(trig_lock.get("error", "")).lower(), \
+                f"addTrigger.condition Lock codes should fail loud as an unconfigurable condition, got: {trig_lock}"
+            assert "not touched" in str(trig_lock.get("restoreHint", "")).lower(), \
+                f"addTrigger.condition Lock codes reject should carry a not-touched restoreHint, got: {trig_lock.get('restoreHint')!r}"
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_set_rule_action_expression_reject_is_pre_write(self) -> None:
+        # An unwalkable condition capability inside an addAction IF-expression (ifThen / elseIf /
+        # repeatWhile / waitExpression) is rejected PRE-WRITE by the top-of-function hoist: the reject is
+        # decidable from the raw requested capability name, so it fires BEFORE any IF-block opener is
+        # committed. There is no open -> reject -> rollback cycle -- that cycle is enough sequential wizard
+        # round-trips (each POST re-renders the full rule page) to cross the cloud relay's per-call timeout,
+        # so this is split into its own small rule to keep every per-call budget well under the ceiling.
+        # Lock codes is unconfigurable on every surface; Last Event Device is a non-condition action-side
+        # reference. On current firmware the doActPage picker does not even LIST these caps, so the tailored
+        # steer (not the generic "not in doActPage option list") also proves the reject is FIRMWARE-
+        # INDEPENDENT: the guard matches the raw requested name before picker resolution. Because nothing is
+        # written, the reject leaves NO orphan IF block -- structuralIssues must stay empty on a clean rule.
+        app_id = self._create_native_rule("ActExprReject", {
+            "addActions": [{"capability": "log", "message": "E2E act-expr base"}],
+        })
+        try:
+            # Lock codes: tailored unconfigurable-condition steer, not the generic picker miss, and a
+            # not-touched restoreHint (pre-write: no opener committed, so nothing to restore).
+            if_lock = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "addAction": {"capability": "ifThen",
+                         "expression": {"conditions": [{"capability": "Lock codes"}]}}, "confirm": True}})
+            assert if_lock.get("success") is False \
+                and "lock device" in str(if_lock.get("error", "")).lower() \
+                and "code name" in str(if_lock.get("error", "")).lower() \
+                and "not in doactpage option list" not in str(if_lock.get("error", "")).lower(), \
+                f"ifThen Lock codes condition should fail loud with the tailored unconfigurable steer, got: {if_lock}"
+            assert "not touched" in str(if_lock.get("restoreHint", "")).lower(), \
+                f"ifThen Lock codes pre-write reject should carry a not-touched restoreHint, got: {if_lock.get('restoreHint')!r}"
+            # Truly pre-write: the dispatcher rejects the unwalkable cap BEFORE the pre-write snapshot,
+            # so the refusal envelope carries NO backup (nothing was snapshotted -- no opener, no
+            # rollback). A non-null backup here would mean the reject still round-tripped a snapshot.
+            assert if_lock.get("backup") is None, \
+                f"ifThen Lock codes pre-write reject must take NO backup (snapshot is post-reject), got: {if_lock.get('backup')!r}"
+            # Pre-write proof: the rejected call must leave NO orphan IF block. ruleBuilderJson health reports
+            # ok:true even with an orphan (it does not see the imbalance), so the configPage-derived
+            # structuralIssues list is the load-bearing signal -- it must be empty, with no missing-END-IF /
+            # never-closed marker anywhere in the health.
+            health_after_if = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_get_rule_health", "args": {"appId": app_id}})
+            assert not health_after_if.get("structuralIssues"), \
+                f"ifThen Lock codes reject left an orphan block opener (structuralIssues not empty): {health_after_if}"
+            assert "never closed" not in str(health_after_if).lower() and "end-if" not in str(health_after_if).lower(), \
+                f"ifThen Lock codes reject left a missing-END-IF structural marker: {health_after_if}"
+            # Non-condition parity on the same IF-expression surface: Last Event Device is rejected the same
+            # pre-write way, leaving no orphan block.
+            if_lastevent = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "addAction": {"capability": "ifThen",
+                         "expression": {"conditions": [{"capability": "Last Event Device"}]}}, "confirm": True}})
+            assert if_lastevent.get("success") is False \
+                and "not usable as a condition" in str(if_lastevent.get("error", "")).lower(), \
+                f"ifThen Last Event Device condition should fail loud as a non-condition, got: {if_lastevent}"
+            assert "not touched" in str(if_lastevent.get("restoreHint", "")).lower(), \
+                f"ifThen Last Event Device pre-write reject should carry a not-touched restoreHint, got: {if_lastevent.get('restoreHint')!r}"
+            assert if_lastevent.get("backup") is None, \
+                f"ifThen Last Event Device pre-write reject must take NO backup (snapshot is post-reject), got: {if_lastevent.get('backup')!r}"
+            health_after_le = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_get_rule_health", "args": {"appId": app_id}})
+            assert not health_after_le.get("structuralIssues"), \
+                f"ifThen Last Event Device reject left an orphan block opener (structuralIssues not empty): {health_after_le}"
         finally:
             self._delete_native(app_id)
 
@@ -3527,6 +3702,11 @@ class TestRunner:
                 "addTrigger", "addTriggers", "addAction", "addActions", "addRequiredExpression")):
             assert created.get("success") is not False and not created.get("partial"), \
                 f"create-time authoring shortcut did not fully commit (partial or failed): {created}"
+        # A native RM create surfaces ruleId under the ruleId-taking downstream tools' name; for a
+        # rule_machine app it equals appId so a create can chain straight into hub_call_rule etc.
+        if created is not None:
+            assert created.get("ruleId") == app_id, \
+                f"native create did not surface ruleId==appId (got ruleId={created.get('ruleId')}, appId={app_id})"
         self.created_native_app_ids.append(str(app_id))
         return app_id
 
@@ -3559,23 +3739,48 @@ class TestRunner:
         self._cache_write_health(app_id, result)
         return result
 
-    def _rm_call_soft(self, args: dict, strict: bool = False) -> Any:
+    def _rm_call_soft(self, args: dict, strict: bool = False, recover_504: bool = False) -> Any:
         """Direct hub_set_rule call (full response: settingsApplied/settingsSkipped/partial,
         triggerIndex/actionIndex -- shapes _set_rule's success-only contract doesn't carry).
 
         Default (soft): same relay-504 soft contract as _set_rule. strict=True: the 504
         raises so _run_one's test-level retry re-runs the small test on a fresh rule (see
-        _set_rule)."""
+        _set_rule).
+
+        strict=True + recover_504=True -- recover-by-config-verify, for composite ops that
+        sit STRUCTURALLY at the cloud relay's fixed ~10s ceiling. For those a 504 is
+        deterministic: the test-level re-run re-rolls the same-length op and 504s again,
+        while the hub has ALREADY committed the write (measured hub-side: the hub finishes
+        and serializes at ~10s as the relay gives up; only the RESPONSE is lost). So
+        instead of raising, confirm the committed rule renders and hand back the sentinel
+        {"success": True, "recovered504": True}. The caller MUST then prove the wire
+        format from the re-fetched committed config (its normal hub_get_app_config
+        readback). The sentinel deliberately carries NO relayDropped/partial keys, so no
+        relayDropped bail can fire on it and every config-side assertion still runs --
+        the lost RESPONSE is recovered from committed state, no wire-format assertion is
+        skipped. If the write never actually landed, the caller's readback fails loudly."""
         try:
             result = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": args})
             self._cache_write_health(args.get("appId"), result)
             return result
         except (McpError, McpToolError, requests.HTTPError) as exc:
-            if strict or "504" not in str(exc):
+            if "504" not in str(exc):
                 raise
-            print(f"    hub_set_rule(appId={args.get('appId')}) response lost to relay 504 -- "
+            if strict and not recover_504:
+                raise
+            app_id = args.get("appId")
+            if strict:
+                op_keys = [k for k in args if k not in ("appId", "confirm")]
+                print(f"    [RECOVER-504] hub_set_rule(appId={app_id}, ops={op_keys}): "
+                      "response lost to relay 504 -- op commits hub-side; "
+                      "wire format will be verified from the committed config")
+                time.sleep(3.0)   # settle: hub serializes the committed rule right at the ceiling
+                self._assert_rule_renders(app_id)
+                self._last_write_health = None   # sentinel has no health -> live fetch downstream
+                return {"success": True, "recovered504": True}
+            print(f"    hub_set_rule(appId={app_id}) response lost to relay 504 -- "
                   "soft contract: verifying rule health instead of hard-failing")
-            self._assert_rule_renders(args.get("appId"))
+            self._assert_rule_renders(app_id)
             self._last_write_health = None
             return {"success": True, "asyncCommitLikely": True, "relayDropped": True}
 
@@ -3635,7 +3840,19 @@ class TestRunner:
         # deleting inline regardless.
         if self.defer_native_deletes:
             return
-        self.client.call_tool(gateway, {"tool": "hub_delete_native_app", "args": {"appId": app_id, "force": True, "confirm": True}})
+        try:
+            self.client.call_tool(gateway, {"tool": "hub_delete_native_app", "args": {"appId": app_id, "force": True, "confirm": True}})
+        except (McpError, McpToolError, requests.HTTPError) as exc:
+            if "504" not in str(exc):
+                raise
+            # Teardown-only tolerance: the relay dropped the delete's RESPONSE, but the hub
+            # still commits the delete. Every wire-format assertion already ran by this point,
+            # so failing here would be a transport false-red on a passed test. Keep the app
+            # tracked -- the end-of-run cleanup sweep re-checks and reaps it if the delete
+            # truly never landed.
+            print(f"    [RECOVER-504] delete appId={app_id}: response lost to relay 504 -- "
+                  "delete commits hub-side; leaving it tracked for the cleanup sweep")
+            return
         self._untrack_native_app(app_id)
 
     # ---- per-concern RM wire-format tests (the former single mega-test, split) ----
@@ -4182,7 +4399,11 @@ class TestRunner:
                     {"capability": "Mode", "state": mode_name},
                 ]},
                 "confirm": True,
-            }, strict=True)
+            }, strict=True, recover_504=True)
+            # On a recovered 504 the response is lost, so these two response-level asserts
+            # pass against the sentinel; the config readback below is the authoritative
+            # wire-format proof and runs on BOTH paths (a skipped/failed mode write would
+            # leave the mode-picker setting missing there and fail loudly).
             assert res.get("success") is not False, f"addAction waitEvents reported failure: {res}"
             # A dropped Mode event would flag the write partial (mode field skipped) -- the
             # fix writes the discovered mode picker so the action commits cleanly.
@@ -4308,9 +4529,11 @@ class TestRunner:
                     {"capability": "Switch", "deviceIds": [sw], "state": "on", "andStays": {"minutes": 5}},
                 ]},
                 "confirm": True,
-            }, strict=True)
-            if res.get("relayDropped"):
-                return
+            }, strict=True, recover_504=True)
+            # No relayDropped bail here: strict never returns a relayDropped envelope, and a
+            # recovered-504 sentinel must FALL THROUGH to the config readback below -- returning
+            # early would soft-skip the stays-/SMins- wire-format proof, which the readback
+            # asserts from the committed config on both the clean and recovered paths.
             assert res.get("success") is not False, f"waitEvents andStays addAction reported failure: {res}"
             assert not res.get("partial"), f"waitEvents andStays action falsely flagged partial: {res}"
 
@@ -5063,14 +5286,18 @@ class TestRunner:
                     ],
                 },
                 "confirm": True,
-            }, strict=True)
+            }, strict=True, recover_504=True)
             assert result.get("success") is not False, \
                 f"multi-condition addRequiredExpression reported failure (the gap-oper cache regression): {result}"
             # ALL THREE condition slots must have allocated -- before the fix a `cond=a` after a
-            # gap-operator no-op'd, so the walker threw and not every slot landed.
-            cidx = result.get("conditionIndices") or []
-            assert len(cidx) == 3, \
-                f"multi-condition RE did not allocate all three condition slots (expected 3 conditionIndices): {result}"
+            # gap-operator no-op'd, so the walker threw and not every slot landed. On a recovered
+            # 504 the response (and its conditionIndices) is lost -- the same len-3 fact is then
+            # proven from the committed config below: three rendered Temperature conditions means
+            # three allocated slots (a no-op'd cond=a would have dropped one from the render).
+            if not result.get("recovered504"):
+                cidx = result.get("conditionIndices") or []
+                assert len(cidx) == 3, \
+                    f"multi-condition RE did not allocate all three condition slots (expected 3 conditionIndices): {result}"
             self._assert_rule_healthy(app_id)
             # The rule renders all THREE Temperature conditions joined by AND.
             cfg = self.client.call_tool("hub_read_apps_code", {
@@ -5103,14 +5330,28 @@ class TestRunner:
                     ],
                 },
                 "confirm": True,
-            }, strict=True)
+            }, strict=True, recover_504=True)
             assert sub.get("success") is not False, \
                 f"sub-expression addRequiredExpression reported failure (close-paren/outer-oper cache regression): {sub}"
-            # Two inner + one outer condition slot must all allocate.
-            scidx = sub.get("conditionIndices") or []
-            assert len(scidx) == 3, \
-                f"sub-expression RE did not allocate all three condition slots (2 inner + 1 outer): {sub}"
+            # Two inner + one outer condition slot must all allocate. On a recovered 504 the
+            # response (and its conditionIndices) is lost -- the same len-3 fact is then proven
+            # by the committed-config readback below.
+            if not sub.get("recovered504"):
+                scidx = sub.get("conditionIndices") or []
+                assert len(scidx) == 3, \
+                    f"sub-expression RE did not allocate all three condition slots (2 inner + 1 outer): {sub}"
             self._assert_rule_healthy(sub_app_id)
+            # Committed-config proof (both paths): all three Temperature conditions render
+            # (2 inner + 1 outer -- a no-op'd outer cond=a would drop one) and the inner OR
+            # join is present.
+            sub_cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": sub_app_id},
+            })
+            sub_blob = str(sub_cfg)
+            assert sub_blob.lower().count("temperature of") >= 3, \
+                f"sub-expression rule does not render all three Temperature conditions: {sub_blob[:800]}"
+            assert "OR" in sub_blob, \
+                f"sub-expression rule does not render the inner OR joining operator: {sub_blob[:800]}"
         finally:
             self._delete_native(sub_app_id)
 
@@ -5420,6 +5661,18 @@ class TestRunner:
         })
         blob = str(result)
         assert "capability" in blob, f"addTrigger discover did not return a schema: {blob[:200]}"
+        # The discover payload exposes a top-level conditionFields list carrying the `not` negation
+        # flag -- the machine-readable place an agent learns a condition can be negated. Assert it in
+        # BOTH the trigger and action discover schemas (parse conditionFields, not a loose substring).
+        trig_cond_fields = result.get("conditionFields") or []
+        assert any(f.get("name") == "not" for f in trig_cond_fields), \
+            f"addTrigger discover conditionFields missing the 'not' field: {trig_cond_fields}"
+        act = self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_set_rule", "args": {"addAction": {"discover": True}},
+        })
+        act_cond_fields = act.get("conditionFields") or []
+        assert any(f.get("name") == "not" for f in act_cond_fields), \
+            f"addAction discover conditionFields missing the 'not' field: {act_cond_fields}"
 
     @test("native_apps")
     def test_delete_native_app_from_native_gateway(self) -> None:
@@ -9486,14 +9739,39 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         # optimization: how much is RM create vs edit vs delete vs reads). Aggregated by op key.
         ops = getattr(self.client, "op_timings", [])
         if ops:
+            # Aggregate per op key, keeping every per-sample duration so max / p95 (the tail that
+            # decides pass-vs-504 against the relay's effective per-call ceiling) is visible, not just
+            # the avg -- a mean near 6s hides a bimodal op class sitting at the ceiling.
             agg: dict[str, list[float]] = {}
-            for op_key, dur in ops:
-                slot = agg.setdefault(op_key, [0, 0.0])
-                slot[0] += 1
-                slot[1] += dur
-            print("\n  Per-op wall-clock (total / count / avg, slowest total first):")
-            for op_key, (cnt, tot) in sorted(agg.items(), key=lambda kv: kv[1][1], reverse=True)[:20]:
-                print(f"    {tot:6.1f}s  {int(cnt):3d}x  {tot / cnt:4.1f}s avg  {op_key}")
+            for op_key, dur, _test, _ok in ops:
+                agg.setdefault(op_key, []).append(dur)
+
+            def _p95(xs: list[float]) -> float:
+                s = sorted(xs)
+                return s[min(len(s) - 1, round(0.95 * (len(s) - 1)))]
+
+            print("\n  Per-op wall-clock (total / count / avg / max / p95, slowest total first):")
+            for op_key, xs in sorted(agg.items(), key=lambda kv: sum(kv[1]), reverse=True)[:20]:
+                tot, cnt = sum(xs), len(xs)
+                print(f"    {tot:6.1f}s  {cnt:3d}x  {tot / cnt:4.1f}s avg  {max(xs):4.1f}s max  {_p95(xs):4.1f}s p95  {op_key}")
+            # Slowest INDIVIDUAL calls with test attribution -- the enumeration of near-ceiling ops
+            # (which specific call in which test). An [err] row is a failed-op latency (504/error),
+            # which brackets the relay's effective ceiling directly.
+            print("\n  Slowest individual calls (dur / op / test / [err] if the call failed):")
+            for op_key, dur, test, ok in sorted(ops, key=lambda t: t[1], reverse=True)[:15]:
+                print(f"    {dur:5.1f}s  {op_key:28s}  {test or '?'}{'' if ok else '  [err]'}")
+            print(f"\n  [TRANSPORT] silent read-side retries (504/network, verbose-gated): "
+                  f"{getattr(self.client, '_transport_retries', 0)}")
+            # Near-ceiling flag: the relay's effective per-call budget is ~10s (measured), so any op
+            # whose p95 clears ~7s on a HEALTHY hub is one relay-window jitter away from a 504 -- and
+            # a max over ~10s already 504s deterministically. Surfacing them here catches a newly-added
+            # near-ceiling op at introduction, with attribution, instead of as roulette several PRs later.
+            near = [(k, xs) for k, xs in agg.items() if _p95(xs) > 7.0]
+            if near:
+                print("\n  [NEAR-CEILING] ops with p95 > 7s (relay ceiling ~10s -- flake/504 risk on cloud):")
+                for k, xs in sorted(near, key=lambda kv: _p95(kv[1]), reverse=True):
+                    flag = "  <-- max over ceiling, 504s deterministically" if max(xs) > 10.0 else ""
+                    print(f"    p95 {_p95(xs):4.1f}s  max {max(xs):4.1f}s  {k}{flag}")
 
         # List failures
         failures = [r for r in self.results if r["status"] == "fail"]

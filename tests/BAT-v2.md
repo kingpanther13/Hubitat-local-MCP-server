@@ -2595,7 +2595,7 @@ All 117 distinct tools are covered by at least one test, excluding the destructi
 
 Sections 1-9 each target a specific tool — named in the test's title and **Expected** criteria while the `test_prompt` stays goal-first (see Prompt style above). Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 265 test scenarios** (124 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 3 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 3 device-state state-change / fail-loud authoring parity + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 5 read-side convergence + 1 multi-device convergence + 3 MCP device-access scope) plus 13 excluded destructive operations documented for manual testing
+**Total: 266 test scenarios** (124 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 3 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 device-state state-change / fail-loud authoring parity + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 5 read-side convergence + 1 multi-device convergence + 3 MCP device-access scope) plus 13 excluded destructive operations documented for manual testing
 
 ---
 
@@ -4329,6 +4329,20 @@ Tools in this section require **the Read master** and HPM itself must be install
 
 **Failure modes**: either condition silently committing a broken/`null` condition row; the change-comparator condition being accepted and rendering meaninglessly; the date/day reject surfacing an opaque `IllegalStateException` mid-walk instead of the uniform steer.
 
+### T664 — condition-surface fail-loud rejects (non-condition + unconfigurable-here capability)
+
+```json
+{
+  "setup_prompt": "Hub Admin Write and Built-in App Tools are enabled. Create RM rule 'BAT CondReject2'.",
+  "test_prompt": "Attempt two deliberately-wrong Required Expression conditions on 'BAT CondReject2', one at a time: (1) a 'Last Event Device' condition, and (2) a 'Lock codes' condition. For each, inspect result.success and result.error, then read the rule back and confirm no condition was committed.",
+  "teardown_prompt": "Delete 'BAT CondReject2'."
+}
+```
+
+**Expected**: both are rejected pre-write with a clear steer -- nothing is committed (`predCapabs` stays empty, `wizardStuck=false`). (1) `Last Event Device` is not usable as a condition at all: it is an action-side reference to the device that fired the rule's trigger (used in ACTIONS, e.g. running a command on the triggering device), not a testable state, and not a trigger capability either. `success=false`, `error` says it is "not usable as a condition" and steers to actions. (2) `Lock codes` IS a real condition type but is not authorable via the structured path -- it needs a lock device plus a specific code name the condition path has no field for, and would otherwise commit a silently-incomplete "on null: null" condition the health guard does not catch. `success=false`, `error` names the lock-device + code-name requirement and steers to the Rule Machine UI. The same rejects fire identically on `addTrigger.condition` and `addAction` `ifThen` expressions.
+
+**Failure modes**: `Last Event Device` committing a *BROKEN* condition (the pre-fix behavior); `Lock codes` committing a health-ok-but-incomplete "on null: null" condition the health guard does not catch (the pre-fix behavior); either reject surfacing an opaque exception mid-walk instead of the uniform steer; a leftover in-flight condition slot (`wizardStuck=true`) after the reject.
+
 ---
 
 ## Section 16: Visual Rules Builder Tests (hub_get_visual_rule / hub_set_visual_rule / hub_delete_visual_rule)
@@ -4585,8 +4599,8 @@ Non-zero exit code if any probe fails (useful as CI gate).
 | `settings` | Raw settings map write |
 | `button` | Page-transition button click by name |
 | `setLabel` | Set rule title (shorthand for `settings: {ruleTitle: ...}`) |
-| `pauseRule: true` | Click pausRule button |
-| `resumeRule: true` | Click resRule button |
+| `pauseRule: true` | Click the pausRule toggle button (pauses a running rule) |
+| `resumeRule: true` | Click the same pausRule toggle button (resumes a paused rule -- pause/resume share one toggle, like stopRule) |
 | `updateRule: true` | Click updateRule button |
 | `getAppConfig: true` | Read-only snapshot (no mutation) |
 

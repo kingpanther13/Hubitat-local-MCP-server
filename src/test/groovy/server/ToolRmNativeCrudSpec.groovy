@@ -250,6 +250,33 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.parentAppId == 21
     }
 
+    def "create_rm_rule surfaces ruleId as an alias of the new appId for chaining into ruleId-taking tools"() {
+        // A rule_machine create returns ruleId as an alias of appId so an agent can chain the create
+        // straight into the ruleId-taking tools (hub_call_rule / hub_set_rule_paused /
+        // hub_set_rule_private_boolean) without re-deriving it. Pins the alias: without it ruleId is
+        // absent (null) and the assertions below do not hold.
+        given:
+        enableWrite()
+        hubGet.register('/hub2/appsList') { params -> appsListJson(21) }
+        hubGet.register('/installedapp/configure/json/974') { params -> ruleConfigJson(974, "", [[name: "origLabel", type: "text"]]) }
+        hubGet.register('/installedapp/statusJson/974') { params -> statusJson(974) }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/installedapp/configure/974", data: ""]
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolSetRule([name: "BAT-RM-demo", confirm: true])
+
+        then: "ruleId is emitted and equals the created appId"
+        result.success == true
+        result.appType == "rule_machine"
+        result.ruleId == 974
+        result.ruleId == result.appId
+    }
+
     def "_discoverParentAppId bootstraps a missing built-in parent via sysApp, then re-discovers it by type -- primary path, no commit needed (issue #185)"() {
         given:
         // Verified live: the sysApp GET creates the parent server-side and it appears in
@@ -3103,6 +3130,438 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         where:
         cap << ["Between two dates", "Days of week", "On a Day"]
+    }
+
+    def "_rmBuildCondition rejects Last Event Device (non-condition) fails loud steering to actions"() {
+        // Last Event Device is listed in the STPage condition picker but is an action-side reference to
+        // the device that fired the rule's trigger -- it has no point-in-time-condition meaning and is
+        // NOT a trigger capability either. On the static conditional-trigger path it would write
+        // rCapab_<N> and commit a broken condition. Reject up front, steering to ACTIONS (where the
+        // triggering-device reference is usable). Both-ways: reverting the guard proceeds to the
+        // isCondTrig_ write and the run hits the hub layer instead of this message.
+        when:
+        script._rmBuildCondition(100, 1, [capability: "Last Event Device"], [])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("not usable as a condition")
+        ex.message.contains("Last Event Device")
+        // Steers to actions (the triggering-device reference), not a condition.
+        ex.message.contains("in actions")
+    }
+
+    def "addRequiredExpression Last Event Device (non-condition) fails loud on the reveal-walker too"() {
+        // Fail-loud parity across surfaces: Last Event Device is a valid STPage picker option but an
+        // action-side reference to the device that fired the trigger -- not usable as a condition, and
+        // NOT a trigger capability either. Without a pre-walker guard the walk would write rCapab_<N>
+        // and commit a broken condition. The guard rejects it up front, uniform with the static path,
+        // steering to ACTIONS. Both-ways: removing the pre-walker guard lets the walk proceed and the
+        // message is NOT the non-condition steer.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "cond", type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1", type: "enum", options: ["Last Event Device", "Switch"]],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["s1"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "a non-condition (action-side) capability is authored on the Required Expression surface"
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[capability: "Last Event Device"]]],
+            confirm: true
+        ])
+
+        then: "the walker rejects it with the non-condition reject, uniform with the static path"
+        result.success == false
+        result.error?.contains("not usable as a condition")
+        result.error?.contains("in actions")
+        result.error?.contains("Last Event Device")
+    }
+
+    def "_rmBuildCondition rejects Lock codes (unconfigurable condition) fails loud steering to the RM UI"() {
+        // Lock codes IS a valid condition type, but authoring one needs a lock device plus a specific
+        // code name and the static condition path has no field for either -- it would write rCapab_<N>
+        // and commit an incomplete condition (renders "on null: null") the health guard does not catch.
+        // Reject up front, before any condition write, steering to the Rule Machine UI. Distinct from the
+        // non-condition caps: Lock codes IS a real condition, just not fully authorable here. Both-ways:
+        // reverting the guard proceeds to the isCondTrig_ write and the run hits the hub layer instead.
+        when:
+        script._rmBuildCondition(100, 1, [capability: "Lock codes"], [])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("Lock codes")
+        ex.message.contains("lock device")
+        ex.message.contains("code name")
+        ex.message.contains("Rule Machine UI")
+    }
+
+    def "addRequiredExpression Lock codes (unconfigurable condition) fails loud on the reveal-walker too"() {
+        // Fail-loud parity across surfaces: Lock codes is a valid STPage picker option and a real
+        // condition type, but it needs a lock device plus a specific code name the walker cannot set --
+        // without a pre-walker guard the walk would write rCapab_<N> and commit an incomplete condition
+        // (renders "on null: null"). The guard rejects it up front, uniform with the static path, steering
+        // to the RM UI. Both-ways: removing the pre-walker guard lets the walk proceed and the message is
+        // NOT the unconfigurable-condition steer.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "cond", type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1", type: "enum", options: ["Lock codes", "Switch"]],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["s1"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "an unconfigurable condition capability is authored on the Required Expression surface"
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[capability: "Lock codes"]]],
+            confirm: true
+        ])
+
+        then: "the walker rejects it with the unconfigurable-condition reject, uniform with the static path"
+        result.success == false
+        result.error?.contains("Lock codes")
+        result.error?.contains("lock device")
+        result.error?.contains("code name")
+        result.error?.contains("Rule Machine UI")
+    }
+
+    def "addAction ifThen Lock codes fails loud firmware-independently (picker lacks the cap) PRE-WRITE (no opener committed)"() {
+        // The doActPage condition picker does NOT list Lock codes here (mirrors current firmware, where the
+        // capability dropped out of the picker). The reject must still fire the TAILORED unconfigurable-
+        // condition steer -- not the generic "not in doActPage option list" -- because it is decided from
+        // the RAW requested capability name, ahead of the pre-write snapshot and any wizard write. So NO
+        // opener is committed and NO cond=a write hits the hub: nothing to roll back, and "RM is not
+        // touched" is accurate with zero wizard round-trips. The posts assertions below prove no wizard
+        // write occurred (no actType opener, no cond=a, no cancelAct rollback). Both-ways proof is
+        // orchestrator-owned; the no-backup property of the pre-snapshot reject is asserted at the
+        // integration level in the e2e suite.
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        def fetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            fetchSeq++
+            doActPageCondSchemaJson(100, fetchSeq)  // rCapab_1 options are Custom Attribute/Switch/Motion -- NO Lock codes
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], paragraphs: ["IF ..."]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "an ifThen expression condition uses the unconfigurable Lock codes capability"
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "ifThen", expression: [conditions: [[capability: "Lock codes"]]]],
+            confirm: true
+        ])
+
+        then: "the reject is the tailored unconfigurable-condition steer, NOT the generic picker miss"
+        result.success == false
+        result.error?.contains("Lock codes")
+        result.error?.contains("lock device")
+        result.error?.contains("code name")
+        result.error?.contains("Rule Machine UI")
+        !result.error?.contains("not in doActPage option list")
+
+        and: "the reject reports the rule as untouched (pre-write hoist -- opener never committed)"
+        result.error?.contains("RM is not touched")
+
+        and: "the pre-write hoist fired: no opener (actType) write, no cond=a write, and no rollback cancelAct click was needed"
+        !posts.any { it.body instanceof Map && (it.body as Map).any { k, v -> k?.toString()?.startsWith("settings[actType.") } }
+        !posts.any { it.body instanceof Map && (it.body as Map).containsKey("settings[cond]") }
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "cancelAct" }
+    }
+
+    def "addAction ifThen Last Event Device fails loud PRE-WRITE via the top-of-function hoist (no opener/cond=a write)"() {
+        // Companion to the Lock codes case on the non-condition (action-side reference) capability: the
+        // tailored "not usable as a condition" steer is decided from the raw requested name ahead of the
+        // pre-write snapshot and any wizard write, so NO IF-block opener is committed and NO cond=a write
+        // reaches the hub -- distinct from the rollback path, which would commit the opener first and then
+        // unwind it. The posts assertions below prove no wizard write occurred (no actType opener, no cond=a,
+        // no cancelAct rollback); the tailored-message assertion distinguishes the raw-name steer from the
+        // generic picker miss. Both-ways proof is orchestrator-owned; the no-backup property of the
+        // pre-snapshot reject is asserted at the integration level in the e2e suite.
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        def fetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            fetchSeq++
+            doActPageCondSchemaJson(100, fetchSeq)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], paragraphs: ["IF ..."]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "an ifThen expression condition uses the non-condition Last Event Device capability"
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "ifThen", expression: [conditions: [[capability: "Last Event Device"]]]],
+            confirm: true
+        ])
+
+        then: "the reject is the tailored non-condition steer, NOT the generic picker miss"
+        result.success == false
+        result.error?.contains("Last Event Device")
+        result.error?.contains("not usable as a condition")
+        result.error?.contains("in actions")
+        result.error?.contains("RM is not touched")
+        !result.error?.contains("not in doActPage option list")
+
+        and: "the pre-write hoist fired: no opener (actType) write, no cond=a write, and no rollback cancelAct click"
+        !posts.any { it.body instanceof Map && (it.body as Map).any { k, v -> k?.toString()?.startsWith("settings[actType.") } }
+        !posts.any { it.body instanceof Map && (it.body as Map).containsKey("settings[cond]") }
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "cancelAct" }
+    }
+
+    def "patches addAction ifThen Lock codes fails loud PRE-WRITE via the _rmAddAction top-of-function hoist (dispatcher-bypass path)"() {
+        // The two specs above route through hub_set_rule's single addAction, which the dispatcher
+        // (_applyNativeAppEdit) refuses in its pre-write pre-flight BEFORE _rmAddAction is entered.
+        // A patches[] sub-op does NOT pass through that pre-flight -- it calls _rmAddAction directly --
+        // so the ONLY pre-write protection here is the top-of-function hoist inside _rmAddAction. This
+        // pins it: reverting the hoist lets the reject fall back to the open -> reject -> rollback cycle
+        // (atomic via the rollback backstop, but back over the cloud relay budget). The tailored
+        // unconfigurable-condition steer must still fire from the RAW requested capability name, so NO
+        // IF-block opener is committed and NO cond=a write reaches the hub -- proven by the posts
+        // assertions below (no actType opener, no cond=a, no cancelAct rollback). Unlike the dispatcher
+        // path, a patches sub-op reports its refusal in the per-op patches[] entry (patchErr stays null),
+        // so the tailored steer is asserted on the addAction patch entry's error, not the top-level error.
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        def fetchSeq = 0
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["condActs": "Conditional Actions"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            fetchSeq++
+            doActPageCondSchemaJson(100, fetchSeq)  // rCapab_1 options omit Lock codes -- reject must not depend on the picker
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], paragraphs: ["IF ..."]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "a patches sub-op adds an ifThen action whose expression uses the unconfigurable Lock codes capability"
+        def result = script.toolSetRule([
+            appId: 100,
+            patches: [[addAction: [capability: "ifThen", expression: [conditions: [[capability: "Lock codes"]]]]]],
+            confirm: true
+        ])
+
+        then: "the batch fails and is marked partial (one op refused pre-write)"
+        result.success == false
+        result.partial == true
+
+        and: "the refusal rides on the addAction patch entry as the tailored steer, NOT the generic picker miss"
+        // The distinguishing invariant of the patches path vs the dispatcher path: the reject is
+        // reported on the per-op entry and top-level patchErr stays null. Pinning it here catches a
+        // regression that reroutes the reject through the outer catch (which would set result.error,
+        // drop addPatch.error, and still pass success:false + partial:true -- a false green).
+        result.error == null
+        def addPatch = (result.patches as List).find { it instanceof Map && it.op == "addAction" }
+        addPatch != null
+        addPatch.success == false
+        addPatch.error?.contains("Lock codes")
+        addPatch.error?.contains("lock device")
+        addPatch.error?.contains("code name")
+        addPatch.error?.contains("Rule Machine UI")
+        addPatch.error?.contains("RM is not touched")
+        !addPatch.error?.contains("not in doActPage option list")
+
+        and: "the pre-write hoist fired: no opener (actType) write, no cond=a write, and no rollback cancelAct click"
+        !posts.any { it.body instanceof Map && (it.body as Map).any { k, v -> k?.toString()?.startsWith("settings[actType.") } }
+        !posts.any { it.body instanceof Map && (it.body as Map).containsKey("settings[cond]") }
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "cancelAct" }
+    }
+
+    def "addRequiredExpression Lock codes fails loud even when the STPage picker OMITS the capability (firmware-independent)"() {
+        // Required-Expression walker: with Lock codes ABSENT from the STPage picker
+        // (rCapab_1 options are Switch/Contact only), the old flow would resolve the picker first and throw
+        // the generic "not in STPage option list". The raw-name guard ahead of picker resolution keeps the
+        // tailored unconfigurable-condition steer firing regardless of firmware. Both-ways: reverting the
+        // early guard produces the generic picker-miss message.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "STPage", title: "RE", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "cond", type: "enum", options: ["a": "New condition"]],
+                                 [name: "rCapab_1", type: "enum", options: ["Switch", "Contact"]],
+                                 [name: "hasAll", type: "button"]
+                             ], paragraphs: ["s1"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "Lock codes is authored on the Required Expression surface whose picker lacks it"
+        def result = script.toolSetRule([
+            appId: 100,
+            addRequiredExpression: [conditions: [[capability: "Lock codes"]]],
+            confirm: true
+        ])
+
+        then: "the tailored unconfigurable-condition reject fires, not the generic picker miss"
+        result.success == false
+        result.error?.contains("Lock codes")
+        result.error?.contains("lock device")
+        result.error?.contains("RM is not touched")
+        !result.error?.contains("not in STPage option list")
+    }
+
+    def "addTrigger.condition Lock codes fails loud through the real tool (static condition path)"() {
+        // Real-wiring reject on the conditional-trigger surface: hub_set_rule(addTrigger:{condition:{Lock
+        // codes}}) routes into _rmBuildCondition, whose raw-name guard rejects before any condition/trigger
+        // write, so the rule is left untouched. Both-ways: reverting the guard proceeds into the wizard writes
+        // and the message is NOT the unconfigurable-condition steer.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when: "a conditional trigger binds a Lock codes condition"
+        def result = script.toolSetRule([
+            appId: 100,
+            addTrigger: [capability: "Switch", deviceIds: [8], state: "on",
+                         condition: [capability: "Lock codes"]],
+            confirm: true
+        ])
+
+        then: "the tailored unconfigurable-condition reject fires and the rule is reported untouched"
+        result.success == false
+        result.error?.contains("Lock codes")
+        result.error?.contains("lock device")
+        result.error?.contains("RM is not touched")
+    }
+
+    def "both discover payloads expose the 'not' condition field so an agent can find the negation flag"() {
+        // The addTrigger and addAction discover schemas each carry a top-level conditionFields list that must
+        // include the `not` negation flag -- the only machine-readable place an agent learns a condition can be
+        // negated. Both-ways: deleting the `not` entry from either payload's conditionFields reds this guard.
+        expect: "the trigger discover payload lists a 'not' condition field"
+        def trigFields = script._rmTriggerSchemaForDiscover().conditionFields
+        trigFields.any { it.name == "not" }
+
+        and: "the action discover payload lists a 'not' condition field"
+        def actFields = script._rmActionSchemaForDiscover().conditionFields
+        actFields.any { it.name == "not" }
+    }
+
+    def "_rmSendActionErrorNote steers a load-failed pause AND resume to the single pausRule toggle button"() {
+        // Pause and resume share ONE toggle page button, pausRule, whose title flips with the rule's run
+        // state (like stopRule) -- clicking pausRule on a paused rule resumes it. There is no resRule button,
+        // so BOTH the pause and resume notes must steer to pausRule and neither may mention resRule. The
+        // per-app load limiter is sticky (clears only on reboot / app disable-enable), so the note must not
+        // advise a bare retry. A non-load failure keeps the plain note. Both-ways: re-introducing a resRule
+        // steer for resume makes the resume assertion red; dropping the sticky wording drops it from the
+        // note; dropping the marker gate makes an unrelated error emit the load steer.
+        expect: "a load-failed resume steers to the pausRule toggle and never resRule, with sticky-limiter wording"
+        def resumeNote = script._rmSendActionErrorNote("resumeRule", 100, "App 100 generates excessive hub load")
+        resumeNote.contains("pausRule")
+        !resumeNote.contains("resRule")
+        resumeNote.contains("sticky")
+
+        and: "a load-failed pause steers to the same pausRule toggle and never resRule"
+        def pauseNote = script._rmSendActionErrorNote("pauseRule", 100, "App 100 generates excessive hub load")
+        pauseNote.contains("pausRule")
+        !pauseNote.contains("resRule")
+        pauseNote.contains("sticky")
+
+        and: "a non-pause/resume load failure gets the sticky-limiter note with no page button"
+        def genNote = script._rmSendActionErrorNote("runRuleAct", 100, "App 100 generates excessive hub load")
+        genNote.contains("sticky")
+        !genNote.contains("resRule")
+        !genNote.contains("pausRule")
+
+        and: "an unrelated (non-load) failure keeps the plain note -- the marker gate is closed"
+        def plain = script._rmSendActionErrorNote("resumeRule", 100, "some other error")
+        !plain.contains("pausRule")
+        !plain.contains("resRule")
+        !plain.contains("sticky")
     }
 
     def "addTrigger numeric capability *changed* routes the change token to ReltDev, NOT tstate, when BOTH fields render (comparator-field-first ordering)"() {
@@ -37870,6 +38329,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         createCalls.any { it == "/installedapp/createchild/hubitat/Notifier/parent/42" }
         result.appId == 990
         result.appType == "notifier"
+
+        and: "ruleId is present-but-null for a non-RM create (uniform output shape, not silently absent)"
+        // Both-ways: dropping the else-null branch makes ruleId absent and containsKey false.
+        result.containsKey("ruleId")
+        result.ruleId == null
     }
 
     def "hub_set_native_app ALLOWS walkStep (and RM-format authoring params) -- routes to the shared edit engine, no longer rejected (issue #185)"() {
