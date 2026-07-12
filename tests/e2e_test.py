@@ -3714,7 +3714,7 @@ class TestRunner:
         """Fresh idempotency token for an RM write (issue #348 machinery). Derived from
         the active test for log traceability, sanitized to the server's charset."""
         self._op_token_seq = getattr(self, "_op_token_seq", 0) + 1
-        base = re.sub(r"[^A-Za-z0-9._-]", ".", str(self._active_test or "setup"))
+        base = re.sub(r"[^A-Za-z0-9._-]", ".", str(getattr(self.client, "_active_test", "") or "setup"))
         return f"e2e.{base}.{self._op_token_seq}"[:128].ljust(8, "x")
 
     def _set_rule(self, app_id: Any, extra: dict, strict: bool = False) -> Any:
