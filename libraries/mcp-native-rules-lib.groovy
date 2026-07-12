@@ -12505,9 +12505,14 @@ def _applyNativeAppEdit(args) {
             // final operation was 'done' (meaning the wizard flow is complete):
             // a single-step 'done', or a 'drive' whose last step was 'done'.
             // For introspect/write/click/navigate ops in the middle of a
-            // multi-step walk, skip Done since the caller is mid-flow.
+            // multi-step walk, skip Done since the caller is mid-flow. A relay-budget
+            // paused drive is ALSO mid-flow even when its last-run step was 'done'
+            // (lastStepOperation names the last step that RAN, not the flow's end) --
+            // finalizing there would run the update lifecycle on a half-configured
+            // app and spend a page round-trip after deciding to beat the ceiling.
             def wsOp = walkStepSpec?.operation?.toString()
-            if (wsOp == "done" || (wsOp == "drive" && result?.lastStepOperation == "done")) {
+            if ((wsOp == "done" || (wsOp == "drive" && result?.lastStepOperation == "done"))
+                    && result?.status != "in_progress") {
                 def walkDone = null
                 try { walkDone = _rmSubmitMainPageDone(appId) }
                 catch (Exception doneExc) { mcpLog("warn", "rm-native", "walkStep: trailing mainPage Done click failed for app ${appId}: ${doneExc.message} -- in-flight state markers may linger and corrupt subsequent edits") }

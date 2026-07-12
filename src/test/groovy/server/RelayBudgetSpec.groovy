@@ -239,6 +239,37 @@ class RelayBudgetSpec extends ToolSpecBase {
         captured.edit.patches.size() == 2
     }
 
+    def "a drive paused right after an intermediate done step does NOT fire the trailing mainPage Done"() {
+        given: 'a walker that pauses after step 1 (a done op), plus a recorder on the finalizer'
+        stateMap.lastBackupTimestamp = FIXED_NOW
+        settingsMap.enableWrite = true
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason -> [key: 'snap'] }
+        script.metaClass._rmCheckRuleHealth = { Integer id -> [ok: true] }
+        script.metaClass._rmWalkStep = { Integer id, Map spec ->
+            spec.operation == 'drive' ? script._rmDriveWalkSteps(id, spec) : [page: spec.page, success: true]
+        }
+        script.metaClass._relayBudgetExceeded = { Long t0 -> t0 != null }
+        def doneClicks = 0
+        script.metaClass._rmSubmitMainPageDone = { Integer id -> doneClicks++; [done: true] }
+
+        when: 'the drive pauses at step 2, with lastStepOperation == done from step 1'
+        def result = script._applyNativeAppEdit([appId: 1, confirm: true, __reqT0: 1000L, walkStep: [
+            operation: 'drive', steps: [
+                [page: 'p1', operation: 'done'],
+                [page: 'p2', operation: 'introspect'],
+            ]]])
+
+        then: 'paused mid-flow: the update lifecycle must NOT run on the half-configured app'
+        result.status == 'in_progress'
+        result.lastStepOperation == 'done'
+        result.stepsRemaining.size() == 1
+        doneClicks == 0
+
+        and: 'no self-contradictory failure markers ride the pause envelope'
+        result.success == true
+        result.mainPageDoneFailed == null
+    }
+
     def "the budget clock reaches _applyNativeAppEdit on a FLAT (no-gateway) dispatch"() {
         given: 'flat mode pinned -- covers the direct handleToolsCall injection with no gateway hop'
         settingsMap.useGateways = false

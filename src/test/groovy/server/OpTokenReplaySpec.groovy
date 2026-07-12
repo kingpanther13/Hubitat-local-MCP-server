@@ -16,9 +16,10 @@ import support.ToolSpecBase
  *   - process the token ONLY when the resolved leaf is a WRITE tool (reads ignore it)
  *   - dedup: running -> isError status:running (do NOT re-run the write);
  *            complete -> replay the buffered result + replayed:true (no re-run);
- *            complete-but-file-swept -> status:unknown
+ *            complete-but-file-swept -> status:indeterminate (never the
+ *            safe-to-retry unknown -- the op DID run here)
  *   - a started marker is written before the tool runs and completed on EVERY
- *     terminal path (success, thrown IAE, generic throw)
+ *     terminal path (success, thrown IAE, generic throw, null result, oversize)
  *   - _opTokenMark prunes >24h entries (deleting their result files) and caps at 50
  *   - _opTokenComplete buffers the result to mcp-op-result-<token>.json (with an
  *     inline / failed_buffer fallback when the upload fails)
