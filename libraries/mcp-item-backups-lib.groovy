@@ -806,7 +806,11 @@ def _getAllToolDefinitions_partItemBackups() {
         // ==================== Hub-DB (whole-hub) backup tools — issue #259 item #1 ====================
         [
             name: "hub_create_backup",
-            description: """Create a full hub-database backup (whole-hub .lzf). REQUIRED before any Write master op (24h validity).[[FLAT_TRIM]] Optionally set the automatic-backup schedule via `schedule` (scheduleOnly=true sets the schedule only). The only write tool needing no prior backup.[[/FLAT_TRIM]]""",
+            description: """Create a full hub-database backup (whole-hub .lzf). REQUIRED before any Write master op (24h validity).[[FLAT_TRIM]] Optionally set the automatic-backup schedule via `schedule` (scheduleOnly=true sets the schedule only). The only write tool needing no prior backup.[[/FLAT_TRIM]]
+[[FLAT_TRIM]]
+Over a cloud relay the transport may drop the response with a gateway error while the hub still commits this write; pass opToken and recover the committed result via hub_get_op_result -- see hub_get_tool_guide(section='slow_ops').
+[[/FLAT_TRIM]]
+""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -819,7 +823,8 @@ def _getAllToolDefinitions_partItemBackups() {
                         cloudBackupFrequency: [type: "integer", enum: [0, 1, 2, 3, 5, 7, 14, 21, 28], description: "Cloud backup interval in DAYS (0=off); kept if omitted"],
                         cloudBackupPassword: [type: "string", description: "Cloud-backup encryption password. Required when cloud backup is/stays enabled."]
                     ]],
-                    scheduleOnly: [type: "boolean", description: "With schedule: set schedule only, no backup now."]
+                    scheduleOnly: [type: "boolean", description: "With schedule: set schedule only, no backup now."],
+                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If the transport drops the response, poll hub_get_op_result with this token to fetch the committed result instead of re-issuing the call. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["confirm"]
             ],
@@ -951,7 +956,11 @@ def _getAllToolDefinitions_partItemBackups() {
         ],
         [
             name: "hub_restore_backup",
-            description: """⚠️ Restore a backup — tell the user first; hub-DB scopes REBOOT the hub.[[FLAT_TRIM]] scope=source (default): an app/driver/rule by backupKey (deleted code → hub_create_*; deleted rules DO recreate). scope=hub_local/hub_cloud: restore the WHOLE hub DB (hub_local→fileName; hub_cloud→path+cloudBackupPassword). scope=hub_uploaded: upload an external .lzf from backupUrl, then restore (open-world).[[/FLAT_TRIM]] Write master + confirm.""",
+            description: """⚠️ Restore a backup — tell the user first; hub-DB scopes REBOOT the hub.[[FLAT_TRIM]] scope=source (default): an app/driver/rule by backupKey (deleted code → hub_create_*; deleted rules DO recreate). scope=hub_local/hub_cloud: restore the WHOLE hub DB (hub_local→fileName; hub_cloud→path+cloudBackupPassword). scope=hub_uploaded: upload an external .lzf from backupUrl, then restore (open-world).[[/FLAT_TRIM]] Write master + confirm.
+[[FLAT_TRIM]]
+Over a cloud relay the transport may drop the response with a gateway error while the hub still commits this write; pass opToken and recover the committed result via hub_get_op_result -- see hub_get_tool_guide(section='slow_ops').
+[[/FLAT_TRIM]]
+""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -961,7 +970,8 @@ def _getAllToolDefinitions_partItemBackups() {
                     path: [type: "string", description: "scope=hub_cloud: the cloud backup `path` from hub_list_backups."],
                     cloudBackupPassword: [type: "string", description: "scope=hub_cloud: cloud backup encryption password."],
                     backupUrl: [type: "string", description: "scope=hub_uploaded: http(s) URL to the .lzf to upload+restore."],
-                    confirm: [type: "boolean", description: "REQUIRED true. Confirms the restore (hub-DB scopes reboot)."]
+                    confirm: [type: "boolean", description: "REQUIRED true. Confirms the restore (hub-DB scopes reboot)."],
+                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If the transport drops the response, poll hub_get_op_result with this token to fetch the committed result instead of re-issuing the call. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["confirm"]
             ],

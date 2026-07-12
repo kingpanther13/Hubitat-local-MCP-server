@@ -2601,7 +2601,11 @@ Supply the code via exactly one of source / sourceFile / importUrl (mutually exc
 After the code installs, create a running instance with a SECOND call: hub_create_app(codeAppId: <newAppId>, confirm: true).
 [[/FLAT_TRIM]]
 
-Verifies the install compiled -- returns success=false with the error if it didn't. Requires Write master + confirm + backup <24h. Returns the new app ID.""",
+Verifies the install compiled -- returns success=false with the error if it didn't. Requires Write master + confirm + backup <24h. Returns the new app ID.
+[[FLAT_TRIM]]
+Over a cloud relay the transport may drop the response with a gateway error while the hub still commits this write; pass opToken and recover the committed result via hub_get_op_result -- see hub_get_tool_guide(section='slow_ops').
+[[/FLAT_TRIM]]
+""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2609,7 +2613,8 @@ Verifies the install compiled -- returns success=false with the error if it didn
                     sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-app.groovy."],
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
                     codeAppId: [type: "integer", description: "Second-step mode: instantiate already-installed code (codeAppId from a prior call) and commit the install; not combinable with source/sourceFile/importUrl."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
+                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If the transport drops the response, poll hub_get_op_result with this token to fetch the committed result instead of re-issuing the call. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["confirm"]
             ],
@@ -2642,7 +2647,11 @@ Verifies the install compiled -- returns success=false with the error if it didn
 
 Supply the code via exactly one of source / sourceFile / importUrl (mutually exclusive; see each param). For >1 driver use BULK mode (the installs param).
 
-Verifies the install compiled: returns success=false with the error if the hub accepted the request but the driver failed to compile. Requires Write master + confirm + backup <24h. Returns new driver ID(s).""",
+Verifies the install compiled: returns success=false with the error if the hub accepted the request but the driver failed to compile. Requires Write master + confirm + backup <24h. Returns new driver ID(s).
+[[FLAT_TRIM]]
+Over a cloud relay the transport may drop the response with a gateway error while the hub still commits this write; pass opToken and recover the committed result via hub_get_op_result -- see hub_get_tool_guide(section='slow_ops').
+[[/FLAT_TRIM]]
+""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2661,7 +2670,8 @@ Verifies the install compiled: returns success=false with the error if the hub a
                             ]
                         ]
                     ],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
+                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If the transport drops the response, poll hub_get_op_result with this token to fetch the committed result instead of re-issuing the call. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["confirm"]
             ],
@@ -2699,7 +2709,11 @@ Supply the new code via exactly one of source / sourceFile / importUrl, or resav
 
 Auto-backs up before modifying. Requires Write master + confirm + backup <24h.[[FLAT_TRIM]]
 
-Self-update guard: refuses to overwrite the MCP server's own app source or OAuth unless Developer Mode is on.[[/FLAT_TRIM]]""",
+Self-update guard: refuses to overwrite the MCP server's own app source or OAuth unless Developer Mode is on.[[/FLAT_TRIM]]
+[[FLAT_TRIM]]
+Over a cloud relay the transport may drop the response with a gateway error while the hub still commits this write; pass opToken and recover the committed result via hub_get_op_result -- see hub_get_tool_guide(section='slow_ops').
+[[/FLAT_TRIM]]
+""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2711,7 +2725,8 @@ Self-update guard: refuses to overwrite the MCP server's own app source or OAuth
                     expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] Stringified integers coerced; explicit null rejected.[[/FLAT_TRIM]]"],
                     triggerUpdated: [type: "integer", description: "OPTIONAL: running instance appId to fire updated() after save."],
                     oauth: [type: "object", description: "OPTIONAL: enable/configure OAuth on this app (apps only); e.g. {enabled:true}. Full shape: hub_get_tool_guide(section='hub_admin_write')."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
+                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If the transport drops the response, poll hub_get_op_result with this token to fetch the committed result instead of re-issuing the call. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["appId", "confirm"]
             ],
@@ -2744,7 +2759,11 @@ Self-update guard: refuses to overwrite the MCP server's own app source or OAuth
 
 Supply the new code via exactly one of source / sourceFile / importUrl, or resave to recompile in place (see each param). For >1 driver use BULK mode (the updates param).
 
-Auto-backs up before modifying. Requires Write master + confirm + backup <24h.""",
+Auto-backs up before modifying. Requires Write master + confirm + backup <24h.
+[[FLAT_TRIM]]
+Over a cloud relay the transport may drop the response with a gateway error while the hub still commits this write; pass opToken and recover the committed result via hub_get_op_result -- see hub_get_tool_guide(section='slow_ops').
+[[/FLAT_TRIM]]
+""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2770,7 +2789,8 @@ Auto-backs up before modifying. Requires Write master + confirm + backup <24h.""
                             required: ["driverId"]
                         ]
                     ],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
+                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If the transport drops the response, poll hub_get_op_result with this token to fetch the committed result instead of re-issuing the call. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["confirm"]
             ],
@@ -2844,14 +2864,19 @@ Tell the user the item name/ID, warn it's permanent, get confirmation. Requires 
 
 Provide exactly one of source / sourceFile / importUrl (see each param).
 
-Source must include a library() block with name/namespace/author/description (all required). The hub does NOT compile-check libraries at install -- syntax errors surface only when an app/driver #includes it. Requires Write master + confirm + backup <24h. Returns new libraryId.""",
+Source must include a library() block with name/namespace/author/description (all required). The hub does NOT compile-check libraries at install -- syntax errors surface only when an app/driver #includes it. Requires Write master + confirm + backup <24h. Returns new libraryId.
+[[FLAT_TRIM]]
+Over a cloud relay the transport may drop the response with a gateway error while the hub still commits this write; pass opToken and recover the committed result via hub_get_op_result -- see hub_get_tool_guide(section='slow_ops').
+[[/FLAT_TRIM]]
+""",
             inputSchema: [
                 type: "object",
                 properties: [
                     source: [type: "string", description: "Inline source (stubs only)."],
                     sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
+                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If the transport drops the response, poll hub_get_op_result with this token to fetch the committed result instead of re-issuing the call. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["confirm"]
             ],
@@ -2878,7 +2903,11 @@ Source must include a library() block with name/namespace/author/description (al
 
 Supply the new code via exactly one of source / sourceFile / importUrl, or resave to recompile in place (see each param). Not compile-checked at save (see hub_create_library).
 
-Auto-backs up before modifying. Requires Write master + confirm + backup <24h.""",
+Auto-backs up before modifying. Requires Write master + confirm + backup <24h.
+[[FLAT_TRIM]]
+Over a cloud relay the transport may drop the response with a gateway error while the hub still commits this write; pass opToken and recover the committed result via hub_get_op_result -- see hub_get_tool_guide(section='slow_ops').
+[[/FLAT_TRIM]]
+""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -2887,7 +2916,8 @@ Auto-backs up before modifying. Requires Write master + confirm + backup <24h.""
                     sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
                     resave: [type: "boolean", description: "Re-save the current source without changes. Runs entirely on-hub."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
+                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If the transport drops the response, poll hub_get_op_result with this token to fetch the committed result instead of re-issuing the call. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["libraryId", "confirm"]
             ],

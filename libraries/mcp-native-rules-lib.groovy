@@ -116,7 +116,9 @@ def _getAllToolDefinitions_partNativeRM() {
             name: "hub_set_native_app",
             description: """Create OR edit a classic native automation app on the hub — one generic upsert tool for any classic SmartApp instance (Room Lighting, Button Controller, Notifier, Group, Scene, Visual Rule, etc.): omit appId to CREATE (appType + name), provide appId to EDIT via settings/button. For Rule Machine RULES use hub_set_rule.
 
-Requires the Write master + confirm=true + recent hub backup.""",
+Requires the Write master + confirm=true + recent hub backup.
+
+Slow multi-step calls over a cloud relay may return status:'in_progress' with resume instructions, or the transport may drop with a gateway error while the hub still commits — see hub_get_tool_guide(section='slow_ops') for the recovery protocol.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -129,6 +131,7 @@ Requires the Write master + confirm=true + recent hub backup.""",
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click."],
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
                     walkStep: [type: "object", description: "Advanced multi-page classic-app walker — EDIT-only (requires appId; rejected on create).[[FLAT_TRIM]] Generic classic-dynamicPage walker for stateful apps: introspect/write/click/navigate/done one step per call, or operation='drive' with steps=[...] to run the whole sequence in one call. Same shape as hub_set_rule's walkStep.[[/FLAT_TRIM]]"],
+                    opToken: [type: "string", description: "Optional idempotency token you invent (8-128 chars, A-Za-z0-9._-). If the transport drops the response, poll hub_get_op_result with this token to fetch the committed result instead of re-issuing the call."],
                     confirm: [type: "boolean", description: "Must be true. Safety gate for Write master operations."]
                 ],
                 required: ["confirm"]
@@ -171,7 +174,9 @@ Shortcuts, each orchestrating the full RM 5.1 wizard in one call: addTrigger, ad
 
 Partial-success (every shortcut): success:true can pair with partial:true — inspect partial/repairHints. A rejected trailing updateRule leaves the change written-but-not-live (subscriptionsNotLive / expressionNotLive / variableNotLive / patchesNotLive); retry hub_set_rule(button='updateRule', confirm=true). If wizardStuck:true, first hub_set_rule(button='cancelCapab', pageName=<page>, confirm=true) — restoreHint carries the exact command. On CREATE the new appId is returned even if a bundled item only partially bakes (partialTriggers/partialActions).
 
-Deep reference (per-capability field specs, extended condition shapes, periodic schedules, the raw settings/button flow, worked examples): pass guide:true to get it inline, or hub_get_tool_guide(section='set_rule_reference'); full create + repair protocol: hub_get_tool_guide(section='set_rule_create_reference'). Pass {discover:true} on addTrigger/addAction for the live machine-readable schema.""",
+Deep reference (per-capability field specs, extended condition shapes, periodic schedules, the raw settings/button flow, worked examples): pass guide:true to get it inline, or hub_get_tool_guide(section='set_rule_reference'); full create + repair protocol: hub_get_tool_guide(section='set_rule_create_reference'). Pass {discover:true} on addTrigger/addAction for the live machine-readable schema.
+
+Slow multi-step calls over a cloud relay may return status:'in_progress' with resume instructions, or the transport may drop with a gateway error while the hub still commits — see hub_get_tool_guide(section='slow_ops') for the recovery protocol.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -252,6 +257,7 @@ Deep reference (per-capability field specs, extended condition shapes, periodic 
                     ],
                     guide: [type: "boolean", description: "Set true to return the full hub_set_rule capability reference inline (same content as hub_get_tool_guide(section='set_rule_reference')), without a separate call. Makes NO change to any rule."],
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller: {controllerId, buttonNumber, event}. Returns buttonRuleId with the Button trigger auto-seeded — then author actions via addAction on that appId. The controller must already have a button device.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
+                    opToken: [type: "string", description: "Optional idempotency token you invent (8-128 chars, A-Za-z0-9._-). If the transport drops the response, poll hub_get_op_result with this token to fetch the committed result instead of re-issuing the call."],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
                 required: ["confirm"]
@@ -4875,7 +4881,7 @@ private boolean _rmRollbackInFlightExpressionAction(Integer appId, Integer idx, 
 //
 // Returns: [success, actionIndex, capability, action, settingsApplied,
 // configPageError]
-private Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false) {
+Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false) {
     if (!(actionSpec instanceof Map)) throw new IllegalArgumentException("addAction requires a Map spec")
     // Discover mode -- return static schema without touching the hub.
     // No capability field required; no Write master gate; no backup.
@@ -7785,7 +7791,7 @@ private Map _rmCollectWalkSchema(Map configPage, Map liveSettings = null) {
 //
 // For "introspect" the call only fetches the schema — no mutation. The
 // `before` snapshot is the same as `after` and `diff` is empty.
-private Map _rmWalkStep(Integer appId, Map spec) {
+Map _rmWalkStep(Integer appId, Map spec) {
     // "drive" runs an ordered sequence of single-step operations in ONE call --
     // the progressive flow that replaces the manual introspect -> navigate ->
     // write each field -> done -> finalize loop the caller used to issue as N
@@ -8122,6 +8128,11 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
     def currentPage = spec?.page?.toString()?.trim()
     def allOk = true
     def lastStepOperation = null
+    // Cloud-relay self-budget: set when the budget is reached BETWEEN steps so the
+    // post-loop path returns an in_progress envelope with the unrun steps instead of
+    // the normal fail-loud rollup. Null on every non-cloud / within-budget run.
+    Integer pausedAtStep = null
+    List stepsRemaining = null
     // Pre-flight: validate every step's SHAPE before issuing ANY live POST. A drive is
     // partial-commit by nature (each write/click is a live POST), so a structural mistake
     // -- a non-object step, or a nested drive -- must reject the whole drive up front,
@@ -8139,6 +8150,18 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
     int idx = 0
     for (def rawStep : steps) {
         idx++
+        // Cloud-relay self-budget checkpoint -- BETWEEN steps only. Never before the
+        // first step (idx > 1) and never after a step already failed (allOk), so a
+        // pause always represents a clean partial: every earlier step committed and
+        // nothing failed. Each step is a live POST, so stopping here and handing back
+        // the unrun steps lets the caller resume before the relay drops the response.
+        if (idx > 1 && allOk && _relayBudgetExceeded(spec?.__reqT0 as Long)) {
+            pausedAtStep = idx
+            stepsRemaining = steps.subList(idx - 1, steps.size()).collect { rem ->
+                (rem instanceof Map) ? ((Map) rem).findAll { k, v -> k != "__reqT0" } : rem
+            }
+            break
+        }
         def step = new LinkedHashMap((Map) rawStep)
         def stepOp = step.operation?.toString()?.trim() ?: "introspect"
         // Inherit the page the previous step ended on when this step omits one.
@@ -8189,6 +8212,28 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
         }
     }
     def finalHealth = _rmCheckRuleHealth(appId)
+    // Paused (cloud-relay budget reached between steps): return an in_progress envelope
+    // and skip the fail-loud rollup below -- a pause is NOT an error. success:true holds
+    // because the pause guard only trips when nothing has failed; every completed step is
+    // committed and its per-step signals ride in steps[].
+    if (pausedAtStep != null) {
+        return [
+            success: true,
+            status: "in_progress",
+            operation: "drive",
+            page: currentPage,
+            stepsRequested: steps.size(),
+            stepsRun: stepResults.size(),
+            pausedAtStep: pausedAtStep,
+            stepsRemaining: stepsRemaining,
+            lastStepOperation: lastStepOperation,
+            steps: stepResults,
+            health: finalHealth,
+            resume: [
+                note: "Relay time budget reached; all completed steps are committed. Re-issue walkStep operation='drive' with steps = stepsRemaining (page inheritance: set page = this result's page) to continue. Attach the same opToken ONLY if the original call carried none; otherwise use a fresh token."
+            ]
+        ]
+    }
     def result = [
         success: allOk && finalHealth.ok,
         operation: "drive",
@@ -8313,7 +8358,7 @@ private Map _rmSubmitFullPageForm(Integer appId, String pageName, Map cfg, Map s
 // Entries get type="rm-rule" so hub_list_backups + hub_restore_backup
 // (the existing tools) handle them too — no separate RM-only backup
 // tools. Backup key pattern: rm-rule_<ruleId>_<yyyyMMdd-HHmmss>.
-private Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
+Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
     def config
     def status
     try {
@@ -8681,9 +8726,14 @@ def toolSetRule(args) {
     // the rest of this handler and gateway mode stay one code path. A probe (op +
     // empty args) returns that op's schema with NO mutation and returns early.
     if (args instanceof Map && args.operation != null) {
+        // _setRuleFromEnvelope rebuilds args from scratch (dropping unknown keys); carry the
+        // request-entry clock across so the drive/patches cloud-relay self-budget still sees it
+        // for envelope-form calls (the direct canonical form keeps it via straight pass-through).
+        def reqT0 = args.__reqT0
         def rekeyed = _setRuleFromEnvelope(args)
         if (rekeyed.containsKey('_schema')) return rekeyed._schema
         args = rekeyed.args
+        if (reqT0 != null && args instanceof Map) args.__reqT0 = reqT0
     }
     // Button Controllers are an RM-family classic app, and their grandchild
     // Button Rules are RM-wire-format -- so creating a Button Rule is exposed
@@ -12439,7 +12489,16 @@ def _applyNativeAppEdit(args) {
     // not-yet-mapped capability handlers, future RM features).
     if (walkStepSpec) {
         try {
-            def result = _rmWalkStep(appId, walkStepSpec)
+            // operation='drive' self-budgets between steps under a cloud relay; hand it the
+            // request-entry clock (read as spec.__reqT0). Threaded only for drive (single
+            // steps don't budget) and via a copy so the caller's args.walkStep is never
+            // mutated and __reqT0 can't leak into a single-step result echo.
+            def wsSpec = walkStepSpec
+            if (args?.__reqT0 != null && walkStepSpec?.operation?.toString()?.trim() == "drive") {
+                wsSpec = new LinkedHashMap(walkStepSpec)
+                wsSpec.__reqT0 = args.__reqT0
+            }
+            def result = _rmWalkStep(appId, wsSpec)
             result.appId = appId
             result.backup = backup
             // Click mainPage Done as the final step — only if the walk's
@@ -13058,10 +13117,39 @@ def _applyNativeAppEdit(args) {
         // on the intermediate, not the original). Track it to refuse the second.
         def seenReplaceRE = false
         try {
-            patchesList.eachWithIndex { p, pi ->
+            // Indexed for-loop (not eachWithIndex) so the cloud-relay budget checkpoint can
+            // cleanly break/return between ops -- a Groovy closure can't break out of a loop.
+            int pi = -1
+            for (def p : patchesList) {
+                pi++
+                // Cloud-relay self-budget checkpoint -- BETWEEN patch ops only, never before
+                // the first (pi > 0) and never after an op already failed (patches don't abort
+                // on a per-op failure, so a clean-partial pause requires every op so far ok --
+                // this keeps the in_progress success:true truthful). Each op is a live POST;
+                // stopping here and handing back the unprocessed specs lets the caller resume
+                // before the relay drops the response. CRITICAL: return BEFORE the batch-end
+                // trailing updateRule below so it does NOT fire -- the ops so far are committed
+                // at the settings level but not yet baked; the resume call's own batch-end
+                // updateRule bakes them once the remaining patches complete.
+                if (pi > 0 && patchResults.every { it?.success != false } && _relayBudgetExceeded(args?.__reqT0 as Long)) {
+                    def patchesRemaining = patchesList.subList(pi, patchesList.size()).collect { rem ->
+                        (rem instanceof Map) ? ((Map) rem).findAll { k, v -> k != "__reqT0" } : rem
+                    }
+                    return [
+                        success: true,
+                        status: "in_progress",
+                        appId: appId,
+                        backup: backup,
+                        patchResults: patchResults,
+                        patchesRemaining: patchesRemaining,
+                        resume: [
+                            note: "Relay time budget reached; all completed patch ops are committed but NOT yet baked into the running rule. Re-issue hub_set_rule edit with patches = patchesRemaining to continue; the rule finalize/updateRule runs when the remaining patches complete. Attach the same opToken ONLY if the original call carried none; otherwise use a fresh token."
+                        ]
+                    ]
+                }
                 if (!(p instanceof Map)) {
                     patchResults << [success: false, error: "patches[${pi}] is not a Map", spec: p]
-                    return
+                    continue
                 }
                 def pm = p as Map
                 try {
@@ -13110,7 +13198,7 @@ def _applyNativeAppEdit(args) {
                         if (seenReplaceRE) {
                             patchResults << [success: false, op: "replaceRequiredExpression",
                                 error: "patches[${pi}]: a rule has a single Required Expression; only one replaceRequiredExpression is valid per patches batch -- the second would replace the first. Remove the duplicate, or issue the second replace as a separate hub_set_rule call."]
-                            return
+                            continue
                         }
                         seenReplaceRE = true
                         // Per-op snapshot, NOT the pre-batch `backup`: replaceRequiredExpression
@@ -13271,7 +13359,7 @@ def _applyNativeAppEdit(args) {
                     // structured envelope (scoped to the top-level clearActions
                     // / replaceActions path), but the raw marker shouldn't leak
                     // into per-patch error / warn-log either. Local name distinct
-                    // from the outer-closure `patchErr` so the top-level result
+                    // from the outer-scope `patchErr` so the top-level result
                     // envelope still drives off the post-trailing-updateRule
                     // aggregate, not the per-patch exception text.
                     def cleanedPatchErr = subExc.message?.replace(getAsyncCommitMarker(), "") ?: subExc.message

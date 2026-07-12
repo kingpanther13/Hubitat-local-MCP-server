@@ -774,14 +774,19 @@ def _getAllToolDefinitions_partSelfAdmin() {
             name: "hub_update_package",
             description: """Developer Mode self-deploy: full HPM-repair of the MCP package at a git ref in one call -- OVERRIDES whatever is installed, anchored to packageManifest.json AT `ref` so an UNMERGED PR installs.[[FLAT_TRIM]] (Plain HPM Repair only reads the PUBLISHED manifest, so it can't reach an unmerged PR's artifacts.)[[/FLAT_TRIM]]
 
-Gated on enableDeveloperMode[[FLAT_TRIM]] (the tool is hidden from tools/list when Developer Mode is off)[[/FLAT_TRIM]] + the Write master + confirm=true + a recent backup. Use dryRun=true to fetch + parse + plan with ZERO writes (no confirm/backup needed)[[FLAT_TRIM]] and see exactly which bundles and apps would deploy[[/FLAT_TRIM]].""",
+Gated on enableDeveloperMode[[FLAT_TRIM]] (the tool is hidden from tools/list when Developer Mode is off)[[/FLAT_TRIM]] + the Write master + confirm=true + a recent backup. Use dryRun=true to fetch + parse + plan with ZERO writes (no confirm/backup needed)[[FLAT_TRIM]] and see exactly which bundles and apps would deploy[[/FLAT_TRIM]].
+[[FLAT_TRIM]]
+Over a cloud relay the transport may drop the response with a gateway error while the hub still commits this deploy; pass opToken and recover the committed result via hub_get_op_result -- see hub_get_tool_guide(section='slow_ops').
+[[/FLAT_TRIM]]
+""",
             inputSchema: [
                 type: "object",
                 properties: [
                     ref: [type: "string", description: "Branch, tag, or commit SHA to deploy (e.g. 'main' or a PR head SHA)."],
                     dryRun: [type: "boolean", description: "OPTIONAL. When true, report the deploy plan with NO writes (skips the confirm/backup gate). Default false."],
                     baseUrl: [type: "string", description: "OPTIONAL raw-source base override (no trailing slash); defaults to the canonical repo.[[FLAT_TRIM]] Per-call URLs are built as <baseUrl>/<ref>/<path>. Use for forks / CI branches on a different remote.[[/FLAT_TRIM]]"],
-                    confirm: [type: "boolean", description: "REQUIRED for a real deploy (omit for dryRun). Must be true; confirms a recent backup exists and the user approved the self-deploy."]
+                    confirm: [type: "boolean", description: "REQUIRED for a real deploy (omit for dryRun). Must be true; confirms a recent backup exists and the user approved the self-deploy."],
+                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If the transport drops the response, poll hub_get_op_result with this token to fetch the committed result instead of re-issuing the call. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["ref"]
             ],

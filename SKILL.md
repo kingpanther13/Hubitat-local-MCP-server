@@ -1,6 +1,6 @@
 ---
 name: hubitat-mcp-server
-description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 117 tools (36 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, Easy and legacy Hubitat® Dashboard CRUD, HPM package state introspection, and Developer Mode self-administration.
+description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 118 tools (36 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, Easy and legacy Hubitat® Dashboard CRUD, HPM package state introspection, and Developer Mode self-administration.
 license: MIT
 ---
 
@@ -93,12 +93,12 @@ New code should be placed in the appropriate section. New sections should follow
 
 ### Category Gateway Proxy (v0.8.0+)
 
-The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 117 items to 36. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways. Gateways come in two flavors: `hub_read_<noun>` gateways whose every sub-tool is read-only, and `hub_manage_<noun>` gateways that contain at least one write (mixed read+write or write-only). A tool MAY appear in more than one gateway (multi-membership) — reads are listed in BOTH their mixed `manage_` gateway AND a pure-read `read_` gateway.
+The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 118 items to 36. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways. Gateways come in two flavors: `hub_read_<noun>` gateways whose every sub-tool is read-only, and `hub_manage_<noun>` gateways that contain at least one write (mixed read+write or write-only). A tool MAY appear in more than one gateway (multi-membership) — reads are listed in BOTH their mixed `manage_` gateway AND a pure-read `read_` gateway.
 
 **Architecture:**
 - `getGatewayConfig()` — defines 23 gateways, each with a description, tools list, and summaries map
 - `getToolDefinitions()` — returns 13 core tools + 23 gateway tool definitions (client-visible)
-- `getAllToolDefinitions()` — returns all 117 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
+- `getAllToolDefinitions()` — returns all 118 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
 - `handleGateway(gatewayName, toolName, toolArgs)` — catalog mode (no args → full schemas) or execute mode (tool + args → dispatch)
 
 **Gateway calling convention:**
@@ -112,7 +112,7 @@ Read gateways (`hub_read_*`, every sub-tool read-only):
 |---------|-------|--------|
 | `hub_read_apps_code` | 11 | List apps/drivers/libraries/bundles, get source, backups (list/get), device-in-use-by lookup, app config inspection, page-name directory, HPM package state (read-only) |
 | `hub_read_devices` | 5 | List/get devices, device attributes, device events, compatible-device catalog search (read-only) |
-| `hub_read_diagnostics` | 9 | Logs, performance stats, hub jobs, debug logs, metrics, memory history, device health, radio details (zwave/zigbee), captured states (read-only) |
+| `hub_read_diagnostics` | 10 | Logs, op-result recovery, performance stats, hub jobs, debug logs, metrics, memory history, device health, radio details (zwave/zigbee), captured states (read-only) |
 | `hub_read_files` | 2 | File Manager list + read (read-only) |
 | `hub_read_rooms` | 2 | Room list + get (read-only) |
 | `hub_read_rules` | 6 | Custom-engine rule get/test, native rule list, rule health, rule local variables, Visual Rules Builder rule list/read (read-only) |

@@ -1,6 +1,6 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 117 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 118 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -2581,9 +2581,9 @@ These operations are too destructive for automated testing. Test manually with e
 | Flat core tools on `tools/list` | 13 |
 | Gateways on `tools/list` | 23 |
 | Total visible on `tools/list` | 36 |
-| Total distinct tools in codebase | 117 |
+| Total distinct tools in codebase | 118 |
 
-**8 read gateways**: `hub_read_apps_code` (11), `hub_read_devices` (5), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3), `hub_read_dashboards` (2)
+**8 read gateways**: `hub_read_apps_code` (11), `hub_read_devices` (5), `hub_read_diagnostics` (10), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3), `hub_read_dashboards` (2)
 
 **15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (9), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
 
@@ -2591,7 +2591,7 @@ These operations are too destructive for automated testing. Test manually with e
 
 ### Tool Coverage (non-destructive tools only)
 
-All 117 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 118 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 each target a specific tool — named in the test's title and **Expected** criteria while the `test_prompt` stays goal-first (see Prompt style above). Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
@@ -4512,6 +4512,50 @@ Key differences from the original BAT.md (which targets the pre-v0.8.0 architect
 10. **Corrected test count**: 159 → 172 (was undercounted in v1); addAction capability completeness adds T607/T608/T609/T610 (176 total); walker parity adds T611 (177 total); Between two times coverage adds T612 (178 total); singular deviceId normalization adds T613 (179 total); paired-tool singular-deviceId coverage adds T614 (addTrigger.condition) + T615 (addAction expression) (181 total); subExpression rejection on addAction adds T616 (182 total -- T616 previously covered recursive subExpression normalization, which production now rejects at the doActPage pre-pass; T616 was rewritten to pin the rejection path); reveal-fallback sentinel adds T617 (183 total); compareToDevice device-relative adds T618 (184 total); Between two times sunrise/sunset adds T619 (185 total); Variable compareToVariable on the walker pages adds T620, compareToDevice missing-comparator reject adds T621, and Custom-Attribute '*changed*' cosmetic-partial filter adds T622 (188 total); periodic-frequency completeness adds T623/T624/T625/T626/T627 (the five newly-supported frequencies: Seconds/Minutes/Weekly/Monthly/Yearly -- Monthly by-day and Yearly nth-weekday) + T628 (Cron field-name fix) + T629 (count-enum validation rejection) + T630 (Monthly nth-weekday mode) + T631 (Monthly dayOfMonth/weekOfMonth mutual-exclusivity rejection) + T632 (two periodic triggers in one rule -- no sub-page collision) (198 total); the native-app tool rename adds T633 (hub_set_rule single-call create-with-bundle: new rule + trigger + action in one upsert) (199 total); Custom-Attribute enum-attribute false-positive-partial guard adds T634 (trigger row), T635 (conditional-trigger condition path), T636 (Required Expression reveal walker / STPage enum condition), and T637 (free-valued Custom Attribute comparator: value lands normally) (203 total); the doActPage walker enum-condition parity (the 4th surface, reached via addAction ifThen) adds T638 (204 total); create-with-bundled-Required-Expression adds T639 and the create-arm edit-only-rejection completeness contract adds T640 (206 total); the doActPage compareToDevice device-relative happy-path (the addAction/ifThen mirror of T618) adds T641 (207 total -- numbered out of sequence because T619/T620 were already taken by the Between-two-times and compareToVariable scenarios); the enum-attribute no-RHS state-change comparator splits across both live outcomes -- T642 (trigger surface ROUTES via the picker's change option) + T643 (Required Expression surface SKIPS, no change option) (209 total); the two new setVariable source modes add T647 (fromDevice / numOp="device attribute") and T648 (math / numOp="variable math", binary + unary arity) (211 total -- numbered T647/T648 because T642/T643 were taken by the enum-attribute comparator scenarios above and T644/T645/T646 by the app-config-summary / device-swap / event-history scenarios); the in-place Required Expression replace (cancelST delete + rebuild) adds T649 (happy-path replace), the no-existing-RE refusal adds T650, the failed-rebuild auto-restore (no data loss) adds T651, and the patches-batch per-op restore-scope guard (a failed replace op does not revert preceding ops) adds T652 (215 total); the rule-local variable lifecycle adds T653 + the namespace distinction adds T654 (217 total); the removeLocalVariable broken-after-delete contract (RM deletes a still-referenced local and leaves the rule broken; the envelope reports a self-consistent failure) adds T655 (218 total); the hub_list_device_events since-bookmark round-trip adds T656 (219 total -- numbered T656 out of sequence to avoid colliding with the setVariable T647 above). Note: `Total: 248 test scenarios` in the header above counts ALL scenarios including the NL (T501-T565 range), built-in-app integration (T801-T821 range), library management (T901-T909 range), and the unnumbered walker/normalization sub-scenarios. The cumulative T-numbered tally in this item (ending at 215) reflects only sequentially-numbered tests in the explicit-coverage section.
 11. **Spec-only coverage by necessity**: the trailing-updateRule failure paths on `addTrigger`, `addRequiredExpression`, `addLocalVariable`, `addTriggers`/`addActions` (bulk), `patches`, and the action-mutation/trigger-mutation dispatchers (`removeAction`, `clearActions`, `replaceActions`, `moveAction`, `removeTrigger`, `modifyTrigger`) -- response slots `updateRuleFailed`, `subscriptionsNotLive` / `expressionNotLive` / `variableNotLive` / `patchesNotLive`, `updateRuleError`, and the recovery `repairHints` line -- are covered exclusively by Spock specs in `src/test/groovy/server/ToolRmNativeCrudSpec.groovy` (the single-path failure/SUCCESS pairs for `addTrigger` / `addRequiredExpression` / `addLocalVariable`, the three-row `@Unroll` failure/SUCCESS pairs for the bulk path covering `addTriggers`-only / `addActions`-only / both, and the corresponding patches and action-mutation envelope specs). The defensive `asyncCommitLikely` path on `clearActions` / `replaceActions` -- response slots `asyncCommitLikely`, `stage`, `actionsRequestedForRemoval`, `actionsStillPresent`, `pendingActionsToAdd`, `clearActionsResult`, `safeRecovery` -- is also spec-only: with the synchronous full-form trashActs submit the delete commits in-band, so this rare residual path (stuck `state.editAct` or a firmware commit lag still showing the actions present after the verify-retry) is not reproducible from an agent prompt against a live hub. Live-hub BAT coverage was considered but skipped: deterministically forcing the trailing `_rmClickAppButton(updateRule)` to throw against a real hub requires hub-side disruption (firmware downgrade / network partition mid-call / hub-config corruption) that is not realistically scriptable from an agent prompt. The Spock specs exercise the production response-shape contract directly via stub injection and constitute the regression gate. The delete-helper **re-click recovery** is likewise spec-only: RM's silent no-op of the FIRST `trashActs`/`trashTrigs` delete click (the dropped-first-click signature `removeAction`/`removeTrigger` recover from with one verified re-click, surfaced as `reclicked: true`) cannot be forced from an agent prompt against a live hub, so `ToolRmNativeCrudSpec`'s re-click + exhaustion specs are the regression gate for that path.
 12. **PR1B read/write gateway split**: the 13-gateway flat-core layout was restructured into **19 gateways (7 `hub_read_*` pure-read + 12 `hub_manage_*` write-bearing) + 11 flat core tools** (30 on tools/list). Gateway renames: `hub_manage_rules` → `hub_manage_custom_rules`, `hub_manage_code_write` → `hub_manage_code`, `hub_manage_native_rules` → `hub_manage_native_rules_and_apps`. Removed gateways (read tools folded into `hub_read_apps_code`): `hub_manage_code_read`, `hub_manage_installed_apps`, `hub_manage_hpm`. `hub_list_installed_apps` merged into `hub_list_apps` (scope=types|instances). New pure-read gateways added: `hub_read_apps_code`, `hub_read_devices`, `hub_read_diagnostics`, `hub_read_files`, `hub_read_rooms`, `hub_read_rules`, `hub_read_variables`. Reads listed in a mixed `hub_manage_*` gateway are also surfaced in their `hub_read_*` gateway (multi-membership). Tool-behavior flips: `hub_export_custom_rule` and `hub_export_native_app` are now WRITES (they persist via saveAs); `hub_get_metrics` is now a READ (recordSnapshot default false). The previously-flat custom-rule and device tools (`hub_get_custom_rule`, `hub_create_custom_rule`, `hub_update_custom_rule`, `hub_list_devices`, `hub_get_device`, etc.) are now folded into gateways. `hub_report_issue` remains a flat core tool.
+
+---
+
+## Section 18: opToken Response Replay & Cloud-Relay Recovery (issue #348)
+
+A slow write over the Hubitat cloud relay can commit on the hub while the relay drops
+the response, so the client sees an opaque gateway/transport error and is tempted to
+re-issue — double-committing. These scenarios grade whether the AI recovers the
+committed result instead of blindly retrying. Goal-framed: the `test_prompt` describes
+the situation, never the tool.
+
+### T660 — Recover a slow rule edit whose response was lost (no double-commit)
+
+```json
+{
+  "setup_prompt": "Create a BAT-prefixed native Rule Machine rule and note its appId. Tell the AI it is about to make a slow edit to that rule over a flaky cloud connection.",
+  "test_prompt": "Add a switch action to my BAT test rule. If the response gets dropped or you see a gateway/transport error, make sure the edit actually committed and recover the result — do NOT just re-run the edit, since that could add the action twice.",
+  "teardown_prompt": "Delete the BAT test rule."
+}
+```
+
+**Expected**: AI attaches an `opToken` it invents to the `hub_set_rule` edit. On a dropped response it calls `hub_get_op_result` with the same token; when it reports `status:complete` the AI uses the buffered result instead of re-issuing. If it re-issues the identical tokened call it gets `replayed:true` and the action count is unchanged (no double-commit). **Fail** if the AI blind-retries the edit and the rule ends up with the action added twice.
+
+### T661 — Continue a self-budgeted rule edit that returned `in_progress`
+
+```json
+{
+  "setup_prompt": "Create a BAT-prefixed native Rule Machine rule and note its appId.",
+  "test_prompt": "Apply several changes to my BAT test rule in one batch. If the hub tells you it paused partway to stay within its time budget, finish the remaining work so all the changes land.",
+  "teardown_prompt": "Delete the BAT test rule."
+}
+```
+
+**Expected**: On a `status:in_progress` result the AI re-issues with the returned `patchesRemaining` (or `stepsRemaining`, inheriting the reported page) to continue, per the `resume` note — attaching a fresh token, not the paused op's token. All committed steps persist; the finalize/updateRule runs when the remainder completes. **Fail** if the AI treats the `in_progress` pause as an error, or replays the paused op's token and stalls on its buffered partial.
+
+### T662 — A never-issued operation reports unknown
+
+```json
+{
+  "test_prompt": "I think an earlier command to the hub may never have gone through. Check whether an operation with a token I never used ever ran, and tell me if it's safe to retry."
+}
+```
+
+**Expected**: AI calls `hub_get_op_result` with the token; it returns `status:unknown` with a note that the original call never arrived and is safe to retry. AI relays that it is safe to retry. **Fail** if the AI claims the operation ran or fabricates a result.
 
 ---
 
