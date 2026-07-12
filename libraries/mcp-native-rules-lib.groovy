@@ -146,7 +146,7 @@ Slow multi-step calls over a cloud relay may return status:'in_progress' with re
                     controllerId: [type: "integer", description: "buttonRule: parent Button Controller appId"],
                     appType: [type: "string", description: "create: app type created"],
                     name: [type: "string", description: "create: requested app label"],
-                    labelApplied: [type: "boolean", description: "create: true if the requested name became the display label (verified for rule_machine only; false for partial-support appTypes -- see note)"],
+                    labelApplied: [type: "boolean", description: "create: true when the requested name verifiably became the display label (assumed for rule_machine, read back from the committed page for other appTypes; false when unverifiable -- see note)"],
                     partialTriggers: [type: "array", description: "create: indices of bundled triggers that failed to fully bake (always empty for this generic tool -- no trigger sugar)", items: [type: "integer"]],
                     partialActions: [type: "array", description: "create: indices of bundled actions that failed to fully bake (always empty for this generic tool -- no action sugar)", items: [type: "integer"]],
                     parentAppId: [type: "integer", description: "create: parent app ID"],
@@ -337,7 +337,7 @@ Slow multi-step calls over a cloud relay may return status:'in_progress' with re
                     requiredExpression: [type: "object", description: "create: outcome of a bundled addRequiredExpression (success/partial/error + conditionIndices/settingsSkipped); present only when addRequiredExpression was passed on CREATE"],
                     appType: [type: "string", description: "create: app type created (rule_machine)"],
                     name: [type: "string", description: "create: rule label"],
-                    labelApplied: [type: "boolean", description: "create: true if the requested name became the display label (always true for rule_machine)"],
+                    labelApplied: [type: "boolean", description: "create: true when the requested name verifiably became the display label (assumed for rule_machine, read back for other appTypes)"],
                     parentAppId: [type: "integer", description: "create: parent (Rule Machine) app ID"],
                     statusSummary: [type: "object", description: "create: eventSubscriptions and scheduledJobs counts"],
                     orphanCleanup: [type: "string", description: "create: present when a failed create's half-built shell was cleaned up"]
@@ -5159,6 +5159,11 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false) {
                 }
                 break
             default:
+                // 'command' is the device-command tools' field name; steer the mix-up
+                // by name instead of leaving a bare "Unknown switch action 'null'".
+                if (action == null && actionSpec.command != null) {
+                    throw new IllegalArgumentException("switch actions use the 'action' field, not 'command' (got command='${actionSpec.command}'). Supported: on, off, toggle, flash, setPerMode, choosePerMode")
+                }
                 throw new IllegalArgumentException("Unknown switch action '${action}' -- supported: on, off, toggle, flash, setPerMode, choosePerMode")
         }
     } else if (cap == "dimmer") {
@@ -9174,6 +9179,19 @@ def _createNativeAppShell(args) {
             repairHints << "Repair pattern: 1) hub_get_app_config(${newId}, includeSettings=true) to inspect current state. 2) For each partial trigger/action, follow its repairHints. 3) hub_set_rule(walkStep={...}) for incremental field writes; replaceActions(...) or removeAction(index) + addAction(...) for whole-action retries. 4) hub_set_rule(button='updateRule') after fixes to commit. 5) Re-run hub_get_rule_health to verify. Don't conclude failure until tool-only repair attempts are exhausted."
             repairHints << "Full trigger/action field reference: call hub_set_rule(guide:true), or hub_get_tool_guide(section='set_rule_create_reference')."
         }
+        // Verify the label instead of assuming by appType: rule_machine reliably
+        // copies origLabel->label on commit; for every other type read the committed
+        // label back and compare (startsWith tolerates RM-style live suffixes). An
+        // unreadable page keeps the conservative false + the honesty note below.
+        def labelApplied = (appType == "rule_machine")
+        if (!labelApplied && name) {
+            try {
+                def committedLabel = _rmFetchConfigJson(newId)?.app?.label?.toString()
+                labelApplied = (committedLabel != null && committedLabel.startsWith(name.toString()))
+            } catch (Exception labelExc) {
+                logDebug("create ${appType} ${newId}: label verify fetch failed: ${labelExc.message}")
+            }
+        }
         def result = [
             success: health.ok && !partialTriggers && !partialActions && !reFailed && !rePartial,
             partial: (partialTriggers || partialActions || reFailed || rePartial) as Boolean,
@@ -9183,7 +9201,7 @@ def _createNativeAppShell(args) {
             appId: newId,
             appType: appType,
             name: name,
-            labelApplied: (appType == "rule_machine"),
+            labelApplied: labelApplied,
             parentAppId: parentId,
             statusSummary: [
                 eventSubscriptions: (status?.eventSubscriptions?.size() ?: 0),
@@ -9233,14 +9251,12 @@ def _createNativeAppShell(args) {
             if (reResult?.updateRuleFailed) result.updateRuleFailed = true
             if (reResult?.updateRuleError != null) result.updateRuleError = reResult.updateRuleError
         }
-        // Honesty caveat: only rule_machine reliably copies origLabel -> the
-        // installed-app display label on commit. For other (partial-support)
-        // appTypes the requested name may NOT become the visible label, so flag
-        // it via labelApplied + a note rather than letting the {success, name}
-        // envelope imply the label landed.
-        if (appType != "rule_machine") {
+        // Honesty caveat, now only when the label VERIFIABLY did not land (or the
+        // verify read failed): labelApplied above is read back from the committed
+        // page for non-RM types, so a clean create no longer carries a false alarm.
+        if (!labelApplied) {
             result.note = ((result.note ?: "") +
-                " NOTE: appType '${appType}' is partial-support -- the requested name may NOT have been applied as the app's display label (only rule_machine is verified to copy origLabel->label on commit). Verify via hub_get_app_config(appId=${newId}) and rename in the Hubitat UI if needed.").toString().trim()
+                " NOTE: the requested name could not be verified as the app's display label. Verify via hub_get_app_config(appId=${newId}) and rename in the Hubitat UI if needed.").toString().trim()
         }
         return result
     } catch (Exception e) {

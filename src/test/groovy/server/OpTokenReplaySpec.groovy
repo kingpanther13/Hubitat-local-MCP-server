@@ -253,11 +253,13 @@ class OpTokenReplaySpec extends ToolSpecBase {
         new String(store[FILE_PREFIX + 'bigtoken123.json'], 'UTF-8').contains(bigPayload)
     }
 
-    def "the token nested in gateway inner args is extracted (args.args.opToken)"() {
-        given:
+    def "the token nested in gateway inner args is extracted (args.args.opToken) and stripped before dispatch"() {
+        given: 'gateway mode pinned -- this test exercises the gateway-nested token shape'
+        settingsMap.useGateways = true
         settingsMap.enableWrite = true
         installFileStore()
-        script.metaClass.toolCreateRoom = { a -> [success: true, roomId: 3] }
+        def received = [:]
+        script.metaClass.toolCreateRoom = { a -> received.args = a; [success: true, roomId: 3] }
 
         when: 'a gateway-wrapped write whose opToken rides in the inner args'
         def response = mcpDriver.callTool('hub_manage_rooms',
@@ -266,6 +268,10 @@ class OpTokenReplaySpec extends ToolSpecBase {
         then: 'the token was processed -- a marker exists for it'
         response.error == null
         atomicStateMap.opTokens['gwtoken123']?.state == 'complete'
+
+        and: 'the leaf never sees the consumed token (strict-arg tools stay tokenable)'
+        received.args instanceof Map
+        !received.args.containsKey('opToken')
     }
 
     @spock.lang.Unroll

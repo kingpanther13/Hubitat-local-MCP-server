@@ -986,13 +986,14 @@ def _getAllToolDefinitions_partVariables() {
         ],
         [
             name: "hub_delete_variable",
-            description: "Permanently delete a variable (DESTRUCTIVE — no undo). Auto-detects whether the target is a hub variable (also deletes its connector device when one exists) or a rule_engine variable. Gated on the Write master + confirm=true + a recent backup.[[FLAT_TRIM]]\n\n**Reference safety:** the tool scans every child rule app for serialized references to this variable name (in triggers/conditions/actions) and refuses by default if any are found. To proceed anyway, pass `force=true` after acknowledging the breakage. The response includes a `brokenConsumers` field listing the affected rules when force=true.[[/FLAT_TRIM]]",
+            description: "Permanently delete a variable (DESTRUCTIVE — no undo). Auto-detects whether the target is a hub variable (also deletes its connector device when one exists) or a rule_engine variable. Gated on the Write master + confirm=true + a recent backup.[[FLAT_TRIM]]\n\n**Reference safety:** the tool scans every child rule app for serialized references to this variable name (in triggers/conditions/actions) and refuses by default if any are found. To proceed anyway, pass `force=true` after acknowledging the breakage. The response includes a `brokenConsumers` field listing the affected rules when force=true.\n\nThe consumer scan makes this call slow; over a cloud relay the transport may drop with a gateway error while the hub still commits -- see hub_get_tool_guide(section='slow_ops') for the opToken recovery protocol.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     name: [type: "string", description: "Variable name to delete"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the deletion"],
-                    force: [type: "boolean", description: "OPTIONAL: must be true to proceed when one or more child rule apps reference this variable. Without force, the tool refuses and lists the consumers."]
+                    force: [type: "boolean", description: "OPTIONAL: must be true to proceed when one or more child rule apps reference this variable. Without force, the tool refuses and lists the consumers."],
+                    opToken: [type: "string", description: "Optional idempotency token you invent (8-128 chars, A-Za-z0-9._-). If the transport drops the response, poll hub_get_op_result with this token to fetch the committed result instead of re-issuing the call."]
                 ],
                 required: ["name", "confirm"]
             ],

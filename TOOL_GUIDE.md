@@ -1148,7 +1148,7 @@ Surfaced via `hub_get_tool_guide(section='slow_ops')`. A slow write invoked over
 
 ### Idempotency token (`opToken`)
 
-The slow write tools (`hub_set_rule`, `hub_set_native_app`, the code save/update tools, `hub_install_bundle`, `hub_update_package`, `hub_create_backup`, `hub_restore_backup`) accept an optional `opToken` the caller invents (8-128 chars of `A-Za-z0-9._-`). The server records it before running the write and buffers the result on completion. If the response drops, call `hub_get_op_result(opToken=<yours>)` instead of re-issuing. Re-issuing the same tokened call while it is still running is refused (status `running`) rather than double-committed; after completion it replays the original result with `replayed: true` and does not run the write again.
+EVERY write tool accepts an optional `opToken` the caller invents (8-128 chars of `A-Za-z0-9._-`); the known-slow class advertises it in its schemas (`hub_set_rule`, `hub_set_native_app`, the code save/update tools, `hub_install_bundle`, `hub_update_package`, `hub_create_backup`, `hub_restore_backup`, `hub_delete_variable`). The server records it before running the write and buffers the result on completion. If the response drops, call `hub_get_op_result(opToken=<yours>)` instead of re-issuing. Re-issuing the same tokened call while it is still running is refused (status `running`) rather than double-committed; after completion it replays the original result with `replayed: true` and does not run the write again.
 
 ### `hub_get_op_result` statuses
 

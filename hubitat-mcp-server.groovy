@@ -892,10 +892,19 @@ def handleToolsCall(msg) {
             // Only WRITE leaves process the token; a read silently ignores it entirely
             // (including a malformed one -- no validation, no throw, no marker), so the
             // read/write partition is checked BEFORE validating the token shape.
-            if (rawToken != null && !getReadOnlyToolNames().contains(reactiveToolName)) {
-                opToken = rawToken.toString()
-                _validateOpToken(opToken)
-                opTokenActive = true
+            if (!getReadOnlyToolNames().contains(reactiveToolName)) {
+                // The token is consumed HERE, so strip it before dispatch: write leaves
+                // never need it, and several validate their args strictly and would
+                // reject the unknown key -- stripping makes EVERY write tokenable, not
+                // just the ones whose schema advertises the param. Reads keep their args
+                // untouched (hub_get_op_result takes opToken as a real parameter).
+                args.remove('opToken')
+                if (args.args instanceof Map) args.args.remove('opToken')
+                if (rawToken != null) {
+                    opToken = rawToken.toString()
+                    _validateOpToken(opToken)
+                    opTokenActive = true
+                }
             }
         }
         if (opTokenActive) {
@@ -7033,7 +7042,7 @@ A slow write invoked over the cloud relay can outlive the relay's fixed response
 
 ### Idempotency token (opToken)
 
-The slow write tools (hub_set_rule, hub_set_native_app, the code save/update tools, hub_install_bundle, hub_update_package, hub_create_backup, hub_restore_backup) accept an optional `opToken` you invent: 8-128 characters of A-Za-z0-9._-. Pass the SAME token on the call and, if the response drops, on your recovery poll.
+EVERY write tool accepts an optional `opToken` you invent: 8-128 characters of A-Za-z0-9._- (the schemas of the known-slow class advertise it explicitly: hub_set_rule, hub_set_native_app, the code save/update tools, hub_install_bundle, hub_update_package, hub_create_backup, hub_restore_backup, hub_delete_variable). Pass the SAME token on the call and, if the response drops, on your recovery poll.
 
 - The server records the token before running the write and buffers the result when it finishes.
 - If the response is lost, call `hub_get_op_result(opToken=<yours>)` instead of re-issuing the write.

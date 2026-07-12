@@ -3710,31 +3710,51 @@ class TestRunner:
         self.created_native_app_ids.append(str(app_id))
         return app_id
 
+    def _next_op_token(self) -> str:
+        """Fresh idempotency token for an RM write (issue #348 machinery). Derived from
+        the active test for log traceability, sanitized to the server's charset."""
+        self._op_token_seq = getattr(self, "_op_token_seq", 0) + 1
+        base = re.sub(r"[^A-Za-z0-9._-]", ".", str(self._active_test or "setup"))
+        return f"e2e.{base}.{self._op_token_seq}"[:128].ljust(8, "x")
+
     def _set_rule(self, app_id: Any, extra: dict, strict: bool = False) -> Any:
         """hub_set_rule edit (appId present) with the given shortcut args.
 
-        Default (soft): a relay 504 gets the moveAction soft contract, generalized -- the
-        cloud relay's ~10s ceiling drops the RESPONSE while the hub finishes the wizard op
-        (the same unknown-commit state asyncCommitLikely models). Verify the rule still
-        renders, return a soft envelope; callers that assert on RESPONSE fields must
-        tolerate relayDropped.
+        Every call carries an auto-generated opToken, so a relay 504 recovers by EXACT
+        replay first (hub_get_op_result): the hub finishes and buffers the result even
+        though the relay dropped the response, and the replay hands back the real
+        envelope -- deterministic recovery instead of re-run roulette on ops that sit
+        at the relay ceiling.
 
-        strict=True: the 504 RAISES instead. Used by the per-concern RM wire-format tests,
-        whose fixtures are a pristine throwaway rule deleted in their finally -- _run_one
-        re-runs the whole small test once on a fresh rule, so no assertion is ever skipped
-        on a soft envelope (a skipped wire-format assertion is a false positive)."""
+        Default (soft) when replay comes up empty: the moveAction soft contract,
+        generalized -- verify the rule still renders, return a soft envelope; callers
+        that assert on RESPONSE fields must tolerate relayDropped.
+
+        strict=True when replay comes up empty: RAISE. Used by the per-concern RM
+        wire-format tests, whose fixtures are a pristine throwaway rule deleted in
+        their finally -- _run_one re-runs the whole small test once on a fresh rule, so
+        no assertion is ever skipped on a soft envelope."""
         args = {"appId": app_id, "confirm": True}
         args.update(extra)
+        token = args.setdefault("opToken", self._next_op_token())
         try:
             result = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": args})
         except (McpError, McpToolError, requests.HTTPError) as exc:
-            if strict or "504" not in str(exc):
+            if "504" not in str(exc):
                 raise
-            print(f"    hub_set_rule({list(extra)}) response lost to relay 504 -- "
-                  "soft contract: verifying the rule still renders instead of hard-failing")
-            self._assert_rule_renders(app_id)
-            self._last_write_health = None
-            return {"success": True, "asyncCommitLikely": True, "relayDropped": True}
+            replay = self._poll_op_result(token)
+            if isinstance(replay, dict):
+                print(f"    [RECOVER-504] hub_set_rule({list(extra)}): response recovered "
+                      "via opToken replay (hub_get_op_result)")
+                result = replay
+            elif strict:
+                raise
+            else:
+                print(f"    hub_set_rule({list(extra)}) response lost to relay 504 -- "
+                      "soft contract: verifying the rule still renders instead of hard-failing")
+                self._assert_rule_renders(app_id)
+                self._last_write_health = None
+                return {"success": True, "asyncCommitLikely": True, "relayDropped": True}
         assert result.get("success") is not False, f"hub_set_rule({list(extra)}) reported failure: {result}"
         self._cache_write_health(app_id, result)
         return result
@@ -3759,6 +3779,7 @@ class TestRunner:
         relayDropped bail can fire on it and every config-side assertion still runs --
         the lost RESPONSE is recovered from committed state, no wire-format assertion is
         skipped. If the write never actually landed, the caller's readback fails loudly."""
+        token = args.setdefault("opToken", self._next_op_token())
         try:
             result = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": args})
             self._cache_write_health(args.get("appId"), result)
@@ -3767,6 +3788,15 @@ class TestRunner:
             if "504" not in str(exc):
                 raise
             if strict and not recover_504:
+                # Exact replay first -- deterministic recovery beats the re-run roulette
+                # for ops that sit at the relay ceiling (the re-run re-rolls the same
+                # length and 504s again).
+                replay = self._poll_op_result(token)
+                if isinstance(replay, dict):
+                    print("    [RECOVER-504] hub_set_rule: response recovered via opToken "
+                          "replay (hub_get_op_result)")
+                    self._cache_write_health(args.get("appId"), replay)
+                    return replay
                 raise
             app_id = args.get("appId")
             if strict:
@@ -3911,15 +3941,28 @@ class TestRunner:
     def _add_action_or_raise_504(self, app_id: Any, action: dict) -> Any:
         """addAction edit that, unlike _set_rule's soft default, lets a relay 504 PROPAGATE.
 
-        Used for block CLOSERS (THEN-add / endIf) where a dropped response must raise so
-        the test-level retry re-runs the whole small test on a fresh rule. _set_rule's
-        soft path would instead swallow the 504 and then run its OWN in-helper health
-        check on the unclosed IF -- which fails with a non-504 AssertionError the retry
-        policy can't recognize (the exact run-27407212930 failure). On the normal
-        (non-504) path the success contract still binds."""
-        result = self.client.call_tool("hub_manage_rule_machine", {
-            "tool": "hub_set_rule", "args": {"appId": app_id, "addAction": action, "confirm": True},
-        })
+        Used for block CLOSERS (THEN-add / endIf). A dropped response first tries the
+        exact opToken replay -- a recovered closer keeps the block sound and the test
+        running. Only when the replay comes up empty (the call never arrived) does the
+        504 RAISE so the test-level retry re-runs the whole small test on a fresh rule.
+        _set_rule's soft path would instead swallow the 504 and then run its OWN
+        in-helper health check on the unclosed IF -- which fails with a non-504
+        AssertionError the retry policy can't recognize (the exact run-27407212930
+        failure). On the normal (non-504) path the success contract still binds."""
+        token = self._next_op_token()
+        try:
+            result = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule",
+                "args": {"appId": app_id, "addAction": action, "confirm": True, "opToken": token},
+            })
+        except (McpError, McpToolError, requests.HTTPError) as exc:
+            if "504" not in str(exc):
+                raise
+            replay = self._poll_op_result(token)
+            if not isinstance(replay, dict):
+                raise
+            print("    [RECOVER-504] block-closer addAction recovered via opToken replay")
+            result = replay
         assert result.get("success") is not False, f"addAction({action}) reported failure: {result}"
         # Block CLOSERS land here -- the cache MUST reflect the now-closed (healthy) rule, else a
         # following _assert_rule_healthy reads the stale mid-build "missing END-IF" health from the opener.
