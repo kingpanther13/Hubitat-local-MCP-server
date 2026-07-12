@@ -204,7 +204,8 @@ class RelayBudgetSpec extends ToolSpecBase {
     // verified live (requestSource=='cloud' probe).
 
     def "the budget clock reaches _applyNativeAppEdit through dispatch and the gateway (canonical form)"() {
-        given:
+        given: 'gateway mode pinned -- this test exercises the gateway re-injection hop'
+        settingsMap.useGateways = true
         settingsMap.enableWrite = true
         def captured = [:]
         script.metaClass._applyNativeAppEdit = { Map a -> captured.edit = a; [success: true, appId: 1] }
@@ -221,7 +222,8 @@ class RelayBudgetSpec extends ToolSpecBase {
     }
 
     def "the budget clock survives the operation-envelope rebuild (envelope form)"() {
-        given:
+        given: 'gateway mode pinned -- the envelope rides the same gateway hop'
+        settingsMap.useGateways = true
         settingsMap.enableWrite = true
         def captured = [:]
         script.metaClass._applyNativeAppEdit = { Map a -> captured.edit = a; [success: true, appId: 1] }
@@ -232,6 +234,24 @@ class RelayBudgetSpec extends ToolSpecBase {
             args: [[addAction: [a: 1]], [addAction: [a: 2]]]]])
 
         then: 'the re-carry preserved the clock across the rebuild'
+        response.error == null
+        captured.edit.__reqT0 instanceof Long
+        captured.edit.patches.size() == 2
+    }
+
+    def "the budget clock reaches _applyNativeAppEdit on a FLAT (no-gateway) dispatch"() {
+        given: 'flat mode pinned -- covers the direct handleToolsCall injection with no gateway hop'
+        settingsMap.useGateways = false
+        settingsMap.enableWrite = true
+        def captured = [:]
+        script.metaClass._applyNativeAppEdit = { Map a -> captured.edit = a; [success: true, appId: 1] }
+
+        when:
+        def response = mcpDriver.callTool('hub_set_rule', [
+            appId: 1, confirm: true,
+            patches: [[addAction: [a: 1]], [addAction: [a: 2]]]])
+
+        then:
         response.error == null
         captured.edit.__reqT0 instanceof Long
         captured.edit.patches.size() == 2
