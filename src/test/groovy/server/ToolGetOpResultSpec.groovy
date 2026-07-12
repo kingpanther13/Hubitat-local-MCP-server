@@ -77,6 +77,24 @@ class ToolGetOpResultSpec extends ToolSpecBase {
         result.result.roomId == 7
     }
 
+    def "indeterminate: a finished token whose buffered result is unreadable is NOT reported as safe-to-retry unknown"() {
+        given:
+        settingsMap.enableRead = true
+        script.metaClass.downloadHubFile = { String name -> null }
+        atomicStateMap.opTokens = [
+            gonebuf9999: [state: 'complete', tool: 'hub_create_room', isError: false,
+                          finishedAt: FIXED_NOW - 2000L, file: FILE_PREFIX + 'gonebuf9999.json']
+        ]
+
+        when:
+        def result = script.toolGetOpResult([opToken: 'gonebuf9999'])
+
+        then:
+        result.status == 'indeterminate'
+        result.opToken == 'gonebuf9999'
+        result.note.toLowerCase().contains('verify')
+    }
+
     def "hub_get_op_result throws when opToken is missing"() {
         given:
         settingsMap.enableRead = true

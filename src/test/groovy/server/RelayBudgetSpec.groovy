@@ -190,4 +190,53 @@ class RelayBudgetSpec extends ToolSpecBase {
         result.status != 'in_progress'
         result.patchesRemaining == null
     }
+
+    // ---------------- __reqT0 threading: dispatch -> gateway -> loop ----------------
+    //
+    // The loop tests above plant __reqT0 directly, so they cannot catch a regression in
+    // the delivery chain: the _budgetAwareTools allowlist injection in handleToolsCall,
+    // the handleGateway re-injection into leaf args, and the _setRuleFromEnvelope
+    // re-carry (it rebuilds args and would drop the key). Here the pause predicate is
+    // stubbed to fire ONLY when a NON-NULL clock reaches the loop -- with the harness
+    // clock frozen, a pause firing IS the proof the clock survived every hop. The real
+    // _isCloudRequest()==true branch needs a live cloud-relayed request object the
+    // harness cannot fabricate; it is verified live (requestSource=='cloud' probe).
+
+    def "the budget clock reaches the patch loop through dispatch and the gateway (canonical form)"() {
+        given: 'the pause predicate fires only when a non-null clock arrives'
+        def addActionCalls = []
+        def clicks = []
+        installPatchStubs(addActionCalls, clicks, false)
+        script.metaClass._relayBudgetExceeded = { Long t0 -> t0 != null }
+
+        when: 'a two-op patches edit arrives through hub_manage_rule_machine'
+        def response = mcpDriver.callTool('hub_manage_rule_machine', [tool: 'hub_set_rule', args: [
+            appId: 1, confirm: true,
+            patches: [[addAction: [a: 1]], [addAction: [a: 2]]]]])
+        def inner = mcpDriver.parseInner(response)
+
+        then: 'the loop paused -- the clock arrived non-null through injection + gateway re-injection'
+        addActionCalls.size() == 1
+        inner.status == 'in_progress'
+        inner.patchesRemaining.size() == 1
+    }
+
+    def "the budget clock survives the operation-envelope rebuild (envelope form)"() {
+        given:
+        def addActionCalls = []
+        def clicks = []
+        installPatchStubs(addActionCalls, clicks, false)
+        script.metaClass._relayBudgetExceeded = { Long t0 -> t0 != null }
+
+        when: 'the same edit in envelope form -- _setRuleFromEnvelope rebuilds args from scratch'
+        def response = mcpDriver.callTool('hub_manage_rule_machine', [tool: 'hub_set_rule', args: [
+            operation: 'patches', appId: 1, confirm: true,
+            args: [[addAction: [a: 1]], [addAction: [a: 2]]]]])
+        def inner = mcpDriver.parseInner(response)
+
+        then: 'the pause proves the re-carry preserved the clock across the rebuild'
+        addActionCalls.size() == 1
+        inner.status == 'in_progress'
+        inner.patchesRemaining.size() == 1
+    }
 }

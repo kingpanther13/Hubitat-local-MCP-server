@@ -142,7 +142,7 @@ class OpTokenReplaySpec extends ToolSpecBase {
         replayInner.roomId == 11
     }
 
-    def "a completed token whose buffer file was swept returns status unknown"() {
+    def "a completed token whose buffer file was swept returns status indeterminate, never the safe-to-retry unknown"() {
         given:
         settingsMap.enableWrite = true
         // Marker says complete, but the result file is gone (24h sweep) -> downloadHubFile null.
@@ -158,10 +158,10 @@ class OpTokenReplaySpec extends ToolSpecBase {
         when:
         def response = mcpDriver.callTool('hub_create_room', [name: 'Den', confirm: true, opToken: 'swept123456'])
 
-        then: 'the write is NOT re-run; the caller is told the result expired'
+        then: 'the write is NOT re-run; the caller is told the result expired but the op DID complete'
         ran == 0
         def inner = mcpDriver.parseInner(response)
-        inner.status == 'unknown'
+        inner.status == 'indeterminate'
         inner.note instanceof String && inner.note.toLowerCase().contains('verify')
     }
 
@@ -203,6 +203,68 @@ class OpTokenReplaySpec extends ToolSpecBase {
         marker.state == 'complete'
         marker.isError == true
         store.containsKey(FILE_PREFIX + 'gentoken12.json')
+    }
+
+    def "the marker is completed with isError when the write returns null (internal tool bug path)"() {
+        given:
+        settingsMap.enableWrite = true
+        def store = installFileStore()
+        script.metaClass.toolCreateRoom = { a -> null }
+
+        when:
+        def response = mcpDriver.callTool('hub_create_room', [name: 'Den', confirm: true, opToken: 'nulltoken1'])
+
+        then: 'the null result surfaces as an isError envelope'
+        response.error == null
+        response.result.isError == true
+
+        and: 'the marker still completes -- no eternal running'
+        def marker = atomicStateMap.opTokens['nulltoken1']
+        marker.state == 'complete'
+        marker.isError == true
+        store.containsKey(FILE_PREFIX + 'nulltoken1.json')
+    }
+
+    def "the marker is completed with isError when the write returns a non-serializable result"() {
+        given:
+        settingsMap.enableWrite = true
+        def store = installFileStore()
+        script.metaClass.toolCreateRoom = { a -> [success: true, oops: { -> 'a closure' }] }
+
+        when:
+        def response = mcpDriver.callTool('hub_create_room', [name: 'Den', confirm: true, opToken: 'sertoken123'])
+
+        then: 'the serializer failure surfaces as an isError envelope'
+        response.error == null
+        response.result.isError == true
+
+        and: 'the marker completes with the error envelope buffered'
+        def marker = atomicStateMap.opTokens['sertoken123']
+        marker.state == 'complete'
+        marker.isError == true
+        store.containsKey(FILE_PREFIX + 'sertoken123.json')
+    }
+
+    def "an oversize result buffers the REAL result under the token, not the too-large envelope"() {
+        given: 'a result whose wire encoding trips the 120KB response guard'
+        settingsMap.enableWrite = true
+        def store = installFileStore()
+        def bigPayload = 'x' * 130000
+        script.metaClass.toolCreateRoom = { a -> [success: true, blob: bigPayload] }
+
+        when:
+        def response = mcpDriver.callTool('hub_create_room', [name: 'Den', confirm: true, opToken: 'bigtoken123'])
+
+        then: 'the wire response is the too-large envelope'
+        response.error == null
+        def inner = mcpDriver.parseInner(response)
+        inner.response_too_large == true
+
+        and: 'the buffered result is the REAL oversize payload -- captured before the size guard'
+        def marker = atomicStateMap.opTokens['bigtoken123']
+        marker.state == 'complete'
+        marker.isError == false
+        new String(store[FILE_PREFIX + 'bigtoken123.json'], 'UTF-8').contains(bigPayload)
     }
 
     def "the token nested in gateway inner args is extracted (args.args.opToken)"() {
@@ -293,6 +355,50 @@ class OpTokenReplaySpec extends ToolSpecBase {
         atomicStateMap.opTokens.size() == 50
         !atomicStateMap.opTokens.containsKey('op_00')
         atomicStateMap.opTokens.containsKey('capnew1234')
+    }
+
+    def "the size cap never evicts a running token -- the oldest TERMINAL record goes instead"() {
+        given: '50 fresh entries; the oldest is still running, the next-oldest is complete'
+        def seed = [:]
+        (0..49).each { i ->
+            def key = "op_${String.format('%02d', i)}".toString()
+            seed[key] = [state: (i == 0 ? 'running' : 'complete'), tool: 'hub_create_room',
+                         startedAt: FIXED_NOW - (50L - i)]
+        }
+        atomicStateMap.opTokens = seed
+
+        when:
+        script._opTokenMark('capnew1234', 'hub_create_room')
+
+        then: 'the live op_00 survives; op_01 (oldest terminal) was evicted'
+        atomicStateMap.opTokens.size() == 50
+        atomicStateMap.opTokens.containsKey('op_00')
+        !atomicStateMap.opTokens.containsKey('op_01')
+        atomicStateMap.opTokens.containsKey('capnew1234')
+    }
+
+    def "replaying a paused in_progress result carries a replayNote so a spent-token resume cannot loop silently"() {
+        given: 'a completed token whose buffered result is a paused in_progress envelope'
+        settingsMap.enableWrite = true
+        script.metaClass.downloadHubFile = { String name ->
+            '{"success":true,"status":"in_progress","patchesRemaining":[{"x":1}]}'.getBytes('UTF-8')
+        }
+        atomicStateMap.opTokens = [
+            pausedtok99: [state: 'complete', tool: 'hub_create_room', isError: false,
+                          finishedAt: FIXED_NOW - 1000L, file: FILE_PREFIX + 'pausedtok99.json']
+        ]
+        def ran = 0
+        script.metaClass.toolCreateRoom = { a -> ran++; [success: true] }
+
+        when: 'the same token is re-issued as if it could resume'
+        def response = mcpDriver.callTool('hub_create_room', [name: 'Den', confirm: true, opToken: 'pausedtok99'])
+
+        then: 'no re-run; the replay is flagged as the original paused envelope'
+        ran == 0
+        def inner = mcpDriver.parseInner(response)
+        inner.replayed == true
+        inner.status == 'in_progress'
+        inner.replayNote instanceof String && inner.replayNote.toLowerCase().contains('fresh')
     }
 
     // ---------------- _opTokenComplete: buffering + fallbacks ----------------

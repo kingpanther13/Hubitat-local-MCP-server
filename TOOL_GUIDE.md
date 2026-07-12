@@ -1150,11 +1150,14 @@ Surfaced via `hub_get_tool_guide(section='slow_ops')`. A slow write invoked over
 
 The slow write tools (`hub_set_rule`, `hub_set_native_app`, the code save/update tools, `hub_install_bundle`, `hub_update_package`, `hub_create_backup`, `hub_restore_backup`) accept an optional `opToken` the caller invents (8-128 chars of `A-Za-z0-9._-`). The server records it before running the write and buffers the result on completion. If the response drops, call `hub_get_op_result(opToken=<yours>)` instead of re-issuing. Re-issuing the same tokened call while it is still running is refused (status `running`) rather than double-committed; after completion it replays the original result with `replayed: true` and does not run the write again.
 
-### `hub_get_op_result` tri-state
+### `hub_get_op_result` statuses
 
 - `unknown` — no operation with this token ever started; the original call never arrived (safe to re-issue with the same token).
 - `running` — still executing; poll again shortly and do NOT re-issue (the write commits even though the response dropped).
-- `complete` — the original result is under `result`, with `isError` and `finishedAt`. Buffered results are swept after ~24h; a later poll returns `unknown` with a note to verify state via reads.
+- `complete` — the original result is under `result`, with `isError` and `finishedAt`.
+- `indeterminate` — the operation completed here but its buffered result is gone (buffering failed, or swept opportunistically once older than ~24h; the sweep runs on later tokened writes, so expiry is not prompt). Do NOT re-issue blindly; verify current state via reads first. Only `unknown` means the call never arrived.
+
+A replayed result whose `status` is `in_progress` carries `replayNote`: it is the original paused envelope, not new progress — a spent token cannot drive a resume; re-issue the remaining work with a fresh token.
 
 ### in_progress resume (multi-step writes only)
 

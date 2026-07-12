@@ -1119,9 +1119,15 @@ def _advertisesOutputSchema(toolName) {
 // from that: (1) a caller-supplied idempotency token buffers the result so a lost
 // response is replayable and a blind retry is deduped; (2) slow multi-step writes
 // self-budget and return a resumable in_progress envelope BEFORE the ceiling. The
-// token bookkeeping persists through atomicState (thread-safe across the
-// concurrent requests this app instance serves); the buffered result lives in the
-// File Manager under the reserved mcp-op-result- prefix.
+// token bookkeeping persists through atomicState -- durable, NOT compare-and-set:
+// the dedup read and the started-mark write are separate operations, so two truly
+// simultaneous calls carrying the same token can both pass the gate, and two
+// overlapping DIFFERENT-token writes can last-writer-win the whole map (losing the
+// other's record; its result file then sits orphaned -- the prune sweeps map
+// entries, not the file prefix). The token targets the sequential-retry pattern
+// (response lost, client retries seconds later), where the persisted mark
+// refuses/replays the retry race-free. The buffered result lives in the File
+// Manager under the reserved mcp-op-result- prefix.
 
 // True only when THIS request arrived over the cloud relay. requestSource is a
 // mapped-endpoint property ("local"|"cloud"); any access failure (older firmware,
@@ -1132,7 +1138,7 @@ def _isCloudRequest() {
 }
 
 // Relay time budget in ms. 0 disables self-budgeting; unset defaults to 8000,
-// comfortably under the observed relay ceiling. The ceiling is a setting, never a
+// comfortably under the observed relay ceiling. The budget is a setting, never a
 // literal elsewhere -- read it here.
 def _relayBudgetMs() {
     return settings.relayBudgetMs != null ? (settings.relayBudgetMs as Long) : 8000L
@@ -1168,9 +1174,8 @@ def _validateOpToken(String opToken) {
 
 def _opTokenResultFile(String opToken) { "mcp-op-result-${opToken}.json" }
 
-// Parse the buffered result for a completed token, preferring the File Manager
-// copy and falling back to the inline copy kept when an upload failed for a small
-// payload. Returns null when nothing readable remains (swept file, failed buffer)
+// Parse the buffered result for a completed token: the inline copy (kept when an
+// upload failed for a small payload) wins, else the File Manager copy. Returns null when nothing readable remains (swept file, failed buffer)
 // so callers surface the "verify state" shape rather than a stale result.
 def _opTokenReadResult(rec) {
     if (!(rec instanceof Map)) return null
@@ -1197,13 +1202,18 @@ def _opTokenDeleteResultFile(rec) {
 // Amortized prune of the token map (mutates in place): drop entries past the 24h
 // TTL (deleting their result files) and cap the map at 50, oldest-first. The TTL
 // sweep is the reserved-prefix cleanup; a token left "running" by an unbuffered
-// internal error self-heals here.
+// internal error self-heals here. The size cap evicts TERMINAL records only: an
+// evicted live token would read back as "unknown -- safe to retry" while its op
+// commits, the exact double-commit the token exists to prevent. Stuck "running"
+// records are the TTL sweep's job, so the cap cannot wedge on them for long.
 def _opTokenPrune(Map tokens) {
     long cutoff = now() - 86400000L
     def expiredKeys = tokens.findAll { k, v -> (v instanceof Map) && (((v.startedAt as Long) ?: 0L) < cutoff) }.keySet().toList()
     expiredKeys.each { k -> _opTokenDeleteResultFile(tokens[k]); tokens.remove(k) }
     if (tokens.size() > 50) {
-        def ordered = tokens.entrySet().toList().sort { e -> (e.value instanceof Map) ? ((e.value.startedAt as Long) ?: 0L) : 0L }
+        def ordered = tokens.entrySet().toList()
+            .findAll { e -> !((e.value instanceof Map) && e.value.state == "running") }
+            .sort { e -> (e.value instanceof Map) ? ((e.value.startedAt as Long) ?: 0L) : 0L }
         int over = tokens.size() - 50
         ordered.take(over).each { e -> _opTokenDeleteResultFile(e.value); tokens.remove(e.key) }
     }
@@ -1231,12 +1241,13 @@ def _opTokenComplete(String opToken, String jsonText, boolean isErrorBool) {
     def prev = (tokens[opToken] instanceof Map) ? tokens[opToken] : [:]
     def rec = [state: "complete", tool: prev.tool, startedAt: prev.startedAt, finishedAt: now(), isError: isErrorBool]
     def fileName = _opTokenResultFile(opToken)
+    byte[] resultBytes = jsonText?.getBytes("UTF-8")
     try {
-        uploadHubFile(fileName, jsonText.getBytes("UTF-8"))
+        uploadHubFile(fileName, resultBytes)
         rec.file = fileName
     } catch (Exception e) {
         mcpLog("warn", "op-token", "Buffering op-result for ${opToken} to the File Manager failed: ${e.message}")
-        if (jsonText != null && jsonText.getBytes("UTF-8").length <= 2048) {
+        if (resultBytes != null && resultBytes.length <= 2048) {
             rec.inline = jsonText
         } else {
             rec.state = "failed_buffer"
@@ -1264,12 +1275,22 @@ def _opTokenDedup(String opToken, origToolName) {
     }
     def parsed = _opTokenReadResult(rec)
     if (parsed == null) {
+        // Distinct from "unknown": the op DID complete here, so a re-issue is NOT
+        // safe -- the wire status must never read as the safe-to-retry shape.
         return [isError: true, result: [
-            success: false, isError: true, status: "unknown", opToken: opToken,
-            note: "This token completed earlier but its buffered result has expired or could not be read. Verify current state via reads before retrying. See hub_get_tool_guide(section='slow_ops')."
+            success: false, isError: true, status: "indeterminate", opToken: opToken,
+            note: "This token completed earlier but its buffered result has expired or could not be read. Do not re-issue blindly -- verify current state via reads first. See hub_get_tool_guide(section='slow_ops')."
         ]]
     }
-    if (parsed instanceof Map) parsed.replayed = true
+    if (parsed instanceof Map) {
+        parsed.replayed = true
+        if (parsed.status == "in_progress") {
+            // A spent token cannot drive a resume: this replay is the ORIGINAL paused
+            // envelope, not new progress. Without the warning a client that reused the
+            // token would loop on the identical response forever.
+            parsed.replayNote = "REPLAY of the original paused result -- the resume did NOT run. Re-issue the remaining work with a FRESH opToken to continue."
+        }
+    }
     return [isError: (rec.isError == true), result: parsed]
 }
 
@@ -7023,7 +7044,10 @@ The slow write tools (hub_set_rule, hub_set_native_app, the code save/update too
 
 - `status: "unknown"` -- no operation with this token ever started here; the original call never arrived. Safe to (re-)issue the original call with the same token.
 - `status: "running"` -- still executing. Poll again in a few seconds. The write commits even though your response dropped, so do NOT re-issue.
-- `status: "complete"` -- the original result is under `result`, with `isError` and `finishedAt`. Buffered results are swept after ~24 hours; a poll after that returns "unknown" with a note to verify current state via reads.
+- `status: "complete"` -- the original result is under `result`, with `isError` and `finishedAt`.
+- `status: "indeterminate"` -- the operation completed here but its buffered result is gone (buffering failed, or swept opportunistically once older than ~24 hours -- the sweep runs on later tokened writes, so expiry is not prompt). Do NOT re-issue blindly; verify current state via reads first. Only "unknown" means the call never arrived.
+
+A replayed result whose `status` is "in_progress" carries `replayNote`: it is the ORIGINAL paused envelope, not new progress -- a spent token cannot drive a resume; re-issue the remaining work with a fresh token.
 
 ### in_progress resume (multi-step writes only)
 

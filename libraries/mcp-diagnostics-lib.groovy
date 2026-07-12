@@ -2008,9 +2008,11 @@ def toolGetOpResult(args) {
     }
     def parsed = _opTokenReadResult(rec)
     if (parsed == null) {
+        // Distinct from "unknown": the op DID run to completion here, so the
+        // safe-to-retry status must never be emitted for this case.
         return [
-            status: "unknown", opToken: opToken, tool: rec.tool,
-            note: "This token completed but its buffered result has expired or could not be read. Verify current state via reads before retrying. See hub_get_tool_guide(section='slow_ops')."
+            status: "indeterminate", opToken: opToken, tool: rec.tool,
+            note: "This token completed but its buffered result has expired or could not be read. Do not re-issue blindly -- verify current state via reads first. See hub_get_tool_guide(section='slow_ops')."
         ]
     }
     return [
@@ -2025,7 +2027,7 @@ def _getAllToolDefinitions_partDiagnostics() {
             name: "hub_get_op_result",
             description: """Fetch a slow write's committed result by its idempotency token (opToken) after a dropped/timed-out response. Read-only; safe to poll.
 [[FLAT_TRIM]]
-Use when a slow write over the cloud relay returned a transport error and you don't know whether it landed. Returns one of three shapes by `status`: "unknown" (no such token ever ran here -- the original call never arrived, so re-issue it with the same token), "running" (still executing -- poll again shortly; the write commits even though your response dropped, so do NOT re-issue), or "complete" (the original result under `result`, plus `isError` and `finishedAt`). Buffered results are swept after ~24h. Full protocol: hub_get_tool_guide(section='slow_ops').
+Use when a slow write over the cloud relay returned a transport error and you don't know whether it landed. `status` is one of: "unknown" (no such token ever ran here -- the original call never arrived, so re-issue it with the same token), "running" (still executing -- poll again shortly; the write commits even though your response dropped, so do NOT re-issue), "complete" (the original result under `result`, plus `isError` and `finishedAt`), or "indeterminate" (it completed but the buffered result is gone -- do NOT re-issue blindly; verify state via reads). Buffered results are swept opportunistically once older than ~24h. Full protocol: hub_get_tool_guide(section='slow_ops').
 [[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
@@ -2037,7 +2039,7 @@ Use when a slow write over the cloud relay returned a transport error and you do
             outputSchema: [
                 type: "object",
                 properties: [
-                    status: [type: "string", description: "unknown | running | complete"],
+                    status: [type: "string", description: "unknown | running | complete | indeterminate (completed but buffered result unreadable -- verify state before any retry)"],
                     opToken: [type: "string", description: "Echoed token"],
                     tool: [type: "string", description: "The write tool this token was attached to; present once the operation has started"],
                     startedAt: [type: "integer", description: "Epoch ms when the operation started; present for running"],
