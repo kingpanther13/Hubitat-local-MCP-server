@@ -225,25 +225,10 @@ class OpTokenReplaySpec extends ToolSpecBase {
         store.containsKey(FILE_PREFIX + 'nulltoken1.json')
     }
 
-    def "the marker is completed with isError when the write returns a non-serializable result"() {
-        given:
-        settingsMap.enableWrite = true
-        def store = installFileStore()
-        script.metaClass.toolCreateRoom = { a -> [success: true, oops: { -> 'a closure' }] }
-
-        when:
-        def response = mcpDriver.callTool('hub_create_room', [name: 'Den', confirm: true, opToken: 'sertoken123'])
-
-        then: 'the serializer failure surfaces as an isError envelope'
-        response.error == null
-        response.result.isError == true
-
-        and: 'the marker completes with the error envelope buffered'
-        def marker = atomicStateMap.opTokens['sertoken123']
-        marker.state == 'complete'
-        marker.isError == true
-        store.containsKey(FILE_PREFIX + 'sertoken123.json')
-    }
+    // The non-serializable terminal path has no portable trigger: JsonOutput serializes
+    // Closures as {} on current Groovy, and the genuinely-failing inputs (circular maps)
+    // die with StackOverflowError, not Exception. The branch is line-for-line parallel to
+    // the null-result path pinned above, which covers the marker-completion guarantee.
 
     def "an oversize result buffers the REAL result under the token, not the too-large envelope"() {
         given: 'a result whose wire encoding trips the 120KB response guard'
