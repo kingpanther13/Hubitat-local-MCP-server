@@ -3710,31 +3710,51 @@ class TestRunner:
         self.created_native_app_ids.append(str(app_id))
         return app_id
 
+    def _next_op_token(self) -> str:
+        """Fresh idempotency token for an RM write (issue #348 machinery). Derived from
+        the active test for log traceability, sanitized to the server's charset."""
+        self._op_token_seq = getattr(self, "_op_token_seq", 0) + 1
+        base = re.sub(r"[^A-Za-z0-9._-]", ".", str(getattr(self.client, "_active_test", "") or "setup"))
+        return f"e2e.{base}.{self._op_token_seq}"[:128].ljust(8, "x")
+
     def _set_rule(self, app_id: Any, extra: dict, strict: bool = False) -> Any:
         """hub_set_rule edit (appId present) with the given shortcut args.
 
-        Default (soft): a relay 504 gets the moveAction soft contract, generalized -- the
-        cloud relay's ~10s ceiling drops the RESPONSE while the hub finishes the wizard op
-        (the same unknown-commit state asyncCommitLikely models). Verify the rule still
-        renders, return a soft envelope; callers that assert on RESPONSE fields must
-        tolerate relayDropped.
+        Every call carries an auto-generated opToken, so a relay 504 recovers by EXACT
+        replay first (hub_get_op_result): the hub finishes and buffers the result even
+        though the relay dropped the response, and the replay hands back the real
+        envelope -- deterministic recovery instead of re-run roulette on ops that sit
+        at the relay ceiling.
 
-        strict=True: the 504 RAISES instead. Used by the per-concern RM wire-format tests,
-        whose fixtures are a pristine throwaway rule deleted in their finally -- _run_one
-        re-runs the whole small test once on a fresh rule, so no assertion is ever skipped
-        on a soft envelope (a skipped wire-format assertion is a false positive)."""
+        Default (soft) when replay comes up empty: the moveAction soft contract,
+        generalized -- verify the rule still renders, return a soft envelope; callers
+        that assert on RESPONSE fields must tolerate relayDropped.
+
+        strict=True when replay comes up empty: RAISE. Used by the per-concern RM
+        wire-format tests, whose fixtures are a pristine throwaway rule deleted in
+        their finally -- _run_one re-runs the whole small test once on a fresh rule, so
+        no assertion is ever skipped on a soft envelope."""
         args = {"appId": app_id, "confirm": True}
         args.update(extra)
+        token = args.setdefault("opToken", self._next_op_token())
         try:
             result = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": args})
         except (McpError, McpToolError, requests.HTTPError) as exc:
-            if strict or "504" not in str(exc):
+            if "504" not in str(exc):
                 raise
-            print(f"    hub_set_rule({list(extra)}) response lost to relay 504 -- "
-                  "soft contract: verifying the rule still renders instead of hard-failing")
-            self._assert_rule_renders(app_id)
-            self._last_write_health = None
-            return {"success": True, "asyncCommitLikely": True, "relayDropped": True}
+            replay = self._poll_op_result(token)
+            if isinstance(replay, dict):
+                print(f"    [RECOVER-504] hub_set_rule({list(extra)}): response recovered "
+                      "via opToken replay (hub_get_op_result)")
+                result = replay
+            elif strict:
+                raise
+            else:
+                print(f"    hub_set_rule({list(extra)}) response lost to relay 504 -- "
+                      "soft contract: verifying the rule still renders instead of hard-failing")
+                self._assert_rule_renders(app_id)
+                self._last_write_health = None
+                return {"success": True, "asyncCommitLikely": True, "relayDropped": True}
         assert result.get("success") is not False, f"hub_set_rule({list(extra)}) reported failure: {result}"
         self._cache_write_health(app_id, result)
         return result
@@ -3759,6 +3779,7 @@ class TestRunner:
         relayDropped bail can fire on it and every config-side assertion still runs --
         the lost RESPONSE is recovered from committed state, no wire-format assertion is
         skipped. If the write never actually landed, the caller's readback fails loudly."""
+        token = args.setdefault("opToken", self._next_op_token())
         try:
             result = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": args})
             self._cache_write_health(args.get("appId"), result)
@@ -3767,10 +3788,33 @@ class TestRunner:
             if "504" not in str(exc):
                 raise
             if strict and not recover_504:
+                # Exact replay first -- deterministic recovery beats the re-run roulette
+                # for ops that sit at the relay ceiling (the re-run re-rolls the same
+                # length and 504s again).
+                replay = self._poll_op_result(token)
+                if isinstance(replay, dict):
+                    print("    [RECOVER-504] hub_set_rule: response recovered via opToken "
+                          "replay (hub_get_op_result)")
+                    self._cache_write_health(args.get("appId"), replay)
+                    return replay
                 raise
             app_id = args.get("appId")
             if strict:
-                op_keys = [k for k in args if k not in ("appId", "confirm")]
+                op_keys = [k for k in args if k not in ("appId", "confirm", "opToken")]
+                # issue #348: prefer opToken replay. The op committed hub-side under this
+                # token, so hub_get_op_result hands back the EXACT buffered result (real
+                # success/partial), which beats re-deriving the outcome from committed
+                # config. The poll uses raw _send (out of op_timings, like
+                # _settle_before_504_retry). Config-verify stays the fallback for the case
+                # the request never arrived (token unknown) or carried no token.
+                token = args.get("opToken")
+                if token:
+                    replay = self._poll_op_result(token)
+                    if isinstance(replay, dict):
+                        print(f"    [RECOVER-504] hub_set_rule(appId={app_id}, ops={op_keys}): "
+                              "response recovered via opToken replay (hub_get_op_result)")
+                        self._cache_write_health(app_id, replay)
+                        return replay
                 print(f"    [RECOVER-504] hub_set_rule(appId={app_id}, ops={op_keys}): "
                       "response lost to relay 504 -- op commits hub-side; "
                       "wire format will be verified from the committed config")
@@ -3783,6 +3827,85 @@ class TestRunner:
             self._assert_rule_renders(app_id)
             self._last_write_health = None
             return {"success": True, "asyncCommitLikely": True, "relayDropped": True}
+
+    def _poll_op_result(self, token: str, deadline_s: float = 25.0) -> Any:
+        """Poll hub_get_op_result for a tokened op's buffered result after a relay 504 (issue #348).
+
+        Uses the RAW _send (like _settle_before_504_retry), NOT call_tool: a post-504 recovery
+        probe must not enter op_timings / [SLOW] / _last_op (it would mislabel this test's
+        telemetry and clobber the identity of the 504-causing op). The flat leaf name dispatches
+        in any gateway mode. Returns the buffered ORIGINAL result dict when the op reports
+        complete; None if it reports unknown (the request never arrived -- config-verify is the
+        right fallback) or never completes in the window."""
+        deadline = time.monotonic() + deadline_s
+        while time.monotonic() < deadline:
+            parsed = None
+            try:
+                raw = self.client._send("tools/call", {
+                    "name": "hub_get_op_result", "arguments": {"opToken": token}})
+                if not raw.get("isError"):
+                    for c in (raw.get("content") or []):
+                        if c.get("type") == "text":
+                            try:
+                                parsed = json.loads(c["text"])
+                            except (ValueError, TypeError):
+                                parsed = None
+            except Exception:
+                parsed = None
+            if isinstance(parsed, dict):
+                status = parsed.get("status")
+                if status == "complete":
+                    inner = parsed.get("result")
+                    return inner if isinstance(inner, dict) else parsed
+                if status == "unknown":
+                    return None
+            time.sleep(2.0)
+        return None
+
+    def _call_with_op_recovery(self, args: dict, token: str, max_iters: int = 8) -> Any:
+        """Drive a slow tokened hub_set_rule edit to completion across cloud-relay
+        interruptions (issue #348). Two interruption classes are handled, both leaving the
+        hub committed:
+          - status=='in_progress' (the server's own relay budget paused the loop before the
+            ceiling): re-issue with the handed-back remaining work (patchesRemaining /
+            stepsRemaining, inheriting the reported page). A resume call carries a FRESH token
+            -- reusing the paused op's token would replay its partial in_progress result via
+            dedup instead of continuing.
+          - a relay 504 (response lost): poll hub_get_op_result for THIS iteration's token
+            (raw _send, out of op_timings) and adopt the buffered result; the loop then decides
+            whether it is terminal or another in_progress leg.
+        Returns the final committed (non in_progress) result dict."""
+        app_id = args["appId"]
+        work = dict(args)
+        work.setdefault("confirm", True)
+        cur_token = token
+        for i in range(max_iters):
+            work["opToken"] = cur_token
+            try:
+                res = self.client.call_tool(
+                    "hub_manage_rule_machine", {"tool": "hub_set_rule", "args": work})
+            except (McpError, McpToolError, requests.HTTPError) as exc:
+                if "504" not in str(exc):
+                    raise
+                replay = self._poll_op_result(cur_token)
+                if not isinstance(replay, dict):
+                    raise
+                res = replay
+            if res.get("status") != "in_progress":
+                return res
+            # Self-budget pause: continue the remaining work under a FRESH token.
+            cur_token = f"{token}.r{i + 1}"
+            remaining = res.get("patchesRemaining")
+            if remaining is not None:
+                work = {"appId": app_id, "confirm": True, "patches": remaining}
+            else:
+                steps = res.get("stepsRemaining") or ((res.get("walkStep") or {}).get("stepsRemaining"))
+                drive = {"operation": "drive", "steps": steps}
+                if res.get("page"):
+                    drive["page"] = res.get("page")
+                work = {"appId": app_id, "confirm": True, "walkStep": drive}
+        raise AssertionError(
+            f"op recovery did not converge within {max_iters} iterations (still in_progress)")
 
     def _assert_rule_renders(self, app_id: Any) -> None:
         """Lenient health check for relay-504 soft paths: a dropped response may have committed
@@ -3818,15 +3941,28 @@ class TestRunner:
     def _add_action_or_raise_504(self, app_id: Any, action: dict) -> Any:
         """addAction edit that, unlike _set_rule's soft default, lets a relay 504 PROPAGATE.
 
-        Used for block CLOSERS (THEN-add / endIf) where a dropped response must raise so
-        the test-level retry re-runs the whole small test on a fresh rule. _set_rule's
-        soft path would instead swallow the 504 and then run its OWN in-helper health
-        check on the unclosed IF -- which fails with a non-504 AssertionError the retry
-        policy can't recognize (the exact run-27407212930 failure). On the normal
-        (non-504) path the success contract still binds."""
-        result = self.client.call_tool("hub_manage_rule_machine", {
-            "tool": "hub_set_rule", "args": {"appId": app_id, "addAction": action, "confirm": True},
-        })
+        Used for block CLOSERS (THEN-add / endIf). A dropped response first tries the
+        exact opToken replay -- a recovered closer keeps the block sound and the test
+        running. Only when the replay comes up empty (the call never arrived) does the
+        504 RAISE so the test-level retry re-runs the whole small test on a fresh rule.
+        _set_rule's soft path would instead swallow the 504 and then run its OWN
+        in-helper health check on the unclosed IF -- which fails with a non-504
+        AssertionError the retry policy can't recognize (the exact run-27407212930
+        failure). On the normal (non-504) path the success contract still binds."""
+        token = self._next_op_token()
+        try:
+            result = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule",
+                "args": {"appId": app_id, "addAction": action, "confirm": True, "opToken": token},
+            })
+        except (McpError, McpToolError, requests.HTTPError) as exc:
+            if "504" not in str(exc):
+                raise
+            replay = self._poll_op_result(token)
+            if not isinstance(replay, dict):
+                raise
+            print("    [RECOVER-504] block-closer addAction recovered via opToken replay")
+            result = replay
         assert result.get("success") is not False, f"addAction({action}) reported failure: {result}"
         # Block CLOSERS land here -- the cache MUST reflect the now-closed (healthy) rule, else a
         # following _assert_rule_healthy reads the stale mid-build "missing END-IF" health from the opener.
@@ -4399,6 +4535,9 @@ class TestRunner:
                     {"capability": "Mode", "state": mode_name},
                 ]},
                 "confirm": True,
+                # issue #348: a deterministic-504 op carries a token so recovery prefers an
+                # exact opToken replay over the config-verify fallback.
+                "opToken": f"bat.waitmode.{app_id}",
             }, strict=True, recover_504=True)
             # On a recovered 504 the response is lost, so these two response-level asserts
             # pass against the sentinel; the config readback below is the authoritative
@@ -4529,6 +4668,8 @@ class TestRunner:
                     {"capability": "Switch", "deviceIds": [sw], "state": "on", "andStays": {"minutes": 5}},
                 ]},
                 "confirm": True,
+                # issue #348: token-carried so a deterministic 504 recovers by exact replay.
+                "opToken": f"bat.waitstays.{app_id}",
             }, strict=True, recover_504=True)
             # No relayDropped bail here: strict never returns a relayDropped envelope, and a
             # recovered-504 sentinel must FALL THROUGH to the config readback below -- returning
@@ -4548,6 +4689,90 @@ class TestRunner:
             self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
+
+    # ---- opToken response replay + cloud-relay self-budget recovery (issue #348) ----
+    #
+    #      This group proves the CLIENT-side recovery contract end-to-end against the real
+    #      relay: a tokened slow edit reaches a committed end state whether it finishes in one
+    #      shot, self-budget-pauses (status:in_progress + resume), or drops the response on a
+    #      504 (recovered by opToken replay). It is the RECOVERY family -- unlike the strict
+    #      native_apps wire-format tests it deliberately tolerates relay interruptions, since
+    #      surviving them IS the thing under test. The in_progress pause/resume branch and the
+    #      deferred-updateRule suppression are covered deterministically by the Spock
+    #      RelayBudgetSpec; here we prove the recovery LOOP works against the live wizard.
+    #      Each test owns a small BAT_E2E_* rule (create -> assert -> delete in finally).
+
+    @test("op_replay")
+    def test_op_replay_multi_patch_completes_via_recovery(self) -> None:
+        # A slow tokened multi-patch edit over the cloud relay must converge to a committed
+        # success. _call_with_op_recovery drives one-shot completion, in_progress resume, and
+        # 504-replay to the same end. Kept SMALL (2 addAction ops) per the per-concern contract.
+        sw = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("OpReplayPatch")
+        try:
+            token = f"bat.opreplay.patch.{app_id}"
+            result = self._call_with_op_recovery({"appId": app_id, "patches": [
+                {"addAction": {"capability": "switch", "action": "on", "deviceIds": [sw]}},
+                {"addAction": {"capability": "switch", "action": "off", "deviceIds": [sw]}},
+            ]}, token)
+            assert result.get("success") is not False, \
+                f"tokened multi-patch edit did not converge to success: {result}"
+            # Both actions committed: the rule config carries two switch device-picker slots
+            # (onOffSwitch.<N>, one per action) regardless of whether a pause split the batch.
+            cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}})
+            settings = cfg.get("settings") or {}
+            switch_action_keys = [k for k in settings if str(k).startswith("onOffSwitch.")]
+            assert len(switch_action_keys) >= 2, \
+                f"expected 2 committed switch actions after recovery, saw {switch_action_keys}: {sorted(settings)}"
+            self._assert_rule_healthy(app_id)
+        finally:
+            self._delete_native(app_id)
+
+    @test("op_replay")
+    def test_op_replay_reissue_is_deduped(self) -> None:
+        # Re-issuing an already-committed tokened call must REPLAY the buffered result
+        # (replayed:true) and NOT run the write again -- the double-commit the cloud relay's
+        # "retry" advice otherwise causes. Proven by (a) the replay flag and (b) the rule
+        # config being identical before and after the re-issue (no new action slot).
+        sw = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("OpReplayDedup")
+        try:
+            token = f"bat.opreplay.dedup.{app_id}"
+            first = self._call_with_op_recovery(
+                {"appId": app_id, "addAction": {"capability": "switch", "action": "on", "deviceIds": [sw]}},
+                token)
+            assert first.get("success") is not False, f"first tokened addAction failed: {first}"
+
+            cfg_before = (self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}}).get("settings") or {})
+
+            # Re-issue the IDENTICAL call with the SAME token -- must dedup to a replay.
+            second = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+                "appId": app_id, "confirm": True, "opToken": token,
+                "addAction": {"capability": "switch", "action": "on", "deviceIds": [sw]}}})
+            assert second.get("replayed") is True, \
+                f"re-issuing the completed token did not replay (double-commit risk): {second}"
+
+            cfg_after = (self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}}).get("settings") or {})
+            assert cfg_after == cfg_before, \
+                f"the deduped re-issue changed the rule (double-commit): before={cfg_before} after={cfg_after}"
+            self._assert_rule_healthy(app_id)
+        finally:
+            self._delete_native(app_id)
+
+    @test("op_replay")
+    def test_op_replay_unknown_token(self) -> None:
+        # hub_get_op_result for a token that never started reports status 'unknown' -- telling
+        # the caller the original call never arrived and is safe to retry. No rule needed;
+        # call_tool auto-routes through hub_read_diagnostics (exercising the gateway membership).
+        never = f"bat.opreplay.never.{int(time.time())}"
+        res = self.client.call_tool("hub_get_op_result", {"opToken": never})
+        assert res.get("status") == "unknown", \
+            f"a never-used token should report unknown, got: {res}"
+        assert never in str(res.get("opToken")), \
+            f"hub_get_op_result should echo the queried token: {res}"
 
     @test("native_apps")
     def test_set_rule_contains_comparator(self) -> None:

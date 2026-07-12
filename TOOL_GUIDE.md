@@ -4,7 +4,7 @@ Detailed reference for MCP Rule Server tools. Consult this when tool description
 
 ## Category Gateway Proxy (v0.8.0+)
 
-As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 36 items (13 core + 23 gateways) covering 117 total tools. Use `hub_search_tools` to find any tool by natural language query.
+As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 36 items (13 core + 23 gateways) covering 118 total tools. Use `hub_search_tools` to find any tool by natural language query.
 
 **How to use a gateway:**
 1. Call the gateway with no arguments to see full parameter schemas for all its tools
@@ -12,7 +12,7 @@ As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used 
 
 Gateway verbs encode mutation: **`hub_read_*`** gateways are pure-read (every sub-tool read-only), **`hub_manage_*`** gateways contain at least one write. A read tool may appear in BOTH a `hub_read_*` gateway and a mixed `hub_manage_*` gateway (multi-membership).
 
-**Read gateways (8):** `hub_read_apps_code` (11), `hub_read_dashboards` (2), `hub_read_devices` (5), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3)
+**Read gateways (8):** `hub_read_apps_code` (11), `hub_read_dashboards` (2), `hub_read_devices` (5), `hub_read_diagnostics` (10), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3)
 
 **Manage gateways (15):** `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (9), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
 
@@ -1141,3 +1141,24 @@ To move EXISTING devices into an existing room, set each device's room via hub_u
 ### hub_update_room
 
 Renaming a room preserves device assignments, but may require updating automations/dashboards that reference the room by name.
+
+## Slow ops over the cloud relay (opToken recovery + in_progress resume)
+
+Surfaced via `hub_get_tool_guide(section='slow_ops')`. A slow write invoked over the cloud relay can outlive the relay's fixed response ceiling: the hub still runs the operation to completion and commits it, but the RESPONSE is lost and the client sees an opaque transport error (a gateway/timeout error). Retrying blindly risks a double commit. Two mechanisms make it recoverable.
+
+### Idempotency token (`opToken`)
+
+EVERY write tool accepts an optional `opToken` the caller invents (8-128 chars of `A-Za-z0-9._-`); the known-slow class advertises it in its schemas (`hub_set_rule`, `hub_set_native_app`, the code save/update tools, `hub_install_bundle`, `hub_update_package`, `hub_create_backup`, `hub_restore_backup`, `hub_delete_variable`). The server records it before running the write and buffers the result on completion. If the response drops, call `hub_get_op_result(opToken=<yours>)` instead of re-issuing. Re-issuing the same tokened call while it is still running is refused (status `running`) rather than double-committed; after completion it replays the original result with `replayed: true` and does not run the write again.
+
+### `hub_get_op_result` statuses
+
+- `unknown` — no operation with this token ever started; the original call never arrived (safe to re-issue with the same token).
+- `running` — still executing; poll again shortly and do NOT re-issue (the write commits even though the response dropped).
+- `complete` — the original result is under `result`, with `isError` and `finishedAt`.
+- `indeterminate` — the operation completed here but its buffered result is gone (buffering failed, or swept opportunistically once older than ~24h; the sweep runs on later tokened writes, so expiry is not prompt). Do NOT re-issue blindly; verify current state via reads first. Only `unknown` means the call never arrived.
+
+A replayed result whose `status` is `in_progress` carries `replayNote`: it is the original paused envelope, not new progress — a spent token cannot drive a resume; re-issue the remaining work with a fresh token.
+
+### in_progress resume (multi-step writes only)
+
+`hub_set_rule` / `hub_set_native_app` multi-step edits pause BETWEEN steps once the relay time budget is reached and return a success-shaped `status: "in_progress"` envelope — completed steps are already committed. A paused `walkStep(operation='drive')` returns `pausedAtStep`, `stepsRemaining`, and `page` (resume the drive with `steps = stepsRemaining` and that `page`); a paused patch edit returns `patchResults` plus `patchesRemaining` (resume the edit with `patches = patchesRemaining`; the rule finalize/`updateRule` runs when the remaining patches complete). Attach the same `opToken` on a resume only if the original call carried none, else use a fresh token. The budget is the advanced `relayBudgetMs` setting (default 8000 ms, 0 disables); LAN requests and a 0 budget never pause.
