@@ -291,6 +291,8 @@ Actions: `mute`, `unmute`
 
 ## Rules capabilities
 
+Each `ruleIds` target below is validated to be an existing Rule Machine rule before any write: a target id that is not an existing rule is rejected fail-loud ("RM is not touched"), steering to `hub_list_rules`, rather than baking a dangling reference that renders broken. On a hub whose rule list can't be resolved (RM not installed or the app-tree read failed) the check is skipped and the write proceeds. A hub with zero rules is NOT a can't-resolve case: every rule target is then rejected fail-loud.
+
 ### privateBoolean
 Note: `pvTF.<N>` field -- `true`=FALSE, `false`=True (inverted relative to field name).
 

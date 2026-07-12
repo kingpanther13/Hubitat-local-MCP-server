@@ -253,7 +253,7 @@ Slow multi-step calls over a cloud relay may return status:'in_progress' with re
                     ],
                     addAction: [
                         type: "object",
-                        description: """Add an RM ACTION (structured). DISCRIMINATOR: use `capability` NOT `type` (`{type:'log'}` is rejected); returns actionIndex (no trailing updateRule — doActPage self-bakes). Capability names: switch, dimmer, color, colorTemp, button, runCommand, lock, thermostat, hsm, shade, fan, mode, setVariable/setLocalVariable, log, notification, httpGet, httpPost, ping, volume, mute, chime, siren, privateBoolean, runRule, cancelTimers, pauseRule, capture, restore, refresh, poll, disableDevice, fileWrite/fileAppend/fileDelete, zwavePoll; flow control — delay, delayPerMode, cancelDelay, repeat, stopRepeat, repeatWhile, waitExpression, waitEvents, ifThen, elseIf, else, endIf, exitRule, comment. Expression-based ones (ifThen/elseIf/repeatWhile/waitExpression) take expression={conditions:[...], operator|operators}. LIMIT: only ONE waitEvents per rule. Per-condition shape: {capability, deviceIds:[N], state?, comparator?, value?, attribute?, not?, rawSettings?} (deviceIds MUST be an array — a bare integer silently stores {N:null}); nested subExpression not supported here (use addRequiredExpression). Optional: delay {hours, minutes, seconds, cancelable}; rawSettings {field:value} with @N = the auto action index (e.g. {'flashRate.@N':750}). Per-field specs + extended shapes (Mode, Between two times, Variable, compareToDevice, variable-sourced values): pass {discover: true} for the live schema, hub_get_tool_guide(section='set_rule_reference'), or docs/rm_action_subtype_schemas.md."""
+                        description: """Add an RM ACTION (structured). DISCRIMINATOR: use `capability` NOT `type` (`{type:'log'}` is rejected); returns actionIndex (no trailing updateRule — doActPage self-bakes). Capability names: switch, dimmer, color, colorTemp, button, runCommand, lock, thermostat, hsm, shade, fan, mode, setVariable/setLocalVariable, log, notification, httpGet, httpPost, ping, volume, mute, chime, siren, privateBoolean, runRule, cancelTimers, pauseRule, capture, restore, refresh, poll, disableDevice, fileWrite/fileAppend/fileDelete, zwavePoll; flow control — delay, delayPerMode, cancelDelay, repeat, stopRepeat, repeatWhile, waitExpression, waitEvents, ifThen, elseIf, else, endIf, exitRule, comment. Expression-based ones (ifThen/elseIf/repeatWhile/waitExpression) take expression={conditions:[...], operator|operators}. LIMIT: only ONE waitEvents per rule. Rule-targeting caps (runRule/cancelTimers/pauseRule/privateBoolean) validate each ruleIds entry against the live RM rule list before any write; a rule id that is not an existing rule is rejected -- use hub_list_rules for valid ids. (On a hub whose rule list can't be resolved -- RM not installed or app-tree unreadable -- the check is skipped; a hub with zero rules instead rejects every rule target.) Per-condition shape: {capability, deviceIds:[N], state?, comparator?, value?, attribute?, not?, rawSettings?} (deviceIds MUST be an array — a bare integer silently stores {N:null}); nested subExpression not supported here (use addRequiredExpression). Optional: delay {hours, minutes, seconds, cancelable}; rawSettings {field:value} with @N = the auto action index (e.g. {'flashRate.@N':750}). Per-field specs + extended shapes (Mode, Between two times, Variable, compareToDevice, variable-sourced values): pass {discover: true} for the live schema, hub_get_tool_guide(section='set_rule_reference'), or docs/rm_action_subtype_schemas.md."""
                     ],
                     guide: [type: "boolean", description: "Set true to return the full hub_set_rule capability reference inline (same content as hub_get_tool_guide(section='set_rule_reference')), without a separate call. Makes NO change to any rule."],
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller: {controllerId, buttonNumber, event}. Returns buttonRuleId with the Button trigger auto-seeded — then author actions via addAction on that appId. The controller must already have a button device.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
@@ -505,16 +505,26 @@ def toolSetAppDisabled(args) {
     return [success: false, appId: appId, disabled: observed, error: "POST accepted but read-back shows disabled=${observed} (wanted ${disable}).", note: "The hub may not have committed the flag; retry, or check the app in the hub UI."]
 }
 
-// List all Rule Machine rules via the official hubitat.helper.RMUtils API.
-// Combines RM 4.x and RM 5.x rules (deduplicated by id).
+// Enumerate Rule Machine rules via the official hubitat.helper.RMUtils API
+// (RM 4.x + RM 5.x, deduplicated by id) and ghost-filter them against the live
+// /hub2/appsList tree. Shared by hub_list_rules (which formats the rich list and
+// reports ghosts) and _rmValidRuleIds (which needs the existence-safe id set for
+// pre-write rule-target validation), so the RMUtils lookup + ghost-filter logic
+// lives in exactly one place.
 //
 // RMUtils is an optional platform class -- absent on hubs that have never
 // installed Rule Machine. Absence manifests as NoClassDefFoundError or
-// ClassNotFoundException (both Error subclasses, uncaught by catch Exception).
-// Hence the catch Throwable + null-guarded .message across the two try blocks
-// below; the classifier further down decides which Throwables to surface vs
-// treat as a quiet "RM not installed".
-def toolListRmRules(args) {
+// ClassNotFoundException (both Error subclasses, uncaught by catch Exception),
+// hence the catch Throwable + null-guarded .message; the caller classifies which
+// Throwables are a quiet "RM not installed" vs a real failure to surface.
+//
+// Returns [combined, ghostIds, v4Error, v5Error, treeReadable]:
+//   combined     -- id(String) -> entry map, ghost-filtered when the tree read
+//   ghostIds     -- ids RMUtils reported that are absent from /hub2/appsList
+//   v4Error/v5Error -- RM 4.x / 5.x lookup error strings (null on success)
+//   treeReadable -- false when /hub2/appsList could not be read; combined is
+//                   then UNfiltered (may still carry post-delete cache ghosts)
+private Map _rmCollectFilteredRmRules() {
     def combined = [:]
     def v4Error = null
     def v5Error = null
@@ -542,12 +552,14 @@ def toolListRmRules(args) {
     // because it reads /hub2/appsList, which is authoritative. Cross-
     // check against that tree and drop any rule whose id isn't in it.
     // If /hub2/appsList itself fails, fall through with unfiltered
-    // output + a warning so callers don't lose visibility on a
-    // transient hub error.
+    // output (treeReadable=false) so hub_list_rules keeps visibility on a
+    // transient hub error and _rmValidRuleIds can treat it as cannot-verify.
     def ghostIds = []
+    def treeReadable = false
     try {
         def liveIds = _collectLiveAppIds()
         if (liveIds != null) {
+            treeReadable = true
             def filtered = [:]
             combined.each { id, entry ->
                 def idInt
@@ -562,8 +574,42 @@ def toolListRmRules(args) {
             combined = filtered
         }
     } catch (Throwable e) {
-        mcpLog("warn", "rm-interop", "hub_list_rules: could not cross-check RMUtils output against /hub2/appsList (${e.message}); returning unfiltered")
+        mcpLog("warn", "rm-interop", "_rmCollectFilteredRmRules: could not cross-check RMUtils output against /hub2/appsList (${e.message}); returning unfiltered")
     }
+    return [combined: combined, ghostIds: ghostIds, v4Error: v4Error, v5Error: v5Error, treeReadable: treeReadable]
+}
+
+// Existence-safe set of Rule Machine rule ids (Integer) for pre-write target
+// validation: the RMUtils rule list intersected with the live app tree. Returns
+// null when the set cannot be trusted -- RMUtils unavailable (Rule Machine never
+// installed) or the app-tree cross-check could not run -- so a caller treats
+// "cannot verify" as skip-validation rather than a false-empty reject.
+private Set _rmValidRuleIds() {
+    def collected = _rmCollectFilteredRmRules()
+    // RMUtils unavailable: nothing enumerated AND both version lookups errored.
+    if (!collected.combined && collected.v4Error && collected.v5Error) return null
+    // App tree unreadable: membership is unverifiable (combined is unfiltered).
+    if (!collected.treeReadable) return null
+    def ids = [] as Set
+    collected.combined.each { id, entry ->
+        def idInt
+        try { idInt = (id instanceof Number) ? id.intValue() : id.toString().toInteger() }
+        catch (Exception ignored) { idInt = null }
+        if (idInt != null) ids << idInt
+    }
+    return ids
+}
+
+// List all Rule Machine rules (RM 4.x + 5.x, deduped by id) via RMUtils, with
+// post-delete cache ghosts filtered against /hub2/appsList. The RMUtils lookup and
+// ghost filter live in _rmCollectFilteredRmRules (shared with the rule-target
+// existence guard); this tool formats, paginates, and classifies the result.
+def toolListRmRules(args) {
+    def collected = _rmCollectFilteredRmRules()
+    def combined = collected.combined
+    def v4Error = collected.v4Error
+    def v5Error = collected.v5Error
+    def ghostIds = collected.ghostIds
 
     // combined.values() returns a Collection view in some Groovy versions; materialize
     // as a concrete List via toList() so subList in _paginateList is safe.
@@ -1344,6 +1390,100 @@ private void _rmValidateDeviceIdsExist(String label, Object ids) {
             // refusal keeps the edit-path restoreHint accurate. (Batch callers catch per item and
             // never consult the sentinel for restoreHint.)
             throw new IllegalArgumentException("${label} contains device ID '${idStr}' which does not exist on the hub. Verify the device ID via hub_list_devices. RM is not touched.")
+        }
+    }
+}
+
+// Action capabilities whose primary target is another RM rule -- their ruleIds
+// must resolve to an existing Rule Machine rule. Single source of truth for the
+// pre-write existence guard's capability gate and the bulk-path "does this batch
+// target a rule?" scan; keep it aligned with the capability branches in
+// _rmAddAction that write a rule field (ruleAct / stopAct / pauseRule / privateT).
+private List _rmRuleTargetCaps() { ["privateBoolean", "runRule", "cancelTimers", "pauseRule"] }
+
+// True when an action spec's capability targets another RM rule (see _rmRuleTargetCaps).
+private boolean _rmSpecTargetsRule(Object spec) {
+    if (!(spec instanceof Map)) return false
+    return ((spec.capability?.toString()?.trim()) in _rmRuleTargetCaps())
+}
+
+// True when any spec in a bulk action list targets another RM rule. Lets a bulk
+// entry point resolve the valid-rule-id set once (and only when it is actually
+// needed) and thread it to every _rmAddAction in the batch.
+private boolean _rmSpecListTargetsRule(List specs) {
+    return (specs ?: []).any { _rmSpecTargetsRule(it) }
+}
+
+// Normalize the rule id(s) written into a rule-targeting action field to the
+// integer-canonical form. A decimal-form Number (22624.0) would otherwise bake
+// literally into the rule field and RM then mishandles it -- the same reason the
+// trigger paths canonicalize a device id to "72" rather than "72.0". Accepts a
+// scalar or a list; returns a list (RM's rule pickers are multi-select).
+//
+// Uses the shared _rmCoerceRuleId so a decimal-form id ("555.0") the guard accepted
+// normalizes here too; falls back to normalizeRuleId's throw for a genuinely non-integer
+// id, only reachable on the cannot-verify skip path (RM not installed or app-tree
+// unreadable) where no id was validated.
+private List _rmNormalizeRuleIdsForWrite(Object ids) {
+    def idList = (ids instanceof List) ? ids : (ids != null ? [ids] : [])
+    return idList.collect { def c = _rmCoerceRuleId(it); c != null ? c : normalizeRuleId(it) }
+}
+
+// Coerce a rule-target id to an integer-valued Integer, or null when it is not
+// integer-valued. Accepts 555, 555.0, "555", "555.0" (a decimal-form string can arrive
+// from JSON coercion) and rejects a fractional id (555.9 / "555.9") rather than silently
+// truncating it to a different existing rule, plus non-numeric input ("abc"). The Number
+// branch compares doubleValue against longValue (avoids BigDecimal-from-double rounding on
+// an already-numeric id); the String branch parses via BigDecimal (integer-valued when
+// stripTrailingZeros leaves scale <= 0), since toInteger() throws on any decimal point.
+private Integer _rmCoerceRuleId(Object id) {
+    try {
+        if (id instanceof Number) {
+            return (id.doubleValue() == id.longValue()) ? id.intValue() : null
+        }
+        def s = id?.toString()?.trim()
+        if (!s) return null
+        def bd = new BigDecimal(s)   // throws on non-numeric -> caught -> null
+        return (bd.stripTrailingZeros().scale() <= 0) ? bd.intValue() : null
+    } catch (Exception ignored) { return null }
+}
+
+// Fail loud, pre-write, when a rule-targeting action names a rule id that does not
+// resolve to an existing Rule Machine rule. RM 5.1 stores an unknown id verbatim
+// into the action's rule field and bakes a dangling reference that never fires and
+// renders broken, with no error at write time. Resolving each id against the
+// existence-safe rule-id set (the RMUtils rule list confirmed against /hub2/appsList)
+// up front keeps the refusal pre-write, matching the fail-loud style of the other
+// pre-write guards.
+//
+// validRuleIds lets a bulk caller resolve the set once and thread it to every item
+// (avoids one fetch per action); a single-action caller passes null and the set is
+// resolved lazily here. When the set cannot be determined -- RMUtils absent or the
+// app-tree cross-check failed, both surfaced as null -- treat it as "cannot verify"
+// and let the write proceed (a genuinely bogus id still bakes broken) rather than
+// synthesize a misleading "rule does not exist" on a hub blip; mirrors the transient-
+// skip stance of _rmValidateDeviceIdsExist. An EMPTY (non-null) set is NOT a blip --
+// the rule list was read successfully and has zero valid rules -- so every rule target
+// is genuinely invalid and is rejected fail-loud (only null, cannot-verify, skips).
+//
+// This guard wraps a bare scalar into a list (a caller may pass ruleIds as a single
+// integer), BECAUSE ruleIds is not contractually required to be an array here -- the
+// sibling _rmValidateDeviceIdsExist instead SKIPS a non-List input, because a bare
+// integer deviceId is the very bug it exists to catch (RM stores {N:null} for it), so
+// silently ignoring the scalar is the safe stance there. For a rule target the scalar
+// is a legitimate single-rule reference, so it is validated rather than skipped.
+private void _rmValidateRuleTargetExists(String label, Object ids, Set validRuleIds = null) {
+    def idList = (ids instanceof List) ? ids : (ids != null ? [ids] : [])
+    if (!idList) return
+    def liveIds = (validRuleIds != null) ? validRuleIds : _rmValidRuleIds()
+    if (liveIds == null) return   // cannot verify (RMUtils absent / tree unreadable) -> skip; an empty set (verified zero rules) falls through and rejects every target
+    idList.each { id ->
+        def idInt = _rmCoerceRuleId(id)
+        if (idInt == null) {
+            throw new IllegalArgumentException("${label} target rule id '${id}' is not a valid numeric rule id. Use hub_list_rules to find valid rule ids. RM is not touched.")
+        }
+        if (!liveIds.contains(idInt)) {
+            throw new IllegalArgumentException("${label} target rule id '${id}' does not exist on the hub. Use hub_list_rules to find valid rule ids. RM is not touched.")
         }
     }
 }
@@ -4881,7 +5021,7 @@ private boolean _rmRollbackInFlightExpressionAction(Integer appId, Integer idx, 
 //
 // Returns: [success, actionIndex, capability, action, settingsApplied,
 // configPageError]
-Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false) {
+Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set validRuleIds = null) {
     if (!(actionSpec instanceof Map)) throw new IllegalArgumentException("addAction requires a Map spec")
     // Discover mode -- return static schema without touching the hub.
     // No capability field required; no Write master gate; no backup.
@@ -4975,6 +5115,14 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false) {
     // level deviceIds list (used by switch / dimmer / lock / shade /
     // thermostat / messaging / etc.) and any waitEvents events[].deviceIds.
     _rmValidateDeviceIdsExist("addAction.deviceIds", actionSpec.deviceIds)
+    // Pre-validate a rule-targeting action's target rule id BEFORE any wizard write
+    // (including the selectActions page-init POST below), so a bogus target is
+    // refused with RM genuinely untouched. Capability-gated so only the rule-
+    // targeting subtypes pay the rule-list resolve; validRuleIds is threaded by
+    // bulk callers so a batch resolves the set once.
+    if (_rmSpecTargetsRule(actionSpec)) {
+        _rmValidateRuleTargetExists(cap, actionSpec.ruleIds ?: actionSpec.deviceIds, validRuleIds)
+    }
     if (actionSpec.events instanceof List) {
         (actionSpec.events as List).eachWithIndex { ev, evIdx ->
             if (ev instanceof Map) {
@@ -5952,30 +6100,31 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false) {
         fields = [
             "pvRuleType.@N": "Rule Machine",
             "pvTF.@N": !(actionSpec.value as Boolean),
-            "privateT.@N": (actionSpec.ruleIds ?: deviceIds)
+            "privateT.@N": _rmNormalizeRuleIdsForWrite(actionSpec.ruleIds ?: deviceIds)
         ]
     } else if (cap == "runRule") {
         actType = "rulesActs"
         actSubType = "getRuleActions"
         fields = [
             "runRuleType.@N": "Rule Machine",
-            "ruleAct.@N": (actionSpec.ruleIds ?: deviceIds)
+            "ruleAct.@N": _rmNormalizeRuleIdsForWrite(actionSpec.ruleIds ?: deviceIds)
         ]
     } else if (cap == "cancelTimers") {
         actType = "rulesActs"
         actSubType = "getStopActions"
         fields = [
             "stopRuleType.@N": "Rule Machine",
-            "stopAct.@N": (actionSpec.ruleIds ?: deviceIds)
+            "stopAct.@N": _rmNormalizeRuleIdsForWrite(actionSpec.ruleIds ?: deviceIds)
         ]
     } else if (cap == "pauseRule") {
         // pR.<N>: true=RESUME, false=Pause (verified live --
         // boolean is inverted relative to its field name).
         actType = "rulesActs"
         actSubType = "getPauseResumeRules"
+        def pauseRuleIds = _rmNormalizeRuleIdsForWrite(actionSpec.ruleIds ?: deviceIds)
         switch (action) {
-            case "pause":  fields = ["pR.@N": false, "pauseRuleType.@N": "Rule Machine", "pauseRule.@N": (actionSpec.ruleIds ?: deviceIds)]; break
-            case "resume": fields = ["pR.@N": true,  "pauseRuleType.@N": "Rule Machine", "pauseRule.@N": (actionSpec.ruleIds ?: deviceIds)]; break
+            case "pause":  fields = ["pR.@N": false, "pauseRuleType.@N": "Rule Machine", "pauseRule.@N": pauseRuleIds]; break
+            case "resume": fields = ["pR.@N": true,  "pauseRuleType.@N": "Rule Machine", "pauseRule.@N": pauseRuleIds]; break
             default: throw new IllegalArgumentException("Unknown pauseRule action '${action}' -- supported: pause, resume")
         }
     } else if (cap == "capture") {
@@ -9119,13 +9268,16 @@ def _createNativeAppShell(args) {
         def actionSpecs = args?.actions instanceof List ? (args.actions as List) : []
         def actionResults = []
         if (actionSpecs) {
+            // Resolve the valid-rule-id set once for the whole batch (only when a
+            // rule-targeting action is present) and thread it to each item.
+            def actionsValidRuleIds = _rmSpecListTargetsRule(actionSpecs) ? _rmValidRuleIds() : null
             actionSpecs.eachWithIndex { spec, i ->
                 if (!(spec instanceof Map)) {
                     actionResults << [success: false, error: "actions[${i}] is not a Map", spec: spec]
                     return
                 }
                 try {
-                    actionResults << _rmAddAction(newId, spec as Map, true)
+                    actionResults << _rmAddAction(newId, spec as Map, true, actionsValidRuleIds)
                 } catch (Exception ae) {
                     actionResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
                     mcpLog("warn", "rm-native", "hub_set_rule: action ${i} (${spec.capability}/${spec.action}) failed -- ${ae.message}")
@@ -12592,6 +12744,9 @@ def _applyNativeAppEdit(args) {
         // without re-deriving the pre-write index set after the rule already
         // changed. Null when no clear/replace is requested.
         def preClearIndicesSnapshot = null
+        // Batch-resolved valid-rule-id set for the replaceActions re-add loop,
+        // populated by the pre-flight below when the incoming list targets a rule.
+        def replaceValidRuleIds = null
         try {
             // Pre-flight: walk the replaceActions spec list's capability
             // sequence and refuse the call before clearActions runs if the
@@ -12605,6 +12760,17 @@ def _applyNativeAppEdit(args) {
                 def specIssues = _rmStructuralIssuesFromSequence(_rmStructuralSequenceFromSpecList(replaceActionsList))
                 if (specIssues) {
                     throw new IllegalArgumentException("replaceActions blocked: the proposed action list is structurally imbalanced — ${specIssues.join('; ')}. Re-order the list, add the missing closer (capability='endIf' or 'stopRepeat'), or remove the orphan closer. RM is not touched and no actions are cleared.")
+                }
+                // Reject a bogus rule target BEFORE clearActions wipes the rule.
+                // Resolve the valid-rule-id set once here and reuse it in the re-add
+                // loop below, so a dangling runRule/cancelTimers/pauseRule/privateBoolean
+                // target fails loud with nothing destroyed rather than wipe-then-drop.
+                replaceValidRuleIds = _rmSpecListTargetsRule(replaceActionsList) ? _rmValidRuleIds() : null
+                replaceActionsList.each { spec ->
+                    if (_rmSpecTargetsRule(spec)) {
+                        def sm = spec as Map
+                        _rmValidateRuleTargetExists(sm.capability?.toString()?.trim(), sm.ruleIds ?: sm.deviceIds, replaceValidRuleIds)
+                    }
                 }
             }
             if (removeActionSpec) {
@@ -12674,7 +12840,7 @@ def _applyNativeAppEdit(args) {
                         addedResults << [success: false, error: "replaceActions[${i}] is not a Map", spec: spec]
                         return
                     }
-                    try { addedResults << _rmAddAction(appId, spec as Map, true) }
+                    try { addedResults << _rmAddAction(appId, spec as Map, true, replaceValidRuleIds) }
                     catch (Exception ae) {
                         addedResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
                         mcpLog("warn", "rm-native", "hub_set_rule: replaceActions[${i}] (${spec.capability}/${spec.action}) failed -- ${ae.message}")
@@ -13137,6 +13303,17 @@ def _applyNativeAppEdit(args) {
         // valid per batch; a second would replace the first (and its additive restore would land
         // on the intermediate, not the original). Track it to refuse the second.
         def seenReplaceRE = false
+        // Resolve the valid-rule-id set once for the whole patch batch (only when
+        // some action op targets a rule) and thread it to every addAction /
+        // addActions / replaceActions op below -- one resolve per batch, not per item.
+        def patchBatchTargetsRule = (patchesList ?: []).any { p ->
+            if (!(p instanceof Map)) return false
+            def pm = p as Map
+            _rmSpecTargetsRule(pm.addAction) ||
+                (pm.addActions instanceof List && _rmSpecListTargetsRule(pm.addActions as List)) ||
+                (pm.replaceActions instanceof List && _rmSpecListTargetsRule(pm.replaceActions as List))
+        }
+        def patchValidRuleIds = patchBatchTargetsRule ? _rmValidRuleIds() : null
         try {
             // Indexed for-loop (not eachWithIndex) so the cloud-relay budget checkpoint can
             // cleanly break/return between ops -- a Groovy closure can't break out of a loop.
@@ -13198,11 +13375,11 @@ def _applyNativeAppEdit(args) {
                         def innerOk = innerResults.every { (it instanceof Map) && (it.success != false) && (it.partial != true) }
                         patchResults << [success: innerOk, op: "addTriggers", results: innerResults]
                     } else if (pm.containsKey("addAction")) {
-                        patchResults << ([op: "addAction"] + _rmAddAction(appId, pm.addAction as Map, true))
+                        patchResults << ([op: "addAction"] + _rmAddAction(appId, pm.addAction as Map, true, patchValidRuleIds))
                     } else if (pm.containsKey("addActions")) {
                         def innerResults = []
                         (pm.addActions as List).each { aspec ->
-                            try { innerResults << _rmAddAction(appId, aspec as Map, true) }
+                            try { innerResults << _rmAddAction(appId, aspec as Map, true, patchValidRuleIds) }
                             catch (Exception e) { innerResults << [success: false, error: e.message ?: e.toString()] }
                         }
                         def innerOk = innerResults.every { (it instanceof Map) && (it.success != false) && (it.partial != true) }
@@ -13327,6 +13504,14 @@ def _applyNativeAppEdit(args) {
                         if (patchSpecIssues) {
                             throw new IllegalArgumentException("patches[${pi}].replaceActions blocked: the proposed action list is structurally imbalanced — ${patchSpecIssues.join('; ')}. Re-order the list, add the missing closer (capability='endIf' or 'stopRepeat'), or remove the orphan closer. RM is not touched and no actions are cleared.")
                         }
+                        // Reject a bogus rule target BEFORE clearActions wipes the rule
+                        // (same wipe-then-drop guard as the top-level replaceActions path).
+                        (pm.replaceActions as List).each { aspec ->
+                            if (_rmSpecTargetsRule(aspec)) {
+                                def sm = aspec as Map
+                                _rmValidateRuleTargetExists(sm.capability?.toString()?.trim(), sm.ruleIds ?: sm.deviceIds, patchValidRuleIds)
+                            }
+                        }
                         def cleared
                         try { cleared = _rmClearActions(appId) ?: [] }
                         catch (Exception clearExc) {
@@ -13345,7 +13530,7 @@ def _applyNativeAppEdit(args) {
                         }
                         def innerResults = []
                         (pm.replaceActions as List).each { aspec ->
-                            try { innerResults << _rmAddAction(appId, aspec as Map, true) }
+                            try { innerResults << _rmAddAction(appId, aspec as Map, true, patchValidRuleIds) }
                             catch (Exception e) { innerResults << [success: false, error: e.message ?: e.toString()] }
                         }
                         def innerOk = innerResults.every { (it instanceof Map) && (it.success != false) && (it.partial != true) }
@@ -13641,12 +13826,15 @@ def _applyNativeAppEdit(args) {
                     mcpLog("warn", "rm-native", "hub_set_rule: addTriggers[${i}] (${spec.capability}) failed -- ${te.message}")
                 }
             }
+            // Resolve the valid-rule-id set once for the whole batch (only when a
+            // rule-targeting action is present) and thread it to each item.
+            def addActionsValidRuleIds = _rmSpecListTargetsRule(addActionsList ?: []) ? _rmValidRuleIds() : null
             (addActionsList ?: []).eachWithIndex { spec, i ->
                 if (!(spec instanceof Map)) {
                     actionResults << [success: false, error: "addActions[${i}] is not a Map", spec: spec]
                     return
                 }
-                try { actionResults << _rmAddAction(appId, spec as Map, true) }
+                try { actionResults << _rmAddAction(appId, spec as Map, true, addActionsValidRuleIds) }
                 catch (Exception ae) {
                     actionResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
                     mcpLog("warn", "rm-native", "hub_set_rule: addActions[${i}] (${spec.capability}/${spec.action}) failed -- ${ae.message}")

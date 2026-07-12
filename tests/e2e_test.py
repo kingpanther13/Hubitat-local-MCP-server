@@ -3207,6 +3207,39 @@ class TestRunner:
             assert "not touched" in str(action_state.get("restoreHint", "")).lower() \
                 and "backup saved before write" not in str(action_state.get("restoreHint", "")).lower(), \
                 f"switch state: pre-flight refusal should carry a not-touched restoreHint, got: {action_state.get('restoreHint')!r}"
+            # Fail-loud parity on a rule-targeting action: privateBoolean / runRule / cancelTimers /
+            # pauseRule store their target rule id verbatim into the RM action field, so a target that
+            # is not an existing rule would bake a dangling reference that never fires and renders
+            # broken. The pre-write existence guard -- which resolves each id against the live RM rule
+            # list before any wizard write -- rejects it up front, naming the missing id and steering
+            # to hub_list_rules, with the same not-touched contract. A wildly out-of-range id is
+            # guaranteed absent on any hub.
+            runrule_missing = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "addAction": {"capability": "runRule", "ruleIds": [999999999]},
+                         "confirm": True}})
+            assert runrule_missing.get("success") is False \
+                and "'999999999'" in str(runrule_missing.get("error", "")) \
+                and "hub_list_rules" in str(runrule_missing.get("error", "")).lower(), \
+                f"runRule with a non-existent target id should fail loud naming the quoted id and hub_list_rules, got: {runrule_missing}"
+            assert "not touched" in str(runrule_missing.get("restoreHint", "")).lower() \
+                and "backup saved before write" not in str(runrule_missing.get("restoreHint", "")).lower(), \
+                f"runRule missing-target pre-flight refusal should carry a not-touched restoreHint, got: {runrule_missing.get('restoreHint')!r}"
+            # Accept-path parity (both-ways companion to the reject above): the existence guard must
+            # ADMIT a valid target, not merely reject bogus ones. Target a SECOND real rule (not this
+            # rule itself -- RM's runRule picker excludes the current rule, which would render broken)
+            # and confirm the runRule action commits success:true. Kept small per the RM e2e budget:
+            # the target rule holds one log action, and this rule gains one runRule action.
+            runrule_target_id = self._create_native_rule("FailLoudRunRuleTarget", {
+                "addActions": [{"capability": "log", "message": "E2E runRule accept target"}],
+            })
+            try:
+                runrule_ok = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                    "args": {"appId": app_id, "addAction": {"capability": "runRule", "ruleIds": [runrule_target_id]},
+                             "confirm": True}})
+                assert runrule_ok.get("success") is True, \
+                    f"runRule targeting an existing rule id ({runrule_target_id}) should be accepted and commit, got: {runrule_ok}"
+            finally:
+                self._delete_native(runrule_target_id)
             # Fail-loud parity on the CONDITION surface (addRequiredExpression): a date/day-window
             # condition capability is unmodelled on every structured condition surface, and a
             # state-change comparator has no meaning on a point-in-time condition. Both are rejected
