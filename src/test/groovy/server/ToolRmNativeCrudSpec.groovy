@@ -2503,6 +2503,22 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
+    def "_rmNormalizeRuleIdsForWrite throws on a non-integer-valued id '#bad' rather than truncating (skip-path write safety)"() {
+        // On the cannot-verify skip path the guard did not validate, so a bad id can reach the
+        // write. It must fail loud here -- NOT truncate a fractional Number (555.9 -> 555, a
+        // different existing rule) the way normalizeRuleId's toInteger() did.
+        when:
+        script._rmNormalizeRuleIdsForWrite([bad])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("is not an integer-valued rule id")
+
+        where:
+        bad << [555.9, "555.9", "abc"]
+    }
+
+    @spock.lang.Unroll
     def "rule-target guard rejects a bogus target for capability '#cap' before any write"() {
         // Per-cap coverage: dropping any capability from _rmRuleTargetCaps() would let that cap's
         // bogus target through -- this catches it. The hoisted guard fires ahead of every
@@ -2586,6 +2602,43 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         } catch (Exception e) { thrownEx = e }
 
         then: "the guard skipped (tree unreadable == cannot verify); the write path is entered"
+        !posts.isEmpty()
+
+        and: "no existence reject -- execution ran past the guard into the unmocked hub layer"
+        thrownEx != null
+        !thrownEx.message.contains("does not exist")
+        thrownEx.message.contains("Unstubbed hubInternalGet")
+    }
+
+    def "rule-target guard SKIPS validation when a single RMUtils version errors transiently (write proceeds)"() {
+        // One-sided RMUtils failure == cannot-verify, NOT verified-zero. On a 5.x-only hub the v4
+        // getRuleList() legitimately returns [] with no error; a transient v5 getRuleList("5.0")
+        // throw leaves combined empty but the rules are NOT confirmed-zero. _rmValidRuleIds must
+        // return null (skip) here, not the empty set. Requiring BOTH versions to error (the old
+        // && gate) would treat that empty combined as authoritative and false-reject every existing
+        // target on the blip -- reverting Fix to the && gate turns this SKIP into a "does not exist"
+        // reject and this spec RED. The tree IS readable (appsList registered), isolating the
+        // one-sided-error path from the tree-unreadable path.
+        given:
+        rmUtils = new RMUtilsMock()
+        rmUtils.stubRuleList4 = []   // v4: RM 5.x-only hub returns an empty list with no error
+        rmUtils.throwOnGetRuleList5 = new RuntimeException("transient hub error reading 5.0 rule list")
+        rmUtils.install()
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "a runRule action targets an id that WOULD reject if the set were verified-zero"
+        Exception thrownEx = null
+        try {
+            script._rmAddAction(100, [capability: "runRule", ruleIds: [999999]])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "the guard skipped (one-sided error == cannot verify); the write path is entered (a POST fires)"
         !posts.isEmpty()
 
         and: "no existence reject -- execution ran past the guard into the unmocked hub layer"
@@ -2704,6 +2757,49 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ruleActWrite.value == [555]
         ruleActWrite.value.every { it instanceof Integer }
         !ruleActWrite.value.toString().contains("555.0")
+    }
+
+    @spock.lang.Unroll
+    def "#cap write path normalizes an integer-valued decimal ruleId to integer-canonical (#fieldPrefix wiring pin)"() {
+        // Sibling of the runRule wiring pin for the other three rule-target caps: each writes its
+        // rule id through a DISTINCT field (privateBoolean -> privateT.<N>, cancelTimers ->
+        // stopAct.<N>, pauseRule -> pauseRule.<N>), each wired to _rmNormalizeRuleIdsForWrite. A
+        // decimal-form id that PASSES the guard (555.0 is integer-valued) must reach that field as
+        // integer-canonical [555], never [555.0]. Reverting any one cap's wiring line to the raw
+        // (actionSpec.ruleIds ?: deviceIds) captures [555.0] and fails that row. Only the field-write
+        // layer is intercepted, isolating the captured value from the doActPage schema walk.
+        // Both-ways pending (orchestrator).
+        given:
+        installRuleTargetStubs()
+        hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        def writes = []
+        script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String key, Object value, List applied, String typeHint = null, List skipped = null, Map cache = null ->
+            writes << [field: key, value: value]
+            applied << key
+        }
+
+        when: "the rule-targeting action names a valid rule id given as an integer-valued decimal (555.0)"
+        try { script._rmAddAction(100, actionSpec) }
+        catch (Exception ignored) { /* finalize/verify past the field write is unstubbed; irrelevant to the pin */ }
+
+        then: "the cap's rule field write carries the integer-canonical id, NOT the decimal form"
+        def fieldWrite = writes.find { it.field?.toString()?.startsWith(fieldPrefix) }
+        fieldWrite != null
+        fieldWrite.value == [555]
+        fieldWrite.value.every { it instanceof Integer }
+        !fieldWrite.value.toString().contains("555.0")
+
+        where:
+        cap             | fieldPrefix   | actionSpec
+        "privateBoolean"| "privateT."   | [capability: "privateBoolean", ruleIds: [555.0]]
+        "cancelTimers"  | "stopAct."    | [capability: "cancelTimers", ruleIds: [555.0]]
+        "pauseRule"     | "pauseRule."  | [capability: "pauseRule", action: "pause", ruleIds: [555.0]]
     }
 
     @spock.lang.Unroll

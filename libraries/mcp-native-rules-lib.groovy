@@ -581,13 +581,20 @@ private Map _rmCollectFilteredRmRules() {
 
 // Existence-safe set of Rule Machine rule ids (Integer) for pre-write target
 // validation: the RMUtils rule list intersected with the live app tree. Returns
-// null when the set cannot be trusted -- RMUtils unavailable (Rule Machine never
-// installed) or the app-tree cross-check could not run -- so a caller treats
-// "cannot verify" as skip-validation rather than a false-empty reject.
+// null when the set cannot be trusted -- any RMUtils lookup error (Rule Machine never
+// installed, or a transient one-sided v4/v5 failure) or the app-tree cross-check could
+// not run -- so a caller treats "cannot verify" as skip-validation rather than a
+// false-empty reject.
 private Set _rmValidRuleIds() {
     def collected = _rmCollectFilteredRmRules()
-    // RMUtils unavailable: nothing enumerated AND both version lookups errored.
-    if (!collected.combined && collected.v4Error && collected.v5Error) return null
+    // Any RMUtils lookup error -- including a one-sided v4 or v5 failure -- makes the
+    // enumeration incomplete, so the set cannot be trusted. On a 5.x-only hub the v4
+    // getRuleList() legitimately returns [] with no error; if the v5 getRuleList("5.0")
+    // then throws transiently, combined is empty but the rules are NOT verified-zero.
+    // Requiring BOTH errors (the old && gate) would return that empty set as authoritative
+    // and false-reject every existing target on the blip. RM-never-installed still errors
+    // on both versions, so this keeps skipping there too.
+    if (collected.v4Error || collected.v5Error) return null
     // App tree unreadable: membership is unverifiable (combined is unfiltered).
     if (!collected.treeReadable) return null
     def ids = [] as Set
@@ -1421,12 +1428,21 @@ private boolean _rmSpecListTargetsRule(List specs) {
 // scalar or a list; returns a list (RM's rule pickers are multi-select).
 //
 // Uses the shared _rmCoerceRuleId so a decimal-form id ("555.0") the guard accepted
-// normalizes here too; falls back to normalizeRuleId's throw for a genuinely non-integer
-// id, only reachable on the cannot-verify skip path (RM not installed or app-tree
-// unreadable) where no id was validated.
+// normalizes here too. A non-integer-valued id (fractional 555.9, or non-numeric "abc")
+// is rejected fail-loud rather than passed on: only the cannot-verify skip path (RM not
+// installed or app-tree unreadable) reaches here without the guard having validated the
+// id, and there normalizeRuleId would truncate a fractional Number to a DIFFERENT existing
+// rule via toInteger() -- the exact silent corruption _rmCoerceRuleId exists to prevent.
+// Throwing keeps the guard and the write on the same integer-valued contract on every path.
 private List _rmNormalizeRuleIdsForWrite(Object ids) {
     def idList = (ids instanceof List) ? ids : (ids != null ? [ids] : [])
-    return idList.collect { def c = _rmCoerceRuleId(it); c != null ? c : normalizeRuleId(it) }
+    return idList.collect { id ->
+        def c = _rmCoerceRuleId(id)
+        if (c == null) {
+            throw new IllegalArgumentException("rule target id '${id}' is not an integer-valued rule id. Use hub_list_rules to find valid rule ids. RM is not touched.")
+        }
+        return c
+    }
 }
 
 // Coerce a rule-target id to an integer-valued Integer, or null when it is not
@@ -1476,7 +1492,13 @@ private void _rmValidateRuleTargetExists(String label, Object ids, Set validRule
     def idList = (ids instanceof List) ? ids : (ids != null ? [ids] : [])
     if (!idList) return
     def liveIds = (validRuleIds != null) ? validRuleIds : _rmValidRuleIds()
-    if (liveIds == null) return   // cannot verify (RMUtils absent / tree unreadable) -> skip; an empty set (verified zero rules) falls through and rejects every target
+    if (liveIds == null) {
+        // Cannot verify (RMUtils absent / tree unreadable) -> skip; an empty set (verified
+        // zero rules) falls through and rejects every target. Log the skip like the sibling
+        // device guard so a target that later bakes broken has a diagnostic trail.
+        mcpLog("warn", "rm-native", "_rmValidateRuleTargetExists: ${label} rule-target existence check skipped -- the RM rule list was unverifiable (RMUtils lookup or /hub2/appsList read failed); a bogus rule id could bake a broken reference")
+        return
+    }
     idList.each { id ->
         def idInt = _rmCoerceRuleId(id)
         if (idInt == null) {
