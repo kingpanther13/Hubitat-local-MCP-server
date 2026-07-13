@@ -1655,6 +1655,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v3.3.1** - fix: fail loud on a non-existent target rule id + RM authoring discoverability. PRs: [#349](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/349)
 - **v3.3.0** - feat: opToken response replay + cloud-relay self-budget for slow writes. PRs: [#350](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/350)
 - **v3.2.5** - ci: honor manual re-runs in lane-gate (attempt > 1 overrides the frozen no-op decision); feat: fail-loud non-condition/unconfigurable capabilities + RM authoring discoverability. PRs: [#347](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/347), [#346](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/346)
 - **v3.2.4** - fix: fail-loud parity for silent-drop RM authoring shapes; docs: note the follow-up-label recovery for a release cut without its tag. PRs: [#344](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/344), [#345](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/345)
