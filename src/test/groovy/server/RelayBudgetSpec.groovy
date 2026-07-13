@@ -135,7 +135,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         settingsMap.enableWrite = true
         script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason -> [key: 'snap'] }
         script.metaClass._rmCheckRuleHealth = { Integer id -> [ok: true] }
-        script.metaClass._rmAddAction = { Integer id, Map spec, boolean batch = false ->
+        script.metaClass._rmAddAction = { Integer id, Map spec, boolean batch = false, Set validRuleIds = null ->
             addActionCalls << spec; [success: true]
         }
         script.metaClass._rmClickAppButton = { Integer aId, String name, String stateAttr = null,

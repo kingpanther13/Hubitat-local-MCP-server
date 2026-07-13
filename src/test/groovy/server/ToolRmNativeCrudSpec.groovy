@@ -1,5 +1,6 @@
 package server
 
+import support.RMUtilsMock
 import support.TestLocation
 import support.ToolSpecBase
 import groovy.json.JsonOutput
@@ -45,6 +46,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // given: block; cleanup() resets to the empty default so tests stay isolated.
     @Shared private TestLocation sharedLocation = new TestLocation()
 
+    // Per-test RMUtils stub for the rule-target existence specs. Installed in the
+    // given: block of the specs that need it, uninstalled in cleanup() so the
+    // shared class metaclass mutation cannot leak into unrelated tests.
+    private RMUtilsMock rmUtils
+
     def setupSpec() {
         // Wire location reads to the shared TestLocation stub so code paths that
         // call location.modes (addTrigger Mode, hub_list_modes, toolSetMode) get
@@ -61,6 +67,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // zone; resetting to UTC keeps all other tests deterministic.
         sharedLocation.modes = []
         sharedLocation.timeZone = TimeZone.getTimeZone("UTC")
+        // Undo any RMUtils metaclass mutation from a rule-target existence spec.
+        rmUtils?.uninstall()
+        rmUtils = null
     }
 
     private void enableWrite() {
@@ -2286,6 +2295,735 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "no /installedapp/update/json POST went out (validation runs pre-write)"
         !posts.any { it.path == "/installedapp/update/json" }
+    }
+
+    // Live app-id tree used by the rule-target existence specs below: a Rule Machine parent
+    // (id 21) with one child rule (id 555). _collectLiveAppIds walks data.id at every depth,
+    // so the reachable set is {21, 555}. The parent id 21 is deliberately present-but-not-a-rule
+    // so the "non-rule app id is rejected" spec can target it: it exists in the app tree yet is
+    // absent from the RMUtils rule list, which is what the existence guard resolves against.
+    private String appsListWithRule(int ruleId = 555) {
+        JsonOutput.toJson([apps: [
+            [data: [id: 21, name: "Rule Machine", type: "Rule Machine"], children: [
+                [data: [id: ruleId, name: "Target Rule", type: "Rule-5.1"], children: []]
+            ]]
+        ]])
+    }
+
+    // Seed RMUtils so the rule id 555 is the ONLY existing RM rule; the app tree above adds the
+    // non-rule parent id 21. The existence-safe set the guard resolves is therefore {555}.
+    private void installRuleTargetStubs() {
+        rmUtils = new RMUtilsMock()
+        rmUtils.stubRuleList5 = [[555: 'Target Rule']]
+        rmUtils.install()
+    }
+
+    def "rule-target guard rejects a runRule target that is not an existing rule, before any write"() {
+        given:
+        installRuleTargetStubs()
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "a runRule action targets a rule id absent from the RM rule list"
+        script._rmAddAction(100, [capability: "runRule", ruleIds: [999999]])
+
+        then: "the add is rejected pre-write, naming the quoted missing id and steering to hub_list_rules"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("'999999'")
+        ex.message.contains("does not exist")
+        ex.message.contains("hub_list_rules")
+        ex.message.contains("RM is not touched")
+
+        and: "the refusal is pre-write -- the guard runs ahead of the selectActions page-init, so NO POST of any kind fired"
+        posts.isEmpty()
+    }
+
+    def "rule-target guard rejects an id that is an installed app but NOT an RM rule"() {
+        // The oracle is the RMUtils rule list intersected with the app tree, not the app tree
+        // alone. Id 21 is the RM parent app -- present in /hub2/appsList but not a rule -- so a
+        // runRule pointed at it must be rejected. A guard that trusted app-existence alone would
+        // wave 21 through and bake a dangling reference.
+        given:
+        installRuleTargetStubs()
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "a runRule action targets the RM parent app id (an installed app, not a rule)"
+        script._rmAddAction(100, [capability: "runRule", ruleIds: [21]])
+
+        then: "rejected pre-write naming the quoted non-rule id and steering to hub_list_rules"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("'21'")
+        ex.message.contains("does not exist")
+        ex.message.contains("hub_list_rules")
+        ex.message.contains("RM is not touched")
+
+        and: "no wizard POST fired"
+        posts.isEmpty()
+    }
+
+    def "rule-target guard SKIPS validation when RMUtils is unavailable (write proceeds)"() {
+        // When the valid-rule-id set cannot be determined -- RMUtils absent (Rule Machine never
+        // installed) -- the guard must NOT synthesize a bogus "does not exist" reject; it lets the
+        // write proceed (a genuinely dangling id still bakes broken downstream). Model RM-absent by
+        // throwing a class-resolution error from both getRuleList overloads, then assert execution
+        // advances past the guard into the unmocked write path rather than rejecting.
+        given:
+        rmUtils = new RMUtilsMock()
+        rmUtils.throwOnGetRuleList4 = new NoClassDefFoundError("hubitat.helper.RMUtils")
+        rmUtils.throwOnGetRuleList5 = new NoClassDefFoundError("hubitat.helper.RMUtils")
+        rmUtils.install()
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "a runRule action targets an id that would be rejected IF the set were known"
+        Exception thrownEx = null
+        try {
+            script._rmAddAction(100, [capability: "runRule", ruleIds: [999999]])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "the guard skipped (cannot verify); the write path is entered (a POST fires)"
+        !posts.isEmpty()
+
+        and: "execution runs past the guard into the unmocked hub layer -- NOT the reject message"
+        thrownEx != null
+        !thrownEx.message.contains("does not exist")
+        thrownEx.message.contains("Unstubbed hubInternalGet")
+    }
+
+    def "rule-target guard lets a valid runRule target through into the write path"() {
+        // Positive control / both-ways discriminator for the rejects above: with a target id that
+        // IS an existing RM rule (555), the existence guard must NOT fire -- execution advances
+        // into the action-write path (a POST fires) and then dead-ends on the unmocked doActPage
+        // fetch. A guard that wrongly rejected a valid id would surface the "does not exist"
+        // message here and never POST. Both-ways pending (orchestrator).
+        given:
+        installRuleTargetStubs()
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "a runRule action targets a rule id present in the RM rule list (write path unmocked)"
+        Exception thrownEx = null
+        try {
+            script._rmAddAction(100, [capability: "runRule", ruleIds: [555]])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "the existence guard does not reject; the write path is entered (a POST fires)"
+        !posts.isEmpty()
+
+        and: "execution runs past the guard into the unmocked hub layer, not the reject message"
+        thrownEx != null
+        !thrownEx.message.contains("does not exist")
+        thrownEx.message.contains("Unstubbed hubInternalGet")
+    }
+
+    def "replaceActions with a bogus rule target is rejected BEFORE clearActions wipes the rule"() {
+        // Wipe-then-drop guard: the replaceActions path clears the rule's actions before re-adding
+        // the incoming list, so a bogus rule target must be caught pre-flight (ahead of the clear)
+        // or the rule is destroyed and then the item is dropped. Assert the reject envelope AND
+        // that the clear POST (trashActs submit) never fired -- the existing actions survive.
+        //
+        // The fixture SEEDS one committed action (actType.1) and exposes the selectActions
+        // trashActs schema, so that IF the guard were (regression) moved AFTER the clear, the
+        // clear would emit a real trashActs full-form submit and the final assertion would fail.
+        // With an empty rule fixture, _rmClearActions early-returns with no trashActs POST and
+        // the ordering pin would be VACUOUS (green even with the guard moved).
+        given:
+        installRuleTargetStubs()
+        enableWrite()
+        def selectActionsSchema = [
+            [name: "actType.1", type: "enum", options: ["switchActs"]],
+            [name: "cancelTrash", type: "button"],
+            [name: "trashActs", type: "enum", multiple: true]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true, version: 7,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectActions", title: "Actions", error: null, sections: [[title: "", input: selectActionsSchema]]],
+                settings: ["actType.1": "switchActs"],
+                childApps: []
+            ])
+        }
+        // A committed action is present, so a clear (if it ran) would produce a real trashActs POST.
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "actType.1", value: "switchActs"]]) }
+        hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "replaceActions carries a runRule action pointed at a non-existent rule id"
+        def result = script.toolSetRule([appId: 100,
+            replaceActions: [[capability: "runRule", ruleIds: [999999]]], confirm: true])
+
+        then: "the operation fails loud, naming the quoted missing id and steering to hub_list_rules"
+        result.success == false
+        result.error?.toString()?.contains("'999999'")
+        result.error?.toString()?.contains("does not exist")
+        result.error?.toString()?.contains("hub_list_rules")
+
+        and: "clearActions never ran -- no trashActs submit POST fired, so the seeded action survives"
+        !posts.any { it.path == "/installedapp/update/json" && it.body?.containsKey("settings[trashActs]") }
+    }
+
+    def "_rmNormalizeRuleIdsForWrite canonicalizes decimal-form ids and wraps a scalar"() {
+        expect: "a decimal-form Number is written as the integer-canonical value, not '22624.0'"
+        script._rmNormalizeRuleIdsForWrite([22624.0]) == [22624]
+        script._rmNormalizeRuleIdsForWrite([555, 556]) == [555, 556]
+
+        and: "a scalar id is wrapped into a single-element list (RM rule pickers are multi-select)"
+        script._rmNormalizeRuleIdsForWrite(555) == [555]
+
+        and: "every result element is an Integer, so serialization emits '555' rather than '555.0'"
+        script._rmNormalizeRuleIdsForWrite([555.0]).every { it instanceof Integer }
+    }
+
+    @spock.lang.Unroll
+    def "_rmNormalizeRuleIdsForWrite throws on a non-integer-valued id '#bad' rather than truncating (skip-path write safety)"() {
+        // On the cannot-verify skip path the guard did not validate, so a bad id can reach the
+        // write. It must fail loud here -- NOT truncate a fractional Number (555.9 -> 555, a
+        // different existing rule) the way normalizeRuleId's toInteger() did.
+        when:
+        script._rmNormalizeRuleIdsForWrite([bad])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("is not an integer-valued rule id")
+
+        where:
+        bad << [555.9, "555.9", "abc"]
+    }
+
+    @spock.lang.Unroll
+    def "rule-target guard rejects a bogus target for capability '#cap' before any write"() {
+        // Per-cap coverage: dropping any capability from _rmRuleTargetCaps() would let that cap's
+        // bogus target through -- this catches it. The hoisted guard fires ahead of every
+        // capability-specific field requirement, so no action:/value: is needed to trip it.
+        given:
+        installRuleTargetStubs()
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "the rule-targeting action names a rule id absent from the RM rule list"
+        script._rmAddAction(100, [capability: cap, ruleIds: [999999]])
+
+        then: "rejected pre-write, naming the quoted missing id + hub_list_rules, with no wizard POST"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("'999999'")
+        ex.message.contains("does not exist")
+        ex.message.contains("hub_list_rules")
+        ex.message.contains("RM is not touched")
+        posts.isEmpty()
+
+        where:
+        cap << ["runRule", "cancelTimers", "pauseRule", "privateBoolean"]
+    }
+
+    def "rule-target guard REJECTS every target on a zero-rule hub (empty rule list, none can exist)"() {
+        // A hub with Rule Machine installed but ZERO rules -> _rmValidRuleIds returns an EMPTY
+        // (non-null) set: the rule list was read successfully and has no valid rules, so every
+        // rule target is genuinely invalid and is rejected fail-loud. Pins the empty branch: a
+        // regression to `if (!liveIds) return` here would silently SKIP validation on a zero-rule
+        // hub and let a bogus target bake a broken reference.
+        given:
+        rmUtils = new RMUtilsMock()   // default stubs are empty rule lists: RM present, no rules
+        rmUtils.install()
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "a runRule action targets an id on a hub whose RM rule list is empty"
+        Exception thrownEx = null
+        try {
+            script._rmAddAction(100, [capability: "runRule", ruleIds: [999999]])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "rejected fail-loud before any write -- an empty set is verified-zero, not cannot-verify"
+        thrownEx instanceof IllegalArgumentException
+        thrownEx.message.contains("'999999'")
+        thrownEx.message.contains("does not exist")
+        thrownEx.message.contains("hub_list_rules")
+
+        and: "no write POST fired (pre-write refusal)"
+        posts.isEmpty()
+    }
+
+    def "rule-target guard SKIPS validation when the app tree is unreadable (write proceeds)"() {
+        // The OTHER cannot-verify path: RMUtils returns a rule but the /hub2/appsList cross-check
+        // fetch fails, so _rmValidRuleIds returns null and the guard skips rather than reject.
+        // /hub2/appsList is deliberately left unstubbed so _collectLiveAppIds returns null.
+        given:
+        installRuleTargetStubs()
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        // /hub2/appsList intentionally NOT registered.
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "a runRule action targets an id that WOULD reject if the tree were readable"
+        Exception thrownEx = null
+        try {
+            script._rmAddAction(100, [capability: "runRule", ruleIds: [999999]])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "the guard skipped (tree unreadable == cannot verify); the write path is entered"
+        !posts.isEmpty()
+
+        and: "no existence reject -- execution ran past the guard into the unmocked hub layer"
+        thrownEx != null
+        !thrownEx.message.contains("does not exist")
+        thrownEx.message.contains("Unstubbed hubInternalGet")
+    }
+
+    def "rule-target guard SKIPS validation when a single RMUtils version errors transiently (write proceeds)"() {
+        // One-sided RMUtils failure == cannot-verify, NOT verified-zero. On a 5.x-only hub the v4
+        // getRuleList() legitimately returns [] with no error; a transient v5 getRuleList("5.0")
+        // throw leaves combined empty but the rules are NOT confirmed-zero. _rmValidRuleIds must
+        // return null (skip) here, not the empty set. Requiring BOTH versions to error (the old
+        // && gate) would treat that empty combined as authoritative and false-reject every existing
+        // target on the blip -- reverting Fix to the && gate turns this SKIP into a "does not exist"
+        // reject and this spec RED. The tree IS readable (appsList registered), isolating the
+        // one-sided-error path from the tree-unreadable path.
+        given:
+        rmUtils = new RMUtilsMock()
+        rmUtils.stubRuleList4 = []   // v4: RM 5.x-only hub returns an empty list with no error
+        rmUtils.throwOnGetRuleList5 = new RuntimeException("transient hub error reading 5.0 rule list")
+        rmUtils.install()
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "a runRule action targets an id that WOULD reject if the set were verified-zero"
+        Exception thrownEx = null
+        try {
+            script._rmAddAction(100, [capability: "runRule", ruleIds: [999999]])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "the guard skipped (one-sided error == cannot verify); the write path is entered (a POST fires)"
+        !posts.isEmpty()
+
+        and: "no existence reject -- execution ran past the guard into the unmocked hub layer"
+        thrownEx != null
+        !thrownEx.message.contains("does not exist")
+        thrownEx.message.contains("Unstubbed hubInternalGet")
+    }
+
+    def "patches replaceActions with a bogus rule target is rejected as a per-op failure, before clearActions"() {
+        // The patches path has a DIFFERENT error-capture shape than the top-level replaceActions:
+        // a per-op try/catch turns the pre-flight throw into a {success:false} patch entry rather
+        // than propagating. Assert the per-op failure AND that clearActions never ran.
+        //
+        // Same de-vacuum as the top-level ordering pin: seed a committed action + expose the
+        // selectActions trashActs schema so a guard moved AFTER the clear would emit a real
+        // trashActs POST and trip the final assertion; an empty rule fixture would make it vacuous.
+        given:
+        installRuleTargetStubs()
+        enableWrite()
+        def selectActionsSchema = [
+            [name: "actType.1", type: "enum", options: ["switchActs"]],
+            [name: "cancelTrash", type: "button"],
+            [name: "trashActs", type: "enum", multiple: true]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true, version: 7,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectActions", title: "Actions", error: null, sections: [[title: "", input: selectActionsSchema]]],
+                settings: ["actType.1": "switchActs"],
+                childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "actType.1", value: "switchActs"]]) }
+        hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "a patches batch's replaceActions op targets a non-existent rule id"
+        def result = script.toolSetRule([appId: 100,
+            patches: [[replaceActions: [[capability: "runRule", ruleIds: [999999]]]]], confirm: true])
+
+        then: "the replaceActions patch op reports success:false naming the quoted missing id and hub_list_rules (per-op catch shape)"
+        def rp = (result.patches as List)?.find { it.op == "replaceActions" }
+        rp != null
+        rp.success == false
+        rp.error?.toString()?.contains("'999999'")
+        rp.error?.toString()?.contains("does not exist")
+        rp.error?.toString()?.contains("hub_list_rules")
+
+        and: "clearActions never ran -- no trashActs submit POST fired, so the seeded action survives"
+        !posts.any { it.path == "/installedapp/update/json" && it.body?.containsKey("settings[trashActs]") }
+    }
+
+    @spock.lang.Unroll
+    def "_rmSpecTargetsRule recognizes rule-targeting capability '#cap' (SSOT drop guard)"() {
+        // Enforcing mechanism for the _rmRuleTargetCaps single source of truth: every capability
+        // that writes a rule field must be recognized by the gate predicate. Dropping one from the
+        // SSOT list makes its row here return false and fails this spec (must-catch fixture).
+        expect:
+        script._rmSpecTargetsRule([capability: cap])
+
+        where:
+        cap << ["runRule", "cancelTimers", "pauseRule", "privateBoolean"]
+    }
+
+    def "_rmSpecTargetsRule does not misclassify a non-rule capability or a non-Map"() {
+        expect: "must-not-catch fixtures -- a non-rule cap, a null cap, and non-Map inputs are all false"
+        !script._rmSpecTargetsRule([capability: "switch"])
+        !script._rmSpecTargetsRule([capability: null])
+        !script._rmSpecTargetsRule("not a map")
+        !script._rmSpecTargetsRule(null)
+    }
+
+    def "runRule write path normalizes an integer-valued decimal ruleId to integer-canonical (write-path wiring pin)"() {
+        // End-to-end pin for the write-site _rmNormalizeRuleIdsForWrite wirings
+        // (privateT/ruleAct/stopAct/pauseRule.@N): a decimal-form ruleId that PASSES the guard
+        // (555.0 is integer-valued) must reach the ruleAct.<idx> write as integer-canonical
+        // [555], never [555.0]. Reverting the wiring line to the raw (actionSpec.ruleIds ?:
+        // deviceIds) makes the captured value [555.0] and fails this. Only the field-write layer
+        // (_rmWriteSettingOnPage) is intercepted -- so the captured value is exactly what the
+        // normalization hands to the write, isolated from the doActPage schema walk. The rest of
+        // the scaffolding runs real off registered GETs. Both-ways pending (orchestrator).
+        given:
+        installRuleTargetStubs()
+        hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
+        // Root + editor pages let _rmInitSelectActionsPage tickle actNdx; statusJson (no actions)
+        // makes _rmCollectActionIndices return [] so idx resolves to 1; the doActPage fetch returns
+        // no actType.<N> so the idx re-read leaves idx=1.
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        // Intercept the field-write layer with the full typed signature (the reliable EMC shape used
+        // across this spec); capture (key, value) and route to applied so the walk proceeds.
+        def writes = []
+        script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String key, Object value, List applied, String typeHint = null, List skipped = null, Map cache = null ->
+            writes << [field: key, value: value]
+            applied << key
+        }
+
+        when: "a runRule action targets a valid rule id given as an integer-valued decimal (555.0)"
+        try { script._rmAddAction(100, [capability: "runRule", ruleIds: [555.0]]) }
+        catch (Exception ignored) { /* finalize/verify past the ruleAct write is unstubbed; irrelevant to the pin */ }
+
+        then: "the ruleAct field write carries the integer-canonical id, NOT the decimal form"
+        def ruleActWrite = writes.find { it.field?.toString()?.startsWith("ruleAct.") }
+        ruleActWrite != null
+        ruleActWrite.value == [555]
+        ruleActWrite.value.every { it instanceof Integer }
+        !ruleActWrite.value.toString().contains("555.0")
+    }
+
+    @spock.lang.Unroll
+    def "#cap write path normalizes an integer-valued decimal ruleId to integer-canonical (#fieldPrefix wiring pin)"() {
+        // Sibling of the runRule wiring pin for the other three rule-target caps: each writes its
+        // rule id through a DISTINCT field (privateBoolean -> privateT.<N>, cancelTimers ->
+        // stopAct.<N>, pauseRule -> pauseRule.<N>), each wired to _rmNormalizeRuleIdsForWrite. A
+        // decimal-form id that PASSES the guard (555.0 is integer-valued) must reach that field as
+        // integer-canonical [555], never [555.0]. Reverting any one cap's wiring line to the raw
+        // (actionSpec.ruleIds ?: deviceIds) captures [555.0] and fails that row. Only the field-write
+        // layer is intercepted, isolating the captured value from the doActPage schema walk.
+        // Both-ways pending (orchestrator).
+        given:
+        installRuleTargetStubs()
+        hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        def writes = []
+        script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String key, Object value, List applied, String typeHint = null, List skipped = null, Map cache = null ->
+            writes << [field: key, value: value]
+            applied << key
+        }
+
+        when: "the rule-targeting action names a valid rule id given as an integer-valued decimal (555.0)"
+        try { script._rmAddAction(100, actionSpec) }
+        catch (Exception ignored) { /* finalize/verify past the field write is unstubbed; irrelevant to the pin */ }
+
+        then: "the cap's rule field write carries the integer-canonical id, NOT the decimal form"
+        def fieldWrite = writes.find { it.field?.toString()?.startsWith(fieldPrefix) }
+        fieldWrite != null
+        fieldWrite.value == [555]
+        fieldWrite.value.every { it instanceof Integer }
+        !fieldWrite.value.toString().contains("555.0")
+
+        where:
+        cap             | fieldPrefix   | actionSpec
+        "privateBoolean"| "privateT."   | [capability: "privateBoolean", ruleIds: [555.0]]
+        "cancelTimers"  | "stopAct."    | [capability: "cancelTimers", ruleIds: [555.0]]
+        "pauseRule"     | "pauseRule."  | [capability: "pauseRule", action: "pause", ruleIds: [555.0]]
+    }
+
+    @spock.lang.Unroll
+    def "rule-target guard rejects a non-integer-valued ruleId '#bad' (idInt==null throw branch)"() {
+        // Pins the "is not a valid numeric rule id" branch: a String that cannot coerce to an
+        // integer-valued id -- non-numeric ("abc"), OR a fractional decimal string ("555.9", which
+        // BigDecimal parses but stripTrailingZeros leaves with scale>0) -- trips idInt==null and
+        // rejects with the numeric-id message, distinct from the does-not-exist message. No
+        // deviceIds, so the device-id guard skips and the rule guard is the only gate.
+        given:
+        installRuleTargetStubs()
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "a runRule action targets a non-integer-valued id"
+        Exception ex = null
+        try { script._rmAddAction(100, [capability: "runRule", ruleIds: [bad]]) }
+        catch (Exception e) { ex = e }
+
+        then: "rejected pre-write with the not-a-valid-numeric-id message, quoting the bad id and steering to hub_list_rules"
+        ex instanceof IllegalArgumentException
+        ex.message.contains("'${bad}'")
+        ex.message.contains("is not a valid numeric rule id")
+        ex.message.contains("hub_list_rules")
+        ex.message.contains("RM is not touched")
+        posts.isEmpty()
+
+        where:
+        bad << ["abc", "555.9"]
+    }
+
+    def "rule-target guard rejects a fractional Number ruleId but accepts an integer-valued decimal (both-ways for the fractional guard)"() {
+        // The fractional-id tightening: 555.9 must be REJECTED as not-a-valid-numeric-id (rather
+        // than silently truncated to the existing rule 555), while 555.0 is an integer-valued
+        // decimal and passes the guard into the write path. Reverting the Number branch to a bare
+        // .intValue() would ACCEPT 555.9 (truncate to 555) and this spec's reject half fails.
+        given:
+        installRuleTargetStubs()
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "a fractional Number ruleId (555.9) whose truncation WOULD hit an existing rule"
+        script._rmAddAction(100, [capability: "runRule", ruleIds: [555.9]])
+
+        then: "rejected as not a valid numeric rule id -- NOT silently truncated to 555"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("'555.9'")
+        ex.message.contains("is not a valid numeric rule id")
+        ex.message.contains("RM is not touched")
+        posts.isEmpty()
+
+        when: "an integer-valued decimal ruleId (555.0) that resolves to the existing rule 555"
+        Exception acceptEx = null
+        try { script._rmAddAction(100, [capability: "runRule", ruleIds: [555.0]]) }
+        catch (Exception e) { acceptEx = e }
+
+        then: "the guard does NOT reject -- execution advances into the unmocked write path"
+        !posts.isEmpty()
+        acceptEx != null
+        !acceptEx.message.contains("does not exist")
+        !acceptEx.message.contains("is not a valid numeric rule id")
+        acceptEx.message.contains("Unstubbed hubInternalGet")
+    }
+
+    @spock.lang.Unroll
+    def "rule-target guard accepts a String/whitespace ruleId '#raw' via the trim+coerce path"() {
+        // Exercises the String coercion branch, which parses via BigDecimal so an integer-valued
+        // decimal string ("555.0", as JSON coercion can produce) is accepted alongside "555" and
+        // " 555 ". All coerce to the existing rule 555 and pass the guard into the write path
+        // (which then dead-ends on the unmocked selectActions fetch). A guard that failed to trim,
+        // or that rejected a decimal-formatted integer string, would refuse these up front.
+        given:
+        installRuleTargetStubs()
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "a runRule action targets the existing rule via a String id"
+        Exception thrownEx = null
+        try { script._rmAddAction(100, [capability: "runRule", ruleIds: [raw]]) }
+        catch (Exception e) { thrownEx = e }
+
+        then: "the guard accepts it (no reject) and execution runs past into the unmocked write path"
+        !posts.isEmpty()
+        thrownEx != null
+        !thrownEx.message.contains("does not exist")
+        !thrownEx.message.contains("is not a valid numeric rule id")
+        thrownEx.message.contains("Unstubbed hubInternalGet")
+
+        where:
+        raw << ["555", " 555 ", "555.0"]
+    }
+
+    def "rule-target guard validates the deviceIds fallback when ruleIds is absent (pre-existing ?: deviceIds behavior)"() {
+        // Pins the `actionSpec.ruleIds ?: deviceIds` fallback: a rule-target cap with NO ruleIds
+        // routes its deviceIds through the RULE existence guard. Id 999999 is stubbed to be a REAL
+        // device (so the device-id guard at the top passes it), yet the rule guard rejects it
+        // because it is not an RM rule -- proving the fallback is validated against the rule set,
+        // not the device set. Removing the `?: deviceIds` fallback would leave the guard with a
+        // null target (skip), the device guard already passed, and no reject would fire.
+        given:
+        installRuleTargetStubs()
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
+        // 999999 exists as a DEVICE so the device-id guard (which runs first) does not reject it.
+        hubGet.register('/device/fullJson/999999') { params -> '{"id":"999999","name":"Not A Rule"}' }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "a runRule action supplies deviceIds (no ruleIds) pointing at a real device that is not a rule"
+        script._rmAddAction(100, [capability: "runRule", deviceIds: [999999]])
+
+        then: "the RULE guard rejects the deviceIds fallback -- distinct rule-target vocabulary, not the device message"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("target rule id")
+        ex.message.contains("'999999'")
+        ex.message.contains("does not exist")
+        ex.message.contains("hub_list_rules")
+        posts.isEmpty()
+    }
+
+    def "top-level addActions bulk edit rejects a bogus rule target as a per-item failure"() {
+        // The plural addActions (edit-path bulk) resolves the valid-rule-id set once and threads
+        // it to each _rmAddAction; a bogus target throws inside the per-item try/catch and surfaces
+        // as a {success:false} entry in actions[] (not a propagated top-level throw).
+        given:
+        installRuleTargetStubs()
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "an addActions batch carries a runRule action pointed at a non-existent rule id"
+        def result = script.toolSetRule([appId: 100,
+            addActions: [[capability: "runRule", ruleIds: [999999]]], confirm: true])
+
+        then: "the bulk envelope is not clean and the per-item action reports the reject"
+        result.success == false
+        def ar = (result.actions as List)?.getAt(0)
+        ar?.success == false
+        ar?.error?.toString()?.contains("'999999'")
+        ar?.error?.toString()?.contains("does not exist")
+        ar?.error?.toString()?.contains("hub_list_rules")
+    }
+
+    def "create arm rejects a bogus rule target in actions[] via the shared threaded guard"() {
+        // The CREATE path (_createNativeAppShell) resolves the valid-rule-id set once and threads
+        // it to every actions[] item's _rmAddAction, exactly like the edit bulk path. A bogus rule
+        // target surfaces as a per-item {success:false} in actions[] with partialActions flagged,
+        // so the create is not reported clean. Drives the REAL shell (not a stub) so the create
+        // arm's guard wiring is exercised end-to-end.
+        given:
+        installRuleTargetStubs()
+        enableWrite()
+        // Parent discovery (id 21) AND the valid-rule-id set (rule 555) both read /hub2/appsList.
+        hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
+        // Shell create: the child-create GET returns a 302 whose location carries the new app id.
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/installedapp/configure/976", data: ""]
+        }
+        hubGet.register('/installedapp/configure/json/976') { params ->
+            ruleConfigJson(976, "", [[name: "origLabel", type: "text"]])
+        }
+        hubGet.register('/installedapp/statusJson/976') { params -> statusJson(976) }
+        hubGet.register('/installedapp/configure/json/976/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 976, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [[name: "useST", type: "bool"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/976/selectActions') { params ->
+            ruleConfigJson(976, "r", [[name: "N", type: "button"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "the create shell is driven with an actions[] entry targeting a non-existent rule id"
+        def result = script._createNativeAppShell([
+            appType: "rule_machine",
+            name: "BAT-create-bogus-rule-target",
+            actions: [[capability: "runRule", ruleIds: [999999]]],
+            confirm: true
+        ])
+
+        then: "the action was rejected per-item (guard threaded on the create arm), so the create is not clean"
+        def ar = (result.actions as List)?.getAt(0)
+        ar?.success == false
+        ar?.error?.toString()?.contains("'999999'")
+        ar?.error?.toString()?.contains("does not exist")
+        ar?.error?.toString()?.contains("hub_list_rules")
+
+        and: "the create is flagged partial/not-clean rather than a false-clean success"
+        result.partialActions == [1]
+        result.success == false
     }
 
     // Fail-loud shape validation. The THROWING cases reject before any hub round-trip, so
