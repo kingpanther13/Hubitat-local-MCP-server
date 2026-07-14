@@ -9285,6 +9285,37 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         parsed.appData["100"].appSettings[0].value == '["Events"]'
     }
 
+    def "hub_export_native_app extraction failure names the Required Expression as the known cause"() {
+        given:
+        enableWrite()
+        // A rule with a Required Expression is the known appCloner-export failure
+        // case: the form refresh is well-formed JSON but renders NO downloadable
+        // filecontent, so extraction returns null. The error must name the Required
+        // Expression + a workaround rather than only "wire format may have changed".
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Source Rule", [], 21) }
+        hubGet.register('/apps/api/4242/app/100') { params -> '<html>source-context</html>' }
+        hubGet.register('/installedapp/configure/json/4242/main') { params -> clonerPageStateWithIdx("importRule", 0) }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/apps/api/4242/app/100", data: ""]
+        }
+        def refreshResp = JsonOutput.toJson([configPage: [name: "main", sections: [[input: []]]]])
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
+            [status: 200, location: null, data: refreshResp]
+        }
+
+        when:
+        script.toolExportNativeApp([sourceAppId: 100])
+
+        then: "the throw names the Required Expression as the likely cause + a workaround"
+        def e = thrown(IllegalStateException)
+        e.message.contains("Required Expression")
+        e.message.contains("replaceRequiredExpression")
+        e.message.contains("appCloner export")
+    }
+
     def "hub_import_native_app refuses parentHintAppId that has no parent (no diff target -> would silently false-fail)"() {
         given:
         enableWrite()
@@ -20017,6 +20048,152 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "the loop advanced across both events (one anotherWait between two hasAll commits)"
         clicks.count { it == "anotherWait" } == 1
         clicks.count { it == "hasAll" } == 2
+    }
+
+    // ---------- waitEvents at an OFFSET event slot (not tCapab-1) ----------
+    //
+    // The first Wait-Event capability field does NOT reliably render at tCapab-1: a Required
+    // Expression (and/or prior actions) advances an internal wizard counter, so the slot may
+    // render at tCapab-2 (etc.). The slot number is NOT predictable (not the action index) --
+    // it is read from whatever tCapab-<N> the wizard actually exposes. The pre-fix code
+    // hardcoded tCapab-1 and threw ("tCapab-1 not in doActPage schema") whenever the slot was
+    // offset, while the identical action succeeded when the slot happened to be tCapab-1. Here
+    // the schema exposes the event field at the offset slot tCapab-2 (with no tCapab-1).
+    def "waitEvents writes the offset event slot tCapab-2 detected from the schema, not throwing on tCapab-1"() {
+        given:
+        enableWrite()
+        // The action opener lands at index 3 (actType.3) but the first event field renders at
+        // tCapab-2 -- the slot number is NOT the action index. The fix reads the exposed
+        // tCapab-<N> from the schema; a regression that assumed tCapab-<idx> would look for
+        // tCapab-3 (absent) and throw, and the pre-fix tCapab-1 assumption also fails here.
+        def doActInputs = [
+            [name: "actType.3", type: "enum", options: ["delayActs": "Delay, Wait, Exit or Comment"]],
+            [name: "actSubType.3", type: "enum", options: ["getWaitEvents": "Wait for Events"]],
+            [name: "tCapab-2", type: "enum", options: ["Switch", "Motion", "Contact"]],
+            [name: "tDev-2", type: "enum", multiple: true, options: ["8": "Sw1"]],
+            [name: "tstate-2", type: "enum", options: ["on": "on", "off": "off"]],
+            [name: "hasAll", type: "button"],
+            [name: "anotherWait", type: "button"],
+            [name: "doneWaits", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", doActInputs) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"Sw1"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def writes = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            body?.each { k, v ->
+                def ks = k?.toString()
+                if (ks?.startsWith("settings[")) writes << [key: ks, value: v?.toString()]
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when: "a waitEvents action is added when the first event slot renders at the offset tCapab-2"
+        script._rmAddAction(100, [capability: "waitEvents", events: [[capability: "Switch", deviceIds: [8], state: "on"]]])
+
+        then: "the event capability landed on the OFFSET slot tCapab-2 (base read from schema, not assumed 1)"
+        writes.any { it.key == "settings[tCapab-2]" && it.value == "Switch" }
+
+        and: "the event state landed on the matching offset slot tstate-2"
+        writes.any { it.key == "settings[tstate-2]" && it.value == "on" }
+
+        and: "the pre-fix hardcoded slot tCapab-1 (absent from this schema) was never written"
+        !writes.any { it.key == "settings[tCapab-1]" }
+    }
+
+    def "waitEvents with TWO events at an offset base writes event 2 on the NEXT slot tCapab-3, not tCapab-2 or evIdx+1"() {
+        // Both-ways for the `baseN + evIdx` offset term: the single-event offset test only
+        // exercises evIdx 0 (n == baseN), where a regression to `evIdx + 1` or a dropped evIdx
+        // term is indistinguishable. Here the base slot is offset (tCapab-2), so event 1 MUST
+        // land on tCapab-3. A regression to `evIdx + 1` puts event 0 on the absent tCapab-1
+        // (throws); a regression that drops the evIdx term puts event 1 back on tCapab-2
+        // (overwriting event 0). Either fails the tCapab-3 assertion below.
+        given:
+        enableWrite()
+        script.metaClass.pauseExecution = { long ms -> }
+        def doActInputs = [
+            [name: "actType.3", type: "enum", options: ["delayActs": "Delay, Wait, Exit or Comment"]],
+            [name: "actSubType.3", type: "enum", options: ["getWaitEvents": "Wait for Events"]],
+            [name: "tCapab-2", type: "enum", options: ["Switch", "Motion"]],
+            [name: "tDev-2", type: "enum", multiple: true, options: ["8": "D8"]],
+            [name: "tstate-2", type: "enum", options: ["on": "on", "off": "off"]],
+            [name: "tCapab-3", type: "enum", options: ["Switch", "Motion"]],
+            [name: "tDev-3", type: "enum", multiple: true, options: ["8": "D8"]],
+            [name: "tstate-3", type: "enum", options: ["active": "active", "inactive": "inactive"]],
+            [name: "hasAll", type: "button"],
+            [name: "anotherWait", type: "button"],
+            [name: "doneWaits", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", doActInputs) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"D8"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def writes = []
+        def clicks = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn") clicks << body?.name?.toString()
+            body?.each { k, v ->
+                def ks = k?.toString()
+                if (ks?.startsWith("settings[")) writes << [key: ks, value: v?.toString()]
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when: "a two-event waitEvents is added at an offset base slot (tCapab-2)"
+        script._rmAddAction(100, [capability: "waitEvents", events: [
+            [capability: "Switch", deviceIds: [8], state: "on"],
+            [capability: "Motion", deviceIds: [8], state: "active"]
+        ]])
+
+        then: "event 0 landed on the base slot tCapab-2 / tstate-2"
+        writes.any { it.key == "settings[tCapab-2]" && it.value == "Switch" }
+        writes.any { it.key == "settings[tstate-2]" && it.value == "on" }
+
+        and: "event 1 landed on the NEXT slot tCapab-3 / tstate-3 (baseN + evIdx), NOT tCapab-2 or tCapab-1"
+        writes.any { it.key == "settings[tCapab-3]" && it.value == "Motion" }
+        writes.any { it.key == "settings[tstate-3]" && it.value == "active" }
+        !writes.any { it.key == "settings[tCapab-1]" }
+
+        and: "the loop advanced across both events (one anotherWait between two hasAll commits)"
+        clicks.count { it == "anotherWait" } == 1
+        clicks.count { it == "hasAll" } == 2
+    }
+
+    def "waitEvents throws loud when no tCapab-<N> event slot ever appears in the schema"() {
+        // Both-ways for base-detection retry exhaustion: if the getWaitEvents subtype write never
+        // exposes a tCapab-<N> field, the walker must fail loud (not silently proceed / NPE on a
+        // null baseN). The schema below carries the action opener but no tCapab slot at all.
+        given:
+        enableWrite()
+        script.metaClass.pauseExecution = { long ms -> }
+        def doActInputs = [
+            [name: "actType.3", type: "enum", options: ["delayActs": "Delay, Wait, Exit or Comment"]],
+            [name: "actSubType.3", type: "enum", options: ["getWaitEvents": "Wait for Events"]],
+            [name: "hasAll", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", doActInputs) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+
+        when: "a waitEvents action is added but the wizard never exposes a tCapab-<N> slot"
+        script._rmAddAction(100, [capability: "waitEvents", events: [[capability: "Switch", deviceIds: [8], state: "on"]]])
+
+        then: "the walker fails loud rather than silently proceeding"
+        def ex = thrown(IllegalStateException)
+        ex.message.contains("no tCapab-<N> event-capability slot appeared")
     }
 
     def "waitEvents unknown capability fails loud with a did-you-mean drawn from the live tCapab options"() {

@@ -404,10 +404,23 @@ def toolExportNativeApp(args) {
         if (!jsonContent) {
             // Distinguish an unreadable response body (the struct read path returns
             // data:null on a 2xx when the body read fails mid-stream) from a genuine
-            // format change, so the operator isn't sent chasing the wrong root cause.
-            def reason = (refreshResp?.data == null)
-                ? "the cloner response body was empty/unreadable (status ${refreshResp?.status})"
-                : "no JSON content could be extracted (looked for configPage.sections[].input[].filecontent) — wire format may have changed"
+            // no-content case, so the operator isn't sent chasing the wrong root cause.
+            def reason
+            if (refreshResp?.data == null) {
+                reason = "the cloner response body was empty/unreadable (status ${refreshResp?.status})"
+            } else {
+                // A consistent no-content extraction here is a KNOWN failure for a source
+                // rule that has a Required Expression: appCloner does not render downloadable
+                // export content for such rules, so there is no filecontent to extract. Name
+                // that cause and a workaround up front (it is the common trigger), then fall
+                // back to the generic wire-format explanation for rules without one.
+                reason = "no JSON content could be extracted (looked for configPage.sections[].input[].filecontent). " +
+                    "Known cause: if the source rule has a Required Expression, appCloner export currently fails for it -- " +
+                    "delete the Required Expression in the Rule Machine UI, export, then re-add it (no MCP tool removes a " +
+                    "Required Expression: replaceRequiredExpression only swaps one for another); or edit the rule in place " +
+                    "via hub_set_rule instead of export/import. " +
+                    "If the rule has NO Required Expression, the cloner wire format may have changed"
+            }
             throw new IllegalStateException("appCloner export fired but ${reason} for cloner ${clonerAppId}")
         }
 
