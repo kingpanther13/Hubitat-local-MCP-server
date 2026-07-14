@@ -233,6 +233,58 @@ class RelayBudgetSpec extends ToolSpecBase {
         !JsonOutput.toJson(result).contains('__reqT0')
     }
 
+    def "a patch op with a large inner addTriggers list pauses MID-op, rewriting the op into patchesRemaining"() {
+        given:
+        def addActionCalls = []
+        def clicks = []
+        installPatchStubs(addActionCalls, clicks, true)
+
+        when: 'ONE patch op carrying three inner addTriggers (first is a non-Map, recorded inline -- _rmAddTrigger is private/unstubbable); budget already blown'
+        def result = script._applyNativeAppEdit([appId: 1, confirm: true, __reqT0: 2000L, patches: [
+            [addTriggers: [
+                'not-a-map',
+                [capability: 'Switch', state: 'off', deviceIds: [9]],
+                [capability: 'Motion', state: 'active', deviceIds: [10]],
+            ]],
+        ]])
+
+        then: 'the budget paused after the first inner trigger, before the second'
+        result.status == 'in_progress'
+
+        and: 'patchesRemaining leads with the SAME op rewritten to its two unprocessed inner triggers'
+        result.patchesRemaining instanceof List
+        result.patchesRemaining.size() == 1
+        result.patchesRemaining[0].addTriggers instanceof List
+        result.patchesRemaining[0].addTriggers.size() == 2
+        result.patchesRemaining[0].addTriggers[0].state == 'off'
+
+        and: 'the op is recorded partial in patchResults and no updateRule fired'
+        result.patchResults.find { it.op == 'addTriggers' }?.partial == true
+        !clicks.contains('updateRule')
+        !JsonOutput.toJson(result).contains('__reqT0')
+    }
+
+    def "_patchesPauseResult surfaces a failed op as outer success:false + partial, not masked"() {
+        when: 'a pause built from patch results where one op failed'
+        def result = script._patchesPauseResult(5, [key: 'snap'],
+            [[success: true, op: 'addAction'], [success: false, op: 'addAction', error: 'boom']],
+            [[addAction: [a: 9]]])
+
+        then: 'the outer envelope reports the failure, not a clean in_progress success'
+        result.status == 'in_progress'
+        result.success == false
+        result.partial == true
+        result.appId == 5
+        result.patchesRemaining.size() == 1
+
+        and: 'an all-clean pause instead reports success:true / partial:false'
+        def clean = script._patchesPauseResult(5, [key: 'snap'],
+            [[success: true, op: 'addAction'], [success: true, op: 'addAction']],
+            [[addAction: [a: 9]]])
+        clean.success == true
+        clean.partial == false
+    }
+
     // ---------------- _applyNativeAppEdit bulk addTriggers[]/addActions[] checkpoint ----------------
 
     private void installBulkStubs(List triggerCalls, List actionCalls, List clicks, boolean pause) {

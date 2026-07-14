@@ -3390,17 +3390,16 @@ class TestRunner:
 
     @test("native_apps")
     def test_set_rule_waitevents_on_offset_action_slot(self) -> None:
-        # The event-row slot tracks the action's OWN index (a high-water mark), so when a
-        # waitEvents action is not the first in the rule the first Wait-Event capability
-        # field renders at an offset slot (tCapab-2, not tCapab-1). The event walker reads
-        # the base slot from the schema; pre-fix it hardcoded tCapab-1 and threw ("tCapab-1
-        # not in doActPage schema") whenever the action index was > 1. Here a seed log action
-        # is what bumps the index (the DRIVER of the offset); a Required Expression is also
-        # committed because that is the real-world rule shape that first surfaced this, but
-        # the RE is incidental -- the seed action alone produces the offset. Its own small
-        # throwaway rule (a Required Expression conflicts with any other per-concern rule's
-        # state), deleted in the finally; strict so a relay-dropped response re-runs on a
-        # fresh rule rather than skipping the wire assertion.
+        # The first Wait-Event capability field does NOT reliably render at tCapab-1, and its
+        # slot number is NOT the action index -- a Required Expression (and/or prior actions)
+        # advances an internal wizard counter with no predictable relationship to actType.<N>,
+        # so the field can render at tCapab-2 (etc.). The event walker reads the exposed base
+        # slot from the schema; pre-fix it hardcoded tCapab-1 and threw ("tCapab-1 not in
+        # doActPage schema") whenever the slot was offset. Here a seed log action plus a
+        # Required Expression put the waitEvents past the first slot. Its own small throwaway
+        # rule (a Required Expression conflicts with any other per-concern rule's state),
+        # deleted in the finally; strict so a relay-dropped response re-runs on a fresh rule
+        # rather than skipping the wire assertion.
         switch_id = int(self.get_test_switch_id())
         app_id = self._create_native_rule("WaitEvtOffset", {
             "addActions": [{"capability": "log", "message": "E2E waitEvents offset base"}],
@@ -3956,10 +3955,10 @@ class TestRunner:
         interruptions (issue #348). Two interruption classes are handled, both leaving the
         hub committed:
           - status=='in_progress' (the server's own relay budget paused the loop before the
-            ceiling): re-issue with the handed-back remaining work (patchesRemaining /
-            stepsRemaining, inheriting the reported page). A resume call carries a FRESH token
-            -- reusing the paused op's token would replay its partial in_progress result via
-            dedup instead of continuing.
+            ceiling): re-issue with the handed-back remaining work (patchesRemaining, the bulk
+            addTriggersRemaining/addActionsRemaining lists, or stepsRemaining inheriting the
+            reported page). A resume call carries a FRESH token -- reusing the paused op's token
+            would replay its partial in_progress result via dedup instead of continuing.
           - a relay 504 (response lost): poll hub_get_op_result for THIS iteration's token
             (raw _send, out of op_timings) and adopt the buffered result; the loop then decides
             whether it is terminal or another in_progress leg.
@@ -3987,6 +3986,14 @@ class TestRunner:
             remaining = res.get("patchesRemaining")
             if remaining is not None:
                 work = {"appId": app_id, "confirm": True, "patches": remaining}
+            elif res.get("addTriggersRemaining") is not None or res.get("addActionsRemaining") is not None:
+                # Bulk addTriggers/addActions pause: re-issue with the handed-back remaining lists
+                # (a pause emits both keys; one may be empty -- pass only the non-empty side).
+                work = {"appId": app_id, "confirm": True}
+                if res.get("addTriggersRemaining"):
+                    work["addTriggers"] = res["addTriggersRemaining"]
+                if res.get("addActionsRemaining"):
+                    work["addActions"] = res["addActionsRemaining"]
             else:
                 steps = res.get("stepsRemaining") or ((res.get("walkStep") or {}).get("stepsRemaining"))
                 drive = {"operation": "drive", "steps": steps}
@@ -4814,6 +4821,37 @@ class TestRunner:
             switch_action_keys = [k for k in settings if str(k).startswith("onOffSwitch.")]
             assert len(switch_action_keys) >= 2, \
                 f"expected 2 committed switch actions after recovery, saw {switch_action_keys}: {sorted(settings)}"
+            self._assert_rule_healthy(app_id)
+        finally:
+            self._delete_native(app_id)
+
+    @test("op_replay")
+    def test_op_replay_bulk_addactions_completes_via_recovery(self) -> None:
+        # A slow tokened BULK addTriggers/addActions edit over the cloud relay must converge to a
+        # committed success via _call_with_op_recovery, which now understands the bulk pause shape
+        # (addTriggersRemaining/addActionsRemaining) alongside patches/steps -- before, the bulk
+        # shape fell into the walkStep branch with steps=None and never converged. Kept SMALL
+        # (a trigger + 2 addActions) per the per-concern contract.
+        sw = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("OpReplayBulk")
+        try:
+            token = f"bat.opreplay.bulk.{app_id}"
+            result = self._call_with_op_recovery({"appId": app_id,
+                "addTriggers": [{"capability": "Switch", "deviceIds": [sw], "state": "on"}],
+                "addActions": [
+                    {"capability": "switch", "action": "on", "deviceIds": [sw]},
+                    {"capability": "switch", "action": "off", "deviceIds": [sw]},
+                ]}, token)
+            assert result.get("success") is not False, \
+                f"tokened bulk addTriggers/addActions edit did not converge to success: {result}"
+            # Both actions committed: two onOffSwitch.<N> device-picker slots regardless of whether
+            # a pause split the batch.
+            cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}})
+            settings = cfg.get("settings") or {}
+            switch_action_keys = [k for k in settings if str(k).startswith("onOffSwitch.")]
+            assert len(switch_action_keys) >= 2, \
+                f"expected 2 committed switch actions after bulk recovery, saw {switch_action_keys}: {sorted(settings)}"
             self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)

@@ -12593,8 +12593,9 @@ private Map _rmReplaceRequiredExpression(Integer appId, Map exprSpec, Object bac
 // Strip the internal relay-budget clock (__reqT0) from a spec before handing it back to
 // the caller in an in_progress pause. The caller re-issues the spec verbatim on resume, and
 // a leaked __reqT0 would poison the resume call's elapsed-time budget calculation. Single
-// source of truth for the walkStep-drive, patches, and bulk pause paths (k.toString() guards
-// the GString-vs-String key trap for an interpolated remaining-item key).
+// source of truth for the walkStep-drive, patches, and bulk pause paths. The k?.toString()
+// comparison is null-safe and normalizes a GString key to a plain String before matching, so
+// the strip holds regardless of how a key was constructed.
 private _stripInternalClock(rem) {
     return (rem instanceof Map) ? ((Map) rem).findAll { k, v -> k?.toString() != "__reqT0" } : rem
 }
@@ -13983,9 +13984,10 @@ def _applyNativeAppEdit(args) {
             // not masked. On a pause, hand back the unprocessed items and return BEFORE the trailing
             // updateRule below so it does NOT fire -- the items so far are committed at the settings
             // level but not yet baked; the resume call's own trailing updateRule bakes them once the
-            // remaining items complete. Sibling pattern: the walkStep-drive step loop and the
-            // patches op loop (both gate on all-clean because their pause is defined as a clean
-            // partial; the bulk path instead surfaces the failure in the pause envelope).
+            // remaining items complete. Sibling pattern: the patches op loop stops the same way
+            // (regardless of a failed op, surfacing it in the pause envelope); only the
+            // walkStep-drive step loop gates on all-clean, because its pause is defined as a clean
+            // partial.
             int ti = -1
             for (def spec : trigList) {
                 ti++

@@ -20106,6 +20106,96 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !writes.any { it.key == "settings[tCapab-1]" }
     }
 
+    def "waitEvents with TWO events at an offset base writes event 2 on the NEXT slot tCapab-3, not tCapab-2 or evIdx+1"() {
+        // Both-ways for the `baseN + evIdx` offset term: the single-event offset test only
+        // exercises evIdx 0 (n == baseN), where a regression to `evIdx + 1` or a dropped evIdx
+        // term is indistinguishable. Here the base slot is offset (tCapab-2), so event 1 MUST
+        // land on tCapab-3. A regression to `evIdx + 1` puts event 0 on the absent tCapab-1
+        // (throws); a regression that drops the evIdx term puts event 1 back on tCapab-2
+        // (overwriting event 0). Either fails the tCapab-3 assertion below.
+        given:
+        enableWrite()
+        script.metaClass.pauseExecution = { long ms -> }
+        def doActInputs = [
+            [name: "actType.3", type: "enum", options: ["delayActs": "Delay, Wait, Exit or Comment"]],
+            [name: "actSubType.3", type: "enum", options: ["getWaitEvents": "Wait for Events"]],
+            [name: "tCapab-2", type: "enum", options: ["Switch", "Motion"]],
+            [name: "tDev-2", type: "enum", multiple: true, options: ["8": "D8"]],
+            [name: "tstate-2", type: "enum", options: ["on": "on", "off": "off"]],
+            [name: "tCapab-3", type: "enum", options: ["Switch", "Motion"]],
+            [name: "tDev-3", type: "enum", multiple: true, options: ["8": "D8"]],
+            [name: "tstate-3", type: "enum", options: ["active": "active", "inactive": "inactive"]],
+            [name: "hasAll", type: "button"],
+            [name: "anotherWait", type: "button"],
+            [name: "doneWaits", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", doActInputs) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"D8"}' }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        def writes = []
+        def clicks = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn") clicks << body?.name?.toString()
+            body?.each { k, v ->
+                def ks = k?.toString()
+                if (ks?.startsWith("settings[")) writes << [key: ks, value: v?.toString()]
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when: "a two-event waitEvents is added at an offset base slot (tCapab-2)"
+        script._rmAddAction(100, [capability: "waitEvents", events: [
+            [capability: "Switch", deviceIds: [8], state: "on"],
+            [capability: "Motion", deviceIds: [8], state: "active"]
+        ]])
+
+        then: "event 0 landed on the base slot tCapab-2 / tstate-2"
+        writes.any { it.key == "settings[tCapab-2]" && it.value == "Switch" }
+        writes.any { it.key == "settings[tstate-2]" && it.value == "on" }
+
+        and: "event 1 landed on the NEXT slot tCapab-3 / tstate-3 (baseN + evIdx), NOT tCapab-2 or tCapab-1"
+        writes.any { it.key == "settings[tCapab-3]" && it.value == "Motion" }
+        writes.any { it.key == "settings[tstate-3]" && it.value == "active" }
+        !writes.any { it.key == "settings[tCapab-1]" }
+
+        and: "the loop advanced across both events (one anotherWait between two hasAll commits)"
+        clicks.count { it == "anotherWait" } == 1
+        clicks.count { it == "hasAll" } == 2
+    }
+
+    def "waitEvents throws loud when no tCapab-<N> event slot ever appears in the schema"() {
+        // Both-ways for base-detection retry exhaustion: if the getWaitEvents subtype write never
+        // exposes a tCapab-<N> field, the walker must fail loud (not silently proceed / NPE on a
+        // null baseN). The schema below carries the action opener but no tCapab slot at all.
+        given:
+        enableWrite()
+        script.metaClass.pauseExecution = { long ms -> }
+        def doActInputs = [
+            [name: "actType.3", type: "enum", options: ["delayActs": "Delay, Wait, Exit or Comment"]],
+            [name: "actSubType.3", type: "enum", options: ["getWaitEvents": "Wait for Events"]],
+            [name: "hasAll", type: "button"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", [[name: "N", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", doActInputs) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+
+        when: "a waitEvents action is added but the wizard never exposes a tCapab-<N> slot"
+        script._rmAddAction(100, [capability: "waitEvents", events: [[capability: "Switch", deviceIds: [8], state: "on"]]])
+
+        then: "the walker fails loud rather than silently proceeding"
+        def ex = thrown(IllegalStateException)
+        ex.message.contains("no tCapab-<N> event-capability slot appeared")
+    }
+
     def "waitEvents unknown capability fails loud with a did-you-mean drawn from the live tCapab options"() {
         // The waitEvents capability-not-in-options reject appends a closest-match suggestion drawn
         // from the live tCapab-<N> option list (containment-matched). Both-ways: removing the
