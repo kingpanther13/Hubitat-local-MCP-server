@@ -6272,11 +6272,15 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         }
     } else if (cap == "waitEvents") {
         // Wait for Events — delayActs/getWaitEvents. Each event row uses
-        // dash-separated index: tCapab-<eventIdx>, tDev-<eventIdx>,
-        // tstate-<eventIdx>. After actSubType=getWaitEvents the wizard
-        // exposes tCapab-1; writing it reveals tDev-1; writing devices
-        // reveals tstate-1; writing state advances to next event slot
-        // OR exposes timeout/done. Verified live.
+        // dash-separated index: tCapab-<slot>, tDev-<slot>, tstate-<slot>.
+        // After actSubType=getWaitEvents the wizard exposes the first event's
+        // tCapab slot; writing it reveals tDev; writing devices reveals tstate;
+        // writing state advances to the next event slot OR exposes timeout/done.
+        // The first slot number is NOT always 1 and is NOT the action index: a
+        // Required Expression (and/or prior actions) advances an internal wizard
+        // counter, so the first event field can render at tCapab-2 (etc.) with no
+        // predictable relationship to actType.<N>. The event loop reads the exposed
+        // base slot from the schema rather than assuming 1. Verified live.
         actType = "delayActs"
         actSubType = "getWaitEvents"
         fields = [:]
@@ -6397,6 +6401,32 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     // Optional timeout via the existing delay-modifier path.
     if (actSubType == "getWaitEvents") {
         def events = actionSpec.events as List
+        // Detect the base event-capability slot from the schema. The first event field does
+        // NOT render at tCapab-1, nor reliably at the action index -- the Required Expression
+        // wizard (and prior actions) advance an internal counter, so the slot number is not
+        // predictable and MUST be read from what the wizard actually exposes. After the
+        // getWaitEvents subtype write the wizard exposes exactly ONE un-filled tCapab-<N> for
+        // the first event, so find-first over the schema is unambiguous here (subsequent event
+        // rows appear one at a time only after each hasAll click). Raw inputs are read (not
+        // _rmCollectInputSchema, which drops the option list) because the per-event loop below
+        // reuses this fetch to validate the event capability. Retry briefly -- the subtype
+        // write may need a tick before the field appears.
+        Integer baseN = null
+        def baseInputs = null
+        def baseCapField = null
+        for (int attempt = 0; attempt < 4; attempt++) {
+            def baseCfg = _rmFetchConfigJson(appId, "doActPage")
+            baseInputs = (baseCfg?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+            baseCapField = baseInputs.find { it?.name?.toString() ==~ /^tCapab-\d+$/ }
+            if (baseCapField) {
+                baseN = (baseCapField.name.toString().replaceFirst(/^tCapab-/, "")) as Integer
+                break
+            }
+            if (attempt < 3) pauseExecution(250)
+        }
+        if (baseN == null) {
+            throw new IllegalStateException("waitEvents: no tCapab-<N> event-capability slot appeared in doActPage schema after the getWaitEvents subtype write for app ${appId} action ${idx}; the wizard did not expose the first event-capability field.")
+        }
         events.eachWithIndex { evRaw, evIdx ->
             if (!(evRaw instanceof Map)) {
                 throw new IllegalArgumentException("waitEvents.events[${evIdx}] is not a Map")
@@ -6404,17 +6434,19 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
             def ev = evRaw as Map
             def evCap = ev.capability?.toString()?.trim()
             if (!evCap) throw new IllegalArgumentException("waitEvents.events[${evIdx}].capability is required")
-            def n = evIdx + 1
+            def n = baseN + evIdx
             // Validate + canonicalize capability against the live enum.
-            // Retry briefly: after the prior anotherWait click, RM's state.actNdx
-            // advance is observable via plain GET but occasionally the first
-            // fetch races with the click's commit (server processes the click
-            // before persisting the new schema). Retrying once after a short
-            // pause gives the hub a tick to catch up.
+            // For the first event (evIdx==0, n==baseN) reuse the base-detection
+            // fetch (baseInputs + the already-located tCapab-<baseN> field) rather
+            // than re-fetching the same page. For later events, retry briefly: after
+            // the prior anotherWait click, RM's state.actNdx advance is observable via
+            // plain GET but occasionally the first fetch races with the click's commit
+            // (server processes the click before persisting the new schema). Retrying
+            // once after a short pause gives the hub a tick to catch up.
             def cfg = null
-            def inputs = null
-            def capInput = null
-            for (int attempt = 0; attempt < 4; attempt++) {
+            def inputs = (evIdx == 0) ? baseInputs : null
+            def capInput = (evIdx == 0) ? baseCapField : null
+            for (int attempt = 0; attempt < 4 && !capInput; attempt++) {
                 cfg = _rmFetchConfigJson(appId, "doActPage")
                 inputs = (cfg?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
                 capInput = inputs.find { it?.name?.toString() == "tCapab-${n}".toString() }
@@ -8333,9 +8365,7 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
         // the unrun steps lets the caller resume before the relay drops the response.
         if (idx > 1 && allOk && _relayBudgetExceeded(spec?.__reqT0 as Long)) {
             pausedAtStep = idx
-            stepsRemaining = steps.subList(idx - 1, steps.size()).collect { rem ->
-                (rem instanceof Map) ? ((Map) rem).findAll { k, v -> k != "__reqT0" } : rem
-            }
+            stepsRemaining = steps.subList(idx - 1, steps.size()).collect { _stripInternalClock(it) }
             break
         }
         def step = new LinkedHashMap((Map) rawStep)
@@ -12560,6 +12590,79 @@ private Map _rmReplaceRequiredExpression(Integer appId, Map exprSpec, Object bac
 // state.editCond / state.editAct before the next settings
 // write can reach the right dynamic page.
 //
+// Strip the internal relay-budget clock (__reqT0) from a spec before handing it back to
+// the caller in an in_progress pause. The caller re-issues the spec verbatim on resume, and
+// a leaked __reqT0 would poison the resume call's elapsed-time budget calculation. Single
+// source of truth for the walkStep-drive, patches, and bulk pause paths (k.toString() guards
+// the GString-vs-String key trap for an interpolated remaining-item key).
+private _stripInternalClock(rem) {
+    return (rem instanceof Map) ? ((Map) rem).findAll { k, v -> k?.toString() != "__reqT0" } : rem
+}
+
+// Cloud-relay pause envelope for the bulk addTriggers/addActions path -- mirrors the
+// in_progress shape the walkStep-drive step loop and the patches op loop return. The
+// checkpoint stops the batch as soon as the relay budget is exceeded (protecting the
+// response from a relay drop) REGARDLESS of whether an earlier item failed; the outer
+// success/partial here are computed from the committed items exactly like the
+// normal-completion return, so a committed-but-degraded or failed item is bubbled up (not
+// masked as clean) across the resume boundary. Health is intentionally NOT gated: the
+// trailing updateRule is deferred to the resume call, so subscriptions are legitimately
+// not-yet-live at a pause and gating success on health would falsely fail every pause. The
+// unprocessed items are handed back (minus the internal __reqT0 clock) for the caller to
+// re-issue.
+private Map _bulkRelayPauseResult(Integer appId, Map backup, List triggerResults, List actionResults,
+                                  List addTriggersRemaining, List addActionsRemaining) {
+    def trigOk = triggerResults.count { it?.success != false }
+    def actOk = actionResults.count { it?.success != false }
+    def itemsPartial = (trigOk != triggerResults.size()) || (actOk != actionResults.size()) ||
+        triggerResults.any { it instanceof Map && it.partial == true } ||
+        actionResults.any { it instanceof Map && it.partial == true }
+    def repairHints = []
+    if (itemsPartial) {
+        repairHints << "One or more committed bulk items failed or reported partial before the relay budget paused the batch. Drill into triggers[]/actions[] for per-item settingsSkipped + repairHints; the remaining (unprocessed) items are in addTriggersRemaining/addActionsRemaining."
+    }
+    return [
+        success: trigOk == triggerResults.size() && actOk == actionResults.size(),
+        partial: itemsPartial,
+        status: "in_progress",
+        appId: appId,
+        backup: backup,
+        triggers: triggerResults,
+        actions: actionResults,
+        triggersCommitted: trigOk,
+        actionsCommitted: actOk,
+        addTriggersRemaining: addTriggersRemaining.collect { _stripInternalClock(it) },
+        addActionsRemaining: addActionsRemaining.collect { _stripInternalClock(it) },
+        repairHints: repairHints,
+        resume: [
+            note: "Relay time budget reached; committed items are written at the settings level (the trailing updateRule is deferred to the resume call). Re-issue the edit (hub_set_rule or hub_set_native_app) with addActions/addTriggers = the remaining items to continue. Attach the same opToken ONLY if the original call carried none; otherwise use a fresh token."
+        ]
+    ]
+}
+
+// Cloud-relay pause envelope for the patches path. Fires at the patch-op boundary AND (for a
+// bulk addTriggers/addActions sub-op) mid-op, so a single patch op carrying a large inner list
+// can no longer exhaust the relay budget un-paused. Like the bulk pause, it stops as soon as the
+// budget is exceeded regardless of an earlier op's outcome (an un-budgeted continuation risks a
+// dropped response), and computes outer success/partial from the ops so far. patchesRemaining is
+// the un-processed work the caller re-issues -- for a mid-op pause the caller prepends the current
+// op rewritten to only its un-processed inner items.
+private Map _patchesPauseResult(Integer appId, Map backup, List patchResults, List patchesRemaining) {
+    def opPartial = patchResults.any { it instanceof Map && (it.success == false || it.partial == true) }
+    return [
+        success: patchResults.every { it?.success != false },
+        partial: opPartial,
+        status: "in_progress",
+        appId: appId,
+        backup: backup,
+        patchResults: patchResults,
+        patchesRemaining: patchesRemaining,
+        resume: [
+            note: "Relay time budget reached; completed patch ops are committed at the settings level but NOT yet baked into the running rule. Re-issue the edit (hub_set_rule or hub_set_native_app) with patches = patchesRemaining to continue; the rule finalize/updateRule runs when the remaining patches complete. Attach the same opToken ONLY if the original call carried none; otherwise use a fresh token."
+        ]
+    ]
+}
+
 // pageName lets callers target a specific sub-page (e.g. ruleActions,
 // triggerCondition, ifthenelseActions) — the schema is introspected from
 // that page so settings named on that page get correct marshaling.
@@ -13342,30 +13445,19 @@ def _applyNativeAppEdit(args) {
             int pi = -1
             for (def p : patchesList) {
                 pi++
-                // Cloud-relay self-budget checkpoint -- BETWEEN patch ops only, never before
-                // the first (pi > 0) and never after an op already failed (patches don't abort
-                // on a per-op failure, so a clean-partial pause requires every op so far ok --
-                // this keeps the in_progress success:true truthful). Each op is a live POST;
-                // stopping here and handing back the unprocessed specs lets the caller resume
-                // before the relay drops the response. CRITICAL: return BEFORE the batch-end
-                // trailing updateRule below so it does NOT fire -- the ops so far are committed
-                // at the settings level but not yet baked; the resume call's own batch-end
+                // Cloud-relay self-budget checkpoint -- BETWEEN patch ops, never before the first
+                // (pi > 0). Stops as soon as the relay budget is exceeded regardless of an earlier
+                // op's outcome: patches don't abort on a per-op failure, but continuing un-budgeted
+                // after the budget is spent risks the relay dropping the whole response (losing
+                // every op's result). _patchesPauseResult surfaces any failed/partial op in the
+                // outer success/partial rather than masking it. Each op is a live POST; handing
+                // back the unprocessed specs lets the caller resume. CRITICAL: return BEFORE the
+                // batch-end trailing updateRule below so it does NOT fire -- the ops so far are
+                // committed at the settings level but not yet baked; the resume call's own batch-end
                 // updateRule bakes them once the remaining patches complete.
-                if (pi > 0 && patchResults.every { it?.success != false } && _relayBudgetExceeded(args?.__reqT0 as Long)) {
-                    def patchesRemaining = patchesList.subList(pi, patchesList.size()).collect { rem ->
-                        (rem instanceof Map) ? ((Map) rem).findAll { k, v -> k != "__reqT0" } : rem
-                    }
-                    return [
-                        success: true,
-                        status: "in_progress",
-                        appId: appId,
-                        backup: backup,
-                        patchResults: patchResults,
-                        patchesRemaining: patchesRemaining,
-                        resume: [
-                            note: "Relay time budget reached; all completed patch ops are committed but NOT yet baked into the running rule. Re-issue hub_set_rule edit with patches = patchesRemaining to continue; the rule finalize/updateRule runs when the remaining patches complete. Attach the same opToken ONLY if the original call carried none; otherwise use a fresh token."
-                        ]
-                    ]
+                if (pi > 0 && _relayBudgetExceeded(args?.__reqT0 as Long)) {
+                    def patchesRemaining = patchesList.subList(pi, patchesList.size()).collect { _stripInternalClock(it) }
+                    return _patchesPauseResult(appId, backup, patchResults, patchesRemaining)
                 }
                 if (!(p instanceof Map)) {
                     patchResults << [success: false, error: "patches[${pi}] is not a Map", spec: p]
@@ -13385,8 +13477,20 @@ def _applyNativeAppEdit(args) {
                     } else if (pm.containsKey("addTrigger")) {
                         patchResults << ([op: "addTrigger"] + _rmAddTrigger(appId, pm.addTrigger as Map))
                     } else if (pm.containsKey("addTriggers")) {
+                        // Indexed for-loop (not .each) so the relay-budget checkpoint can break
+                        // mid-op: a single patch op carrying a large inner list must not run the
+                        // whole list un-paused. On a mid-op pause, hand back this op rewritten to
+                        // its un-processed inner triggers, prepended to the remaining patches.
+                        def innerList = (pm.addTriggers as List)
                         def innerResults = []
-                        (pm.addTriggers as List).each { tspec ->
+                        int ii = -1
+                        boolean innerPaused = false
+                        for (def tspec : innerList) {
+                            ii++
+                            if (ii > 0 && _relayBudgetExceeded(args?.__reqT0 as Long)) {
+                                innerPaused = true
+                                break
+                            }
                             try { innerResults << _rmAddTrigger(appId, tspec as Map) }
                             catch (Exception e) { innerResults << [success: false, error: e.message ?: e.toString()] }
                         }
@@ -13395,17 +13499,40 @@ def _applyNativeAppEdit(args) {
                         // so opsOk count + the user-visible success flag
                         // accurately reflect partial-batch failures.
                         def innerOk = innerResults.every { (it instanceof Map) && (it.success != false) && (it.partial != true) }
-                        patchResults << [success: innerOk, op: "addTriggers", results: innerResults]
+                        def trigOpEntry = [success: innerOk, op: "addTriggers", results: innerResults]
+                        if (innerPaused) trigOpEntry.partial = true
+                        patchResults << trigOpEntry
+                        if (innerPaused) {
+                            def remainingOp = [addTriggers: innerList.subList(ii, innerList.size())]
+                            def patchesRemaining = ([remainingOp] + patchesList.subList(pi + 1, patchesList.size())).collect { _stripInternalClock(it) }
+                            return _patchesPauseResult(appId, backup, patchResults, patchesRemaining)
+                        }
                     } else if (pm.containsKey("addAction")) {
                         patchResults << ([op: "addAction"] + _rmAddAction(appId, pm.addAction as Map, true, patchValidRuleIds))
                     } else if (pm.containsKey("addActions")) {
+                        // Same mid-op relay-budget checkpoint as the addTriggers inner loop above.
+                        def innerList = (pm.addActions as List)
                         def innerResults = []
-                        (pm.addActions as List).each { aspec ->
+                        int ii = -1
+                        boolean innerPaused = false
+                        for (def aspec : innerList) {
+                            ii++
+                            if (ii > 0 && _relayBudgetExceeded(args?.__reqT0 as Long)) {
+                                innerPaused = true
+                                break
+                            }
                             try { innerResults << _rmAddAction(appId, aspec as Map, true, patchValidRuleIds) }
                             catch (Exception e) { innerResults << [success: false, error: e.message ?: e.toString()] }
                         }
                         def innerOk = innerResults.every { (it instanceof Map) && (it.success != false) && (it.partial != true) }
-                        patchResults << [success: innerOk, op: "addActions", results: innerResults]
+                        def actOpEntry = [success: innerOk, op: "addActions", results: innerResults]
+                        if (innerPaused) actOpEntry.partial = true
+                        patchResults << actOpEntry
+                        if (innerPaused) {
+                            def remainingOp = [addActions: innerList.subList(ii, innerList.size())]
+                            def patchesRemaining = ([remainingOp] + patchesList.subList(pi + 1, patchesList.size())).collect { _stripInternalClock(it) }
+                            return _patchesPauseResult(appId, backup, patchResults, patchesRemaining)
+                        }
                     } else if (pm.containsKey("addRequiredExpression")) {
                         patchResults << ([op: "addRequiredExpression"] + _rmAddRequiredExpression(appId, pm.addRequiredExpression as Map))
                     } else if (pm.containsKey("replaceRequiredExpression")) {
@@ -13836,30 +13963,61 @@ def _applyNativeAppEdit(args) {
         def updateRuleFailed = false
         def subscriptionsNotLive = false
         def updateRuleError = null
+        def trigList = (addTriggersList ?: [])
+        def actList = (addActionsList ?: [])
         try {
-            (addTriggersList ?: []).eachWithIndex { spec, i ->
+            // Indexed for-loops (not eachWithIndex) so the cloud-relay budget checkpoint can
+            // break/return cleanly between items -- a Groovy closure can't break out of a loop.
+            // The checkpoint fires BETWEEN items only (never before the first committed item) and
+            // stops the batch as soon as the relay budget is exceeded, WHETHER OR NOT an earlier
+            // item failed -- continuing un-budgeted after a failure risks the relay dropping the
+            // whole response (a transport timeout the caller can only recover from by re-issuing,
+            // which double-commits the already-applied items). _bulkRelayPauseResult computes the
+            // outer success/partial from the committed items so a failed/degraded item is bubbled,
+            // not masked. On a pause, hand back the unprocessed items and return BEFORE the trailing
+            // updateRule below so it does NOT fire -- the items so far are committed at the settings
+            // level but not yet baked; the resume call's own trailing updateRule bakes them once the
+            // remaining items complete. Sibling pattern: the walkStep-drive step loop and the
+            // patches op loop (both gate on all-clean because their pause is defined as a clean
+            // partial; the bulk path instead surfaces the failure in the pause envelope).
+            int ti = -1
+            for (def spec : trigList) {
+                ti++
+                if ((triggerResults.size() + actionResults.size()) > 0 &&
+                        _relayBudgetExceeded(args?.__reqT0 as Long)) {
+                    return _bulkRelayPauseResult(appId, backup, triggerResults, actionResults,
+                        trigList.subList(ti, trigList.size()), actList)
+                }
                 if (!(spec instanceof Map)) {
-                    triggerResults << [success: false, error: "addTriggers[${i}] is not a Map", spec: spec]
-                    return
+                    triggerResults << [success: false, error: "addTriggers[${ti}] is not a Map", spec: spec]
+                    continue
                 }
                 try { triggerResults << _rmAddTrigger(appId, spec as Map) }
                 catch (Exception te) {
                     triggerResults << [success: false, error: te.message, specCapability: spec.capability]
-                    mcpLog("warn", "rm-native", "hub_set_rule: addTriggers[${i}] (${spec.capability}) failed -- ${te.message}")
+                    mcpLog("warn", "rm-native", "hub_set_rule: addTriggers[${ti}] (${spec.capability}) failed -- ${te.message}")
                 }
             }
             // Resolve the valid-rule-id set once for the whole batch (only when a
             // rule-targeting action is present) and thread it to each item.
-            def addActionsValidRuleIds = _rmSpecListTargetsRule(addActionsList ?: []) ? _rmValidRuleIds() : null
-            (addActionsList ?: []).eachWithIndex { spec, i ->
+            def addActionsValidRuleIds = _rmSpecListTargetsRule(actList) ? _rmValidRuleIds() : null
+            int ai = -1
+            for (def spec : actList) {
+                ai++
+                if ((triggerResults.size() + actionResults.size()) > 0 &&
+                        _relayBudgetExceeded(args?.__reqT0 as Long)) {
+                    // Every trigger already processed; only the unprocessed actions remain.
+                    return _bulkRelayPauseResult(appId, backup, triggerResults, actionResults,
+                        [], actList.subList(ai, actList.size()))
+                }
                 if (!(spec instanceof Map)) {
-                    actionResults << [success: false, error: "addActions[${i}] is not a Map", spec: spec]
-                    return
+                    actionResults << [success: false, error: "addActions[${ai}] is not a Map", spec: spec]
+                    continue
                 }
                 try { actionResults << _rmAddAction(appId, spec as Map, true, addActionsValidRuleIds) }
                 catch (Exception ae) {
                     actionResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
-                    mcpLog("warn", "rm-native", "hub_set_rule: addActions[${i}] (${spec.capability}/${spec.action}) failed -- ${ae.message}")
+                    mcpLog("warn", "rm-native", "hub_set_rule: addActions[${ai}] (${spec.capability}/${spec.action}) failed -- ${ae.message}")
                 }
             }
         } catch (Exception e) {

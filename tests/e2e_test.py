@@ -3389,6 +3389,62 @@ class TestRunner:
             self._delete_native(app_id)
 
     @test("native_apps")
+    def test_set_rule_waitevents_on_offset_action_slot(self) -> None:
+        # The event-row slot tracks the action's OWN index (a high-water mark), so when a
+        # waitEvents action is not the first in the rule the first Wait-Event capability
+        # field renders at an offset slot (tCapab-2, not tCapab-1). The event walker reads
+        # the base slot from the schema; pre-fix it hardcoded tCapab-1 and threw ("tCapab-1
+        # not in doActPage schema") whenever the action index was > 1. Here a seed log action
+        # is what bumps the index (the DRIVER of the offset); a Required Expression is also
+        # committed because that is the real-world rule shape that first surfaced this, but
+        # the RE is incidental -- the seed action alone produces the offset. Its own small
+        # throwaway rule (a Required Expression conflicts with any other per-concern rule's
+        # state), deleted in the finally; strict so a relay-dropped response re-runs on a
+        # fresh rule rather than skipping the wire assertion.
+        switch_id = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("WaitEvtOffset", {
+            "addActions": [{"capability": "log", "message": "E2E waitEvents offset base"}],
+        })
+        try:
+            # Commit a Required Expression (device-state condition -- shape proven in BAT
+            # T613/T639); incidental to the offset, present as the real-world rule shape.
+            re_res = self._set_rule(app_id, {"addRequiredExpression": {
+                "conditions": [{"capability": "Switch", "deviceIds": [switch_id], "state": "on"}]}}, strict=True)
+            assert re_res.get("success") is not False, f"addRequiredExpression should commit, got: {re_res}"
+
+            # THE fix: adding a waitEvents action past index 1 must commit -- the walker
+            # writes the offset slot (tCapab-2 here) instead of throwing on tCapab-1.
+            we_res = self._set_rule(app_id, {"addAction": {"capability": "waitEvents",
+                "events": [{"capability": "Switch", "deviceIds": [switch_id], "state": "on"}]}}, strict=True)
+            assert we_res.get("success") is True, \
+                f"waitEvents add on an offset action slot should commit, got: {we_res}"
+
+            # The committed rule is structurally sound (no broken markers from a half-written event row).
+            health = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_get_rule_health", "args": {"appId": app_id}})
+            assert health.get("ok") is True and not health.get("structuralIssues"), \
+                f"waitEvents offset-slot rule should be healthy, got: {health}"
+
+            # Confirm the event actually wrote its OFFSET state slot: a regression that
+            # writes tCapab but drops tstate on the offset slot (or writes to the wrong
+            # slot number) would leave a healthy-looking but empty/misplaced event. The
+            # add response's settingsApplied lists the exact field keys written -- assert
+            # the offset state slot (tstate-2) is among them, not tstate-1.
+            applied_blob = json.dumps(we_res)
+            assert "tstate-2" in applied_blob, \
+                f"the wait event should have written its state to the offset slot tstate-2, got: {we_res}"
+            assert "tstate-1" not in applied_blob, \
+                f"the wait event must NOT have written the non-offset slot tstate-1, got: {we_res}"
+
+            # Independent read-back: the committed rule config shows a Wait-for-events action.
+            cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": app_id}})
+            assert "wait" in json.dumps(cfg).lower(), \
+                f"the committed rule config should show the Wait-for-events action, got: {cfg}"
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
     def test_set_native_app_lifecycle(self) -> None:
         # hub_set_native_app: the GENERIC create-or-edit upsert. Create via the
         # registry-driven create path, rename via a raw settings write, then delete.
