@@ -204,12 +204,12 @@ class RelayBudgetSpec extends ToolSpecBase {
         def clicks = []
         installPatchStubs(addActionCalls, clicks, true)
 
-        when: 'ONE patch op carrying three inner addActions; the budget is already blown'
+        when: 'ONE patch op carrying three inner addActions (each with a stray internal clock); the budget is already blown'
         def result = script._applyNativeAppEdit([appId: 1, confirm: true, __reqT0: 2000L, patches: [
             [addActions: [
-                [capability: 'switch', action: 'on', deviceIds: [8]],
-                [capability: 'switch', action: 'off', deviceIds: [9]],
-                [capability: 'switch', action: 'on', deviceIds: [10]],
+                [capability: 'switch', action: 'on', deviceIds: [8], __reqT0: 999L],
+                [capability: 'switch', action: 'off', deviceIds: [9], __reqT0: 999L],
+                [capability: 'switch', action: 'on', deviceIds: [10], __reqT0: 999L],
             ]],
         ]])
 
@@ -223,6 +223,9 @@ class RelayBudgetSpec extends ToolSpecBase {
         result.patchesRemaining[0].addActions instanceof List
         result.patchesRemaining[0].addActions.size() == 2
         result.patchesRemaining[0].addActions[0].deviceIds == [9]
+
+        and: 'the internal clock is stripped from the NESTED inner specs, not just the patch op'
+        !result.patchesRemaining[0].addActions.any { it.containsKey('__reqT0') }
 
         and: 'the current op is recorded partial in patchResults and no updateRule fired'
         result.patchResults.find { it.op == 'addActions' }?.partial == true

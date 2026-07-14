@@ -13503,7 +13503,10 @@ def _applyNativeAppEdit(args) {
                         if (innerPaused) trigOpEntry.partial = true
                         patchResults << trigOpEntry
                         if (innerPaused) {
-                            def remainingOp = [addTriggers: innerList.subList(ii, innerList.size())]
+                            // Strip the internal clock from the un-processed inner specs (the
+                            // top-level .collect only reaches each patch op's own keys, not the
+                            // specs nested inside this rebuilt addTriggers op).
+                            def remainingOp = [addTriggers: innerList.subList(ii, innerList.size()).collect { _stripInternalClock(it) }]
                             def patchesRemaining = ([remainingOp] + patchesList.subList(pi + 1, patchesList.size())).collect { _stripInternalClock(it) }
                             return _patchesPauseResult(appId, backup, patchResults, patchesRemaining)
                         }
@@ -13529,7 +13532,10 @@ def _applyNativeAppEdit(args) {
                         if (innerPaused) actOpEntry.partial = true
                         patchResults << actOpEntry
                         if (innerPaused) {
-                            def remainingOp = [addActions: innerList.subList(ii, innerList.size())]
+                            // Strip the internal clock from the un-processed inner specs (the
+                            // top-level .collect only reaches each patch op's own keys, not the
+                            // specs nested inside this rebuilt addActions op).
+                            def remainingOp = [addActions: innerList.subList(ii, innerList.size()).collect { _stripInternalClock(it) }]
                             def patchesRemaining = ([remainingOp] + patchesList.subList(pi + 1, patchesList.size())).collect { _stripInternalClock(it) }
                             return _patchesPauseResult(appId, backup, patchResults, patchesRemaining)
                         }
