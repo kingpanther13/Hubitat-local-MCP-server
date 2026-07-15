@@ -536,6 +536,37 @@ def updated() {
         state.remove("capturedDeviceStates")
         mcpLog("info", "capture-migration", "Migrated ${migratedCount} captured state(s) from state to atomicState")
     }
+
+    // One-time reset of the advanced publishOutputSchemas toggle (issue #354).
+    // Also hooked into handleMcpRequest -- see _forcePublishSchemasOffOnce for why.
+    _forcePublishSchemasOffOnce()
+}
+
+// ===== One-time force publishOutputSchemas OFF migration (issue #354) =====
+// The advanced publishOutputSchemas toggle makes every tools/call fail on
+// spec-validating MCP clients (Claude Desktop): they hold the server to each
+// advertised outputSchema and reject any result lacking conforming
+// structuredContent. At least one install (issue #354) reached ON with the user
+// unable to recall setting it, so reset it OFF once for everybody. Called from BOTH updated() and
+// the top of handleMcpRequest because a code deploy (HPM update, hub_update_app)
+// recompiles the class WITHOUT firing updated() (the same fact
+// requiredParamsCatalogFingerprint relies on) -- an updated()-only migration would
+// miss every user who updates via HPM and never reopens the app page, so the
+// request-path hook catches them on their first MCP call after the update.
+//
+// state.publishOutputSchemasForcedOff locks it to a single firing: a user who
+// deliberately re-enables the toggle AFTER the migration keeps their choice, the
+// same one-shot contract as the customEngineMigrated guard above. The marker is
+// set unconditionally (even when the setting was already OFF/null) so the guard
+// also fast-exits the per-request hook -- which runs on every MCP request -- once
+// the migration has run.
+private void _forcePublishSchemasOffOnce() {
+    if (state.publishOutputSchemasForcedOff == true) return
+    if (settings.publishOutputSchemas == true) {
+        app.updateSetting("publishOutputSchemas", [type: "bool", value: false])
+        mcpLog("info", "schema-migration", "Forced publishOutputSchemas=false (one-time reset, issue #354; the advanced toggle breaks strict MCP clients when left ON)")
+    }
+    state.publishOutputSchemasForcedOff = true
 }
 
 def uninstalled() {
@@ -646,6 +677,14 @@ def handleMcpGet() {
 // response objects). Do NOT convert application-level JSON-RPC errors to 4xx --
 // spec-compliant clients expect the error inside a 200 body.
 def handleMcpRequest() {
+    // Issue #354: reset publishOutputSchemas OFF once. Hooked here (not only in
+    // updated()) because an HPM code deploy recompiles the class without firing
+    // updated(), so HPM updaters would otherwise never get the reset until they
+    // reopened the app page. try/catch so a migration hiccup can never break
+    // request handling; the guard inside makes this a fast no-op after it runs.
+    try { _forcePublishSchemasOffOnce() }
+    catch (Exception e) { mcpLog("warn", "schema-migration", "one-time publishOutputSchemas reset skipped: ${e.message}") }
+
     def requestBody
     try {
         // Content-Type is intentionally not validated: Hubitat's mapped-endpoint

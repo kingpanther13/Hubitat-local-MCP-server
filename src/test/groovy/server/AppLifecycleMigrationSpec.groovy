@@ -5,8 +5,10 @@ import support.TestChildApp
 import support.ToolSpecBase
 
 /**
- * Spec for the one-time enableCustomRuleEngine rename migration that fires
- * inside updated().
+ * Spec for the app-lifecycle one-time migrations that fire inside updated()
+ * (and, for issue #354, also at the top of handleMcpRequest): the
+ * enableCustomRuleEngine rename migration and the publishOutputSchemas
+ * force-OFF migration.
  *
  * Background: the legacy setting was `enableRuleEngine` (defaultValue: true).
  * The setting was renamed to `enableCustomRuleEngine` (defaultValue: false).
@@ -227,6 +229,125 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
 
         and: 'migration marker stays true'
         stateMap.customEngineMigrated == true
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #354: one-time force publishOutputSchemas OFF. Fires from BOTH
+    // updated() and the top of handleMcpRequest (an HPM code deploy recompiles
+    // the class without firing updated(), so the request-path hook is what
+    // reaches HPM updaters). state.publishOutputSchemasForcedOff is the one-shot
+    // marker; a deliberate re-enable after it is set is preserved.
+    // -----------------------------------------------------------------------
+
+    def "updated() forces publishOutputSchemas OFF when it is stale-ON and the marker is unset"() {
+        given: 'the advanced toggle is ON and the migration has never run'
+        def mcpLogCalls = stubUpdatedDeps()
+        settingsMap.publishOutputSchemas = true
+
+        when:
+        script.updated()
+
+        then: 'the toggle was forced to false'
+        sharedAppStub.settingsStore['publishOutputSchemas'] == [type: 'bool', value: false]
+
+        and: 'the one-shot marker is set'
+        stateMap.publishOutputSchemasForcedOff == true
+
+        and: 'an info log line was emitted citing the issue'
+        mcpLogCalls.any { it.level == 'info' && it.component == 'schema-migration' && it.msg.contains('#354') }
+    }
+
+    def "updated() sets the marker but does not write the toggle when publishOutputSchemas is already OFF/null"() {
+        given: 'the toggle is at its default (null) and the migration has never run'
+        def mcpLogCalls = stubUpdatedDeps()
+        // settings.publishOutputSchemas deliberately unset -- null, the new-install default
+
+        when:
+        script.updated()
+
+        then: 'no write to the toggle (null is already the safe state)'
+        sharedAppStub.settingsStore['publishOutputSchemas'] == null
+
+        and: 'the marker is still set so the request-path hook fast-exits from now on'
+        stateMap.publishOutputSchemasForcedOff == true
+
+        and: 'no schema-migration log line'
+        !mcpLogCalls.any { it.component == 'schema-migration' }
+    }
+
+    def "updated() does not undo a deliberate re-enable made after the marker is set"() {
+        given: 'the migration already ran; the user then re-enabled the toggle on purpose'
+        def mcpLogCalls = stubUpdatedDeps()
+        stateMap.publishOutputSchemasForcedOff = true
+        settingsMap.publishOutputSchemas = true
+
+        when:
+        script.updated()
+
+        then: 'the toggle is left untouched -- the user choice wins'
+        sharedAppStub.settingsStore['publishOutputSchemas'] == null
+
+        and: 'the marker stays set'
+        stateMap.publishOutputSchemasForcedOff == true
+
+        and: 'no schema-migration log line'
+        !mcpLogCalls.any { it.component == 'schema-migration' }
+    }
+
+    def "an MCP request forces publishOutputSchemas OFF when stale-ON with no marker, and still returns its result"() {
+        given: 'the toggle is ON, the marker is unset, and a capturing mcpLog'
+        def logCalls = []
+        script.metaClass.mcpLog = { String level, String component, String msg ->
+            logCalls << [level: level, component: component, msg: msg]
+        }
+        settingsMap.publishOutputSchemas = true
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 42, method: 'ping', params: [:]])
+
+        when:
+        script.handleMcpRequest()
+
+        then: 'the request-path hook forced the toggle OFF and set the marker'
+        sharedAppStub.settingsStore['publishOutputSchemas'] == [type: 'bool', value: false]
+        stateMap.publishOutputSchemasForcedOff == true
+
+        and: 'the migration logged the reset'
+        logCalls.any { it.level == 'info' && it.component == 'schema-migration' && it.msg.contains('#354') }
+
+        and: 'the request itself still dispatched and returned a success envelope'
+        def response = mcpDriver.parseResponseJson()
+        response.jsonrpc == '2.0'
+        response.id == 42
+        response.error == null
+        response.result == [:]
+    }
+
+    def "a normal MCP request still succeeds when the migration helper throws"() {
+        given: 'the toggle is ON so the helper reaches its logging step, which we make throw'
+        def logCalls = []
+        // The helper emits an info/schema-migration line after updateSetting; make ONLY
+        // that call throw so the helper blows up mid-run. The handleMcpRequest catch then
+        // logs a warn/schema-migration line, which must NOT throw (that path stays real).
+        script.metaClass.mcpLog = { String level, String component, String msg ->
+            if (level == 'info' && component == 'schema-migration') throw new RuntimeException('boom')
+            logCalls << [level: level, component: component, msg: msg]
+        }
+        settingsMap.publishOutputSchemas = true
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 7, method: 'ping', params: [:]])
+
+        when:
+        script.handleMcpRequest()
+
+        then: 'the try/catch swallowed the failure -- the request returns its normal result'
+        def response = mcpDriver.parseResponseJson()
+        response.id == 7
+        response.error == null
+        response.result == [:]
+
+        and: 'the helper threw before setting the marker (proves it really failed mid-run)'
+        stateMap.publishOutputSchemasForcedOff == null
+
+        and: 'the catch emitted a warn-level schema-migration line'
+        logCalls.any { it.level == 'warn' && it.component == 'schema-migration' }
     }
 
     // -----------------------------------------------------------------------
