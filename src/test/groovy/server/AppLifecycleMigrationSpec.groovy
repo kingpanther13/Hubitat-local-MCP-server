@@ -235,7 +235,7 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
     // Issue #354: one-time force publishOutputSchemas OFF. Fires from BOTH
     // updated() and the top of handleMcpRequest (an HPM code deploy recompiles
     // the class without firing updated(), so the request-path hook is what
-    // reaches HPM updaters). state.publishOutputSchemasForcedOff is the one-shot
+    // reaches HPM updaters). atomicState.publishOutputSchemasForcedOff is the one-shot
     // marker; a deliberate re-enable after it is set is preserved.
     // -----------------------------------------------------------------------
 
@@ -251,7 +251,7 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         sharedAppStub.settingsStore['publishOutputSchemas'] == [type: 'bool', value: false]
 
         and: 'the one-shot marker is set'
-        stateMap.publishOutputSchemasForcedOff == true
+        atomicStateMap.publishOutputSchemasForcedOff == true
 
         and: 'an info log line was emitted citing the issue'
         mcpLogCalls.any { it.level == 'info' && it.component == 'schema-migration' && it.msg.contains('#354') }
@@ -269,7 +269,7 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         sharedAppStub.settingsStore['publishOutputSchemas'] == null
 
         and: 'the marker is still set so the request-path hook fast-exits from now on'
-        stateMap.publishOutputSchemasForcedOff == true
+        atomicStateMap.publishOutputSchemasForcedOff == true
 
         and: 'no schema-migration log line'
         !mcpLogCalls.any { it.component == 'schema-migration' }
@@ -278,7 +278,7 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
     def "updated() does not undo a deliberate re-enable made after the marker is set"() {
         given: 'the migration already ran; the user then re-enabled the toggle on purpose'
         def mcpLogCalls = stubUpdatedDeps()
-        stateMap.publishOutputSchemasForcedOff = true
+        atomicStateMap.publishOutputSchemasForcedOff = true
         settingsMap.publishOutputSchemas = true
 
         when:
@@ -288,7 +288,7 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         sharedAppStub.settingsStore['publishOutputSchemas'] == null
 
         and: 'the marker stays set'
-        stateMap.publishOutputSchemasForcedOff == true
+        atomicStateMap.publishOutputSchemasForcedOff == true
 
         and: 'no schema-migration log line'
         !mcpLogCalls.any { it.component == 'schema-migration' }
@@ -308,7 +308,7 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
 
         then: 'the request-path hook forced the toggle OFF and set the marker'
         sharedAppStub.settingsStore['publishOutputSchemas'] == [type: 'bool', value: false]
-        stateMap.publishOutputSchemasForcedOff == true
+        atomicStateMap.publishOutputSchemasForcedOff == true
 
         and: 'the migration logged the reset'
         logCalls.any { it.level == 'info' && it.component == 'schema-migration' && it.msg.contains('#354') }
@@ -344,7 +344,7 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         response.result == [:]
 
         and: 'the helper threw before setting the marker (proves it really failed mid-run)'
-        stateMap.publishOutputSchemasForcedOff == null
+        atomicStateMap.publishOutputSchemasForcedOff == null
 
         and: 'the catch emitted a warn-level schema-migration line'
         logCalls.any { it.level == 'warn' && it.component == 'schema-migration' }

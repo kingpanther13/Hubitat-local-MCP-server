@@ -406,7 +406,8 @@ def advancedOverridesPage() {
         section("Output schema publication") {
             paragraph "<b>Recommended: leave OFF unless you know what you're doing — especially with Claude Desktop.</b> " +
                       "Turning this ON advertises each base tool's outputSchema on tools/list and the gateway catalog, and the server then also returns structuredContent (a second, structured copy of the result) on every successful call to those tools, roughly doubling their response size. " +
-                      "Spec-validating clients hold the server to the advertised schema on every call, so any schema inaccuracy surfaces as a failed tool call on those clients. OFF is always the safe choice; nothing requires this setting."
+                      "Spec-validating clients hold the server to the advertised schema on every call, so any schema inaccuracy surfaces as a failed tool call on those clients. OFF is always the safe choice; nothing requires this setting.<br>" +
+                      "<b>Leave OFF if using Claude Desktop.</b>"
             input "publishOutputSchemas", "bool", title: "Publish tool output schemas",
                   description: "Leave OFF (default). ON: gateway-mode base tools and the gateway catalog advertise outputSchema (wire form, no required arrays) and successful results carry structuredContent per the MCP spec. The flat tool list never advertises outputSchema regardless of this setting.",
                   defaultValue: false
@@ -554,19 +555,21 @@ def updated() {
 // miss every user who updates via HPM and never reopens the app page, so the
 // request-path hook catches them on their first MCP call after the update.
 //
-// state.publishOutputSchemasForcedOff locks it to a single firing: a user who
-// deliberately re-enables the toggle AFTER the migration keeps their choice, the
-// same one-shot contract as the customEngineMigrated guard above. The marker is
-// set unconditionally (even when the setting was already OFF/null) so the guard
-// also fast-exits the per-request hook -- which runs on every MCP request -- once
-// the migration has run.
+// atomicState.publishOutputSchemasForcedOff locks it to a single firing: a user
+// who deliberately re-enables the toggle AFTER the migration keeps their choice,
+// the same one-shot contract as the customEngineMigrated guard above (atomicState,
+// not state, because this also runs on the concurrent request path where a stale
+// state snapshot could lose the marker and re-fire onto a deliberate re-enable).
+// The marker is set unconditionally (even when the setting was already OFF/null)
+// so the guard also fast-exits the per-request hook -- which runs on every MCP
+// request -- once the migration has run.
 private void _forcePublishSchemasOffOnce() {
-    if (state.publishOutputSchemasForcedOff == true) return
+    if (atomicState.publishOutputSchemasForcedOff == true) return
     if (settings.publishOutputSchemas == true) {
         app.updateSetting("publishOutputSchemas", [type: "bool", value: false])
         mcpLog("info", "schema-migration", "Forced publishOutputSchemas=false (one-time reset, issue #354; the advanced toggle breaks strict MCP clients when left ON)")
     }
-    state.publishOutputSchemasForcedOff = true
+    atomicState.publishOutputSchemasForcedOff = true
 }
 
 def uninstalled() {
