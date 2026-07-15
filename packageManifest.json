@@ -1,12 +1,12 @@
 {
     "packageName": "MCP Rule Server",
     "author": "kingpanther13",
-    "version": "3.3.2",
+    "version": "3.4.0",
     "minimumHEVersion": "2.3.0",
-    "dateReleased": "2026-07-14",
+    "dateReleased": "2026-07-15",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/README.md",
     "communityLink": "",
-    "releaseNotes": "v3.3.2 - 2026-07-14\n- fix: harden RM authoring against relay-budget drop, RE-rule export, and offset waitEvents slot (#352)\n  - Bulk rule authoring over the cloud relay now returns a resumable result when it\n  - Clearer, accurate error when exporting a rule that has a Required Expression.\n  - Fixed \"Wait for Events\" failing on a rule that has a Required Expression or\n\nv3.3.1 - 2026-07-13\n- fix: fail loud on a non-existent target rule id + RM authoring discoverability (#349)\n  - Rule Machine authoring now fails loud, before any write, when a run-rule / cancel-timers / pause-resume-rule / set-private-boolean action targets a rule that doesn't exist -- validated against the live rule list (so a non-rule app id or a stale id is caught) instead of silently baking a dangling reference. The error names the id and points at `hub_list_rules`. A bad target in a `replaceActions` batch is rejected before the existing actions are cleared.\n  - Clearer docs: reading a rule's config while authoring, and the rule-level Required-Expression / function-mode flags.\n\nv3.3.0 - 2026-07-12\n- feat: opToken response replay + cloud-relay self-budget for slow writes (#350)\n  - Slow operations no longer get lost over the Hubitat cloud relay: pass an `opToken` on big writes and fetch the finished result with the new `hub_get_op_result` tool if the connection drops mid-call.\n  - Retrying a write with the same `opToken` is now safe — the hub returns the original result instead of running the operation twice.\n  - Large rule edits made through the cloud relay now pause safely before the relay's time limit and return exact instructions to continue; local-network calls are unaffected.",
+    "releaseNotes": "v3.4.0 - 2026-07-15\n- fix: one-time reset of publishOutputSchemas to OFF on update (issue #354) (#355)\n  - The advanced \"Publish tool output schemas\" setting is reset to OFF once on update. When ON it makes strict MCP clients such as Claude Desktop reject every tool call (issue #354). If you genuinely rely on it, re-enable it after updating — your choice is kept from then on.\n  - Clearer warnings on that setting everywhere it can be flipped: the Advanced settings page, the self-admin tool, and the tool guide now all say to leave it OFF if you use Claude Desktop.",
     "apps": [
         {
             "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",

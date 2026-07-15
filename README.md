@@ -1655,6 +1655,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v3.4.0** - fix: one-time reset of publishOutputSchemas to OFF on update (issue #354). PRs: [#355](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/355)
 - **v3.3.2** - fix: harden RM authoring against relay-budget drop, RE-rule export, and offset waitEvents slot. PRs: [#352](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/352)
 - **v3.3.1** - fix: fail loud on a non-existent target rule id + RM authoring discoverability. PRs: [#349](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/349)
 - **v3.3.0** - feat: opToken response replay + cloud-relay self-budget for slow writes. PRs: [#350](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/350)
