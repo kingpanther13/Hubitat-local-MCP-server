@@ -3800,10 +3800,21 @@ class TestRunner:
 
     def _next_op_token(self) -> str:
         """Fresh idempotency token for an RM write (issue #348 machinery). Derived from
-        the active test for log traceability, sanitized to the server's charset."""
+        the active test for log traceability, sanitized to the server's charset.
+
+        The run nonce is LOAD-BEARING, not cosmetic: server token records live ~24h, and
+        a token without it is deterministic across runs (same suite, same test, same seq).
+        A later run -- or a `gh run rerun` -- would re-issue byte-identical tokens, and the
+        dedup gate then REPLAYS the previous run's buffered envelope instead of executing
+        the write: the call "succeeds" with a correct-looking (stale) echo while the rule
+        never changes, and the read-back assertions fail with nothing-landed signatures.
+        Tokens are per-call nonces by contract; the nonce is what makes them nonces."""
         self._op_token_seq = getattr(self, "_op_token_seq", 0) + 1
+        nonce = getattr(self, "_op_token_nonce", None)
+        if nonce is None:
+            nonce = self._op_token_nonce = f"{int(time.time())}.{random.randrange(16**4):04x}"
         base = re.sub(r"[^A-Za-z0-9._-]", ".", str(getattr(self.client, "_active_test", "") or "setup"))
-        return f"e2e.{base}.{self._op_token_seq}"[:128].ljust(8, "x")
+        return f"e2e.{nonce}.{base}.{self._op_token_seq}"[:128].ljust(8, "x")
 
     def _set_rule(self, app_id: Any, extra: dict, strict: bool = False) -> Any:
         """hub_set_rule edit (appId present) with the given shortcut args.
@@ -3827,6 +3838,7 @@ class TestRunner:
         token = args.setdefault("opToken", self._next_op_token())
         try:
             result = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": args})
+            result = self._retry_unexpected_replay(result, args, f"hub_set_rule({list(extra)})")
         except (McpError, McpToolError, requests.HTTPError) as exc:
             if "504" not in str(exc):
                 raise
@@ -3870,6 +3882,7 @@ class TestRunner:
         token = args.setdefault("opToken", self._next_op_token())
         try:
             result = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": args})
+            result = self._retry_unexpected_replay(result, args, "hub_set_rule")
             self._cache_write_health(args.get("appId"), result)
             return result
         except (McpError, McpToolError, requests.HTTPError) as exc:
@@ -3915,6 +3928,24 @@ class TestRunner:
             self._assert_rule_renders(app_id)
             self._last_write_health = None
             return {"success": True, "asyncCommitLikely": True, "relayDropped": True}
+
+    def _retry_unexpected_replay(self, result: Any, args: dict, label: str) -> Any:
+        """A replayed:true envelope on a FIRST issue is always a token collision with a
+        stale server record (a deliberate replay only ever comes back from the token-only
+        poll helpers): the call never executed and the echo describes some earlier op.
+        Swallowing it would 'pass' the write while the rule never changed -- the exact
+        failure shape of the cross-run deterministic-token incident. Re-issue once under
+        a fresh token; a second replay is impossible (the fresh token has no record)."""
+        if not (isinstance(result, dict) and result.get("replayed") is True):
+            return result
+        stale = args.get("opToken")
+        args["opToken"] = self._next_op_token()
+        print(f"    [TOKEN-COLLISION] {label}: first issue replayed a stale buffer "
+              f"(token {stale}) -- re-issuing under a fresh token")
+        fresh = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": args})
+        assert not (isinstance(fresh, dict) and fresh.get("replayed") is True), \
+            f"{label}: fresh-token re-issue STILL replayed -- token generation is broken: {args.get('opToken')}"
+        return fresh
 
     def _poll_op_result(self, token: str, deadline_s: float = 25.0, tool: str = "hub_set_rule") -> Any:
         """Poll a tokened op's buffered result after a relay 504 by re-issuing the CALL
