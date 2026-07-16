@@ -733,15 +733,28 @@ class OpTokenReplaySpec extends ToolSpecBase {
     }
 
     def "_opTokenPut catches the missing updateMapValue and delegates to the whole-map writer (pre-2.3.2 firmware path)"() {
-        given: 'atomicState is a PLAIN map, like a platform without the per-entry API, so the call throws the real MissingMethodException -- the gating lane\'s TestAtomicState always implements it, so the catch-and-delegate needs this forced pin (the script metaClass override is wiped by every test\'s setup())'
-        def plain = new LinkedHashMap()
-        script.metaClass.getAtomicState = { plain }
+        given: 'whatever object the script sees as atomicState gets a THROWING updateMapValue, like a platform without the per-entry API -- the gating lane\'s TestAtomicState always implements it, so the catch-and-delegate needs a forced pin. Instance metaClass must go through setMetaClass(): .metaClass property access on a Map subclass is an entry lookup.'
+        def store = script.atomicState
+        def threw = false
+        def emc = new ExpandoMetaClass(store.getClass(), false, true)
+        emc.updateMapValue = { Object p, Object k, Object v ->
+            threw = true
+            throw new MissingMethodException('updateMapValue', store.getClass(), [p, k, v] as Object[])
+        }
+        emc.initialize()
+        store.setMetaClass(emc)
 
         when:
         script._opTokenPut('mmefall12345', [state: 'running', tool: 'hub_create_room', startedAt: FIXED_NOW])
 
         then: 'the record landed via the whole-map fallback'
-        plain.opTokens['mmefall12345'].state == 'running'
+        store.opTokens['mmefall12345'].state == 'running'
+
+        and: 'on the shared TestAtomicState the poisoned per-entry call really threw first (the compat lane\'s wrapper lacks the method and exercises the catch naturally)'
+        !(store instanceof support.TestAtomicState) || threw
+
+        cleanup: 'the instance metaClass rides a JVM-shared store -- it must not leak into later tests'
+        store?.setMetaClass(null)
     }
 
     def "a thrown _opTokenComplete cannot wedge the token: the finally's fallback writes failed_buffer and polls answer indeterminate"() {
