@@ -420,6 +420,40 @@ class OpTokenReplaySpec extends ToolSpecBase {
 
     // ---------------- issue #351: the separate poll tool is retired ----------------
 
+    def "a stale client's call to the retired hub_get_op_result name is honored as a pure poll (unknown token is not burned)"() {
+        given:
+        settingsMap.enableWrite = true
+        def uploads = 0
+        script.metaClass.uploadHubFile = { String name, byte[] content -> uploads++ }
+
+        when: 'the retired tool name, called flat the way a stale client would'
+        def response = mcpDriver.callTool('hub_get_op_result', [opToken: 'staleclient1'])
+
+        then: 'answered as a poll -- unknown status, nothing marked, nothing buffered'
+        uploads == 0
+        !atomicStateMap.opTokens?.containsKey('staleclient1')
+        response.result.isError == true
+        mcpDriver.parseInner(response).status == 'unknown'
+    }
+
+    def "the retired name replays a completed token for a stale client (dedup answers before the shape check)"() {
+        given:
+        settingsMap.enableWrite = true
+        installFileStore()
+        def ran = 0
+        script.metaClass.toolCreateRoom = { a -> ran++; [success: true, roomId: 6] }
+
+        when: 'a tokened write completes, then a stale client polls via the retired name'
+        mcpDriver.callTool('hub_create_room', [name: 'Den', confirm: true, opToken: 'staleclient2'])
+        def polled = mcpDriver.callTool('hub_get_op_result', [opToken: 'staleclient2'])
+
+        then:
+        ran == 1
+        def inner = mcpDriver.parseInner(polled)
+        inner.replayed == true
+        inner.roomId == 6
+    }
+
     def "hub_get_op_result is fully retired: absent from the catalog, gateways, classifications, and display meta"() {
         expect:
         script.getAllToolDefinitions().every { it.name != 'hub_get_op_result' }

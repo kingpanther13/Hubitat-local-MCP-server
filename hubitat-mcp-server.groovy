@@ -1258,8 +1258,15 @@ def _validateOpToken(String opToken) {
 // UNSEEN token: seen tokens are answered by the dedup gate regardless of shape.
 def _isOpTokenPollShape(args, boolean isGatewayCall, leafName) {
     if (!(args instanceof Map)) return false
-    def req = requiredParamsByTool()[leafName]
-    if (!(req instanceof List) || req.isEmpty()) return false
+    // Compat shim for the RETIRED hub_get_op_result poll tool: a stale client that
+    // still calls it can only ever mean a poll (the name is gone from the catalog
+    // and dispatch), so honor the intent -- otherwise its token would be marked and
+    // burned on the unknown-tool dispatch error. Completed/running tokens are
+    // already answered by the dedup gate before this check, name regardless.
+    if (leafName?.toString() != 'hub_get_op_result') {
+        def req = requiredParamsByTool()[leafName]
+        if (!(req instanceof List) || req.isEmpty()) return false
+    }
     def bare = { Map m -> m.keySet().every { it == 'bestPracticeKey' } }
     if (isGatewayCall) {
         if (!args.keySet().every { it in ['tool', 'args', 'bestPracticeKey'] }) return false
