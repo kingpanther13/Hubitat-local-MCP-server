@@ -269,6 +269,35 @@ class OpTokenReplaySpec extends ToolSpecBase {
         replay.response_too_large == true
     }
 
+    def "an oversize result on a schema-advertised tool buffers isError:true so its replay cannot ride out as a schema-noncompliant success"() {
+        given: 'publishOutputSchemas ON: the wire too-large envelope is flagged isError (#342) -- the buffered record must carry the SAME flag, or the replay decorates the envelope with structuredContent as a fake success'
+        settingsMap.publishOutputSchemas = true
+        settingsMap.useGateways = true
+        settingsMap.enableRead = true
+        installFileStore()
+        def big = 'x' * 130000
+        def ran = 0
+        script.metaClass.toolGetHubInfo = { a -> ran++; [firmwareVersion: '9.9.9', blob: big] }
+
+        when:
+        def first = mcpDriver.callTool('hub_get_info', [opToken: 'bigschema123'])
+
+        then: 'the wire envelope is too-large and isError; the marker matches it'
+        first.result.isError == true
+        mcpDriver.parseInner(first).response_too_large == true
+        atomicStateMap.opTokens['bigschema123'].isError == true
+
+        when: 'the token-only poll replays it'
+        def second = mcpDriver.callTool('hub_get_info', [opToken: 'bigschema123'])
+
+        then: 'one run; the replay rides the isError envelope and gains no structuredContent'
+        ran == 1
+        second.result.isError == true
+        second.result.structuredContent == null
+        mcpDriver.parseInner(second).replayed == true
+        mcpDriver.parseInner(second).response_too_large == true
+    }
+
     def "the token nested in gateway inner args is extracted (args.args.opToken) and stripped before dispatch"() {
         given: 'gateway mode pinned -- this test exercises the gateway-nested token shape'
         settingsMap.useGateways = true
@@ -496,6 +525,94 @@ class OpTokenReplaySpec extends ToolSpecBase {
         atomicStateMap.opTokens['freshtok1234'].state == 'running'
     }
 
+    def "a tokened call with PARTIAL args is NOT a poll -- it dispatches and burns the token on the leaf's own validation error"() {
+        given: 'negative-space pin: only a truly bare tokened call polls; partial args mean a real (malformed) execution attempt'
+        settingsMap.enableWrite = true
+        installFileStore()
+        script.metaClass.toolCreateRoom = { a ->
+            if (a.confirm != true) throw new IllegalArgumentException('confirm required')
+            [success: true]
+        }
+
+        when: 'token + name but no confirm'
+        def response = mcpDriver.callTool('hub_create_room', [opToken: 'partial12345', name: 'Den'])
+
+        then: 'the leaf validation error surfaced (-32602), and the token was marked and spent on it'
+        response.error != null
+        response.error.code == -32602
+        atomicStateMap.opTokens['partial12345'].state == 'complete'
+        atomicStateMap.opTokens['partial12345'].isError == true
+    }
+
+    def "a token-only call naming a bare GATEWAY is a pure poll -- the token is never spent on a catalog listing"() {
+        given:
+        settingsMap.useGateways = true
+        settingsMap.enableWrite = true
+        installFileStore()
+
+        when: 'the gateway name with ONLY a token -- catalog mode is never the tokened op'
+        def response = mcpDriver.callTool('hub_manage_rooms', [opToken: 'gwcat123456'])
+
+        then:
+        !atomicStateMap.opTokens?.containsKey('gwcat123456')
+        mcpDriver.parseInner(response).status == 'unknown'
+    }
+
+    def "a token-only gateway call with a DEAD tool key (empty string) is still a pure poll -- the token is not spent on the catalog"() {
+        given: 'tool present but empty fails the isGatewayCall truthiness check, so without the dead-key tolerance this shape would dispatch as catalog mode and spend the token on the listing'
+        settingsMap.useGateways = true
+        settingsMap.enableWrite = true
+        installFileStore()
+
+        when:
+        def response = mcpDriver.callTool('hub_manage_rooms', [tool: '', opToken: 'gwdead123456'])
+
+        then:
+        !atomicStateMap.opTokens?.containsKey('gwdead123456')
+        mcpDriver.parseInner(response).status == 'unknown'
+    }
+
+    def "a completed token polled through the gateway envelope ({tool, opToken}) replays -- never the unknown shape"() {
+        given: 'every replayed:true pin elsewhere is flat-shaped; this pins the gateway poll shape against a reorder that answers it from the poll-shape check instead of the dedup gate'
+        settingsMap.useGateways = true
+        settingsMap.enableWrite = true
+        installFileStore()
+        def ran = 0
+        script.metaClass.toolCreateRoom = { a -> ran++; [success: true, roomId: 9] }
+
+        when: 'the tokened write completes via the gateway, then the poll re-issues token-only through the SAME envelope'
+        mcpDriver.callTool('hub_manage_rooms',
+            [tool: 'hub_create_room', args: [name: 'Den', confirm: true], opToken: 'gwreplay1234'])
+        def poll = mcpDriver.callTool('hub_manage_rooms', [tool: 'hub_create_room', opToken: 'gwreplay1234'])
+
+        then: 'one run; the gateway-shaped poll replays the buffered result'
+        ran == 1
+        mcpDriver.parseInner(poll).replayed == true
+        mcpDriver.parseInner(poll).roomId == 9
+    }
+
+    def "an outer token plus a string-encoded inner args carrying its own opToken strips BOTH before the leaf sees the args"() {
+        given:
+        settingsMap.useGateways = true
+        settingsMap.enableWrite = true
+        installFileStore()
+        def received = [:]
+        script.metaClass.toolCreateRoom = { a -> received.args = a; [success: true, roomId: 5] }
+
+        when: 'token at the envelope level AND inside the JSON string (a confused client)'
+        def response = mcpDriver.callTool('hub_manage_rooms',
+            [tool: 'hub_create_room', opToken: 'outertok1234',
+             args: '{"name":"Den","confirm":true,"opToken":"innertok1234"}'])
+
+        then: 'the OUTER token won and was processed; the inner one was stripped, not leaked to the leaf'
+        response.error == null
+        atomicStateMap.opTokens['outertok1234']?.state == 'complete'
+        !atomicStateMap.opTokens?.containsKey('innertok1234')
+        received.args instanceof Map
+        !received.args.containsKey('opToken')
+        received.args.name == 'Den'
+    }
+
     def "a token-only re-issue while the op is running returns the running refusal without arg validation"() {
         given:
         settingsMap.enableWrite = true
@@ -615,6 +732,81 @@ class OpTokenReplaySpec extends ToolSpecBase {
         atomicStateMap.opTokens['existing123']?.state == 'complete'
     }
 
+    def "_opTokenPut catches the missing updateMapValue and delegates to the whole-map writer (pre-2.3.2 firmware path)"() {
+        given: 'the per-entry API throws MissingMethodException like a platform without it -- the gating CI lane\'s TestAtomicState always implements it, so the catch-and-delegate itself needs this forced pin'
+        atomicStateMap.metaClass.updateMapValue = { Object prop, Object key, Object val ->
+            throw new MissingMethodException('updateMapValue', LinkedHashMap, [prop, key, val] as Object[])
+        }
+
+        when:
+        script._opTokenPut('mmefall12345', [state: 'running', tool: 'hub_create_room', startedAt: FIXED_NOW])
+
+        then: 'the record landed via the fallback'
+        atomicStateMap.opTokens['mmefall12345'].state == 'running'
+
+        cleanup: 'the per-instance metaClass rides a JVM-shared TestAtomicState -- it MUST not leak into later tests'
+        atomicStateMap.setMetaClass(null)
+    }
+
+    def "a thrown _opTokenComplete cannot wedge the token: the finally's fallback writes failed_buffer and polls answer indeterminate"() {
+        given:
+        settingsMap.enableWrite = true
+        installFileStore()
+        def ran = 0
+        script.metaClass.toolCreateRoom = { a -> ran++; [success: true] }
+        script.metaClass._opTokenComplete = { String t, String j, boolean e -> throw new RuntimeException('atomicState write failed') }
+
+        when: 'the tokened write completes but completion-buffering blows up'
+        def first = mcpDriver.callTool('hub_create_room', [name: 'Den', confirm: true, opToken: 'wedgeproof12'])
+
+        and: 'the caller later polls token-only'
+        def poll = mcpDriver.callTool('hub_create_room', [opToken: 'wedgeproof12'])
+
+        then: 'the write ran once and its own response was not disturbed'
+        ran == 1
+        first.error == null
+
+        and: 'the fallback record landed: failed_buffer, clock-stamped so it lives its own TTL (a null startedAt would prune to the unsafe unknown)'
+        atomicStateMap.opTokens['wedgeproof12'].state == 'failed_buffer'
+        atomicStateMap.opTokens['wedgeproof12'].startedAt == FIXED_NOW
+
+        and: 'the poll answers indeterminate -- never running-forever, never the unsafe unknown'
+        mcpDriver.parseInner(poll).status == 'indeterminate'
+    }
+
+    def "the TTL sweep deletes the result file by the token's deterministic name even when the record lost its .file pointer"() {
+        given: 'the prune-vs-complete race shape: an expired record with no .file'
+        def deleted = []
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.deleteHubFile = { String name -> deleted << name }
+        atomicStateMap.opTokens = [
+            orphaned1234: [state: 'running', tool: 'hub_create_room', startedAt: FIXED_NOW - DAY_MS - 1L]
+        ]
+
+        when:
+        script._opTokenMark('newmark45678', 'hub_create_room')
+
+        then:
+        !atomicStateMap.opTokens.containsKey('orphaned1234')
+        deleted.contains(FILE_PREFIX + 'orphaned1234.json')
+    }
+
+    def "a malformed JSON-string inner args leaves the token unextracted and falls through to the gateway's own parse error"() {
+        given:
+        settingsMap.useGateways = true
+        settingsMap.enableWrite = true
+        installFileStore()
+
+        when: 'the string mentions opToken but is not valid JSON'
+        def response = mcpDriver.callTool('hub_manage_rooms',
+            [tool: 'hub_create_room', args: '{"name":"Den","opToken":"brokenstr123"'])
+
+        then: 'no token processed, nothing marked; the gateway surfaces its own -32602 for the invalid JSON'
+        !atomicStateMap.opTokens?.containsKey('brokenstr123')
+        response.error != null
+        response.error.code == -32602
+    }
+
     def "_opTokenMark writes a running marker stamped with the current clock"() {
         when:
         script._opTokenMark('marktok12', 'hub_create_room')
@@ -646,38 +838,60 @@ class OpTokenReplaySpec extends ToolSpecBase {
         atomicStateMap.opTokens.containsKey('newmark123')
     }
 
-    def "_opTokenMark caps the map at 50 entries, dropping the oldest first"() {
-        given: '50 fresh entries, op_00 the oldest'
+    def "the size cap engages past 100 stored records, batch-evicting the oldest down to 50"() {
+        given: '100 fresh entries, op_00 the oldest -- exactly at the hysteresis high-water mark'
         def seed = [:]
-        (0..49).each { i ->
+        (0..99).each { i ->
             def key = "op_${String.format('%02d', i)}".toString()
-            seed[key] = [state: 'complete', tool: 'hub_create_room', startedAt: FIXED_NOW - (50L - i)]
+            seed[key] = [state: 'complete', tool: 'hub_create_room', startedAt: FIXED_NOW - (100L - i)]
         }
         atomicStateMap.opTokens = seed
 
-        when:
+        when: 'the 101st record arrives'
         script._opTokenMark('capnew1234', 'hub_create_room')
 
-        then: 'the map is held at 50 and the single oldest entry was evicted for the newcomer'
+        then: 'one batch eviction takes the map to 50: the 51 oldest terminal records are gone'
         atomicStateMap.opTokens.size() == 50
         !atomicStateMap.opTokens.containsKey('op_00')
+        !atomicStateMap.opTokens.containsKey('op_50')
+        atomicStateMap.opTokens.containsKey('op_51')
         atomicStateMap.opTokens.containsKey('capnew1234')
     }
 
-    def "the size cap never evicts a running token -- the oldest TERMINAL record goes instead"() {
-        given: '50 fresh entries; the oldest is still running, the next-oldest is complete'
+    def "the size cap has a dead band: between 50 and 100 stored records the prune never rewrites the map"() {
+        given: '60 fresh terminal records -- over the old hard cap, inside the dead band'
         def seed = [:]
-        (0..49).each { i ->
+        (0..59).each { i ->
+            def key = "op_${String.format('%02d', i)}".toString()
+            seed[key] = [state: 'complete', tool: 'hub_create_room', startedAt: FIXED_NOW - (60L - i)]
+        }
+        atomicStateMap.opTokens = seed
+        script._opTokenPut('deadband1234', [state: 'running', tool: 'hub_create_room', startedAt: FIXED_NOW])
+        def instanceAfterPut = atomicStateMap.opTokens
+
+        when: 'the prune runs at 61 stored records'
+        script._opTokenPrune()
+
+        then: 'nothing evicted and the map instance is untouched -- steady state stays free of the whole-map write (the #351 race exposure a hard at-50 cap would make permanent)'
+        atomicStateMap.opTokens.is(instanceAfterPut)
+        atomicStateMap.opTokens.size() == 61
+        atomicStateMap.opTokens.containsKey('op_00')
+    }
+
+    def "the size cap never evicts a running token -- the oldest TERMINAL records go instead"() {
+        given: '100 fresh entries; the oldest is still running, the rest are complete'
+        def seed = [:]
+        (0..99).each { i ->
             def key = "op_${String.format('%02d', i)}".toString()
             seed[key] = [state: (i == 0 ? 'running' : 'complete'), tool: 'hub_create_room',
-                         startedAt: FIXED_NOW - (50L - i)]
+                         startedAt: FIXED_NOW - (100L - i)]
         }
         atomicStateMap.opTokens = seed
 
         when:
         script._opTokenMark('capnew1234', 'hub_create_room')
 
-        then: 'the live op_00 survives; op_01 (oldest terminal) was evicted'
+        then: 'the live op_00 survives the batch eviction; the oldest terminal records went instead'
         atomicStateMap.opTokens.size() == 50
         atomicStateMap.opTokens.containsKey('op_00')
         !atomicStateMap.opTokens.containsKey('op_01')
@@ -709,6 +923,40 @@ class OpTokenReplaySpec extends ToolSpecBase {
     }
 
     // ---------------- _opTokenComplete: buffering + fallbacks ----------------
+
+    def "_opTokenComplete stamps its own clock when the running marker was lost -- an orphaned completion never prunes to the unsafe unknown"() {
+        given: 'no running marker (the prune-vs-per-entry race shape): prev is empty'
+        installFileStore()
+        atomicStateMap.remove('opTokens')
+
+        when:
+        script._opTokenComplete('orphandone12', '{"success":true}', false)
+
+        then: 'the completed record carries a live startedAt, so it survives its own full TTL'
+        atomicStateMap.opTokens['orphandone12'].state == 'complete'
+        atomicStateMap.opTokens['orphandone12'].startedAt == FIXED_NOW
+    }
+
+    def "a non-error replay carries structuredContent for a schema-advertised base tool when publishOutputSchemas is on"() {
+        given: 'spec-validating clients require structuredContent on every non-error result of an advertised tool (#342) -- the replay short-circuit must comply too'
+        settingsMap.publishOutputSchemas = true
+        settingsMap.useGateways = true
+        settingsMap.enableRead = true
+        installFileStore()
+        def ran = 0
+        script.metaClass.toolGetHubInfo = { a -> ran++; [firmwareVersion: '9.9.9'] }
+
+        when: 'a tokened call to a flat core tool completes, then the token-only poll replays it'
+        def first = mcpDriver.callTool('hub_get_info', [opToken: 'structok1234'])
+        def second = mcpDriver.callTool('hub_get_info', [opToken: 'structok1234'])
+
+        then: 'one run; both the original and the replay carry structuredContent'
+        ran == 1
+        first.result.structuredContent != null
+        second.result.structuredContent != null
+        second.result.structuredContent.replayed == true
+        second.result.structuredContent.firmwareVersion == '9.9.9'
+    }
 
     def "_opTokenComplete buffers the result to the reserved file and flips the marker to complete"() {
         given:

@@ -523,11 +523,21 @@ class ToolRuleHealthSpec extends ToolSpecBase {
 
         then:
         h.ok == false
+        h.unreadable == true   // nothing was checked -- the ok||unreadable gates must read couldn't-check, not broken
         h.broken == null
         h.source == "none"
         h.issues.any { it.contains("appId is null") }
         h.brokenMarkerCounts == [:]   // faithful subset of the normal shape (the gate reads this key)
         hubGet.calls.isEmpty()   // no /app/ruleBuilderJson/null or /installedapp/configure/json/null
+    }
+
+    def "_rmHealthGatePass: only a checked-and-broken verdict fails committed work (the no-evidence polarity table)"() {
+        expect: 'ONE definition, pinned as a truth table so no gate site can silently invert either no-evidence state'
+        script._rmHealthGatePass([ok: true, unreadable: false])       // healthy
+        script._rmHealthGatePass([ok: true, skipped: true])           // probe shed under the time budget
+        script._rmHealthGatePass([ok: false, unreadable: true])       // couldn't check -- no evidence either way
+        !script._rmHealthGatePass([ok: false, unreadable: false])     // checked and broken -- the ONLY failing verdict
+        !script._rmHealthGatePass(null)                               // no verdict object at all is not a pass
     }
 
     // ---------- error-response integration (issue #254, task: fold health into RM error replies) ----------

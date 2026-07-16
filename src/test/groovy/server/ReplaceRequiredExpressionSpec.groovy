@@ -1589,6 +1589,22 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
         script._rmHealthRegressedVsBaseline(baseline, now) == false
     }
 
+    def "F-MSG: an UNREADABLE post-op probe never reads as a regression -- a couldn't-check must not fire the restore on committed work"() {
+        given:
+        // The unreadable verdict's issue strings are fetch diagnostics ("health check
+        // failed: ..."), not evidence. Set-diffed against the baseline they would read
+        // as new issues and roll back (or fail) work that committed cleanly -- the same
+        // poison the walkStep gate fix closed. Goes RED if the unreadable guard is dropped.
+        def baseline = [issues: [], structuralIssues: [], brokenMarkerCounts: [:]]
+        def now = [unreadable: true,
+                   issues: ["health check failed: status code: 404, reason phrase: Not Found"],
+                   structuralIssues: [], brokenMarkerCounts: [:]]
+
+        expect:
+        script._rmHealthRegressionNewIssues(baseline, now).isEmpty()
+        script._rmHealthRegressedVsBaseline(baseline, now) == false
+    }
+
     def "BUG-8: a pre-existing **Broken Condition** with UNCHANGED count does NOT restore (BUG-1 preserved)"() {
         given:
         // The must-NOT-catch companion: the SAME pre-existing **Broken Condition** is present at

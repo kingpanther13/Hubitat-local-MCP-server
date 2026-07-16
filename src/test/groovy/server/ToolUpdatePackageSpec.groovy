@@ -648,6 +648,31 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
 
         and: 'nothing was written'
         calls == []
+
+        and: 'the RUNNING deploy\'s marker is untouched -- a refusal that cleared it would make the guard one-shot, re-opening the double-deploy on the very next retry'
+        atomicStateMap.packageDeployInFlight == [ref: 'feat/other', startedAt: GUARD_NOW - 60000L]
+    }
+
+    def "a STALE lastSelfDeploy (older than the marker) does NOT stand the guard down -- only a fresh one proves the deploy finished"() {
+        given: 'a prior deploy left an old lastSelfDeploy; the CURRENT deploy is still running'
+        enableDev()
+        registerAppTypes()
+        def calls = []
+        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
+        script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true, appId: a.appId] }
+        atomicStateMap.packageDeployInFlight = [ref: 'feat/other', startedAt: GUARD_NOW - 60000L]
+        atomicStateMap.lastSelfDeploy = [success: true, at: GUARD_NOW - 300000L]   // predates the marker
+
+        when:
+        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+
+        then: 'still refused -- the stale record proves nothing about the running deploy'
+        result.success == false
+        result.error.toLowerCase().contains('already')
+        calls == []
+
+        and: 'the running deploy\'s marker survives the refusal'
+        atomicStateMap.packageDeployInFlight == [ref: 'feat/other', startedAt: GUARD_NOW - 60000L]
     }
 
     def "the guard stands down when lastSelfDeploy postdates it -- the deploy finished, only its response was lost"() {
@@ -666,6 +691,9 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         then:
         result.success == true
         calls.size() == 3   // bundle + child app + self app
+
+        and: 'the fresh deploy owns and then clears the marker'
+        atomicStateMap.packageDeployInFlight == null
     }
 
     def "the guard expires after its TTL (a wedged marker cannot block deploys forever)"() {

@@ -485,7 +485,11 @@ def toolUpdatePackage(args) {
     // is read-only planning: it neither checks nor sets the guard. The marker
     // stands down when hub_get_info's lastSelfDeploy postdates it (the deploy
     // reached its final act; only the response was lost) or after the TTL, so a
-    // wedged marker can never block deploys for long.
+    // wedged marker can never block deploys for long. lastSelfDeploy is also
+    // stamped by a hub_update_app self-update and the self-app restore path --
+    // deliberately honoured here too: every writer means the self app just
+    // recompiled, which kills any in-flight deploy thread, so standing down on
+    // their stamp is coherent, not a bypass.
     final long guardTtlMs = 10L * 60L * 1000L
     if (!dryRun) {
         def inFlight = atomicState.packageDeployInFlight

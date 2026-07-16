@@ -3917,10 +3917,10 @@ class TestRunner:
             return {"success": True, "asyncCommitLikely": True, "relayDropped": True}
 
     def _poll_op_result(self, token: str, deadline_s: float = 25.0, tool: str = "hub_set_rule") -> Any:
-        """Poll a tokened op's buffered result after a relay 504 by re-issuing the WRITE
-        token-only (issue #351: the write IS the poll -- the dedup gate answers running/
-        replayed/unknown without re-running anything; the separate hub_get_op_result
-        poll tool is retired).
+        """Poll a tokened op's buffered result after a relay 504 by re-issuing the CALL
+        token-only (issue #351: the call IS the poll, reads included -- the dedup gate
+        answers running/replayed/unknown without re-running anything; the separate
+        hub_get_op_result poll tool is retired).
 
         Uses the RAW _send (like _settle_before_504_retry), NOT call_tool: a post-504 recovery
         probe must not enter op_timings / [SLOW] / _last_op (it would mislabel this test's
@@ -4019,9 +4019,15 @@ class TestRunner:
     def _cache_write_health(self, app_id: Any, result: Any) -> None:
         """Stash the health object a hub_set_rule write already returned (the SAME _rmCheckRuleHealth a
         standalone hub_get_rule_health re-derives), keyed by app, so a following _assert_rule_healthy
-        skips the extra round-trip. Cleared on a relay-dropped/soft envelope (no health) -> live fetch."""
-        if isinstance(result, dict) and isinstance(result.get("health"), dict):
-            self._last_write_health = (str(app_id), result["health"])
+        skips the extra round-trip. Cleared on a relay-dropped/soft envelope (no health) -> live fetch.
+        Also cleared when the returned probe carries no verdict -- skipped:true (shed under the time
+        budget) or unreadable:true (probe fetch failed): caching those would let _assert_rule_healthy
+        pass a genuinely broken rule without ever probing live."""
+        health = result.get("health") if isinstance(result, dict) else None
+        if (isinstance(health, dict)
+                and health.get("skipped") is not True
+                and health.get("unreadable") is not True):
+            self._last_write_health = (str(app_id), health)
         else:
             self._last_write_health = None
 
@@ -4934,6 +4940,26 @@ class TestRunner:
             f"the poll should echo the queried token: {parsed}"
         assert parsed.get("success") is False, \
             f"the unknown poll must never read as a committed success: {parsed}"
+
+    @test("op_replay")
+    def test_op_replay_retired_name_shim(self) -> None:
+        # A stale client still calling the RETIRED hub_get_op_result name can only mean a
+        # poll (the name is gone from the catalog and dispatch) -- the shim honours the
+        # intent instead of burning the token on an unknown-tool dispatch error. Raw _send:
+        # the answer rides an isError envelope that call_tool would raise on.
+        never = f"bat.opreplay.retired.{int(time.time())}"
+        raw = self.client._send("tools/call", {
+            "name": "hub_get_op_result", "arguments": {"opToken": never}})
+        assert raw.get("isError") is True, \
+            f"the retired-name poll must ride an isError envelope (nothing ran): {raw}"
+        parsed = None
+        for c in (raw.get("content") or []):
+            if c.get("type") == "text":
+                parsed = json.loads(c["text"])
+        assert isinstance(parsed, dict) and parsed.get("status") == "unknown", \
+            f"a never-used token via the retired name should report unknown, got: {parsed}"
+        assert never in str(parsed.get("opToken")), \
+            f"the poll should echo the queried token: {parsed}"
 
     @test("native_apps")
     def test_set_rule_contains_comparator(self) -> None:

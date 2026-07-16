@@ -365,7 +365,7 @@ class RelayBudgetSpec extends ToolSpecBase {
     // the real running loop via a non-Map trigger[0]: the loop records that failure INLINE (no
     // _rmAddTrigger call needed) and the budget then pauses before trigger[1], driving the real
     // checkpoint + trigList.subList(ti, ...) + actList carry-forward. The clean-partial return
-    // shape is pinned separately on _bulkRelayPauseResult below.
+    // shape is pinned separately on _bulkPauseResult below.
     def "the trigger-loop checkpoint hands back the unrun triggers AND all actions on a pause"() {
         given:
         def triggerCalls = []
@@ -444,11 +444,11 @@ class RelayBudgetSpec extends ToolSpecBase {
         !clicks.contains('updateRule')
     }
 
-    // Pin the trigger-pause return shape directly on _bulkRelayPauseResult too -- a
+    // Pin the trigger-pause return shape directly on _bulkPauseResult too -- a
     // deterministic unit on the shape the running loop above relies on.
-    def "_bulkRelayPauseResult builds the trigger-loop carry-forward shape (remaining triggers + all actions)"() {
+    def "_bulkPauseResult builds the trigger-loop carry-forward shape (remaining triggers + all actions)"() {
         when: 'a trigger-loop pause: one trigger committed, two remain, no action has run yet'
-        def result = script._bulkRelayPauseResult(7, [key: 'snap'],
+        def result = script._bulkPauseResult(7, [key: 'snap'],
             [[success: true, capability: 'Switch']],                                        // triggerResults so far
             [],                                                                             // actionResults so far
             [[capability: 'Switch', state: 'off', __reqT0: 9L], [capability: 'Motion']],   // remaining triggers
@@ -615,6 +615,79 @@ class RelayBudgetSpec extends ToolSpecBase {
         then:
         result.success == false
         result.error.contains('unhealthy')
+    }
+
+    // Real single-op _rmWalkStep, no walker stubs: the gate and clock wiring inside the
+    // op itself (the exact shape of the live-hub 504/poison failure). introspect's only
+    // hub touches are the page configure/json and statusJson reads.
+    private void seedWalkStepPage(int id) {
+        hubGet.register("/installedapp/configure/json/${id}/mainPage".toString()) {
+            JsonOutput.toJson([
+                app: [id: id, label: 'BAT-WS', name: 'Rule-5.1', installed: true,
+                      appType: [name: 'Rule-5.1', namespace: 'hubitat']],
+                configPage: [name: 'mainPage', title: 'Edit Rule', install: true, error: null,
+                             sections: [[title: '', input: [], paragraphs: []]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register("/installedapp/statusJson/${id}".toString()) {
+            JsonOutput.toJson([installedApp: [id: id], appSettings: [],
+                               eventSubscriptions: [], scheduledJobs: [], appState: [:]])
+        }
+    }
+
+    def "a REAL single walkStep op tolerates an unreadable health probe -- committed work stands"() {
+        given:
+        settingsMap.enableRead = true
+        seedWalkStepPage(100)
+        script.metaClass._rmCheckRuleHealth = { Integer id ->
+            [ok: false, unreadable: true, source: 'none', broken: null,
+             issues: ['health check failed: status code: 404, reason phrase: Not Found']]
+        }
+
+        when:
+        def result = script._rmWalkStep(100, [page: 'mainPage', operation: 'introspect'])
+
+        then:
+        result.success == true
+        result.health.unreadable == true
+        result.repairHints.any { it.contains('hub_get_rule_health') }
+    }
+
+    def "a REAL single walkStep op still fails on a checked-and-broken health verdict"() {
+        given:
+        settingsMap.enableRead = true
+        seedWalkStepPage(100)
+        script.metaClass._rmCheckRuleHealth = { Integer id ->
+            [ok: false, unreadable: false, broken: true, issues: ['ruleBuilderJson reports broken:true']]
+        }
+
+        when:
+        def result = script._rmWalkStep(100, [page: 'mainPage', operation: 'introspect'])
+
+        then:
+        result.success == false
+    }
+
+    def "a REAL single walkStep op sheds its trailing health probe once the budget is spent (clock read from the spec)"() {
+        given:
+        settingsMap.enableRead = true
+        seedWalkStepPage(100)
+        def probes = 0
+        script.metaClass._rmCheckRuleHealth = { Integer id -> probes++; [ok: true] }
+        script.metaClass._timeBudgetExceeded = { Long t0 -> t0 != null }
+
+        when: 'clock present -- probe shed'
+        def shed = script._rmWalkStep(100, [page: 'mainPage', operation: 'introspect', __reqT0: 1000L])
+
+        and: 'no clock -- probe runs'
+        def probed = script._rmWalkStep(100, [page: 'mainPage', operation: 'introspect'])
+
+        then:
+        shed.success == true
+        shed.health.skipped == true
+        probes == 1        // only the un-clocked call probed
+        probed.health.skipped == null
     }
 
     def "the budget clock is threaded into a SINGLE walkStep op (not just drive)"() {

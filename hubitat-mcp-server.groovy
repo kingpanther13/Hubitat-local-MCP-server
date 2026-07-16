@@ -940,16 +940,18 @@ def handleToolsCall(msg) {
             def rawToken = args.opToken ?: (args.args instanceof Map ? args.args.opToken : null)
             // Inner gateway args may arrive as a JSON-encoded STRING (handleGateway
             // supports that shape) -- a token inside it must still activate the
-            // idempotency machinery, or that client shape silently loses all dedup
-            // protection. Parse-or-ignore, gated on a cheap substring probe so
-            // ordinary string-args calls never pay a parse; on success hand the
-            // parsed Map onward (the gateway's own Map path). A malformed string
-            // falls through untouched to handleGateway's own -32602 parse error.
-            if (rawToken == null && args.args instanceof String && args.args.contains('opToken')) {
+            // idempotency machinery (or the shape silently loses all dedup protection)
+            // AND must be stripped even when the OUTER token already resolved, so a
+            // strict-arg leaf never sees the unknown key after the gateway parses the
+            // string. Parse-or-ignore, gated on a cheap substring probe so ordinary
+            // string-args calls never pay a parse; on success hand the parsed Map
+            // onward (the gateway's own Map path). A malformed string falls through
+            // untouched to handleGateway's own -32602 parse error.
+            if (args.args instanceof String && args.args.contains('opToken')) {
                 try {
                     def parsedInner = new groovy.json.JsonSlurper().parseText(args.args.toString())
-                    if (parsedInner instanceof Map && parsedInner.opToken != null) {
-                        rawToken = parsedInner.opToken
+                    if (parsedInner instanceof Map && parsedInner.containsKey('opToken')) {
+                        if (rawToken == null && parsedInner.opToken != null) rawToken = parsedInner.opToken
                         parsedInner.remove('opToken')
                         args.args = parsedInner
                     }
@@ -974,16 +976,25 @@ def handleToolsCall(msg) {
                 // the buffered result). Short-circuit BEFORE dispatch so neither the
                 // write nor the completion buffer runs again (opCompletionText stays
                 // null, so the finally does not re-buffer).
-                return jsonRpcResult(msg.id, [
+                def dedupBody = [
                     content: [[type: "text", text: groovy.json.JsonOutput.toJson(dedup.result)]],
                     isError: dedup.isError
-                ])
+                ]
+                // A non-error REPLAY of a schema-advertised base tool must carry
+                // structuredContent exactly like the normal path (#342 -- spec-validating
+                // clients reject a schema-advertised "success" without it, and post-#351
+                // this short-circuit is the ONLY recovery path for a dropped response).
+                if (!dedup.isError && settings.publishOutputSchemas == true && settings.useGateways != false
+                        && dedup.result instanceof Map && _advertisesOutputSchema(toolName)) {
+                    dedupBody.structuredContent = dedup.result
+                }
+                return jsonRpcResult(msg.id, dedupBody)
             }
-            // Token-only poll on an UNSEEN token: the write re-issued with nothing but
-            // its opToken is the documented recovery poll, and a required-args write
-            // called that way can never be a real execution -- so answer "unknown"
-            // instead of marking the token and burning it on the leaf's missing-arg
-            // validation error. Running/complete tokens were already answered above.
+            // Token-only poll on an UNSEEN token: the call re-issued with nothing but
+            // its opToken is the documented recovery poll, and a required-args leaf
+            // (write or read) called that way can never be a real execution -- so answer
+            // "unknown" instead of marking the token and burning it on the leaf's
+            // missing-arg validation error. Running/complete tokens were answered above.
             boolean isGatewayCall = getGatewayConfig().containsKey(toolName) && args.tool instanceof String && args.tool
             if (_isOpTokenPollShape(args, isGatewayCall, reactiveToolName)) {
                 return jsonRpcResult(msg.id, [
@@ -1114,11 +1125,16 @@ def handleToolsCall(msg) {
             ])
             String tooLargeJson = groovy.json.JsonOutput.toJson(_responseTooLargeEnvelope(reactiveToolName as String, wireBytes, responseSizeLimit))
             def tooLargeBody = [content: [[type: "text", text: tooLargeJson]]]
-            // Buffer the SAME envelope the caller is getting, replacing the real result
-            // captured above: a replay must reproduce the original wire response, and the
-            // oversize real result could never ride the dedup short-circuit anyway -- it
-            // would just trip the outer 128KB cap as an opaque -32603 on every poll.
-            if (opTokenActive) opCompletionText = tooLargeJson
+            // Computed up front: the buffered record must reproduce the SAME isError flag
+            // the wire envelope carries (set below for schema-advertised tools, #342).
+            boolean tooLargeIsError = (settings.publishOutputSchemas == true && settings.useGateways != false
+                    && _advertisesOutputSchema(toolName))
+            // Buffer the SAME envelope (and flag) the caller is getting, replacing the
+            // real result captured above: a replay must reproduce the original wire
+            // response, and the oversize real result could never ride the dedup
+            // short-circuit anyway -- it would just trip the outer 128KB cap as an
+            // opaque -32603 on every poll.
+            if (opTokenActive) { opCompletionText = tooLargeJson; opCompletionIsError = tooLargeIsError }
             // A schema-advertised tool's NON-ERROR result must carry structuredContent (the
             // spec MUST behind issue #342), and this fallback deliberately replaces the real
             // result with a text-only envelope. Flag it isError so spec-validating clients
@@ -1126,8 +1142,7 @@ def handleToolsCall(msg) {
             // of rejecting a schema-noncompliant "success" with the same generic failure
             // #342 was filed about. Non-advertised tools keep the long-standing non-error
             // shape (#174: the model reads the suggestion and retries narrower).
-            if (settings.publishOutputSchemas == true && settings.useGateways != false
-                    && _advertisesOutputSchema(toolName)) {
+            if (tooLargeIsError) {
                 tooLargeBody.isError = true
             }
             return jsonRpcResult(msg.id, tooLargeBody)
@@ -1190,9 +1205,11 @@ def handleToolsCall(msg) {
                 // downgrades every poll to the indeterminate verify-state answer.
                 // startedAt=now() so the record lives its own full TTL (a null would
                 // read as expired and prune to the unsafe "unknown" immediately).
+                // Straight to the whole-map writer: _opTokenPut is part of what just
+                // threw, so retrying it would fail the same way for any non-MME cause.
                 try {
-                    _opTokenPut(opToken, [state: "failed_buffer", tool: reactiveToolName?.toString(),
-                                          startedAt: now(), finishedAt: now(), isError: opCompletionIsError])
+                    _opTokenPutWholeMap(opToken, [state: "failed_buffer", tool: reactiveToolName?.toString(),
+                                                  startedAt: now(), finishedAt: now(), isError: opCompletionIsError])
                 } catch (Exception ignored) { }
             }
         }
@@ -1225,7 +1242,9 @@ def _advertisesOutputSchema(toolName) {
 // simultaneous calls carrying the SAME token can both pass the gate. Records for
 // DIFFERENT tokens are written per-entry (atomicState.updateMapValue), so a client
 // running successive or parallel tokened calls cannot lose a record to a whole-map
-// last-writer-win; the amortized prune is the one remaining whole-map writer (its
+// last-writer-win; the amortized prune is the only whole-map writer left on the
+// normal (updateMapValue) path, and its size-cap hysteresis (engage past 100
+// records, evict to 50) keeps steady-state marks from rewriting the map (its
 // narrow window self-heals via the TTL sweep). The token targets the
 // sequential-retry pattern (response lost, client retries seconds later), where
 // the persisted mark refuses/replays the retry race-free. The buffered result
@@ -1293,12 +1312,17 @@ def _validateOpToken(String opToken) {
 // regardless of shape.
 def _isOpTokenPollShape(args, boolean isGatewayCall, leafName) {
     if (!(args instanceof Map)) return false
-    // Compat shim for the RETIRED hub_get_op_result poll tool: a stale client that
-    // still calls it can only ever mean a poll (the name is gone from the catalog
-    // and dispatch), so honor the intent -- otherwise its token would be marked and
-    // burned on the unknown-tool dispatch error. Completed/running tokens are
-    // already answered by the dedup gate before this check, name regardless.
-    if (leafName?.toString() != 'hub_get_op_result') {
+    // Two name classes skip the required-params rule because a bare tokened call to
+    // them can never be a legitimate tokened execution: the RETIRED hub_get_op_result
+    // poll tool (gone from catalog and dispatch -- a stale client calling it can only
+    // mean a poll), and bare GATEWAY names (a token-only gateway call is catalog mode,
+    // which nobody targets with an idempotency token -- without this, the token would
+    // be marked and spent on the catalog listing, and a later re-issue of the real op
+    // would replay the catalog). Completed/running tokens are already answered by the
+    // dedup gate before this check, name regardless.
+    boolean pollOnlyName = (leafName?.toString() == 'hub_get_op_result') ||
+            getGatewayConfig().containsKey(leafName?.toString())
+    if (!pollOnlyName) {
         def req = requiredParamsByTool()[leafName]
         if (!(req instanceof List) || req.isEmpty()) return false
     }
@@ -1307,6 +1331,14 @@ def _isOpTokenPollShape(args, boolean isGatewayCall, leafName) {
         if (!args.keySet().every { it in ['tool', 'args', 'bestPracticeKey'] }) return false
         def inner = args.args
         return inner == null || ((inner instanceof Map) && bare(inner))
+    }
+    // Degenerate gateway shape: a `tool` key that is present but null/empty fails the
+    // isGatewayCall truthiness check, so the call lands here as "flat" on a gateway
+    // name. Its intent is the same catalog mode as no `tool` at all -- treat the dead
+    // key as absent, or the token would be marked and spent on the catalog listing
+    // (and a later real re-issue of the op would replay the catalog).
+    if (getGatewayConfig().containsKey(leafName?.toString()) && args.containsKey('tool') && !args.tool) {
+        return args.keySet().every { it in ['tool', 'bestPracticeKey'] }
     }
     return bare(args)
 }
@@ -1357,12 +1389,13 @@ def _opTokenPutWholeMap(String opToken, Map rec) {
     atomicState.opTokens = tokens
 }
 
-// Amortized prune: drop entries past the 24h TTL and cap the map at 50,
-// oldest-first. Runs AFTER the marker is written and only rewrites the map when
-// something actually needs removing, so the common path never does a whole-map
-// write; result-file deletions happen after the map write so no file I/O sits
-// inside the read->write window. This is the one remaining whole-map writer -- a
-// concurrent per-entry write can lose to it in a narrow window, which the sweep
+// Amortized prune: drop entries past the 24h TTL, and past 100 stored records
+// batch-evict the oldest terminal entries down to 50. Runs AFTER the marker is
+// written and only rewrites the map when something actually needs removing, so
+// the common path never does a whole-map write; result-file deletions happen
+// after the map write so no file I/O sits inside the read->write window. This is
+// the only whole-map writer on the normal (updateMapValue) path -- a concurrent
+// per-entry write can lose to it in a narrow window, which the sweep
 // self-heals (the record's file TTL-expires; a live token is never the eviction
 // target: the size cap evicts TERMINAL records only, and stuck "running" records
 // are the TTL sweep's job, so the cap cannot wedge on them for long).
@@ -1375,7 +1408,12 @@ def _opTokenPrune() {
     long cutoff = now() - 86400000L
     def expiredKeys = tokens.findAll { k, v -> (v instanceof Map) && (((v.startedAt as Long) ?: 0L) < cutoff) }.keySet().toList()
     expiredKeys.each { k -> tokens.remove(k); removedKeys << k }
-    if (tokens.size() > 50) {
+    // Hysteresis dead band: a hard at-50 cap would turn EVERY tokened call past the
+    // 50th-within-24h into a whole-map rewrite -- permanent re-exposure of the
+    // lost-record race the per-entry writes exist to close. Engaging only past 100
+    // and evicting to 50 in one batch keeps steady state (50-100 records) free of
+    // cap-driven rewrites: one batch eviction per ~50 new tokens under sustained load.
+    if (tokens.size() > 100) {
         def ordered = tokens.entrySet().toList()
             .findAll { e -> !((e.value instanceof Map) && e.value.state == "running") }
             .sort { e -> (e.value instanceof Map) ? ((e.value.startedAt as Long) ?: 0L) : 0L }
@@ -1390,7 +1428,14 @@ def _opTokenPrune() {
     // (deleting a never-uploaded name is a harmless best-effort no-op).
     removedKeys.each { k ->
         try { deleteHubFile(_opTokenResultFile(k.toString())) }
-        catch (Exception e) { /* best-effort: a stray result file is swept next pass */ }
+        catch (Exception e) {
+            // Best-effort: the key just left the map, so nothing can re-derive this
+            // filename later -- a failed delete leaks one small JSON file until it is
+            // removed from File Manager by hand. Logged so the manual-cleanup case is
+            // discoverable (a real failure is otherwise indistinguishable from the
+            // expected never-uploaded no-op).
+            mcpLog("debug", "op-token", "prune could not delete result file ${_opTokenResultFile(k.toString())}: ${e.message}")
+        }
     }
 }
 
@@ -1417,7 +1462,14 @@ def _opTokenComplete(String opToken, String jsonText, boolean isErrorBool) {
     }
     def stored = atomicState.opTokens
     def prev = (stored instanceof Map && stored[opToken] instanceof Map) ? stored[opToken] : [:]
-    def rec = [state: "complete", tool: prev.tool, startedAt: prev.startedAt, finishedAt: now(), isError: isErrorBool]
+    // startedAt drives the prune TTL: if the running marker was lost (the disclosed
+    // prune-vs-per-entry race / whole-map fallback race), prev is empty and a null
+    // startedAt would read as epoch-0-expired -- the very next prune would drop the
+    // record AND its file, downgrading a COMPLETED op to the unsafe "unknown".
+    // Stamp now() so an orphaned completion still lives its own full TTL.
+    def rec = [state: "complete", tool: prev.tool,
+               startedAt: (prev.startedAt != null ? prev.startedAt : now()),
+               finishedAt: now(), isError: isErrorBool]
     if (uploaded) {
         rec.file = fileName
     } else if (resultBytes != null && resultBytes.length <= 2048) {
@@ -1432,7 +1484,7 @@ def _opTokenComplete(String opToken, String jsonText, boolean isErrorBool) {
 // Dedup gate consulted before dispatch. Returns null to proceed, or a
 // [result, isError] pair to short-circuit: a "running" refusal (a duplicate write
 // in flight) or a replay of the already-buffered result (adds replayed:true). A
-// completed-but-unreadable buffer degrades to the "verify state" unknown shape.
+// completed-but-unreadable buffer degrades to the "verify state" indeterminate shape.
 def _opTokenDedup(String opToken, origToolName) {
     def toks = atomicState.opTokens
     def rec = (toks instanceof Map && toks[opToken] instanceof Map) ? toks[opToken] : null
@@ -5355,16 +5407,26 @@ private String _classicAppFormat(Map cfg) {
  * _rmBuildUpdateErrorResponse, toolSetVisualRule) attach this report to
  * mutation success AND error responses so an LLM sees broken state immediately.
  */
+// Empty health-verdict shell: the stable keys of _rmCheckRuleHealth's report with
+// nothing detected, for the degenerate verdicts (null appId here; the skipped
+// probe in _rmWalkStepHealth) -- ONE literal to keep in lockstep with the main
+// report shape instead of a hand-copied literal per degenerate case.
+private Map _rmEmptyHealthVerdict(Map overrides) {
+    def v = [ok: false, unreadable: false, broken: null, source: "none", ruleFormat: null,
+             label: null, configPageError: null, brokenMarkers: [], brokenMarkerCounts: [:],
+             multipleFlagPoison: [], structuralIssues: [], validationErrors: [], issues: []]
+    v.putAll(overrides ?: [:])
+    return v
+}
+
 Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     // Defensive guard: error paths (_rmBuildUpdateErrorResponse and friends) can call in with a
     // null appId if the failure happened before the id resolved. Reading rule state for a null id
     // would fire redundant HTTP calls (/app/ruleBuilderJson/null, /installedapp/configure/json/null)
-    // that just throw — short-circuit to a clean unhealthy verdict instead. (Gemini review, PR #276.)
+    // that just throw -- short-circuit instead. (Gemini review, PR #276.) The verdict is unhealthy
+    // AND unreadable: nothing was checked, so ok||unreadable gates treat it as couldn't-check.
     if (appId == null) {
-        return [ok: false, unreadable: true, broken: null, source: "none", ruleFormat: null,
-                label: null, configPageError: null, brokenMarkers: [], brokenMarkerCounts: [:],
-                multipleFlagPoison: [], structuralIssues: [], validationErrors: [],
-                issues: ["health check failed: appId is null"]]
+        return _rmEmptyHealthVerdict(unreadable: true, issues: ["health check failed: appId is null"])
     }
     def issues = []
     def label = null
@@ -5485,6 +5547,12 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
         } catch (Exception e) {
             // Both sources down: include the compiled-state read failure too so the dual-failure
             // diagnostic is complete (auth/connectivity often breaks both localhost reads at once).
+            // When the compiled read SUCCEEDED and only this HTML path failed, the failure still
+            // lands in issues (ok:false, unreadable:false) DELIBERATELY: the render scan is what
+            // catches the transient window where a break shows in the HTML before the compiled
+            // `broken` boolean flips (see the cross-check note below), so losing it is a real
+            // gap in the verdict, not a couldn't-check -- fail loud rather than report a
+            // half-checked rule as healthy.
             def also = compiledReadError ? " (compiled-state read also failed: ${compiledReadError})" : ""
             issues << "health check failed: ${e.message}${also}".toString()
         }
@@ -6909,7 +6977,7 @@ Spec: `{page, operation, write?:{<field>:<value>}, click?:{name,stateAttribute?}
 - `navigate` -- forward into a sub-page via its href.
 - `done` -- BACK-navigate from a sub-page to its parent (`_action_previous=Done`), carrying ALL the sub-page's current settings. REQUIRED for sub-pages (Periodic, etc.) whose parent row otherwise renders `?`. Pass `hrefContext={fromPage:<parent>, hrefParams:{n:<idx>}}`.
 
-The loop `drive` automates (and the sequence to put in `steps[]`): `introspect` to see the page's fields -> `navigate` into a sub-page if one is exposed -> `write` each required field (with `hrefContext` on sub-pages) -> inspect `diff.appeared`/`valueEcho.match`/`silentRejection` between writes -> `done` to back out of a sub-page (this bakes the trigger/action description) -> `click` `hasAll`/`actionDone` on the parent to finalize the row. Always check `silentRejection`, `valueEcho.match`, and `health.ok` in each step's snapshot -- they are the fail-loud signals.
+The loop `drive` automates (and the sequence to put in `steps[]`): `introspect` to see the page's fields -> `navigate` into a sub-page if one is exposed -> `write` each required field (with `hrefContext` on sub-pages) -> inspect `diff.appeared`/`valueEcho.match`/`silentRejection` between writes -> `done` to back out of a sub-page (this bakes the trigger/action description) -> `click` `hasAll`/`actionDone` on the parent to finalize the row. Always check `silentRejection`, `valueEcho.match`, and `health` in each step's snapshot -- they are the fail-loud signals. On health: `skipped: true` means the probe was deliberately not run (time budget spent) and `unreadable: true` means it could not be read -- neither is evidence of breakage; only a checked verdict (broken/issues with unreadable false) is.
 
 Worked `drive` example (a multi-device switch trigger committed in one call, the `steps[]` form of the raw-mode example below). The trailing `done` is what runs the mainPage Done finalize (raw-mode step 6, `updateRule`); without it the trigger is written to settings but never subscribed, so the rule looks created yet never fires:
 ```
@@ -7217,14 +7285,14 @@ A slow write can outlive its transport: the cloud relay severs calls at a fixed 
 
 ### Idempotency token (opToken): pass one, and re-issue with the SAME one
 
-EVERY tool -- reads included -- accepts an optional `opToken` you invent: 8-128 characters of A-Za-z0-9._- (the schemas of the known-slow class advertise it explicitly: hub_set_rule, hub_set_native_app, the code save/update tools, hub_install_bundle, hub_update_package, hub_create_backup, hub_restore_backup, hub_delete_variable). The server records the token before running the call and buffers the terminal result under it when it finishes. A read cannot double-commit, but an expensive read that outlives its transport still completes and buffers, so the tokened re-issue serves the buffered result instead of re-running the work. Tokens are per-call nonces: concurrent calls with DIFFERENT tokens never interfere with each other.
+EVERY tool -- reads included -- accepts an optional `opToken` you invent: 8-128 characters of A-Za-z0-9._- (the schemas of the known-slow class advertise it explicitly: hub_set_rule, hub_set_native_app, the code save/update tools, hub_install_bundle, hub_update_package, hub_create_backup, hub_restore_backup, hub_delete_variable). The server records the token before running the call and buffers the terminal result under it when it finishes. A read cannot double-commit, but an expensive read that outlives its transport still completes and buffers, so the tokened re-issue serves the buffered result instead of re-running the work. Tokens are per-call nonces: records are written per-entry, so concurrent calls with DIFFERENT tokens do not interfere with each other.
 
-If the response is lost, DO NOT re-run the operation and DO NOT invent a fresh token. Re-issue the SAME tool call with the SAME `opToken` -- the token alone is enough (e.g. `{tool: "hub_update_package", opToken: "<yours>"}` with no other arguments). The server answers from the token record without running anything twice:
+If the response is lost, DO NOT re-run the operation and DO NOT invent a fresh token. Re-issue the SAME tool call with the SAME `opToken` -- the token alone is enough: a flat tool takes `{opToken: "<yours>"}` with no other arguments (e.g. hub_update_package), a gateway member takes `{tool: "<leaf>", opToken: "<yours>"}` (e.g. `{tool: "hub_set_rule", opToken: "<yours>"}` via hub_manage_rule_machine). The server answers from the token record without running anything twice:
 
-- `status: "running"` -- still executing on the hub. Poll again in a few seconds by re-issuing the same tokened call. The write commits even though your response dropped.
+- `status: "running"` -- still executing on the hub. Poll again in a few seconds by re-issuing the same tokened call. The operation completes and commits even though your response dropped.
 - `replayed: true` -- it finished; this IS the original buffered result (including `isError` if that attempt failed).
-- `status: "unknown"` (returned only to a token-only poll) -- no operation with this token ever started here; the original call never arrived. Re-issue the ORIGINAL call (full arguments) with this same token.
-- `status: "indeterminate"` -- the operation completed here but its buffered result is gone (buffering failed, or swept opportunistically once older than ~24 hours). Do NOT re-issue blindly; verify current state via reads first. Only "unknown" means the call never arrived.
+- `status: "unknown"` (returned only to a token-only poll) -- no RECORD of this token exists: the original call never arrived, OR the record aged out (records sweep ~24h after start, and past 100 stored records the oldest terminal records batch-evict down to 50). Poll promptly after a drop and it reliably means never-arrived: re-issue the ORIGINAL call (full arguments) with this same token. Do not trust day-old tokens.
+- `status: "indeterminate"` -- the operation completed here but its buffered result cannot be read (buffering failed, or the result file is gone while the record survives). Do NOT re-issue blindly; verify current state via reads first.
 
 A token is SPENT once its operation completes -- errors included. A replayed result carrying an error means that attempt failed; to retry with corrected arguments, invent a FRESH token. Never reuse a token for a different or corrected operation.
 
