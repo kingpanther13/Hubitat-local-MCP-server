@@ -542,6 +542,117 @@ class RelayBudgetSpec extends ToolSpecBase {
         captured.edit.patches.size() == 2
     }
 
+    // ---------------- health-probe shedding + unreadable tolerance (issue #351) ----------------
+    // The trailing health probe is advisory freight on an already-committed op: it
+    // must shed once the budget is spent (returning under the transport ceiling
+    // beats 504ing on diagnostics), and a probe that could not be READ (transient
+    // fetch failure -- no evidence of breakage) must never fail committed work.
+
+    def "_rmWalkStepHealth sheds the probe once the budget is spent"() {
+        given:
+        def probes = 0
+        script.metaClass._rmCheckRuleHealth = { Integer id -> probes++; [ok: true] }
+        script.metaClass._timeBudgetExceeded = { Long t0 -> true }
+
+        when:
+        def h = script._rmWalkStepHealth(7, 1000L)
+
+        then: 'no probe fetch; an ok-shaped skipped verdict pointing at hub_get_rule_health'
+        probes == 0
+        h.ok == true
+        h.skipped == true
+        h.note.contains('hub_get_rule_health')
+    }
+
+    def "_rmWalkStepHealth probes normally within budget"() {
+        given:
+        def probes = 0
+        script.metaClass._rmCheckRuleHealth = { Integer id -> probes++; [ok: true] }
+        script.metaClass._timeBudgetExceeded = { Long t0 -> false }
+
+        expect:
+        script._rmWalkStepHealth(7, 1000L).ok == true
+        probes == 1
+    }
+
+    def "an unreadable final health probe does not fail a drive whose every step committed"() {
+        given:
+        def walkCalls = []
+        script.metaClass._rmWalkStep = { Integer id, Map step ->
+            walkCalls << new LinkedHashMap(step); [page: step.page, success: true]
+        }
+        script.metaClass._rmCheckRuleHealth = { Integer id ->
+            [ok: false, unreadable: true, source: 'none', broken: null,
+             issues: ['health check failed: status code: 404, reason phrase: Not Found']]
+        }
+        script.metaClass._timeBudgetExceeded = { Long t0 -> false }
+
+        when:
+        def result = script._rmDriveWalkSteps(1, [operation: 'drive', steps: [
+            [page: 'p1', operation: 'introspect'],
+        ]])
+
+        then: 'committed work stands; the caller is told to re-verify, not to restore'
+        result.success == true
+        result.error == null
+        result.health.unreadable == true
+        result.repairHints.any { it.contains('hub_get_rule_health') }
+    }
+
+    def "a checked-and-broken final health verdict still fails the drive (unreadable tolerance is not a bypass)"() {
+        given:
+        def walkCalls = []
+        installWalkerStubs(walkCalls, false)
+        script.metaClass._rmCheckRuleHealth = { Integer id ->
+            [ok: false, unreadable: false, broken: true, issues: ['ruleBuilderJson reports broken:true']]
+        }
+
+        when:
+        def result = script._rmDriveWalkSteps(1, [operation: 'drive', steps: [
+            [page: 'p1', operation: 'introspect'],
+        ]])
+
+        then:
+        result.success == false
+        result.error.contains('unhealthy')
+    }
+
+    def "the budget clock is threaded into a SINGLE walkStep op (not just drive)"() {
+        given:
+        stateMap.lastBackupTimestamp = FIXED_NOW
+        settingsMap.enableWrite = true
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason -> [key: 'snap'] }
+        def captured = [:]
+        script.metaClass._rmWalkStep = { Integer id, Map spec -> captured.spec = spec; [page: spec.page, success: true, operation: spec.operation] }
+
+        when:
+        script._applyNativeAppEdit([appId: 1, confirm: true, __reqT0: 1000L,
+                                    walkStep: [operation: 'introspect', page: 'mainPage']])
+
+        then:
+        captured.spec.__reqT0 == 1000L
+    }
+
+    def "the drive threads the budget clock into each per-step spec"() {
+        given:
+        def walkCalls = []
+        script.metaClass._rmWalkStep = { Integer id, Map step ->
+            walkCalls << new LinkedHashMap(step); [page: step.page, success: true]
+        }
+        script.metaClass._rmCheckRuleHealth = { Integer id -> [ok: true] }
+        script.metaClass._timeBudgetExceeded = { Long t0 -> false }
+
+        when:
+        def result = script._rmDriveWalkSteps(1, [operation: 'drive', __reqT0: 1000L, steps: [
+            [page: 'p1', operation: 'introspect'],
+            [page: 'p2', operation: 'introspect'],
+        ]])
+
+        then: 'every step carries the clock; the result echoes none of it'
+        walkCalls.every { it.__reqT0 == 1000L }
+        !JsonOutput.toJson(result).contains('__reqT0')
+    }
+
     def "a drive paused right after an intermediate done step does NOT fire the trailing mainPage Done"() {
         given: 'a walker that pauses after step 1 (a done op), plus a recorder on the finalizer'
         stateMap.lastBackupTimestamp = FIXED_NOW

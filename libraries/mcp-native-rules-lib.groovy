@@ -8286,13 +8286,19 @@ Map _rmWalkStep(Integer appId, Map spec) {
         }
     }
 
-    def health = _rmCheckRuleHealth(appId)
+    // Trailing health probe: advisory freight on an ALREADY-COMMITTED op. Shed it
+    // when the transport time budget is spent -- returning under the ceiling beats
+    // carrying diagnostics into a severed response (the 504 whose recovery then
+    // replays a needlessly failed envelope). And an UNREADABLE probe (a transient
+    // fetch failure -- no evidence of breakage either way) must never fail the
+    // committed work; only positive evidence may.
+    def health = _rmWalkStepHealth(appId, spec?.__reqT0 as Long)
     def silentRejection = (operation == "write") &&
         appeared.isEmpty() && disappeared.isEmpty() &&
         valueEcho?.match == false
 
-    return [
-        success: health.ok && (operation != "write" || (valueEcho?.match != false)),
+    def result = [
+        success: (health.ok || health.unreadable == true) && (operation != "write" || (valueEcho?.match != false)),
         page: page,
         operation: operation,
         before: beforeSchema,
@@ -8313,6 +8319,26 @@ Map _rmWalkStep(Integer appId, Map spec) {
         silentRejection: silentRejection,
         health: health
     ]
+    if (health.unreadable == true) {
+        result.repairHints = (result.repairHints ?: []) + ["The post-op health probe could not be read (transient fetch failure -- not evidence of breakage); the operation itself committed. Verify via hub_get_rule_health(ruleId=${appId}).".toString()]
+    }
+    return result
+}
+
+// The trailing health probe for a walkStep op, budget-aware: once the transport
+// time budget is spent the probe is SKIPPED (an ok-shaped verdict flagged
+// skipped:true, with a pointer to hub_get_rule_health) so the committed op's
+// response returns under the transport ceiling instead of burning the remaining
+// window on diagnostics. t0 == null (no budget threaded) always probes.
+private Map _rmWalkStepHealth(Integer appId, Long t0) {
+    if (_timeBudgetExceeded(t0)) {
+        return [ok: true, skipped: true, unreadable: false, broken: null, source: "skipped",
+                ruleFormat: null, label: null, configPageError: null, brokenMarkers: [],
+                brokenMarkerCounts: [:], multipleFlagPoison: [], structuralIssues: [],
+                validationErrors: [], issues: [],
+                note: "health probe skipped: the transport time budget was reached after the committed operation -- verify via hub_get_rule_health(ruleId=${appId})".toString()]
+    }
+    return _rmCheckRuleHealth(appId)
 }
 
 // Auto-driver for walkStep (operation='drive'): run an ordered list of
@@ -8369,6 +8395,11 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
             break
         }
         def step = new LinkedHashMap((Map) rawStep)
+        // Thread the budget clock into the (already-copied) step so its trailing
+        // health probe sheds once the budget is spent -- the between-step pause
+        // above then fires before the next step. stepsRemaining is built from the
+        // raw list via _stripInternalClock, so the clock never leaks into an echo.
+        if (spec?.__reqT0 != null) step.__reqT0 = spec.__reqT0
         def stepOp = step.operation?.toString()?.trim() ?: "introspect"
         // Inherit the page the previous step ended on when this step omits one.
         if (!step.page && currentPage) step.page = currentPage
@@ -8417,8 +8448,11 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
             if (stopOnError) break
         }
     }
-    def finalHealth = _rmCheckRuleHealth(appId)
-    // Paused (cloud-relay budget reached between steps): return an in_progress envelope
+    // Budget-aware final probe: on a pause (or any budget-spent exit) the probe is
+    // skipped -- the pause exists to beat the transport ceiling, and burning the
+    // remaining window on a diagnostic fetch defeats it.
+    def finalHealth = _rmWalkStepHealth(appId, spec?.__reqT0 as Long)
+    // Paused (budget reached between steps): return an in_progress envelope
     // and skip the fail-loud rollup below -- a pause is NOT an error. success:true holds
     // because the pause guard only trips when nothing has failed; every completed step is
     // committed and its per-step signals ride in steps[].
@@ -8440,8 +8474,12 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
             ]
         ]
     }
+    // An unreadable final probe (transient fetch failure, no evidence either way)
+    // must not fail a drive whose every step committed cleanly; a skipped probe
+    // (budget shed) likewise. Positive evidence of breakage still gates.
+    boolean finalHealthGate = finalHealth.ok || finalHealth.unreadable == true
     def result = [
-        success: allOk && finalHealth.ok,
+        success: allOk && finalHealthGate,
         operation: "drive",
         page: currentPage,
         stepsRequested: steps.size(),
@@ -8454,13 +8492,15 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
     // error caught per-step otherwise lives only in steps[].error -- a weak signal for an
     // LLM caller that sees success:false with no top-level `error`. Surface the first failed
     // step's error (and a repairHint naming it); if every step passed but the rule ended
-    // unhealthy, surface the finalHealth.ok gate's reason instead.
+    // unhealthy, surface the finalHealth gate's reason instead.
     def firstFailed = stepResults.find { it.success == false }
     if (firstFailed != null) {
         result.error = "drive halted at step ${firstFailed.step} (${firstFailed.operation}): ${firstFailed.error ?: 'step reported success:false -- inspect its valueEcho/silentRejection/health'}".toString()
         result.repairHints = (result.repairHints ?: []) + ["Drive stopped at step ${firstFailed.step}. Inspect steps[${firstFailed.step - 1}] for the failure detail, correct it, and re-run the drive from that step.".toString()]
-    } else if (!finalHealth.ok) {
+    } else if (!finalHealthGate) {
         result.error = "drive completed all ${stepResults.size()} step(s) but the rule is unhealthy: ${(finalHealth.issues ?: ['see health']).join('; ')}".toString()
+    } else if (finalHealth.unreadable == true) {
+        result.repairHints = (result.repairHints ?: []) + ["The final health probe could not be read (transient fetch failure -- not evidence of breakage); every step committed. Verify via hub_get_rule_health(ruleId=${appId}).".toString()]
     }
     return result
 }
@@ -12783,12 +12823,14 @@ def _applyNativeAppEdit(args) {
     // not-yet-mapped capability handlers, future RM features).
     if (walkStepSpec) {
         try {
-            // operation='drive' self-budgets between steps under a cloud relay; hand it the
-            // request-entry clock (read as spec.__reqT0). Threaded only for drive (single
-            // steps don't budget) and via a copy so the caller's args.walkStep is never
-            // mutated and __reqT0 can't leak into a single-step result echo.
+            // Hand EVERY walkStep op the request-entry clock (read as spec.__reqT0):
+            // drive self-budgets between steps, and every op -- single steps included --
+            // sheds its trailing health probe once the budget is spent so a committed
+            // op returns under the transport ceiling instead of 504ing on diagnostics.
+            // Threaded via a copy so the caller's args.walkStep is never mutated and
+            // __reqT0 can't leak into a result echo.
             def wsSpec = walkStepSpec
-            if (args?.__reqT0 != null && walkStepSpec?.operation?.toString()?.trim() == "drive") {
+            if (args?.__reqT0 != null) {
                 wsSpec = new LinkedHashMap(walkStepSpec)
                 wsSpec.__reqT0 = args.__reqT0
             }

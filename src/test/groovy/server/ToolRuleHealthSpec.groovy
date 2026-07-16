@@ -73,6 +73,37 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.issues.isEmpty()
     }
 
+    def "auto: when NEITHER source is readable the verdict is flagged unreadable -- couldn't check, not checked-and-broken"() {
+        given: 'no hub paths registered: both the compiled-state and HTML reads throw'
+        settingsMap.enableRead = true
+
+        when:
+        def h = script._rmCheckRuleHealth(123)
+
+        then: 'ok stays false (no positive evidence of health), but unreadable marks the transient'
+        h.ok == false
+        h.unreadable == true
+        h.source == 'none'
+        h.broken == null
+        h.brokenMarkers.isEmpty()
+    }
+
+    def "auto: a genuine broken verdict is NOT unreadable"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/app/ruleBuilderJson/100') { ruleBuilderJson([broken: true]) }
+        hubGet.register('/installedapp/configure/json/100') { configJson(100) }
+        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        h.ok == false
+        h.unreadable == false
+        h.broken == true
+    }
+
     def "auto: ruleBuilderJson broken:true is the authoritative verdict (even when HTML shows nothing)"() {
         given:
         settingsMap.enableRead = true

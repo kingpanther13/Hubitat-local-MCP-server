@@ -5361,7 +5361,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     // would fire redundant HTTP calls (/app/ruleBuilderJson/null, /installedapp/configure/json/null)
     // that just throw — short-circuit to a clean unhealthy verdict instead. (Gemini review, PR #276.)
     if (appId == null) {
-        return [ok: false, broken: null, source: "none", ruleFormat: null,
+        return [ok: false, unreadable: true, broken: null, source: "none", ruleFormat: null,
                 label: null, configPageError: null, brokenMarkers: [], brokenMarkerCounts: [:],
                 multipleFlagPoison: [], structuralIssues: [], validationErrors: [],
                 issues: ["health check failed: appId is null"]]
@@ -5521,6 +5521,12 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     // extra localhost GET, not response size — the empty arrays are a few bytes.
     def result = [
         ok: issues.isEmpty() && broken != true && validationErrors.isEmpty(),
+        // unreadable: NEITHER source could be read -- a "couldn't check" verdict, not
+        // a "checked and broken" one (ok stays false; there is no positive evidence
+        // either way). Callers gating committed work on ok should treat unreadable
+        // as advisory (a transient fetch failure must not fail a committed op) and
+        // direct the caller to re-verify via hub_get_rule_health.
+        unreadable: sourcesUsed.isEmpty(),
         broken: broken,
         source: (sourcesUsed ? sourcesUsed.join("+") : "none"),
         ruleFormat: ruleFormat,
@@ -7240,6 +7246,7 @@ hub_set_rule and hub_set_native_app run multi-step wizard edits. Once the time b
 - A paused bulk `addTriggers`/`addActions` edit returns `triggersCommitted`/`actionsCommitted`, the per-item `triggers`/`actions` arrays, and `addTriggersRemaining`/`addActionsRemaining` (the unprocessed specs). Re-issue the hub_set_rule / hub_set_native_app edit with `addTriggers`/`addActions` set to those remaining lists. Unlike the walkStep pause (which only pauses when everything so far is clean), this pause -- like the patch pause -- can stop right after a failed/degraded item to protect the response from a transport drop, so check the top-level `success`/`partial` and the per-item arrays -- a committed item that failed is surfaced there, not masked.
 - A paused patch edit returns `patchResults` so far and `patchesRemaining`. Re-issue the hub_set_rule / hub_set_native_app edit with `patches = patchesRemaining`. A patch op carrying a large inner `addTriggers`/`addActions` list can pause MID-op: `patchesRemaining` then leads with that op rewritten to only its unprocessed inner items. The rule finalize (updateRule) runs when the remaining patches complete, not on the paused call.
 - Attach the same `opToken` on a resume ONLY if the original call carried none; otherwise use a fresh token for the resume.
+Once the budget is spent, a walkStep op also SHEDS its trailing health probe (the result's health carries skipped: true) so the committed op returns under the transport ceiling -- verify via hub_get_rule_health when you see it; an UNREADABLE probe (transient fetch failure) never fails committed work, only positive evidence of breakage does.
 
 The budget is per-transport: the advanced `relayBudgetMs` setting for cloud-relay requests (default 8000 ms, 0 disables) and `lanBudgetMs` for LAN requests (default 0 = off; set it just under your MCP client's request timeout to make long LAN edits pause instead of dying). With the LAN knob unset, LAN behaviour is unchanged.
 '''
