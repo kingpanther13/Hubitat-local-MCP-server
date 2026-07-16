@@ -238,12 +238,13 @@ class OpTokenReplaySpec extends ToolSpecBase {
     // die with StackOverflowError, not Exception. The branch is line-for-line parallel to
     // the null-result path pinned above, which covers the marker-completion guarantee.
 
-    def "an oversize result buffers the REAL result under the token, not the too-large envelope"() {
+    def "an oversize result buffers the too-large envelope so the replay reproduces the original response"() {
         given: 'a result whose wire encoding trips the 120KB response guard'
         settingsMap.enableWrite = true
         def store = installFileStore()
         def bigPayload = 'x' * 130000
-        script.metaClass.toolCreateRoom = { a -> [success: true, blob: bigPayload] }
+        def ran = 0
+        script.metaClass.toolCreateRoom = { a -> ran++; [success: true, blob: bigPayload] }
 
         when:
         def response = mcpDriver.callTool('hub_create_room', [name: 'Den', confirm: true, opToken: 'bigtoken123'])
@@ -253,11 +254,19 @@ class OpTokenReplaySpec extends ToolSpecBase {
         def inner = mcpDriver.parseInner(response)
         inner.response_too_large == true
 
-        and: 'the buffered result is the REAL oversize payload -- captured before the size guard'
+        and: 'the buffered result is that SAME envelope -- the raw oversize payload could never ride the dedup short-circuit (it would trip the outer 128KB cap as an opaque -32603 on every poll)'
         def marker = atomicStateMap.opTokens['bigtoken123']
         marker.state == 'complete'
-        marker.isError == false
-        new String(store[FILE_PREFIX + 'bigtoken123.json'], 'UTF-8').contains(bigPayload)
+        !new String(store[FILE_PREFIX + 'bigtoken123.json'], 'UTF-8').contains(bigPayload)
+
+        when: 'the token-only poll replays it'
+        def second = mcpDriver.callTool('hub_create_room', [opToken: 'bigtoken123'])
+
+        then: 'one run total; the replay is the original too-large envelope, delivered under the cap'
+        ran == 1
+        def replay = mcpDriver.parseInner(second)
+        replay.replayed == true
+        replay.response_too_large == true
     }
 
     def "the token nested in gateway inner args is extracted (args.args.opToken) and stripped before dispatch"() {
@@ -279,6 +288,44 @@ class OpTokenReplaySpec extends ToolSpecBase {
         and: 'the leaf never sees the consumed token (strict-arg tools stay tokenable)'
         received.args instanceof Map
         !received.args.containsKey('opToken')
+    }
+
+    def "a token inside a JSON-string-encoded gateway inner args is extracted and honoured"() {
+        given: 'the gateway accepts inner args as a JSON string; the token must not silently lose protection there'
+        settingsMap.useGateways = true
+        settingsMap.enableWrite = true
+        installFileStore()
+        def received = [:]
+        script.metaClass.toolCreateRoom = { a -> received.args = a; [success: true, roomId: 3] }
+
+        when:
+        def response = mcpDriver.callTool('hub_manage_rooms',
+            [tool: 'hub_create_room', args: '{"name":"Den","confirm":true,"opToken":"strtoken123"}'])
+
+        then: 'the token was extracted, processed, and stripped from what the leaf saw'
+        response.error == null
+        atomicStateMap.opTokens['strtoken123']?.state == 'complete'
+        received.args instanceof Map
+        !received.args.containsKey('opToken')
+        received.args.name == 'Den'
+    }
+
+    def "a token-only poll works in the JSON-string inner-args form too"() {
+        given:
+        settingsMap.useGateways = true
+        settingsMap.enableWrite = true
+        installFileStore()
+        def ran = 0
+        script.metaClass.toolCreateRoom = { a -> ran++; [success: true] }
+
+        when:
+        def response = mcpDriver.callTool('hub_manage_rooms',
+            [tool: 'hub_create_room', args: '{"opToken":"strpoll1234"}'])
+
+        then: 'parsed to an empty inner map -- a pure poll, nothing ran, token not burned'
+        ran == 0
+        !atomicStateMap.opTokens?.containsKey('strpoll1234')
+        mcpDriver.parseInner(response).status == 'unknown'
     }
 
     @spock.lang.Unroll
@@ -387,6 +434,68 @@ class OpTokenReplaySpec extends ToolSpecBase {
         mcpDriver.parseInner(response).status == 'unknown'
     }
 
+    def "an invalid token on a READ tool is rejected with -32602 -- reads validate tokens now"() {
+        given: 'issue #351 behaviour change pin: pre-fold, reads silently ignored malformed tokens'
+        settingsMap.enableRead = true
+        def ran = 0
+        script.metaClass.getRooms = { -> ran++; [] }
+
+        when:
+        def response = mcpDriver.callTool('hub_list_rooms', [opToken: 'abc'])
+
+        then: 'validation rejects it before the read runs'
+        ran == 0
+        response.error != null
+        response.error.code == -32602
+    }
+
+    def "the running refusal for a hub_update_package token names the lastSelfDeploy done-signal"() {
+        given: 'the monolithic deploy can drop even its token completion -- the note must point at the independent signal'
+        settingsMap.enableWrite = true
+        installFileStore()
+        atomicStateMap.opTokens = [
+            pkgrun12345: [state: 'running', tool: 'hub_update_package', startedAt: FIXED_NOW - 5000L]
+        ]
+
+        when:
+        def response = mcpDriver.callTool('hub_update_package', [opToken: 'pkgrun12345'])
+
+        then:
+        response.result.isError == true
+        def inner = mcpDriver.parseInner(response)
+        inner.status == 'running'
+        inner.note.contains('lastSelfDeploy')
+    }
+
+    def "a stale gateway client's retired-name poll ({tool: hub_get_op_result} via hub_read_diagnostics) is honored too"() {
+        given:
+        settingsMap.useGateways = true
+        settingsMap.enableWrite = true
+        installFileStore()
+
+        when:
+        def response = mcpDriver.callTool('hub_read_diagnostics', [tool: 'hub_get_op_result', args: [opToken: 'gwstale1234']])
+
+        then: 'answered as a pure poll -- unknown status, token not marked'
+        !atomicStateMap.opTokens?.containsKey('gwstale1234')
+        mcpDriver.parseInner(response).status == 'unknown'
+    }
+
+    def "a no-op prune never rewrites the token map -- the #351 concurrency invariant"() {
+        given: 'a small, fresh map: nothing expired, under the cap'
+        installFileStore()
+        script.metaClass.toolCreateRoom = { a -> [success: true] }
+        script._opTokenMark('freshtok1234', 'hub_create_room')
+        def instanceAfterMark = atomicStateMap.opTokens
+
+        when: 'prune runs with nothing to remove'
+        script._opTokenPrune()
+
+        then: 'the stored map is the SAME instance -- no whole-map write happened, so a concurrent per-entry write could not have been clobbered'
+        atomicStateMap.opTokens.is(instanceAfterMark)
+        atomicStateMap.opTokens['freshtok1234'].state == 'running'
+    }
+
     def "a token-only re-issue while the op is running returns the running refusal without arg validation"() {
         given:
         settingsMap.enableWrite = true
@@ -471,17 +580,27 @@ class OpTokenReplaySpec extends ToolSpecBase {
     // ---------------- _opTokenMark: started marker, TTL prune, size cap ----------------
 
     def "token records are written per-entry via updateMapValue -- successive different-token marks both survive"() {
-        given: 'the harness atomicState implements the hub per-entry API; pin that production routes through it'
+        given: 'probe whether the script\'s atomicState exposes the per-entry API -- the groovy2x compat lane\'s older harness wraps atomicState without it, and production must work (via the fallback) either way'
+        boolean perEntryAvailable
+        try {
+            script.atomicState.updateMapValue('opTokens', 'probe.entry1', [state: 'probe'])
+            perEntryAvailable = true
+        } catch (MissingMethodException ignored) {
+            perEntryAvailable = false
+        }
+        atomicStateMap.remove('opTokens')
         int callsBefore = ((support.TestAtomicState) atomicStateMap).@updateMapValueCalls
 
         when: 'two different tokens marked back-to-back (the successive/parallel-client pattern)'
         script._opTokenMark('tokenAlpha1', 'hub_create_room')
         script._opTokenMark('tokenBravo1', 'hub_delete_room')
 
-        then: 'both records survive and each write went through the per-entry API, not a whole-map rewrite'
+        then: 'both records survive regardless of which write path the platform offers'
         atomicStateMap.opTokens['tokenAlpha1']?.state == 'running'
         atomicStateMap.opTokens['tokenBravo1']?.state == 'running'
-        ((support.TestAtomicState) atomicStateMap).@updateMapValueCalls == callsBefore + 2
+
+        and: 'when the per-entry API exists, production routed through it -- not a whole-map rewrite'
+        ((support.TestAtomicState) atomicStateMap).@updateMapValueCalls == callsBefore + (perEntryAvailable ? 2 : 0)
     }
 
     def "_opTokenPutWholeMap (the no-updateMapValue fallback) lands the record without disturbing others"() {

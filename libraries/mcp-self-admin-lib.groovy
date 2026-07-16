@@ -517,10 +517,16 @@ def toolUpdatePackage(args) {
         return _updatePackageBody(args, ref, dryRun)
     } finally {
         // Clear the guard on EVERY return path of a real deploy -- aborts included.
-        // The one path that can strand it is the runtime killing this thread at the
+        // Null-assign FIRST (universally supported; a null marker already fails the
+        // guard's instanceof Map check), then remove the key outright -- so even a
+        // platform where remove misbehaves cannot leave the guard wedged. The one
+        // path that can strand it is the runtime killing this thread at the
         // self-app recompile; the lastSelfDeploy stand-down + TTL above cover that.
         if (!dryRun) {
-            try { atomicState.remove("packageDeployInFlight") } catch (Exception ignored) { }
+            try {
+                atomicState.packageDeployInFlight = null
+                atomicState.remove("packageDeployInFlight")
+            } catch (Exception ignored) { }
         }
     }
 }

@@ -610,6 +610,9 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         result.partial == true
         result.abortReason == 'app_update_threw'
         result.error.contains('Verify with hub_get_source')
+
+        and: 'the in-flight guard is released on this partial path too (the finally clears every return)'
+        atomicStateMap.packageDeployInFlight == null
     }
 
     // -------- issue #351: in-flight deploy guard --------
@@ -709,6 +712,34 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         result.success == false
         result.aborted == true
         atomicStateMap.packageDeployInFlight == null
+    }
+
+    def "a tokened deploy refused by the guard spends the token on the refusal, which then replays token-only"() {
+        given: 'the integration seam between the guard and the universal token machinery (both #351)'
+        enableDev()
+        registerAppTypes()
+        Map store = [:]
+        script.metaClass.uploadHubFile = { String n, byte[] b -> store[n] = b }
+        script.metaClass.downloadHubFile = { String n -> store[n] }
+        script.metaClass.deleteHubFile = { String n -> store.remove(n) }
+        atomicStateMap.packageDeployInFlight = [ref: 'feat/other', startedAt: GUARD_NOW - 60000L]
+
+        when: 'the full tokened call arrives through dispatch while a deploy is in flight'
+        def first = mcpDriver.callTool('hub_update_package', [ref: 'main', confirm: true, opToken: 'guardtok1234'])
+
+        and: 'the caller polls token-only afterwards'
+        def second = mcpDriver.callTool('hub_update_package', [opToken: 'guardtok1234'])
+
+        then: 'the refusal rode the isError envelope and was buffered under the token'
+        first.result.isError == true
+        mcpDriver.parseInner(first).inFlight.ref == 'feat/other'
+        atomicStateMap.opTokens['guardtok1234'].state == 'complete'
+        atomicStateMap.opTokens['guardtok1234'].isError == true
+
+        and: 'the token-only poll replays the refusal deterministically (spent token, no re-run)'
+        def replay = mcpDriver.parseInner(second)
+        replay.replayed == true
+        replay.inFlight.ref == 'feat/other'
     }
 
     def "dryRun neither checks nor sets the guard"() {

@@ -1165,7 +1165,7 @@ If the response is lost, do NOT re-run the operation and do NOT invent a fresh t
 - `status: "running"` — still executing; poll again shortly by re-issuing the same tokened call (the write commits even though the response dropped).
 - `replayed: true` — it finished; this IS the original buffered result (including `isError` if that attempt failed).
 - `status: "unknown"` (returned only to a token-only poll) — no operation with this token ever started; the original call never arrived. Re-issue the ORIGINAL call (full arguments) with this same token.
-- `status: "indeterminate"` — the operation completed here but its buffered result is gone (buffering failed, or swept opportunistically once older than ~24h; the sweep runs on later tokened writes, so expiry is not prompt). Do NOT re-issue blindly; verify current state via reads first. Only `unknown` means the call never arrived.
+- `status: "indeterminate"` — the operation completed here but its buffered result is gone (buffering failed, or swept opportunistically once older than ~24h; the sweep runs on later tokened calls, so expiry is not prompt). Do NOT re-issue blindly; verify current state via reads first. Only `unknown` means the call never arrived.
 
 A token is SPENT once its operation completes — errors included; to retry with corrected arguments, invent a FRESH token. A replayed result whose `status` is `in_progress` carries `replayNote`: it is the original paused envelope, not new progress — a spent token cannot drive a resume; re-issue the remaining work with a fresh token.
 

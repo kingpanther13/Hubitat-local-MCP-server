@@ -907,12 +907,13 @@ def handleToolsCall(msg) {
         return jsonRpcError(msg.id, -32602, "Invalid params: tool name required")
     }
 
-    // ---- Cloud-relay self-budget clock ----
+    // ---- Slow-write self-budget clock ----
     // Capture wall-clock at handler entry; the delta from the actual request
     // entry is sub-millisecond. Threaded into the dispatched args so a slow
-    // multi-step write can pause before the relay ceiling and return a resumable
-    // in_progress envelope. LAN requests / budget=0 short-circuit the check, so
-    // this is inert unless a cloud relay is in play.
+    // multi-step write can pause before its transport dies and return a resumable
+    // in_progress envelope. The budget is per-source (relayBudgetMs over the
+    // relay, lanBudgetMs on LAN, default 0 = off), so this is inert whenever the
+    // applicable budget is 0.
     long reqT0 = now()
 
     // Idempotency-token state, declared out here so the completion-buffering
@@ -937,6 +938,23 @@ def handleToolsCall(msg) {
         // leaf (args.tool on a gateway call, the leaf on a flat call).
         if (args instanceof Map) {
             def rawToken = args.opToken ?: (args.args instanceof Map ? args.args.opToken : null)
+            // Inner gateway args may arrive as a JSON-encoded STRING (handleGateway
+            // supports that shape) -- a token inside it must still activate the
+            // idempotency machinery, or that client shape silently loses all dedup
+            // protection. Parse-or-ignore, gated on a cheap substring probe so
+            // ordinary string-args calls never pay a parse; on success hand the
+            // parsed Map onward (the gateway's own Map path). A malformed string
+            // falls through untouched to handleGateway's own -32602 parse error.
+            if (rawToken == null && args.args instanceof String && args.args.contains('opToken')) {
+                try {
+                    def parsedInner = new groovy.json.JsonSlurper().parseText(args.args.toString())
+                    if (parsedInner instanceof Map && parsedInner.opToken != null) {
+                        rawToken = parsedInner.opToken
+                        parsedInner.remove('opToken')
+                        args.args = parsedInner
+                    }
+                } catch (Exception ignored) { }
+            }
             // The token is consumed HERE, so strip it before dispatch: leaves never
             // need it, and several validate their args strictly and would reject the
             // unknown key -- stripping makes EVERY tool tokenable, not just the ones
@@ -1043,9 +1061,9 @@ def handleToolsCall(msg) {
                 isError: true
             ])
         }
-        // Buffer the successful (or returned-error) result under the token. Captured
-        // here so BOTH the normal return and the oversize fallback below replay the
-        // real result rather than the too-large envelope.
+        // Buffer the successful (or returned-error) result under the token. The
+        // oversize branch below OVERWRITES this capture with the too-large envelope
+        // it actually returns -- a replay must reproduce the original wire response.
         if (opTokenActive) {
             opCompletionText = jsonText
             opCompletionIsError = (result instanceof Map && result.isError == true)
@@ -1094,7 +1112,13 @@ def handleToolsCall(msg) {
             mcpLog("warn", "server", "Tool ${reactiveToolName} response too large (${wireBytes} > ${responseSizeLimit} bytes) -- returning response_too_large envelope", null, [
                 details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null, bytes: wireBytes, limit: responseSizeLimit]
             ])
-            def tooLargeBody = [content: [[type: "text", text: groovy.json.JsonOutput.toJson(_responseTooLargeEnvelope(reactiveToolName as String, wireBytes, responseSizeLimit))]]]
+            String tooLargeJson = groovy.json.JsonOutput.toJson(_responseTooLargeEnvelope(reactiveToolName as String, wireBytes, responseSizeLimit))
+            def tooLargeBody = [content: [[type: "text", text: tooLargeJson]]]
+            // Buffer the SAME envelope the caller is getting, replacing the real result
+            // captured above: a replay must reproduce the original wire response, and the
+            // oversize real result could never ride the dedup short-circuit anyway -- it
+            // would just trip the outer 128KB cap as an opaque -32603 on every poll.
+            if (opTokenActive) opCompletionText = tooLargeJson
             // A schema-advertised tool's NON-ERROR result must carry structuredContent (the
             // spec MUST behind issue #342), and this fallback deliberately replaces the real
             // result with a text-only envelope. Flag it isError so spec-validating clients
@@ -1159,7 +1183,18 @@ def handleToolsCall(msg) {
         // the text (success, oversize, validation error, runtime error, null/non-serializable).
         if (opTokenActive && opCompletionText != null) {
             try { _opTokenComplete(opToken, opCompletionText, opCompletionIsError) }
-            catch (Exception ce) { mcpLog("warn", "op-token", "Recording op-result completion for ${opToken} failed: ${ce.message}") }
+            catch (Exception ce) {
+                mcpLog("warn", "op-token", "Recording op-result completion for ${opToken} failed: ${ce.message}")
+                // Never leave the token wedged "running" until the 24h TTL while the
+                // running-note forbids the recovering re-run: a failed_buffer record
+                // downgrades every poll to the indeterminate verify-state answer.
+                // startedAt=now() so the record lives its own full TTL (a null would
+                // read as expired and prune to the unsafe "unknown" immediately).
+                try {
+                    _opTokenPut(opToken, [state: "failed_buffer", tool: reactiveToolName?.toString(),
+                                          startedAt: now(), finishedAt: now(), isError: opCompletionIsError])
+                } catch (Exception ignored) { }
+            }
         }
     }
 }
@@ -1178,7 +1213,7 @@ def _advertisesOutputSchema(toolName) {
     return getAllToolDefinitions().find { it.name == toolName }?.outputSchema != null
 }
 
-// ==================== Cloud-relay budget + idempotency tokens ====================
+// ==================== Slow-op time budgets + idempotency tokens ====================
 // The cloud relay severs any /mcp call at a fixed ceiling while the hub handler
 // runs to completion and commits -- only the RESPONSE is lost, and the client
 // sees an opaque transport 5xx the server cannot reshape. Two mechanisms recover
@@ -1198,7 +1233,8 @@ def _advertisesOutputSchema(toolName) {
 
 // True only when THIS request arrived over the cloud relay. requestSource is a
 // mapped-endpoint property ("local"|"cloud"); any access failure (older firmware,
-// non-request context) reads as local so the budget stays inert on LAN.
+// non-request context) reads as local, which selects the LAN budget (inert at its
+// default 0).
 def _isCloudRequest() {
     try { return request?.requestSource?.toString() == "cloud" }
     catch (Exception e) { return false }
@@ -1296,12 +1332,6 @@ def _opTokenReadResult(rec) {
     return null
 }
 
-// Best-effort delete of a token's buffered result file (prune sweep only).
-def _opTokenDeleteResultFile(rec) {
-    try { if (rec instanceof Map && rec.file) deleteHubFile(rec.file.toString()) }
-    catch (Exception e) { /* best-effort: a stray result file is swept next pass */ }
-}
-
 // Write ONE token record via the hub's per-entry atomicState.updateMapValue
 // (firmware 2.3.2+) so two overlapping DIFFERENT-token calls cannot clobber each
 // other's records the way a whole-map read-modify-write can -- a lost "running"
@@ -1341,20 +1371,27 @@ def _opTokenPrune() {
     if (!(stored instanceof Map)) return
     def tokens = [:]
     tokens.putAll(stored)
-    def removed = []
+    def removedKeys = []
     long cutoff = now() - 86400000L
     def expiredKeys = tokens.findAll { k, v -> (v instanceof Map) && (((v.startedAt as Long) ?: 0L) < cutoff) }.keySet().toList()
-    expiredKeys.each { k -> removed << tokens.remove(k) }
+    expiredKeys.each { k -> tokens.remove(k); removedKeys << k }
     if (tokens.size() > 50) {
         def ordered = tokens.entrySet().toList()
             .findAll { e -> !((e.value instanceof Map) && e.value.state == "running") }
             .sort { e -> (e.value instanceof Map) ? ((e.value.startedAt as Long) ?: 0L) : 0L }
         int over = tokens.size() - 50
-        ordered.take(over).each { e -> removed << tokens.remove(e.key) }
+        ordered.take(over).each { e -> tokens.remove(e.key); removedKeys << e.key }
     }
-    if (removed.isEmpty()) return
+    if (removedKeys.isEmpty()) return
     atomicState.opTokens = tokens
-    removed.each { _opTokenDeleteResultFile(it) }
+    // Delete by the token's DETERMINISTIC filename, not the record's .file pointer:
+    // a record reverted by the prune-vs-complete race loses its .file while the
+    // uploaded result file exists -- keying on the token closes that orphan leak
+    // (deleting a never-uploaded name is a harmless best-effort no-op).
+    removedKeys.each { k ->
+        try { deleteHubFile(_opTokenResultFile(k.toString())) }
+        catch (Exception e) { /* best-effort: a stray result file is swept next pass */ }
+    }
 }
 
 // Mark a token running just before dispatch (per-entry write), then prune.
@@ -2395,7 +2432,7 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null) {
     // fires only on an ABSENT key, so a present-but-invalid value (e.g. confirm:false)
     // still reaches the handler's own richer runtime message in both modes.
     def safeArgs = toolArgs ?: [:]
-    // Thread the relay-budget clock from the outer request into the sub-tool's args
+    // Thread the time-budget clock from the outer request into the sub-tool's args
     // (handleToolsCall injected it on the gateway envelope; the gateway strips a
     // layer, so re-inject on the leaf args here). Guarded by the same budget-aware
     // allowlist as the outer injection -- strict-arg leaves must never see the key.
