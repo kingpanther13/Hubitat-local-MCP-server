@@ -4052,12 +4052,14 @@ class TestRunner:
         standalone hub_get_rule_health re-derives), keyed by app, so a following _assert_rule_healthy
         skips the extra round-trip. Cleared on a relay-dropped/soft envelope (no health) -> live fetch.
         Also cleared when the returned probe carries no verdict -- skipped:true (shed under the time
-        budget) or unreadable:true (probe fetch failed): caching those would let _assert_rule_healthy
-        pass a genuinely broken rule without ever probing live."""
+        budget), unreadable:true (probe fetch failed), or a non-empty checkErrors (only ONE source
+        read; the verdict is half-checked): caching those would let _assert_rule_healthy pass a
+        genuinely broken rule without ever probing live."""
         health = result.get("health") if isinstance(result, dict) else None
         if (isinstance(health, dict)
                 and health.get("skipped") is not True
-                and health.get("unreadable") is not True):
+                and health.get("unreadable") is not True
+                and not health.get("checkErrors")):
             self._last_write_health = (str(app_id), health)
         else:
             self._last_write_health = None

@@ -404,12 +404,12 @@ class OpTokenReplaySpec extends ToolSpecBase {
         uploads == 0
         !atomicStateMap.opTokens?.containsKey('pollNever12')
 
-        and: 'the caller learns the original call never arrived and how to recover'
+        and: 'the caller learns the original call never arrived and how to recover (the LEAF shape keeps the generic full-args re-issue note -- the catalog-shape clause is gateway-name only)'
         response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.status == 'unknown'
         inner.opToken == 'pollNever12'
-        inner.note instanceof String && inner.note.toLowerCase().contains('re-issue')
+        inner.note instanceof String && inner.note.contains('Re-issue the ORIGINAL call (full arguments)')
     }
 
     def "a token-only gateway envelope ({tool, opToken}) is the same pure poll"() {
@@ -556,6 +556,9 @@ class OpTokenReplaySpec extends ToolSpecBase {
         then:
         !atomicStateMap.opTokens?.containsKey('gwcat123456')
         mcpDriver.parseInner(response).status == 'unknown'
+
+        and: 'the note gives the catalog-shape exit, not the generic re-issue instruction (which would loop forever -- this token can never be marked)'
+        mcpDriver.parseInner(response).note.contains('WITHOUT an opToken')
     }
 
     def "a token-only gateway call with a DEAD tool key (empty string) is still a pure poll -- the token is not spent on the catalog"() {

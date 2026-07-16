@@ -997,10 +997,17 @@ def handleToolsCall(msg) {
             // missing-arg validation error. Running/complete tokens were answered above.
             boolean isGatewayCall = getGatewayConfig().containsKey(toolName) && args.tool instanceof String && args.tool
             if (_isOpTokenPollShape(args, isGatewayCall, reactiveToolName)) {
+                // A tokened CATALOG call (bare gateway name -- reactiveToolName falls back to
+                // the gateway) never reaches the catalog and its token is never marked, so
+                // "re-issue the original call with this token" would loop forever: the right
+                // exit is dropping the token from the catalog call.
+                String unknownNote = getGatewayConfig().containsKey(reactiveToolName?.toString())
+                    ? "No operation with this token has started on this hub. This token rode a gateway CATALOG call (no tool selected) -- tokens are never spent on catalog listings, so polling it always answers unknown. Re-issue the catalog call WITHOUT an opToken; put tokens on the {tool, args} call itself. See hub_get_tool_guide(section='slow_ops')."
+                    : "No operation with this token has started on this hub -- the original call never arrived, so this poll ran nothing. Re-issue the ORIGINAL call (full arguments) with this same opToken. See hub_get_tool_guide(section='slow_ops')."
                 return jsonRpcResult(msg.id, [
                     content: [[type: "text", text: groovy.json.JsonOutput.toJson([
                         success: false, isError: true, status: "unknown", opToken: opToken, tool: reactiveToolName,
-                        note: "No operation with this token has started on this hub -- the original call never arrived, so this poll ran nothing. Re-issue the ORIGINAL call (full arguments) with this same opToken. See hub_get_tool_guide(section='slow_ops')."
+                        note: unknownNote
                     ])]],
                     isError: true
                 ])
@@ -5414,7 +5421,8 @@ private String _classicAppFormat(Map cfg) {
 private Map _rmEmptyHealthVerdict(Map overrides) {
     def v = [ok: false, unreadable: false, broken: null, source: "none", ruleFormat: null,
              label: null, configPageError: null, brokenMarkers: [], brokenMarkerCounts: [:],
-             multipleFlagPoison: [], structuralIssues: [], validationErrors: [], issues: []]
+             multipleFlagPoison: [], structuralIssues: [], validationErrors: [], issues: [],
+             checkErrors: []]
     v.putAll(overrides ?: [:])
     return v
 }
@@ -5429,6 +5437,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
         return _rmEmptyHealthVerdict(unreadable: true, issues: ["health check failed: appId is null"])
     }
     def issues = []
+    def checkErrors = []           // lone-source read failures: visible diagnostics, never gate-failing evidence
     def label = null
     def configPageError = null
     def brokenMarkers = []
@@ -5545,17 +5554,29 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
                 issues << ("structural imbalance in action block nesting: ${structuralIssues.join('; ')} — if you are still building this rule (adding an IF/ELSE or Repeat block across separate calls), this is EXPECTED until you add the closer, and the fix is simply to add it via addAction(capability='endIf'|'stopRepeat') — do NOT restore. Only if the rule was already complete does this indicate damage (a raw settings write or a mutation that committed post-response), in which case use hub_restore_backup to roll back.".toString())
             }
         } catch (Exception e) {
-            // Both sources down: include the compiled-state read failure too so the dual-failure
-            // diagnostic is complete (auth/connectivity often breaks both localhost reads at once).
-            // When the compiled read SUCCEEDED and only this HTML path failed, the failure still
-            // lands in issues (ok:false, unreadable:false) DELIBERATELY: the render scan is what
-            // catches the transient window where a break shows in the HTML before the compiled
-            // `broken` boolean flips (see the cross-check note below), so losing it is a real
-            // gap in the verdict, not a couldn't-check -- fail loud rather than report a
-            // half-checked rule as healthy.
-            def also = compiledReadError ? " (compiled-state read also failed: ${compiledReadError})" : ""
-            issues << "health check failed: ${e.message}${also}".toString()
+            if (sourcesUsed.isEmpty()) {
+                // Both sources down: include the compiled-state read failure too so the dual-failure
+                // diagnostic is complete (auth/connectivity often breaks both localhost reads at once).
+                def also = compiledReadError ? " (compiled-state read also failed: ${compiledReadError})" : ""
+                issues << "health check failed: ${e.message}${also}".toString()
+            } else {
+                // The compiled source read CLEAN and only this HTML leg failed: a lone
+                // transient fetch failure is not evidence about the rule, so it must not
+                // ride in issues -- an ok:false verdict here fails every committed-work
+                // gate AND set-diffs as a "new issue" in the replace/patches regression
+                // differ, firing the auto-restore over one localhost GET hiccup. It still
+                // surfaces in checkErrors (visible, non-gating): the render scan is the
+                // cross-check that can show a break before the compiled boolean flips, so
+                // the caller is told this verdict is half-checked and can re-probe.
+                checkErrors << "configPage read failed: ${e.message}".toString()
+            }
         }
+    }
+    // Mirror leg: the compiled-state read failed but the HTML path ran clean. Previously
+    // this was SILENTLY discarded in auto mode (ok:true with the authoritative source
+    // unread) -- surface it the same non-gating way as the HTML-leg failure above.
+    if (compiledReadError != null && !sourcesUsed.isEmpty()) {
+        checkErrors << "compiled-state read failed: ${compiledReadError}".toString()
     }
     // Cross-check the two RM sources when both ran. They can legitimately disagree in a
     // transient window: live on fw 2.5.0.143, deleting a rule's trigger device sets the
@@ -5605,7 +5626,12 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
         multipleFlagPoison: multipleFlagPoison,
         structuralIssues: structuralIssues,
         validationErrors: validationErrors,
-        issues: issues
+        issues: issues,
+        // Half-checked marker: ONE source failed to read while the other read clean.
+        // Deliberately outside `issues` so ok stays evidence-based -- a lone transient
+        // fetch failure neither fails committed-work gates nor feeds the regression
+        // differ (both-sources-down is `unreadable`, not this).
+        checkErrors: checkErrors
     ]
     if (predicate != null) result.predicate = predicate
     return result
