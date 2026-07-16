@@ -733,19 +733,15 @@ class OpTokenReplaySpec extends ToolSpecBase {
     }
 
     def "_opTokenPut catches the missing updateMapValue and delegates to the whole-map writer (pre-2.3.2 firmware path)"() {
-        given: 'the per-entry API throws MissingMethodException like a platform without it -- the gating CI lane\'s TestAtomicState always implements it, so the catch-and-delegate itself needs this forced pin'
-        atomicStateMap.metaClass.updateMapValue = { Object prop, Object key, Object val ->
-            throw new MissingMethodException('updateMapValue', LinkedHashMap, [prop, key, val] as Object[])
-        }
+        given: 'atomicState is a PLAIN map, like a platform without the per-entry API, so the call throws the real MissingMethodException -- the gating lane\'s TestAtomicState always implements it, so the catch-and-delegate needs this forced pin (the script metaClass override is wiped by every test\'s setup())'
+        def plain = new LinkedHashMap()
+        script.metaClass.getAtomicState = { plain }
 
         when:
         script._opTokenPut('mmefall12345', [state: 'running', tool: 'hub_create_room', startedAt: FIXED_NOW])
 
-        then: 'the record landed via the fallback'
-        atomicStateMap.opTokens['mmefall12345'].state == 'running'
-
-        cleanup: 'the per-instance metaClass rides a JVM-shared TestAtomicState -- it MUST not leak into later tests'
-        atomicStateMap.setMetaClass(null)
+        then: 'the record landed via the whole-map fallback'
+        plain.opTokens['mmefall12345'].state == 'running'
     }
 
     def "a thrown _opTokenComplete cannot wedge the token: the finally's fallback writes failed_buffer and polls answer indeterminate"() {
