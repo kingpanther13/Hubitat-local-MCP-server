@@ -131,7 +131,7 @@ Slow multi-step calls over a cloud relay may return status:'in_progress' with re
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click."],
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
                     walkStep: [type: "object", description: "Advanced multi-page classic-app walker — EDIT-only (requires appId; rejected on create).[[FLAT_TRIM]] Generic classic-dynamicPage walker for stateful apps: introspect/write/click/navigate/done one step per call, or operation='drive' with steps=[...] to run the whole sequence in one call. Same shape as hub_set_rule's walkStep.[[/FLAT_TRIM]]"],
-                    opToken: [type: "string", description: "Optional idempotency token you invent (8-128 chars, A-Za-z0-9._-). If the transport drops the response, poll hub_get_op_result with this token to fetch the committed result instead of re-issuing the call."],
+                    opToken: [type: "string", description: "Optional idempotency token you invent (8-128 chars, A-Za-z0-9._-). If the transport drops the response, re-issue this call with the SAME token to poll/replay the committed result instead of re-running the edit."],
                     confirm: [type: "boolean", description: "Must be true. Safety gate for Write master operations."]
                 ],
                 required: ["confirm"]
@@ -257,7 +257,7 @@ Slow multi-step calls over a cloud relay may return status:'in_progress' with re
                     ],
                     guide: [type: "boolean", description: "Set true to return the full hub_set_rule capability reference inline (same content as hub_get_tool_guide(section='set_rule_reference')), without a separate call. Makes NO change to any rule."],
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller: {controllerId, buttonNumber, event}. Returns buttonRuleId with the Button trigger auto-seeded — then author actions via addAction on that appId. The controller must already have a button device.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
-                    opToken: [type: "string", description: "Optional idempotency token you invent (8-128 chars, A-Za-z0-9._-). If the transport drops the response, poll hub_get_op_result with this token to fetch the committed result instead of re-issuing the call."],
+                    opToken: [type: "string", description: "Optional idempotency token you invent (8-128 chars, A-Za-z0-9._-). If the transport drops the response, re-issue this call with the SAME token to poll/replay the committed result instead of re-running the edit."],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
                 required: ["confirm"]
@@ -8363,7 +8363,7 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
         // pause always represents a clean partial: every earlier step committed and
         // nothing failed. Each step is a live POST, so stopping here and handing back
         // the unrun steps lets the caller resume before the relay drops the response.
-        if (idx > 1 && allOk && _relayBudgetExceeded(spec?.__reqT0 as Long)) {
+        if (idx > 1 && allOk && _timeBudgetExceeded(spec?.__reqT0 as Long)) {
             pausedAtStep = idx
             stepsRemaining = steps.subList(idx - 1, steps.size()).collect { _stripInternalClock(it) }
             break
@@ -8436,7 +8436,7 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
             steps: stepResults,
             health: finalHealth,
             resume: [
-                note: "Relay time budget reached; all completed steps are committed. Re-issue walkStep operation='drive' with steps = stepsRemaining (page inheritance: set page = this result's page) to continue. Attach the same opToken ONLY if the original call carried none; otherwise use a fresh token."
+                note: "Time budget reached; all completed steps are committed. Re-issue walkStep operation='drive' with steps = stepsRemaining (page inheritance: set page = this result's page) to continue. Attach the same opToken ONLY if the original call carried none; otherwise use a fresh token."
             ]
         ]
     }
@@ -12620,7 +12620,7 @@ private Map _bulkRelayPauseResult(Integer appId, Map backup, List triggerResults
         actionResults.any { it instanceof Map && it.partial == true }
     def repairHints = []
     if (itemsPartial) {
-        repairHints << "One or more committed bulk items failed or reported partial before the relay budget paused the batch. Drill into triggers[]/actions[] for per-item settingsSkipped + repairHints; the remaining (unprocessed) items are in addTriggersRemaining/addActionsRemaining."
+        repairHints << "One or more committed bulk items failed or reported partial before the time budget paused the batch. Drill into triggers[]/actions[] for per-item settingsSkipped + repairHints; the remaining (unprocessed) items are in addTriggersRemaining/addActionsRemaining."
     }
     return [
         success: trigOk == triggerResults.size() && actOk == actionResults.size(),
@@ -12636,7 +12636,7 @@ private Map _bulkRelayPauseResult(Integer appId, Map backup, List triggerResults
         addActionsRemaining: addActionsRemaining.collect { _stripInternalClock(it) },
         repairHints: repairHints,
         resume: [
-            note: "Relay time budget reached; committed items are written at the settings level (the trailing updateRule is deferred to the resume call). Re-issue the edit (hub_set_rule or hub_set_native_app) with addActions/addTriggers = the remaining items to continue. Attach the same opToken ONLY if the original call carried none; otherwise use a fresh token."
+            note: "Time budget reached; committed items are written at the settings level (the trailing updateRule is deferred to the resume call). Re-issue the edit (hub_set_rule or hub_set_native_app) with addActions/addTriggers = the remaining items to continue. Attach the same opToken ONLY if the original call carried none; otherwise use a fresh token."
         ]
     ]
 }
@@ -12659,7 +12659,7 @@ private Map _patchesPauseResult(Integer appId, Map backup, List patchResults, Li
         patchResults: patchResults,
         patchesRemaining: patchesRemaining,
         resume: [
-            note: "Relay time budget reached; completed patch ops are committed at the settings level but NOT yet baked into the running rule. Re-issue the edit (hub_set_rule or hub_set_native_app) with patches = patchesRemaining to continue; the rule finalize/updateRule runs when the remaining patches complete. Attach the same opToken ONLY if the original call carried none; otherwise use a fresh token."
+            note: "Time budget reached; completed patch ops are committed at the settings level but NOT yet baked into the running rule. Re-issue the edit (hub_set_rule or hub_set_native_app) with patches = patchesRemaining to continue; the rule finalize/updateRule runs when the remaining patches complete. Attach the same opToken ONLY if the original call carried none; otherwise use a fresh token."
         ]
     ]
 }
@@ -13456,7 +13456,7 @@ def _applyNativeAppEdit(args) {
                 // batch-end trailing updateRule below so it does NOT fire -- the ops so far are
                 // committed at the settings level but not yet baked; the resume call's own batch-end
                 // updateRule bakes them once the remaining patches complete.
-                if (pi > 0 && _relayBudgetExceeded(args?.__reqT0 as Long)) {
+                if (pi > 0 && _timeBudgetExceeded(args?.__reqT0 as Long)) {
                     def patchesRemaining = patchesList.subList(pi, patchesList.size()).collect { _stripInternalClock(it) }
                     return _patchesPauseResult(appId, backup, patchResults, patchesRemaining)
                 }
@@ -13488,7 +13488,7 @@ def _applyNativeAppEdit(args) {
                         boolean innerPaused = false
                         for (def tspec : innerList) {
                             ii++
-                            if (ii > 0 && _relayBudgetExceeded(args?.__reqT0 as Long)) {
+                            if (ii > 0 && _timeBudgetExceeded(args?.__reqT0 as Long)) {
                                 innerPaused = true
                                 break
                             }
@@ -13521,7 +13521,7 @@ def _applyNativeAppEdit(args) {
                         boolean innerPaused = false
                         for (def aspec : innerList) {
                             ii++
-                            if (ii > 0 && _relayBudgetExceeded(args?.__reqT0 as Long)) {
+                            if (ii > 0 && _timeBudgetExceeded(args?.__reqT0 as Long)) {
                                 innerPaused = true
                                 break
                             }
@@ -13992,7 +13992,7 @@ def _applyNativeAppEdit(args) {
             for (def spec : trigList) {
                 ti++
                 if ((triggerResults.size() + actionResults.size()) > 0 &&
-                        _relayBudgetExceeded(args?.__reqT0 as Long)) {
+                        _timeBudgetExceeded(args?.__reqT0 as Long)) {
                     return _bulkRelayPauseResult(appId, backup, triggerResults, actionResults,
                         trigList.subList(ti, trigList.size()), actList)
                 }
@@ -14013,7 +14013,7 @@ def _applyNativeAppEdit(args) {
             for (def spec : actList) {
                 ai++
                 if ((triggerResults.size() + actionResults.size()) > 0 &&
-                        _relayBudgetExceeded(args?.__reqT0 as Long)) {
+                        _timeBudgetExceeded(args?.__reqT0 as Long)) {
                     // Every trigger already processed; only the unprocessed actions remain.
                     return _bulkRelayPauseResult(appId, backup, triggerResults, actionResults,
                         [], actList.subList(ai, actList.size()))

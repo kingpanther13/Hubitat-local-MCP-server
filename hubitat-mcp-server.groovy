@@ -412,11 +412,14 @@ def advancedOverridesPage() {
                   description: "Leave OFF (default). ON: gateway-mode base tools and the gateway catalog advertise outputSchema (wire form, no required arrays) and successful results carry structuredContent per the MCP spec. The flat tool list never advertises outputSchema regardless of this setting.",
                   defaultValue: false
         }
-        section("Cloud relay budget") {
-            paragraph "The cloud relay severs a slow /mcp call at a fixed ceiling while the hub keeps running the operation to completion. When a slow multi-step write is running over the relay, the server pauses BEFORE this budget and returns a resumable in_progress envelope so no step is lost. Set 0 to disable (behaviour is unchanged for LAN requests either way)."
+        section("Slow-write time budgets") {
+            paragraph "The cloud relay severs a slow /mcp call at a fixed ceiling while the hub keeps running the operation to completion. When a slow multi-step write reaches its budget, the server pauses BETWEEN committed sub-steps and returns a resumable in_progress envelope so no step is lost. The relay budget defaults ON (under the relay ceiling); the LAN budget defaults OFF -- LAN has no transport ceiling, so enable it only when your MCP client's own request timeout kills slow writes (set it just under that timeout). Set 0 to disable either."
             input "relayBudgetMs", "number", title: "Cloud-relay time budget (ms, 0 = off)",
                   description: "Pause a slow multi-step write over the cloud relay once this many ms have elapsed (default: 8000, under the ~10s relay ceiling).",
                   defaultValue: 8000, range: "0..30000", required: false
+            input "lanBudgetMs", "number", title: "LAN time budget (ms, 0 = off)",
+                  description: "Pause a slow multi-step write on a LAN request once this many ms have elapsed (default: 0 = off; set just under your MCP client's request timeout).",
+                  defaultValue: 0, range: "0..300000", required: false
         }
         section {
             def dt = (settings.disabled_tools ?: []).size()
@@ -918,8 +921,9 @@ def handleToolsCall(msg) {
     String opToken = null
     boolean opTokenActive = false
     // Buffer the terminal result under the token on every exit path (finally), so
-    // a dropped transport response is recoverable via hub_get_op_result and no
-    // token is left eternally "running". Each terminal path sets opCompletionText.
+    // a dropped transport response is recoverable by re-issuing the tokened call
+    // (the dedup gate replays it) and no token is left eternally "running". Each
+    // terminal path sets opCompletionText.
     String opCompletionText = null
     boolean opCompletionIsError = false
     try {
@@ -939,7 +943,7 @@ def handleToolsCall(msg) {
                 // never need it, and several validate their args strictly and would
                 // reject the unknown key -- stripping makes EVERY write tokenable, not
                 // just the ones whose schema advertises the param. Reads keep their args
-                // untouched (hub_get_op_result takes opToken as a real parameter).
+                // untouched (they ignore the token entirely -- no read consumes it).
                 args.remove('opToken')
                 if (args.args instanceof Map) args.args.remove('opToken')
                 if (rawToken != null) {
@@ -959,6 +963,21 @@ def handleToolsCall(msg) {
                 return jsonRpcResult(msg.id, [
                     content: [[type: "text", text: groovy.json.JsonOutput.toJson(dedup.result)]],
                     isError: dedup.isError
+                ])
+            }
+            // Token-only poll on an UNSEEN token: the write re-issued with nothing but
+            // its opToken is the documented recovery poll, and a required-args write
+            // called that way can never be a real execution -- so answer "unknown"
+            // instead of marking the token and burning it on the leaf's missing-arg
+            // validation error. Running/complete tokens were already answered above.
+            boolean isGatewayCall = getGatewayConfig().containsKey(toolName) && args.tool instanceof String && args.tool
+            if (_isOpTokenPollShape(args, isGatewayCall, reactiveToolName)) {
+                return jsonRpcResult(msg.id, [
+                    content: [[type: "text", text: groovy.json.JsonOutput.toJson([
+                        success: false, isError: true, status: "unknown", opToken: opToken, tool: reactiveToolName,
+                        note: "No operation with this token has started on this hub -- the original call never arrived, so this poll ran nothing. Re-issue the ORIGINAL call (full arguments) with this same opToken. See hub_get_tool_guide(section='slow_ops')."
+                    ])]],
+                    isError: true
                 ])
             }
             _opTokenMark(opToken, reactiveToolName)
@@ -1140,8 +1159,8 @@ def handleToolsCall(msg) {
         return jsonRpcResult(msg.id, [content: [[type: "text", text: "Tool error: ${e.message}"]], isError: true])
     } finally {
         // Buffer the terminal result under the token so a dropped transport response
-        // is replayable via hub_get_op_result. Reached on every path that set the
-        // text (success, oversize, validation error, runtime error, null/non-serializable).
+        // is replayable by re-issuing the tokened call. Reached on every path that set
+        // the text (success, oversize, validation error, runtime error, null/non-serializable).
         if (opTokenActive && opCompletionText != null) {
             try { _opTokenComplete(opToken, opCompletionText, opCompletionIsError) }
             catch (Exception ce) { mcpLog("warn", "op-token", "Recording op-result completion for ${opToken} failed: ${ce.message}") }
@@ -1195,6 +1214,13 @@ def _relayBudgetMs() {
     return settings.relayBudgetMs != null ? (settings.relayBudgetMs as Long) : 8000L
 }
 
+// LAN time budget in ms. Default 0 = off: LAN has no fixed transport ceiling, so
+// the pause is opt-in for clients whose own request timeout kills slow multi-step
+// writes (set it just under that client timeout).
+def _lanBudgetMs() {
+    return settings.lanBudgetMs != null ? (settings.lanBudgetMs as Long) : 0L
+}
+
 // The leaves whose partial-commit loops consume the __reqT0 budget clock. This is
 // the injection allowlist for handleToolsCall/handleGateway: tools outside it never
 // see the key (several validate their args strictly and reject unknown keys).
@@ -1203,14 +1229,14 @@ def _budgetAwareTools() {
 }
 
 // True when a partial-commit loop should pause and hand back a resumable
-// in_progress envelope: a positive budget, a cloud-relayed request, and the
-// elapsed time since request entry (t0) has reached the budget. LAN requests and
-// budget=0 short-circuit, so non-relay behaviour is byte-identical to before.
-def _relayBudgetExceeded(Long t0) {
+// in_progress envelope: the elapsed time since request entry (t0) has reached the
+// budget for this request's source -- relayBudgetMs over the cloud relay,
+// lanBudgetMs (default 0 = off) on LAN. With the LAN knob unset, LAN behaviour is
+// byte-identical to the pre-budget shape.
+def _timeBudgetExceeded(Long t0) {
     if (t0 == null) return false
-    Long budget = _relayBudgetMs()
+    Long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
     if (budget <= 0) return false
-    if (!_isCloudRequest()) return false
     return (now() - t0) >= budget
 }
 
@@ -1221,6 +1247,26 @@ def _validateOpToken(String opToken) {
     if (!(opToken ==~ /^[A-Za-z0-9._-]{8,128}$/)) {
         throw new IllegalArgumentException("Invalid opToken (must be 8-128 characters of A-Za-z0-9._- -- it becomes a File Manager filename component). See hub_get_tool_guide(section='slow_ops').")
     }
+}
+
+// True when a tokened write call is a pure status poll: after the token strip the
+// args carry NOTHING else (the #299 bestPracticeKey acknowledgment is tolerated --
+// BPS-gated clients attach it to every write), and the leaf has required params (so
+// the bare call could never be a legitimate execution). Tools with no required
+// params fall through -- a bare tokened call IS their real call shape, and every
+// current write declares at least one required param anyway. Consulted only for an
+// UNSEEN token: seen tokens are answered by the dedup gate regardless of shape.
+def _isOpTokenPollShape(args, boolean isGatewayCall, leafName) {
+    if (!(args instanceof Map)) return false
+    def req = requiredParamsByTool()[leafName]
+    if (!(req instanceof List) || req.isEmpty()) return false
+    def bare = { Map m -> m.keySet().every { it == 'bestPracticeKey' } }
+    if (isGatewayCall) {
+        if (!args.keySet().every { it in ['tool', 'args', 'bestPracticeKey'] }) return false
+        def inner = args.args
+        return inner == null || ((inner instanceof Map) && bare(inner))
+    }
+    return bare(args)
 }
 
 def _opTokenResultFile(String opToken) { "mcp-op-result-${opToken}.json" }
@@ -1318,10 +1364,18 @@ def _opTokenDedup(String opToken, origToolName) {
     def rec = (toks instanceof Map && toks[opToken] instanceof Map) ? toks[opToken] : null
     if (rec == null) return null
     if (rec.state == "running") {
+        def started = (rec.startedAt != null) ? (rec.startedAt as Long) : null
+        def runningNote = "An operation with this token is already executing on the hub. Do NOT re-run the operation; poll by re-issuing this call with the same opToken (the token alone is enough) until it replays the buffered result. See hub_get_tool_guide(section='slow_ops')."
+        if (rec.tool?.toString() == "hub_update_package") {
+            // The monolithic deploy's recompile can drop even this token's completion:
+            // point at the independent done-signal so a poll can't spin forever.
+            runningNote += " For hub_update_package, hub_get_info's lastSelfDeploy is the independent done-signal: an `at` newer than startedAt means the deploy's final act ran even if this token never completes."
+        }
         return [isError: true, result: [
             success: false, isError: true, status: "running", opToken: opToken,
             tool: rec.tool, startedAt: rec.startedAt,
-            note: "An operation with this token is already executing on the hub. Do not re-issue the write; poll hub_get_op_result with this token until it reports complete, then read the buffered result. See hub_get_tool_guide(section='slow_ops')."
+            elapsedMs: (started != null) ? (now() - started) : null,
+            note: runningNote
         ]]
     }
     def parsed = _opTokenReadResult(rec)
@@ -1676,10 +1730,9 @@ def getGatewayConfig() {
         ],
         hub_read_diagnostics: [
             description: "Read-only hub health, logs, and diagnostics: system logs, performance stats, scheduled jobs, MCP debug logs, hub metrics, free-memory/CPU history, device health/staleness, Z-Wave/Zigbee radio details, and saved state snapshots. All operations are read-only; the matching writes (gc, Z-Wave repair, clear logs, set log level, delete snapshots) live in hub_manage_logs / hub_manage_diagnostics.",
-            tools: ["hub_get_logs", "hub_get_op_result", "hub_get_performance_stats", "hub_get_jobs", "hub_get_debug_logs", "hub_get_metrics", "hub_get_memory_history", "hub_get_device_health", "hub_get_radio_details", "hub_list_captured_states"],
+            tools: ["hub_get_logs", "hub_get_performance_stats", "hub_get_jobs", "hub_get_debug_logs", "hub_get_metrics", "hub_get_memory_history", "hub_get_device_health", "hub_get_radio_details", "hub_list_captured_states"],
             summaries: [
                 hub_get_logs: "Get Hubitat system logs, most recent first. Args: level, source, pattern/patterns, since/until, deviceId|appId, limit",
-                hub_get_op_result: "Fetch the buffered result of a slow write by its idempotency token after a dropped/timed-out response. Args: opToken. Returns status unknown|running|complete.",
                 hub_get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events). Args: type, sortBy, limit",
                 hub_get_jobs: "Get scheduled jobs, running jobs, and hub actions",
                 hub_get_debug_logs: "Get MCP internal debug logs (mode='logs') or logging status (mode='status'). Args: mode, level, component (e.g. server/rule), ruleId, limit",
@@ -1691,7 +1744,6 @@ def getGatewayConfig() {
             ],
             searchHints: [
                 hub_get_logs: "errors warnings messages trace syslog output recent latest device app scope regex pattern filter time window since until",
-                hub_get_op_result: "idempotency token operation result replay recover dropped timeout 504 gateway error transport committed poll in progress resume slow write",
                 hub_get_performance_stats: "slow cpu busy resource usage hog bottleneck",
                 hub_get_jobs: "scheduled cron timer recurring what is running next automation",
                 hub_get_debug_logs: "mcp internal troubleshoot trace logging status buffer capacity level",
@@ -2830,7 +2882,6 @@ def executeTool(toolName, args) {
 
         // Monitoring Tools
         case "hub_get_logs": return toolGetHubLogs(args)
-        case "hub_get_op_result": return toolGetOpResult(args)
         case "hub_get_performance_stats": return toolGetPerformanceStats(args)
         case "hub_get_jobs": return toolGetHubJobs(args)
         case "hub_get_metrics": return toolGetHubPerformance(args)
@@ -7080,38 +7131,43 @@ To move EXISTING devices into an existing room, set each device's room via hub_u
 Renaming a room preserves device assignments, but may require updating automations/dashboards that reference the room by name.
 ''',
 
-        slow_ops: '''## Slow ops over the cloud relay (opToken recovery + in_progress resume)
+        slow_ops: '''## Slow ops (opToken recovery + in_progress resume)
 
-A slow write invoked over the cloud relay can outlive the relay's fixed response ceiling. When that happens the hub still runs the operation to completion and commits it -- only the RESPONSE is lost, and your client surfaces an opaque transport error (a gateway/timeout error, often worded as "try again"). Retrying blindly risks a DOUBLE COMMIT. Two mechanisms make this recoverable.
+A slow write can outlive its transport: the cloud relay severs calls at a fixed ceiling, and an MCP client's own request timeout can kill a long LAN call. Either way the hub still runs the operation to completion and commits it -- only the RESPONSE is lost, and your client surfaces an opaque transport error (a gateway/timeout error, often worded as "try again"). RE-RUNNING THE CALL IS THE WRONG RECOVERY: it double-commits the write. Recovery is always a POLL, and the write tool itself is the poll.
 
-### Idempotency token (opToken)
+### Idempotency token (opToken): pass one, and re-issue with the SAME one
 
-EVERY write tool accepts an optional `opToken` you invent: 8-128 characters of A-Za-z0-9._- (the schemas of the known-slow class advertise it explicitly: hub_set_rule, hub_set_native_app, the code save/update tools, hub_install_bundle, hub_update_package, hub_create_backup, hub_restore_backup, hub_delete_variable). Pass the SAME token on the call and, if the response drops, on your recovery poll.
+EVERY write tool accepts an optional `opToken` you invent: 8-128 characters of A-Za-z0-9._- (the schemas of the known-slow class advertise it explicitly: hub_set_rule, hub_set_native_app, the code save/update tools, hub_install_bundle, hub_update_package, hub_create_backup, hub_restore_backup, hub_delete_variable). The server records the token before running the write and buffers the terminal result under it when it finishes.
 
-- The server records the token before running the write and buffers the result when it finishes.
-- If the response is lost, call `hub_get_op_result(opToken=<yours>)` instead of re-issuing the write.
-- If you DO re-issue the same tokened call while it is still running, the server refuses the duplicate (status "running") rather than committing twice. If it already finished, the server replays the original result with `replayed: true` and does NOT run the write again.
-- A token is SPENT once its operation completes -- errors included. A replayed result carrying an error means that attempt failed; to retry with corrected arguments, invent a FRESH token. Never reuse a token for a different or corrected operation.
+If the response is lost, DO NOT re-run the operation and DO NOT invent a fresh token. Re-issue the SAME tool call with the SAME `opToken` -- the token alone is enough (e.g. `{tool: "hub_update_package", opToken: "<yours>"}` with no other arguments). The server answers from the token record without running anything twice:
 
-### hub_get_op_result tri-state
+- `status: "running"` -- still executing on the hub. Poll again in a few seconds by re-issuing the same tokened call. The write commits even though your response dropped.
+- `replayed: true` -- it finished; this IS the original buffered result (including `isError` if that attempt failed).
+- `status: "unknown"` (returned only to a token-only poll) -- no operation with this token ever started here; the original call never arrived. Re-issue the ORIGINAL call (full arguments) with this same token.
+- `status: "indeterminate"` -- the operation completed here but its buffered result is gone (buffering failed, or swept opportunistically once older than ~24 hours). Do NOT re-issue blindly; verify current state via reads first. Only "unknown" means the call never arrived.
 
-- `status: "unknown"` -- no operation with this token ever started here; the original call never arrived. Safe to (re-)issue the original call with the same token.
-- `status: "running"` -- still executing. Poll again in a few seconds. The write commits even though your response dropped, so do NOT re-issue.
-- `status: "complete"` -- the original result is under `result`, with `isError` and `finishedAt`.
-- `status: "indeterminate"` -- the operation completed here but its buffered result is gone (buffering failed, or swept opportunistically once older than ~24 hours -- the sweep runs on later tokened writes, so expiry is not prompt). Do NOT re-issue blindly; verify current state via reads first. Only "unknown" means the call never arrived.
+A token is SPENT once its operation completes -- errors included. A replayed result carrying an error means that attempt failed; to retry with corrected arguments, invent a FRESH token. Never reuse a token for a different or corrected operation.
 
 A replayed result whose `status` is "in_progress" carries `replayNote`: it is the ORIGINAL paused envelope, not new progress -- a spent token cannot drive a resume; re-issue the remaining work with a fresh token.
 
+### hub_update_package: never re-run on a timeout
+
+The package deploy is monolithic (it cannot checkpoint-pause) and takes minutes -- it is the write most likely to outlive a client timeout, and a re-run repeats the WHOLE bundle+apps repair on a hub that is already mid-deploy. On any transport error or timeout:
+
+1. Poll with the same `opToken` (token-only re-issue, as above). While the deploy runs you get the "running" refusal; when it finishes you get the exact buffered result.
+2. The hub also refuses a concurrent second deploy outright while one is in flight, so an untokened re-run is caught server-side too.
+3. `hub_get_info`'s `lastSelfDeploy` is the deploy's done-signal: its `at` flipping fresh (check `ageMs`) means the self-app leg ran; its `success`/`error` carry the outcome even if every response was lost.
+
 ### in_progress resume (multi-step writes only)
 
-hub_set_rule and hub_set_native_app run multi-step wizard edits. Over the relay, once the time budget is reached BETWEEN steps they stop early and return a SUCCESS-shaped envelope with `status: "in_progress"` -- every completed step is already committed. The envelope carries the remaining work so you can resume:
+hub_set_rule and hub_set_native_app run multi-step wizard edits. Once the time budget for the request's transport is reached BETWEEN steps they stop early and return a SUCCESS-shaped envelope with `status: "in_progress"` -- every completed step is already committed. The envelope carries the remaining work so you can resume:
 
 - A paused `walkStep(operation='drive')` returns `pausedAtStep`, `stepsRemaining` (the unrun step specs), and `page`. Re-issue the drive with `steps = stepsRemaining` and `page` set to the returned page to continue.
-- A paused bulk `addTriggers`/`addActions` edit returns `triggersCommitted`/`actionsCommitted`, the per-item `triggers`/`actions` arrays, and `addTriggersRemaining`/`addActionsRemaining` (the unprocessed specs). Re-issue the hub_set_rule / hub_set_native_app edit with `addTriggers`/`addActions` set to those remaining lists. Unlike the walkStep pause (which only pauses when everything so far is clean), this pause -- like the patch pause -- can stop right after a failed/degraded item to protect the response from a relay drop, so check the top-level `success`/`partial` and the per-item arrays -- a committed item that failed is surfaced there, not masked.
+- A paused bulk `addTriggers`/`addActions` edit returns `triggersCommitted`/`actionsCommitted`, the per-item `triggers`/`actions` arrays, and `addTriggersRemaining`/`addActionsRemaining` (the unprocessed specs). Re-issue the hub_set_rule / hub_set_native_app edit with `addTriggers`/`addActions` set to those remaining lists. Unlike the walkStep pause (which only pauses when everything so far is clean), this pause -- like the patch pause -- can stop right after a failed/degraded item to protect the response from a transport drop, so check the top-level `success`/`partial` and the per-item arrays -- a committed item that failed is surfaced there, not masked.
 - A paused patch edit returns `patchResults` so far and `patchesRemaining`. Re-issue the hub_set_rule / hub_set_native_app edit with `patches = patchesRemaining`. A patch op carrying a large inner `addTriggers`/`addActions` list can pause MID-op: `patchesRemaining` then leads with that op rewritten to only its unprocessed inner items. The rule finalize (updateRule) runs when the remaining patches complete, not on the paused call.
 - Attach the same `opToken` on a resume ONLY if the original call carried none; otherwise use a fresh token for the resume.
 
-The budget is the advanced `relayBudgetMs` setting (default 8000 ms, 0 disables). LAN requests and a 0 budget never pause -- behaviour there is unchanged.
+The budget is per-transport: the advanced `relayBudgetMs` setting for cloud-relay requests (default 8000 ms, 0 disables) and `lanBudgetMs` for LAN requests (default 0 = off; set it just under your MCP client's request timeout to make long LAN edits pause instead of dying). With the LAN knob unset, LAN behaviour is unchanged.
 '''
     ]
 }

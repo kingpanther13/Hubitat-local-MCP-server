@@ -116,7 +116,8 @@ class OpTokenReplaySpec extends ToolSpecBase {
         inner.opToken == 'runtok1234'
         inner.tool == 'hub_create_room'
         inner.startedAt == FIXED_NOW - 3000L
-        inner.note instanceof String && inner.note.contains('hub_get_op_result')
+        inner.elapsedMs == 3000L
+        inner.note instanceof String && inner.note.contains('opToken') && !inner.note.contains('hub_get_op_result')
     }
 
     def "re-issuing a completed token replays the buffered result with replayed=true and does not re-run the write"() {
@@ -296,6 +297,135 @@ class OpTokenReplaySpec extends ToolSpecBase {
         'bad charset'    | 'abc!defg'
         'has a space'    | 'abc defgh'
         'too long'       | ('a' * 129)
+    }
+
+    // ---------------- token-only poll: the write IS the poll (issue #351) ----------------
+    // Re-issuing a write with ONLY its opToken is the documented recovery poll. The
+    // running/complete/indeterminate answers come from the dedup gate regardless of
+    // shape; the poll shape matters for an UNSEEN token, where a required-args write
+    // must answer "unknown" instead of marking the token and burning it on the
+    // leaf's missing-arg validation error.
+
+    def "a token-only call on a required-args write is a pure poll: an unseen token reports unknown without executing or marking"() {
+        given:
+        settingsMap.enableWrite = true
+        def uploads = 0
+        script.metaClass.uploadHubFile = { String name, byte[] content -> uploads++ }
+        def ran = 0
+        script.metaClass.toolCreateRoom = { a -> ran++; [success: true] }
+
+        when: 'the recovery poll: the write re-issued with ONLY the token'
+        def response = mcpDriver.callTool('hub_create_room', [opToken: 'pollNever12'])
+
+        then: 'nothing ran, nothing was marked or buffered -- the token stays fresh for the real re-issue'
+        ran == 0
+        uploads == 0
+        !atomicStateMap.opTokens?.containsKey('pollNever12')
+
+        and: 'the caller learns the original call never arrived and how to recover'
+        response.result.isError == true
+        def inner = mcpDriver.parseInner(response)
+        inner.status == 'unknown'
+        inner.opToken == 'pollNever12'
+        inner.note instanceof String && inner.note.toLowerCase().contains('re-issue')
+    }
+
+    def "a token-only gateway envelope ({tool, opToken}) is the same pure poll"() {
+        given:
+        settingsMap.useGateways = true
+        settingsMap.enableWrite = true
+        installFileStore()
+        def ran = 0
+        script.metaClass.toolCreateRoom = { a -> ran++; [success: true] }
+
+        when:
+        def response = mcpDriver.callTool('hub_manage_rooms', [tool: 'hub_create_room', opToken: 'gwpoll12345'])
+
+        then:
+        ran == 0
+        !atomicStateMap.opTokens?.containsKey('gwpoll12345')
+        response.result.isError == true
+        mcpDriver.parseInner(response).status == 'unknown'
+    }
+
+    def "a gateway poll with the token nested in an otherwise-empty inner args is still a pure poll"() {
+        given:
+        settingsMap.useGateways = true
+        settingsMap.enableWrite = true
+        installFileStore()
+        def ran = 0
+        script.metaClass.toolCreateRoom = { a -> ran++; [success: true] }
+
+        when:
+        def response = mcpDriver.callTool('hub_manage_rooms', [tool: 'hub_create_room', args: [opToken: 'gwpoll23456']])
+
+        then:
+        ran == 0
+        !atomicStateMap.opTokens?.containsKey('gwpoll23456')
+        mcpDriver.parseInner(response).status == 'unknown'
+    }
+
+    def "a token-only poll still counts as a poll when it carries the mandatory-BPS acknowledgment key"() {
+        given: 'a BPS-gated client attaches bestPracticeKey to every write -- the poll shape must tolerate it'
+        settingsMap.enableWrite = true
+        installFileStore()
+        def ran = 0
+        script.metaClass.toolCreateRoom = { a -> ran++; [success: true] }
+
+        when:
+        def response = mcpDriver.callTool('hub_create_room', [opToken: 'bpspoll1234', bestPracticeKey: 'bps-ack-299'])
+
+        then:
+        ran == 0
+        !atomicStateMap.opTokens?.containsKey('bpspoll1234')
+        mcpDriver.parseInner(response).status == 'unknown'
+    }
+
+    def "a token-only re-issue while the op is running returns the running refusal without arg validation"() {
+        given:
+        settingsMap.enableWrite = true
+        installFileStore()
+        atomicStateMap.opTokens = [
+            polling123: [state: 'running', tool: 'hub_create_room', startedAt: FIXED_NOW - 3000L]
+        ]
+        def ran = 0
+        script.metaClass.toolCreateRoom = { a -> ran++; [success: true] }
+
+        when: 'poll by re-issuing with ONLY the token -- no name/confirm'
+        def response = mcpDriver.callTool('hub_create_room', [opToken: 'polling123'])
+
+        then:
+        ran == 0
+        response.result.isError == true
+        mcpDriver.parseInner(response).status == 'running'
+    }
+
+    def "a token-only re-issue after completion replays the buffered result"() {
+        given:
+        settingsMap.enableWrite = true
+        installFileStore()
+        def ran = 0
+        script.metaClass.toolCreateRoom = { a -> ran++; [success: true, roomId: 4] }
+
+        when: 'full call, then the token-only poll'
+        mcpDriver.callTool('hub_create_room', [name: 'Den', confirm: true, opToken: 'pollDone123'])
+        def second = mcpDriver.callTool('hub_create_room', [opToken: 'pollDone123'])
+
+        then: 'the write ran once; the poll replays the buffered result'
+        ran == 1
+        def inner = mcpDriver.parseInner(second)
+        inner.replayed == true
+        inner.roomId == 4
+    }
+
+    // ---------------- issue #351: the separate poll tool is retired ----------------
+
+    def "hub_get_op_result is fully retired: absent from the catalog, gateways, classifications, and display meta"() {
+        expect:
+        script.getAllToolDefinitions().every { it.name != 'hub_get_op_result' }
+        script.getGatewayConfig().every { name, cfg -> !(cfg.tools?.contains('hub_get_op_result')) }
+        !script.getReadOnlyToolNames().contains('hub_get_op_result')
+        !script.getToolDisplayMeta().containsKey('hub_get_op_result')
     }
 
     // ---------------- _opTokenMark: started marker, TTL prune, size cap ----------------

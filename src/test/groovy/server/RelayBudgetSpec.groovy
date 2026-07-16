@@ -23,12 +23,14 @@ import support.ToolSpecBase
  *     relay dropping the whole response -- and surface any failed/degraded item in the
  *     pause envelope's success/partial rather than masking it as a clean success.
  *
- * The generic machinery (_isCloudRequest / _relayBudgetMs / _relayBudgetExceeded)
- * lives in the main file. The loop tests stub _relayBudgetExceeded so the pause is
- * deterministic; the composition of that predicate is unit-tested separately with
- * _isCloudRequest stubbed and the harness's fixed clock (now()==1234567890000L).
- * A LAN request or relayBudgetMs=0 short-circuits the guard, so those loops keep
- * their pre-#348 shape byte-for-byte -- covered by the not-exceeded cases below.
+ * The generic machinery (_isCloudRequest / _relayBudgetMs / _lanBudgetMs /
+ * _timeBudgetExceeded) lives in the main file. The loop tests stub
+ * _timeBudgetExceeded so the pause is deterministic; the composition of that
+ * predicate is unit-tested separately with _isCloudRequest stubbed and the
+ * harness's fixed clock (now()==1234567890000L). The budget is per-source (issue
+ * #351): a cloud request reads relayBudgetMs (default 8000), a LAN request reads
+ * lanBudgetMs (default 0 = off) -- so with the LAN knob unset, LAN loops keep
+ * their pre-#348 shape byte-for-byte, covered by the not-exceeded cases below.
  */
 class RelayBudgetSpec extends ToolSpecBase {
 
@@ -56,22 +58,40 @@ class RelayBudgetSpec extends ToolSpecBase {
         script._isCloudRequest() == false
     }
 
-    @Unroll
-    def "_relayBudgetExceeded fires only for a cloud request past a live budget (#desc)"() {
+    def "_lanBudgetMs defaults to 0 (off) when the setting is unset"() {
+        expect:
+        script._lanBudgetMs() == 0L
+    }
+
+    def "_lanBudgetMs honours settings.lanBudgetMs"() {
         given:
-        settingsMap.relayBudgetMs = budgetMs
+        settingsMap.lanBudgetMs = 45000
+
+        expect:
+        script._lanBudgetMs() == 45000L
+    }
+
+    @Unroll
+    def "_timeBudgetExceeded fires only past the live budget for the request's source (#desc)"() {
+        given:
+        settingsMap.relayBudgetMs = relayMs
+        if (lanMs != null) settingsMap.lanBudgetMs = lanMs
         script.metaClass._isCloudRequest = { -> cloud }
 
         expect:
-        script._relayBudgetExceeded(t0) == expected
+        script._timeBudgetExceeded(t0) == expected
 
         where:
-        desc                        | cloud | budgetMs | t0                | expected
-        'cloud, over budget'        | true  | 100      | FIXED_NOW - 200L  | true
-        'cloud, under budget'       | true  | 100      | FIXED_NOW - 50L   | false
-        'cloud, null t0'            | true  | 100      | null              | false
-        'cloud, budget disabled 0'  | true  | 0        | FIXED_NOW - 200L  | false
-        'LAN, over budget'          | false | 100      | FIXED_NOW - 200L  | false
+        desc                          | cloud | relayMs | lanMs | t0                | expected
+        'cloud, over budget'          | true  | 100     | null  | FIXED_NOW - 200L  | true
+        'cloud, under budget'         | true  | 100     | null  | FIXED_NOW - 50L   | false
+        'cloud, null t0'              | true  | 100     | null  | null              | false
+        'cloud, budget disabled 0'    | true  | 0       | null  | FIXED_NOW - 200L  | false
+        'LAN, lan budget unset (off)' | false | 100     | null  | FIXED_NOW - 999L  | false
+        'LAN, lan budget live, over'  | false | 100     | 200   | FIXED_NOW - 300L  | true
+        'LAN, lan budget live, under' | false | 100     | 200   | FIXED_NOW - 50L   | false
+        'LAN, lan budget disabled 0'  | false | 100     | 0     | FIXED_NOW - 300L  | false
+        'cloud ignores the LAN knob'  | true  | 0       | 50    | FIXED_NOW - 200L  | false
     }
 
     // ---------------- _rmDriveWalkSteps checkpoint ----------------
@@ -81,7 +101,7 @@ class RelayBudgetSpec extends ToolSpecBase {
             walkCalls << new LinkedHashMap(step); [page: step.page, success: true]
         }
         script.metaClass._rmCheckRuleHealth = { Integer id -> [ok: true] }
-        script.metaClass._relayBudgetExceeded = { Long t0 -> pause }
+        script.metaClass._timeBudgetExceeded = { Long t0 -> pause }
         return walkCalls
     }
 
@@ -147,7 +167,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         }
         script.metaClass._rmClickAppButton = { Integer aId, String name, String stateAttr = null,
                                                String pageName = null, Map cache = null -> clicks << name }
-        script.metaClass._relayBudgetExceeded = { Long t0 -> pause }
+        script.metaClass._timeBudgetExceeded = { Long t0 -> pause }
     }
 
     def "a patches batch over a tiny cloud budget commits the first op then pauses, deferring updateRule"() {
@@ -298,7 +318,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         }
         script.metaClass._rmClickAppButton = { Integer aId, String name, String stateAttr = null,
                                                String pageName = null, Map cache = null -> clicks << name }
-        script.metaClass._relayBudgetExceeded = { Long t0 -> pause }
+        script.metaClass._timeBudgetExceeded = { Long t0 -> pause }
     }
 
     def "a bulk addActions batch over a tiny cloud budget commits the first action then pauses, deferring updateRule"() {
@@ -402,7 +422,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         }
         script.metaClass._rmClickAppButton = { Integer aId, String name, String stateAttr = null,
                                                String pageName = null, Map cache = null -> clicks << name }
-        script.metaClass._relayBudgetExceeded = { Long t0 -> true }
+        script.metaClass._timeBudgetExceeded = { Long t0 -> true }
 
         when: 'the first action fails, then the budget pauses before the second'
         def result = script._applyNativeAppEdit([appId: 1, confirm: true, __reqT0: 2000L, addActions: [
@@ -531,7 +551,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         script.metaClass._rmWalkStep = { Integer id, Map spec ->
             spec.operation == 'drive' ? script._rmDriveWalkSteps(id, spec) : [page: spec.page, success: true]
         }
-        script.metaClass._relayBudgetExceeded = { Long t0 -> t0 != null }
+        script.metaClass._timeBudgetExceeded = { Long t0 -> t0 != null }
         def doneClicks = 0
         script.metaClass._rmSubmitMainPageDone = { Integer id -> doneClicks++; [done: true] }
 

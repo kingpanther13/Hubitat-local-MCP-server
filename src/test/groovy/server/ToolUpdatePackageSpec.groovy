@@ -612,6 +612,121 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         result.error.contains('Verify with hub_get_source')
     }
 
+    // -------- issue #351: in-flight deploy guard --------
+    // A package deploy takes minutes; a client-side timeout tempts the agent into
+    // re-running the whole repair while the first run is still committing (the
+    // double-deploy the issue documents). The guard refuses a concurrent second
+    // deploy outright -- recovery is polling, never a re-run.
+
+    private static final long GUARD_NOW = 1234567890000L
+
+    def "a second real deploy is refused while one is in flight, with zero writes"() {
+        given:
+        enableDev()
+        registerAppTypes()
+        def calls = []
+        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
+        script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true, appId: a.appId] }
+        atomicStateMap.packageDeployInFlight = [ref: 'feat/other', startedAt: GUARD_NOW - 60000L]
+
+        when:
+        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+
+        then: 'refused as a runtime error (not thrown), naming the in-flight deploy'
+        result.success == false
+        result.isError == true
+        result.error.toLowerCase().contains('already')
+        result.inFlight.ref == 'feat/other'
+        result.inFlight.elapsedMs == 60000L
+
+        and: 'recovery guidance points at polling, never re-running'
+        result.note.contains('opToken')
+        result.note.contains('lastSelfDeploy')
+
+        and: 'nothing was written'
+        calls == []
+    }
+
+    def "the guard stands down when lastSelfDeploy postdates it -- the deploy finished, only its response was lost"() {
+        given:
+        enableDev()
+        registerAppTypes()
+        def calls = []
+        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
+        script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true, appId: a.appId] }
+        atomicStateMap.packageDeployInFlight = [ref: 'feat/other', startedAt: GUARD_NOW - 120000L]
+        atomicStateMap.lastSelfDeploy = [success: true, at: GUARD_NOW - 10000L]
+
+        when:
+        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+
+        then:
+        result.success == true
+        calls.size() == 3   // bundle + child app + self app
+    }
+
+    def "the guard expires after its TTL (a wedged marker cannot block deploys forever)"() {
+        given:
+        enableDev()
+        registerAppTypes()
+        script.metaClass.toolInstallBundle = { a -> [success: true] }
+        script.metaClass.toolUpdateAppCode = { a -> [success: true, appId: a.appId] }
+        atomicStateMap.packageDeployInFlight = [ref: 'feat/other', startedAt: GUARD_NOW - (11L * 60L * 1000L)]
+
+        when:
+        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+
+        then:
+        result.success == true
+    }
+
+    def "the guard is cleared on a clean finish"() {
+        given:
+        enableDev()
+        registerAppTypes()
+        script.metaClass.toolInstallBundle = { a -> [success: true] }
+        script.metaClass.toolUpdateAppCode = { a -> [success: true, appId: a.appId] }
+
+        when:
+        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+
+        then:
+        result.success == true
+        atomicStateMap.packageDeployInFlight == null
+    }
+
+    def "the guard is cleared when the deploy aborts before the self app"() {
+        given:
+        enableDev()
+        registerAppTypes()
+        script.metaClass.toolInstallBundle = { a -> [success: false, error: 'zip fetch failed'] }
+        script.metaClass.toolUpdateAppCode = { a -> [success: true, appId: a.appId] }
+
+        when:
+        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+
+        then:
+        result.success == false
+        result.aborted == true
+        atomicStateMap.packageDeployInFlight == null
+    }
+
+    def "dryRun neither checks nor sets the guard"() {
+        given:
+        enableDev()
+        registerAppTypes()
+        def seeded = [ref: 'feat/other', startedAt: GUARD_NOW - 60000L]
+        atomicStateMap.packageDeployInFlight = seeded
+
+        when: 'a plan-only run while a deploy is in flight'
+        def result = script.toolUpdatePackage([ref: 'main', dryRun: true])
+
+        then: 'the read-only plan is served and the live marker is untouched'
+        result.success == true
+        result.dryRun == true
+        atomicStateMap.packageDeployInFlight == seeded
+    }
+
     // -------- de-dup of include parsing (coverage guard input) --------
 
     def "duplicate #include of the same library still resolves a single include token"() {

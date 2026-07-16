@@ -90,7 +90,6 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_get_app_config',
             'hub_list_hpm_packages',
             'hub_list_rules', 'hub_get_rule_health',
-            'hub_get_op_result',
             'hub_get_tool_guide'
         ]
     }
@@ -508,7 +507,6 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_list_hpm_packages',
             'hub_list_rules', 'hub_get_rule_health', 'hub_list_rule_local_variables', 'hub_get_visual_rule',
             'hub_list_dashboards', 'hub_get_dashboard',
-            'hub_get_op_result',
             'hub_get_tool_guide'
             // hub_search_tools is in getReadOnlyToolNames() but suppressed in flat mode.
         ] as Set
@@ -589,7 +587,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         names.size() == (names as Set).size()
 
         and: 'no chunk dropped — the full surface is present (bump on intentional add/remove)'
-        names.size() == 118
+        names.size() == 117
 
         and: 'sentinels from the first and last chunks survive the concatenation chain'
         names.contains('hub_list_devices')   // first chunk
