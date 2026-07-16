@@ -4898,6 +4898,22 @@ class TestRunner:
             self._delete_native(app_id)
 
     @test("op_replay")
+    def test_op_replay_read_token(self) -> None:
+        # issue #351: tokens are honoured on EVERY tool, reads included -- an expensive
+        # read whose response is lost replays its buffered result instead of re-running
+        # the work. hub_get_info is a flat read returning a map, so the replay carries
+        # replayed:true alongside the original fields.
+        token = f"bat.opreplay.read.{int(time.time())}"
+        first = self.client.call_tool("hub_get_info", {"opToken": token})
+        assert isinstance(first, dict) and first.get("firmwareVersion"), \
+            f"tokened read failed: {first}"
+        replay = self._poll_op_result(token, deadline_s=10.0, tool="hub_get_info")
+        assert isinstance(replay, dict) and replay.get("replayed") is True, \
+            f"token-only re-issue of the read should replay the buffered result: {replay}"
+        assert replay.get("firmwareVersion") == first.get("firmwareVersion"), \
+            f"replayed read should be the buffered original: {replay}"
+
+    @test("op_replay")
     def test_op_replay_unknown_token(self) -> None:
         # A token-only write poll for a token that never started reports status 'unknown'
         # (issue #351: the write IS the poll) -- telling the caller the original call never

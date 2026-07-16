@@ -13,7 +13,8 @@ import support.ToolSpecBase
  * Contract under test:
  *   - extract opToken from args.opToken OR the gateway inner args.args.opToken
  *   - validate 8-128 chars, charset [A-Za-z0-9._-]; invalid -> IAE -> -32602
- *   - process the token ONLY when the resolved leaf is a WRITE tool (reads ignore it)
+ *   - process the token for EVERY leaf, reads included (issue #351: an expensive
+ *     read that outlives its transport replays instead of re-running)
  *   - dedup: running -> isError status:running (do NOT re-run the write);
  *            complete -> replay the buffered result + replayed:true (no re-run);
  *            complete-but-file-swept -> status:indeterminate (never the
@@ -76,21 +77,26 @@ class OpTokenReplaySpec extends ToolSpecBase {
         store.containsKey(FILE_PREFIX + 'abc12345.json')
     }
 
-    def "a token on a READ tool is ignored -- no marker, no buffer file"() {
-        given:
+    def "a token on a READ tool is honoured too: marker, buffer, and replay on re-issue"() {
+        given: 'issue #351: tokens work on EVERY tool -- an expensive read that outlives its transport replays instead of re-running'
         settingsMap.enableRead = true
-        def uploads = 0
-        script.metaClass.uploadHubFile = { String name, byte[] content -> uploads++ }
-        script.metaClass.getRooms = { -> [] }
+        installFileStore()
+        def ran = 0
+        script.metaClass.getRooms = { -> ran++; [] }
 
-        when: 'a read tool carrying a well-formed token'
-        def response = mcpDriver.callTool('hub_list_rooms', [opToken: 'readtoken1'])
+        when: 'a read tool carrying a well-formed token, then the token-only re-issue'
+        def first = mcpDriver.callTool('hub_list_rooms', [opToken: 'readtoken12'])
+        def second = mcpDriver.callTool('hub_list_rooms', [opToken: 'readtoken12'])
 
-        then: 'the read succeeds and the token was silently ignored -- no marker for it, nothing buffered'
-        response.error == null
-        !response.result.isError
-        !atomicStateMap.opTokens?.containsKey('readtoken1')
-        uploads == 0
+        then: 'the first call ran and completed the marker'
+        first.error == null
+        !first.result.isError
+        atomicStateMap.opTokens['readtoken12']?.state == 'complete'
+
+        and: 'the re-issue replays the buffered result without re-running the read'
+        ran == 1
+        second.error == null
+        mcpDriver.parseInner(second).replayed == true
     }
 
     def "re-issuing a token whose op is still running is refused without re-running the write"() {
@@ -463,6 +469,32 @@ class OpTokenReplaySpec extends ToolSpecBase {
     }
 
     // ---------------- _opTokenMark: started marker, TTL prune, size cap ----------------
+
+    def "token records are written per-entry via updateMapValue -- successive different-token marks both survive"() {
+        given: 'the harness atomicState implements the hub per-entry API; pin that production routes through it'
+        int callsBefore = ((support.TestAtomicState) atomicStateMap).@updateMapValueCalls
+
+        when: 'two different tokens marked back-to-back (the successive/parallel-client pattern)'
+        script._opTokenMark('tokenAlpha1', 'hub_create_room')
+        script._opTokenMark('tokenBravo1', 'hub_delete_room')
+
+        then: 'both records survive and each write went through the per-entry API, not a whole-map rewrite'
+        atomicStateMap.opTokens['tokenAlpha1']?.state == 'running'
+        atomicStateMap.opTokens['tokenBravo1']?.state == 'running'
+        ((support.TestAtomicState) atomicStateMap).@updateMapValueCalls == callsBefore + 2
+    }
+
+    def "_opTokenPutWholeMap (the no-updateMapValue fallback) lands the record without disturbing others"() {
+        given:
+        atomicStateMap.opTokens = [existing123: [state: 'complete', startedAt: FIXED_NOW - 1000L]]
+
+        when:
+        script._opTokenPutWholeMap('fallback1234', [state: 'running', startedAt: FIXED_NOW])
+
+        then:
+        atomicStateMap.opTokens['fallback1234']?.state == 'running'
+        atomicStateMap.opTokens['existing123']?.state == 'complete'
+    }
 
     def "_opTokenMark writes a running marker stamped with the current clock"() {
         when:

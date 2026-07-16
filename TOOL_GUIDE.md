@@ -1158,7 +1158,7 @@ Surfaced via `hub_get_tool_guide(section='slow_ops')`. A slow write can outlive 
 
 ### Idempotency token (`opToken`): pass one, and re-issue with the SAME one
 
-EVERY write tool accepts an optional `opToken` the caller invents (8-128 chars of `A-Za-z0-9._-`); the known-slow class advertises it in its schemas (`hub_set_rule`, `hub_set_native_app`, the code save/update tools, `hub_install_bundle`, `hub_update_package`, `hub_create_backup`, `hub_restore_backup`, `hub_delete_variable`). The server records it before running the write and buffers the terminal result under it on completion.
+EVERY tool — reads included — accepts an optional `opToken` the caller invents (8-128 chars of `A-Za-z0-9._-`); the known-slow class advertises it in its schemas (`hub_set_rule`, `hub_set_native_app`, the code save/update tools, `hub_install_bundle`, `hub_update_package`, `hub_create_backup`, `hub_restore_backup`, `hub_delete_variable`). The server records it before running the call and buffers the terminal result under it on completion. A read cannot double-commit, but an expensive read that outlives its transport still completes and buffers, so the tokened re-issue serves the buffered result instead of re-running the work. Tokens are per-call nonces: concurrent calls with different tokens never interfere.
 
 If the response is lost, do NOT re-run the operation and do NOT invent a fresh token. Re-issue the SAME tool call with the SAME `opToken` — the token alone is enough (e.g. `{tool: "hub_update_package", opToken: "<yours>"}` with no other arguments). The server answers from the token record without running anything twice:
 

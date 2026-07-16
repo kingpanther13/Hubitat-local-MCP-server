@@ -930,27 +930,23 @@ def handleToolsCall(msg) {
         // ---- Idempotency token: resolve, validate, dedup, mark ----
         // All token bookkeeping happens ONCE here, never in executeTool -- a gateway
         // re-enters executeTool per sub-tool and would double-process. The token is
-        // honoured only for WRITE leaves (a read replay is pointless and reads are
-        // already idempotent); a read silently ignores the arg. reactiveToolName is
-        // the resolved leaf (args.tool on a gateway call, the leaf on a flat call).
+        // honoured for EVERY leaf, reads included (issue #351): a read cannot
+        // double-commit, but an expensive read that outlives its transport still
+        // completes and buffers here, so the tokened re-issue serves the buffered
+        // result instead of re-running the work. reactiveToolName is the resolved
+        // leaf (args.tool on a gateway call, the leaf on a flat call).
         if (args instanceof Map) {
             def rawToken = args.opToken ?: (args.args instanceof Map ? args.args.opToken : null)
-            // Only WRITE leaves process the token; a read silently ignores it entirely
-            // (including a malformed one -- no validation, no throw, no marker), so the
-            // read/write partition is checked BEFORE validating the token shape.
-            if (!getReadOnlyToolNames().contains(reactiveToolName)) {
-                // The token is consumed HERE, so strip it before dispatch: write leaves
-                // never need it, and several validate their args strictly and would
-                // reject the unknown key -- stripping makes EVERY write tokenable, not
-                // just the ones whose schema advertises the param. Reads keep their args
-                // untouched (they ignore the token entirely -- no read consumes it).
-                args.remove('opToken')
-                if (args.args instanceof Map) args.args.remove('opToken')
-                if (rawToken != null) {
-                    opToken = rawToken.toString()
-                    _validateOpToken(opToken)
-                    opTokenActive = true
-                }
+            // The token is consumed HERE, so strip it before dispatch: leaves never
+            // need it, and several validate their args strictly and would reject the
+            // unknown key -- stripping makes EVERY tool tokenable, not just the ones
+            // whose schema advertises the param.
+            args.remove('opToken')
+            if (args.args instanceof Map) args.args.remove('opToken')
+            if (rawToken != null) {
+                opToken = rawToken.toString()
+                _validateOpToken(opToken)
+                opTokenActive = true
             }
         }
         if (opTokenActive) {
@@ -1191,13 +1187,14 @@ def _advertisesOutputSchema(toolName) {
 // self-budget and return a resumable in_progress envelope BEFORE the ceiling. The
 // token bookkeeping persists through atomicState -- durable, NOT compare-and-set:
 // the dedup read and the started-mark write are separate operations, so two truly
-// simultaneous calls carrying the same token can both pass the gate, and two
-// overlapping DIFFERENT-token writes can last-writer-win the whole map (losing the
-// other's record; its result file then sits orphaned -- the prune sweeps map
-// entries, not the file prefix). The token targets the sequential-retry pattern
-// (response lost, client retries seconds later), where the persisted mark
-// refuses/replays the retry race-free. The buffered result lives in the File
-// Manager under the reserved mcp-op-result- prefix.
+// simultaneous calls carrying the SAME token can both pass the gate. Records for
+// DIFFERENT tokens are written per-entry (atomicState.updateMapValue), so a client
+// running successive or parallel tokened calls cannot lose a record to a whole-map
+// last-writer-win; the amortized prune is the one remaining whole-map writer (its
+// narrow window self-heals via the TTL sweep). The token targets the
+// sequential-retry pattern (response lost, client retries seconds later), where
+// the persisted mark refuses/replays the retry race-free. The buffered result
+// lives in the File Manager under the reserved mcp-op-result- prefix.
 
 // True only when THIS request arrived over the cloud relay. requestSource is a
 // mapped-endpoint property ("local"|"cloud"); any access failure (older firmware,
@@ -1249,13 +1246,15 @@ def _validateOpToken(String opToken) {
     }
 }
 
-// True when a tokened write call is a pure status poll: after the token strip the
-// args carry NOTHING else (the #299 bestPracticeKey acknowledgment is tolerated --
+// True when a tokened call is a pure status poll: after the token strip the args
+// carry NOTHING else (the #299 bestPracticeKey acknowledgment is tolerated --
 // BPS-gated clients attach it to every write), and the leaf has required params (so
 // the bare call could never be a legitimate execution). Tools with no required
-// params fall through -- a bare tokened call IS their real call shape, and every
-// current write declares at least one required param anyway. Consulted only for an
-// UNSEEN token: seen tokens are answered by the dedup gate regardless of shape.
+// params fall through -- a bare tokened call IS their real call shape, so
+// "unknown -> execute" is exactly the documented recovery for them (re-issue the
+// original call), while running/complete still answer from the dedup gate.
+// Consulted only for an UNSEEN token: seen tokens are answered by the dedup gate
+// regardless of shape.
 def _isOpTokenPollShape(args, boolean isGatewayCall, leafName) {
     if (!(args instanceof Map)) return false
     // Compat shim for the RETIRED hub_get_op_result poll tool: a stale client that
@@ -1303,63 +1302,94 @@ def _opTokenDeleteResultFile(rec) {
     catch (Exception e) { /* best-effort: a stray result file is swept next pass */ }
 }
 
-// Amortized prune of the token map (mutates in place): drop entries past the 24h
-// TTL (deleting their result files) and cap the map at 50, oldest-first. The TTL
-// sweep is the reserved-prefix cleanup; a token left "running" by an unbuffered
-// internal error self-heals here. The size cap evicts TERMINAL records only: an
-// evicted live token would read back as "unknown -- safe to retry" while its op
-// commits, the exact double-commit the token exists to prevent. Stuck "running"
-// records are the TTL sweep's job, so the cap cannot wedge on them for long.
-def _opTokenPrune(Map tokens) {
+// Write ONE token record via the hub's per-entry atomicState.updateMapValue
+// (firmware 2.3.2+) so two overlapping DIFFERENT-token calls cannot clobber each
+// other's records the way a whole-map read-modify-write can -- a lost "running"
+// marker would read back as the safe-to-retry "unknown", the exact double-commit
+// the token exists to prevent. Falls back to the whole-map write (the documented
+// small race) where the platform method is missing.
+def _opTokenPut(String opToken, Map rec) {
+    if (!(atomicState.opTokens instanceof Map)) atomicState.opTokens = [:]
+    try {
+        atomicState.updateMapValue("opTokens", opToken, rec)
+    } catch (MissingMethodException e) {
+        _opTokenPutWholeMap(opToken, rec)
+    }
+}
+
+// Whole-map fallback for _opTokenPut (older firmware / test harnesses without
+// updateMapValue). Read-modify-write: a concurrent different-token write inside
+// this window can be lost -- the pre-#351 behaviour, kept only as the fallback.
+def _opTokenPutWholeMap(String opToken, Map rec) {
+    def tokens = [:]
+    if (atomicState.opTokens instanceof Map) tokens.putAll(atomicState.opTokens)
+    tokens[opToken] = rec
+    atomicState.opTokens = tokens
+}
+
+// Amortized prune: drop entries past the 24h TTL and cap the map at 50,
+// oldest-first. Runs AFTER the marker is written and only rewrites the map when
+// something actually needs removing, so the common path never does a whole-map
+// write; result-file deletions happen after the map write so no file I/O sits
+// inside the read->write window. This is the one remaining whole-map writer -- a
+// concurrent per-entry write can lose to it in a narrow window, which the sweep
+// self-heals (the record's file TTL-expires; a live token is never the eviction
+// target: the size cap evicts TERMINAL records only, and stuck "running" records
+// are the TTL sweep's job, so the cap cannot wedge on them for long).
+def _opTokenPrune() {
+    def stored = atomicState.opTokens
+    if (!(stored instanceof Map)) return
+    def tokens = [:]
+    tokens.putAll(stored)
+    def removed = []
     long cutoff = now() - 86400000L
     def expiredKeys = tokens.findAll { k, v -> (v instanceof Map) && (((v.startedAt as Long) ?: 0L) < cutoff) }.keySet().toList()
-    expiredKeys.each { k -> _opTokenDeleteResultFile(tokens[k]); tokens.remove(k) }
+    expiredKeys.each { k -> removed << tokens.remove(k) }
     if (tokens.size() > 50) {
         def ordered = tokens.entrySet().toList()
             .findAll { e -> !((e.value instanceof Map) && e.value.state == "running") }
             .sort { e -> (e.value instanceof Map) ? ((e.value.startedAt as Long) ?: 0L) : 0L }
         int over = tokens.size() - 50
-        ordered.take(over).each { e -> _opTokenDeleteResultFile(e.value); tokens.remove(e.key) }
+        ordered.take(over).each { e -> removed << tokens.remove(e.key) }
     }
+    if (removed.isEmpty()) return
+    atomicState.opTokens = tokens
+    removed.each { _opTokenDeleteResultFile(it) }
 }
 
-// Mark a token running just before dispatch, pruning as we go. Whole-map reassign
-// -- a nested atomicState mutation does not persist.
+// Mark a token running just before dispatch (per-entry write), then prune.
 def _opTokenMark(String opToken, toolName) {
-    def tokens = [:]
-    if (atomicState.opTokens instanceof Map) tokens.putAll(atomicState.opTokens)
-    // Add the new marker BEFORE pruning so the size cap counts it -- otherwise a
-    // 50-entry map would grow to 51 (the cap check runs at 50 and passes).
-    tokens[opToken] = [state: "running", tool: toolName?.toString(), startedAt: now()]
-    _opTokenPrune(tokens)
-    atomicState.opTokens = tokens
+    _opTokenPut(opToken, [state: "running", tool: toolName?.toString(), startedAt: now()])
+    _opTokenPrune()
 }
 
 // Buffer a token's terminal result (called once, on the request's terminal path).
-// Uploads the wire JSON to the reserved File Manager file; on upload failure keeps
-// a small result inline, else marks it failed_buffer so a replay tells the caller
-// to verify state rather than trust a missing file.
+// Uploads the wire JSON to the reserved File Manager file BEFORE touching the
+// token record (no file I/O between the record read and write); on upload failure
+// keeps a small result inline, else marks it failed_buffer so a replay tells the
+// caller to verify state rather than trust a missing file.
 def _opTokenComplete(String opToken, String jsonText, boolean isErrorBool) {
-    def tokens = [:]
-    if (atomicState.opTokens instanceof Map) tokens.putAll(atomicState.opTokens)
-    def prev = (tokens[opToken] instanceof Map) ? tokens[opToken] : [:]
-    def rec = [state: "complete", tool: prev.tool, startedAt: prev.startedAt, finishedAt: now(), isError: isErrorBool]
     def fileName = _opTokenResultFile(opToken)
     byte[] resultBytes = jsonText?.getBytes("UTF-8")
+    boolean uploaded = false
     try {
         uploadHubFile(fileName, resultBytes)
-        rec.file = fileName
+        uploaded = true
     } catch (Exception e) {
         mcpLog("warn", "op-token", "Buffering op-result for ${opToken} to the File Manager failed: ${e.message}")
-        if (resultBytes != null && resultBytes.length <= 2048) {
-            rec.inline = jsonText
-        } else {
-            rec.state = "failed_buffer"
-            rec.note = "Operation committed but its result could not be buffered (upload failed, payload too large to inline). Re-read current state to confirm."
-        }
     }
-    tokens[opToken] = rec
-    atomicState.opTokens = tokens
+    def stored = atomicState.opTokens
+    def prev = (stored instanceof Map && stored[opToken] instanceof Map) ? stored[opToken] : [:]
+    def rec = [state: "complete", tool: prev.tool, startedAt: prev.startedAt, finishedAt: now(), isError: isErrorBool]
+    if (uploaded) {
+        rec.file = fileName
+    } else if (resultBytes != null && resultBytes.length <= 2048) {
+        rec.inline = jsonText
+    } else {
+        rec.state = "failed_buffer"
+        rec.note = "Operation committed but its result could not be buffered (upload failed, payload too large to inline). Re-read current state to confirm."
+    }
+    _opTokenPut(opToken, rec)
 }
 
 // Dedup gate consulted before dispatch. Returns null to proceed, or a
@@ -7144,7 +7174,7 @@ A slow write can outlive its transport: the cloud relay severs calls at a fixed 
 
 ### Idempotency token (opToken): pass one, and re-issue with the SAME one
 
-EVERY write tool accepts an optional `opToken` you invent: 8-128 characters of A-Za-z0-9._- (the schemas of the known-slow class advertise it explicitly: hub_set_rule, hub_set_native_app, the code save/update tools, hub_install_bundle, hub_update_package, hub_create_backup, hub_restore_backup, hub_delete_variable). The server records the token before running the write and buffers the terminal result under it when it finishes.
+EVERY tool -- reads included -- accepts an optional `opToken` you invent: 8-128 characters of A-Za-z0-9._- (the schemas of the known-slow class advertise it explicitly: hub_set_rule, hub_set_native_app, the code save/update tools, hub_install_bundle, hub_update_package, hub_create_backup, hub_restore_backup, hub_delete_variable). The server records the token before running the call and buffers the terminal result under it when it finishes. A read cannot double-commit, but an expensive read that outlives its transport still completes and buffers, so the tokened re-issue serves the buffered result instead of re-running the work. Tokens are per-call nonces: concurrent calls with DIFFERENT tokens never interfere with each other.
 
 If the response is lost, DO NOT re-run the operation and DO NOT invent a fresh token. Re-issue the SAME tool call with the SAME `opToken` -- the token alone is enough (e.g. `{tool: "hub_update_package", opToken: "<yours>"}` with no other arguments). The server answers from the token record without running anything twice:
 
