@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Conventions for AI coding agents working on this repo (OpenAI Codex, Cursor, Aider, Windsurf, Zed, etc.). Claude Code reads `CLAUDE.md`, which is kept byte-identical to this file — the PR Guard CI workflow flags drift. **AGENTS.md is the source of truth.** Edit it, then `cp AGENTS.md CLAUDE.md` before committing. (GitHub Copilot uses `.github/copilot-instructions.md`; Gemini Code Assist uses `.gemini/styleguide.md`.)
+Conventions for AI coding agents working on this repo (OpenAI Codex, Cursor, Aider, Windsurf, Zed, etc.). Claude Code reads `CLAUDE.md`, which is kept byte-identical to this file — the PR Guard CI workflow flags drift. **AGENTS.md is the source of truth.** Edit it, then `cp AGENTS.md CLAUDE.md` before committing. (GitHub Copilot uses `.github/copilot-instructions.md`; `.gemini/styleguide.md` drove Gemini Code Assist's reviews — that bot is sunset and disabled, its replacement TBD.)
 
 This file is for AI agents. Human contributors follow `.github/pull_request_template.md` and `.gemini/styleguide.md`.
 
@@ -329,6 +329,6 @@ All bookkeeping is bot-only. Communicate user-facing changes through your PR's `
 ## Reference
 
 - [`.github/pull_request_template.md`](.github/pull_request_template.md) — PR body structure (source of truth)
-- [`.gemini/styleguide.md`](.gemini/styleguide.md) — Gemini Code Assist's review checks
+- [`.gemini/styleguide.md`](.gemini/styleguide.md) — review checklist (drove the sunset Gemini Code Assist bot; kept for its future replacement)
 - [`docs/release-automation-design.md`](docs/release-automation-design.md) — full release-pipeline design and the bookkeeping rule
 - [`docs/testing.md`](docs/testing.md) — Spock + hubitat_ci harness, dispatch interception cheat sheet
