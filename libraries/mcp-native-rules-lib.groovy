@@ -118,7 +118,7 @@ def _getAllToolDefinitions_partNativeRM() {
 
 Requires the Write master + confirm=true + recent hub backup.
 
-Slow multi-step calls over a cloud relay may return status:'in_progress' with resume instructions, or the transport may drop with a gateway error while the hub still commits — see hub_get_tool_guide(section='slow_ops') for the recovery protocol.""",
+Slow multi-step calls may return status:'in_progress' with resume instructions once the transport time budget is reached (cloud relay by default; LAN via the lanBudgetMs setting), or the transport may drop with a gateway error while the hub still commits — see hub_get_tool_guide(section='slow_ops') for the recovery protocol.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -131,7 +131,7 @@ Slow multi-step calls over a cloud relay may return status:'in_progress' with re
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click."],
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
                     walkStep: [type: "object", description: "Advanced multi-page classic-app walker — EDIT-only (requires appId; rejected on create).[[FLAT_TRIM]] Generic classic-dynamicPage walker for stateful apps: introspect/write/click/navigate/done one step per call, or operation='drive' with steps=[...] to run the whole sequence in one call. Same shape as hub_set_rule's walkStep.[[/FLAT_TRIM]]"],
-                    opToken: [type: "string", description: "Optional idempotency token you invent (8-128 chars, A-Za-z0-9._-). If the transport drops the response, poll hub_get_op_result with this token to fetch the committed result instead of re-issuing the call."],
+                    opToken: [type: "string", description: "Optional idempotency token you invent (8-128 chars, A-Za-z0-9._-). If the transport drops the response, re-issue this call with the SAME token to poll/replay the committed result instead of re-running the edit."],
                     confirm: [type: "boolean", description: "Must be true. Safety gate for Write master operations."]
                 ],
                 required: ["confirm"]
@@ -176,7 +176,7 @@ Partial-success (every shortcut): success:true can pair with partial:true — in
 
 Deep reference (per-capability field specs, extended condition shapes, periodic schedules, the raw settings/button flow, worked examples): pass guide:true to get it inline, or hub_get_tool_guide(section='set_rule_reference'); full create + repair protocol: hub_get_tool_guide(section='set_rule_create_reference'). Pass {discover:true} on addTrigger/addAction for the live machine-readable schema.
 
-Slow multi-step calls over a cloud relay may return status:'in_progress' with resume instructions, or the transport may drop with a gateway error while the hub still commits — see hub_get_tool_guide(section='slow_ops') for the recovery protocol.""",
+Slow multi-step calls may return status:'in_progress' with resume instructions once the transport time budget is reached (cloud relay by default; LAN via the lanBudgetMs setting), or the transport may drop with a gateway error while the hub still commits — see hub_get_tool_guide(section='slow_ops') for the recovery protocol.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -249,7 +249,7 @@ Slow multi-step calls over a cloud relay may return status:'in_progress' with re
                     ],
                     walkStep: [
                         type: "object",
-                        description: """Raw wizard walker — the escape hatch when addAction/addTrigger don't cover the capability (Periodic sub-pages, conditional-trigger binding, IF/THEN/ELSE, later-firmware features). operation='drive' runs a whole steps=[...] loop in ONE call (introspect → navigate into a sub-page → write each field → done → finalize), carrying the page forward and stopping at the first failed step (stopOnError=false to continue); the single-step primitives drive composes are introspect | write (one field) | click | navigate | done. Spec: {page, operation, write?:{field:value}, click?:{name, stateAttribute?}, navigate?:{targetPage}, hrefContext?:{fromPage, hrefName, hrefParams?}, steps?:[...]}; page is e.g. selectTriggers/selectActions/doActPage/periodic. Always check silentRejection / valueEcho.match / health.ok (the fail-loud signals). Full walker mechanics + page names: guide:true or hub_get_tool_guide(section='set_rule_reference')."""
+                        description: """Raw wizard walker — the escape hatch when addAction/addTrigger don't cover the capability (Periodic sub-pages, conditional-trigger binding, IF/THEN/ELSE, later-firmware features). operation='drive' runs a whole steps=[...] loop in ONE call (introspect → navigate into a sub-page → write each field → done → finalize), carrying the page forward and stopping at the first failed step (stopOnError=false to continue); the single-step primitives drive composes are introspect | write (one field) | click | navigate | done. Spec: {page, operation, write?:{field:value}, click?:{name, stateAttribute?}, navigate?:{targetPage}, hrefContext?:{fromPage, hrefName, hrefParams?}, steps?:[...]}; page is e.g. selectTriggers/selectActions/doActPage/periodic. Always check silentRejection / valueEcho.match / health (the fail-loud signals; health.skipped / health.unreadable mean not-checked, not broken). Full walker mechanics + page names: guide:true or hub_get_tool_guide(section='set_rule_reference')."""
                     ],
                     addAction: [
                         type: "object",
@@ -257,7 +257,7 @@ Slow multi-step calls over a cloud relay may return status:'in_progress' with re
                     ],
                     guide: [type: "boolean", description: "Set true to return the full hub_set_rule capability reference inline (same content as hub_get_tool_guide(section='set_rule_reference')), without a separate call. Makes NO change to any rule."],
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller: {controllerId, buttonNumber, event}. Returns buttonRuleId with the Button trigger auto-seeded — then author actions via addAction on that appId. The controller must already have a button device.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
-                    opToken: [type: "string", description: "Optional idempotency token you invent (8-128 chars, A-Za-z0-9._-). If the transport drops the response, poll hub_get_op_result with this token to fetch the committed result instead of re-issuing the call."],
+                    opToken: [type: "string", description: "Optional idempotency token you invent (8-128 chars, A-Za-z0-9._-). If the transport drops the response, re-issue this call with the SAME token to poll/replay the committed result instead of re-running the edit."],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
                 required: ["confirm"]
@@ -346,7 +346,7 @@ Slow multi-step calls over a cloud relay may return status:'in_progress' with re
         ],
         [
             name: "hub_get_rule_health",
-            description: """Inspect a rule's current state and return a structured health report.[[FLAT_TRIM]] Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule).[[/FLAT_TRIM]] Run after every mutation; hub_set_rule attaches it as `health` on every response. ok=false means at least one issue was found; the issues list explains what.""",
+            description: """Inspect a rule's current state and return a structured health report.[[FLAT_TRIM]] Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule).[[/FLAT_TRIM]] Run after every mutation; hub_set_rule attaches it as `health` on every response. ok=false with unreadable=false means at least one issue was found (the issues list explains what); ok=false with unreadable=true means NEITHER source could be read (a transient fetch failure, or the app does not exist) -- a couldn't-check verdict, not evidence of breakage.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -358,7 +358,9 @@ Slow multi-step calls over a cloud relay may return status:'in_progress' with re
             outputSchema: [
                 type: "object",
                 properties: [
-                    ok: [type: "boolean", description: "True when no issues found"],
+                    ok: [type: "boolean", description: "True when no issues found. False covers TWO states: checked-and-broken (unreadable=false) and couldn't-check (unreadable=true)."],
+                    unreadable: [type: "boolean", description: "True when NEITHER source could be read (transient fetch failure, or the app does not exist) -- a couldn't-check verdict with no evidence either way, never proof of breakage. Always present."],
+                    checkErrors: [type: "array", items: [type: "string"], description: "Half-checked marker: read failures of ONE source while the other read clean (e.g. 'configPage read failed: ...'). Diagnostics only -- ok reflects what WAS read; re-run hub_get_rule_health for a full verdict. Always present (empty when both sources read)."],
                     broken: [type: "boolean", description: "Authoritative compiled-state broken verdict (RM `broken`, or graph VRB validationErrors non-empty); null when no boolean applies. Disambiguate via ruleFormat: null+ruleFormat='vrb-classic'/'basic-rule'/'button-controller'/'classic-app' is a healthy rule with no compiled boolean; null+ruleFormat=null means undetermined (source unavailable / read failed)."],
                     source: [type: "string", description: "Which source(s) contributed: 'ruleBuilderJson', 'ruleBuilder20Json', 'configPage', a '+'-join, or 'none'"],
                     ruleFormat: [type: "string", description: "What was inspected: 'rm', 'vrb-graph', 'vrb-classic', 'basic-rule', 'button-controller', 'classic-app' (other classic apps via configPage), or null when unrecognized"],
@@ -8286,13 +8288,19 @@ Map _rmWalkStep(Integer appId, Map spec) {
         }
     }
 
-    def health = _rmCheckRuleHealth(appId)
+    // Trailing health probe: advisory freight on an ALREADY-COMMITTED op. Shed it
+    // when the transport time budget is spent -- returning under the ceiling beats
+    // carrying diagnostics into a severed response (the 504 whose recovery then
+    // replays a needlessly failed envelope). And an UNREADABLE probe (a transient
+    // fetch failure -- no evidence of breakage either way) must never fail the
+    // committed work; only positive evidence may.
+    def health = _rmWalkStepHealth(appId, spec?.__reqT0 as Long)
     def silentRejection = (operation == "write") &&
         appeared.isEmpty() && disappeared.isEmpty() &&
         valueEcho?.match == false
 
-    return [
-        success: health.ok && (operation != "write" || (valueEcho?.match != false)),
+    def result = [
+        success: _rmHealthGatePass(health) && (operation != "write" || (valueEcho?.match != false)),
         page: page,
         operation: operation,
         before: beforeSchema,
@@ -8313,6 +8321,33 @@ Map _rmWalkStep(Integer appId, Map spec) {
         silentRejection: silentRejection,
         health: health
     ]
+    if (health.unreadable == true) {
+        result.repairHints = (result.repairHints ?: []) + ["The post-op health probe could not be read -- no evidence of breakage either way (a transient failure, or the rule may since have been removed); the operation itself committed. Verify via hub_get_rule_health(${appId}).".toString()]
+    }
+    return result
+}
+
+// The trailing health probe for a walkStep op, budget-aware: once the transport
+// time budget is spent the probe is SKIPPED (an ok-shaped verdict flagged
+// skipped:true, with a pointer to hub_get_rule_health) so the committed op's
+// response returns under the transport ceiling instead of burning the remaining
+// window on diagnostics. t0 == null (no budget threaded) always probes.
+private Map _rmWalkStepHealth(Integer appId, Long t0) {
+    if (_timeBudgetExceeded(t0)) {
+        return _rmEmptyHealthVerdict(ok: true, skipped: true, source: "skipped",
+                note: "health probe skipped: the transport time budget was reached after the committed operation -- verify via hub_get_rule_health(${appId})".toString())
+    }
+    return _rmCheckRuleHealth(appId)
+}
+
+// The success gate for a health verdict attached to COMMITTED work: pass unless
+// there is POSITIVE evidence of breakage. ok:true covers healthy and skipped
+// (probe deliberately not run); unreadable:true covers couldn't-check. Both
+// no-evidence states pass; only a checked-and-broken verdict fails. ONE
+// definition so no future gate site can silently invert the polarity of either
+// no-evidence state.
+private boolean _rmHealthGatePass(Map health) {
+    return health?.ok == true || health?.unreadable == true
 }
 
 // Auto-driver for walkStep (operation='drive'): run an ordered list of
@@ -8336,9 +8371,10 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
     def currentPage = spec?.page?.toString()?.trim()
     def allOk = true
     def lastStepOperation = null
-    // Cloud-relay self-budget: set when the budget is reached BETWEEN steps so the
+    // Time-budget self-pause: set when the budget is reached BETWEEN steps so the
     // post-loop path returns an in_progress envelope with the unrun steps instead of
-    // the normal fail-loud rollup. Null on every non-cloud / within-budget run.
+    // the normal fail-loud rollup. Null whenever no pause fires (within budget, or
+    // no budget configured for this transport).
     Integer pausedAtStep = null
     List stepsRemaining = null
     // Pre-flight: validate every step's SHAPE before issuing ANY live POST. A drive is
@@ -8358,17 +8394,22 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
     int idx = 0
     for (def rawStep : steps) {
         idx++
-        // Cloud-relay self-budget checkpoint -- BETWEEN steps only. Never before the
+        // Time-budget checkpoint -- BETWEEN steps only. Never before the
         // first step (idx > 1) and never after a step already failed (allOk), so a
         // pause always represents a clean partial: every earlier step committed and
         // nothing failed. Each step is a live POST, so stopping here and handing back
-        // the unrun steps lets the caller resume before the relay drops the response.
-        if (idx > 1 && allOk && _relayBudgetExceeded(spec?.__reqT0 as Long)) {
+        // the unrun steps lets the caller resume before the transport drops the response.
+        if (idx > 1 && allOk && _timeBudgetExceeded(spec?.__reqT0 as Long)) {
             pausedAtStep = idx
             stepsRemaining = steps.subList(idx - 1, steps.size()).collect { _stripInternalClock(it) }
             break
         }
         def step = new LinkedHashMap((Map) rawStep)
+        // Thread the budget clock into the (already-copied) step so its trailing
+        // health probe sheds once the budget is spent -- the between-step pause
+        // above then fires before the next step. stepsRemaining is built from the
+        // raw list via _stripInternalClock, so the clock never leaks into an echo.
+        if (spec?.__reqT0 != null) step.__reqT0 = spec.__reqT0
         def stepOp = step.operation?.toString()?.trim() ?: "introspect"
         // Inherit the page the previous step ended on when this step omits one.
         if (!step.page && currentPage) step.page = currentPage
@@ -8417,8 +8458,11 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
             if (stopOnError) break
         }
     }
-    def finalHealth = _rmCheckRuleHealth(appId)
-    // Paused (cloud-relay budget reached between steps): return an in_progress envelope
+    // Budget-aware final probe: on a pause (or any budget-spent exit) the probe is
+    // skipped -- the pause exists to beat the transport ceiling, and burning the
+    // remaining window on a diagnostic fetch defeats it.
+    def finalHealth = _rmWalkStepHealth(appId, spec?.__reqT0 as Long)
+    // Paused (budget reached between steps): return an in_progress envelope
     // and skip the fail-loud rollup below -- a pause is NOT an error. success:true holds
     // because the pause guard only trips when nothing has failed; every completed step is
     // committed and its per-step signals ride in steps[].
@@ -8436,12 +8480,16 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
             steps: stepResults,
             health: finalHealth,
             resume: [
-                note: "Relay time budget reached; all completed steps are committed. Re-issue walkStep operation='drive' with steps = stepsRemaining (page inheritance: set page = this result's page) to continue. Attach the same opToken ONLY if the original call carried none; otherwise use a fresh token."
+                note: "Time budget reached; all completed steps are committed. Re-issue walkStep operation='drive' with steps = stepsRemaining (page inheritance: set page = this result's page) to continue. Attach the same opToken ONLY if the original call carried none; otherwise use a fresh token."
             ]
         ]
     }
+    // An unreadable final probe (transient fetch failure, no evidence either way)
+    // must not fail a drive whose every step committed cleanly; a skipped probe
+    // (budget shed) likewise. Positive evidence of breakage still gates.
+    boolean finalHealthGate = _rmHealthGatePass(finalHealth)
     def result = [
-        success: allOk && finalHealth.ok,
+        success: allOk && finalHealthGate,
         operation: "drive",
         page: currentPage,
         stepsRequested: steps.size(),
@@ -8454,13 +8502,15 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
     // error caught per-step otherwise lives only in steps[].error -- a weak signal for an
     // LLM caller that sees success:false with no top-level `error`. Surface the first failed
     // step's error (and a repairHint naming it); if every step passed but the rule ended
-    // unhealthy, surface the finalHealth.ok gate's reason instead.
+    // unhealthy, surface the finalHealth gate's reason instead.
     def firstFailed = stepResults.find { it.success == false }
     if (firstFailed != null) {
         result.error = "drive halted at step ${firstFailed.step} (${firstFailed.operation}): ${firstFailed.error ?: 'step reported success:false -- inspect its valueEcho/silentRejection/health'}".toString()
         result.repairHints = (result.repairHints ?: []) + ["Drive stopped at step ${firstFailed.step}. Inspect steps[${firstFailed.step - 1}] for the failure detail, correct it, and re-run the drive from that step.".toString()]
-    } else if (!finalHealth.ok) {
+    } else if (!finalHealthGate) {
         result.error = "drive completed all ${stepResults.size()} step(s) but the rule is unhealthy: ${(finalHealth.issues ?: ['see health']).join('; ')}".toString()
+    } else if (finalHealth.unreadable == true) {
+        result.repairHints = (result.repairHints ?: []) + ["The final health probe could not be read -- no evidence of breakage either way (a transient failure, or the rule may since have been removed); every step committed. Verify via hub_get_rule_health(${appId}).".toString()]
     }
     return result
 }
@@ -8933,7 +8983,8 @@ def toolSetRule(args) {
     // empty args) returns that op's schema with NO mutation and returns early.
     if (args instanceof Map && args.operation != null) {
         // _setRuleFromEnvelope rebuilds args from scratch (dropping unknown keys); carry the
-        // request-entry clock across so the drive/patches cloud-relay self-budget still sees it
+        // request-entry clock across so the time-budget machinery (drive/patches pauses,
+        // bulk pauses, and every walkStep op's health shed) still sees it
         // for envelope-form calls (the direct canonical form keeps it via straight pass-through).
         def reqT0 = args.__reqT0
         def rekeyed = _setRuleFromEnvelope(args)
@@ -9397,7 +9448,7 @@ def _createNativeAppShell(args) {
             }
         }
         def result = [
-            success: health.ok && !partialTriggers && !partialActions && !reFailed && !rePartial,
+            success: _rmHealthGatePass(health) && !partialTriggers && !partialActions && !reFailed && !rePartial,
             partial: (partialTriggers || partialActions || reFailed || rePartial) as Boolean,
             partialTriggers: partialTriggers,
             partialActions: partialActions,
@@ -9883,7 +9934,7 @@ private Map _rmApplyLocalVarResult(Integer appId, Map varResult, Map backup, Str
     // brokenBefore is an internal wording signal only -- rule-health state does not belong on the
     // backup metadata object the envelope surfaces. Strip it before it can ride out on envelope.backup.
     if (backup instanceof Map) backup.remove("brokenBefore")
-    boolean deleteBrokeRule = (!isAdd) && (varResult?.deleted == true) && (varResult?.success != false) && !health.ok
+    boolean deleteBrokeRule = (!isAdd) && (varResult?.deleted == true) && (varResult?.success != false) && !_rmHealthGatePass(health)
     String deleteBrokeError = null
     if (deleteBrokeRule) {
         def markerHint = (health.brokenMarkers instanceof List && !health.brokenMarkers.isEmpty()) ? " (${health.brokenMarkers.join(', ')})" : ""
@@ -9924,7 +9975,7 @@ private Map _rmApplyLocalVarResult(Integer appId, Map varResult, Map backup, Str
         note = "Local variable '${varResult?.name}' ${varResult?.deleted == true ? 'removed' : 'NOT removed (verify miss -- see repairHints)'}; updateRule ${updateRuleFailed ? 'FAILED -- removal may not be live' : (varResult?.deleted == true ? 'fired' : 'fired (removal unconfirmed)')}."
     }
     def envelope = [
-        success: (varResult?.success != false) && health.ok && !updateRuleFailed,
+        success: (varResult?.success != false) && _rmHealthGatePass(health) && !updateRuleFailed,
         // committed-but-not-clean -> partial:true: on the broken-after-delete path the delete
         // committed (deleted:true) but the rule is not healthy, so the operation is partial.
         partial: (varResult?.partial == true) || updateRuleFailed || deleteBrokeRule,
@@ -11990,6 +12041,13 @@ private Set _rmCollectPageInputNames(Integer appId, String pageName, Map cache =
 // clean replace on an already-imbalanced rule is never spuriously rolled back. The restore
 // message names ONLY these new issues, not the full current-issue list.
 private List _rmHealthRegressionNewIssues(Map baselineHealth, Map nowHealth) {
+    // A couldn't-check post-op probe (unreadable: NEITHER source read) carries no
+    // positive evidence of anything: its "health check failed" issue strings are
+    // fetch diagnostics, not regressions, and set-diffing them against the baseline
+    // would fire the restore (or fail the batch op) on COMMITTED work over a
+    // transient probe failure -- the same poison _rmHealthGatePass closes on the
+    // plain ok-gates. No verdict, no attributable regression.
+    if (nowHealth?.unreadable == true) return []
     def baselineIssues = (baselineHealth?.issues ?: []) as Set
     def baselineStructural = (baselineHealth?.structuralIssues ?: []) as Set
     def nowIssues = (nowHealth?.issues ?: []) as Set
@@ -12590,7 +12648,7 @@ private Map _rmReplaceRequiredExpression(Integer appId, Map exprSpec, Object bac
 // state.editCond / state.editAct before the next settings
 // write can reach the right dynamic page.
 //
-// Strip the internal relay-budget clock (__reqT0) from a spec before handing it back to
+// Strip the internal time-budget clock (__reqT0) from a spec before handing it back to
 // the caller in an in_progress pause. The caller re-issues the spec verbatim on resume, and
 // a leaked __reqT0 would poison the resume call's elapsed-time budget calculation. Single
 // source of truth for the walkStep-drive, patches, and bulk pause paths. The k?.toString()
@@ -12600,10 +12658,10 @@ private _stripInternalClock(rem) {
     return (rem instanceof Map) ? ((Map) rem).findAll { k, v -> k?.toString() != "__reqT0" } : rem
 }
 
-// Cloud-relay pause envelope for the bulk addTriggers/addActions path -- mirrors the
+// Time-budget pause envelope for the bulk addTriggers/addActions path -- mirrors the
 // in_progress shape the walkStep-drive step loop and the patches op loop return. The
-// checkpoint stops the batch as soon as the relay budget is exceeded (protecting the
-// response from a relay drop) REGARDLESS of whether an earlier item failed; the outer
+// checkpoint stops the batch as soon as the time budget is exceeded (protecting the
+// response from a transport drop) REGARDLESS of whether an earlier item failed; the outer
 // success/partial here are computed from the committed items exactly like the
 // normal-completion return, so a committed-but-degraded or failed item is bubbled up (not
 // masked as clean) across the resume boundary. Health is intentionally NOT gated: the
@@ -12611,7 +12669,7 @@ private _stripInternalClock(rem) {
 // not-yet-live at a pause and gating success on health would falsely fail every pause. The
 // unprocessed items are handed back (minus the internal __reqT0 clock) for the caller to
 // re-issue.
-private Map _bulkRelayPauseResult(Integer appId, Map backup, List triggerResults, List actionResults,
+private Map _bulkPauseResult(Integer appId, Map backup, List triggerResults, List actionResults,
                                   List addTriggersRemaining, List addActionsRemaining) {
     def trigOk = triggerResults.count { it?.success != false }
     def actOk = actionResults.count { it?.success != false }
@@ -12620,7 +12678,7 @@ private Map _bulkRelayPauseResult(Integer appId, Map backup, List triggerResults
         actionResults.any { it instanceof Map && it.partial == true }
     def repairHints = []
     if (itemsPartial) {
-        repairHints << "One or more committed bulk items failed or reported partial before the relay budget paused the batch. Drill into triggers[]/actions[] for per-item settingsSkipped + repairHints; the remaining (unprocessed) items are in addTriggersRemaining/addActionsRemaining."
+        repairHints << "One or more committed bulk items failed or reported partial before the time budget paused the batch. Drill into triggers[]/actions[] for per-item settingsSkipped + repairHints; the remaining (unprocessed) items are in addTriggersRemaining/addActionsRemaining."
     }
     return [
         success: trigOk == triggerResults.size() && actOk == actionResults.size(),
@@ -12636,14 +12694,14 @@ private Map _bulkRelayPauseResult(Integer appId, Map backup, List triggerResults
         addActionsRemaining: addActionsRemaining.collect { _stripInternalClock(it) },
         repairHints: repairHints,
         resume: [
-            note: "Relay time budget reached; committed items are written at the settings level (the trailing updateRule is deferred to the resume call). Re-issue the edit (hub_set_rule or hub_set_native_app) with addActions/addTriggers = the remaining items to continue. Attach the same opToken ONLY if the original call carried none; otherwise use a fresh token."
+            note: "Time budget reached; committed items are written at the settings level (the trailing updateRule is deferred to the resume call). Re-issue the edit (hub_set_rule or hub_set_native_app) with addActions/addTriggers = the remaining items to continue. Attach the same opToken ONLY if the original call carried none; otherwise use a fresh token."
         ]
     ]
 }
 
-// Cloud-relay pause envelope for the patches path. Fires at the patch-op boundary AND (for a
+// Time-budget pause envelope for the patches path. Fires at the patch-op boundary AND (for a
 // bulk addTriggers/addActions sub-op) mid-op, so a single patch op carrying a large inner list
-// can no longer exhaust the relay budget un-paused. Like the bulk pause, it stops as soon as the
+// can no longer exhaust the time budget un-paused. Like the bulk pause, it stops as soon as the
 // budget is exceeded regardless of an earlier op's outcome (an un-budgeted continuation risks a
 // dropped response), and computes outer success/partial from the ops so far. patchesRemaining is
 // the un-processed work the caller re-issues -- for a mid-op pause the caller prepends the current
@@ -12659,7 +12717,7 @@ private Map _patchesPauseResult(Integer appId, Map backup, List patchResults, Li
         patchResults: patchResults,
         patchesRemaining: patchesRemaining,
         resume: [
-            note: "Relay time budget reached; completed patch ops are committed at the settings level but NOT yet baked into the running rule. Re-issue the edit (hub_set_rule or hub_set_native_app) with patches = patchesRemaining to continue; the rule finalize/updateRule runs when the remaining patches complete. Attach the same opToken ONLY if the original call carried none; otherwise use a fresh token."
+            note: "Time budget reached; completed patch ops are committed at the settings level but NOT yet baked into the running rule. Re-issue the edit (hub_set_rule or hub_set_native_app) with patches = patchesRemaining to continue; the rule finalize/updateRule runs when the remaining patches complete. Attach the same opToken ONLY if the original call carried none; otherwise use a fresh token."
         ]
     ]
 }
@@ -12783,12 +12841,14 @@ def _applyNativeAppEdit(args) {
     // not-yet-mapped capability handlers, future RM features).
     if (walkStepSpec) {
         try {
-            // operation='drive' self-budgets between steps under a cloud relay; hand it the
-            // request-entry clock (read as spec.__reqT0). Threaded only for drive (single
-            // steps don't budget) and via a copy so the caller's args.walkStep is never
-            // mutated and __reqT0 can't leak into a single-step result echo.
+            // Hand EVERY walkStep op the request-entry clock (read as spec.__reqT0):
+            // drive self-budgets between steps, and every op -- single steps included --
+            // sheds its trailing health probe once the budget is spent so a committed
+            // op returns under the transport ceiling instead of 504ing on diagnostics.
+            // Threaded via a copy so the caller's args.walkStep is never mutated and
+            // __reqT0 can't leak into a result echo.
             def wsSpec = walkStepSpec
-            if (args?.__reqT0 != null && walkStepSpec?.operation?.toString()?.trim() == "drive") {
+            if (args?.__reqT0 != null) {
                 wsSpec = new LinkedHashMap(walkStepSpec)
                 wsSpec.__reqT0 = args.__reqT0
             }
@@ -12799,7 +12859,7 @@ def _applyNativeAppEdit(args) {
             // final operation was 'done' (meaning the wizard flow is complete):
             // a single-step 'done', or a 'drive' whose last step was 'done'.
             // For introspect/write/click/navigate ops in the middle of a
-            // multi-step walk, skip Done since the caller is mid-flow. A relay-budget
+            // multi-step walk, skip Done since the caller is mid-flow. A budget-
             // paused drive is ALSO mid-flow even when its last-run step was 'done'
             // (lastStepOperation names the last step that RAN, not the flow's end) --
             // finalizing there would run the update lifecycle on a half-configured
@@ -13111,7 +13171,7 @@ def _applyNativeAppEdit(args) {
             repairHints << moveResult.verifyHint.toString()
         }
         return [
-            success: (addedOk == addedTotal) && health.ok && !updateRuleFailed && !moveSoftFail,
+            success: (addedOk == addedTotal) && _rmHealthGatePass(health) && !updateRuleFailed && !moveSoftFail,
             partial: itemsPartial || updateRuleFailed || (moveResult?.partial == true),
             appId: appId,
             backup: backup,
@@ -13237,7 +13297,7 @@ def _applyNativeAppEdit(args) {
             // helper-side addition does not silently drop the signal.
             def removedInnerPartial = trigMutResult?.partial == true
             return [
-                success: trigMutResult.success != false && health.ok && !updateRuleFailed,
+                success: trigMutResult.success != false && _rmHealthGatePass(health) && !updateRuleFailed,
                 partial: updateRuleFailed || removedInnerPartial,
                 appId: appId,
                 backup: backup,
@@ -13268,7 +13328,7 @@ def _applyNativeAppEdit(args) {
             repairHints << "modifyTrigger reported inner partial (settingsSkipped or verificationFetchFailed). Inspect settingsSkipped[] for per-field silent_rejection reasons. Re-attempt the modifyTrigger call, or use removeTrigger + addTrigger to rebuild the trigger atomically."
         }
         return [
-            success: trigMutResult.success != false && health.ok && !updateRuleFailed,
+            success: trigMutResult.success != false && _rmHealthGatePass(health) && !updateRuleFailed,
             partial: updateRuleFailed || trigInnerPartial,
             appId: appId,
             backup: backup,
@@ -13441,22 +13501,22 @@ def _applyNativeAppEdit(args) {
         }
         def patchValidRuleIds = patchBatchTargetsRule ? _rmValidRuleIds() : null
         try {
-            // Indexed for-loop (not eachWithIndex) so the cloud-relay budget checkpoint can
+            // Indexed for-loop (not eachWithIndex) so the time-budget checkpoint can
             // cleanly break/return between ops -- a Groovy closure can't break out of a loop.
             int pi = -1
             for (def p : patchesList) {
                 pi++
-                // Cloud-relay self-budget checkpoint -- BETWEEN patch ops, never before the first
-                // (pi > 0). Stops as soon as the relay budget is exceeded regardless of an earlier
+                // Time-budget checkpoint -- BETWEEN patch ops, never before the first
+                // (pi > 0). Stops as soon as the time budget is exceeded regardless of an earlier
                 // op's outcome: patches don't abort on a per-op failure, but continuing un-budgeted
-                // after the budget is spent risks the relay dropping the whole response (losing
+                // after the budget is spent risks the transport dropping the whole response (losing
                 // every op's result). _patchesPauseResult surfaces any failed/partial op in the
                 // outer success/partial rather than masking it. Each op is a live POST; handing
                 // back the unprocessed specs lets the caller resume. CRITICAL: return BEFORE the
                 // batch-end trailing updateRule below so it does NOT fire -- the ops so far are
                 // committed at the settings level but not yet baked; the resume call's own batch-end
                 // updateRule bakes them once the remaining patches complete.
-                if (pi > 0 && _relayBudgetExceeded(args?.__reqT0 as Long)) {
+                if (pi > 0 && _timeBudgetExceeded(args?.__reqT0 as Long)) {
                     def patchesRemaining = patchesList.subList(pi, patchesList.size()).collect { _stripInternalClock(it) }
                     return _patchesPauseResult(appId, backup, patchResults, patchesRemaining)
                 }
@@ -13488,7 +13548,7 @@ def _applyNativeAppEdit(args) {
                         boolean innerPaused = false
                         for (def tspec : innerList) {
                             ii++
-                            if (ii > 0 && _relayBudgetExceeded(args?.__reqT0 as Long)) {
+                            if (ii > 0 && _timeBudgetExceeded(args?.__reqT0 as Long)) {
                                 innerPaused = true
                                 break
                             }
@@ -13521,7 +13581,7 @@ def _applyNativeAppEdit(args) {
                         boolean innerPaused = false
                         for (def aspec : innerList) {
                             ii++
-                            if (ii > 0 && _relayBudgetExceeded(args?.__reqT0 as Long)) {
+                            if (ii > 0 && _timeBudgetExceeded(args?.__reqT0 as Long)) {
                                 innerPaused = true
                                 break
                             }
@@ -13812,7 +13872,7 @@ def _applyNativeAppEdit(args) {
             repairHints << "One or more patch ops reported partial. Drill into patches[] for per-op settingsSkipped + repairHints. The patch ops landed but some inner fields didn't; address the per-op partials directly or re-issue the patches batch."
         }
         return [
-            success: (patchErr == null) && (opsOk == patchResults.size()) && health.ok && !updateRuleFailed,
+            success: (patchErr == null) && (opsOk == patchResults.size()) && _rmHealthGatePass(health) && !updateRuleFailed,
             // `partial` is ORTHOGONAL to success: a patches call where every op
             // landed but one carried partial:true (e.g. trailing-updateRule
             // failure on an inner addRequiredExpression, or settingsSkipped on
@@ -13973,13 +14033,13 @@ def _applyNativeAppEdit(args) {
         def trigList = (addTriggersList ?: [])
         def actList = (addActionsList ?: [])
         try {
-            // Indexed for-loops (not eachWithIndex) so the cloud-relay budget checkpoint can
+            // Indexed for-loops (not eachWithIndex) so the time-budget checkpoint can
             // break/return cleanly between items -- a Groovy closure can't break out of a loop.
             // The checkpoint fires BETWEEN items only (never before the first committed item) and
-            // stops the batch as soon as the relay budget is exceeded, WHETHER OR NOT an earlier
+            // stops the batch as soon as the time budget is exceeded, WHETHER OR NOT an earlier
             // item failed -- continuing un-budgeted after a failure risks the relay dropping the
             // whole response (a transport timeout the caller can only recover from by re-issuing,
-            // which double-commits the already-applied items). _bulkRelayPauseResult computes the
+            // which double-commits the already-applied items). _bulkPauseResult computes the
             // outer success/partial from the committed items so a failed/degraded item is bubbled,
             // not masked. On a pause, hand back the unprocessed items and return BEFORE the trailing
             // updateRule below so it does NOT fire -- the items so far are committed at the settings
@@ -13992,8 +14052,8 @@ def _applyNativeAppEdit(args) {
             for (def spec : trigList) {
                 ti++
                 if ((triggerResults.size() + actionResults.size()) > 0 &&
-                        _relayBudgetExceeded(args?.__reqT0 as Long)) {
-                    return _bulkRelayPauseResult(appId, backup, triggerResults, actionResults,
+                        _timeBudgetExceeded(args?.__reqT0 as Long)) {
+                    return _bulkPauseResult(appId, backup, triggerResults, actionResults,
                         trigList.subList(ti, trigList.size()), actList)
                 }
                 if (!(spec instanceof Map)) {
@@ -14013,9 +14073,9 @@ def _applyNativeAppEdit(args) {
             for (def spec : actList) {
                 ai++
                 if ((triggerResults.size() + actionResults.size()) > 0 &&
-                        _relayBudgetExceeded(args?.__reqT0 as Long)) {
+                        _timeBudgetExceeded(args?.__reqT0 as Long)) {
                     // Every trigger already processed; only the unprocessed actions remain.
-                    return _bulkRelayPauseResult(appId, backup, triggerResults, actionResults,
+                    return _bulkPauseResult(appId, backup, triggerResults, actionResults,
                         [], actList.subList(ai, actList.size()))
                 }
                 if (!(spec instanceof Map)) {
@@ -14077,7 +14137,7 @@ def _applyNativeAppEdit(args) {
             repairHints << "One or more bulk trigger/action items reported partial. Drill into triggers[] and actions[] for per-item settingsSkipped + repairHints. Wait 5s and retry the affected items, or use removeAction/removeTrigger to clean up and re-add."
         }
         return [
-            success: trigOk == triggerResults.size() && actOk == actionResults.size() && health.ok && !updateRuleFailed,
+            success: trigOk == triggerResults.size() && actOk == actionResults.size() && _rmHealthGatePass(health) && !updateRuleFailed,
             partial: itemsPartial || updateRuleFailed,
             appId: appId,
             backup: backup,
@@ -14257,7 +14317,7 @@ def _applyNativeAppEdit(args) {
         // Always attach health to settings/button mutations too — the LLM
         // sees broken state immediately without having to call hub_get_rule_health.
         result.health = _rmCheckRuleHealth(appId)
-        if (!result.health.ok) result.success = false
+        if (!_rmHealthGatePass(result.health)) result.success = false
         // Final commit: click the mainPage Done button. Mirrors the live UI's
         // last-step behavior on every modify session. Without it, in-flight
         // state markers (state.editAct, state.editCond, etc.) can linger and

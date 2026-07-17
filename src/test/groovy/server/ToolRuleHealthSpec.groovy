@@ -73,6 +73,37 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.issues.isEmpty()
     }
 
+    def "auto: when NEITHER source is readable the verdict is flagged unreadable -- couldn't check, not checked-and-broken"() {
+        given: 'no hub paths registered: both the compiled-state and HTML reads throw'
+        settingsMap.enableRead = true
+
+        when:
+        def h = script._rmCheckRuleHealth(123)
+
+        then: 'ok stays false (no positive evidence of health), but unreadable marks the transient'
+        h.ok == false
+        h.unreadable == true
+        h.source == 'none'
+        h.broken == null
+        h.brokenMarkers.isEmpty()
+    }
+
+    def "auto: a genuine broken verdict is NOT unreadable"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/app/ruleBuilderJson/100') { ruleBuilderJson([broken: true]) }
+        hubGet.register('/installedapp/configure/json/100') { configJson(100) }
+        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        h.ok == false
+        h.unreadable == false
+        h.broken == true
+    }
+
     def "auto: ruleBuilderJson broken:true is the authoritative verdict (even when HTML shows nothing)"() {
         given:
         settingsMap.enableRead = true
@@ -239,8 +270,8 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         "Notifier-1.0"          | "classic-app"
     }
 
-    def "auto: a configPage fetch failure surfaces as 'health check failed' even when ruleBuilderJson succeeded"() {
-        given:
+    def "auto: a LONE configPage fetch failure is a non-gating checkErrors diagnostic when ruleBuilderJson read clean"() {
+        given: 'the compiled source reads clean; the HTML leg alone fails -- issues must stay empty, or the fetch hiccup fails every committed-work gate AND set-diffs as a new issue that fires the replace/patches auto-restore'
         settingsMap.enableRead = true
         hubGet.register('/app/ruleBuilderJson/100') { ruleBuilderJson([broken: false]) }
         // configure/json unregistered -> _rmFetchConfigJson throws inside the HTML path
@@ -248,10 +279,46 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         when:
         def h = script._rmCheckRuleHealth(100)
 
-        then:
+        then: 'ok reflects what WAS read; the failed leg is named in checkErrors, not issues'
         h.broken == false
-        h.issues.any { it.contains("health check failed") }
-        h.ok == false
+        h.ok == true
+        h.unreadable == false
+        h.issues.isEmpty()
+        h.checkErrors.any { it.contains("configPage read failed") }
+
+        and: 'the committed-work gate passes and the regression differ attributes nothing'
+        script._rmHealthGatePass(h)
+        script._rmHealthRegressionNewIssues([issues: [], structuralIssues: [], brokenMarkerCounts: [:]], h).isEmpty()
+    }
+
+    def "auto: a LONE compiled-state read failure is surfaced in checkErrors when the HTML leg read clean (was silently discarded)"() {
+        given: 'ruleBuilderJson read fails; configPage renders clean -- the authoritative source went unread and the verdict must say so'
+        settingsMap.enableRead = true
+        hubGet.register('/app/ruleBuilderJson/100') { throw new RuntimeException('status code: 408, reason phrase: Request Timeout') }
+        hubGet.register('/installedapp/configure/json/100') { configJson(100) }
+        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then: 'ok reflects the clean HTML scan; the unread compiled source is named, not swallowed'
+        h.ok == true
+        h.unreadable == false
+        h.broken == null
+        h.source == "configPage"
+        h.issues.isEmpty()
+        h.checkErrors.any { it.contains("compiled-state read failed") }
+    }
+
+    def "auto: a fully-read verdict carries an EMPTY checkErrors (always present)"() {
+        given:
+        seedHealthy(100)
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        h.checkErrors == []
     }
 
     def "auto: ruleBuilderJson broken:true AND an HTML marker agree -> no cross-check issue"() {
@@ -492,11 +559,21 @@ class ToolRuleHealthSpec extends ToolSpecBase {
 
         then:
         h.ok == false
+        h.unreadable == true   // nothing was checked -- the ok||unreadable gates must read couldn't-check, not broken
         h.broken == null
         h.source == "none"
         h.issues.any { it.contains("appId is null") }
         h.brokenMarkerCounts == [:]   // faithful subset of the normal shape (the gate reads this key)
         hubGet.calls.isEmpty()   // no /app/ruleBuilderJson/null or /installedapp/configure/json/null
+    }
+
+    def "_rmHealthGatePass: only a checked-and-broken verdict fails committed work (the no-evidence polarity table)"() {
+        expect: 'ONE definition, pinned as a truth table so no gate site can silently invert either no-evidence state'
+        script._rmHealthGatePass([ok: true, unreadable: false])       // healthy
+        script._rmHealthGatePass([ok: true, skipped: true])           // probe shed under the time budget
+        script._rmHealthGatePass([ok: false, unreadable: true])       // couldn't check -- no evidence either way
+        !script._rmHealthGatePass([ok: false, unreadable: false])     // checked and broken -- the ONLY failing verdict
+        !script._rmHealthGatePass(null)                               // no verdict object at all is not a pass
     }
 
     // ---------- error-response integration (issue #254, task: fold health into RM error replies) ----------

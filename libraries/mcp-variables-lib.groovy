@@ -993,7 +993,7 @@ def _getAllToolDefinitions_partVariables() {
                     name: [type: "string", description: "Variable name to delete"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the deletion"],
                     force: [type: "boolean", description: "OPTIONAL: must be true to proceed when one or more child rule apps reference this variable. Without force, the tool refuses and lists the consumers."],
-                    opToken: [type: "string", description: "Optional idempotency token you invent (8-128 chars, A-Za-z0-9._-). If the transport drops the response, poll hub_get_op_result with this token to fetch the committed result instead of re-issuing the call."]
+                    opToken: [type: "string", description: "Optional idempotency token you invent (8-128 chars, A-Za-z0-9._-). If the transport drops the response, re-issue this call with the SAME token to poll/replay the committed result instead of re-running the edit."]
                 ],
                 required: ["name", "confirm"]
             ],

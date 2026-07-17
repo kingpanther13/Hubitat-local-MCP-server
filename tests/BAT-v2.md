@@ -1,6 +1,6 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 118 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 117 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -2581,9 +2581,9 @@ These operations are too destructive for automated testing. Test manually with e
 | Flat core tools on `tools/list` | 13 |
 | Gateways on `tools/list` | 23 |
 | Total visible on `tools/list` | 36 |
-| Total distinct tools in codebase | 118 |
+| Total distinct tools in codebase | 117 |
 
-**8 read gateways**: `hub_read_apps_code` (11), `hub_read_devices` (5), `hub_read_diagnostics` (10), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3), `hub_read_dashboards` (2)
+**8 read gateways**: `hub_read_apps_code` (11), `hub_read_devices` (5), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3), `hub_read_dashboards` (2)
 
 **15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (9), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
 
@@ -2591,7 +2591,7 @@ These operations are too destructive for automated testing. Test manually with e
 
 ### Tool Coverage (non-destructive tools only)
 
-All 118 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 117 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 each target a specific tool — named in the test's title and **Expected** criteria while the `test_prompt` stays goal-first (see Prompt style above). Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
@@ -4515,13 +4515,15 @@ Key differences from the original BAT.md (which targets the pre-v0.8.0 architect
 
 ---
 
-## Section 18: opToken Response Replay & Cloud-Relay Recovery (issue #348)
+## Section 18: opToken Response Replay & Slow-Op Recovery (issues #348 / #351)
 
-A slow write over the Hubitat cloud relay can commit on the hub while the relay drops
-the response, so the client sees an opaque gateway/transport error and is tempted to
-re-issue — double-committing. These scenarios grade whether the AI recovers the
-committed result instead of blindly retrying. Goal-framed: the `test_prompt` describes
-the situation, never the tool.
+A slow write can commit on the hub while the transport (cloud-relay ceiling or the
+client's own timeout) drops the response, so the client sees an opaque gateway/transport
+error and is tempted to re-issue — double-committing. Recovery is always a POLL: re-issue
+the write with the SAME `opToken` (the token alone is enough); the separate poll tool was
+retired in #351. These scenarios grade whether the AI recovers the committed result
+instead of blindly retrying. Goal-framed: the `test_prompt` describes the situation,
+never the tool.
 
 ### T660 — Recover a slow rule edit whose response was lost (no double-commit)
 
@@ -4533,7 +4535,7 @@ the situation, never the tool.
 }
 ```
 
-**Expected**: AI attaches an `opToken` it invents to the `hub_set_rule` edit. On a dropped response it calls `hub_get_op_result` with the same token; when it reports `status:complete` the AI uses the buffered result instead of re-issuing. If it re-issues the identical tokened call it gets `replayed:true` and the action count is unchanged (no double-commit). **Fail** if the AI blind-retries the edit and the rule ends up with the action added twice.
+**Expected**: AI attaches an `opToken` it invents to the `hub_set_rule` edit. On a dropped response it polls by re-issuing the call with the SAME token (the token alone is enough): while the edit still runs it gets the `status:running` refusal, and once it finishes the server replays the buffered result with `replayed:true` — the action count is unchanged (no double-commit). **Fail** if the AI blind-retries the edit with a fresh token (or none) and the rule ends up with the action added twice.
 
 ### T661 — Continue a self-budgeted rule edit that returned `in_progress`
 
@@ -4555,7 +4557,19 @@ the situation, never the tool.
 }
 ```
 
-**Expected**: AI calls `hub_get_op_result` with the token; it returns `status:unknown` with a note that the original call never arrived and is safe to retry. AI relays that it is safe to retry. **Fail** if the AI claims the operation ran or fabricates a result.
+**Expected**: AI polls by issuing a token-only write call with that token (e.g. `hub_set_rule` with nothing but `opToken`); it returns `status:unknown` with a note that the original call never arrived and the original call should be re-issued in full. AI relays that it is safe to retry. **Fail** if the AI claims the operation ran or fabricates a result.
+
+### T663 — A package deploy that outlives the client timeout lands exactly once (issue #351)
+
+```json
+{
+  "setup_prompt": "Developer Mode is enabled and a recent hub backup exists. The AI will repair-deploy the CURRENT main ref (a same-version repair) over a connection whose client timeout is shorter than the multi-minute deploy.",
+  "test_prompt": "Redeploy the MCP package at ref 'main' on my hub. Your connection tends to time out before slow operations finish — make sure the deploy lands exactly once and report its final outcome.",
+  "teardown_prompt": "Confirm the hub is on ref main and healthy."
+}
+```
+
+**Expected**: AI attaches an `opToken` to `hub_update_package`. On the client timeout it does NOT re-run the deploy: it polls by re-issuing token-only (getting the `status:running` refusal while the repair runs, then the `replayed:true` buffered result), and/or watches `hub_get_info`'s `lastSelfDeploy` for a fresh `at`/`ageMs` as the done-signal. If it does attempt a second full deploy while the first is running, the hub's in-flight guard refuses it (`error` naming the running deploy, zero writes). **Fail** if a second full bundle+apps repair executes.
 
 ---
 

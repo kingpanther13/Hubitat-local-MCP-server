@@ -23,12 +23,14 @@ import support.ToolSpecBase
  *     relay dropping the whole response -- and surface any failed/degraded item in the
  *     pause envelope's success/partial rather than masking it as a clean success.
  *
- * The generic machinery (_isCloudRequest / _relayBudgetMs / _relayBudgetExceeded)
- * lives in the main file. The loop tests stub _relayBudgetExceeded so the pause is
- * deterministic; the composition of that predicate is unit-tested separately with
- * _isCloudRequest stubbed and the harness's fixed clock (now()==1234567890000L).
- * A LAN request or relayBudgetMs=0 short-circuits the guard, so those loops keep
- * their pre-#348 shape byte-for-byte -- covered by the not-exceeded cases below.
+ * The generic machinery (_isCloudRequest / _relayBudgetMs / _lanBudgetMs /
+ * _timeBudgetExceeded) lives in the main file. The loop tests stub
+ * _timeBudgetExceeded so the pause is deterministic; the composition of that
+ * predicate is unit-tested separately with _isCloudRequest stubbed and the
+ * harness's fixed clock (now()==1234567890000L). The budget is per-source (issue
+ * #351): a cloud request reads relayBudgetMs (default 8000), a LAN request reads
+ * lanBudgetMs (default 0 = off) -- so with the LAN knob unset, LAN loops keep
+ * their pre-#348 shape byte-for-byte, covered by the not-exceeded cases below.
  */
 class RelayBudgetSpec extends ToolSpecBase {
 
@@ -56,22 +58,40 @@ class RelayBudgetSpec extends ToolSpecBase {
         script._isCloudRequest() == false
     }
 
-    @Unroll
-    def "_relayBudgetExceeded fires only for a cloud request past a live budget (#desc)"() {
+    def "_lanBudgetMs defaults to 0 (off) when the setting is unset"() {
+        expect:
+        script._lanBudgetMs() == 0L
+    }
+
+    def "_lanBudgetMs honours settings.lanBudgetMs"() {
         given:
-        settingsMap.relayBudgetMs = budgetMs
+        settingsMap.lanBudgetMs = 45000
+
+        expect:
+        script._lanBudgetMs() == 45000L
+    }
+
+    @Unroll
+    def "_timeBudgetExceeded fires only past the live budget for the request's source (#desc)"() {
+        given:
+        settingsMap.relayBudgetMs = relayMs
+        if (lanMs != null) settingsMap.lanBudgetMs = lanMs
         script.metaClass._isCloudRequest = { -> cloud }
 
         expect:
-        script._relayBudgetExceeded(t0) == expected
+        script._timeBudgetExceeded(t0) == expected
 
         where:
-        desc                        | cloud | budgetMs | t0                | expected
-        'cloud, over budget'        | true  | 100      | FIXED_NOW - 200L  | true
-        'cloud, under budget'       | true  | 100      | FIXED_NOW - 50L   | false
-        'cloud, null t0'            | true  | 100      | null              | false
-        'cloud, budget disabled 0'  | true  | 0        | FIXED_NOW - 200L  | false
-        'LAN, over budget'          | false | 100      | FIXED_NOW - 200L  | false
+        desc                          | cloud | relayMs | lanMs | t0                | expected
+        'cloud, over budget'          | true  | 100     | null  | FIXED_NOW - 200L  | true
+        'cloud, under budget'         | true  | 100     | null  | FIXED_NOW - 50L   | false
+        'cloud, null t0'              | true  | 100     | null  | null              | false
+        'cloud, budget disabled 0'    | true  | 0       | null  | FIXED_NOW - 200L  | false
+        'LAN, lan budget unset (off)' | false | 100     | null  | FIXED_NOW - 999L  | false
+        'LAN, lan budget live, over'  | false | 100     | 200   | FIXED_NOW - 300L  | true
+        'LAN, lan budget live, under' | false | 100     | 200   | FIXED_NOW - 50L   | false
+        'LAN, lan budget disabled 0'  | false | 100     | 0     | FIXED_NOW - 300L  | false
+        'cloud ignores the LAN knob'  | true  | 0       | 50    | FIXED_NOW - 200L  | false
     }
 
     // ---------------- _rmDriveWalkSteps checkpoint ----------------
@@ -81,7 +101,7 @@ class RelayBudgetSpec extends ToolSpecBase {
             walkCalls << new LinkedHashMap(step); [page: step.page, success: true]
         }
         script.metaClass._rmCheckRuleHealth = { Integer id -> [ok: true] }
-        script.metaClass._relayBudgetExceeded = { Long t0 -> pause }
+        script.metaClass._timeBudgetExceeded = { Long t0 -> pause }
         return walkCalls
     }
 
@@ -147,7 +167,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         }
         script.metaClass._rmClickAppButton = { Integer aId, String name, String stateAttr = null,
                                                String pageName = null, Map cache = null -> clicks << name }
-        script.metaClass._relayBudgetExceeded = { Long t0 -> pause }
+        script.metaClass._timeBudgetExceeded = { Long t0 -> pause }
     }
 
     def "a patches batch over a tiny cloud budget commits the first op then pauses, deferring updateRule"() {
@@ -298,7 +318,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         }
         script.metaClass._rmClickAppButton = { Integer aId, String name, String stateAttr = null,
                                                String pageName = null, Map cache = null -> clicks << name }
-        script.metaClass._relayBudgetExceeded = { Long t0 -> pause }
+        script.metaClass._timeBudgetExceeded = { Long t0 -> pause }
     }
 
     def "a bulk addActions batch over a tiny cloud budget commits the first action then pauses, deferring updateRule"() {
@@ -345,7 +365,7 @@ class RelayBudgetSpec extends ToolSpecBase {
     // the real running loop via a non-Map trigger[0]: the loop records that failure INLINE (no
     // _rmAddTrigger call needed) and the budget then pauses before trigger[1], driving the real
     // checkpoint + trigList.subList(ti, ...) + actList carry-forward. The clean-partial return
-    // shape is pinned separately on _bulkRelayPauseResult below.
+    // shape is pinned separately on _bulkPauseResult below.
     def "the trigger-loop checkpoint hands back the unrun triggers AND all actions on a pause"() {
         given:
         def triggerCalls = []
@@ -402,7 +422,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         }
         script.metaClass._rmClickAppButton = { Integer aId, String name, String stateAttr = null,
                                                String pageName = null, Map cache = null -> clicks << name }
-        script.metaClass._relayBudgetExceeded = { Long t0 -> true }
+        script.metaClass._timeBudgetExceeded = { Long t0 -> true }
 
         when: 'the first action fails, then the budget pauses before the second'
         def result = script._applyNativeAppEdit([appId: 1, confirm: true, __reqT0: 2000L, addActions: [
@@ -424,11 +444,11 @@ class RelayBudgetSpec extends ToolSpecBase {
         !clicks.contains('updateRule')
     }
 
-    // Pin the trigger-pause return shape directly on _bulkRelayPauseResult too -- a
+    // Pin the trigger-pause return shape directly on _bulkPauseResult too -- a
     // deterministic unit on the shape the running loop above relies on.
-    def "_bulkRelayPauseResult builds the trigger-loop carry-forward shape (remaining triggers + all actions)"() {
+    def "_bulkPauseResult builds the trigger-loop carry-forward shape (remaining triggers + all actions)"() {
         when: 'a trigger-loop pause: one trigger committed, two remain, no action has run yet'
-        def result = script._bulkRelayPauseResult(7, [key: 'snap'],
+        def result = script._bulkPauseResult(7, [key: 'snap'],
             [[success: true, capability: 'Switch']],                                        // triggerResults so far
             [],                                                                             // actionResults so far
             [[capability: 'Switch', state: 'off', __reqT0: 9L], [capability: 'Motion']],   // remaining triggers
@@ -522,6 +542,190 @@ class RelayBudgetSpec extends ToolSpecBase {
         captured.edit.patches.size() == 2
     }
 
+    // ---------------- health-probe shedding + unreadable tolerance (issue #351) ----------------
+    // The trailing health probe is advisory freight on an already-committed op: it
+    // must shed once the budget is spent (returning under the transport ceiling
+    // beats 504ing on diagnostics), and a probe that could not be READ (transient
+    // fetch failure -- no evidence of breakage) must never fail committed work.
+
+    def "_rmWalkStepHealth sheds the probe once the budget is spent"() {
+        given:
+        def probes = 0
+        script.metaClass._rmCheckRuleHealth = { Integer id -> probes++; [ok: true] }
+        script.metaClass._timeBudgetExceeded = { Long t0 -> true }
+
+        when:
+        def h = script._rmWalkStepHealth(7, 1000L)
+
+        then: 'no probe fetch; an ok-shaped skipped verdict pointing at hub_get_rule_health'
+        probes == 0
+        h.ok == true
+        h.skipped == true
+        h.note.contains('hub_get_rule_health')
+    }
+
+    def "_rmWalkStepHealth probes normally within budget"() {
+        given:
+        def probes = 0
+        script.metaClass._rmCheckRuleHealth = { Integer id -> probes++; [ok: true] }
+        script.metaClass._timeBudgetExceeded = { Long t0 -> false }
+
+        expect:
+        script._rmWalkStepHealth(7, 1000L).ok == true
+        probes == 1
+    }
+
+    def "an unreadable final health probe does not fail a drive whose every step committed"() {
+        given:
+        def walkCalls = []
+        script.metaClass._rmWalkStep = { Integer id, Map step ->
+            walkCalls << new LinkedHashMap(step); [page: step.page, success: true]
+        }
+        script.metaClass._rmCheckRuleHealth = { Integer id ->
+            [ok: false, unreadable: true, source: 'none', broken: null,
+             issues: ['health check failed: status code: 404, reason phrase: Not Found']]
+        }
+        script.metaClass._timeBudgetExceeded = { Long t0 -> false }
+
+        when:
+        def result = script._rmDriveWalkSteps(1, [operation: 'drive', steps: [
+            [page: 'p1', operation: 'introspect'],
+        ]])
+
+        then: 'committed work stands; the caller is told to re-verify, not to restore'
+        result.success == true
+        result.error == null
+        result.health.unreadable == true
+        result.repairHints.any { it.contains('hub_get_rule_health') }
+    }
+
+    def "a checked-and-broken final health verdict still fails the drive (unreadable tolerance is not a bypass)"() {
+        given:
+        def walkCalls = []
+        installWalkerStubs(walkCalls, false)
+        script.metaClass._rmCheckRuleHealth = { Integer id ->
+            [ok: false, unreadable: false, broken: true, issues: ['ruleBuilderJson reports broken:true']]
+        }
+
+        when:
+        def result = script._rmDriveWalkSteps(1, [operation: 'drive', steps: [
+            [page: 'p1', operation: 'introspect'],
+        ]])
+
+        then:
+        result.success == false
+        result.error.contains('unhealthy')
+    }
+
+    // Real single-op _rmWalkStep, no walker stubs: the gate and clock wiring inside the
+    // op itself (the exact shape of the live-hub 504/poison failure). introspect's only
+    // hub touches are the page configure/json and statusJson reads.
+    private void seedWalkStepPage(int id) {
+        hubGet.register("/installedapp/configure/json/${id}/mainPage".toString()) {
+            JsonOutput.toJson([
+                app: [id: id, label: 'BAT-WS', name: 'Rule-5.1', installed: true,
+                      appType: [name: 'Rule-5.1', namespace: 'hubitat']],
+                configPage: [name: 'mainPage', title: 'Edit Rule', install: true, error: null,
+                             sections: [[title: '', input: [], paragraphs: []]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register("/installedapp/statusJson/${id}".toString()) {
+            JsonOutput.toJson([installedApp: [id: id], appSettings: [],
+                               eventSubscriptions: [], scheduledJobs: [], appState: [:]])
+        }
+    }
+
+    def "a REAL single walkStep op tolerates an unreadable health probe -- committed work stands"() {
+        given:
+        settingsMap.enableRead = true
+        seedWalkStepPage(100)
+        script.metaClass._rmCheckRuleHealth = { Integer id ->
+            [ok: false, unreadable: true, source: 'none', broken: null,
+             issues: ['health check failed: status code: 404, reason phrase: Not Found']]
+        }
+
+        when:
+        def result = script._rmWalkStep(100, [page: 'mainPage', operation: 'introspect'])
+
+        then:
+        result.success == true
+        result.health.unreadable == true
+        result.repairHints.any { it.contains('hub_get_rule_health') }
+    }
+
+    def "a REAL single walkStep op still fails on a checked-and-broken health verdict"() {
+        given:
+        settingsMap.enableRead = true
+        seedWalkStepPage(100)
+        script.metaClass._rmCheckRuleHealth = { Integer id ->
+            [ok: false, unreadable: false, broken: true, issues: ['ruleBuilderJson reports broken:true']]
+        }
+
+        when:
+        def result = script._rmWalkStep(100, [page: 'mainPage', operation: 'introspect'])
+
+        then:
+        result.success == false
+    }
+
+    def "a REAL single walkStep op sheds its trailing health probe once the budget is spent (clock read from the spec)"() {
+        given:
+        settingsMap.enableRead = true
+        seedWalkStepPage(100)
+        def probes = 0
+        script.metaClass._rmCheckRuleHealth = { Integer id -> probes++; [ok: true] }
+        script.metaClass._timeBudgetExceeded = { Long t0 -> t0 != null }
+
+        when: 'clock present -- probe shed'
+        def shed = script._rmWalkStep(100, [page: 'mainPage', operation: 'introspect', __reqT0: 1000L])
+
+        and: 'no clock -- probe runs'
+        def probed = script._rmWalkStep(100, [page: 'mainPage', operation: 'introspect'])
+
+        then:
+        shed.success == true
+        shed.health.skipped == true
+        probes == 1        // only the un-clocked call probed
+        probed.health.skipped == null
+    }
+
+    def "the budget clock is threaded into a SINGLE walkStep op (not just drive)"() {
+        given:
+        stateMap.lastBackupTimestamp = FIXED_NOW
+        settingsMap.enableWrite = true
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason -> [key: 'snap'] }
+        def captured = [:]
+        script.metaClass._rmWalkStep = { Integer id, Map spec -> captured.spec = spec; [page: spec.page, success: true, operation: spec.operation] }
+
+        when:
+        script._applyNativeAppEdit([appId: 1, confirm: true, __reqT0: 1000L,
+                                    walkStep: [operation: 'introspect', page: 'mainPage']])
+
+        then:
+        captured.spec.__reqT0 == 1000L
+    }
+
+    def "the drive threads the budget clock into each per-step spec"() {
+        given:
+        def walkCalls = []
+        script.metaClass._rmWalkStep = { Integer id, Map step ->
+            walkCalls << new LinkedHashMap(step); [page: step.page, success: true]
+        }
+        script.metaClass._rmCheckRuleHealth = { Integer id -> [ok: true] }
+        script.metaClass._timeBudgetExceeded = { Long t0 -> false }
+
+        when:
+        def result = script._rmDriveWalkSteps(1, [operation: 'drive', __reqT0: 1000L, steps: [
+            [page: 'p1', operation: 'introspect'],
+            [page: 'p2', operation: 'introspect'],
+        ]])
+
+        then: 'every step carries the clock; the result echoes none of it'
+        walkCalls.every { it.__reqT0 == 1000L }
+        !JsonOutput.toJson(result).contains('__reqT0')
+    }
+
     def "a drive paused right after an intermediate done step does NOT fire the trailing mainPage Done"() {
         given: 'a walker that pauses after step 1 (a done op), plus a recorder on the finalizer'
         stateMap.lastBackupTimestamp = FIXED_NOW
@@ -531,7 +735,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         script.metaClass._rmWalkStep = { Integer id, Map spec ->
             spec.operation == 'drive' ? script._rmDriveWalkSteps(id, spec) : [page: spec.page, success: true]
         }
-        script.metaClass._relayBudgetExceeded = { Long t0 -> t0 != null }
+        script.metaClass._timeBudgetExceeded = { Long t0 -> t0 != null }
         def doneClicks = 0
         script.metaClass._rmSubmitMainPageDone = { Integer id -> doneClicks++; [done: true] }
 

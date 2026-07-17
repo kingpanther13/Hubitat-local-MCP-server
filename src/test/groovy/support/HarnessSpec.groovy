@@ -106,7 +106,7 @@ abstract class HarnessSpec extends Specification {
     }()
     private static final PermissiveLog SHARED_LOG = new PermissiveLog()
     private static final Map SHARED_STATE_MAP = [:]
-    private static final Map SHARED_ATOMIC_STATE_MAP = [:]
+    private static final Map SHARED_ATOMIC_STATE_MAP = new TestAtomicState()
     // Must be non-empty at sandbox.run() time — HubitatCI's
     // readUserSettingValues does a Groovy truthy check on the passed map
     // and silently swaps in a fresh empty Map when it's empty, breaking

@@ -1981,77 +1981,8 @@ def toolDeleteCapturedState(args) {
     return stateId ? deleteCapturedState(stateId) : clearAllCapturedStates()
 }
 
-// hub_get_op_result: recover the outcome of a slow write whose response was lost
-// (cloud-relay drop / gateway timeout). The idempotency-token bookkeeping lives in
-// the main app (opToken machinery); this read returns its tri-state view. Reuses
-// the app's _validateOpToken / _opTokenReadResult helpers (resolved after the
-// #include inline).
-def toolGetOpResult(args) {
-    def opToken = (args instanceof Map && args.opToken != null) ? args.opToken.toString() : null
-    if (!opToken) throw new IllegalArgumentException("opToken is required (the idempotency token you passed on the original write). See hub_get_tool_guide(section='slow_ops').")
-    _validateOpToken(opToken)
-    def toks = atomicState.opTokens
-    def rec = (toks instanceof Map && toks[opToken] instanceof Map) ? toks[opToken] : null
-    if (rec == null) {
-        return [
-            status: "unknown", opToken: opToken,
-            note: "No operation with this token ever started on this hub -- the original call never arrived. Safe to retry the original call with the same token. See hub_get_tool_guide(section='slow_ops')."
-        ]
-    }
-    if (rec.state == "running") {
-        def started = (rec.startedAt != null) ? (rec.startedAt as Long) : null
-        return [
-            status: "running", opToken: opToken, tool: rec.tool, startedAt: rec.startedAt,
-            elapsedMs: (started != null) ? (now() - started) : null,
-            note: "Still executing. Poll again in a few seconds. Writes commit even when the transport drops -- do not re-issue the original call. See hub_get_tool_guide(section='slow_ops')."
-        ]
-    }
-    def parsed = _opTokenReadResult(rec)
-    if (parsed == null) {
-        // Distinct from "unknown": the op DID run to completion here, so the
-        // safe-to-retry status must never be emitted for this case.
-        return [
-            status: "indeterminate", opToken: opToken, tool: rec.tool,
-            note: "This token completed but its buffered result has expired or could not be read. Do not re-issue blindly -- verify current state via reads first. See hub_get_tool_guide(section='slow_ops')."
-        ]
-    }
-    return [
-        status: "complete", opToken: opToken, tool: rec.tool,
-        isError: (rec.isError == true), finishedAt: rec.finishedAt, result: parsed
-    ]
-}
-
 def _getAllToolDefinitions_partDiagnostics() {
     return [
-        [
-            name: "hub_get_op_result",
-            description: """Fetch a slow write's committed result by its idempotency token (opToken) after a dropped/timed-out response. Read-only; safe to poll.
-[[FLAT_TRIM]]
-Use when a slow write over the cloud relay returned a transport error and you don't know whether it landed. `status` is one of: "unknown" (no such token ever ran here -- the original call never arrived, so re-issue it with the same token), "running" (still executing -- poll again shortly; the write commits even though your response dropped, so do NOT re-issue), "complete" (the original result under `result`, plus `isError` and `finishedAt`), or "indeterminate" (it completed but the buffered result is gone -- do NOT re-issue blindly; verify state via reads). Buffered results are swept opportunistically once older than ~24h. Full protocol: hub_get_tool_guide(section='slow_ops').
-[[/FLAT_TRIM]]""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    opToken: [type: "string", description: "The idempotency token you invented and passed on the original slow write (8-128 chars, A-Za-z0-9._-)."]
-                ],
-                required: ["opToken"]
-            ],
-            outputSchema: [
-                type: "object",
-                properties: [
-                    status: [type: "string", description: "unknown | running | complete | indeterminate (completed but buffered result unreadable -- verify state before any retry)"],
-                    opToken: [type: "string", description: "Echoed token"],
-                    tool: [type: "string", description: "The write tool this token was attached to; present once the operation has started"],
-                    startedAt: [type: "integer", description: "Epoch ms when the operation started; present for running"],
-                    elapsedMs: [type: ["integer", "null"], description: "Ms elapsed since start; present for running (null if the start time is unknown)"],
-                    finishedAt: [type: "integer", description: "Epoch ms when the operation completed; present for complete"],
-                    isError: [type: "boolean", description: "Whether the buffered result was an error; present for complete"],
-                    result: [type: "object", description: "The original tool result object; present for complete"],
-                    note: [type: "string", description: "Recovery guidance; present for unknown/running"]
-                ],
-                required: ["status", "opToken"]
-            ]
-        ],
         [
             name: "hub_get_logs",
             description: """Get Hubitat system logs, most recent first. Requires Read master.""",
@@ -2602,8 +2533,6 @@ def _readOnlyToolNames_partDiagnostics() {
         "hub_list_captured_states",
         // Diagnostics + logs (read)
         "hub_get_logs", "hub_get_performance_stats", "hub_get_jobs", "hub_get_memory_history", "hub_get_radio_details",
-        // Idempotency-token result recovery (pure read of buffered op results)
-        "hub_get_op_result",
         // hub_get_metrics is read by default (recordSnapshot defaults false;
         // pass recordSnapshot=true to also persist a CSV snapshot to File Manager).
         "hub_get_metrics",
@@ -2644,7 +2573,6 @@ def _toolDisplayMeta_partDiagnostics() {
     return [
         // Diagnostics + logs
         hub_get_logs: [title: "Get Hub Logs", summary: "Hub log entries with level, source, regex, and time-window filters."],
-        hub_get_op_result: [title: "Get Operation Result", summary: "Fetch a slow write's buffered result by its idempotency token after a dropped response."],
         hub_get_performance_stats: [title: "Get Performance Stats", summary: "Device and app performance statistics."],
         hub_get_jobs: [title: "Get Scheduled Jobs", summary: "Scheduled jobs, running jobs, and hub actions."],
         hub_get_metrics: [title: "Get Hub Metrics", summary: "Hub metrics with CSV trend history."],

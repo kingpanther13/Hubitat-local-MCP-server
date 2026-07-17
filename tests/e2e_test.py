@@ -3800,16 +3800,27 @@ class TestRunner:
 
     def _next_op_token(self) -> str:
         """Fresh idempotency token for an RM write (issue #348 machinery). Derived from
-        the active test for log traceability, sanitized to the server's charset."""
+        the active test for log traceability, sanitized to the server's charset.
+
+        The run nonce is LOAD-BEARING, not cosmetic: server token records live ~24h, and
+        a token without it is deterministic across runs (same suite, same test, same seq).
+        A later run -- or a `gh run rerun` -- would re-issue byte-identical tokens, and the
+        dedup gate then REPLAYS the previous run's buffered envelope instead of executing
+        the write: the call "succeeds" with a correct-looking (stale) echo while the rule
+        never changes, and the read-back assertions fail with nothing-landed signatures.
+        Tokens are per-call nonces by contract; the nonce is what makes them nonces."""
         self._op_token_seq = getattr(self, "_op_token_seq", 0) + 1
+        nonce = getattr(self, "_op_token_nonce", None)
+        if nonce is None:
+            nonce = self._op_token_nonce = f"{int(time.time())}.{random.randrange(16**4):04x}"
         base = re.sub(r"[^A-Za-z0-9._-]", ".", str(getattr(self.client, "_active_test", "") or "setup"))
-        return f"e2e.{base}.{self._op_token_seq}"[:128].ljust(8, "x")
+        return f"e2e.{nonce}.{base}.{self._op_token_seq}"[:128].ljust(8, "x")
 
     def _set_rule(self, app_id: Any, extra: dict, strict: bool = False) -> Any:
         """hub_set_rule edit (appId present) with the given shortcut args.
 
         Every call carries an auto-generated opToken, so a relay 504 recovers by EXACT
-        replay first (hub_get_op_result): the hub finishes and buffers the result even
+        replay first (token-only re-issue of the write): the hub finishes and buffers the result even
         though the relay dropped the response, and the replay hands back the real
         envelope -- deterministic recovery instead of re-run roulette on ops that sit
         at the relay ceiling.
@@ -3827,13 +3838,14 @@ class TestRunner:
         token = args.setdefault("opToken", self._next_op_token())
         try:
             result = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": args})
+            result = self._retry_unexpected_replay(result, args, f"hub_set_rule({list(extra)})")
         except (McpError, McpToolError, requests.HTTPError) as exc:
             if "504" not in str(exc):
                 raise
             replay = self._poll_op_result(token)
             if isinstance(replay, dict):
                 print(f"    [RECOVER-504] hub_set_rule({list(extra)}): response recovered "
-                      "via opToken replay (hub_get_op_result)")
+                      "via opToken replay (token-only write re-issue)")
                 result = replay
             elif strict:
                 raise
@@ -3870,6 +3882,7 @@ class TestRunner:
         token = args.setdefault("opToken", self._next_op_token())
         try:
             result = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": args})
+            result = self._retry_unexpected_replay(result, args, "hub_set_rule")
             self._cache_write_health(args.get("appId"), result)
             return result
         except (McpError, McpToolError, requests.HTTPError) as exc:
@@ -3882,7 +3895,7 @@ class TestRunner:
                 replay = self._poll_op_result(token)
                 if isinstance(replay, dict):
                     print("    [RECOVER-504] hub_set_rule: response recovered via opToken "
-                          "replay (hub_get_op_result)")
+                          "replay (token-only write re-issue)")
                     self._cache_write_health(args.get("appId"), replay)
                     return replay
                 raise
@@ -3890,7 +3903,7 @@ class TestRunner:
             if strict:
                 op_keys = [k for k in args if k not in ("appId", "confirm", "opToken")]
                 # issue #348: prefer opToken replay. The op committed hub-side under this
-                # token, so hub_get_op_result hands back the EXACT buffered result (real
+                # token, so the token-only write re-issue hands back the EXACT buffered result (real
                 # success/partial), which beats re-deriving the outcome from committed
                 # config. The poll uses raw _send (out of op_timings, like
                 # _settle_before_504_retry). Config-verify stays the fallback for the case
@@ -3900,7 +3913,7 @@ class TestRunner:
                     replay = self._poll_op_result(token)
                     if isinstance(replay, dict):
                         print(f"    [RECOVER-504] hub_set_rule(appId={app_id}, ops={op_keys}): "
-                              "response recovered via opToken replay (hub_get_op_result)")
+                              "response recovered via opToken replay (token-only write re-issue)")
                         self._cache_write_health(app_id, replay)
                         return replay
                 print(f"    [RECOVER-504] hub_set_rule(appId={app_id}, ops={op_keys}): "
@@ -3916,36 +3929,56 @@ class TestRunner:
             self._last_write_health = None
             return {"success": True, "asyncCommitLikely": True, "relayDropped": True}
 
-    def _poll_op_result(self, token: str, deadline_s: float = 25.0) -> Any:
-        """Poll hub_get_op_result for a tokened op's buffered result after a relay 504 (issue #348).
+    def _retry_unexpected_replay(self, result: Any, args: dict, label: str) -> Any:
+        """A replayed:true envelope on a FIRST issue is always a token collision with a
+        stale server record (a deliberate replay only ever comes back from the token-only
+        poll helpers): the call never executed and the echo describes some earlier op.
+        Swallowing it would 'pass' the write while the rule never changed -- the exact
+        failure shape of the cross-run deterministic-token incident. Re-issue once under
+        a fresh token; a second replay is impossible (the fresh token has no record)."""
+        if not (isinstance(result, dict) and result.get("replayed") is True):
+            return result
+        stale = args.get("opToken")
+        args["opToken"] = self._next_op_token()
+        print(f"    [TOKEN-COLLISION] {label}: first issue replayed a stale buffer "
+              f"(token {stale}) -- re-issuing under a fresh token")
+        fresh = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": args})
+        assert not (isinstance(fresh, dict) and fresh.get("replayed") is True), \
+            f"{label}: fresh-token re-issue STILL replayed -- token generation is broken: {args.get('opToken')}"
+        return fresh
+
+    def _poll_op_result(self, token: str, deadline_s: float = 25.0, tool: str = "hub_set_rule") -> Any:
+        """Poll a tokened op's buffered result after a relay 504 by re-issuing the CALL
+        token-only (issue #351: the call IS the poll, reads included -- the dedup gate
+        answers running/replayed/unknown without re-running anything; the separate
+        hub_get_op_result poll tool is retired).
 
         Uses the RAW _send (like _settle_before_504_retry), NOT call_tool: a post-504 recovery
         probe must not enter op_timings / [SLOW] / _last_op (it would mislabel this test's
-        telemetry and clobber the identity of the 504-causing op). The flat leaf name dispatches
-        in any gateway mode. Returns the buffered ORIGINAL result dict when the op reports
-        complete; None if it reports unknown (the request never arrived -- config-verify is the
-        right fallback) or never completes in the window."""
+        telemetry and clobber the identity of the 504-causing op), and the running/unknown
+        answers ride isError envelopes that call_tool would raise on. The flat leaf name
+        dispatches in any gateway mode. Returns the buffered ORIGINAL result dict (carrying
+        replayed:true) when the op completed; None if it reports unknown (the request never
+        arrived -- config-verify is the right fallback), indeterminate (completed but the
+        buffer is gone -- same fallback), or never completes in the window."""
         deadline = time.monotonic() + deadline_s
         while time.monotonic() < deadline:
             parsed = None
             try:
                 raw = self.client._send("tools/call", {
-                    "name": "hub_get_op_result", "arguments": {"opToken": token}})
-                if not raw.get("isError"):
-                    for c in (raw.get("content") or []):
-                        if c.get("type") == "text":
-                            try:
-                                parsed = json.loads(c["text"])
-                            except (ValueError, TypeError):
-                                parsed = None
+                    "name": tool, "arguments": {"opToken": token}})
+                for c in (raw.get("content") or []):
+                    if c.get("type") == "text":
+                        try:
+                            parsed = json.loads(c["text"])
+                        except (ValueError, TypeError):
+                            parsed = None
             except Exception:
                 parsed = None
             if isinstance(parsed, dict):
-                status = parsed.get("status")
-                if status == "complete":
-                    inner = parsed.get("result")
-                    return inner if isinstance(inner, dict) else parsed
-                if status == "unknown":
+                if parsed.get("replayed") is True:
+                    return parsed
+                if parsed.get("status") in ("unknown", "indeterminate"):
                     return None
             time.sleep(2.0)
         return None
@@ -3959,9 +3992,9 @@ class TestRunner:
             addTriggersRemaining/addActionsRemaining lists, or stepsRemaining inheriting the
             reported page). A resume call carries a FRESH token -- reusing the paused op's token
             would replay its partial in_progress result via dedup instead of continuing.
-          - a relay 504 (response lost): poll hub_get_op_result for THIS iteration's token
-            (raw _send, out of op_timings) and adopt the buffered result; the loop then decides
-            whether it is terminal or another in_progress leg.
+          - a relay 504 (response lost): poll with THIS iteration's token (token-only write
+            re-issue via raw _send, out of op_timings) and adopt the buffered result; the loop
+            then decides whether it is terminal or another in_progress leg.
         Returns the final committed (non in_progress) result dict."""
         app_id = args["appId"]
         work = dict(args)
@@ -4017,9 +4050,17 @@ class TestRunner:
     def _cache_write_health(self, app_id: Any, result: Any) -> None:
         """Stash the health object a hub_set_rule write already returned (the SAME _rmCheckRuleHealth a
         standalone hub_get_rule_health re-derives), keyed by app, so a following _assert_rule_healthy
-        skips the extra round-trip. Cleared on a relay-dropped/soft envelope (no health) -> live fetch."""
-        if isinstance(result, dict) and isinstance(result.get("health"), dict):
-            self._last_write_health = (str(app_id), result["health"])
+        skips the extra round-trip. Cleared on a relay-dropped/soft envelope (no health) -> live fetch.
+        Also cleared when the returned probe carries no verdict -- skipped:true (shed under the time
+        budget), unreadable:true (probe fetch failed), or a non-empty checkErrors (only ONE source
+        read; the verdict is half-checked): caching those would let _assert_rule_healthy pass a
+        genuinely broken rule without ever probing live."""
+        health = result.get("health") if isinstance(result, dict) else None
+        if (isinstance(health, dict)
+                and health.get("skipped") is not True
+                and health.get("unreadable") is not True
+                and not health.get("checkErrors")):
+            self._last_write_health = (str(app_id), health)
         else:
             self._last_write_health = None
 
@@ -4881,6 +4922,12 @@ class TestRunner:
             assert second.get("replayed") is True, \
                 f"re-issuing the completed token did not replay (double-commit risk): {second}"
 
+            # The token-ONLY poll form (issue #351) replays the same buffered result:
+            # no other args needed, nothing re-runs.
+            polled = self._poll_op_result(token, deadline_s=10.0)
+            assert isinstance(polled, dict) and polled.get("replayed") is True, \
+                f"token-only re-issue should replay the buffered result: {polled}"
+
             cfg_after = (self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}}).get("settings") or {})
             assert cfg_after == cfg_before, \
@@ -4890,16 +4937,62 @@ class TestRunner:
             self._delete_native(app_id)
 
     @test("op_replay")
+    def test_op_replay_read_token(self) -> None:
+        # issue #351: tokens are honoured on EVERY tool, reads included -- an expensive
+        # read whose response is lost replays its buffered result instead of re-running
+        # the work. hub_get_info is a flat read returning a map, so the replay carries
+        # replayed:true alongside the original fields.
+        token = f"bat.opreplay.read.{int(time.time())}"
+        first = self.client.call_tool("hub_get_info", {"opToken": token})
+        assert isinstance(first, dict) and first.get("firmwareVersion"), \
+            f"tokened read failed: {first}"
+        replay = self._poll_op_result(token, deadline_s=10.0, tool="hub_get_info")
+        assert isinstance(replay, dict) and replay.get("replayed") is True, \
+            f"token-only re-issue of the read should replay the buffered result: {replay}"
+        assert replay.get("firmwareVersion") == first.get("firmwareVersion"), \
+            f"replayed read should be the buffered original: {replay}"
+
+    @test("op_replay")
     def test_op_replay_unknown_token(self) -> None:
-        # hub_get_op_result for a token that never started reports status 'unknown' -- telling
-        # the caller the original call never arrived and is safe to retry. No rule needed;
-        # call_tool auto-routes through hub_read_diagnostics (exercising the gateway membership).
+        # A token-only write poll for a token that never started reports status 'unknown'
+        # (issue #351: the write IS the poll) -- telling the caller the original call never
+        # arrived, without executing anything or burning the token. Raw _send: the answer
+        # rides an isError envelope that call_tool would raise on. No rule needed.
         never = f"bat.opreplay.never.{int(time.time())}"
-        res = self.client.call_tool("hub_get_op_result", {"opToken": never})
-        assert res.get("status") == "unknown", \
-            f"a never-used token should report unknown, got: {res}"
-        assert never in str(res.get("opToken")), \
-            f"hub_get_op_result should echo the queried token: {res}"
+        raw = self.client._send("tools/call", {
+            "name": "hub_set_rule", "arguments": {"opToken": never}})
+        assert raw.get("isError") is True, \
+            f"a token-only poll must ride an isError envelope (nothing ran): {raw}"
+        parsed = None
+        for c in (raw.get("content") or []):
+            if c.get("type") == "text":
+                parsed = json.loads(c["text"])
+        assert isinstance(parsed, dict) and parsed.get("status") == "unknown", \
+            f"a never-used token should report unknown, got: {parsed}"
+        assert never in str(parsed.get("opToken")), \
+            f"the poll should echo the queried token: {parsed}"
+        assert parsed.get("success") is False, \
+            f"the unknown poll must never read as a committed success: {parsed}"
+
+    @test("op_replay")
+    def test_op_replay_retired_name_shim(self) -> None:
+        # A stale client still calling the RETIRED hub_get_op_result name can only mean a
+        # poll (the name is gone from the catalog and dispatch) -- the shim honours the
+        # intent instead of burning the token on an unknown-tool dispatch error. Raw _send:
+        # the answer rides an isError envelope that call_tool would raise on.
+        never = f"bat.opreplay.retired.{int(time.time())}"
+        raw = self.client._send("tools/call", {
+            "name": "hub_get_op_result", "arguments": {"opToken": never}})
+        assert raw.get("isError") is True, \
+            f"the retired-name poll must ride an isError envelope (nothing ran): {raw}"
+        parsed = None
+        for c in (raw.get("content") or []):
+            if c.get("type") == "text":
+                parsed = json.loads(c["text"])
+        assert isinstance(parsed, dict) and parsed.get("status") == "unknown", \
+            f"a never-used token via the retired name should report unknown, got: {parsed}"
+        assert never in str(parsed.get("opToken")), \
+            f"the poll should echo the queried token: {parsed}"
 
     @test("native_apps")
     def test_set_rule_contains_comparator(self) -> None:
