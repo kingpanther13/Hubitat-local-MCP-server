@@ -4,6 +4,16 @@
 # All fields are optional; only listing what we override from defaults.
 
 code_review:
+  # Google sunset Gemini Code Assist's GitHub review activities; the app now
+  # only posts sunset-notice banners on PRs. Disable it fully so the lingering
+  # installation cannot post. The rest of this config (and styleguide.md) is
+  # kept for whichever review bot replaces it.
+  disable: true
+  pull_request_opened:
+    summary: false
+    code_review: false
+    include_drafts: false
+
   # Skip the .gemini/ directory in PR review diffs. The styleguide and this
   # config aren't code-under-review — letting Gemini comment on its own
   # config noise-pollutes reviews when this directory changes.

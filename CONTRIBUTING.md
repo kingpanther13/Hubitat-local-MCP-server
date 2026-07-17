@@ -62,7 +62,7 @@ The PR title must start with one of these, lowercase and colon-terminated:
 
 `build:` is reserved for Dependabot — contributors should not use it.
 
-Pick the prefix matching the diff and tick the matching `Type of change` box; Gemini Code Assist flags mismatches.
+Pick the prefix matching the diff and tick the matching `Type of change` box; reviewers flag mismatches.
 
 ### Release Notes section
 
@@ -94,7 +94,7 @@ If your PR changes tool behaviour, add or update the matching BAT scenarios in t
 
 ### PR review flow
 
-- [Gemini Code Assist](https://gemini.google.com/) auto-reviews using [`.gemini/styleguide.md`](.gemini/styleguide.md). Its first comment will always lead with "I am an AI and make mistakes…" — pushback is welcome and the maintainer treats Gemini's checks as suggestions, not blockers.
+- Gemini Code Assist's automated reviews are sunset (Google retired the bot's review activities; it is disabled in [`.gemini/config.yaml`](.gemini/config.yaml)). A replacement review bot is TBD; [`.gemini/styleguide.md`](.gemini/styleguide.md) remains the review checklist reviewers apply.
 - The three custom checks (Release Notes presence, title-prefix / Type-of-change agreement, prefix-matches-diff) are suggestions, not hard blocks.
 - The maintainer makes the final call on merge.
 
