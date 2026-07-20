@@ -237,7 +237,7 @@ jobs:
           print('README.md updated.')
           " <<< "$REPLACEMENT"
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         if: steps.label.outputs.skip == 'false'
         with:
           python-version: '3.x'
