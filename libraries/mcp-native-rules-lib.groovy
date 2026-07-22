@@ -5,7 +5,7 @@ def _getAllToolDefinitions_partNativeRM() {
         // Rule Machine Integration (read + trigger + pause/resume only — platform blocks CRUD)
         [
             name: "hub_list_rules",
-            description: "List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id). Returns rule IDs and labels. Requires the Read master. Call `hub_get_tool_guide(section='builtin_app_tools')` for details and platform limitations on RM rule internals.",
+            description: "List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id). Each rule carries its id, label, and live `status`: `active`, `paused`, or `disabled` (red-X) — `unknown` when the hub's app list is momentarily unreadable. Requires the Read master. For the enabled/disabled state of NON-RM classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use `hub_list_apps` (scope='instances'). Call `hub_get_tool_guide(section='builtin_app_tools')` for the status-detection semantics and platform limitations on RM rule internals.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -20,13 +20,18 @@ def _getAllToolDefinitions_partNativeRM() {
                         label: [type: "string", description: "Rule label"],
                         name: [type: "string", description: "Rule name"],
                         type: [type: "string", description: "Rule type, or null"],
-                        rmVersion: [type: "string", description: "RM version, 4.x or 5.x"]
+                        rmVersion: [type: "string", description: "RM version, 4.x or 5.x"],
+                        status: [type: "string", enum: ["active", "paused", "disabled", "unknown"], description: "Live status; 'unknown' when the app list was unreadable"],
+                        disabled: [type: "boolean", description: "Rule is disabled (red-X); omitted when status is 'unknown'"],
+                        paused: [type: "boolean", description: "Rule is paused; omitted when status is 'unknown'"],
+                        requiredExpressionFalse: [type: "boolean", description: "Present (true) only when the rule's required expression is currently false, so it won't trigger"]
                     ]]],
                     count: [type: "integer", description: "Rules returned"],
                     total: [type: "integer", description: "Total rules; paginated mode only"],
                     nextCursor: [type: "string", description: "Cursor; present when more remain"],
                     ghostsFiltered: [type: "array", description: "RMUtils cache ghost IDs dropped", items: [type: "integer"]],
                     ghostNote: [type: "string", description: "Present when ghosts were filtered"],
+                    statusNote: [type: "string", description: "Present when the app list was unreadable and rule status is 'unknown'"],
                     note: [type: "string", description: "Present when RM not detected or informational"],
                     warning: [type: "string", description: "Present on partial RMUtils failure"],
                     success: [type: "boolean", description: "Present only on failure/partial paths"],
@@ -526,6 +531,9 @@ def toolSetAppDisabled(args) {
 //   v4Error/v5Error -- RM 4.x / 5.x lookup error strings (null on success)
 //   treeReadable -- false when /hub2/appsList could not be read; combined is
 //                   then UNfiltered (may still carry post-delete cache ghosts)
+//   liveApps     -- the /hub2/appsList map (id -> [name, disabled]) used for the
+//                   ghost filter AND hub_list_rules status enrichment; null when
+//                   the tree was unreadable (treeReadable=false)
 private Map _rmCollectFilteredRmRules() {
     def combined = [:]
     def v4Error = null
@@ -558,16 +566,17 @@ private Map _rmCollectFilteredRmRules() {
     // transient hub error and _rmValidRuleIds can treat it as cannot-verify.
     def ghostIds = []
     def treeReadable = false
+    def liveApps = null
     try {
-        def liveIds = _collectLiveAppIds()
-        if (liveIds != null) {
+        liveApps = _collectLiveApps()
+        if (liveApps != null) {
             treeReadable = true
             def filtered = [:]
             combined.each { id, entry ->
                 def idInt
                 try { idInt = (id instanceof Number) ? id.intValue() : id.toString().toInteger() }
                 catch (Exception ignored) { idInt = null }
-                if (idInt != null && liveIds.contains(idInt)) {
+                if (idInt != null && liveApps.containsKey(idInt)) {
                     filtered[id] = entry
                 } else {
                     if (idInt != null) ghostIds << idInt
@@ -578,7 +587,7 @@ private Map _rmCollectFilteredRmRules() {
     } catch (Throwable e) {
         mcpLog("warn", "rm-interop", "_rmCollectFilteredRmRules: could not cross-check RMUtils output against /hub2/appsList (${e.message}); returning unfiltered")
     }
-    return [combined: combined, ghostIds: ghostIds, v4Error: v4Error, v5Error: v5Error, treeReadable: treeReadable]
+    return [combined: combined, ghostIds: ghostIds, v4Error: v4Error, v5Error: v5Error, treeReadable: treeReadable, liveApps: liveApps]
 }
 
 // Existence-safe set of Rule Machine rule ids (Integer) for pre-write target
@@ -619,6 +628,13 @@ def toolListRmRules(args) {
     def v4Error = collected.v4Error
     def v5Error = collected.v5Error
     def ghostIds = collected.ghostIds
+    def treeReadable = collected.treeReadable
+    def liveApps = collected.liveApps
+
+    // Enrich each rule with its live enabled/paused/disabled status from the
+    // /hub2/appsList tree (issue #359). When the tree was unreadable the rules are
+    // returned unfiltered and carry no node data, so status is "unknown".
+    combined.values().each { entry -> _rmAnnotateRuleStatus(entry, treeReadable, liveApps) }
 
     // combined.values() returns a Collection view in some Groovy versions; materialize
     // as a concrete List via toList() so subList in _paginateList is safe.
@@ -637,6 +653,9 @@ def toolListRmRules(args) {
     if (ghostIds) {
         result.ghostsFiltered = ghostIds.sort()
         result.ghostNote = "RMUtils reported ${ghostIds.size()} rule id(s) that no longer exist in /hub2/appsList — these are post-delete RMUtils-cache ghosts (rule is already gone, the cache just hasn't caught up). Filtered out of the rules list."
+    }
+    if (!treeReadable && !rules.isEmpty()) {
+        result.statusNote = "/hub2/appsList was unreadable, so each rule's status is \"unknown\" (enabled/paused/disabled could not be determined). Retry; if it persists the hub's internal API may need Hub Security credentials."
     }
     // Classify the failures. A "missing class" error (RM not installed) is quiet whether
     // the other version succeeded OR both versions failed the same way (both-absent path).
@@ -748,6 +767,50 @@ private void registerRmRule(Map combined, def r, String version) {
             rmVersion: version
         ]
     }
+}
+
+// Annotate an RM rule entry (in place) with its live status from the
+// /hub2/appsList node data (issue #359): disabled/paused booleans, a status
+// string ("disabled" | "paused" | "active" | "unknown"), and, only when present,
+// requiredExpressionFalse=true.
+//
+// disabled comes straight from the node's data.disabled (red-X) flag. paused is
+// decoration-detected: a paused rule gains a "(Paused)" suffix on its appsList
+// name that the RMUtils label does NOT carry — live-verified that RMUtils keeps a
+// clean label ("Play room toggle") while the appsList name reads "Play room toggle
+// (Paused)". HTML-stripping BOTH sides and diffing isolates the decoration: equal
+// -> none; appsList == label + remainder -> the remainder IS the decoration. That
+// also protects a rule the user literally NAMED "... (Paused)" — the RMUtils label
+// carries the same suffix, so the remainder is empty and paused stays false. The
+// "(Required Expression false)" decoration (rule enabled but its required
+// expression is currently false, so it won't trigger) is read the same way. A
+// disabled app shows no paused decoration, and precedence is disabled > paused >
+// active.
+//
+// When the tree was unreadable (treeReadable=false, liveApps=null) status is
+// "unknown" and the boolean flags are omitted — the state genuinely can't be
+// verified, so asserting false would be a lie.
+private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps) {
+    def idInt
+    try { idInt = (entry.id instanceof Number) ? entry.id.intValue() : entry.id?.toString()?.toInteger() }
+    catch (Exception ignored) { idInt = null }
+    def node = (treeReadable && idInt != null && liveApps != null) ? liveApps[idInt] : null
+    if (node == null) {
+        entry.status = "unknown"
+        return
+    }
+    def disabled = node.disabled == true
+    def paused = false
+    def cleanApps = stripAppConfigHtml(node.name)
+    def cleanRm = stripAppConfigHtml(entry.label)
+    if (cleanApps != null && cleanRm != null && cleanApps != cleanRm && cleanApps.startsWith(cleanRm)) {
+        def remainder = cleanApps.substring(cleanRm.length())
+        if (remainder.contains("(Paused)")) paused = true
+        if (remainder.contains("(Required Expression false)")) entry.requiredExpressionFalse = true
+    }
+    entry.disabled = disabled
+    entry.paused = paused
+    entry.status = disabled ? "disabled" : (paused ? "paused" : "active")
 }
 
 // Trigger a Rule Machine rule via RMUtils.sendAction() or the lifecycle
@@ -1090,23 +1153,28 @@ private Map _rmCheckSubscriptionSettle(Integer appId) {
     ]
 }
 
-// Collect all installed-app ids currently present in the hub's authoritative
-// /hub2/appsList tree. Used by hub_list_rules to filter out stale RMUtils-
-// cache ghosts after a rule is deleted (the delete itself succeeds at the
-// InstalledApp table, but RMUtils' internal rule list lags for seconds-to-
-// minutes — hub UI lists never show these because they read /hub2/appsList,
-// not RMUtils, so we do the same).
+// Collect the hub's authoritative /hub2/appsList installed-app tree, keyed by
+// app id. Two consumers, both hub_list_rules:
+//   1. Ghost filter — an id present here is a live app; an id RMUtils still
+//      reports but that is absent here is a post-delete cache ghost (the delete
+//      succeeds at the InstalledApp table, but RMUtils' internal rule list lags
+//      for seconds-to-minutes; hub UI lists read /hub2/appsList, not RMUtils, so
+//      we do the same).
+//   2. Status enrichment (issue #359) — each node's raw name carries the
+//      "(Paused)" / "(Required Expression false)" decorations and its
+//      data.disabled flag carries the red-X state.
 //
-// Returns a Set<Integer> of all live ids across the tree (any depth), or
-// null if the endpoint is unreachable / malformed. Callers treat null as
-// "cannot filter — surface RMUtils output unfiltered" rather than as an
-// empty set (which would drop every rule).
-private Set _collectLiveAppIds() {
+// Returns Map<Integer, Map> id -> [name: <raw appsList name>, disabled: <bool>]
+// across the tree (any depth), or null if the endpoint is unreachable /
+// malformed. Callers treat null as "cannot verify — surface RMUtils output
+// unfiltered, status unknown" rather than as an empty map (which would drop
+// every rule).
+private Map _collectLiveApps() {
     def responseText
     try {
         responseText = hubInternalGet("/hub2/appsList")
     } catch (Exception e) {
-        mcpLog("warn", "rm-interop", "_collectLiveAppIds: /hub2/appsList fetch failed (${e.message})")
+        mcpLog("warn", "rm-interop", "_collectLiveApps: /hub2/appsList fetch failed (${e.message})")
         return null
     }
     if (!responseText) return null
@@ -1114,21 +1182,23 @@ private Set _collectLiveAppIds() {
     try {
         parsed = new groovy.json.JsonSlurper().parseText(responseText)
     } catch (Exception e) {
-        mcpLog("warn", "rm-interop", "_collectLiveAppIds: /hub2/appsList parse failed (${e.message})")
+        mcpLog("warn", "rm-interop", "_collectLiveApps: /hub2/appsList parse failed (${e.message})")
         return null
     }
-    def ids = [] as Set
+    def apps = [:]
     def walk
     walk = { node ->
         if (node == null) return
         def idVal = node?.data?.id ?: node?.id
         if (idVal != null) {
-            try { ids << (idVal as Integer) } catch (Exception ignored) { /* skip non-int ids */ }
+            try {
+                apps[(idVal as Integer)] = [name: node?.data?.name, disabled: node?.data?.disabled == true]
+            } catch (Exception ignored) { /* skip non-int ids */ }
         }
         (node?.children ?: []).each { walk(it) }
     }
     (parsed?.apps ?: []).each { walk(it) }
-    return ids
+    return apps
 }
 
 // Normalize an atTime string to the form RM 5.1 expects:

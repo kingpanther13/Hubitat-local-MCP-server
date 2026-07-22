@@ -6648,7 +6648,12 @@ Tools in the hub_read_apps_code and hub_manage_native_rules_and_apps gateways ar
 **hub_manage_native_rules_and_apps (11 tools) — read, trigger, AND full CRUD on native RM rules:**
 
 RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/private-boolean = Write master):
-- **hub_list_rules** — enumerate Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id)
+- **hub_list_rules** — enumerate Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id). Each rule carries a live **status** — "active" | "paused" | "disabled" | "unknown" — plus **disabled** / **paused** booleans (omitted on the "unknown" path) and, only when detected, **requiredExpressionFalse: true**.
+  - **disabled** is the app's red-X enable/disable flag, read straight from /hub2/appsList (data.disabled).
+  - **paused** is decoration-detected. Rule Machine surfaces a paused rule ONLY as a "(Paused)" suffix appended to the app's /hub2/appsList name; the RMUtils label for the same rule stays clean (live-verified). So the appsList name and the RMUtils label are BOTH HTML-stripped (tags removed, entities decoded, trimmed — the appsList name comes decoded, the RMUtils label comes entity-escaped like "Heat On &lt;67" and can carry trailing spaces) and diffed: equal → no decoration; appsList == label + remainder → the remainder is the decoration ("(Paused)" ⇒ paused, "(Required Expression false)" ⇒ requiredExpressionFalse). A rule the user literally NAMED "... (Paused)" is NOT false-flagged: the RMUtils label carries the same suffix, so the remainder is empty.
+  - **precedence**: disabled > paused > active (a red-X disabled app processes no pause command and shows no "(Paused)" decoration).
+  - **status "unknown"** means /hub2/appsList was momentarily unreadable — the rules are then returned unfiltered (post-delete ghosts may linger) and carry no status booleans; a result-level **statusNote** explains it. Retry.
+  - This status detection covers Rule Machine rules. For the enabled/disabled state of other classic automation apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use hub_list_apps (scope='instances'), whose entries carry a disabled flag.
 - **hub_call_rule** — trigger an existing RM rule
   - action="rule" (default): full evaluation (triggers + conditions + actions)
   - action="actions": run actions only, skip conditions
@@ -7091,6 +7096,10 @@ The right move when `partial: true` is to follow the `repairHints`, NOT to delet
         visual_rule_reference: '''## Visual Rules Builder reference (`hub_get_visual_rule` / `hub_set_visual_rule` / `hub_delete_visual_rule`)
 
 Visual Rules Builder (VRB) is the PRIMARY rule engine for new automations; each rule is stored as ONE clean JSON definition (no wizard, no settings[] protocol). A VRB rule is: one or more trigger events, an optional condition gate, and then/else action branches — if/then/else logic is fully supported (a condition node routes execution to thenNodes or elseNodes). Pretty much everything can be done with it; use `hub_set_rule` (Rule Machine) when something complex is needed — nested or multiple condition blocks, loops, variables and expressions, capture/restore, waiting on a device-state expression (VRB's `wait` waits a fixed duration), or device commands outside the action catalog below.
+
+### List mode (`hub_get_visual_rule` with no appId)
+
+Returns one entry per rule: `{appId, name, disabled, paused}`. `disabled` is the red-X flag; `paused` is detected from a "(Paused)" suffix on the rule's name (VRB has no RMUtils label to cross-check, so a rule literally named "... (Paused)" reads as paused). For the authoritative pause state, read the single rule with `hub_get_visual_rule(appId=N)` — its `rulePaused` comes straight from the builder JSON.
 
 ### Two serializations (`format` in every single-rule success response)
 

@@ -96,7 +96,7 @@ class ToolVisualRulesSpec extends ToolSpecBase {
 
     // ==================== hub_get_visual_rule: list mode ====================
 
-    def "list mode returns appId/name/disabled for every child of the Visual Rules Builder parent"() {
+    def "list mode returns appId/name/disabled/paused for every child of the Visual Rules Builder parent"() {
         given:
         registerAppsList([
             [key: 701, data: [id: 701, appTypeId: 100, name: 'Hall light', type: 'Visual Rule Builder', disabled: false], children: []],
@@ -109,9 +109,27 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         then:
         result.success == true
         result.count == 2
-        result.rules == [[appId: 701, name: 'Hall light', disabled: false],
-                         [appId: 702, name: 'Door alert', disabled: true]]
+        result.rules == [[appId: 701, name: 'Hall light', disabled: false, paused: false],
+                         [appId: 702, name: 'Door alert', disabled: true, paused: false]]
         result.note.contains('Pass appId')
+    }
+
+    def "list mode flags a paused rule from the (Paused) name suffix, HTML-wrapped or plain"() {
+        given: 'one rule paused with an HTML-span decoration, one plain-suffix paused, one active'
+        registerAppsList([
+            [key: 703, data: [id: 703, name: 'Porch light <span style="color:red">(Paused)</span>', type: 'Visual Rule Builder', disabled: false], children: []],
+            [key: 704, data: [id: 704, name: 'Night mode (Paused)', type: 'Visual Rule Builder', disabled: false], children: []],
+            [key: 705, data: [id: 705, name: 'Garage watch', type: 'Visual Rule Builder', disabled: false], children: []]
+        ])
+
+        when:
+        def result = script.toolGetVisualRule([:])
+
+        then: 'paused flagged, and the name is HTML-stripped so it no longer leaks the span'
+        result.success == true
+        result.rules == [[appId: 703, name: 'Porch light (Paused)', disabled: false, paused: true],
+                         [appId: 704, name: 'Night mode (Paused)', disabled: false, paused: true],
+                         [appId: 705, name: 'Garage watch', disabled: false, paused: false]]
     }
 
     def "list mode returns an actionable error when the Visual Rules Builder parent app is not installed"() {
