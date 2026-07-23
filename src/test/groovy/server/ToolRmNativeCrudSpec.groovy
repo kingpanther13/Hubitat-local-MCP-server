@@ -2298,7 +2298,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     // Live app-id tree used by the rule-target existence specs below: a Rule Machine parent
-    // (id 21) with one child rule (id 555). _collectLiveAppIds walks data.id at every depth,
+    // (id 21) with one child rule (id 555). _collectLiveApps walks data.id at every depth,
     // so the reachable set is {21, 555}. The parent id 21 is deliberately present-but-not-a-rule
     // so the "non-rule app id is rejected" spec can target it: it exists in the app tree yet is
     // absent from the RMUtils rule list, which is what the existence guard resolves against.
@@ -2584,7 +2584,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "rule-target guard SKIPS validation when the app tree is unreadable (write proceeds)"() {
         // The OTHER cannot-verify path: RMUtils returns a rule but the /hub2/appsList cross-check
         // fetch fails, so _rmValidRuleIds returns null and the guard skips rather than reject.
-        // /hub2/appsList is deliberately left unstubbed so _collectLiveAppIds returns null.
+        // /hub2/appsList is deliberately left unstubbed so _collectLiveApps returns null.
         given:
         installRuleTargetStubs()
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }

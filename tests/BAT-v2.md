@@ -1782,7 +1782,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `hub_get_custom_rule` (list mode: omit ruleId).
+**Expected**: `hub_list_rules` — each entry carries a `status` (`active` | `paused` | `disabled`), so the AI answers the running/paused split directly from the one call (plus `hub_get_custom_rule` list mode / `hub_get_visual_rule` list mode if the user's automations span engines). FAIL if the AI claims rule status is not exposed (issue #359 regression).
 **Equivalent to**: T08
 
 #### T211 — Walk me through this automation
@@ -2713,6 +2713,18 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 **Expected**: Calls `hub_set_rule_paused` with `value=true` (pauses) → confirms with user → calls `hub_set_rule_paused` with `value=false` (resumes). Both return `{success: true}`.
 
 **WARNING**: Only runs if user has a BAT-prefixed RM rule OR explicitly identifies a safe rule. Never use a production rule.
+
+### T209a — Report rule status (issue #359)
+
+```json
+{
+  "setup_prompt": "List Rule Machine rules and identify one labeled with 'BAT' prefix, or if none exists, ask the user to identify a safe test rule. Pause it with hub_set_rule_paused.",
+  "test_prompt": "How many of my Rule Machine rules are active right now, and which ones are paused or disabled?",
+  "teardown_prompt": "Resume the rule that was paused during setup and verify it reads active again."
+}
+```
+
+**Expected**: One `hub_list_rules` call; the AI counts by the per-rule `status` field and names the paused setup rule. FAIL if the AI answers that rule status is not exposed, or walks per-rule config pages to derive it.
 
 ### T209b — Run actions on an RM rule (bypasses conditions)
 

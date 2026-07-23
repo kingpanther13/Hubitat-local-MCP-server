@@ -598,7 +598,7 @@ Two surfaces under one gateway: RMUtils-based runtime control for RM rules (RM-o
 
 **RMUtils control (4 tools, RM-only):**
 
-- **`hub_list_rules`** — enumerate Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id)
+- **`hub_list_rules`** — enumerate Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id). Each rule carries a live `status` (`active` | `paused` | `disabled` | `unknown`) plus `disabled`/`paused` booleans and, when detected, `requiredExpressionFalse: true`. `disabled` is the red-X flag; `paused` is decoration-detected (a "(Paused)" suffix that appears on the /hub2/appsList name but not the RMUtils label); precedence governs only the `status` summary (disabled > paused > active); the `disabled`/`paused` booleans are independent facts (a rule paused-then-disabled reads paused:true, disabled:true, status:"disabled"). `unknown` is per-rule: tree-level (`/hub2/appsList` unreadable → whole list, with a result-level `statusNote`) or per-entry (one rule's node under-populated → just that rule, others stay determinate); either way the booleans are omitted, never asserted false. For non-RM classic apps use `hub_list_apps` (scope='instances'). Full semantics: `hub_get_tool_guide(section='builtin_app_tools')`.
 - **`hub_call_rule`** — trigger an existing RM rule via `RMUtils.sendAction`
   - `action="rule"` (default, full evaluation): runs triggers + conditions + actions as if the rule fired
   - `action="actions"`: runs only the actions, bypassing conditions (useful for manual override)
@@ -911,7 +911,7 @@ Two rule-level toggles are plain mainPage booleans, distinct from the `addTrigge
 
 ### Visual Rules Builder tools (in `hub_manage_rule_machine`; read also in `hub_read_rules`)
 
-- **`hub_get_visual_rule(appId?)`** — list every Visual Rules Builder rule (omit `appId`: `{appId, name, disabled}` entries) or read one rule's full definition. Every single-rule success response carries `format`: `'classic'` (`{whenNodes, thenNodes, elseNodes}`) or `'graph'` (`{version, nodes, edges}`). Read master.
+- **`hub_get_visual_rule(appId?)`** — list every Visual Rules Builder rule (omit `appId`: `{appId, name, disabled, paused}` entries — `paused` is name-suffix detected, so read a single rule for the authoritative `rulePaused`; an omitted `paused`/`disabled` means undeterminable from the node data, never asserted false) or read one rule's full definition. Every single-rule success response carries `format`: `'classic'` (`{whenNodes, thenNodes, elseNodes}`) or `'graph'` (`{version, nodes, edges}`). Read master.
 - **`hub_set_visual_rule(appId?, name, definition, paused?, confirm)`** — create (omit `appId`; `name` + `definition` required) or edit (the `definition` replaces wholesale, `name` renames, `paused` pauses/resumes). The definition's format must match the rule's existing format; responses include a read-back `verified` flag. Write master + `confirm=true` + a backup within 24h.
 - **`hub_delete_visual_rule(appId, confirm)`** — type-gated delete (refuses ids that are not VRB rules); returns the rule's `predeleteDefinition` so it can be recreated. Write master + `confirm=true` + a backup within 24h.
 

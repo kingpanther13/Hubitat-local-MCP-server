@@ -94,8 +94,26 @@ private List _vrbListRules() {
     if (parent == null) {
         throw new IllegalStateException("The Visual Rules Builder parent app is not installed on this hub. Install it via Apps -> Add Built-In App -> Visual Rules Builder, then retry.")
     }
+    // A paused VRB rule decorates its appsList name with a "(Paused)" suffix (often HTML-
+    // wrapped in a red span); strip tags/entities so the name is clean AND the suffix is
+    // detectable. Unlike hub_list_rules there is no RMUtils label to cross-check against, so
+    // this is suffix-only: a rule the user literally named "... (Paused)" reads as paused here.
+    // hub_get_visual_rule(appId) returns the authoritative rulePaused.
+    //
+    // paused/disabled are OMITTED (not asserted false) when the node data can't support them:
+    // a null stripped name means paused is undeterminable, and an absent data.disabled key
+    // means disabled is undeterminable. Present keys behave exactly as before.
     return (parent.children ?: []).findAll { it?.data?.id != null }.collect {
-        [appId: it.data.id, name: it.data.name, disabled: it.data.disabled == true]
+        def cleanName = stripAppConfigHtml(it.data.name)
+        def disabledRaw = it.data.disabled
+        def entry = [appId: it.data.id, name: cleanName]
+        if (disabledRaw != null) entry.disabled = (disabledRaw == true)
+        if (cleanName != null) {
+            entry.paused = cleanName.endsWith("(Paused)")
+        } else {
+            mcpLog("warn", "vrb", "_vrbListRules: rule ${it.data.id} has no readable name in /hub2/appsList; name null, paused undeterminable")
+        }
+        entry
     }
 }
 
@@ -247,7 +265,7 @@ private Map _vrbNotVisualRuleError(Integer appId) {
 }
 
 def toolGetVisualRule(args) {
-    // Read-only. No appId -> list every Visual Rules Builder rule (id, name, disabled).
+    // Read-only. No appId -> list every Visual Rules Builder rule (appId, name, disabled, paused).
     // With appId -> full definition in whichever serialization the rule speaks.
     if (args?.appId == null) {
         try {
@@ -627,7 +645,7 @@ def _getAllToolDefinitions_partVisualRules() {
     return [
         [
             name: "hub_get_visual_rule",
-            description: "List Visual Rules Builder rules (omit appId) or read one rule's full JSON definition.[[FLAT_TRIM]] Returns the rule's format: 'classic' ({whenNodes, thenNodes, elseNodes}) or 'graph' ({version, nodes, edges}); pass the same format back to hub_set_visual_rule when editing.[[/FLAT_TRIM]]",
+            description: "List Visual Rules Builder rules (omit appId; each entry: appId, name, disabled, paused) or read one rule's full JSON definition.[[FLAT_TRIM]] List-mode `paused` is detected from the rule's name suffix (no cross-check); call with appId for the authoritative `rulePaused`. A single-rule read returns the rule's format: 'classic' ({whenNodes, thenNodes, elseNodes}) or 'graph' ({version, nodes, edges}); pass the same format back to hub_set_visual_rule when editing.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -638,7 +656,7 @@ def _getAllToolDefinitions_partVisualRules() {
                 type: "object",
                 properties: [
                     success: [type: "boolean"],
-                    rules: [type: "array", description: "List mode: [{appId, name, disabled}]"],
+                    rules: [type: "array", description: "List mode: [{appId, name, disabled, paused}] (paused is name-suffix detected; appId read gives authoritative rulePaused). An OMITTED paused or disabled means it was undeterminable from the node data (null name / absent disabled key)."],
                     count: [type: "integer"],
                     appId: [type: "integer"],
                     format: [type: "string", description: "'classic' (whenNodes/thenNodes/elseNodes) or 'graph' (nodes/edges)"],

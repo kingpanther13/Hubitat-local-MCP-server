@@ -3118,6 +3118,56 @@ class TestRunner:
         )
         assert found, f"created native rule {app_id} not found in hub_list_rules"
 
+        # STATUS (issue #359): hub_list_rules surfaces each rule's live status. The freshly-
+        # created, enabled rule reads "active"; pausing via hub_set_rule_paused flips it to
+        # "paused" (+ paused:true), and resuming returns it to "active". Reuses THIS rule --
+        # no new rule created (keeps the RM e2e rule budget small).
+        def _rule_status(target_id):
+            listed = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
+            entries = listed if isinstance(listed, list) else (listed.get("rules") or [])
+            match = next((r for r in entries if str(r.get("id")) == str(target_id)), None)
+            assert match is not None, f"rule {target_id} not found in hub_list_rules: {listed}"
+            return match
+
+        active = _rule_status(app_id)
+        assert active.get("status") == "active", f"new rule should read status active, got: {active}"
+        assert active.get("paused") is False and active.get("disabled") is False, \
+            f"new rule should be neither paused nor disabled, got: {active}"
+
+        self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_set_rule_paused", "args": {"ruleId": app_id, "paused": True}})
+        time.sleep(2.0)  # let the (Paused) appsList decoration settle before re-reading status
+        paused = _rule_status(app_id)
+        assert paused.get("status") == "paused" and paused.get("paused") is True, \
+            f"paused rule should read status paused + paused:true, got: {paused}"
+
+        self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_set_rule_paused", "args": {"ruleId": app_id, "paused": False}})
+        time.sleep(2.0)
+        resumed = _rule_status(app_id)
+        assert resumed.get("status") == "active" and resumed.get("paused") is False, \
+            f"resumed rule should read status active again, got: {resumed}"
+
+        # DISABLED (issue #359): the red-X disabled flag is the other status axis. Disable the
+        # SAME rule via hub_set_app_disabled and confirm hub_list_rules reports status "disabled"
+        # + disabled:true, then re-enable and confirm it returns to "active" -- BEFORE the EDIT
+        # step below so the edit runs against an enabled rule. (No live requiredExpressionFalse
+        # scenario: the decoration-refresh timing on a fresh rule is unverified; Spock covers its
+        # parsing.)
+        self.client.call_tool("hub_manage_native_rules_and_apps", {
+            "tool": "hub_set_app_disabled", "args": {"appId": app_id, "disabled": True}})
+        time.sleep(2.0)
+        disabled = _rule_status(app_id)
+        assert disabled.get("status") == "disabled" and disabled.get("disabled") is True, \
+            f"disabled rule should read status disabled + disabled:true, got: {disabled}"
+
+        self.client.call_tool("hub_manage_native_rules_and_apps", {
+            "tool": "hub_set_app_disabled", "args": {"appId": app_id, "disabled": False}})
+        time.sleep(2.0)
+        reenabled = _rule_status(app_id)
+        assert reenabled.get("status") == "active" and reenabled.get("disabled") is False, \
+            f"re-enabled rule should read status active again, got: {reenabled}"
+
         # EDIT: hub_set_rule WITH appId routes to the edit engine -- add a second action.
         # _set_rule carries the relay-504 soft contract (verify health, don't hard-fail).
         edited = self._set_rule(app_id, {"addAction": {"capability": "log", "message": "second action"}})
@@ -6346,6 +6396,13 @@ class TestRunner:
             assert got.get("name") == renamed, f"rename did not land: {got.get('name')!r}"
             assert got.get("rulePaused") is True, f"pause did not land: {got}"
 
+            # LIST-MODE paused (issue #359): the no-args listing surfaces a suffix-detected
+            # `paused` flag; the just-paused rule must read paused:true there too.
+            pentry = next((r for r in (self._get_visual_rule().get("rules") or [])
+                           if str(r.get("appId")) == str(app_id)), None)
+            assert pentry is not None, f"paused VRB rule {app_id} missing from list mode: {pentry}"
+            assert pentry.get("paused") is True, f"list mode should show paused:true for a paused rule: {pentry}"
+
             # RESUME.
             rs = self._soft_write(
                 lambda: self.client.call_tool("hub_manage_rule_machine", {
@@ -6360,6 +6417,12 @@ class TestRunner:
                 assert rs["response"].get("success") is True, f"resume reported failure: {rs['response']}"
             got = self._get_visual_rule(app_id)
             assert got.get("rulePaused") is False, f"resume did not land: {got}"
+
+            # LIST-MODE paused clears after resume.
+            rentry = next((r for r in (self._get_visual_rule().get("rules") or [])
+                           if str(r.get("appId")) == str(app_id)), None)
+            assert rentry is not None and rentry.get("paused") is False, \
+                f"list mode should show paused:false after resume: {rentry}"
 
             # REPLACE: wholesale definition edit in the SAME format the rule speaks
             # ('Turns on' variant), verified by the tool's read-back AND our own.
