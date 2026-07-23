@@ -3118,9 +3118,9 @@ class TestRunner:
         )
         assert found, f"created native rule {app_id} not found in hub_list_rules"
 
-        # STATUS (issue #359): hub_list_rules now surfaces each rule's live status. The freshly-
-        # created, enabled rule reads "active"; pausing via hub_set_rule_paused must flip it to
-        # "paused" (+ paused:true), and resuming must return it to "active". Reuses THIS rule --
+        # STATUS (issue #359): hub_list_rules surfaces each rule's live status. The freshly-
+        # created, enabled rule reads "active"; pausing via hub_set_rule_paused flips it to
+        # "paused" (+ paused:true), and resuming returns it to "active". Reuses THIS rule --
         # no new rule created (keeps the RM e2e rule budget small).
         def _rule_status(target_id):
             listed = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
@@ -3147,6 +3147,26 @@ class TestRunner:
         resumed = _rule_status(app_id)
         assert resumed.get("status") == "active" and resumed.get("paused") is False, \
             f"resumed rule should read status active again, got: {resumed}"
+
+        # DISABLED (issue #359): the red-X disabled flag is the other status axis. Disable the
+        # SAME rule via hub_set_app_disabled and confirm hub_list_rules reports status "disabled"
+        # + disabled:true, then re-enable and confirm it returns to "active" -- BEFORE the EDIT
+        # step below so the edit runs against an enabled rule. (No live requiredExpressionFalse
+        # scenario: the decoration-refresh timing on a fresh rule is unverified; Spock covers its
+        # parsing.)
+        self.client.call_tool("hub_manage_native_rules_and_apps", {
+            "tool": "hub_set_app_disabled", "args": {"appId": app_id, "disabled": True}})
+        time.sleep(2.0)
+        disabled = _rule_status(app_id)
+        assert disabled.get("status") == "disabled" and disabled.get("disabled") is True, \
+            f"disabled rule should read status disabled + disabled:true, got: {disabled}"
+
+        self.client.call_tool("hub_manage_native_rules_and_apps", {
+            "tool": "hub_set_app_disabled", "args": {"appId": app_id, "disabled": False}})
+        time.sleep(2.0)
+        reenabled = _rule_status(app_id)
+        assert reenabled.get("status") == "active" and reenabled.get("disabled") is False, \
+            f"re-enabled rule should read status active again, got: {reenabled}"
 
         # EDIT: hub_set_rule WITH appId routes to the edit engine -- add a second action.
         # _set_rule carries the relay-504 soft contract (verify health, don't hard-fail).

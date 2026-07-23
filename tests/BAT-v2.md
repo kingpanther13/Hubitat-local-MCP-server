@@ -1782,7 +1782,7 @@ These tests cover the same tool capabilities as earlier sections, but use **pure
 }
 ```
 
-**Expected**: `hub_list_rules` — each entry now carries `status` (`active` | `paused` | `disabled`), so the AI answers the running/paused split directly from the one call (plus `hub_get_custom_rule` list mode / `hub_get_visual_rule` list mode if the user's automations span engines). FAIL if the AI claims rule status is not exposed (issue #359 regression).
+**Expected**: `hub_list_rules` — each entry carries a `status` (`active` | `paused` | `disabled`), so the AI answers the running/paused split directly from the one call (plus `hub_get_custom_rule` list mode / `hub_get_visual_rule` list mode if the user's automations span engines). FAIL if the AI claims rule status is not exposed (issue #359 regression).
 **Equivalent to**: T08
 
 #### T211 — Walk me through this automation

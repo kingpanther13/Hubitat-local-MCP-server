@@ -132,6 +132,29 @@ class ToolVisualRulesSpec extends ToolSpecBase {
                          [appId: 705, name: 'Garage watch', disabled: false, paused: false]]
     }
 
+    def "list mode omits paused (null name) and disabled (absent key) when the node data can't support them"() {
+        given: 'one child has a null name, another has no disabled key at all'
+        registerAppsList([
+            [key: 710, data: [id: 710, name: null, type: 'Visual Rule Builder', disabled: false], children: []],
+            [key: 711, data: [id: 711, name: 'Kitchen', type: 'Visual Rule Builder'], children: []]
+        ])
+
+        when:
+        def result = script.toolGetVisualRule([:])
+
+        then: 'null name -> name null + paused omitted (never asserted false)'
+        def r710 = result.rules.find { it.appId == 710 }
+        r710.name == null
+        !r710.containsKey('paused')
+        r710.disabled == false
+
+        and: 'absent disabled key -> disabled omitted, present name still yields paused'
+        def r711 = result.rules.find { it.appId == 711 }
+        r711.name == 'Kitchen'
+        r711.paused == false
+        !r711.containsKey('disabled')
+    }
+
     def "list mode returns an actionable error when the Visual Rules Builder parent app is not installed"() {
         given:
         hubGet.register('/hub2/appsList') { params ->
@@ -1044,11 +1067,12 @@ class ToolVisualRulesSpec extends ToolSpecBase {
     // ==================== dispatch-envelope (integration) ====================
 
     @Unroll
-    def "hub_get_visual_rule via dispatch returns the VRB rule list (useGateways=#useGateways)"() {
+    def "hub_get_visual_rule via dispatch returns the VRB rule list with paused + HTML-stripped name (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         registerAppsList([
-            [key: 701, data: [id: 701, appTypeId: 100, name: 'Hall light', type: 'Visual Rule Builder', disabled: false], children: []]
+            [key: 701, data: [id: 701, appTypeId: 100, name: 'Hall light', type: 'Visual Rule Builder', disabled: false], children: []],
+            [key: 702, data: [id: 702, appTypeId: 100, name: 'Porch light <span style="color:red">(Paused)</span>', type: 'Visual Rule Builder', disabled: false], children: []]
         ])
 
         when:
@@ -1059,9 +1083,15 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         response.id == mcpDriver.lastSentId
         def inner = mcpDriver.parseInner(response)
         inner.success == true
-        inner.count == 1
+        inner.count == 2
         inner.rules[0].appId == 701
         inner.rules[0].name == 'Hall light'
+        inner.rules[0].paused == false
+
+        and: 'the paused rule survives JSON with its span-stripped name and paused:true'
+        inner.rules[1].appId == 702
+        inner.rules[1].name == 'Porch light (Paused)'
+        inner.rules[1].paused == true
 
         where:
         useGateways << [true, false]

@@ -99,10 +99,21 @@ private List _vrbListRules() {
     // detectable. Unlike hub_list_rules there is no RMUtils label to cross-check against, so
     // this is suffix-only: a rule the user literally named "... (Paused)" reads as paused here.
     // hub_get_visual_rule(appId) returns the authoritative rulePaused.
+    //
+    // paused/disabled are OMITTED (not asserted false) when the node data can't support them:
+    // a null stripped name means paused is undeterminable, and an absent data.disabled key
+    // means disabled is undeterminable. Present keys behave exactly as before.
     return (parent.children ?: []).findAll { it?.data?.id != null }.collect {
         def cleanName = stripAppConfigHtml(it.data.name)
-        [appId: it.data.id, name: cleanName, disabled: it.data.disabled == true,
-         paused: cleanName != null && cleanName.endsWith("(Paused)")]
+        def disabledRaw = it.data.disabled
+        def entry = [appId: it.data.id, name: cleanName]
+        if (disabledRaw != null) entry.disabled = (disabledRaw == true)
+        if (cleanName != null) {
+            entry.paused = cleanName.endsWith("(Paused)")
+        } else {
+            mcpLog("warn", "vrb", "_vrbListRules: rule ${it.data.id} has no readable name in /hub2/appsList; name null, paused undeterminable")
+        }
+        entry
     }
 }
 
@@ -645,7 +656,7 @@ def _getAllToolDefinitions_partVisualRules() {
                 type: "object",
                 properties: [
                     success: [type: "boolean"],
-                    rules: [type: "array", description: "List mode: [{appId, name, disabled, paused}] (paused is name-suffix detected; appId read gives authoritative rulePaused)"],
+                    rules: [type: "array", description: "List mode: [{appId, name, disabled, paused}] (paused is name-suffix detected; appId read gives authoritative rulePaused). An OMITTED paused or disabled means it was undeterminable from the node data (null name / absent disabled key)."],
                     count: [type: "integer"],
                     appId: [type: "integer"],
                     format: [type: "string", description: "'classic' (whenNodes/thenNodes/elseNodes) or 'graph' (nodes/edges)"],

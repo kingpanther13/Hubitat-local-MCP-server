@@ -634,12 +634,16 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         [data: [id: id, name: name, type: 'Rule Machine', user: true, hidden: false, disabled: disabled], children: []]
     }
 
-    def "flags a paused rule from the appsList (Paused) decoration the RMUtils label lacks (plain + HTML-span)"() {
+    def "flags a paused rule from the appsList (Paused) decoration the RMUtils label lacks (plain + HTML-span, RM 4.x + 5.x)"() {
         given: 'clean RMUtils labels; appsList names carry the (Paused) suffix in plain and red-span form'
         rmUtils.stubRuleList5 = [[401: 'Play room toggle'], [402: 'Hall motion']]
+        // A 4.x rule (explicit-fields shape) proves the annotation is version-agnostic:
+        // it reads entry.label, which registerRmRule fills for both RM versions.
+        rmUtils.stubRuleList4 = [[id: 403, label: 'Garden lights', name: 'Garden lights', type: 'Rule-4.1']]
         registerRmAppsList([
             ruleNode(401, 'Play room toggle (Paused)'),
-            ruleNode(402, 'Hall motion <span style="color:red">(Paused)</span>')
+            ruleNode(402, 'Hall motion <span style="color:red">(Paused)</span>'),
+            ruleNode(403, 'Garden lights (Paused)')
         ])
 
         when:
@@ -648,19 +652,24 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         then:
         def r401 = result.rules.find { it.id == 401 }
         def r402 = result.rules.find { it.id == 402 }
+        def r403 = result.rules.find { it.id == 403 }
         r401.paused == true
         r401.disabled == false
         r401.status == 'paused'
         r402.paused == true
         r402.status == 'paused'
+
+        and: 'the RM 4.x rule is annotated the same way'
+        r403.rmVersion == '4.x'
+        r403.paused == true
+        r403.status == 'paused'
     }
 
-    def "surfaces the disabled flag and disabled takes precedence over a paused decoration"() {
-        given:
+    def "disabled wins the status summary but the disabled/paused booleans stay independent"() {
+        given: 'rule 411 was paused first (keeps its "(Paused)" decoration) and disabled afterward'
         rmUtils.stubRuleList5 = [[410: 'Kitchen night'], [411: 'Porch timer']]
         registerRmAppsList([
             ruleNode(410, 'Kitchen night', true),
-            // even if a decoration is somehow present, a red-X disabled app wins
             ruleNode(411, 'Porch timer (Paused)', true)
         ])
 
@@ -671,8 +680,12 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         def r410 = result.rules.find { it.id == 410 }
         def r411 = result.rules.find { it.id == 411 }
         r410.disabled == true
+        r410.paused == false
         r410.status == 'disabled'
+
+        and: 'precedence only summarizes status; the booleans report independent facts, so a paused-then-disabled rule reads BOTH true'
         r411.disabled == true
+        r411.paused == true
         r411.status == 'disabled'
     }
 
@@ -756,6 +769,115 @@ class ToolListRmRulesSpec extends ToolSpecBase {
 
         and: 'a single result-level statusNote explains the unreadable app list'
         result.statusNote?.contains('unreadable')
+    }
+
+    def "a rule whose appsList node has a null name is per-entry unknown while other rules stay determinate"() {
+        given:
+        rmUtils.stubRuleList5 = [[480: 'Good rule'], [481: 'Nameless node']]
+        registerRmAppsList([
+            ruleNode(480, 'Good rule'),
+            // node present but its name is null -> paused undeterminable for THIS rule only
+            [data: [id: 481, name: null, type: 'Rule Machine', disabled: false], children: []]
+        ])
+
+        when:
+        def result = script.toolListRmRules([:])
+
+        then: 'the nameless rule is individually unknown; the other keeps a real status'
+        def good = result.rules.find { it.id == 480 }
+        def bad = result.rules.find { it.id == 481 }
+        good.status == 'active'
+        good.paused == false
+        bad.status == 'unknown'
+        !bad.containsKey('disabled')
+        !bad.containsKey('paused')
+
+        and: 'the per-list statusNote is NOT set -- the tree read fine, only one entry was thin'
+        result.statusNote == null
+    }
+
+    def "a rule whose appsList node lacks the disabled key is per-entry unknown"() {
+        given:
+        rmUtils.stubRuleList5 = [[490: 'No disabled key']]
+        // node with NO disabled key at all -> disabled undeterminable
+        registerRmAppsList([[data: [id: 490, name: 'No disabled key', type: 'Rule Machine'], children: []]])
+
+        when:
+        def result = script.toolListRmRules([:])
+
+        then:
+        def r = result.rules.find { it.id == 490 }
+        r.status == 'unknown'
+        !r.containsKey('disabled')
+        !r.containsKey('paused')
+    }
+
+    def "a rule whose RMUtils entry has a null label (raw-id fallback) is per-entry unknown"() {
+        given: 'a bare integer rule id (registerRmRule raw-id fallback) leaves label null -- nothing to diff against'
+        rmUtils.stubRuleList5 = [500]
+        registerRmAppsList([ruleNode(500, 'Some rule')])
+
+        when:
+        def result = script.toolListRmRules([:])
+
+        then:
+        def r = result.rules.find { it.id == 500 }
+        r != null
+        r.label == null
+        r.status == 'unknown'
+        !r.containsKey('disabled')
+        !r.containsKey('paused')
+    }
+
+    @spock.lang.Unroll
+    def "hub_list_rules via dispatch preserves status/disabled/paused through JSON (disabled precedence) (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        rmUtils.stubRuleList5 = [[410: 'Kitchen night'], [411: 'Porch timer']]
+        registerRmAppsList([
+            ruleNode(410, 'Kitchen night', true),
+            ruleNode(411, 'Porch timer (Paused)', true)
+        ])
+
+        when:
+        def response = mcpDriver.callTool('hub_list_rules', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        def r410 = inner.rules.find { it.id == 410 }
+        def r411 = inner.rules.find { it.id == 411 }
+        r410.status == 'disabled'
+        r410.disabled == true
+        r410.paused == false
+        r411.status == 'disabled'
+        r411.disabled == true
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "hub_list_rules via dispatch reports per-rule status unknown + statusNote when the tree is unreadable (useGateways=#useGateways)"() {
+        given: '/hub2/appsList left unstubbed so the whole tree is unreadable'
+        settingsMap.useGateways = useGateways
+        rmUtils.stubRuleList5 = [[460: 'Some rule'], [461: 'Another rule']]
+
+        when:
+        def response = mcpDriver.callTool('hub_list_rules', [:])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.rules.size() == 2
+        inner.rules.every { it.status == 'unknown' }
+        inner.rules.every { !it.containsKey('disabled') && !it.containsKey('paused') }
+        inner.statusNote?.contains('unreadable')
+
+        where:
+        useGateways << [true, false]
     }
 
     def "hub_list_rules outputSchema declares the status fields"() {

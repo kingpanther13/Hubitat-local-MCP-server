@@ -769,27 +769,17 @@ private void registerRmRule(Map combined, def r, String version) {
     }
 }
 
-// Annotate an RM rule entry (in place) with its live status from the
-// /hub2/appsList node data (issue #359): disabled/paused booleans, a status
-// string ("disabled" | "paused" | "active" | "unknown"), and, only when present,
-// requiredExpressionFalse=true.
-//
-// disabled comes straight from the node's data.disabled (red-X) flag. paused is
-// decoration-detected: a paused rule gains a "(Paused)" suffix on its appsList
-// name that the RMUtils label does NOT carry — live-verified that RMUtils keeps a
-// clean label ("Play room toggle") while the appsList name reads "Play room toggle
-// (Paused)". HTML-stripping BOTH sides and diffing isolates the decoration: equal
-// -> none; appsList == label + remainder -> the remainder IS the decoration. That
-// also protects a rule the user literally NAMED "... (Paused)" — the RMUtils label
-// carries the same suffix, so the remainder is empty and paused stays false. The
-// "(Required Expression false)" decoration (rule enabled but its required
-// expression is currently false, so it won't trigger) is read the same way. A
-// disabled app shows no paused decoration, and precedence is disabled > paused >
-// active.
-//
-// When the tree was unreadable (treeReadable=false, liveApps=null) status is
-// "unknown" and the boolean flags are omitted — the state genuinely can't be
-// verified, so asserting false would be a lie.
+// Annotate an RM rule entry (in place) with disabled/paused booleans, a status summary,
+// and requiredExpressionFalse. WHY decoration-detection (full algorithm in the
+// builtin_app_tools guide): RMUtils exposes no paused boolean, so a paused rule is found
+// only by the "(Paused)" suffix its appsList name carries but its RMUtils label doesn't
+// (live-verified; diffing the stripped strings also protects a rule literally NAMED
+// "... (Paused)" — its label carries the same suffix, so the remainder is empty).
+// status is a precedence SUMMARY (disabled > paused > active); the booleans stay
+// independent — a rule paused first then disabled keeps its decoration, so
+// {disabled:true, paused:true, status:"disabled"} is truthful. "unknown" (booleans then
+// omitted, never asserted false) covers both a null liveApps (whole tree unreadable) and
+// this one rule's node lacking data.disabled / name / RMUtils label.
 private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps) {
     def idInt
     try { idInt = (entry.id instanceof Number) ? entry.id.intValue() : entry.id?.toString()?.toInteger() }
@@ -799,11 +789,21 @@ private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps
         entry.status = "unknown"
         return
     }
-    def disabled = node.disabled == true
-    def paused = false
+    def disabledRaw = node.disabled
     def cleanApps = stripAppConfigHtml(node.name)
     def cleanRm = stripAppConfigHtml(entry.label)
-    if (cleanApps != null && cleanRm != null && cleanApps != cleanRm && cleanApps.startsWith(cleanRm)) {
+    if (disabledRaw == null || cleanApps == null || cleanRm == null) {
+        def missing = []
+        if (disabledRaw == null) missing << "data.disabled"
+        if (cleanApps == null) missing << "appsList name"
+        if (cleanRm == null) missing << "RMUtils label"
+        mcpLog("warn", "rm-interop", "_rmAnnotateRuleStatus: rule ${entry.id} has incomplete node data (missing ${missing.join(', ')}); status unknown")
+        entry.status = "unknown"
+        return
+    }
+    def disabled = disabledRaw == true
+    def paused = false
+    if (cleanApps != cleanRm && cleanApps.startsWith(cleanRm)) {
         def remainder = cleanApps.substring(cleanRm.length())
         if (remainder.contains("(Paused)")) paused = true
         if (remainder.contains("(Required Expression false)")) entry.requiredExpressionFalse = true
@@ -1153,22 +1153,12 @@ private Map _rmCheckSubscriptionSettle(Integer appId) {
     ]
 }
 
-// Collect the hub's authoritative /hub2/appsList installed-app tree, keyed by
-// app id. Two consumers, both hub_list_rules:
-//   1. Ghost filter — an id present here is a live app; an id RMUtils still
-//      reports but that is absent here is a post-delete cache ghost (the delete
-//      succeeds at the InstalledApp table, but RMUtils' internal rule list lags
-//      for seconds-to-minutes; hub UI lists read /hub2/appsList, not RMUtils, so
-//      we do the same).
-//   2. Status enrichment (issue #359) — each node's raw name carries the
-//      "(Paused)" / "(Required Expression false)" decorations and its
-//      data.disabled flag carries the red-X state.
-//
-// Returns Map<Integer, Map> id -> [name: <raw appsList name>, disabled: <bool>]
-// across the tree (any depth), or null if the endpoint is unreachable /
-// malformed. Callers treat null as "cannot verify — surface RMUtils output
-// unfiltered, status unknown" rather than as an empty map (which would drop
-// every rule).
+// Collect the hub's authoritative /hub2/appsList tree keyed by app id, for hub_list_rules'
+// ghost filter (an id absent here but still in RMUtils' lagging cache is a post-delete
+// ghost — hub UI lists read this tree, so we do too) and its status enrichment. Per-node
+// name and disabled are stored RAW (either may be null) so _rmAnnotateRuleStatus can tell
+// "field present" from "field missing"; a null RETURN means the endpoint was unreadable —
+// callers surface RMUtils output unfiltered rather than dropping every rule.
 private Map _collectLiveApps() {
     def responseText
     try {
@@ -1192,7 +1182,10 @@ private Map _collectLiveApps() {
         def idVal = node?.data?.id ?: node?.id
         if (idVal != null) {
             try {
-                apps[(idVal as Integer)] = [name: node?.data?.name, disabled: node?.data?.disabled == true]
+                // Store the RAW disabled value (may be null when the key is absent) —
+                // coercing to == true here would erase the "field missing" signal that
+                // _rmAnnotateRuleStatus needs to classify the rule as per-entry unknown.
+                apps[(idVal as Integer)] = [name: node?.data?.name, disabled: node?.data?.disabled]
             } catch (Exception ignored) { /* skip non-int ids */ }
         }
         (node?.children ?: []).each { walk(it) }
