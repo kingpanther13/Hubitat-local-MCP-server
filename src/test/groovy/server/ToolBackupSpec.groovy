@@ -435,7 +435,8 @@ class ToolBackupSpec extends ToolSpecBase {
         given:
         settingsMap.enableWrite = true            // Write master on, but NO prior backup stamp
         stateMap.remove('lastBackupTimestamp')
-        // statusJson never reports completion -> the backup is unverified
+        // statusJson never reports completion -> the backup is unverified (and the list fixture
+        // never gains a new entry, so the ground-truth signal stays silent too)
         hubGet.register('/hub/backup/statusJson') { params -> '{"backupInProgress":true,"cloudBackupInProgress":false}' }
 
         when:
@@ -446,6 +447,63 @@ class ToolBackupSpec extends ToolSpecBase {
         r.confirmed == false
         stateMap.lastBackupTimestamp == null      // the 24h gate is NOT satisfied by an unverified backup
         r.note.toLowerCase().contains('not')
+    }
+
+    // -------- issue #361: list-based completion + mockEpoch lever --------
+
+    def "a create confirms via a NEW entry in the hub's backup list even while cloudBackupInProgress stays true (issue #361)"() {
+        given:
+        settingsMap.enableWrite = true
+        stateMap.remove('lastBackupTimestamp')
+        // Hub Protect upload in progress: statusJson never settles (the pre-#361 wedge)
+        hubGet.register('/hub/backup/statusJson') { params -> '{"backupInProgress":false,"cloudBackupInProgress":true}' }
+        // First read = pre-trigger snapshot (old entry only); later reads show the new backup file
+        int listReads = 0
+        hubGet.register('/hub2/localBackups') { params ->
+            listReads++
+            listReads == 1 ? '[{"name":"old.lzf","createTimeOrig":"2026-06-01T00:00:00"}]'
+                           : '[{"name":"old.lzf","createTimeOrig":"2026-06-01T00:00:00"},{"name":"new.lzf","createTimeOrig":"2026-06-02T00:00:00+0000"}]'
+        }
+
+        when:
+        def r = script.toolCreateHubBackup([confirm: true])
+
+        then:
+        r.success == true
+        r.confirmed == true
+        stateMap.lastBackupTimestamp != null      // the 24h gate IS satisfied: the backup file exists
+    }
+
+    def "a create with an unsettled cloud upload and NO new list entry stays unconfirmed and unstamped"() {
+        given:
+        settingsMap.enableWrite = true
+        stateMap.remove('lastBackupTimestamp')
+        hubGet.register('/hub/backup/statusJson') { params -> '{"backupInProgress":false,"cloudBackupInProgress":true}' }
+        // the setup fixture list never changes -> no new entry appears
+
+        when:
+        def r = script.toolCreateHubBackup([confirm: true])
+
+        then:
+        r.success == false
+        r.confirmed == false
+        stateMap.lastBackupTimestamp == null
+        r.error.toLowerCase().contains('did not confirm')
+    }
+
+    def "mock=true with mockEpoch stamps the given epoch (developer-mode test lever)"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.enableDeveloperMode = true
+
+        when:
+        def r = script.toolCreateHubBackup([confirm: true, mock: true, mockEpoch: 1234000000000L])
+
+        then:
+        r.success == true
+        r.mocked == true
+        r.backupTimestampEpoch == 1234000000000L
+        stateMap.lastBackupTimestamp == 1234000000000L
     }
 
     // ---------- dispatch envelopes ----------

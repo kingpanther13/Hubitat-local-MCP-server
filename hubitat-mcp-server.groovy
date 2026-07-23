@@ -4233,9 +4233,54 @@ def requireDestructiveConfirm(Boolean confirmParam) {
     if (!confirmParam) {
         throw new IllegalArgumentException("SAFETY CHECK FAILED: You must set confirm=true to use this tool. Did you create a backup with hub_create_backup first? Review the tool description for the mandatory pre-flight checklist, or call hub_get_tool_guide for the tool's full reference.")
     }
-    // Check for recent hub backup (within 24 hours)
-    if (!state.lastBackupTimestamp || (now() - state.lastBackupTimestamp) > 86400000) {
-        throw new IllegalArgumentException("BACKUP REQUIRED: No hub backup found within the last 24 hours. You MUST call hub_create_backup FIRST and verify it succeeds before using this tool. Last backup: ${state.lastBackupTimestamp ? formatTimestamp(state.lastBackupTimestamp) : 'Never'}")
+    // Recent-backup check (within 24 hours): this app's own stamp first (cheap), then the
+    // hub's own local backup list -- a scheduled or UI-created backup is exactly as real a
+    // recovery point as an MCP-triggered one, and the stamp alone goes stale whenever a
+    // backup exists that this app never confirmed (issue #361: hub_update_firmware refused
+    // while hub_list_backups showed fresh backups).
+    if (state.lastBackupTimestamp && (now() - state.lastBackupTimestamp) <= 86400000) return
+    Long listEpoch = _latestLocalHubBackupEpoch()
+    if (listEpoch != null && (now() - listEpoch) <= 86400000) {
+        state.lastBackupTimestamp = listEpoch   // cache so later gated calls skip the list read
+        return
+    }
+    def lastKnown = [state.lastBackupTimestamp, listEpoch].findAll { it != null }.max()
+    throw new IllegalArgumentException("BACKUP REQUIRED: No hub backup found within the last 24 hours (checked this app's record and the hub's local backup list). You MUST call hub_create_backup FIRST and verify it succeeds before using this tool. Last backup: ${lastKnown ? formatTimestamp(lastKnown) : 'Never'}")
+}
+
+/**
+ * Newest local hub-DB backup's epoch millis from the hub's own list (GET /hub2/localBackups),
+ * or null when the list is unreachable, empty, or unparseable. Ground truth consulted by the
+ * destructive-confirm gate's fallback and hub_create_backup's completion check: the hub's
+ * list proves a backup file exists regardless of what this app's private stamp says.
+ */
+def _latestLocalHubBackupEpoch() {
+    try {
+        def raw = hubInternalGet("/hub2/localBackups", null, 10)
+        def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+        if (!(parsed instanceof List)) return null
+        Long newest = null
+        parsed.each { entry ->
+            def ts = (entry instanceof Map) ? entry.createTimeOrig?.toString() : null
+            if (!ts) return
+            Long epoch = null
+            // createTimeOrig carries an explicit numeric offset ("2026-04-23T07:01:24+0000");
+            // the offset-less shape is tolerated as UTC in case a firmware drops the suffix.
+            try { epoch = Date.parse("yyyy-MM-dd'T'HH:mm:ssZ", ts).time }
+            catch (Exception ignored) {
+                try {
+                    def sdf = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss")
+                    sdf.setTimeZone(TimeZone.getTimeZone("UTC"))
+                    sdf.setLenient(false)
+                    epoch = sdf.parse(ts).time
+                } catch (Exception ignored2) { }
+            }
+            if (epoch != null && (newest == null || epoch > newest)) newest = epoch
+        }
+        return newest
+    } catch (Exception e) {
+        mcpLog("debug", "hub-admin", "local backup list unreadable (backup-gate fallback skipped): ${e.message}")
+        return null
     }
 }
 
@@ -5960,7 +6005,7 @@ This section covers the hub-admin and system tools (hub info, location modes, HS
 ### Destructive Write Tools - Pre-Flight Checklist
 
 All Write master tools require these steps:
-1. Backup check: Ensure hub_create_backup was called within the last 24 hours
+1. Backup check: Ensure a hub backup exists within the last 24 hours (hub_create_backup, or any backup in hub_list_backups scope=hub_local -- scheduled backups count; the gate checks the hub's own list when this app's record is stale)
 2. Inform user: Tell them what you're about to do
 3. Get confirmation: Wait for explicit "yes", "confirm", or "proceed"
 4. Set confirm=true: Pass the confirm parameter
@@ -6403,7 +6448,7 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 
 ### Hub Backups
 - hub_create_backup creates full hub database backup
-- Required within 24 hours before any Write master operation
+- A hub backup within 24 hours is required before any Write master operation; the gate accepts this app's own record OR any backup in the hub's local backup list (scheduled/UI backups count)
 - Only write tool that doesn't require a prior backup
 
 ### Source Code Backups (Automatic)

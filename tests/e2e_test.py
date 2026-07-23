@@ -7565,7 +7565,7 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         self._delete_rule_safe(rule_id)
 
     # -----------------------------------------------------------------------
-    # GROUP 9: system_tools (5 tests)
+    # GROUP 9: system_tools
     # -----------------------------------------------------------------------
 
     @test("system_tools")
@@ -7601,6 +7601,76 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         src = self.client.call_tool("hub_manage_backup", {"tool": "hub_list_backups", "args": {}})
         assert isinstance(src, dict) and "backups" in src, \
             f"default scope=source missing 'backups': {sorted(src.keys()) if isinstance(src, dict) else type(src).__name__}"
+
+    @test("system_tools")
+    def test_backup_gate_list_fallback(self) -> None:
+        # Issue #361: the destructive-confirm gate must accept a real backup from the hub's OWN
+        # local backup list when this app's private stamp is stale (a scheduled/UI backup is a
+        # real recovery point the stamp knows nothing about). Live proof, driven by the
+        # developer-mode mock lever's mockEpoch (stamps an arbitrarily STALE record):
+        #   1. snapshot the newest local backup entry + parse its epoch
+        #   2. stamp a >24h-old record via hub_create_backup(mock=true, mockEpoch)
+        #   3. run a gated write (hub_write_file):
+        #        list has a <24h backup -> the gate PASSES via the fallback and re-stamps
+        #                                  lastBackupEpoch to the list's newest epoch
+        #        no <24h backup listed  -> the gate throws BACKUP REQUIRED naming the list
+        #   4. finally: restore a fresh mock stamp (and remove the probe file) so later gated
+        #      tests see the standard state
+        from datetime import datetime as _dt
+        stale_epoch = int(time.time() * 1000) - 30 * 3600 * 1000   # 30h ago: outside the 24h window
+        loc = self.client.call_tool("hub_manage_backup", {"tool": "hub_list_backups", "args": {"scope": "hub_local"}})
+        newest_ms = None
+        for entry in (loc.get("hubLocalBackups") or []) if isinstance(loc, dict) else []:
+            ts = entry.get("createTimeOrig")
+            if not ts:
+                continue
+            try:
+                ms = int(_dt.strptime(ts, "%Y-%m-%dT%H:%M:%S%z").timestamp() * 1000)
+            except ValueError:
+                continue
+            newest_ms = ms if newest_ms is None else max(newest_ms, ms)
+        probe = f"{PREFIX}361_gate_probe.txt"
+        try:
+            mock = self.client.call_tool("hub_create_backup", {"confirm": True, "mock": True, "mockEpoch": stale_epoch})
+            assert isinstance(mock, dict) and mock.get("mocked") is True, f"mockEpoch stamp failed: {mock}"
+            info = self.client.call_tool("hub_get_info")
+            assert isinstance(info, dict) and info.get("lastBackupEpoch") == stale_epoch, \
+                f"mockEpoch did not land: {info.get('lastBackupEpoch') if isinstance(info, dict) else info} != {stale_epoch}"
+            fresh_in_list = newest_ms is not None and (time.time() * 1000 - newest_ms) <= 24 * 3600 * 1000
+            if fresh_in_list:
+                assert newest_ms is not None  # narrowed by fresh_in_list; keeps type checkers happy
+                wr = self.client.call_tool("hub_manage_files", {
+                    "tool": "hub_write_file",
+                    "args": {"fileName": probe, "content": "issue-361 gate probe", "confirm": True}})
+                assert isinstance(wr, dict) and wr.get("success") is True, \
+                    f"gated write should PASS via the backup-list fallback " \
+                    f"(list has a {(time.time() * 1000 - newest_ms) / 3600000.0:.1f}h-old backup): {wr}"
+                info2 = self.client.call_tool("hub_get_info")
+                restamped = info2.get("lastBackupEpoch") if isinstance(info2, dict) else None
+                assert restamped is not None and restamped != stale_epoch, \
+                    "gate fallback must re-stamp lastBackupEpoch from the hub's backup list"
+                assert abs(float(restamped) - newest_ms) < 60000, \
+                    f"re-stamped epoch should match the list's newest entry: {restamped} vs {newest_ms}"
+            else:
+                print("    [E2E-NOTE] no <24h local backup on the hub -- proving the REFUSAL side of the fallback")
+                try:
+                    self.client.call_tool("hub_manage_files", {
+                        "tool": "hub_write_file",
+                        "args": {"fileName": probe, "content": "issue-361 gate probe", "confirm": True}})
+                    raise AssertionError("gated write should have been refused: stale stamp AND no <24h backup in the hub's list")
+                except McpError as exc:
+                    assert "BACKUP REQUIRED" in str(exc), f"expected BACKUP REQUIRED, got: {exc}"
+                    assert "backup list" in str(exc), f"the refusal should say the hub's backup list was checked: {exc}"
+        finally:
+            # Restore a fresh stamp FIRST (later gated calls, including the probe delete, need it).
+            try:
+                self.client.call_tool("hub_create_backup", {"confirm": True, "mock": True})
+            except Exception as exc:
+                print(f"    [WARN] could not restore a fresh mock backup stamp: {exc}")
+            try:
+                self.client.call_tool("hub_manage_files", {"tool": "hub_delete_file", "args": {"fileName": probe, "confirm": True}})
+            except Exception:
+                pass  # refusal branch never wrote the probe file
 
     @test("system_tools")
     def test_mode_lifecycle(self) -> None:

@@ -134,7 +134,7 @@ This is the consolidation target: best-practice content can move here from indiv
 
 All destructive write tools (the `confirm`+backup tier) require these steps:
 
-1. **Backup check**: Ensure `hub_create_backup` was called within the last 24 hours
+1. **Backup check**: Ensure a hub backup exists within the last 24 hours — `hub_create_backup`, or any backup already in `hub_list_backups` (scope=hub_local); the gate consults the hub's own backup list when this app's record is stale, so scheduled backups count
 2. **Inform user**: Tell them what you're about to do
 3. **Get confirmation**: Wait for explicit "yes", "confirm", or "proceed"
 4. **Set confirm=true**: Pass the confirm parameter

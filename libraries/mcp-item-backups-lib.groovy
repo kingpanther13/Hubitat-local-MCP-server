@@ -434,10 +434,12 @@ def toolCreateHubBackup(args) {
         // without performing any real backup -- the hub backup is a heavy operation the platform's
         // load limiter punishes, and e2e needs the GATED tools tested, not the backup itself.
         // Developer-mode-gated so a production client can't silently satisfy the gate with a lie.
+        // mockEpoch stamps an arbitrary epoch (e.g. a deliberately STALE one) so e2e can drive
+        // the gate's stale-stamp fallback path against the hub's real backup list.
         if (settings.enableDeveloperMode != true) {
             throw new IllegalArgumentException("hub_create_backup mock=true requires Developer Mode (it satisfies the destructive-confirm gate WITHOUT a real backup -- test environments only).")
         }
-        def backupTime = now()
+        def backupTime = (args.mockEpoch != null) ? (args.mockEpoch as Long) : now()
         state.lastBackupTimestamp = backupTime
         mcpLog("warn", "hub-admin", "MOCK backup recorded (no real backup performed; developer mode)")
         return [
@@ -462,27 +464,49 @@ def toolCreateHubBackup(args) {
         // did). So: fire the request asynchronously (the hub still creates the backup; the
         // async client's truncated body is discarded) and confirm completion via the hub's own
         // /hub/backup/statusJson instead of the binary response.
+        // Pre-trigger snapshot of the hub's newest local backup: completion is confirmed by a
+        // NEWER entry appearing in the hub's own list (ground truth), with statusJson quiet as
+        // the fast-path signal. statusJson ALONE wedged real hubs (issue #361): a Hub Protect
+        // cloud upload holds cloudBackupInProgress=true for minutes after the local .lzf is
+        // already written, so a real, listed backup read as unconfirmed and the 24h gate never
+        // stamped -- blocking every destructive tool despite a fresh recovery point.
+        Long preEpoch = _latestLocalHubBackupEpoch()
+        long confirmT0 = now()
         def asyncParams = [uri: hubBaseUri(), path: "/hub/backupDB", query: [fileName: "latest"], timeout: 300]
         def cookie = getHubSecurityCookie()
         if (cookie) asyncParams.headers = [Cookie: cookie]
         asynchttpGet("backupResponseSink", asyncParams)
 
-        // Confirm via statusJson: wait for an in-progress backup to finish (small JSON reads).
-        // A small-DB backup can finish before the first poll, so backupInProgress=false is
-        // treated as completion rather than requiring an observed true->false transition.
+        // Confirm via statusJson OR the backup list (small JSON reads). A small-DB backup can
+        // finish before the first poll, so backupInProgress=false is treated as completion
+        // rather than requiring an observed true->false transition. The loop is ALSO
+        // wall-clock-capped: with slow reads the 20 iterations could otherwise stretch to
+        // minutes of blocking (far past any transport ceiling) while pollers see "running".
         def confirmed = false
         def statusUnreadable = false
+        int unreadableRounds = 0
         for (int i = 0; i < 20; i++) {
             pauseExecution(3000)
             def statusText = null
-            try { statusText = hubInternalGet("/hub/backup/statusJson", null, 15) } catch (Exception ignored) { }
+            try { statusText = hubInternalGet("/hub/backup/statusJson", null, 10) } catch (Exception ignored) { }
             def parsed = null
             try { parsed = statusText ? new groovy.json.JsonSlurper().parseText(statusText) : null } catch (Exception ignored) { }
             if (parsed instanceof Map && parsed.backupInProgress == false && parsed.cloudBackupInProgress != true) {
                 confirmed = true
                 break
             }
-            if (parsed == null && i >= 2) { statusUnreadable = true; break }   // status endpoint unreadable; stop burning time
+            // Ground truth: a local backup entry newer than the pre-trigger snapshot means the
+            // backup file exists no matter what statusJson reports (an in-flight cloud upload
+            // must not un-confirm an already-written local backup). When the pre-trigger read
+            // failed, only an entry stamped since just before the trigger counts -- a stale
+            // list must not confirm.
+            Long newest = _latestLocalHubBackupEpoch()
+            if (newest != null && newest > (preEpoch != null ? preEpoch : confirmT0 - 60000L)) {
+                confirmed = true
+                break
+            }
+            if (parsed == null && newest == null && ++unreadableRounds >= 3) { statusUnreadable = true; break }   // both signals unreadable; stop burning time
+            if (now() - confirmT0 >= 57000L) break
         }
 
         if (!confirmed) {
@@ -490,17 +514,17 @@ def toolCreateHubBackup(args) {
             // state.lastBackupTimestamp here would let destructive ops proceed believing a recovery
             // point exists when it may not (a rejected/in-progress/failed backup) -- a silent failure.
             // Leave the gate unstamped and report failure so the caller blocks until a backup is real.
-            mcpLog("warn", "hub-admin", "Hub backup triggered but completion was NOT confirmed (${statusUnreadable ? '/hub/backup/statusJson unreadable' : 'still in progress after ~60s'}); destructive-confirm gate left unsatisfied")
+            mcpLog("warn", "hub-admin", "Hub backup triggered but completion was NOT confirmed (${statusUnreadable ? 'statusJson and the backup list were both unreadable' : 'no completion signal within ~60s'}); destructive-confirm gate left unsatisfied")
             return [
                 success: false,
                 confirmed: false,
                 scheduleUpdated: scheduleUpdated,
                 error: statusUnreadable
-                    ? "Hub backup was triggered but completion could not be confirmed (/hub/backup/statusJson was unreadable)."
-                    : "Hub backup was triggered but did not confirm complete within ~60s (it may still be running).",
+                    ? "Hub backup was triggered but completion could not be confirmed (/hub/backup/statusJson and the hub's backup list were both unreadable)."
+                    : "Hub backup was triggered but did not confirm complete within ~60s (no new entry in the hub's local backup list yet; it may still be running).",
                 note: "The 24h destructive-confirm gate was NOT satisfied -- do NOT run destructive ops yet. " +
-                      "A large backup can still be completing; verify in the Hubitat UI (Settings -> Backup and Restore), " +
-                      "or call hub_create_backup again once it finishes."
+                      "A large backup can still be completing; verify with hub_list_backups (scope=hub_local) or in the Hubitat UI (Settings -> Backup and Restore). " +
+                      "Once the backup file exists, destructive tools accept it directly from the hub's backup list -- no re-run of hub_create_backup needed."
             ]
         }
 
@@ -816,6 +840,7 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
                 properties: [
                     confirm: [type: "boolean", description: "true to create a backup now (omit with scheduleOnly)."],
                     mock: [type: "boolean", description: "Developer Mode only: stamp the 24h gate record; no real backup (test envs)."],
+                    mockEpoch: [type: "integer", description: "Developer Mode only, with mock=true: stamp this epoch-millis instead of now (test envs; lets tests set a stale gate record)."],
                     schedule: [type: "object", description: "Optional: set the automatic-backup schedule. Omitted fields keep their current value (read-merged from the hub).[[FLAT_TRIM]] If cloud backup is enabled you MUST pass cloudBackupPassword (the hub doesn't expose it for read-back) or pass cloudBackupFrequency=0 to turn cloud backup off.[[/FLAT_TRIM]]", properties: [
                         hour: [type: "integer", description: "Hour 0-23 (kept if omitted)"],
                         minute: [type: "integer", description: "Minute 0-59 (kept if omitted)"],
@@ -832,7 +857,7 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
                 type: "object",
                 properties: [
                     success: [type: "boolean", description: "Whether the operation succeeded"],
-                    confirmed: [type: "boolean", description: "Whether backup completion was confirmed via the hub's backup status (false = best-effort trigger)"],
+                    confirmed: [type: "boolean", description: "Whether backup completion was confirmed via the hub's backup status or a new entry in its backup list (false = best-effort trigger)"],
                     mocked: [type: "boolean", description: "true when mock=true stamped the gate record without a real backup"],
                     scheduleUpdated: [type: "boolean", description: "true when the automatic-backup schedule was set this call"],
                     message: [type: "string", description: "Human-readable result"],

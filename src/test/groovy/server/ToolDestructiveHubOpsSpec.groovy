@@ -73,6 +73,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         given:
         settingsMap.enableWrite = true
         // No stateMap.lastBackupTimestamp — requireDestructiveConfirm's 24h window fails
+        // (and /hub2/localBackups is unstubbed, so the list fallback degrades to null)
 
         when:
         script.toolRebootHub([confirm: true])
@@ -81,6 +82,72 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('BACKUP REQUIRED')
         ex.message.contains('hub_create_backup')
+    }
+
+    // -------- requireDestructiveConfirm backup-list fallback (issue #361) --------
+    // The gate's private stamp goes stale whenever a backup exists that this app never
+    // confirmed (scheduled/UI backups, or a create whose completion check missed). The
+    // fallback reads the hub's own local backup list -- ground truth for recovery points.
+
+    def "gate accepts a fresh backup from the hub's local backup list when the app stamp is missing (issue #361)"() {
+        given:
+        settingsMap.enableWrite = true
+        // No stateMap.lastBackupTimestamp. Fixed harness now() = 1234567890000 (2009-02-13T23:31:30Z);
+        // this entry is ~3.5h old -- within the 24h window.
+        hubGet.register('/hub2/localBackups') { params -> '[{"name":"2009-02-13~2.5.0.159.lzf","createTimeOrig":"2009-02-13T20:00:00+0000"}]' }
+        def postedPath = null
+        script.metaClass.hubInternalPost = { String path, Map body = null -> postedPath = path; 'ok' }
+
+        when:
+        def result = script.toolRebootHub([confirm: true])
+
+        then:
+        postedPath == '/hub/reboot'
+        result.success == true
+        stateMap.lastBackupTimestamp == 1234555200000L   // the list's epoch is cached into the stamp
+    }
+
+    def "gate caches the list find, so a second gated call skips the list read"() {
+        given:
+        settingsMap.enableWrite = true
+        hubGet.register('/hub2/localBackups') { params -> '[{"name":"a.lzf","createTimeOrig":"2009-02-13T20:00:00+0000"}]' }
+        script.metaClass.hubInternalPost = { String path, Map body = null -> 'ok' }
+
+        when:
+        script.toolRebootHub([confirm: true])
+        script.toolRebootHub([confirm: true])
+
+        then:
+        hubGet.calls.count { it.path == '/hub2/localBackups' } == 1
+    }
+
+    def "the backup-list fallback ignores backups older than 24h"() {
+        given:
+        settingsMap.enableWrite = true
+        // ~3.98 days before the fixed harness now() -- outside the 24h window.
+        hubGet.register('/hub2/localBackups') { params -> '[{"name":"old.lzf","createTimeOrig":"2009-02-10T00:00:00+0000"}]' }
+
+        when:
+        script.toolRebootHub([confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('BACKUP REQUIRED')
+        ex.message.contains('backup list')
+        stateMap.lastBackupTimestamp == null      // a stale list entry must NOT stamp the gate
+    }
+
+    def "a malformed backup list leaves the gate closed"() {
+        given:
+        settingsMap.enableWrite = true
+        hubGet.register('/hub2/localBackups') { params -> '<html>login required</html>' }
+
+        when:
+        script.toolRebootHub([confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('BACKUP REQUIRED')
     }
 
     // -------- toolCreateHubBackup (async trigger; never slurps the .lzf) --------

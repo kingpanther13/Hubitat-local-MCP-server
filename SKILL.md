@@ -296,7 +296,7 @@ Access control has a central master gate plus a destructive confirmation tier, w
 
 **`requireDestructiveConfirm(args.confirm)`** — runs in the handlers of the destructive/sensitive write tools, orthogonal to the masters (the Write master already gated them centrally). Two-layer check:
 1. `args.confirm` must be `true` (explicit confirmation parameter)
-2. `state.lastBackupTimestamp` must be within the last 24 hours
+2. A hub backup within the last 24 hours: `state.lastBackupTimestamp` first; when that stamp is stale/missing, the gate falls back to the hub's own local backup list (`GET /hub2/localBackups` via `_latestLocalHubBackupEpoch()`) — a scheduled/UI backup is a real recovery point — and caches a fresh find back into the stamp (issue #361)
 
 Exception: `toolCreateHubBackup` checks `confirm` directly without requiring a prior backup (it IS the backup operation).
 
@@ -408,7 +408,7 @@ The cookie is cached in `state.hubSecurityCookie` with expiry in `state.hubSecur
 | `debugLogs` | Map | `{entries: [], config: {logLevel, maxEntries}}` circular buffer |
 | `hubSecurityCookie` | String | Cached auth cookie |
 | `hubSecurityCookieExpiry` | Long | Cookie expiry epoch ms |
-| `lastBackupTimestamp` | Long | Last hub backup epoch ms (24-hour write safety gate) |
+| `lastBackupTimestamp` | Long | Newest known hub backup epoch ms (24-hour write safety gate; stamped by hub_create_backup or refreshed from the hub's local backup list on a gate fallback) |
 | `itemBackupManifest` | Map | Metadata for source code backups stored in File Manager, keyed by `"app_<id>"` / `"driver_<id>"` / `"library_<id>"`, max 20 entries |
 | `updateCheck` | Map | `{latestVersion, checkedAt, updateAvailable}` |
 
