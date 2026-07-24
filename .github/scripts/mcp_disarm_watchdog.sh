@@ -36,6 +36,23 @@ set -euo pipefail
 
 FLAG_FILE="e2e-deadman-v2.json"
 
+# Stop the dead-man heartbeat BEFORE touching the flag: a beat mid-disarm would read the
+# still-armed flag and write it back armed after this step disarms it (resurrecting the
+# deadline). Killing by PID first closes that race; the heartbeat's own armed==true guard
+# covers the not-launched / already-dead cases.
+HB_PID_FILE="${RUNNER_TEMP:-/tmp}/deadman-heartbeat.pid"
+if [ -f "$HB_PID_FILE" ]; then
+  HB_PID=$(cat "$HB_PID_FILE" 2>/dev/null || echo "")
+  if [ -n "$HB_PID" ] && kill "$HB_PID" 2>/dev/null; then
+    echo "Stopped dead-man heartbeat (pid $HB_PID)."
+  else
+    echo "Dead-man heartbeat pid '${HB_PID:-?}' already gone."
+  fi
+  rm -f "$HB_PID_FILE"
+else
+  echo "No heartbeat PID file found -- run predates the heartbeat launcher or the deploy step was skipped."
+fi
+
 # --- cloud-gateway wrappers (target $WATCHDOG_URL, the watchdog's own MCP endpoint, not $MCP_URL) ----
 
 mcp_call() {

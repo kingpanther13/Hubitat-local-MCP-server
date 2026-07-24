@@ -88,6 +88,19 @@ fi
 source "$(dirname "$0")/mcp_watchdog_lib.sh"
 
 # ---------------------------------------------------------------------------
+# Dead-man heartbeat: launched disowned HERE (the first PR-side script after the arm) so it
+# covers the deploy AND the whole test step -- runner background processes survive step
+# boundaries within a job. mcp_disarm_watchdog.sh kills it by PID file before touching the
+# flag; if the runner dies, the heartbeat dies with it and the flag's deadline lapses --
+# exactly when the dead-man SHOULD fire. See mcp_deadman_heartbeat.sh for why the deadline
+# is heartbeat-extended instead of a fixed arm window.
+HB_PID_FILE="${RUNNER_TEMP:-/tmp}/deadman-heartbeat.pid"
+HB_LOG="${RUNNER_TEMP:-/tmp}/deadman-heartbeat.log"
+nohup bash "$(dirname "$0")/mcp_deadman_heartbeat.sh" > "$HB_LOG" 2>&1 &
+echo "$!" > "$HB_PID_FILE"
+echo "Dead-man heartbeat launched (pid $(cat "$HB_PID_FILE"), log $HB_LOG)."
+
+# ---------------------------------------------------------------------------
 # NO per-run defensive backup here anymore: the hub backup is a heavy operation the platform's
 # load limiter punishes (empirically: dispatch-block episodes tracked per-run backups; backup-free
 # runs never tripped). The watchdog's write tools don't require one, and the test runner takes a
