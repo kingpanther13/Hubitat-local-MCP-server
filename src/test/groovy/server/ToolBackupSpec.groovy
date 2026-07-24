@@ -509,13 +509,23 @@ class ToolBackupSpec extends ToolSpecBase {
         hubGet.calls.count { it.path == '/hub/backup/statusJson' } == 3
     }
 
+    // Virtual clock (mirrors ToolPollComparatorStableSpec): pauseExecution advances the clock by
+    // advanceMs (more than the requested pause = simulated slow rounds); now() reads it via the
+    // base mock's NOW_OVERRIDE holder, which HarnessSpec.setup() resets. Kept in a plain method
+    // body on purpose -- the groovy2x matrix leg cannot resolve the base-class static from
+    // inside a Spock feature block.
+    private List installVirtualClock(long start, long advanceMs) {
+        def clock = [start]
+        script.metaClass.pauseExecution = { long ms -> clock[0] = clock[0] + advanceMs }
+        NOW_OVERRIDE.set({ clock[0] })
+        return clock
+    }
+
     def "the confirm loop is wall-clock capped: slow rounds exit early instead of grinding all 20 iterations"() {
         given: 'a virtual clock where each round costs 30s (slow status/list reads on a loaded hub)'
         settingsMap.enableWrite = true
         stateMap.remove('lastBackupTimestamp')
-        def clock = [1234567890000L]
-        script.metaClass.pauseExecution = { long ms -> clock[0] = clock[0] + 30000L }
-        NOW_OVERRIDE.set({ clock[0] })
+        installVirtualClock(1234567890000L, 30000L)
         hubGet.register('/hub/backup/statusJson') { params -> '{"backupInProgress":true,"cloudBackupInProgress":false}' }
 
         when:
