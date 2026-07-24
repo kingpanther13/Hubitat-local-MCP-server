@@ -36,6 +36,32 @@ set -euo pipefail
 
 FLAG_FILE="e2e-deadman-v2.json"
 
+# Stop the dead-man heartbeat BEFORE touching the flag: a beat mid-disarm would read the
+# still-armed flag and write it back armed after this step disarms it (resurrecting the
+# deadline). Kill + WAIT first (the wait reaps an in-flight beat's process so its write
+# cannot land after this point); a straggler that already dispatched is additionally
+# blunted by the beat's own armed==true guard on its NEXT read.
+HB_PID_FILE="${RUNNER_TEMP:-/tmp}/deadman-heartbeat.pid"
+HB_LOG="${RUNNER_TEMP:-/tmp}/deadman-heartbeat.log"
+if [ -f "$HB_PID_FILE" ]; then
+  HB_PID=$(cat "$HB_PID_FILE" 2>/dev/null || echo "")
+  if [ -n "$HB_PID" ] && kill "$HB_PID" 2>/dev/null; then
+    wait "$HB_PID" 2>/dev/null || true
+    echo "Stopped dead-man heartbeat (pid $HB_PID)."
+  else
+    echo "Dead-man heartbeat pid '${HB_PID:-?}' already gone."
+  fi
+  rm -f "$HB_PID_FILE"
+else
+  echo "No heartbeat PID file found -- run predates the heartbeat launcher or the deploy step was skipped."
+fi
+# Surface the beat history: a >30-min gap between "extended" lines is evidence of a
+# deadline lapse (and possible mid-run fire) that a flag rewrite cannot erase.
+if [ -f "$HB_LOG" ]; then
+  echo "=== dead-man heartbeat log (tail) ==="
+  tail -n 12 "$HB_LOG" || true
+fi
+
 # --- cloud-gateway wrappers (target $WATCHDOG_URL, the watchdog's own MCP endpoint, not $MCP_URL) ----
 
 mcp_call() {
@@ -250,7 +276,7 @@ echo "Disarming the watchdog: writing {armed:false, intent:\"disarm\"} to '$FLAG
 WRITE_RPC=$(jq -nc --arg fn "$FLAG_FILE" --arg content "$FLAG_JSON" \
   '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:$fn,content:$content,confirm:true}}}')
 if ! mcp_tool_call_text "hub_write_file (disarm flag)" "$WRITE_RPC" >/dev/null; then
-  echo "::error::hub_write_file('$FLAG_FILE') returned non-JSON $RPC_ATTEMPTS times -- could not confirm the disarm write. The watchdog may still be ARMED and could fire its auto-restore (~35 min). Investigate / re-run."
+  echo "::error::hub_write_file('$FLAG_FILE') returned non-JSON $RPC_ATTEMPTS times -- could not confirm the disarm write. The watchdog may still be ARMED and could fire its auto-restore (within ~30 min of the last heartbeat). Investigate / re-run."
   exit 1
 fi
 
@@ -264,7 +290,7 @@ fi
 RB_ARMED=$(echo "$READBACK_TEXT" | jq -r '.content | fromjson | .armed' 2>/dev/null || echo "")
 RB_INTENT=$(echo "$READBACK_TEXT" | jq -r '.content | fromjson | .intent' 2>/dev/null || echo "")
 if [ "$RB_ARMED" != "false" ] || [ "$RB_INTENT" != "disarm" ]; then
-  echo "::error::Disarm did NOT land: flag read back armed=$RB_ARMED intent=$RB_INTENT (expected armed=false intent=disarm). The write may have silently no-opped, leaving the watchdog ARMED to fire (~35 min). Response: $(printf '%s' "$READBACK_TEXT" | head -c 600)"
+  echo "::error::Disarm did NOT land: flag read back armed=$RB_ARMED intent=$RB_INTENT (expected armed=false intent=disarm). The write may have silently no-opped, leaving the watchdog ARMED to fire (within ~30 min of the last heartbeat). Response: $(printf '%s' "$READBACK_TEXT" | head -c 600)"
   exit 1
 fi
 # CI no longer polls for restore completion, so this read-back is the ONLY pre-restore verification. The

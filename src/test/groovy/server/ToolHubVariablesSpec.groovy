@@ -678,6 +678,27 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         ex.message.contains('does not exist')
     }
 
+    def "hub_delete_connector removes the connector device and the verify loop confirms the cleared linkage"() {
+        given: 'a variable WITH a connector; post-delete reads see the linkage cleared'
+        enableWrite()
+        int reads = 0
+        script.metaClass.getGlobalVar = { String n ->
+            reads++
+            reads == 1 ? [name: 'with_conn', type: 'String', value: 'x', deviceId: 305, attribute: 'variable']
+                       : [name: 'with_conn', type: 'String', value: 'x', deviceId: null, attribute: null]
+        }
+        def deleted = []
+        script.metaClass.toolDeleteDevice = { a -> deleted << a.deviceId; [success: true] }
+
+        when:
+        def result = script.toolRemoveConnector([name: 'with_conn', confirm: true])
+
+        then: 'the connector device was deleted and the check-first verify saw deviceId cleared'
+        deleted == ['305']
+        result.success == true
+        result.alreadyRemoved == null
+    }
+
     def "hub_delete_connector is a no-op when no connector exists"() {
         given:
         enableWrite()

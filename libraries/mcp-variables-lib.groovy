@@ -546,14 +546,19 @@ private Map _createOneVariable(Integer appId, String name, String type, value) {
 
     // Verify the variable landed. The wizard auto-commits on varValue write
     // (or dateTimeDone for DateTime); the var becomes visible to getGlobalVar
-    // shortly after. Retry with backoff up to ~3s before giving up.
+    // shortly after. Retry with backoff up to ~2s before giving up.
     def created = null
-    for (int attempt = 0; attempt < 4; attempt++) {
-        try { pauseExecution(500) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
+    for (int attempt = 0; attempt < 8; attempt++) {
         try { created = getGlobalVar(name) } catch (Exception e) {
             logDebug("hub_create_variable: post-write getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
         }
         if (created != null) break
+        // Check-FIRST: the wizard commit is usually visible immediately, so the old
+        // sleep-then-check paid 500ms on every call; the backoff only runs when needed
+        // (slightly larger worst-case window, 7x300ms vs 4x500ms; zero happy-path sleep).
+        if (attempt < 7) {
+            try { pauseExecution(300) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
+        }
     }
     if (created == null) {
         throw new IllegalStateException(
@@ -625,10 +630,13 @@ def toolCreateConnector(args) {
     _rmWriteSettingOnPage(appId, "hubVar", "capab", chosenType, applied, "enum", skipped)
 
     def after
-    for (int v = 0; v < 4; v++) {
-        try { pauseExecution(500) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
+    for (int v = 0; v < 8; v++) {
         try { after = getGlobalVar(name) } catch (Exception e) { after = null }
         if (after?.deviceId != null) break
+        // Check-FIRST (see hub_create_variable's verify loop): zero happy-path sleep.
+        if (v < 7) {
+            try { pauseExecution(300) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
+        }
     }
     if (after?.deviceId == null) {
         throw new IllegalStateException(
@@ -685,10 +693,13 @@ def toolRemoveConnector(args) {
     // hub_delete_device that returned success but didn't actually remove (or the
     // hub didn't propagate the unlinking) would silently report success here.
     def after = null
-    for (int v = 0; v < 4; v++) {
-        try { pauseExecution(500) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
+    for (int v = 0; v < 8; v++) {
         try { after = getGlobalVar(name) } catch (Exception e) { after = null }
         if (after?.deviceId == null) break
+        // Check-FIRST (see hub_create_variable's verify loop): zero happy-path sleep.
+        if (v < 7) {
+            try { pauseExecution(300) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
+        }
     }
     if (after?.deviceId != null) {
         throw new IllegalStateException(
@@ -807,10 +818,13 @@ def toolDeleteHubVariable(args) {
             _rmClickAppButton(appId, varName, "deleteGV", "hubVar")
             _rmClickAppButton(appId, "delConfirm", null, "hubVar")
             // Brief pause + verification. If the var is gone, we're done.
-            for (int v = 0; v < 4; v++) {
-                try { pauseExecution(500) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
+            for (int v = 0; v < 8; v++) {
                 try { stillThere = getGlobalVar(varName) } catch (Exception e) { stillThere = null }
                 if (stillThere == null) break
+                // Check-FIRST (see hub_create_variable's verify loop): zero happy-path sleep.
+                if (v < 7) {
+                    try { pauseExecution(300) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
+                }
             }
             if (stillThere == null) break
         }

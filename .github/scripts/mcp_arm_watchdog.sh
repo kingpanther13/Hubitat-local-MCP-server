@@ -9,7 +9,7 @@
 # (2) RECORDS canonical main's install URLs -- the bundle zip + parent app + each child app, as raw
 # https URLs at MAIN_SHA -- plus each app's expected char count and each #include'd library's id, into
 # the restore manifest, then (3) writes the manifest-shaped armed flag with the ARM_WINDOW_MS deadline
-# (35 min). The matching "Disarm dead-man watchdog (final)" always() step flips it to
+# (a 15-min heartbeat timeout; see mcp_deadman_heartbeat.sh). The matching "Disarm dead-man watchdog (final)" always() step flips it to
 # {armed:false, intent:"disarm"}; if a run crashes before that, the watchdog fires and restores the
 # package on its own -- by downloading and installing main from those canonical URLs at fire time
 # (GET /bundle2/uploadZipFromUrl for the bundle, POST /app/ajax/update for each app), so GitHub
@@ -42,17 +42,18 @@ APP_NAME="MCP Rule Server"
 WATCHDOG_NAME="E2E Dead-Man Watchdog v2"
 WATCHDOG_SOURCE_URL="${PR_RAW_BASE}/${PR_HEAD_SHA_RESOLVED}/e2e-deadman-watchdog-v2.groovy"
 FLAG_FILE="e2e-deadman-v2.json"
-ARM_WINDOW_MS=4500000   # 75 minutes -- deliberately > the longest LIVE window between this arm and
-                        # the always() disarm (full-lane deploy ~5 min + the whole suite ~40-50 min,
-                        # measured 49 min on run 30060370488), so the watchdog can only fire after a
-                        # run truly died, never mid-live-run. The original 35-min window was sized
-                        # against a 30-min job timeout that no longer exists (timeout-minutes is now
-                        # 270 to survive the approval/queue wait) and the dead-man fired MID-SUITE on
-                        # the first >35-min full lane: it silently restored canonical main while
-                        # tests were still running, so any test after the deadline exercised OLD
-                        # code (PR #362's protocol-group failure). The always() disarm clears the
-                        # flag in seconds on every normal run, so the wider window only delays
-                        # auto-recovery when the session truly dies.
+ARM_WINDOW_MS=900000    # 15 minutes -- a HEARTBEAT TIMEOUT, not a run-length budget. The deploy
+                        # script launches mcp_deadman_heartbeat.sh, which beats IMMEDIATELY at
+                        # launch and then every 5 minutes, each beat extending flag.deadline to
+                        # now+30min (six consecutive failed beats before a lapse), so the dead-man
+                        # fires only when heartbeats STOP (runner truly died) -- run length is
+                        # irrelevant. The initial window only needs to cover arm -> the deploy
+                        # step's launch+verified first beat (~1-5 min). History: a fixed
+                        # 35-min window sized against a long-gone 30-min job timeout fired MID-SUITE
+                        # on every >35-min full lane once the suite grew (2026-07-12), silently
+                        # restoring canonical main under still-running tests (exposed by PR #362's
+                        # protocol false-red); a fixed window can always be outgrown, a heartbeat
+                        # cannot. Crash recovery is now <=30 min (the extend) instead of the old window size.
 
 # Shared helpers (resolve_main_bundle_artifact_url -- the canonical-main bundle resolver this
 # script and the deploy's skip-compare both use). The lib's call wrappers are NOT used here;
@@ -414,7 +415,7 @@ echo "Assembled restore manifest: $MANIFEST_JSON"
 
 # --- 4) Write the manifest-shaped armed flag, then READ IT BACK and assert ------------------------
 # `date +%s` * 1000 (not %s%3N): %3N is a GNU-only extension; this stays portable (the second-
-# granularity is irrelevant for a 35-minute deadline). armPrSha records the PR head SHA being tested
+# granularity is irrelevant for a minutes-scale heartbeat deadline). armPrSha records the PR head SHA being tested
 # this run -- a forensic breadcrumb on a fire. canonicalMainSha records the MAIN_SHA whose URLs
 # the manifest carries -- the revision the restore will install.
 DEADLINE_MS=$(( $(date +%s) * 1000 + ARM_WINDOW_MS ))
@@ -426,7 +427,7 @@ FLAG_JSON=$(jq -nc \
   --argjson manifest "$MANIFEST_JSON" \
   '{armed:true, deadline:$deadline, runId:$runId, intent:"arm", armPrSha:$armPrSha, canonicalMainSha:$canonicalMainSha, manifest:$manifest}')
 
-echo "Writing armed flag to '$FLAG_FILE' (deadline=$DEADLINE_MS, ~35min)..."
+echo "Writing armed flag to '$FLAG_FILE' (deadline=$DEADLINE_MS, ~15min heartbeat timeout)..."
 WRITE_RPC=$(jq -nc --arg fn "$FLAG_FILE" --arg content "$FLAG_JSON" \
   '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_write_file",arguments:{fileName:$fn,content:$content,confirm:true}}}')
 if ! mcp_tool_call_text "hub_write_file (arm flag)" "$WRITE_RPC" >/dev/null; then

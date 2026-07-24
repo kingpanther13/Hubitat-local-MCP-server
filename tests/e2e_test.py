@@ -7696,8 +7696,8 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         # contracts need fault injection / firmware-dependent states (a duplicate-name or
         # delete-current refusal), so they are proven in ToolModeSpec unit tests, not here.
         import time as _time
-        STEP = 0.3      # spacing between actions inside a portion
-        PORTION = 2.0   # pause between portions (also widens the limiter window so a trip localises)
+        STEP = 0.2      # spacing between actions inside a portion
+        PORTION = 1.0   # pause between portions (keeps a limiter trip localisable to a portion)
         mode_name = f"{PREFIX}Mode"
         renamed = f"{PREFIX}Mode2"
         renamed2 = f"{PREFIX}Mode3"
@@ -8651,9 +8651,20 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         url = f"{raw_base}/{sha}/tests/fixtures/mcp-e2e-throwaway-bundle.zip"
         bid = None
         try:
-            installed = self.client.call_tool("hub_manage_code", {
-                "tool": "hub_install_bundle", "args": {"importUrl": url, "confirm": True},
-            })
+            # Tokened install with replay recovery: the hub fetches the zip from GitHub inside
+            # this call, which sits near the relay ceiling -- a dropped response used to re-run
+            # this WHOLE test (~90s doubled). The token replays the committed install instead.
+            token = self._next_op_token()
+            try:
+                installed = self.client.call_tool("hub_manage_code", {
+                    "tool": "hub_install_bundle", "args": {"importUrl": url, "confirm": True, "opToken": token},
+                })
+            except (McpError, McpToolError, requests.HTTPError) as exc:
+                if "504" not in str(exc):
+                    raise
+                installed = self._poll_op_result(token, tool="hub_install_bundle")
+                assert isinstance(installed, dict), f"bundle install response lost and token replay came up empty: {exc}"
+                print("    [RECOVER-504] throwaway bundle install recovered via opToken replay")
             assert installed.get("success") is True, f"throwaway bundle install failed: {installed}"
             listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
             bundles = listed.get("bundles", []) if isinstance(listed, dict) else []
@@ -8680,19 +8691,12 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                     })
                 except Exception as exc:
                     print(f"  [WARN] throwaway bundle cleanup: delete {bid} failed: {exc}")
-            # Deleting the bundle removes only the container; Hubitat does NOT cascade-delete the library
-            # it delivered (mcptest.E2eThrowawayLib), so remove that too or it pollutes Libraries Code
-            # across runs. The disarm no-stale gate is scoped to the 'mcp' namespace and won't touch this.
-            try:
-                libs = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_libraries"})
-                for lib in (libs.get("libraries", []) if isinstance(libs, dict) else []):
-                    if lib.get("namespace") == "mcptest" and lib.get("id"):
-                        self.client.call_tool("hub_manage_code", {
-                            "tool": "hub_delete_item",
-                            "args": {"type": "library", "item_id": str(lib["id"]), "confirm": True},
-                        })
-            except Exception as exc:
-                print(f"  [WARN] throwaway library cleanup failed: {exc}")
+            # Deleting the bundle removes only the container, not the library it delivered
+            # (mcptest.E2eThrowawayLib) -- but the run-end cleanup's Layer 7b mcptest-namespace
+            # sweep reaps it with the ONE hub_list_libraries scan it already pays for the whole
+            # run. The per-test scan that used to live here cost 14-40s per attempt: the hub's
+            # /hub2/userLibraries endpoint returns EVERY library WITH full source (~2MB), so it
+            # was the single most expensive read in the suite -- and doubled on a 504 retry.
 
     # -----------------------------------------------------------------------
     # GROUP 10: developer_mode (14 tests — Section 12 of BAT-v2.md + review-fix coverage + #250 dry-run + selectedDevices scope)
