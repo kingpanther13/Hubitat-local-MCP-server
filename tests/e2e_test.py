@@ -8692,7 +8692,7 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                 except Exception as exc:
                     print(f"  [WARN] throwaway bundle cleanup: delete {bid} failed: {exc}")
             # Deleting the bundle removes only the container, not the library it delivered
-            # (mcptest.E2eThrowawayLib) -- but the run-end cleanup's Layer 7 mcptest-namespace
+            # (mcptest.E2eThrowawayLib) -- but the run-end cleanup's Layer 7b mcptest-namespace
             # sweep reaps it with the ONE hub_list_libraries scan it already pays for the whole
             # run. The per-test scan that used to live here cost 14-40s per attempt: the hub's
             # /hub2/userLibraries endpoint returns EVERY library WITH full source (~2MB), so it

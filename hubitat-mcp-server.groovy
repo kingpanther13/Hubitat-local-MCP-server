@@ -1485,10 +1485,11 @@ def _opTokenRelease(String opToken) {
 // Manager by a debounced scheduled sweep -- the synchronous uploadHubFile cost ~1s of
 // every tokened write's latency (measured live: tokened writes averaged +1.2s over
 // untokened, dominated by this upload). A poll in the pre-sweep gap replays from the
-// inline copy (_opTokenReadResult is inline-first), so wire semantics are unchanged, and
-// atomicState survives reboots the old in-request upload window did not. Oversized
-// results keep the synchronous upload; on ITS failure a small result stays inline, else
-// the record downgrades to failed_buffer so a replay says verify-state.
+// inline copy (_opTokenReadResult is inline-first), and the commit-to-durable gap
+// SHRINKS: the record lands without waiting on a ~1s upload first. Oversized (>8KB)
+// results keep the synchronous upload; on ITS failure the record downgrades to
+// failed_buffer so a replay says verify-state (an oversized result can never take the
+// small-inline fallback -- that outcome lives on the deferred path and in the sweep).
 def _opTokenComplete(String opToken, String jsonText, boolean isErrorBool) {
     def fileName = _opTokenResultFile(opToken)
     byte[] resultBytes = jsonText?.getBytes("UTF-8")
@@ -1517,9 +1518,9 @@ def _opTokenComplete(String opToken, String jsonText, boolean isErrorBool) {
         rec.pendingUpload = true
     } else if (uploaded) {
         rec.file = fileName
-    } else if (resultBytes != null && resultBytes.length <= 2048) {
-        rec.inline = jsonText
     } else {
+        // Synchronous path = null or >8KB result, so the <=2048 inline fallback is
+        // structurally impossible here; a failed sync upload is always failed_buffer.
         rec.state = "failed_buffer"
         rec.note = "Operation committed but its result could not be buffered (upload failed, payload too large to inline). Re-read current state to confirm."
     }

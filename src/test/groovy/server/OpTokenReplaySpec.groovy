@@ -25,7 +25,8 @@ import support.ToolSpecBase
  *   - _opTokenComplete stores results up to 8KB INLINE (pendingUpload) and defers the
  *     mcp-op-result-<token>.json upload to the debounced _opTokenUploadSweep -- the
  *     synchronous per-write upload was ~1.2s of tokened-call latency; bigger results
- *     upload synchronously (with the inline / failed_buffer fallback on failure)
+ *     upload synchronously (failed_buffer on failure -- the small-inline fallback
+ *     lives on the deferred path and in the sweep, never after a failed sync upload)
  *
  * Mocking strategy (see docs/testing.md): uploadHubFile / downloadHubFile /
  * deleteHubFile are stubbed per-test on script.metaClass, exactly like the

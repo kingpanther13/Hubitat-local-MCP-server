@@ -555,8 +555,10 @@ private Map _createOneVariable(Integer appId, String name, String type, value) {
         if (created != null) break
         // Check-FIRST: the wizard commit is usually visible immediately, so the old
         // sleep-then-check paid 500ms on every call; the backoff only runs when needed
-        // (same ~2s worst-case window, zero happy-path sleep).
-        try { pauseExecution(300) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
+        // (slightly larger worst-case window, 7x300ms vs 4x500ms; zero happy-path sleep).
+        if (attempt < 7) {
+            try { pauseExecution(300) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
+        }
     }
     if (created == null) {
         throw new IllegalStateException(
@@ -632,7 +634,9 @@ def toolCreateConnector(args) {
         try { after = getGlobalVar(name) } catch (Exception e) { after = null }
         if (after?.deviceId != null) break
         // Check-FIRST (see hub_create_variable's verify loop): zero happy-path sleep.
-        try { pauseExecution(300) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
+        if (v < 7) {
+            try { pauseExecution(300) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
+        }
     }
     if (after?.deviceId == null) {
         throw new IllegalStateException(
@@ -693,7 +697,9 @@ def toolRemoveConnector(args) {
         try { after = getGlobalVar(name) } catch (Exception e) { after = null }
         if (after?.deviceId == null) break
         // Check-FIRST (see hub_create_variable's verify loop): zero happy-path sleep.
-        try { pauseExecution(300) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
+        if (v < 7) {
+            try { pauseExecution(300) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
+        }
     }
     if (after?.deviceId != null) {
         throw new IllegalStateException(
@@ -816,7 +822,9 @@ def toolDeleteHubVariable(args) {
                 try { stillThere = getGlobalVar(varName) } catch (Exception e) { stillThere = null }
                 if (stillThere == null) break
                 // Check-FIRST (see hub_create_variable's verify loop): zero happy-path sleep.
-                try { pauseExecution(300) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
+                if (v < 7) {
+                    try { pauseExecution(300) } catch (Exception e) { logDebug("pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
+                }
             }
             if (stillThere == null) break
         }
