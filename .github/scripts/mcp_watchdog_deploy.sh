@@ -98,7 +98,26 @@ HB_PID_FILE="${RUNNER_TEMP:-/tmp}/deadman-heartbeat.pid"
 HB_LOG="${RUNNER_TEMP:-/tmp}/deadman-heartbeat.log"
 nohup bash "$(dirname "$0")/mcp_deadman_heartbeat.sh" > "$HB_LOG" 2>&1 &
 echo "$!" > "$HB_PID_FILE"
-echo "Dead-man heartbeat launched (pid $(cat "$HB_PID_FILE"), log $HB_LOG)."
+# VERIFY the launch: the arm window is only 15 min BECAUSE the heartbeat extends it, so a
+# heartbeat that died at startup (unset env, source failure) silently converts every full
+# lane into a guaranteed mid-suite restore -- strictly worse than any fixed window. The
+# script fires an immediate first beat, so a healthy launch shows "deadline extended"
+# within seconds; a dead process is a hard failure, a still-retrying beat only a warning.
+HB_OK=""
+for i in $(seq 1 15); do
+  if grep -q "deadline extended" "$HB_LOG" 2>/dev/null; then HB_OK="beat"; break; fi
+  if ! kill -0 "$(cat "$HB_PID_FILE")" 2>/dev/null; then break; fi
+  sleep 2
+done
+if [ "$HB_OK" = "beat" ]; then
+  echo "Dead-man heartbeat launched and beating (pid $(cat "$HB_PID_FILE"), log $HB_LOG)."
+elif kill -0 "$(cat "$HB_PID_FILE")" 2>/dev/null; then
+  echo "::warning::Dead-man heartbeat is running but no first beat landed within ~30s (relay flake?) -- it retries every 5 min; see $HB_LOG in the disarm step's tail."
+else
+  echo "::error::Dead-man heartbeat DIED at launch -- with the 15-min heartbeat window this guarantees a mid-suite restore. Log follows:"
+  cat "$HB_LOG" 2>/dev/null || true
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # NO per-run defensive backup here anymore: the hub backup is a heavy operation the platform's

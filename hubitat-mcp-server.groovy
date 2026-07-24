@@ -1363,9 +1363,12 @@ def _isOpTokenPollShape(args, boolean isGatewayCall, leafName) {
 
 def _opTokenResultFile(String opToken) { "mcp-op-result-${opToken}.json" }
 
-// Parse the buffered result for a completed token: the inline copy (kept when an
-// upload failed for a small payload) wins, else the File Manager copy. Returns null when nothing readable remains (swept file, failed buffer)
-// so callers surface the "verify state" shape rather than a stale result.
+// Parse the buffered result for a completed token: the inline copy wins, else the File
+// Manager copy. Inline is the PRIMARY storage for every deferred (<=8KB) result until the
+// upload sweep drains it -- inline-first is what makes a pre-sweep replay work -- and also
+// the permanent home for a small result whose upload failed. Returns null when nothing
+// readable remains (swept file, failed buffer) so callers surface the "verify state"
+// shape rather than a stale result.
 def _opTokenReadResult(rec) {
     if (!(rec instanceof Map)) return null
     if (rec.inline != null) {
@@ -1525,7 +1528,17 @@ def _opTokenComplete(String opToken, String jsonText, boolean isErrorBool) {
         rec.note = "Operation committed but its result could not be buffered (upload failed, payload too large to inline). Re-read current state to confirm."
     }
     _opTokenPut(opToken, rec)
-    if (deferUpload) _opTokenScheduleSweep()
+    // Isolated: a throw here after the record committed would let the outer finally's
+    // failure handler overwrite a good complete+inline record with failed_buffer. A lost
+    // schedule is the lesser harm -- the stale-guard self-heal re-arms on the next
+    // completion, and the inline copy keeps serving replays meanwhile. (That deferred
+    // inline can transiently hold up to 8KB/record in atomicState is the accepted
+    // trade-off for dropping the ~1s per-write upload; the sweep drains it in seconds
+    // and the prune bounds the record count.)
+    if (deferUpload) {
+        try { _opTokenScheduleSweep() }
+        catch (Exception se) { mcpLog("warn", "op-token", "Scheduling the op-result upload sweep failed: ${se.message}") }
+    }
 }
 
 // Debounced scheduler for the upload sweep. A bare runIn would re-arm on every completion
@@ -1554,7 +1567,18 @@ def _opTokenUploadSweep() {
     def stored = atomicState.opTokens
     if (!(stored instanceof Map)) return
     stored.each { k, v ->
-        if (!(v instanceof Map) || v.pendingUpload != true || v.inline == null) return
+        if (!(v instanceof Map) || v.pendingUpload != true) return
+        if (v.inline == null) {
+            // Poison guard: pendingUpload with nothing to upload is unreachable from
+            // _opTokenComplete, but if it ever arose, skipping would re-visit it on every
+            // sweep forever -- clear the flag so the contract (a sweep always retires
+            // pendingUpload) holds unconditionally.
+            def fixed = [:]
+            fixed.putAll(v)
+            fixed.remove('pendingUpload')
+            _opTokenPut(k.toString(), fixed)
+            return
+        }
         def rec = [:]
         rec.putAll(v)
         def jsonText = rec.inline?.toString()

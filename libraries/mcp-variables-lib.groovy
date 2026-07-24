@@ -546,7 +546,7 @@ private Map _createOneVariable(Integer appId, String name, String type, value) {
 
     // Verify the variable landed. The wizard auto-commits on varValue write
     // (or dateTimeDone for DateTime); the var becomes visible to getGlobalVar
-    // shortly after. Retry with backoff up to ~3s before giving up.
+    // shortly after. Retry with backoff up to ~2s before giving up.
     def created = null
     for (int attempt = 0; attempt < 8; attempt++) {
         try { created = getGlobalVar(name) } catch (Exception e) {
