@@ -23,7 +23,7 @@
 #     writes, so a fired/disarmed flag is not resurrected and the disarm's fire detection
 #     is not clobbered by a stale read-modify-write. (A fire landing inside a beat's
 #     read->write gap can still be overwritten -- no CAS exists on File Manager writes --
-#     which is why the disarm also prints this script's log: a >15-min gap between
+#     which is why the disarm also prints this script's log: a >30-min gap between
 #     "extended" lines is un-clobberable evidence of a lapse.)
 set -u
 : "${WATCHDOG_URL:?WATCHDOG_URL env var required (full cloud OAuth URL for the watchdog /mcp endpoint) -- without it every beat would silently fail and the dead-man would fire mid-run}"

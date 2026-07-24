@@ -53,7 +53,7 @@ ARM_WINDOW_MS=900000    # 15 minutes -- a HEARTBEAT TIMEOUT, not a run-length bu
                         # on every >35-min full lane once the suite grew (2026-07-12), silently
                         # restoring canonical main under still-running tests (exposed by PR #362's
                         # protocol false-red); a fixed window can always be outgrown, a heartbeat
-                        # cannot. Crash recovery is now <=15 min instead of the old window size.
+                        # cannot. Crash recovery is now <=30 min (the extend) instead of the old window size.
 
 # Shared helpers (resolve_main_bundle_artifact_url -- the canonical-main bundle resolver this
 # script and the deploy's skip-compare both use). The lib's call wrappers are NOT used here;
