@@ -7697,7 +7697,7 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         # delete-current refusal), so they are proven in ToolModeSpec unit tests, not here.
         import time as _time
         STEP = 0.2      # spacing between actions inside a portion
-        PORTION = 1.0   # pause between portions (also widens the limiter window so a trip localises)
+        PORTION = 1.0   # pause between portions (keeps a limiter trip localisable to a portion)
         mode_name = f"{PREFIX}Mode"
         renamed = f"{PREFIX}Mode2"
         renamed2 = f"{PREFIX}Mode3"
@@ -8662,7 +8662,7 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             except (McpError, McpToolError, requests.HTTPError) as exc:
                 if "504" not in str(exc):
                     raise
-                installed = self._poll_op_result(token)
+                installed = self._poll_op_result(token, tool="hub_install_bundle")
                 assert isinstance(installed, dict), f"bundle install response lost and token replay came up empty: {exc}"
                 print("    [RECOVER-504] throwaway bundle install recovered via opToken replay")
             assert installed.get("success") is True, f"throwaway bundle install failed: {installed}"

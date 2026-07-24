@@ -354,7 +354,7 @@ class OpTokenReplaySpec extends ToolSpecBase {
     def "the sweep debounce guard schedules once per burst and the sweep re-arms it"() {
         given:
         settingsMap.enableWrite = true
-        installFileStore()
+        def store = installFileStore()
         sweepSchedules.clear()
         script.metaClass.toolCreateRoom = { a -> [success: true, roomId: 5] }
 
@@ -371,6 +371,28 @@ class OpTokenReplaySpec extends ToolSpecBase {
 
         then: 'a fresh sweep is scheduled'
         sweepSchedules == ['_opTokenUploadSweep', '_opTokenUploadSweep']
+
+        and: 'the ONE sweep processed BOTH pending records -- files landed, inline stripped'
+        store.containsKey(FILE_PREFIX + 'burst1aaaaa.json')
+        store.containsKey(FILE_PREFIX + 'burst2aaaaa.json')
+        atomicStateMap.opTokens['burst1aaaaa'].pendingUpload == null
+        atomicStateMap.opTokens['burst2aaaaa'].pendingUpload == null
+    }
+
+    def "a STALE debounce guard re-arms instead of deadlocking (the lost-schedule self-heal)"() {
+        given: 'a guard timestamp older than the 60s staleness bound -- the armed-but-lost-schedule state'
+        settingsMap.enableWrite = true
+        installFileStore()
+        sweepSchedules.clear()
+        atomicStateMap.opSweepScheduledAt = FIXED_NOW - 61000L
+        script.metaClass.toolCreateRoom = { a -> [success: true, roomId: 6] }
+
+        when: 'a completion lands under the stale guard'
+        mcpDriver.callTool('hub_create_room', [name: 'D', confirm: true, opToken: 'staleguard1'])
+
+        then: 'a fresh sweep is scheduled -- a boolean guard would deadlock here forever'
+        sweepSchedules == ['_opTokenUploadSweep']
+        atomicStateMap.opSweepScheduledAt == FIXED_NOW
     }
 
     def "an oversize result buffers the too-large envelope so the replay reproduces the original response"() {
