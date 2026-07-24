@@ -42,10 +42,17 @@ APP_NAME="MCP Rule Server"
 WATCHDOG_NAME="E2E Dead-Man Watchdog v2"
 WATCHDOG_SOURCE_URL="${PR_RAW_BASE}/${PR_HEAD_SHA_RESOLVED}/e2e-deadman-watchdog-v2.groovy"
 FLAG_FILE="e2e-deadman-v2.json"
-ARM_WINDOW_MS=2100000   # 35 minutes -- deliberately > the 30-min job timeout-minutes, so the
-                        # watchdog can only fire AFTER GitHub has already killed a hung/dead job,
-                        # never mid-live-run. The always() disarm clears it in seconds on every
-                        # normal run, so the long window only matters when the session truly dies.
+ARM_WINDOW_MS=4500000   # 75 minutes -- deliberately > the longest LIVE window between this arm and
+                        # the always() disarm (full-lane deploy ~5 min + the whole suite ~40-50 min,
+                        # measured 49 min on run 30060370488), so the watchdog can only fire after a
+                        # run truly died, never mid-live-run. The original 35-min window was sized
+                        # against a 30-min job timeout that no longer exists (timeout-minutes is now
+                        # 270 to survive the approval/queue wait) and the dead-man fired MID-SUITE on
+                        # the first >35-min full lane: it silently restored canonical main while
+                        # tests were still running, so any test after the deadline exercised OLD
+                        # code (PR #362's protocol-group failure). The always() disarm clears the
+                        # flag in seconds on every normal run, so the wider window only delays
+                        # auto-recovery when the session truly dies.
 
 # Shared helpers (resolve_main_bundle_artifact_url -- the canonical-main bundle resolver this
 # script and the deploy's skip-compare both use). The lib's call wrappers are NOT used here;

@@ -927,7 +927,7 @@ def _getAllToolDefinitions_partSystem() {
                     databaseSizeKB: [type: "string", description: "Database size in KB"],
                     databaseWarning: [type: "string", description: "Present when database is large"],
                     mcpServerVersion: [type: "string", description: "Installed MCP server version"],
-                    lastBackupEpoch: [type: "integer", description: "Epoch millis of the last hub_create_backup via this app; null if never. The destructive-confirm 24h gate reads the same record."],
+                    lastBackupEpoch: [type: "integer", description: "Epoch millis of the newest hub backup this app knows of (its own hub_create_backup stamp, or the hub's local backup list once a gated tool consulted it); null if never. The destructive-confirm 24h gate reads the same record and falls back to the hub's own backup list when it is stale."],
                     mcpDeviceCount: [type: "integer", description: "Selected device count"],
                     mcpRuleCount: [type: "integer", description: "MCP rule child-app count"],
                     mcpLogEntries: [type: "integer", description: "Buffered MCP log entry count"],

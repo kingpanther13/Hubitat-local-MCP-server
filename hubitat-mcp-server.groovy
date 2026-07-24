@@ -1180,8 +1180,19 @@ def handleToolsCall(msg) {
             }
         }
         if (opTokenActive) {
-            opCompletionText = groovy.json.JsonOutput.toJson([isError: true, error: "Invalid params: ${msgText}", tool: reactiveToolName])
-            opCompletionIsError = true
+            // A validation error means the leaf executed NOTHING (the error contract: an
+            // IllegalArgumentException is thrown up front, before any side effect -- the
+            // release below leans on that convention, so a tool must never throw IAE after
+            // partial work), so the token must NOT be spent on it: buffering the -32602 made
+            // the documented recovery (re-issue with the SAME token) replay the stale
+            // rejection even after the caller fixed the arguments (the dedup gate cannot see
+            // that args changed -- issue #361 review).
+            // Release the record instead: a corrected re-issue executes fresh, and a
+            // lost-response re-poll answers "unknown -> re-issue the original call", which
+            // simply re-validates to the identical error. opCompletionText stays null, so
+            // the finally does not buffer.
+            try { _opTokenRelease(opToken) }
+            catch (Exception re) { mcpLog("warn", "op-token", "Releasing token ${opToken} after a validation error failed: ${re.message}") }
         }
         return jsonRpcError(msg.id, -32602, "Invalid params: ${msgText}")
     } catch (Exception e) {
@@ -1452,6 +1463,23 @@ def _opTokenMark(String opToken, toolName) {
     _opTokenPrune()
 }
 
+// Release a token after a validation error (the leaf executed nothing, so the token must
+// stay spendable by a corrected re-issue). Written as a per-entry "released" sentinel that
+// the dedup gate treats as absent -- NOT a whole-map remove: atomicState has no per-key
+// remove, and a whole-map read-modify-write here could clobber a concurrent different-token
+// updateMapValue and silently lose a LIVE record's dedup protection (the prune stays the
+// only whole-map writer, and it only drops terminal records). The TTL sweep / size cap reap
+// released records like any other terminal entry. No result file from THIS request can
+// exist here (only _opTokenComplete uploads, and completion never ran; a prior record would
+// have short-circuited at the dedup gate before dispatch) -- at most a prune-orphaned file
+// from an earlier, already-pruned completion remains, which a later completion overwrites.
+def _opTokenRelease(String opToken) {
+    def stored = atomicState.opTokens
+    def prev = (stored instanceof Map && stored[opToken] instanceof Map) ? stored[opToken] : [:]
+    _opTokenPut(opToken, [state: "released", tool: prev.tool,
+                          startedAt: (prev.startedAt != null ? prev.startedAt : now())])
+}
+
 // Buffer a token's terminal result (called once, on the request's terminal path).
 // Uploads the wire JSON to the reserved File Manager file BEFORE touching the
 // token record (no file I/O between the record read and write); on upload failure
@@ -1496,6 +1524,9 @@ def _opTokenDedup(String opToken, origToolName) {
     def toks = atomicState.opTokens
     def rec = (toks instanceof Map && toks[opToken] instanceof Map) ? toks[opToken] : null
     if (rec == null) return null
+    // A released record means a validation error spent NOTHING: treat it as absent so the
+    // corrected re-issue dispatches fresh (it re-marks the token running on its way in).
+    if (rec.state == "released") return null
     if (rec.state == "running") {
         def started = (rec.startedAt != null) ? (rec.startedAt as Long) : null
         def runningNote = "An operation with this token is already executing on the hub. Do NOT re-run the operation; poll by re-issuing this call with the same opToken (the token alone is enough) until it replays the buffered result. See hub_get_tool_guide(section='slow_ops')."
@@ -4233,9 +4264,67 @@ def requireDestructiveConfirm(Boolean confirmParam) {
     if (!confirmParam) {
         throw new IllegalArgumentException("SAFETY CHECK FAILED: You must set confirm=true to use this tool. Did you create a backup with hub_create_backup first? Review the tool description for the mandatory pre-flight checklist, or call hub_get_tool_guide for the tool's full reference.")
     }
-    // Check for recent hub backup (within 24 hours)
-    if (!state.lastBackupTimestamp || (now() - state.lastBackupTimestamp) > 86400000) {
-        throw new IllegalArgumentException("BACKUP REQUIRED: No hub backup found within the last 24 hours. You MUST call hub_create_backup FIRST and verify it succeeds before using this tool. Last backup: ${state.lastBackupTimestamp ? formatTimestamp(state.lastBackupTimestamp) : 'Never'}")
+    // Recent-backup check (within 24 hours): this app's own stamp first (cheap), then the
+    // hub's own local backup list -- a scheduled or UI-created backup is exactly as real a
+    // recovery point as an MCP-triggered one, and the stamp alone goes stale whenever a
+    // backup exists that this app never confirmed (issue #361: hub_update_firmware refused
+    // while hub_list_backups showed fresh backups).
+    if (state.lastBackupTimestamp && (now() - state.lastBackupTimestamp) <= 86400000) return
+    Long listEpoch = _latestLocalHubBackupEpoch()
+    if (listEpoch != null && (now() - listEpoch) <= 86400000) {
+        state.lastBackupTimestamp = listEpoch   // cache so later gated calls skip the list read
+        return
+    }
+    def lastKnown = [state.lastBackupTimestamp, listEpoch].findAll { it != null }.max()
+    throw new IllegalArgumentException("BACKUP REQUIRED: No hub backup found within the last 24 hours (checked this app's record and the hub's local backup list). You MUST call hub_create_backup FIRST and verify it succeeds before using this tool. Last backup: ${lastKnown ? formatTimestamp(lastKnown) : 'Never'}")
+}
+
+/**
+ * Newest local hub-DB backup's epoch millis from the hub's own list (GET /hub2/localBackups),
+ * or null when the list is unreachable, empty, or unparseable. Ground truth consulted by the
+ * destructive-confirm gate's fallback and hub_create_backup's completion check: the hub's
+ * list proves a backup file exists regardless of what this app's private stamp says.
+ */
+def _latestLocalHubBackupEpoch() {
+    try {
+        def raw = hubInternalGet("/hub2/localBackups", null, 10)
+        def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+        if (!(parsed instanceof List)) {
+            // e.g. an auth-failure JSON object under Hub Security -- the fallback is out of
+            // service, which quietly regresses to the pre-#361 refusals; leave a trace.
+            mcpLog("debug", "hub-admin", "local backup list returned a ${parsed == null ? 'null/empty' : (parsed instanceof Map ? 'JSON-object' : 'non-list')} body -- backup-gate fallback skipped")
+            return null
+        }
+        Long newest = null
+        parsed.each { entry ->
+            def ts = (entry instanceof Map) ? entry.createTimeOrig?.toString() : null
+            if (!ts) return
+            Long epoch = null
+            // createTimeOrig carries an explicit numeric offset ("2026-04-23T07:01:24+0000");
+            // the offset-less shape is tolerated as UTC in case a firmware drops the suffix.
+            // (If such a firmware emitted LOCAL time instead, a non-UTC hub would mis-age the
+            // backup by its offset -- accepted for a defensive path no real hub exercises.)
+            try { epoch = Date.parse("yyyy-MM-dd'T'HH:mm:ssZ", ts).time }
+            catch (Exception ignored) {
+                try {
+                    def sdf = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss")
+                    sdf.setTimeZone(TimeZone.getTimeZone("UTC"))
+                    sdf.setLenient(false)
+                    epoch = sdf.parse(ts).time
+                } catch (Exception ignored2) { }
+            }
+            if (epoch != null && (newest == null || epoch > newest)) newest = epoch
+        }
+        if (newest == null && !parsed.isEmpty()) {
+            // Backups exist but no createTimeOrig parsed -- a firmware format drift would
+            // silently re-break issue #361 (fallback dead, gate refusing beside real backups),
+            // so this one is loud.
+            mcpLog("warn", "hub-admin", "local backup list has ${parsed.size()} entries but no parseable createTimeOrig -- backup-gate fallback is blind (timestamp format drift?)")
+        }
+        return newest
+    } catch (Exception e) {
+        mcpLog("debug", "hub-admin", "local backup list unreadable (backup-gate fallback skipped): ${e.message}")
+        return null
     }
 }
 
@@ -5959,8 +6048,8 @@ This section covers the hub-admin and system tools (hub info, location modes, HS
 
 ### Destructive Write Tools - Pre-Flight Checklist
 
-All Write master tools require these steps:
-1. Backup check: Ensure hub_create_backup was called within the last 24 hours
+The destructive/confirm-tier write tools require these steps (ordinary writes need only the Write master):
+1. Backup check: Ensure a hub backup exists within the last 24 hours (hub_create_backup, or any backup in hub_list_backups scope=hub_local -- scheduled backups count; the gate checks the hub's own list when this app's record is stale)
 2. Inform user: Tell them what you're about to do
 3. Get confirmation: Wait for explicit "yes", "confirm", or "proceed"
 4. Set confirm=true: Pass the confirm parameter
@@ -6403,8 +6492,8 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 
 ### Hub Backups
 - hub_create_backup creates full hub database backup
-- Required within 24 hours before any Write master operation
-- Only write tool that doesn't require a prior backup
+- A hub backup within 24 hours is required by the destructive/confirm-tier write tools (ordinary writes need only the Write master); the gate accepts this app's own record OR any backup in the hub's local backup list (scheduled/UI backups count)
+- hub_create_backup itself is exempt from the prior-backup requirement (it IS the backup)
 
 ### Source Code Backups (Automatic)
 - Created when using hub_update_app, hub_update_driver, hub_update_library, hub_delete_item
@@ -7329,7 +7418,7 @@ If the response is lost, DO NOT re-run the operation and DO NOT invent a fresh t
 - `status: "unknown"` (returned only to a token-only poll) -- no RECORD of this token exists: the original call never arrived, OR the record aged out (records sweep ~24h after start, and past 100 stored records the oldest terminal records batch-evict down to 50). Poll promptly after a drop and it reliably means never-arrived: re-issue the ORIGINAL call (full arguments) with this same token. Do not trust day-old tokens.
 - `status: "indeterminate"` -- the operation completed here but its buffered result cannot be read (buffering failed, or the result file is gone while the record survives). Do NOT re-issue blindly; verify current state via reads first.
 
-A token is SPENT once its operation completes -- errors included. A replayed result carrying an error means that attempt failed; to retry with corrected arguments, invent a FRESH token. Never reuse a token for a different or corrected operation.
+A token is SPENT once its operation completes -- runtime errors included. A replayed result carrying an error means that attempt failed; to retry with corrected arguments after a RUNTIME failure, invent a FRESH token. Never reuse a token for a DIFFERENT operation. Exception: a call rejected for invalid arguments (-32602) executed nothing and RELEASES its token -- fix the arguments and re-issue with the SAME token.
 
 A replayed result whose `status` is "in_progress" carries `replayNote`: it is the ORIGINAL paused envelope, not new progress -- a spent token cannot drive a resume; re-issue the remaining work with a fresh token.
 

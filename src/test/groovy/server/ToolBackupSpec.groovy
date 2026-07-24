@@ -435,7 +435,8 @@ class ToolBackupSpec extends ToolSpecBase {
         given:
         settingsMap.enableWrite = true            // Write master on, but NO prior backup stamp
         stateMap.remove('lastBackupTimestamp')
-        // statusJson never reports completion -> the backup is unverified
+        // statusJson never reports completion -> the backup is unverified (and the list fixture
+        // never gains a new entry, so the ground-truth signal stays silent too)
         hubGet.register('/hub/backup/statusJson') { params -> '{"backupInProgress":true,"cloudBackupInProgress":false}' }
 
         when:
@@ -446,6 +447,133 @@ class ToolBackupSpec extends ToolSpecBase {
         r.confirmed == false
         stateMap.lastBackupTimestamp == null      // the 24h gate is NOT satisfied by an unverified backup
         r.note.toLowerCase().contains('not')
+    }
+
+    // -------- issue #361: list-based completion + mockEpoch lever --------
+
+    def "a create confirms via a NEW entry in the hub's backup list even while cloudBackupInProgress stays true (issue #361)"() {
+        given:
+        settingsMap.enableWrite = true
+        stateMap.remove('lastBackupTimestamp')
+        // Hub Protect upload in progress: statusJson never settles (the pre-#361 wedge)
+        hubGet.register('/hub/backup/statusJson') { params -> '{"backupInProgress":false,"cloudBackupInProgress":true}' }
+        // First read = pre-trigger snapshot (old entry only); later reads show the new backup file
+        int listReads = 0
+        hubGet.register('/hub2/localBackups') { params ->
+            listReads++
+            listReads == 1 ? '[{"name":"old.lzf","createTimeOrig":"2026-06-01T00:00:00"}]'
+                           : '[{"name":"old.lzf","createTimeOrig":"2026-06-01T00:00:00"},{"name":"new.lzf","createTimeOrig":"2026-06-02T00:00:00+0000"}]'
+        }
+
+        when:
+        def r = script.toolCreateHubBackup([confirm: true])
+
+        then:
+        r.success == true
+        r.confirmed == true
+        stateMap.lastBackupTimestamp != null      // the 24h gate IS satisfied: the backup file exists
+    }
+
+    def "a create with an unsettled cloud upload and NO new list entry stays unconfirmed and unstamped"() {
+        given:
+        settingsMap.enableWrite = true
+        stateMap.remove('lastBackupTimestamp')
+        hubGet.register('/hub/backup/statusJson') { params -> '{"backupInProgress":false,"cloudBackupInProgress":true}' }
+        // the setup fixture list never changes -> no new entry appears
+
+        when:
+        def r = script.toolCreateHubBackup([confirm: true])
+
+        then:
+        r.success == false
+        r.confirmed == false
+        stateMap.lastBackupTimestamp == null
+        r.error.toLowerCase().contains('did not confirm')
+    }
+
+    def "a create bails as statusUnreadable when statusJson AND the backup list are both unreadable"() {
+        given:
+        settingsMap.enableWrite = true
+        stateMap.remove('lastBackupTimestamp')
+        hubGet.register('/hub/backup/statusJson') { params -> '<html>login</html>' }
+        hubGet.register('/hub2/localBackups') { params -> '<html>login</html>' }
+
+        when:
+        def r = script.toolCreateHubBackup([confirm: true])
+
+        then: 'three consecutive both-signals-unreadable rounds end the loop with the distinct error'
+        r.success == false
+        r.confirmed == false
+        stateMap.lastBackupTimestamp == null
+        r.error.contains('both unreadable')
+        hubGet.calls.count { it.path == '/hub/backup/statusJson' } == 3
+    }
+
+    // Virtual clock (mirrors ToolPollComparatorStableSpec): pauseExecution advances the clock by
+    // advanceMs (more than the requested pause = simulated slow rounds); now() reads it via the
+    // base mock's NOW_OVERRIDE holder, which HarnessSpec.setup() resets.
+    private List installVirtualClock(long start, long advanceMs) {
+        def clock = [start]
+        script.metaClass.pauseExecution = { long ms -> clock[0] = clock[0] + advanceMs }
+        NOW_OVERRIDE.set({ clock[0] })
+        return clock
+    }
+
+    @spock.lang.IgnoreIf({ System.getProperty('harnessStrictMetaClass') == 'true' })  // virtual clock needs the pauseExecution metaClass override + NOW_OVERRIDE, which the strict-metaClass groovy2x lane disallows; full coverage runs in the primary test lanes
+    def "the confirm loop is wall-clock capped: slow rounds exit early instead of grinding all 20 iterations"() {
+        given: 'a virtual clock where each round costs 30s (slow status/list reads on a loaded hub)'
+        settingsMap.enableWrite = true
+        stateMap.remove('lastBackupTimestamp')
+        installVirtualClock(1234567890000L, 30000L)
+        hubGet.register('/hub/backup/statusJson') { params -> '{"backupInProgress":true,"cloudBackupInProgress":false}' }
+
+        when:
+        def r = script.toolCreateHubBackup([confirm: true])
+
+        then: 'the ~57s cap ends the loop on round 2 -- not the 20-iteration count'
+        r.success == false
+        r.confirmed == false
+        stateMap.lastBackupTimestamp == null
+        r.error.contains('did not confirm')
+        hubGet.calls.count { it.path == '/hub/backup/statusJson' } == 2
+    }
+
+    def "a create whose PRE-trigger list read failed only confirms on an entry newer than the trigger window"() {
+        given: 'preEpoch is null (unreadable pre-trigger list), so only a fresh-looking entry may confirm'
+        settingsMap.enableWrite = true
+        stateMap.remove('lastBackupTimestamp')
+        hubGet.register('/hub/backup/statusJson') { params -> '{"backupInProgress":false,"cloudBackupInProgress":true}' }
+        int listReads = 0
+        hubGet.register('/hub2/localBackups') { params ->
+            listReads++
+            // fixed harness now() = 1234567890000 (2009-02-13T23:31:30Z); this entry is 30s old --
+            // inside the confirmT0-60s window, so it confirms even with no pre-trigger baseline
+            listReads == 1 ? '<html>login</html>'
+                           : '[{"name":"new.lzf","createTimeOrig":"2009-02-13T23:31:00+0000"}]'
+        }
+
+        when:
+        def r = script.toolCreateHubBackup([confirm: true])
+
+        then:
+        r.success == true
+        r.confirmed == true
+        stateMap.lastBackupTimestamp != null
+    }
+
+    def "mock=true with mockEpoch stamps the given epoch (developer-mode test lever)"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.enableDeveloperMode = true
+
+        when:
+        def r = script.toolCreateHubBackup([confirm: true, mock: true, mockEpoch: 1234000000000L])
+
+        then:
+        r.success == true
+        r.mocked == true
+        r.backupTimestampEpoch == 1234000000000L
+        stateMap.lastBackupTimestamp == 1234000000000L
     }
 
     // ---------- dispatch envelopes ----------

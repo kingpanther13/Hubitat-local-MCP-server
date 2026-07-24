@@ -80,6 +80,16 @@ if ! CUR_TEXT=$(mcp_tool_call_text "hub_read_file (read armed flag for manifest)
   exit 1
 fi
 CUR_CONTENT=$(echo "$CUR_TEXT" | jq -r '.content // ""')
+# Surface the pre-disarm state BEFORE this script rewrites the flag: a dead-man that fired
+# mid-run (armed already false, fireAttempts > 0, restoreTrigger "deadline") is otherwise
+# invisible -- the disarm's rewrite erases the evidence and the run reads as inexplicably
+# testing OLD code past the deadline (how PR #362's mid-suite restore hid for a full run).
+PRE_STATE=$(printf '%s' "$CUR_CONTENT" | jq -c '{armed, fireAttempts, deadline, restoreTrigger, restoredAt}' 2>/dev/null || echo "{}")
+echo "Pre-disarm flag state: $PRE_STATE"
+PRE_FIRED=$(printf '%s' "$CUR_CONTENT" | jq -r '(.fireAttempts // 0) > 0 or ((.restoreTrigger // "") == "deadline")' 2>/dev/null || echo "false")
+if [ "$PRE_FIRED" = "true" ]; then
+  echo "::warning::The dead-man FIRED before this disarm (see pre-disarm flag state above) -- the hub was restored to canonical main MID-RUN, so any test executed after the deadline ran against OLD code. Treat this run's results as invalid and re-run."
+fi
 MANIFEST_JSON=$(printf '%s' "$CUR_CONTENT" | jq -c '.manifest // empty' 2>/dev/null || echo "")
 ARM_PR_SHA=$(printf '%s' "$CUR_CONTENT" | jq -r '.armPrSha // .mainSha // ""' 2>/dev/null || echo "")
 # The canonical-main SHA the hub was confirmed on at arm. Forwarded into the disarm flag so the

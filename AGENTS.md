@@ -133,7 +133,7 @@ Every MCP tool is gated. The layers, from broadest to narrowest:
 
 ### Error contracts
 
-- **Validation errors** (caller-recoverable, bad args): throw `IllegalArgumentException`. Caught by `handleToolsCall` and mapped to JSON-RPC `-32602`. Existing pattern; reaffirmed.
+- **Validation errors** (caller-recoverable, bad args): throw `IllegalArgumentException`. Caught by `handleToolsCall` and mapped to JSON-RPC `-32602`. Existing pattern; reaffirmed. **A validation throw MUST fire before any side effect** — the opToken machinery RELEASES a token on `-32602` (a corrected same-token re-issue executes fresh), which is only safe while nothing was committed; a tool that mutates state and then throws `IllegalArgumentException` would expose that work to a double-run.
 - **Runtime errors** (operation tried and failed for non-arg reasons): return `[success: false, error: <human-readable>, note: <actionable guidance>]`. Don't throw — the AI needs a structured error.
 - **`isError: true` envelope** for tool-execution errors per MCP spec 2025-06-18. Already adopted in v0.7.7+ (see SKILL.md § Version Management for the adoption note).
 - **Specific, actionable, recovery-oriented error text.** Tell the model how to recover. Anthropic recommends steering truncation errors toward recovery strategies like *"many small and targeted searches instead of a single, broad search."*
