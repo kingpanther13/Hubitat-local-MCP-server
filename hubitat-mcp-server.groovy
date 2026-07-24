@@ -1180,8 +1180,16 @@ def handleToolsCall(msg) {
             }
         }
         if (opTokenActive) {
-            opCompletionText = groovy.json.JsonOutput.toJson([isError: true, error: "Invalid params: ${msgText}", tool: reactiveToolName])
-            opCompletionIsError = true
+            // A validation error means the leaf executed NOTHING, so the token must NOT be
+            // spent on it: buffering the -32602 made the documented recovery (re-issue with
+            // the SAME token) replay the stale rejection even after the caller fixed the
+            // arguments (the dedup gate cannot see that args changed -- issue #361 review).
+            // Release the record instead: a corrected re-issue executes fresh, and a
+            // lost-response re-poll answers "unknown -> re-issue the original call", which
+            // simply re-validates to the identical error. opCompletionText stays null, so
+            // the finally does not buffer.
+            try { _opTokenRelease(opToken) }
+            catch (Exception re) { mcpLog("warn", "op-token", "Releasing token ${opToken} after a validation error failed: ${re.message}") }
         }
         return jsonRpcError(msg.id, -32602, "Invalid params: ${msgText}")
     } catch (Exception e) {
@@ -1450,6 +1458,20 @@ def _opTokenPrune() {
 def _opTokenMark(String opToken, toolName) {
     _opTokenPut(opToken, [state: "running", tool: toolName?.toString(), startedAt: now()])
     _opTokenPrune()
+}
+
+// Remove a token's record entirely (the validation-error path: the leaf executed nothing,
+// so the token must stay spendable by a corrected re-issue). Whole-map remove -- the same
+// narrow concurrent-write window the prune accepts, self-healed by the TTL sweep. No result
+// file can exist on this path (only _opTokenComplete uploads, and completion never ran; a
+// prior record for the token would have short-circuited at the dedup gate before dispatch).
+def _opTokenRelease(String opToken) {
+    def stored = atomicState.opTokens
+    if (!(stored instanceof Map) || !stored.containsKey(opToken)) return
+    def tokens = [:]
+    tokens.putAll(stored)
+    tokens.remove(opToken)
+    atomicState.opTokens = tokens
 }
 
 // Buffer a token's terminal result (called once, on the request's terminal path).
@@ -7374,7 +7396,7 @@ If the response is lost, DO NOT re-run the operation and DO NOT invent a fresh t
 - `status: "unknown"` (returned only to a token-only poll) -- no RECORD of this token exists: the original call never arrived, OR the record aged out (records sweep ~24h after start, and past 100 stored records the oldest terminal records batch-evict down to 50). Poll promptly after a drop and it reliably means never-arrived: re-issue the ORIGINAL call (full arguments) with this same token. Do not trust day-old tokens.
 - `status: "indeterminate"` -- the operation completed here but its buffered result cannot be read (buffering failed, or the result file is gone while the record survives). Do NOT re-issue blindly; verify current state via reads first.
 
-A token is SPENT once its operation completes -- errors included. A replayed result carrying an error means that attempt failed; to retry with corrected arguments, invent a FRESH token. Never reuse a token for a different or corrected operation.
+A token is SPENT once its operation completes -- runtime errors included. A replayed result carrying an error means that attempt failed; to retry with corrected arguments after a RUNTIME failure, invent a FRESH token. Never reuse a token for a DIFFERENT operation. Exception: a call rejected for invalid arguments (-32602) executed nothing and RELEASES its token -- fix the arguments and re-issue with the SAME token.
 
 A replayed result whose `status` is "in_progress" carries `replayNote`: it is the ORIGINAL paused envelope, not new progress -- a spent token cannot drive a resume; re-issue the remaining work with a fresh token.
 

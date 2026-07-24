@@ -9800,6 +9800,36 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             f"Expected HTTP 202 for a notification, got {resp.status_code}: {resp.text[:200]!r}"
         assert resp.text.strip() == "", f"Expected empty body for 202, got: {resp.text[:200]!r}"
 
+    @test("protocol")
+    def test_op_token_released_on_validation_error(self) -> None:
+        """A tokened call rejected for invalid arguments (-32602) executed nothing, so it
+        must RELEASE the token: a corrected re-issue with the SAME token executes fresh
+        instead of replaying the stale rejection (issue #361 review finding — the old
+        behaviour buffered the -32602 under the token, wedging every fix-and-retry)."""
+        token = self._next_op_token()
+        room_name = f"{PREFIX}TokRelease"
+        try:
+            self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_create_room", "args": {"name": room_name, "opToken": token}})
+            raise AssertionError("hub_create_room without confirm should have been rejected (-32602)")
+        except McpError as exc:
+            assert "confirm" in str(exc).lower(), f"expected the missing-confirm validation error, got: {exc}"
+        created = None
+        try:
+            created = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_create_room", "args": {"name": room_name, "confirm": True, "opToken": token}})
+            assert isinstance(created, dict) and created.get("success") is True, \
+                f"corrected re-issue with the SAME token should execute, not replay the rejection: {created}"
+            assert created.get("replayed") is not True, \
+                f"corrected re-issue was served a REPLAY -- the validation error spent the token: {created}"
+        finally:
+            if isinstance(created, dict) and created.get("success") is True:
+                try:
+                    self.client.call_tool("hub_manage_rooms", {
+                        "tool": "hub_delete_room", "args": {"room": room_name, "confirm": True}})
+                except Exception as exc:
+                    print(f"    [WARN] could not delete {room_name} (prefix sweep will reap it): {exc}")
+
     # -----------------------------------------------------------------------
     # Cleanup
     # -----------------------------------------------------------------------

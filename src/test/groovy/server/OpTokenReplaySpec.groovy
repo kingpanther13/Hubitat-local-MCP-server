@@ -173,7 +173,7 @@ class OpTokenReplaySpec extends ToolSpecBase {
         inner.note instanceof String && inner.note.toLowerCase().contains('verify')
     }
 
-    def "the marker is completed with isError when the write throws IllegalArgumentException"() {
+    def "a validation error RELEASES the token instead of spending it (issue #361 review)"() {
         given:
         settingsMap.enableWrite = true
         def store = installFileStore()
@@ -186,11 +186,33 @@ class OpTokenReplaySpec extends ToolSpecBase {
         response.error != null
         response.error.code == -32602
 
-        and: 'no token is left eternally running -- the terminal IAE path completes the marker'
-        def marker = atomicStateMap.opTokens['iaetoken12']
-        marker.state == 'complete'
-        marker.isError == true
-        store.containsKey(FILE_PREFIX + 'iaetoken12.json')
+        and: 'the leaf executed nothing, so the token is released -- not left running, not spent on the stale rejection'
+        !atomicStateMap.opTokens?.containsKey('iaetoken12')
+        !store.containsKey(FILE_PREFIX + 'iaetoken12.json')
+    }
+
+    def "a corrected re-issue with the SAME token executes after a validation error"() {
+        given: 'the real-world footgun: first call rejected for bad args, caller fixes them and retries with the same token'
+        settingsMap.enableWrite = true
+        installFileStore()
+        def ran = 0
+        script.metaClass.toolCreateRoom = { a ->
+            if (a.confirm != true) throw new IllegalArgumentException('confirm required')
+            ran++; [success: true, roomId: 7]
+        }
+
+        when: 'first call fails validation (no confirm)'
+        def first = mcpDriver.callTool('hub_create_room', [name: 'Den', opToken: 'retrytok123'])
+
+        and: 'the corrected call reuses the SAME token'
+        def second = mcpDriver.callTool('hub_create_room', [name: 'Den', confirm: true, opToken: 'retrytok123'])
+
+        then: 'the rejection did not spend the token: the corrected call ran fresh (no stale -32602 replay)'
+        first.error?.code == -32602
+        ran == 1
+        mcpDriver.parseInner(second).success == true
+        atomicStateMap.opTokens['retrytok123'].state == 'complete'
+        atomicStateMap.opTokens['retrytok123'].isError == false
     }
 
     def "the marker is completed with isError when the write throws a generic exception"() {
@@ -525,7 +547,7 @@ class OpTokenReplaySpec extends ToolSpecBase {
         atomicStateMap.opTokens['freshtok1234'].state == 'running'
     }
 
-    def "a tokened call with PARTIAL args is NOT a poll -- it dispatches and burns the token on the leaf's own validation error"() {
+    def "a tokened call with PARTIAL args is NOT a poll -- it dispatches, and the leaf's validation error releases the token"() {
         given: 'negative-space pin: only a truly bare tokened call polls; partial args mean a real (malformed) execution attempt'
         settingsMap.enableWrite = true
         installFileStore()
@@ -537,11 +559,10 @@ class OpTokenReplaySpec extends ToolSpecBase {
         when: 'token + name but no confirm'
         def response = mcpDriver.callTool('hub_create_room', [opToken: 'partial12345', name: 'Den'])
 
-        then: 'the leaf validation error surfaced (-32602), and the token was marked and spent on it'
+        then: 'the leaf validation error surfaced (-32602), and the token was released for a corrected re-issue'
         response.error != null
         response.error.code == -32602
-        atomicStateMap.opTokens['partial12345'].state == 'complete'
-        atomicStateMap.opTokens['partial12345'].isError == true
+        !atomicStateMap.opTokens?.containsKey('partial12345')
     }
 
     def "a token-only call naming a bare GATEWAY is a pure poll -- the token is never spent on a catalog listing"() {
