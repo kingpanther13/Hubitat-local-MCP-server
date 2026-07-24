@@ -7696,8 +7696,8 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         # contracts need fault injection / firmware-dependent states (a duplicate-name or
         # delete-current refusal), so they are proven in ToolModeSpec unit tests, not here.
         import time as _time
-        STEP = 0.3      # spacing between actions inside a portion
-        PORTION = 2.0   # pause between portions (also widens the limiter window so a trip localises)
+        STEP = 0.2      # spacing between actions inside a portion
+        PORTION = 1.0   # pause between portions (also widens the limiter window so a trip localises)
         mode_name = f"{PREFIX}Mode"
         renamed = f"{PREFIX}Mode2"
         renamed2 = f"{PREFIX}Mode3"
