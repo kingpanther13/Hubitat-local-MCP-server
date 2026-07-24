@@ -1654,6 +1654,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v3.4.3** - fix: backup gate and create-backup confirmation read the hub's real backup list. PRs: [#362](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/362)
 - **v3.4.2** - chore: disable sunset Gemini Code Assist reviews; build(deps): bump actions/setup-python from 6 to 7 in the github-actions group ([#358](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/358), @app/dependabot); feat: expose live enabled/paused/disabled status in hub_list_rules (#359). PRs: [#357](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/357), [#358](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/358), [#360](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/360)
 - **v3.4.1** - feat: fold hub_get_op_result into the opToken write-retry flow. PRs: [#356](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/356)
 - **v3.4.0** - fix: one-time reset of publishOutputSchemas to OFF on update (issue #354). PRs: [#355](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/355)
