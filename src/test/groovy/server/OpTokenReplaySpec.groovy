@@ -1104,7 +1104,7 @@ class OpTokenReplaySpec extends ToolSpecBase {
         second.result.structuredContent.firmwareVersion == '9.9.9'
     }
 
-    def "_opTokenComplete buffers the result to the reserved file and flips the marker to complete"() {
+    def "_opTokenComplete defers small results inline, and the sweep lands the exact bytes in the reserved file"() {
         given:
         def store = [:]
         script.metaClass.uploadHubFile = { String name, byte[] content -> store[name] = new String(content, 'UTF-8') }
@@ -1113,20 +1113,29 @@ class OpTokenReplaySpec extends ToolSpecBase {
         when:
         script._opTokenComplete('ct123456', '{"success":true,"x":1}', false)
 
-        then: 'the exact bytes land in mcp-op-result-<token>.json'
-        store[FILE_PREFIX + 'ct123456.json'] == '{"success":true,"x":1}'
-
-        and: 'the marker is completed while preserving tool + startedAt'
+        then: 'the marker is completed while preserving tool + startedAt, result inline pending the sweep'
         def marker = atomicStateMap.opTokens['ct123456']
         marker.state == 'complete'
         marker.isError == false
         marker.tool == 'hub_create_room'
         marker.startedAt == FIXED_NOW - 500L
         marker.finishedAt == FIXED_NOW
-        marker.file == FILE_PREFIX + 'ct123456.json'
+        marker.inline == '{"success":true,"x":1}'
+        marker.pendingUpload == true
+        store.isEmpty()
+
+        when:
+        script._opTokenUploadSweep()
+
+        then: 'the exact bytes land in mcp-op-result-<token>.json and the inline copy is stripped'
+        store[FILE_PREFIX + 'ct123456.json'] == '{"success":true,"x":1}'
+        def swept = atomicStateMap.opTokens['ct123456']
+        swept.file == FILE_PREFIX + 'ct123456.json'
+        swept.inline == null
+        swept.pendingUpload == null
     }
 
-    def "_opTokenComplete falls back to inline storage when the upload fails and the result is small"() {
+    def "_opTokenComplete keeps a small result inline regardless of File Manager health (deferred path, no upload attempted)"() {
         given:
         script.metaClass.uploadHubFile = { String name, byte[] content -> throw new RuntimeException('storage full') }
         atomicStateMap.opTokens = [inl123456: [state: 'running', tool: 'hub_create_room', startedAt: FIXED_NOW]]
@@ -1135,17 +1144,17 @@ class OpTokenReplaySpec extends ToolSpecBase {
         when:
         script._opTokenComplete('inl123456', small, false)
 
-        then: 'a small result is kept inline on the marker so replay still works'
+        then: 'the result is inline on the marker so replay works even before (or without) the sweep'
         def marker = atomicStateMap.opTokens['inl123456']
         marker.state == 'complete'
         marker.inline == small
     }
 
-    def "_opTokenComplete marks failed_buffer when the upload fails and the result is too large to inline"() {
-        given:
+    def "_opTokenComplete marks failed_buffer when the SYNCHRONOUS upload (over the deferred cap) fails"() {
+        given: 'a result too big to defer inline (>8192) whose upload then fails'
         script.metaClass.uploadHubFile = { String name, byte[] content -> throw new RuntimeException('storage full') }
         atomicStateMap.opTokens = [big123456: [state: 'running', tool: 'hub_create_room', startedAt: FIXED_NOW]]
-        def big = '{"blob":"' + ('x' * 3000) + '"}'
+        def big = '{"blob":"' + ('x' * 9000) + '"}'
 
         when:
         script._opTokenComplete('big123456', big, false)
