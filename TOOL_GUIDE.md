@@ -1167,7 +1167,7 @@ If the response is lost, do NOT re-run the operation and do NOT invent a fresh t
 - `status: "unknown"` (returned only to a token-only poll) — no RECORD of this token exists: the original call never arrived, OR the record aged out (records sweep ~24h after start, and past 100 stored records the oldest terminal records batch-evict down to 50). Poll promptly after a drop and it reliably means never-arrived: re-issue the ORIGINAL call (full arguments) with this same token. Do not trust day-old tokens.
 - `status: "indeterminate"` — the operation completed here but its buffered result cannot be read (buffering failed, or the result file is gone while the record survives). Do NOT re-issue blindly; verify current state via reads first.
 
-A token is SPENT once its operation completes — errors included; to retry with corrected arguments, invent a FRESH token. A replayed result whose `status` is `in_progress` carries `replayNote`: it is the original paused envelope, not new progress — a spent token cannot drive a resume; re-issue the remaining work with a fresh token.
+A token is SPENT once its operation completes — runtime errors included; to retry with corrected arguments after a RUNTIME failure, invent a FRESH token. Exception: a call rejected for invalid arguments (-32602) executed nothing and RELEASES its token — fix the arguments and re-issue with the SAME token. A replayed result whose `status` is `in_progress` carries `replayNote`: it is the original paused envelope, not new progress — a spent token cannot drive a resume; re-issue the remaining work with a fresh token.
 
 ### hub_update_package: never re-run on a timeout
 

@@ -1180,10 +1180,13 @@ def handleToolsCall(msg) {
             }
         }
         if (opTokenActive) {
-            // A validation error means the leaf executed NOTHING, so the token must NOT be
-            // spent on it: buffering the -32602 made the documented recovery (re-issue with
-            // the SAME token) replay the stale rejection even after the caller fixed the
-            // arguments (the dedup gate cannot see that args changed -- issue #361 review).
+            // A validation error means the leaf executed NOTHING (the error contract: an
+            // IllegalArgumentException is thrown up front, before any side effect -- the
+            // release below leans on that convention, so a tool must never throw IAE after
+            // partial work), so the token must NOT be spent on it: buffering the -32602 made
+            // the documented recovery (re-issue with the SAME token) replay the stale
+            // rejection even after the caller fixed the arguments (the dedup gate cannot see
+            // that args changed -- issue #361 review).
             // Release the record instead: a corrected re-issue executes fresh, and a
             // lost-response re-poll answers "unknown -> re-issue the original call", which
             // simply re-validates to the identical error. opCompletionText stays null, so
@@ -1460,18 +1463,21 @@ def _opTokenMark(String opToken, toolName) {
     _opTokenPrune()
 }
 
-// Remove a token's record entirely (the validation-error path: the leaf executed nothing,
-// so the token must stay spendable by a corrected re-issue). Whole-map remove -- the same
-// narrow concurrent-write window the prune accepts, self-healed by the TTL sweep. No result
-// file can exist on this path (only _opTokenComplete uploads, and completion never ran; a
-// prior record for the token would have short-circuited at the dedup gate before dispatch).
+// Release a token after a validation error (the leaf executed nothing, so the token must
+// stay spendable by a corrected re-issue). Written as a per-entry "released" sentinel that
+// the dedup gate treats as absent -- NOT a whole-map remove: atomicState has no per-key
+// remove, and a whole-map read-modify-write here could clobber a concurrent different-token
+// updateMapValue and silently lose a LIVE record's dedup protection (the prune stays the
+// only whole-map writer, and it only drops terminal records). The TTL sweep / size cap reap
+// released records like any other terminal entry. No result file from THIS request can
+// exist here (only _opTokenComplete uploads, and completion never ran; a prior record would
+// have short-circuited at the dedup gate before dispatch) -- at most a prune-orphaned file
+// from an earlier, already-pruned completion remains, which a later completion overwrites.
 def _opTokenRelease(String opToken) {
     def stored = atomicState.opTokens
-    if (!(stored instanceof Map) || !stored.containsKey(opToken)) return
-    def tokens = [:]
-    tokens.putAll(stored)
-    tokens.remove(opToken)
-    atomicState.opTokens = tokens
+    def prev = (stored instanceof Map && stored[opToken] instanceof Map) ? stored[opToken] : [:]
+    _opTokenPut(opToken, [state: "released", tool: prev.tool,
+                          startedAt: (prev.startedAt != null ? prev.startedAt : now())])
 }
 
 // Buffer a token's terminal result (called once, on the request's terminal path).
@@ -1518,6 +1524,9 @@ def _opTokenDedup(String opToken, origToolName) {
     def toks = atomicState.opTokens
     def rec = (toks instanceof Map && toks[opToken] instanceof Map) ? toks[opToken] : null
     if (rec == null) return null
+    // A released record means a validation error spent NOTHING: treat it as absent so the
+    // corrected re-issue dispatches fresh (it re-marks the token running on its way in).
+    if (rec.state == "released") return null
     if (rec.state == "running") {
         def started = (rec.startedAt != null) ? (rec.startedAt as Long) : null
         def runningNote = "An operation with this token is already executing on the hub. Do NOT re-run the operation; poll by re-issuing this call with the same opToken (the token alone is enough) until it replays the buffered result. See hub_get_tool_guide(section='slow_ops')."
@@ -4280,7 +4289,12 @@ def _latestLocalHubBackupEpoch() {
     try {
         def raw = hubInternalGet("/hub2/localBackups", null, 10)
         def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
-        if (!(parsed instanceof List)) return null
+        if (!(parsed instanceof List)) {
+            // e.g. an auth-failure JSON object under Hub Security -- the fallback is out of
+            // service, which quietly regresses to the pre-#361 refusals; leave a trace.
+            mcpLog("debug", "hub-admin", "local backup list returned a ${parsed == null ? 'null/empty' : (parsed instanceof Map ? 'JSON-object' : 'non-list')} body -- backup-gate fallback skipped")
+            return null
+        }
         Long newest = null
         parsed.each { entry ->
             def ts = (entry instanceof Map) ? entry.createTimeOrig?.toString() : null
@@ -4288,6 +4302,8 @@ def _latestLocalHubBackupEpoch() {
             Long epoch = null
             // createTimeOrig carries an explicit numeric offset ("2026-04-23T07:01:24+0000");
             // the offset-less shape is tolerated as UTC in case a firmware drops the suffix.
+            // (If such a firmware emitted LOCAL time instead, a non-UTC hub would mis-age the
+            // backup by its offset -- accepted for a defensive path no real hub exercises.)
             try { epoch = Date.parse("yyyy-MM-dd'T'HH:mm:ssZ", ts).time }
             catch (Exception ignored) {
                 try {
@@ -4298,6 +4314,12 @@ def _latestLocalHubBackupEpoch() {
                 } catch (Exception ignored2) { }
             }
             if (epoch != null && (newest == null || epoch > newest)) newest = epoch
+        }
+        if (newest == null && !parsed.isEmpty()) {
+            // Backups exist but no createTimeOrig parsed -- a firmware format drift would
+            // silently re-break issue #361 (fallback dead, gate refusing beside real backups),
+            // so this one is loud.
+            mcpLog("warn", "hub-admin", "local backup list has ${parsed.size()} entries but no parseable createTimeOrig -- backup-gate fallback is blind (timestamp format drift?)")
         }
         return newest
     } catch (Exception e) {
@@ -6026,7 +6048,7 @@ This section covers the hub-admin and system tools (hub info, location modes, HS
 
 ### Destructive Write Tools - Pre-Flight Checklist
 
-All Write master tools require these steps:
+The destructive/confirm-tier write tools require these steps (ordinary writes need only the Write master):
 1. Backup check: Ensure a hub backup exists within the last 24 hours (hub_create_backup, or any backup in hub_list_backups scope=hub_local -- scheduled backups count; the gate checks the hub's own list when this app's record is stale)
 2. Inform user: Tell them what you're about to do
 3. Get confirmation: Wait for explicit "yes", "confirm", or "proceed"
@@ -6470,8 +6492,8 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 
 ### Hub Backups
 - hub_create_backup creates full hub database backup
-- A hub backup within 24 hours is required before any Write master operation; the gate accepts this app's own record OR any backup in the hub's local backup list (scheduled/UI backups count)
-- Only write tool that doesn't require a prior backup
+- A hub backup within 24 hours is required by the destructive/confirm-tier write tools (ordinary writes need only the Write master); the gate accepts this app's own record OR any backup in the hub's local backup list (scheduled/UI backups count)
+- hub_create_backup itself is exempt from the prior-backup requirement (it IS the backup)
 
 ### Source Code Backups (Automatic)
 - Created when using hub_update_app, hub_update_driver, hub_update_library, hub_delete_item

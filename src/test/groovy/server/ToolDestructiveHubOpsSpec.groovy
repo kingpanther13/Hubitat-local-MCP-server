@@ -137,6 +137,22 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         stateMap.lastBackupTimestamp == null      // a stale list entry must NOT stamp the gate
     }
 
+    def "the fallback parses an offset-less createTimeOrig as UTC and skips entries without one"() {
+        given:
+        settingsMap.enableWrite = true
+        // First entry has no createTimeOrig (skipped); the second is suffix-less -- the
+        // SimpleDateFormat UTC fallback must resolve it to the same epoch as the +0000 form.
+        hubGet.register('/hub2/localBackups') { params -> '[{"name":"junk.lzf"},{"name":"a.lzf","createTimeOrig":"2009-02-13T20:00:00"}]' }
+        script.metaClass.hubInternalPost = { String path, Map body = null -> 'ok' }
+
+        when:
+        def result = script.toolRebootHub([confirm: true])
+
+        then:
+        result.success == true
+        stateMap.lastBackupTimestamp == 1234555200000L   // == the +0000 parse of the same instant
+    }
+
     def "a malformed backup list leaves the gate closed"() {
         given:
         settingsMap.enableWrite = true

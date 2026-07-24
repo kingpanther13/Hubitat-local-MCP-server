@@ -186,8 +186,8 @@ class OpTokenReplaySpec extends ToolSpecBase {
         response.error != null
         response.error.code == -32602
 
-        and: 'the leaf executed nothing, so the token is released -- not left running, not spent on the stale rejection'
-        !atomicStateMap.opTokens?.containsKey('iaetoken12')
+        and: 'the leaf executed nothing, so the token is released (a per-entry sentinel the dedup gate treats as absent) -- not left running, not spent on the stale rejection'
+        atomicStateMap.opTokens['iaetoken12'].state == 'released'
         !store.containsKey(FILE_PREFIX + 'iaetoken12.json')
     }
 
@@ -562,7 +562,7 @@ class OpTokenReplaySpec extends ToolSpecBase {
         then: 'the leaf validation error surfaced (-32602), and the token was released for a corrected re-issue'
         response.error != null
         response.error.code == -32602
-        !atomicStateMap.opTokens?.containsKey('partial12345')
+        atomicStateMap.opTokens['partial12345'].state == 'released'
     }
 
     def "a token-only call naming a bare GATEWAY is a pure poll -- the token is never spent on a catalog listing"() {
