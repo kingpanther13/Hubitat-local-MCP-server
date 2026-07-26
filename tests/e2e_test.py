@@ -3245,20 +3245,42 @@ class TestRunner:
         assert active.get("paused") is False and active.get("disabled") is False, \
             f"new rule should be neither paused nor disabled, got: {active}"
 
-        # Assert the write's OWN envelope before polling the read side: without it a
-        # genuine pause failure and a slow status decoration produce the same symptom.
-        pause_res = self.client.call_tool("hub_manage_rule_machine", {
-            "tool": "hub_set_rule_paused", "args": {"ruleId": app_id, "paused": True}})
-        assert not (isinstance(pause_res, dict) and pause_res.get("success") is False), \
-            f"hub_set_rule_paused(paused=True) reported failure: {pause_res}"
+        # Every status write goes through _status_write so an "excessive hub load" limiter trip
+        # bounces the app and retries once -- the same contract the mode-lifecycle and
+        # system-settings tests use. One difference drove the wrapper's shape: those tools RAISE
+        # on the limiter, while hub_set_rule_paused returns it inside a structured envelope
+        # ({'success': False, 'error': 'RMUtils.sendAction failed: App N generates excessive hub
+        # load'}), so the envelope has to be inspected too or the bounce never fires. The limiter
+        # is sticky (only an app bounce or hub reboot clears it), which is why retrying alone
+        # cannot work -- it tripped here on a full-lane run at ~43 minutes in.
+        def _status_write(tool: str, args: dict, label: str) -> Any:
+            gateway = "hub_manage_rule_machine" if tool == "hub_set_rule_paused" else "hub_manage_native_rules_and_apps"
+            try:
+                res = self.client.call_tool(gateway, {"tool": tool, "args": args})
+            except McpToolError as exc:
+                if "excessive hub load" in str(exc) and self._clear_load_throttle(f"{label}: {exc}"):
+                    res = self.client.call_tool(gateway, {"tool": tool, "args": args})
+                else:
+                    raise
+            if (isinstance(res, dict) and res.get("success") is False
+                    and "excessive hub load" in str(res.get("error", ""))
+                    and self._clear_load_throttle(f"{label}: {res.get('error')}")):
+                res = self.client.call_tool(gateway, {"tool": tool, "args": args})
+            # Assert the write's OWN envelope before polling the read side: without it a genuine
+            # failure and a slow status decoration produce the same symptom (that is how the
+            # limiter trip first presented -- as an unexplained 'paused: False' read-back).
+            assert not (isinstance(res, dict) and res.get("success") is False), \
+                f"{label} reported failure: {res}"
+            return res
+
+        _status_write("hub_set_rule_paused", {"ruleId": app_id, "paused": True},
+                      "hub_set_rule_paused(paused=True)")
         paused = _rule_status_when(app_id, lambda s: s.get("status") == "paused" and s.get("paused") is True)
         assert paused.get("status") == "paused" and paused.get("paused") is True, \
             f"paused rule should read status paused + paused:true, got: {paused}"
 
-        resume_res = self.client.call_tool("hub_manage_rule_machine", {
-            "tool": "hub_set_rule_paused", "args": {"ruleId": app_id, "paused": False}})
-        assert not (isinstance(resume_res, dict) and resume_res.get("success") is False), \
-            f"hub_set_rule_paused(paused=False) reported failure: {resume_res}"
+        _status_write("hub_set_rule_paused", {"ruleId": app_id, "paused": False},
+                      "hub_set_rule_paused(paused=False)")
         resumed = _rule_status_when(app_id, lambda s: s.get("status") == "active" and s.get("paused") is False)
         assert resumed.get("status") == "active" and resumed.get("paused") is False, \
             f"resumed rule should read status active again, got: {resumed}"
@@ -3269,14 +3291,14 @@ class TestRunner:
         # step below so the edit runs against an enabled rule. (No live requiredExpressionFalse
         # scenario: the decoration-refresh timing on a fresh rule is unverified; Spock covers its
         # parsing.)
-        self.client.call_tool("hub_manage_native_rules_and_apps", {
-            "tool": "hub_set_app_disabled", "args": {"appId": app_id, "disabled": True}})
+        _status_write("hub_set_app_disabled", {"appId": app_id, "disabled": True},
+                      "hub_set_app_disabled(disabled=True)")
         disabled = _rule_status_when(app_id, lambda s: s.get("status") == "disabled" and s.get("disabled") is True)
         assert disabled.get("status") == "disabled" and disabled.get("disabled") is True, \
             f"disabled rule should read status disabled + disabled:true, got: {disabled}"
 
-        self.client.call_tool("hub_manage_native_rules_and_apps", {
-            "tool": "hub_set_app_disabled", "args": {"appId": app_id, "disabled": False}})
+        _status_write("hub_set_app_disabled", {"appId": app_id, "disabled": False},
+                      "hub_set_app_disabled(disabled=False)")
         reenabled = _rule_status_when(app_id, lambda s: s.get("status") == "active" and s.get("disabled") is False)
         assert reenabled.get("status") == "active" and reenabled.get("disabled") is False, \
             f"re-enabled rule should read status active again, got: {reenabled}"
