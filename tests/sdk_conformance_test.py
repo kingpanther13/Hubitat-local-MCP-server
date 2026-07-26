@@ -39,13 +39,24 @@ config all FAIL with a remediation message. A skip here would look like coverage
 Configuration is shared with tests/e2e_test.py — `tests/e2e_config.json` (gitignored) or
 HUBITAT_HUB_URL / HUBITAT_APP_ID / HUBITAT_ACCESS_TOKEN.
 
-SECRET HANDLING. This endpoint authenticates by the access token in the URL QUERY — there is
-no bearer alternative — so the token is part of every URL the SDK touches, and httpx quotes
-that URL in the message of every URL-bearing exception it raises. Every string this script
-prints or raises therefore goes through `_redact`, the connect banner prints
-`config["safe_endpoint"]` rather than the live URL, the request trace stores headers but never
-a URL, and the SDK's own DEBUG line that logs the endpoint is silenced. CI masks the token in
-its logs too, but this script does not rely on that — it also runs locally.
+SECRET HANDLING — STRUCTURAL, NOT SCRUBBED. This endpoint authenticates by the access token
+in the URL QUERY (there is no bearer alternative), so the token is part of every URL the SDK
+touches, and httpx quotes that URL in the message of every URL-bearing exception it raises.
+Rather than scrub those messages, nothing printed is derived from them in the first place:
+
+  * the tokenized URL exists in one place, `config["endpoint"]`, and is passed to
+    `streamable_http_client` and nowhere else — never printed, never string-sliced;
+  * every printed message uses `config["safe_endpoint"]`, which is `HubitatMcpClient.endpoint`
+    — built from hub_url + app_id only, so it never held the token to begin with;
+  * httpx failures are described from structured fields (class, status, reason phrase,
+    method) by `_http_failure_detail`, which never reads `str(exc)`;
+  * the request trace records headers but deliberately no URL;
+  * the SDK's own DEBUG line that logs the endpoint is silenced.
+
+An earlier version scrubbed a tokenized string with a `_redact` helper instead. CodeQL's
+py/clear-text-logging-sensitive-data flagged it, correctly: a mask built by slicing the token
+still discloses part of it, and the "sanitizer" was itself the thing feeding token-derived
+data into a print. Structure beats scrubbing — keep it that way.
 
 Usage:
     pip install -r tests/sdk-conformance-requirements.txt
@@ -57,6 +68,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+from http import HTTPStatus
 from pathlib import Path
 from typing import Any
 
@@ -118,42 +130,55 @@ def deprecated_sdk_usages() -> list[str]:
             for label, fn in checked if getattr(fn, "__deprecated__", None)]
 
 
-# Values that must never reach stdout/stderr. The access token rides in the endpoint URL
-# (this endpoint has no other auth), so httpx puts it in the message of every URL-bearing
-# exception it raises -- an HTTPStatusError reads "Client error '401 Unauthorized' for url
-# '<endpoint>?access_token=<secret>'". CI masks the secret in its own logs, but this script
-# must not depend on that: it may run locally, and a log that escapes CI keeps the token.
-_SECRETS: list[str] = []
+def _http_failure_detail(exc: httpx.HTTPError, endpoint: str) -> str:
+    """Describe an httpx failure from STRUCTURED FIELDS ONLY -- never from `str(exc)`.
 
+    httpx quotes the full request URL in its exception messages ("Client error '401
+    Unauthorized' for url '<endpoint>?access_token=<token>'"), and this endpoint
+    authenticates by that query token, so `str(exc)` carries a live credential. Assembling
+    the text from the exception CLASS, the numeric status, its standard reason phrase, the
+    request method, and the caller's token-free `endpoint` means the token's value never
+    enters the message in the first place -- rather than entering it and being scrubbed
+    afterwards, which is both weaker and (as CodeQL's py/clear-text-logging-sensitive-data
+    correctly observed of an earlier attempt) still a disclosure if the mask keeps any of
+    the token's characters.
 
-def _register_secret(value: str) -> None:
-    """Mark a value for redaction from every string this script prints or raises."""
-    if value and value not in _SECRETS:
-        _SECRETS.append(value)
-
-
-def _redact(text: str) -> str:
-    """Replace every registered secret with a masked stand-in.
-
-    The first four characters survive, matching tests/e2e_test.py's own masking convention,
-    so a wrong-token diagnosis is still possible without disclosing the token.
+    Diagnosability is preserved deliberately: a 401 still reads as an unmistakable 401.
     """
-    for secret in _SECRETS:
-        text = text.replace(secret, f"{secret[:4]}...<redacted>" if len(secret) > 4 else "<redacted>")
-    return text
+    parts = [type(exc).__name__]
+    response = getattr(exc, "response", None)
+    if response is not None:
+        status = int(response.status_code)
+        try:
+            phrase = HTTPStatus(status).phrase
+        except ValueError:
+            phrase = ""
+        parts.append(f"HTTP {status} {phrase}".rstrip())
+    request = getattr(exc, "request", None)
+    if request is not None:
+        parts.append(f"on {request.method}")
+    parts.append(f"to {endpoint}")
+    return " ".join(parts)
 
 
-def _describe_exception(exc: BaseException) -> str:
-    """Redacted `type: message`, flattening anyio's ExceptionGroup wrappers.
+def _failure_detail(exc: BaseException, endpoint: str) -> str:
+    """One actionable line for any failure, flattening anyio's ExceptionGroup wrappers.
 
     A transport failure surfaces as "unhandled errors in a TaskGroup", which names nothing
     actionable -- the real cause (ConnectError, ReadTimeout, an HTTP status error) is a
-    sub-exception. Recurse so the printed line says what actually went wrong, and redact,
-    because the URL those messages quote carries the access token.
+    sub-exception, so recurse.
+
+    The httpx branch never reads the exception's message (see `_http_failure_detail`).
+    Every other exception here is an AssertionError from this file's own scenarios, or a
+    json/ValueError over a hub RESPONSE body -- text authored here or derived from the
+    hub's reply, never from the request URL -- so its message is safe to show and is
+    where the diagnostic value lives.
     """
     if isinstance(exc, BaseExceptionGroup):
-        return "; ".join(_describe_exception(sub) for sub in exc.exceptions)
-    return _redact(f"{type(exc).__name__}: {exc}")
+        return "; ".join(_failure_detail(sub, endpoint) for sub in exc.exceptions)
+    if isinstance(exc, httpx.HTTPError):
+        return _http_failure_detail(exc, endpoint)
+    return f"{type(exc).__name__}: {exc}"
 
 
 def _load_hub_config() -> dict:
@@ -182,14 +207,18 @@ def _load_hub_config() -> dict:
             "Install its dependency with `pip install requests`."
         ) from exc
     config = e2e_test.load_config()
-    token = config["access_token"]
     client = e2e_test.HubitatMcpClient(
-        hub_url=config["hub_url"], app_id=config["app_id"], access_token=token
+        hub_url=config["hub_url"], app_id=config["app_id"], access_token=config["access_token"]
     )
-    # Register the secret BEFORE any URL built from it can reach a print or an exception.
-    _register_secret(token)
-    separator = "&" if "?" in client.endpoint else "?"
-    endpoint = f"{client.endpoint}{separator}access_token={token}"
+    # `client.endpoint` is built from hub_url + app_id ONLY -- the token is a separate
+    # attribute on that client. So it is inherently token-free and is the string every
+    # printed message uses. The tokenized URL below is derived from it, never the reverse:
+    # nothing printed is produced by stripping a secret back out of a string.
+    safe_endpoint = client.endpoint
+    assert "access_token" not in safe_endpoint, \
+        "internal: the endpoint used for printed messages must never carry the token"
+    separator = "&" if "?" in safe_endpoint else "?"
+    endpoint = f"{safe_endpoint}{separator}access_token={config['access_token']}"
     if "access_token=" not in endpoint:
         # Unreachable as written; kept because the failure it guards against (a tokenless
         # URL) surfaces as a bare 401 that reads like a hub/permissions problem rather than
@@ -199,8 +228,10 @@ def _load_hub_config() -> dict:
             "so the hub would answer 401. This endpoint authenticates by token-in-URL only."
         )
     return {
+        # `endpoint` is used for exactly one thing -- the streamable_http_client call. It is
+        # never printed, never string-manipulated into anything printed.
         "endpoint": endpoint,
-        "safe_endpoint": _redact(endpoint),
+        "safe_endpoint": safe_endpoint,
         "initialize_versions": e2e_test.INITIALIZE_PROTOCOL_VERSIONS,
         "supported_versions": e2e_test.SUPPORTED_PROTOCOL_VERSIONS,
     }
@@ -280,7 +311,7 @@ class Scenarios:
         except Exception as exc:
             # Any exception is a scenario failure, AssertionError included -- recorded so
             # the independent scenarios after it still run and report.
-            self._record(name, _describe_exception(exc))
+            self._record(name, _failure_detail(exc, self.config['safe_endpoint']))
             return False
         self._record(name, None)
         return True
@@ -380,12 +411,11 @@ class Scenarios:
         assert block.type == "text", f"expected a text content block, got {block.type!r}"
         payload = json.loads(block.text)
         assert isinstance(payload, dict), f"hub_get_info payload is not an object: {type(payload)}"
-        # Redacted defensively: toolGetHubInfo returns no token or server URL today (the only
-        # access_token in the app's Groovy is on its settings PAGE), but this is the one
-        # message here that echoes a whole hub payload, so it should not become a leak if
-        # that tool ever grows an endpoint field.
+        # Echoes a whole hub payload, which is safe: toolGetHubInfo returns neither a token
+        # nor a server URL (the only access_token in the app's Groovy is on its settings
+        # PAGE), and this is a RESPONSE body -- nothing here derives from the request URL.
         assert payload.get("success") is not False, \
-            _redact(f"hub_get_info returned a failure envelope: {payload}")
+            f"hub_get_info returned a failure envelope: {payload}"
         print(f"         hub_get_info returned {len(block.text)} chars of JSON, keys={sorted(payload)[:6]}")
 
     async def _legacy_header_contract(self) -> None:
@@ -465,7 +495,7 @@ def main() -> None:
     # The SDK logs the endpoint URL -- token and all -- at DEBUG ("Connecting to
     # StreamableHTTP endpoint: {url}"). Nothing configures logging here so it is not emitted
     # today, but this script must not be one global logging.basicConfig(DEBUG) away from
-    # printing a live credential, and _redact cannot reach a library's own log call.
+    # printing a live credential, and nothing in this file can reach a library's own log call.
     logging.getLogger("mcp.client.streamable_http").setLevel(logging.INFO)
 
     print("=" * 60)
@@ -477,7 +507,7 @@ def main() -> None:
         # Report the transport failure as one actionable line rather than dumping an anyio
         # exception-group traceback -- an unreachable hub is the common case here.
         print(f"\nERROR: the SDK client could not complete a session against the hub: "
-              f"{_describe_exception(exc)}")
+              f"{_failure_detail(exc, config['safe_endpoint'])}")
         print("  Check that the hub is online, the MCP endpoint URL and access token are correct, "
               "and that the endpoint answers Streamable HTTP POSTs.")
         sys.exit(1)

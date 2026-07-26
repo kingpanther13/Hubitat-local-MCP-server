@@ -432,7 +432,17 @@ It shares config with `tests/e2e_test.py` (`tests/e2e_config.json` or `HUBITAT_H
 
 **The token must be in the URL query.** `HubitatMcpClient.endpoint` is the bare `<prefix>/mcp` — that client keeps `access_token` separate and attaches it per request as `params={"access_token": …}`. The SDK's transport takes one URL and nothing else, so handing it `client.endpoint` sends a tokenless request and the hub answers a bare **401** that reads like a hub or permissions problem rather than a harness bug. This endpoint authenticates by token-in-URL only; there is no bearer fallback (Hubitat's OAuth endpoints ignore `Authorization`, and this server never reads it). `_load_hub_config` appends it and asserts it is present.
 
-That token in the URL is also why **every string the script prints or raises goes through `_redact`**: httpx quotes the full URL in the message of every URL-bearing exception it raises, so an unredacted 401 would put a live credential in the CI log. The connect banner prints a masked endpoint, the request trace records headers but deliberately never a URL, and the SDK's own DEBUG line that logs the endpoint is silenced. CI masks the token in its logs as well, but the script does not rely on that — it also runs locally.
+That token in the URL is also why the script's printed output is **structurally token-free rather than scrubbed**. httpx quotes the full URL in the message of every URL-bearing exception it raises, so a 401 would otherwise put a live credential in the CI log. Instead of masking those messages, nothing printed is derived from them:
+
+- the tokenized URL lives only in `config["endpoint"]` and is passed to `streamable_http_client` and nowhere else — never printed, never string-sliced;
+- every printed message uses `config["safe_endpoint"]`, i.e. `HubitatMcpClient.endpoint`, built from `hub_url` + `app_id` only, so it never held the token;
+- httpx failures are described by `_http_failure_detail` from structured fields — exception class, numeric status, its standard reason phrase, request method — and never from `str(exc)`;
+- the request trace records headers but deliberately no URL;
+- the SDK's own DEBUG line that logs the endpoint is silenced.
+
+Diagnosability is unaffected: a wrong token still prints `HTTPStatusError HTTP 401 Unauthorized on POST to <endpoint>` plus the remediation line.
+
+**Why structural and not a `_redact` helper:** an earlier version did scrub, and CodeQL's `py/clear-text-logging-sensitive-data` flagged three sinks — correctly. A mask built by slicing the token (`token[:4] + "…"`) still discloses part of it, and the "sanitizer" was itself what fed token-derived data into a `print`. The repo has no suppression comments anywhere; the precedent for this query is `tests/e2e_test.py`'s OAuth leg, which keeps secret-bearing values out of prints entirely and validates them through asserts instead (`assert` is not a logging sink). Follow that pattern rather than adding a scrubber.
 
 ```bash
 pip install -r tests/sdk-conformance-requirements.txt
