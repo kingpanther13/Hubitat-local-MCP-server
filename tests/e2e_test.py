@@ -10763,13 +10763,15 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
 
         # Layer 6: rooms with the BAT_E2E_ prefix (issue #209 McpRoomsLib round-trip).
         # The create/rename/delete test cleans up in its own finally; this reclaims a
-        # room a crashed run stranded.
+        # room a crashed run stranded. KEEP_-prefixed rooms are standing fixtures
+        # (BAT_E2E_KEEP_Room) and are exempt, same as the KEEP_ scaffold devices --
+        # this sweep deleted the fixture room on its first run without the exemption.
         try:
             rooms_result = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
             rlist = rooms_result.get("rooms", []) if isinstance(rooms_result, dict) else []
             for rm in rlist:
                 rname = rm.get("name") or ""
-                if PREFIX in rname:
+                if PREFIX in rname and not rname.startswith(SCAFFOLD_PREFIX):
                     rid = str(rm.get("id", ""))
                     if rid:
                         try:
