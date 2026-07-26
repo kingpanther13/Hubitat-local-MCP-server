@@ -160,6 +160,20 @@ def toolGetHubInfo(args = null) {
         info.lastSelfDeploy = lsd
     }
 
+    // Transport header readability (see _noteHeadersReadable). Null until the first MCP request has
+    // been served. When false, TWO things are off and neither is visible anywhere else: Origin
+    // validation cannot run, and modern-era (2026-07-28) requests are served as legacy.
+    if (state.headersReadable != null) {
+        def hv = [requestHeadersReadable: (state.headersReadable == true),
+                  originValidation: (state.headersReadable != true) ? "INACTIVE (headers unreadable)"
+                                    : ((settings.enforceOriginValidation == true) ? "enforcing (403 on mismatch)" : "log-only (default)"),
+                  modernEraDetection: (state.headersReadable == true) ? "active" : "INACTIVE (all requests served as legacy)"]
+        if (state.originLocalIpReadable == false) {
+            hv.originAllowlist = "NARROWED -- location.hub.localIP unreadable, so a LAN browser origin naming this hub by address is rejected"
+        }
+        info.headerValidation = hv
+    }
+
     // PII/location data requires the Read master (default ON)
     if (settings.enableRead != false) {
         info.name = hub?.name
@@ -402,18 +416,17 @@ private _applyNetworkConfig(network, List applied) {
         def mode = network.ipMode?.toString()
         try {
             if (mode == "static") {
-                def q = [
-                    "address=${_urlEnc(network.address)}",
-                    "netmask=${_urlEnc(network.netmask)}",
-                    "gateway=${_urlEnc(network.gateway)}",
-                    "nameserver=${_urlEnc(network.nameserver ?: '')}"
-                ].join("&")
-                hubInternalGet("/hub/advanced/switchToStaticIp?${q}")
+                hubInternalGet("/hub/advanced/switchToStaticIp", [
+                    address: network.address,
+                    netmask: network.netmask,
+                    gateway: network.gateway,
+                    nameserver: (network.nameserver ?: '')
+                ])
                 applied << "network.staticIp"
             } else {   // dhcp (validated)
                 def fallover = network.containsKey("useDNSFallover") ? ("${network.useDNSFallover}".equalsIgnoreCase("true")) : false
-                def q = "nameserver=${_urlEnc(network.nameserver ?: '')}&useDNSFallover=${fallover}"
-                hubInternalGet("/hub/advanced/switchToDhcp?${q}")
+                hubInternalGet("/hub/advanced/switchToDhcp",
+                               [nameserver: (network.nameserver ?: ''), useDNSFallover: fallover])
                 applied << "network.dhcp"
             }
         } catch (Exception e) {
@@ -439,8 +452,8 @@ private _applyNetworkConfig(network, List applied) {
     // WiFi join (ssid/psk -- RE'd param names).
     if (network.wifiSsid) {
         try {
-            def q = "ssid=${_urlEnc(network.wifiSsid)}&psk=${_urlEnc(network.wifiPassword ?: '')}"
-            hubInternalGet("/hub/advanced/setWiFiNetworkInfo?${q}")
+            hubInternalGet("/hub/advanced/setWiFiNetworkInfo",
+                           [ssid: network.wifiSsid, psk: (network.wifiPassword ?: '')])
             applied << "network.wifi"
         } catch (Exception e) {
             mcpLogError("hub-admin", "hub_set_system_settings setWiFiNetworkInfo failed", e)
@@ -450,12 +463,6 @@ private _applyNetworkConfig(network, List applied) {
     }
 
     return null
-}
-
-// URL-encode a network query value (UTF-8). Centralizes the encode so a value with spaces or symbols
-// (a WiFi SSID/password, a nameserver list) is wired correctly.
-private String _urlEnc(v) {
-    return java.net.URLEncoder.encode(v?.toString() ?: "", "UTF-8")
 }
 
 // Validate an optional lat/long arg: coerce a string to a number and bound the range (-> -32602 on a
@@ -938,6 +945,7 @@ def _getAllToolDefinitions_partSystem() {
                     customRuleEngineEnabled: [type: "boolean", description: "Custom rule engine toggle state"],
                     developerModeEnabled: [type: "boolean", description: "Developer Mode toggle state"],
                     lastSelfDeploy: [type: "object", description: "issue #237: outcome of the last hub_update_app self-update (the MCP server updating its own app). Recovers the result that can't return on the deploy call (success reloads the app; a big-file compile failure 504s). Keys: success (bool), error (hub's verbatim message or null), sourceMode, importUrl, sourceLength, at (epoch ms), ageMs (ms since `at`, computed at read). PERSISTS in atomicState across app reloads -- it is NOT cleared on update, so a read can return a STALE record from an earlier deploy; check ageMs (or baseline `at` across your own deploy) for freshness before trusting it. Absent until the first self-update."],
+                    headerValidation: [type: "object", description: "Transport header readability, recorded on the first MCP request served. Keys: requestHeadersReadable (bool), originValidation, modernEraDetection, and originAllowlist when the hub LAN IP could not be read. When requestHeadersReadable is false the firmware does not expose request.headers, which INACTIVATES Origin validation (the DNS-rebinding check) and makes every request be served as legacy-era regardless of its MCP-Protocol-Version header. Absent until the first request."],
                     name: [type: "string", description: "Hub name (Read master only)"],
                     localIP: [type: "string", description: "Hub local IP (Read master only)"],
                     timeZone: [type: "string", description: "Time zone ID (Read master only)"],

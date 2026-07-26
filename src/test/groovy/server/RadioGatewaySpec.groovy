@@ -520,6 +520,30 @@ class RadioGatewaySpec extends ToolSpecBase {
         res.duration?.contains('5-30')
     }
 
+    def "repair_start does NOT report success when the ?-in-path guard fires"() {
+        // The guard is a server coding bug, not a hub fault, so _radioGetSafe rethrows it instead
+        // of turning it into the {error} map that triggers the legacy fallback. Without that
+        // rethrow, a conversion regressed to an embedded querystring would 404, silently fall
+        // through to /hub/zwaveRepair, and report success -- the exact silent-success shape the
+        // guard exists to end.
+        given: 'the modern endpoint raises the guard the way _hubRequest would'
+        hubGet.register('/hub/zwaveRepair2') { p ->
+            throw new IllegalStateException(
+                "hubInternal* path must not contain a querystring: '/hub/zwaveRepair2?resetStats=false' -- pass the query map instead")
+        }
+        and: 'the legacy endpoint WOULD succeed, so a laundered guard would look like success'
+        boolean legacyTried = false
+        hubGet.register('/hub/zwaveRepair') { p -> legacyTried = true; 'legacy started' }
+
+        when:
+        def res = script.toolCallZwave([action: 'repair_start'])
+
+        then: 'the tool reports failure and never reaches the fallback'
+        res.success == false
+        res.error?.contains('querystring')
+        !legacyTried
+    }
+
     def "repair_start falls back to legacy /hub/zwaveRepair when zwaveRepair2 errors"() {
         given:
         // zwaveRepair2 unregistered -> _radioGetSafe returns {error} -> legacy fallback fires.
@@ -530,6 +554,91 @@ class RadioGatewaySpec extends ToolSpecBase {
 
         then:
         res.success == true
+    }
+
+    // ---- query-map conversions: composed-key pins ----
+    //
+    // These six endpoints had NO coverage of any kind, so a mistyped query KEY (zwaveNodeId vs
+    // nodeId, setupCode vs code) would have shipped silently -- the hub would 400/ignore it and the
+    // tool would still report success. The mock recomposes 'path?k=v' from the query map, so
+    // asserting calls[].key pins both the path AND the parameter names.
+
+    def "getNodeState passes the node id as a query map"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/hub/zwaveDetails/json') { p -> JsonOutput.toJson([enabled: true]) }
+        hubGet.register('/hub/zwave2/getNodeState') { p -> 'IDLE' }
+
+        when:
+        script.toolGetRadioDetails([radio: 'zwave', node_id: '7'])
+
+        then:
+        hubGet.calls*.key.contains('/hub/zwave2/getNodeState?node=7')
+    }
+
+    def "the SmartStart list cache-busts with a t query param"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/hub/zwaveDetails/json') { p -> JsonOutput.toJson([enabled: true]) }
+        hubGet.register('/mobileapi/zwave/smartstart/list') { p -> JsonOutput.toJson([]) }
+
+        when:
+        script.toolGetRadioDetails([radio: 'zwave', include_smartstart: true])
+
+        then: 'the key carries a t= param (its value is now(), fixed by the harness)'
+        hubGet.calls*.key.any { it.startsWith('/mobileapi/zwave/smartstart/list?t=') }
+    }
+
+    def "updateChannelAndPower passes channel + powerLevel as a query map"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/zigbee/updateChannelAndPower') { p -> 'ok' }
+
+        when:
+        def res = script.toolSetZigbee([channel: 20, power_level: 8, confirm: true])
+
+        then:
+        res.success == true
+        hubGet.calls*.key.contains('/hub/zigbee/updateChannelAndPower?channel=20&powerLevel=8')
+    }
+
+    def "repair_node passes zwaveNodeId as a query map"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/zwaveNodeRepair2') { p -> 'started' }
+
+        when:
+        def res = script.toolCallZwave([action: 'repair_node', node_id: '12'])
+
+        then:
+        res.success == true
+        hubGet.calls*.key.contains('/hub/zwaveNodeRepair2?zwaveNodeId=12')
+    }
+
+    def "antenna_test_start passes node as a query map"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/zwave2/startAntennaTest') { p -> 'started' }
+
+        when:
+        def res = script.toolCallZwave([action: 'antenna_test_start', node_id: '9'])
+
+        then:
+        res.success == true
+        hubGet.calls*.key.contains('/hub/zwave2/startAntennaTest?node=9')
+    }
+
+    def "matter openPairingWindow passes node as a query map"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/matter/openPairingWindow') { p -> JsonOutput.toJson([success: true]) }
+
+        when:
+        def res = script.toolCallMatter([action: 'open_pairing_window', node_id: '3001'])
+
+        then:
+        res.success == true
+        hubGet.calls*.key.contains('/hub/matter/openPairingWindow?node=3001')
     }
 
     // ---- include_* read folds ----
@@ -707,8 +816,9 @@ class RadioGatewaySpec extends ToolSpecBase {
 
         then:
         r.success == false
-        // (a) the requested path is EXACTLY the zigbee updateSettings path with both query flags
-        hubGet.calls*.path.contains('/hub/zigbee/updateSettings?rebuildNetworkOnReboot=true&inactiveDevicePingEnabled=false')
+        // (a) the mock's composed path?query key pins EXACTLY the zigbee updateSettings
+        // request with both query flags (production sends the bare path + a query map)
+        hubGet.calls*.key.contains('/hub/zigbee/updateSettings?rebuildNetworkOnReboot=true&inactiveDevicePingEnabled=false')
         // (b) the note names an absent Zigbee radio and does NOT mislead toward credentials
         r.note?.contains('Zigbee radio')
         r.note?.toLowerCase()?.contains('absent')

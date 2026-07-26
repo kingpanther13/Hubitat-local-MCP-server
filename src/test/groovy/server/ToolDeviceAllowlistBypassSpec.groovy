@@ -699,8 +699,8 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         then: 'the NAME (Garage), not the id (7), is sent'
         result.success == true
         result.changes.find { it.property == 'room' }?.newValue == 'Garage'
-        hubGet.calls.any { it.path == "/device/updateRoom?deviceId=${UNLISTED_ID}&room=Garage" }
-        !hubGet.calls.any { it.path == "/device/updateRoom?deviceId=${UNLISTED_ID}&room=7" }
+        hubGet.calls.any { it.key == "/device/updateRoom?deviceId=${UNLISTED_ID}&room=Garage" }
+        !hubGet.calls.any { it.key == "/device/updateRoom?deviceId=${UNLISTED_ID}&room=7" }
     }
 
     def "bypass ON: toolUpdateDevice room with an UNKNOWN name returns Room not found and never calls updateRoom"() {

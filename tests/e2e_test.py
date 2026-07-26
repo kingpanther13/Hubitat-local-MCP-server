@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import random
@@ -36,12 +37,29 @@ import requests
 # ---------------------------------------------------------------------------
 
 PREFIX = "BAT_E2E_"
-# Persistent scaffold devices (the shared switch + temp sensors that rule fixtures reference and the
-# poll tests read) carry this marker so the cleanup sweeps SKIP them by name -- created once and
-# reused across runs, never deleted. Under-test fixtures use the bare PREFIX and are still reaped.
+# Persistent scaffold FIXTURES (the shared switch + temp sensors that rule fixtures reference and the
+# poll tests read, plus the BAT_E2E_KEEP_Room the /device/updateRoom scenario moves a device into)
+# carry this marker so the cleanup sweeps SKIP them by name -- created once and reused across runs,
+# never deleted. Under-test fixtures use the bare PREFIX and are still reaped. A missing KEEP_
+# fixture is a hub-provisioning problem, not a test bug: the owning scenario says how to recreate it.
 # (The watchdog purges apps/vars only, never devices, so this is purely the test-side device sweep;
 # no watchdog change is needed -- the devices are simply named to dodge the sweep.)
 SCAFFOLD_PREFIX = f"{PREFIX}KEEP_"  # "BAT_E2E_KEEP_"
+
+# Mirror of supportedProtocolVersions() in hubitat-mcp-server.groovy, newest first.
+# The protocol group pins the live list against this, so a version added or removed
+# server-side without updating the e2e expectation fails loudly instead of silently
+# widening what the hub claims to speak. This is the TRANSPORT list: it is what
+# server/discover advertises, what a modern MCP-Protocol-Version header is checked
+# against, and what a -32022 rejection hands back in data.supported.
+SUPPORTED_PROTOCOL_VERSIONS = ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
+
+# Mirror of initializeProtocolVersions() — the subset `initialize` may negotiate.
+# 2026-07-28 deleted the initialize handshake, so a client that reaches that method is
+# legacy-era by construction and is never handed the modern version: initialize echoes
+# only these, and every other requested value (unknown, omitted, or "2026-07-28")
+# falls back to INITIALIZE_PROTOCOL_VERSIONS[0], NOT SUPPORTED_PROTOCOL_VERSIONS[0].
+INITIALIZE_PROTOCOL_VERSIONS = [v for v in SUPPORTED_PROTOCOL_VERSIONS if v != "2026-07-28"]
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -290,13 +308,21 @@ class HubitatMcpClient:
             "clientInfo": {"name": "e2e-test", "version": "1.0.0"},
         })
 
-    def raw_request(self, payload: Any) -> requests.Response:
+    def raw_request(self, payload: Any, headers: dict | None = None) -> requests.Response:
         """POST a raw JSON-RPC body (single object, batch array, or notification)
         and return the raw requests.Response — no result-unwrapping, no
         error-raising. Retries transient 5xx/network flake like _send. Used by
         transport/protocol tests that must inspect the raw HTTP status and
         envelope (batch caps, 202-for-notifications, JSON-RPC framing) — paths
         the result-unwrapping call_tool/_send helpers deliberately hide.
+
+        `headers` sets extra request headers, which is how the modern (2026-07-28)
+        transport tests drive the MCP-Protocol-Version / Mcp-Method / Mcp-Name
+        validation. The cloud relay forwards these to the hub intact and preserves the
+        hub's status code, both probe-verified. Omitting `headers` leaves the request
+        HEADERLESS, i.e. on the legacy path — which is what every other call in this
+        suite does. Do NOT send an `Origin` here: Origin handling is covered by the
+        Spock matrix only, so the suite's own hub connection can never depend on it.
         """
         time.sleep(0.2)   # same per-call duty-cycle pacing as _send (see the limiter note there)
         last_exc: Exception | None = None
@@ -306,6 +332,7 @@ class HubitatMcpClient:
                     self.endpoint,
                     params={"access_token": self.access_token},
                     json=payload,
+                    headers=headers,
                     timeout=60,
                 )
                 if 500 <= resp.status_code < 600:
@@ -2078,6 +2105,63 @@ class TestRunner:
         assert show.get("success") is True, f"show-on-home restore failed: {show}"
 
     @test("devices")
+    def test_update_device_room_assign_and_unassign(self) -> None:
+        """UNCONDITIONAL live proof of /device/updateRoom (name-keyed room assignment).
+
+        The bypass-block leg that also touches this endpoint only runs when the arbitrarily-picked
+        unlisted device happens to already be in a room, so it can skip an entire run. This one owns
+        its inputs: the KEEP_ scaffold room (standing infra, see SCAFFOLD_PREFIX) and the scaffold
+        switch. It creates and deletes NOTHING -- it moves the switch in, asserts, reads back, and
+        restores the switch's prior membership.
+        """
+        dev_id = self.get_test_switch_id()
+        room_name = f"{SCAFFOLD_PREFIX}Room"
+
+        # Standing infra, like the KEEP_ devices: resolve it, never create it.
+        rooms = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
+        room = next((r for r in (rooms.get("rooms", []) if isinstance(rooms, dict) else [])
+                     if r.get("name") == room_name), None)
+        assert room is not None, (
+            f"the standing fixture room '{room_name}' is missing from the test hub. It is permanent "
+            "infra (the KEEP_ prefix keeps it out of every cleanup sweep) -- recreate it once via "
+            f"hub_manage_rooms(tool='hub_create_room', args={{'name': '{room_name}', 'confirm': True}}) "
+            "and this scenario will pass again. Do NOT make this test create it: a per-run create/delete "
+            "churns room ids and races the sweeps.")
+        room_id = str(room.get("id"))
+
+        # Where the switch started, so the finally can put it back.
+        before = self.client.call_tool("hub_manage_devices", {
+            "tool": "hub_get_device", "args": {"deviceId": dev_id}})
+        original_room = (before.get("room") or before.get("roomName")) if isinstance(before, dict) else None
+
+        try:
+            # THE surface under test: name-keyed assignment via /device/updateRoom.
+            assigned = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "room": room_name})
+            assert assigned.get("success") is True, \
+                f"hub_update_device room assign failed -- /device/updateRoom rejected it: {assigned}"
+            assert any(c.get("property") == "room" for c in (assigned.get("changes") or [])), \
+                f"room change not recorded: {assigned}"
+
+            # Independent read-back through the ROOM surface: the device really is in the room.
+            got = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_get_room", "args": {"room": room_id}})
+            assert any(str(d.get("id")) == str(dev_id) for d in (got.get("devices") or [])), \
+                f"room '{room_name}' does not list device {dev_id} after the assign: {got}"
+
+            # The unassign leg shares the endpoint and has its own read-back guard in production.
+            unassigned = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "room": ""})
+            assert unassigned.get("success") is True, f"hub_update_device room unassign failed: {unassigned}"
+
+            print(f"    ROOM_ASSIGN ok -- /device/updateRoom moved {dev_id} into '{room_name}' and out again")
+        finally:
+            # Restore prior membership; if it had none, the unassign above already left it correct.
+            if original_room:
+                try:
+                    self.client.call_tool("hub_update_device", {"deviceId": dev_id, "room": str(original_room)})
+                except Exception as exc:
+                    print(f"  [WARN] room-assign cleanup: restoring device {dev_id} to '{original_room}' failed: {exc}")
+
+    @test("devices")
     def test_update_device_default_current_state(self) -> None:
         # Intent: choose which attribute appears in the Status column for a device.
         dev_id = self.get_test_switch_id()
@@ -2158,6 +2242,18 @@ class TestRunner:
         assert created.get("success") is True, f"create from driver failed: {created}"
         new_id = str(created.get("deviceId") or "")
         assert new_id, f"create from driver returned no deviceId: {created}"
+
+        # The label leg is /device/updateLabel -- and this is its only UNCONDITIONAL live proof.
+        # (The bypass-block leg that also exercises it is gated on the arbitrarily-picked device
+        # having a label, so it can skip entirely; see the [COVERAGE GAP] print there.) The envelope
+        # reports `label` as the APPLIED label, falling back to the driver's own default when the
+        # dedicated setter AND the wholesale /device/update fallback both missed -- so a requested
+        # label reading back means the leg worked, and a label warning is the tool's own admission
+        # that it did not.
+        assert created.get("label") == f"{PREFIX}FromDriver",             ("hub_create_device did not apply the requested label -- /device/updateLabel and the "
+             f"wholesale /device/update fallback both missed: label={created.get('label')!r} "
+             f"warnings={created.get('warnings')!r}")
+        assert not [w for w in (created.get("warnings") or []) if "label" in str(w).lower()],             f"hub_create_device warned about the label: {created.get('warnings')!r}"
         try:
             # A freshly created REAL device is NOT MCP-selected, so the scoped hub_get_device
             # (selected/child devices only) can't resolve it. Confirm it exists via the
@@ -6809,12 +6905,23 @@ class TestRunner:
                     print(f"  [WARN] deadman cleanup: delete code class {code_app_id} failed: {exc}")
 
     # -----------------------------------------------------------------------
-    # GROUP 4d: app_code_update (1 test) -- the hub_update_app code-deploy path
-    # (POST /app/saveOrUpdateJson). One throwaway code class, four legs before its delete:
+    # GROUP 4d: app_code_update (2 tests) -- the hub_update_app code-deploy path
+    # (POST /app/saveOrUpdateJson).
+    #
+    # test_update_app_code_lifecycle: one throwaway code class, five legs before its delete:
     # a real round-trip edit (success + version advance + source landed), the
     # hub's verbatim compile error on broken Groovy (not our generic fallback),
-    # the client-side expectedVersion optimistic lock (refused, no write), and a
-    # hub_restore_backup of the pre-update auto-backup (V1 back, undo key returned).
+    # the client-side expectedVersion optimistic lock (refused, no write), a
+    # hub_restore_backup of the pre-update auto-backup (V1 back, undo key returned), and the
+    # OAuth fold (asserted as a hard success -- it covers /app/updateOAuth reached with a
+    # query MAP, which only a live hub can prove: the old embedded-querystring form 404s
+    # that exact route).
+    #
+    # test_update_app_code_trigger_updated: the triggerUpdated lifecycle refresh, which needs
+    # a running INSTANCE and so creates + cleans up one. Pins that the Done submit lands on
+    # /installedapp/update/json (the old /installedapp/configure/<id>/mainPage route is a 405
+    # on current firmware and silently never fired) AND that the re-submit round-trips the
+    # instance's configured settings instead of re-applying the code's defaults.
     # -----------------------------------------------------------------------
 
     @test("app_code_update")
@@ -6953,9 +7060,15 @@ def updateLegMarker() { return "UPDATE-LEG-MARKER-V1" }
                 f"restore reported success but the version did not advance ({version_after} -> {after_restore.get('version')})"
 
             # Leg 5 (#259): enable OAuth on the (oauth:true-declaring) code class via the
-            # hub_update_app oauth fold -- the programmatic "Enable OAuth in App". The leg MUST
-            # dispatch and return a structured oauth block; on success the hub returns the generated
-            # clientId. (Throwaway app, never the MCP server -- the self-OAuth guard protects that.)
+            # hub_update_app oauth fold -- the programmatic "Enable OAuth in App".
+            # (Throwaway app, never the MCP server -- the self-OAuth guard protects that.)
+            #
+            # This asserts SUCCESS outright. It used to accept a structured failure as a pass,
+            # which is exactly how a live 404 hid for months: the tool embedded the querystring
+            # in the request PATH, which the platform's http client treats as literal path
+            # content -- the exact route /app/updateOAuth then never matched. The tool now
+            # passes a query map, so a failure here is a real regression in that conversion
+            # (or the hub stopped serving the endpoint).
             oauth_res = self.client.call_tool("hub_manage_code", {
                 "tool": "hub_update_app",
                 "args": {"appId": code_app_id, "oauth": {"enabled": True}, "confirm": True},
@@ -6967,11 +7080,10 @@ def updateLegMarker() { return "UPDATE-LEG-MARKER-V1" }
             # ob-derived value -- not even a branch-chosen literal note -- into the print below: ob
             # carries the client secret, and CodeQL's clear-text-logging guard taints anything whose
             # value is control-dependent on it.
-            assert "success" in ob, "oauth block missing 'success'"
-            if ob.get("success") is True:
-                assert ob.get("clientId"), "OAuth enabled but no clientId returned"
-            else:
-                assert ob.get("error"), "OAuth leg failed without a structured error"
+            assert ob.get("success") is True, \
+                f"OAuth enable failed -- /app/updateOAuth query-map request rejected? error={ob.get('error')!r} note={ob.get('note')!r}"
+            assert ob.get("enabled") is True, "OAuth reported success but not enabled"
+            assert ob.get("clientId"), "OAuth enabled but no clientId returned"
 
             print(f"    APP_CODE_UPDATE ok -- v{version_before}->v{version_after}; compile error + lock conflict both refused with no write; restore brought V1 back (undo key {pre_restore_key}); OAuth leg checked")
         finally:
@@ -6983,6 +7095,199 @@ def updateLegMarker() { return "UPDATE-LEG-MARKER-V1" }
                     })
                 except Exception as exc:
                     print(f"  [WARN] app-code update cleanup: delete code class {code_app_id} failed: {exc}")
+
+    @test("app_code_update")
+    def test_update_app_code_trigger_updated(self) -> None:
+        """hub_update_app(triggerUpdated=<instance>) must fire updated() on a running instance
+        after the code save AND leave that instance's configured settings intact.
+
+        The lifecycle refresh submits the classic "Done" form to /installedapp/update/json --
+        the same submit the install-commit uses. It previously POSTed to
+        /installedapp/configure/<id>/mainPage, which is the HTML UI page: current firmware
+        answers POST there with 405, so the refresh never fired and the caller got
+        updatedFired:false + partial:true. Only a live hub proves which route the firmware
+        accepts, so this scenario is the regression pin.
+
+        Sharing the Done-submit with the install path brings a blanking hazard with it: that
+        submit re-sends every input on the page, so on an already-CONFIGURED instance it must
+        round-trip the stored values rather than re-apply the code's defaults. The target
+        therefore declares a bool input defaulting to FALSE which the test sets to TRUE before
+        the refresh -- so "settings survived" is distinguishable from "defaults re-applied",
+        which would read back false.
+
+        It also declares a DEVICE input (capability.switch, multiple) assigned the scaffold
+        switch, because that is the shape real apps overwhelmingly have and the one that cannot
+        be answered off-hub. /installedapp/configure/json renders a device setting as an OBJECT
+        with value=null, which is unencodable, so the Done body is built from statusJson
+        appSettings instead: _rmLiveSettingsFromStatus rebuilds the assignment from
+        deviceIdsForDeviceList into the id List the form CSV-encodes. If this hub reports device
+        settings some other way the assignment is re-submitted as "" and the assertion below
+        fails -- precisely the signal wanted, since the shape handling would then need extending
+        rather than being assumed correct.
+
+        Needs a running INSTANCE (not just a code class), so it creates and cleans up both.
+        Named "Deadman Test Target ..." in namespace mcptest so the Layer 5 sweep reclaims a
+        stranded copy -- instance included -- if a crash skips the finally."""
+        source_v1 = '''\
+definition(
+    name: "Deadman Test Target Trigger",
+    namespace: "mcptest",
+    author: "ci",
+    description: "Throwaway e2e triggerUpdated target",
+    category: "Utility",
+    iconUrl: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png",
+    iconX2Url: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png"
+)
+
+preferences {
+    page(name: "p", title: "Trigger Leg Target", install: true, uninstall: true) {
+        section {
+            input name: "refreshProbe", type: "bool", title: "Round-trip probe", defaultValue: false
+            input name: "probeSwitches", type: "capability.switch", title: "Round-trip devices", multiple: true, required: false
+            input name: "lifecycleStamp", type: "text", title: "Lifecycle stamp", required: false
+            paragraph "Throwaway triggerUpdated target. Marker: ${triggerLegMarker()}"
+        }
+    }
+}
+
+def installed() { updateStamp("installed") }
+def updated() { updateStamp("updated") }
+
+// The stamp goes into a SETTING, not state: hub_get_app_config(includeSettings) can read a
+// setting, which is what lets the test prove updated() actually RAN. updatedFired only proves
+// the hub accepted the Done POST.
+def updateStamp(String which) { app.updateSetting("lifecycleStamp", [type: "text", value: which]) }
+
+def triggerLegMarker() { return "TRIGGER-LEG-MARKER-V1" }
+'''
+
+        def probe_value(cfg: dict) -> str:
+            """refreshProbe as read back. The hub may render a bool setting as a real boolean
+            or as its string form, so compare case-folded text rather than an identity."""
+            settings = (cfg.get("settings") or {}) if isinstance(cfg, dict) else {}
+            return str(settings.get("refreshProbe")).strip().lower()
+
+        def probe_device_ids(cfg: dict) -> set:
+            """probeSwitches as a set of device-id strings. A device setting comes back in more
+            than one shape depending on how the hub renders it -- an id->label object (what
+            configure/json produces), a plain list of ids, or a CSV string -- so normalize all
+            three rather than pinning one and calling a mere shape change a regression."""
+            settings = (cfg.get("settings") or {}) if isinstance(cfg, dict) else {}
+            raw = settings.get("probeSwitches")
+            if isinstance(raw, dict):
+                return {str(k) for k in raw}
+            if isinstance(raw, list):
+                return {str(v) for v in raw}
+            if isinstance(raw, str) and raw.strip():
+                return {part.strip() for part in raw.split(",") if part.strip()}
+            return set()
+
+        code_app_id = None
+        instance_app_id = None
+        try:
+            created = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_create_app",
+                "args": {"source": source_v1, "confirm": True},
+            })
+            code_app_id = created.get("appId")
+            assert code_app_id, f"hub_create_app(source) did not return an appId (code class): {created}"
+
+            # A committed instance is required: triggerUpdated fires updated() on a RUNNING app.
+            installed = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_create_app",
+                "args": {"codeAppId": code_app_id, "confirm": True},
+            })
+            instance_app_id = installed.get("instanceAppId")
+            assert installed.get("committed") is True, \
+                f"could not commit the instance the triggerUpdated leg needs: {installed}"
+            assert instance_app_id, f"instance committed but no instanceAppId returned: {installed}"
+
+            # CONFIGURE the instance: flip refreshProbe off its false default. This is the
+            # precondition for the settings-preservation assertion at the end -- verified here
+            # so a later read of "false" can only mean the Done re-submit blanked it, never
+            # that the write never landed.
+            scaffold_switch = self.get_test_switch_id()
+            self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app",
+                "args": {"appId": instance_app_id,
+                         "settings": {"refreshProbe": True, "probeSwitches": [scaffold_switch]},
+                         "confirm": True},
+            })
+            before_cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config",
+                "args": {"appId": instance_app_id, "includeSettings": True},
+            })
+            assert probe_value(before_cfg) == "true", \
+                f"could not configure refreshProbe=true, so the round-trip check has no baseline: settings={before_cfg.get('settings')!r}"
+            assert probe_device_ids(before_cfg) == {str(scaffold_switch)}, \
+                ("could not assign the scaffold switch to probeSwitches, so the device round-trip check "
+                 f"has no baseline: settings.probeSwitches={(before_cfg.get('settings') or {}).get('probeSwitches')!r}")
+
+            # Save new code AND fire updated() on the instance in one call.
+            source_v2 = source_v1.replace("TRIGGER-LEG-MARKER-V1", "TRIGGER-LEG-MARKER-V2")
+            res = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_update_app",
+                "args": {"appId": code_app_id, "source": source_v2,
+                         "triggerUpdated": instance_app_id, "confirm": True},
+            })
+            assert res.get("success") is True, f"code save leg failed: {res}"
+            assert res.get("triggerUpdated") is not None, \
+                f"triggerUpdated was requested but is absent from the envelope: {res}"
+            assert res.get("updatedFired") is True, \
+                ("triggerUpdated did not fire -- the Done submit to /installedapp/update/json was "
+                 f"rejected by this firmware: partial={res.get('partial')!r} hints={res.get('repairHints')!r}")
+            assert res.get("partial") is not True, \
+                f"updatedFired reported true yet the envelope is flagged partial: {res}"
+
+            # Independent check: the instance is still a committed install after the refresh,
+            # and its CONFIGURED setting survived the Done re-submit. A helper that re-applied
+            # the code's defaults instead of round-tripping the stored values reads back
+            # "false" here -- that is the blanking hazard the shared Done-submit introduces.
+            cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config",
+                "args": {"appId": instance_app_id, "includeSettings": True},
+            })
+            app_obj = (cfg.get("app") or {}) if isinstance(cfg, dict) else {}
+            assert app_obj.get("installed") is True, \
+                f"the lifecycle refresh left the instance uninstalled: {app_obj}"
+            assert probe_value(cfg) == "true", \
+                ("the lifecycle refresh did not preserve the instance's configured settings: "
+                 f"refreshProbe went true -> {probe_value(cfg)!r} (defaults re-applied instead of "
+                 f"round-tripped). settings={cfg.get('settings')!r}")
+            assert probe_device_ids(cfg) == {str(scaffold_switch)}, \
+                ("the lifecycle refresh did not preserve the instance's DEVICE selection: "
+                 f"probeSwitches went [{scaffold_switch}] -> {sorted(probe_device_ids(cfg))} -- the Done "
+                 "re-submit blanked it, so the statusJson deviceIdsForDeviceList reconstruction does not "
+                 f"cover this hub's shape. settings.probeSwitches={(cfg.get('settings') or {}).get('probeSwitches')!r}")
+
+            # updatedFired only says the hub ACCEPTED the Done POST. The stamp says updated() ran:
+            # installed() wrote "installed" at commit time, so reading "updated" here is the
+            # lifecycle callback's own footprint.
+            stamp = str(((cfg.get("settings") or {}).get("lifecycleStamp")) or "")
+            assert stamp == "updated", \
+                ("triggerUpdated reported updatedFired but updated() left no footprint: "
+                 f"lifecycleStamp={stamp!r} (expected 'updated'; 'installed' means only installed() "
+                 "ever ran, so the Done was accepted without firing the lifecycle callback)")
+
+            print(f"    TRIGGER_UPDATED ok -- updated() ran on instance {instance_app_id} "
+                  f"(lifecycleStamp={stamp}), still installed, bool + device selection both preserved")
+        finally:
+            if instance_app_id:
+                try:
+                    self.client.call_tool("hub_manage_native_rules_and_apps", {
+                        "tool": "hub_delete_native_app",
+                        "args": {"appId": instance_app_id, "force": True, "confirm": True},
+                    })
+                except Exception as exc:
+                    print(f"  [WARN] triggerUpdated cleanup: delete instance {instance_app_id} failed: {exc}")
+            if code_app_id:
+                try:
+                    self.client.call_tool("hub_manage_code", {
+                        "tool": "hub_delete_item",
+                        "args": {"type": "app", "item_id": code_app_id, "confirm": True},
+                    })
+                except Exception as exc:
+                    print(f"  [WARN] triggerUpdated cleanup: delete code class {code_app_id} failed: {exc}")
 
     # -----------------------------------------------------------------------
     # GROUP 4e: driver_code_update (1 test) -- the hub_update_driver code-deploy
@@ -9163,11 +9468,23 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
 
             # ---- WRITE bypass endpoints (live proof; spec-stubs masked the updateRoom name bug) ----
             # All reversible / no-op so an arbitrary unlisted device is left exactly as found.
+            #
+            # Legs (a) and (c) are gated on what the arbitrarily-picked unlisted device happens to
+            # have, so either can skip an entire run. Neither is the ONLY coverage of its endpoint
+            # any more, so a skip is no longer a hole: /device/updateLabel is proven
+            # unconditionally by test_create_device_from_driver_type (it asserts the applied label),
+            # and /device/updateRoom by test_update_device_room_assign_and_unassign (own fixture
+            # room + the scaffold switch). What these legs add is the UNLISTED-device path -- the
+            # allowlist bypass itself -- which is why the skip still prints.
             orig_label = dev.get("label") or dev.get("name")
             cmd_names = [c.get("name") for c in (dev.get("commands") or []) if isinstance(c, dict)]
             orig_room = dev.get("room")
 
             # (a) label rename via /device/updateLabel, then restore the original (reversible write).
+            if not orig_label:
+                print(f"    [BYPASS LEG SKIPPED] leg (a): device {unauth} has no label/name, so the "
+                      f"UNLISTED-device path for /device/updateLabel was not exercised this run "
+                      f"(the endpoint itself is covered unconditionally elsewhere)")
             if orig_label:
                 up = self.client.call_tool("hub_update_device", {"deviceId": unauth, "label": f"{orig_label} _BWTEST"})
                 assert up.get("success") is True, f"bypass label rename did not succeed: {up}"
@@ -9183,6 +9500,10 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
 
             # (c) room assign via /device/updateRoom, re-assigning to the SAME room (a no-op move that
             # proves the NAME-keyed endpoint returns true without relocating the device).
+            if not orig_room:
+                print(f"    [BYPASS LEG SKIPPED] leg (c): device {unauth} is in no room, so the "
+                      f"UNLISTED-device path for /device/updateRoom was not exercised this run "
+                      f"(the endpoint itself is covered unconditionally elsewhere)")
             if orig_room:
                 rr = self.client.call_tool("hub_update_device", {"deviceId": unauth, "room": orig_room})
                 assert rr.get("success") is True, f"bypass same-room re-assign did not succeed: {rr}"
@@ -9732,10 +10053,23 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             print(f"    [WARN] Could not check hub logs: {exc}")
 
     # -----------------------------------------------------------------------
-    # GROUP 13: protocol (6 tests — initialize echo-allowlist, instructions,
-    # inbound batch cap, and 202-for-notifications. These exercise the
-    # transport/protocol layer end-to-end through the cloud relay, which the
-    # Spock harness (in-process dispatch) cannot reach.)
+    # GROUP 13: protocol (22 tests — initialize echo-allowlist (legacy-capped),
+    # instructions, server/discover, the era-gated resultType decoration + the
+    # unconditional serverInfo _meta, the tools/list cache hints, legacy per-request
+    # _meta version tolerance, the ERA SWITCH (a MCP-Protocol-Version header naming a
+    # legacy revision is served as legacy — that header has been mandatory since
+    # 2025-06-18, so presence must never be read as "modern"), the modern 2026-07-28
+    # header validation (Mcp-Method / Mcp-Name incl. the base64 sentinel → 400 + -32020,
+    # unsupported version → 400 + -32022, batch body → 400 + -32600, unknown method →
+    # 404 + -32601), the inbound batch cap, and 202-for-notifications. These exercise the
+    # transport/protocol layer end-to-end through the cloud relay, which the Spock harness
+    # (in-process dispatch) cannot reach — and the relay both forwards the Mcp-* headers
+    # and preserves the hub's status code, so the HTTP-status half of the contract is only
+    # provable here.
+    #
+    # Origin validation is deliberately NOT exercised here in any form: sending an Origin
+    # header to the test hub risks the suite's own connection to it, so that contract lives
+    # entirely in the Spock matrix.)
     # -----------------------------------------------------------------------
 
     @test("protocol")
@@ -9754,12 +10088,361 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             f"Expected echoed 2025-03-26, got: {result.get('protocolVersion')}"
 
     @test("protocol")
+    def test_initialize_echoes_newest_protocol(self) -> None:
+        """The newest revision initialize may negotiate is echoed when explicitly
+        requested. Distinct from the no-version fallback case: this proves the newest
+        legacy entry is genuinely on the allowlist, not merely the value the fallback
+        happens to return."""
+        newest = INITIALIZE_PROTOCOL_VERSIONS[0]
+        result = self.client.initialize(newest)
+        assert result.get("protocolVersion") == newest, \
+            f"Expected echoed {newest}, got: {result.get('protocolVersion')}"
+
+    @test("protocol")
     def test_initialize_falls_back_on_unsupported_protocol(self) -> None:
-        """An unsupported protocolVersion falls back to the server default
-        (2024-11-05) rather than erroring."""
+        """An unsupported protocolVersion falls back to the newest revision initialize
+        may negotiate rather than erroring — initialize never rejects."""
         result = self.client.initialize("1999-01-01")
-        assert result.get("protocolVersion") == "2024-11-05", \
-            f"Expected fallback 2024-11-05, got: {result.get('protocolVersion')}"
+        assert result.get("protocolVersion") == INITIALIZE_PROTOCOL_VERSIONS[0], \
+            f"Expected fallback {INITIALIZE_PROTOCOL_VERSIONS[0]}, got: {result.get('protocolVersion')}"
+
+    @test("protocol")
+    def test_initialize_never_negotiates_the_modern_revision(self) -> None:
+        """initialize must NOT echo 2026-07-28 even though the transport supports it.
+        That revision deleted the initialize handshake, so a client reaching this method
+        is legacy-era by construction — echoing the modern version would let it cache an
+        era it cannot actually speak. It negotiates down to the newest legacy revision
+        like any other non-allowlisted value."""
+        result = self.client.initialize("2026-07-28")
+        assert result.get("protocolVersion") == INITIALIZE_PROTOCOL_VERSIONS[0], \
+            f"initialize must cap at {INITIALIZE_PROTOCOL_VERSIONS[0]}, got: {result.get('protocolVersion')}"
+        assert result.get("protocolVersion") != "2026-07-28", \
+            "initialize echoed the modern revision — the handshake must stay legacy-capped"
+
+    @test("protocol")
+    def test_server_discover(self) -> None:
+        """server/discover (SEP-2575) advertises the supported protocol versions,
+        capabilities and identity so a stateless client can pick a version before
+        sending anything else. DiscoverResult is a CacheableResult, so ttlMs and
+        cacheScope are REQUIRED fields of it."""
+        result = self.client._send("server/discover")
+        assert result.get("supportedVersions") == SUPPORTED_PROTOCOL_VERSIONS, \
+            f"Expected {SUPPORTED_PROTOCOL_VERSIONS}, got: {result.get('supportedVersions')}"
+        assert isinstance(result.get("capabilities"), dict) and "tools" in result["capabilities"], \
+            f"discover must advertise the tools capability: {result.get('capabilities')}"
+        assert result.get("serverInfo", {}).get("name") == "hubitat-mcp-rule-server", \
+            f"discover serverInfo missing/wrong: {result.get('serverInfo')}"
+        assert isinstance(result.get("ttlMs"), int) and result["ttlMs"] > 0, \
+            f"DiscoverResult requires a positive ttlMs, got: {result.get('ttlMs')!r}"
+        assert result.get("cacheScope") == "private", \
+            f"Expected cacheScope 'private' on a per-token endpoint, got: {result.get('cacheScope')!r}"
+        # A stateless client never calls initialize, so discover is its only route
+        # to the usage guidance.
+        assert isinstance(result.get("instructions"), str) and result["instructions"].strip(), \
+            f"discover must carry instructions: {result.get('instructions')!r}"
+
+    @test("protocol")
+    def test_legacy_results_carry_server_info_meta_but_no_result_type(self) -> None:
+        """A LEGACY-era result carries the _meta io.modelcontextprotocol/serverInfo key and
+        must NOT carry resultType. resultType is a 2026-07-28 field, and legacy clients
+        parse an empty result with a STRICT schema (the MCP TypeScript SDK's
+        EmptyResultSchema is ResultSchema.strict(), which REJECTS unknown keys) — so a
+        resultType on a legacy `ping` reply turns every keepalive into a client-side
+        protocol error. `_meta` is a modeled key in every revision's Result schema, so it
+        survives that same strict parse and stays unconditional.
+
+        Checked across initialize, tools/list, ping, and a real tools/call — tools/call
+        serializes its envelope on a separate preserialized fast path."""
+        ping = self.client._send("ping")
+        for label, result in (
+            ("initialize", self.client.initialize()),
+            ("tools/list", self.client._send("tools/list")),
+            ("ping", ping),
+            # tools/call goes through _send (which stops at the JSON-RPC result) rather
+            # than call_tool, which unwraps to the tool payload and would hide these keys.
+            ("tools/call", self.client._send("tools/call", {"name": "hub_get_info", "arguments": {}})),
+        ):
+            assert "resultType" not in result, \
+                f"{label} legacy result must NOT carry resultType (breaks strict EmptyResult parsing): {sorted(result.keys())}"
+            info = (result.get("_meta") or {}).get("io.modelcontextprotocol/serverInfo") or {}
+            assert info.get("name") == "hubitat-mcp-rule-server", \
+                f"{label} result missing the serverInfo _meta key: {result.get('_meta')!r}"
+            assert info.get("version"), f"{label} serverInfo carries no version: {info!r}"
+
+        # The exact shape a legacy client's strict EmptyResultSchema sees for ping.
+        assert set(ping.keys()) == {"_meta"}, \
+            f"legacy ping result must be exactly the _meta envelope, got: {sorted(ping.keys())}"
+
+    @test("protocol")
+    def test_modern_results_carry_result_type(self) -> None:
+        """SEP-2575: a MODERN-era result carries resultType 'complete'. The companion to
+        the legacy test above — together they pin that the stamp is era-gated rather than
+        simply absent. Driven through raw_request because the modern era is selected by a
+        request header that _send does not set."""
+        for label, body, headers in (
+            (
+                "tools/list",
+                {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+                {"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/list"},
+            ),
+            (
+                # The preserialized fast path: the decoration has to already be baked into
+                # the string handleToolsCall hands back.
+                "tools/call",
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                 "params": {"name": "hub_get_info", "arguments": {}}},
+                {"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call",
+                 "Mcp-Name": "hub_get_info"},
+            ),
+        ):
+            resp = self.client.raw_request(body, headers=headers)
+            assert resp.status_code == 200, \
+                f"modern {label} must ride HTTP 200, got {resp.status_code}: {resp.text[:300]!r}"
+            result = resp.json().get("result", {})
+            assert result.get("resultType") == "complete", \
+                f"modern {label} result missing resultType 'complete': {sorted(result.keys())}"
+            info = (result.get("_meta") or {}).get("io.modelcontextprotocol/serverInfo") or {}
+            assert info.get("name") == "hubitat-mcp-rule-server", \
+                f"modern {label} result missing the serverInfo _meta key: {result.get('_meta')!r}"
+
+    @test("protocol")
+    def test_tools_list_carries_cache_hints(self) -> None:
+        """SEP-2549 CacheableResult: tools/list carries a ttlMs freshness hint and a
+        cacheScope. Scope must be 'private' — the endpoint is authenticated by a
+        per-install token and the catalog is shaped by that install's settings, so a
+        shared intermediary must never serve it across authorization contexts."""
+        result = self.client._send("tools/list")
+        assert isinstance(result.get("ttlMs"), int) and result["ttlMs"] > 0, \
+            f"Expected a positive integer ttlMs, got: {result.get('ttlMs')!r}"
+        assert result.get("cacheScope") == "private", \
+            f"Expected cacheScope 'private', got: {result.get('cacheScope')!r}"
+
+    @test("protocol")
+    def test_request_meta_protocol_version_tolerated_without_headers(self) -> None:
+        """On the HEADERLESS (legacy) path every per-request _meta protocolVersion
+        (SEP-2575) is tolerated at HTTP 200, unknown ones included. A POST with no
+        MCP-Protocol-Version header never claimed the modern transport, so answering it
+        with -32022 would tell a dual-era client "modern server — do not fall back to
+        initialize" and wedge it out of the handshake it still needs. The -32022
+        rejection is scoped to the header path (see the modern tests below).
+        Verified through the relay because the HTTP status is the era signal."""
+        for label, version in (
+            ("supported", "2025-11-25"),
+            ("modern", "2026-07-28"),
+            ("unknown", "2099-01-01"),
+        ):
+            resp = self.client.raw_request({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/list",
+                "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": version}},
+            })
+            assert resp.status_code == 200, \
+                f"a {label} headerless per-request version must ride HTTP 200, got {resp.status_code}: {resp.text[:200]!r}"
+            data = resp.json()
+            assert "error" not in data, \
+                f"a {label} headerless per-request version must not be rejected: {str(data)[:200]}"
+            assert isinstance(data.get("result", {}).get("tools"), list), \
+                f"Expected a tools/list catalog for the {label} version, got: {str(data)[:200]}"
+
+    @test("protocol")
+    def test_legacy_protocol_version_header_is_served_as_legacy(self) -> None:
+        """THE compatibility regression pin. MCP-Protocol-Version has been REQUIRED on
+        every POST since 2025-06-18, so a client that negotiated 2025-06-18 or 2025-11-25
+        through initialize sends it on every subsequent request — and sends NO Mcp-Method
+        or Mcp-Name, because those headers do not exist before 2026-07-28. Reading header
+        PRESENCE as "modern" would answer every one of those with 400 + -32020, i.e. break
+        every current production client on deploy. The era switch is the header's VALUE.
+
+        Also proves the modern-only rules stay off: an unknown method keeps its 200 +
+        -32601 instead of the modern 404, and no resultType is stamped."""
+        for version in ("2025-06-18", "2025-11-25"):
+            resp = self.client.raw_request(
+                {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+                headers={"MCP-Protocol-Version": version},
+            )
+            assert resp.status_code == 200, \
+                f"a {version} header with no Mcp-Method must ride HTTP 200, got {resp.status_code}: {resp.text[:300]!r}"
+            data = resp.json()
+            assert "error" not in data, \
+                f"a {version} request must not be rejected for missing modern headers: {str(data)[:300]}"
+            result = data.get("result", {})
+            assert isinstance(result.get("tools"), list), \
+                f"Expected a tools/list catalog for {version}, got: {str(data)[:300]}"
+            assert "resultType" not in result, \
+                f"a {version} result must not carry the modern resultType: {sorted(result.keys())}"
+
+        # A legacy-versioned tools/call needs no Mcp-Name either.
+        call = self.client.raw_request(
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+             "params": {"name": "hub_get_info", "arguments": {}}},
+            headers={"MCP-Protocol-Version": "2025-06-18"},
+        )
+        assert call.status_code == 200, \
+            f"a legacy-versioned tools/call must not require Mcp-Name, got {call.status_code}: {call.text[:300]!r}"
+        assert "error" not in call.json(), f"legacy tools/call rejected: {str(call.json())[:300]}"
+
+        # And the modern 404 mapping must not reach it.
+        unknown = self.client.raw_request(
+            {"jsonrpc": "2.0", "id": 3, "method": "does/not/exist"},
+            headers={"MCP-Protocol-Version": "2025-11-25"},
+        )
+        assert unknown.status_code == 200, \
+            f"a legacy-versioned unknown method must stay on HTTP 200, got {unknown.status_code}: {unknown.text[:300]!r}"
+        assert unknown.json().get("error", {}).get("code") == -32601, \
+            f"Expected -32601, got: {str(unknown.json())[:300]}"
+
+    @test("protocol")
+    def test_modern_headers_dispatch_normally(self) -> None:
+        """A 2026-07-28 request carrying the full standard header set, matching the body,
+        dispatches normally at HTTP 200. This is the positive control for every rejection
+        test below — it proves the hub really does read inbound headers through the cloud
+        relay, so a 400 elsewhere is a validation verdict and not a header the hub never
+        saw."""
+        resp = self.client.raw_request(
+            {
+                "jsonrpc": "2.0", "id": 1, "method": "tools/list",
+                "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}},
+            },
+            headers={"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/list"},
+        )
+        assert resp.status_code == 200, \
+            f"a valid modern request must ride HTTP 200, got {resp.status_code}: {resp.text[:300]!r}"
+        data = resp.json()
+        assert "error" not in data, f"a valid modern request must not be rejected: {str(data)[:300]}"
+        assert isinstance(data.get("result", {}).get("tools"), list), \
+            f"Expected a tools/list catalog, got: {str(data)[:300]}"
+
+    @test("protocol")
+    def test_modern_header_method_mismatch_rejected(self) -> None:
+        """Mcp-Method mirrors the body `method`; a disagreement MUST be rejected with
+        HTTP 400 + -32020 HeaderMismatch. This is the vulnerability the mirroring
+        exists to close — an intermediary routing on the header while the server
+        executes the body."""
+        resp = self.client.raw_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}},
+            headers={"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/list"},
+        )
+        assert resp.status_code == 400, \
+            f"a header/body method mismatch must be HTTP 400, got {resp.status_code}: {resp.text[:300]!r}"
+        err = resp.json().get("error", {})
+        assert err.get("code") == -32020, f"Expected -32020 HeaderMismatch, got: {str(resp.json())[:300]}"
+        assert "Mcp-Method" in err.get("message", ""), \
+            f"the message must name the offending header: {err.get('message')!r}"
+
+    @test("protocol")
+    def test_modern_tools_call_requires_matching_mcp_name(self) -> None:
+        """Mcp-Name mirrors params.name and is REQUIRED on tools/call. A missing one is a
+        -32020 (a missing required header IS a mismatch per the spec), and so is one that
+        names a different tool — rejected BEFORE dispatch, so the wrong tool never runs."""
+        body = {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "hub_get_info", "arguments": {}},
+        }
+        missing = self.client.raw_request(
+            body, headers={"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call"})
+        assert missing.status_code == 400, \
+            f"a tools/call with no Mcp-Name must be HTTP 400, got {missing.status_code}: {missing.text[:300]!r}"
+        assert missing.json().get("error", {}).get("code") == -32020, \
+            f"Expected -32020, got: {str(missing.json())[:300]}"
+
+        wrong = self.client.raw_request(body, headers={
+            "MCP-Protocol-Version": "2026-07-28",
+            "Mcp-Method": "tools/call",
+            "Mcp-Name": "hub_list_rooms",
+        })
+        assert wrong.status_code == 400, \
+            f"a mismatched Mcp-Name must be HTTP 400, got {wrong.status_code}: {wrong.text[:300]!r}"
+        err = wrong.json().get("error", {})
+        assert err.get("code") == -32020, f"Expected -32020, got: {str(wrong.json())[:300]}"
+        assert "hub_list_rooms" in err.get("message", "") and "hub_get_info" in err.get("message", ""), \
+            f"the message must name both the header and body values: {err.get('message')!r}"
+
+    @test("protocol")
+    def test_modern_base64_sentinel_mcp_name_decodes(self) -> None:
+        """An Mcp-Name carried in the spec's Base64 sentinel wrapper (=?base64?<data>?=)
+        must be decoded before it is compared to params.name, so the call goes through.
+
+        This is the ONLY proof that Groovy's String.decodeBase64() is permitted in the
+        Hubitat sandbox — the Spock suite runs on a real JVM where it always works, so a
+        sandbox rejection would stay green there and only surface here, on real firmware."""
+        tool = "hub_get_info"
+        encoded = "=?base64?" + base64.b64encode(tool.encode()).decode() + "?="
+        # Pin the wire form so a fixture that stopped producing a real sentinel (and thus
+        # proved nothing) fails loudly instead of passing as a plain value.
+        assert encoded == "=?base64?aHViX2dldF9pbmZv?=", f"unexpected sentinel encoding: {encoded!r}"
+
+        resp = self.client.raw_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+             "params": {"name": tool, "arguments": {}}},
+            headers={
+                "MCP-Protocol-Version": "2026-07-28",
+                "Mcp-Method": "tools/call",
+                "Mcp-Name": encoded,
+            },
+        )
+        assert resp.status_code == 200, \
+            f"a base64-sentinel Mcp-Name must decode and pass, got {resp.status_code}: {resp.text[:300]!r}"
+        data = resp.json()
+        assert "error" not in data, \
+            f"sentinel decode failed server-side (decodeBase64 blocked in the sandbox?): {str(data)[:300]}"
+        assert data.get("result", {}).get("content"), \
+            f"Expected a tools/call content envelope, got: {str(data)[:300]}"
+
+    @test("protocol")
+    def test_modern_batch_rejected_with_invalid_request(self) -> None:
+        """The modern transport requires the POST body to be a single JSON-RPC message, so
+        a batch is a malformed BODY: HTTP 400 + -32600 Invalid Request. Deliberately NOT
+        -32020, whose definition covers header/body disagreement and missing or malformed
+        headers — a different fault. Legacy batches keep their 200 array (see the
+        batch-cap test below, which rides headerless)."""
+        resp = self.client.raw_request(
+            [
+                {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+                {"jsonrpc": "2.0", "id": 2, "method": "ping", "params": {}},
+            ],
+            headers={"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/list"},
+        )
+        assert resp.status_code == 400, \
+            f"a modern batch must be HTTP 400, got {resp.status_code}: {resp.text[:300]!r}"
+        data = resp.json()
+        assert isinstance(data, dict), \
+            f"Expected one error object, not an array of per-element results: {str(data)[:300]}"
+        assert data.get("error", {}).get("code") == -32600, \
+            f"Expected -32600 Invalid Request, got: {str(data)[:300]}"
+
+    @test("protocol")
+    def test_modern_unsupported_version_header_rejected(self) -> None:
+        """A MCP-Protocol-Version header naming a revision the server does not implement
+        MUST be answered with HTTP 400 + -32022 UnsupportedProtocolVersionError carrying
+        data.requested and data.supported — both REQUIRED, because `supported` is how the
+        client picks a mutually supported version and retries instead of giving up."""
+        resp = self.client.raw_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+            headers={"MCP-Protocol-Version": "2099-01-01", "Mcp-Method": "tools/list"},
+        )
+        assert resp.status_code == 400, \
+            f"an unsupported version header must be HTTP 400, got {resp.status_code}: {resp.text[:300]!r}"
+        err = resp.json().get("error", {})
+        assert err.get("code") == -32022, f"Expected -32022, got: {str(resp.json())[:300]}"
+        data = err.get("data") or {}
+        assert data.get("requested") == "2099-01-01", f"data.requested wrong: {data!r}"
+        assert data.get("supported") == SUPPORTED_PROTOCOL_VERSIONS, \
+            f"data.supported must be the live supported list {SUPPORTED_PROTOCOL_VERSIONS}, got: {data.get('supported')!r}"
+
+    @test("protocol")
+    def test_modern_unknown_method_returns_404(self) -> None:
+        """2026-07-28 pins an unknown method on the modern transport to HTTP 404 while
+        keeping -32601 in the body — that body is what lets a dual-era client tell this
+        apart from the 404 a legacy HTTP+SSE server returns for a path it does not host.
+        Only provable through the relay, which preserves the hub's status."""
+        resp = self.client.raw_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "does/not/exist"},
+            headers={"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "does/not/exist"},
+        )
+        assert resp.status_code == 404, \
+            f"an unknown modern method must be HTTP 404, got {resp.status_code}: {resp.text[:300]!r}"
+        err = resp.json().get("error", {})
+        assert err.get("code") == -32601, \
+            f"the 404 body must still carry -32601 (the era signal): {str(resp.json())[:300]}"
 
     @test("protocol")
     def test_initialize_returns_instructions(self) -> None:
@@ -9797,8 +10480,7 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
     @test("protocol")
     def test_notification_returns_202(self) -> None:
         """An all-notifications POST (no id) returns HTTP 202 Accepted with an
-        empty body per MCP Streamable HTTP — replaces the prior 204, which some
-        clients/relays mishandle."""
+        empty body, per MCP Streamable HTTP."""
         resp = self.client.raw_request({"jsonrpc": "2.0", "method": "notifications/initialized"})
         assert resp.status_code == 202, \
             f"Expected HTTP 202 for a notification, got {resp.status_code}: {resp.text[:200]!r}"
@@ -10029,12 +10711,13 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                 print(f"  [WARN] Visual Rule sweep failed: {exc}")
 
         # Layer 5: stranded mcptest throwaways. The @test("deadman") test installs 'Deadman Test
-        # Target' (instance + code class), the @test("app_code_update") test creates the
-        # 'Deadman Test Target Update' code class, and the @test("driver_code_update") test
-        # creates the 'Deadman Test Target Driver' driver code class (all named to ride this
-        # same startswith match); none carry the BAT_E2E_ prefix, so a crash/kill between a
-        # create and its finally would strand them past the other sweeps. Reclaim instance(s)
-        # + code classes by namespace+name (idempotent across runs).
+        # Target' (instance + code class), the @test("app_code_update") tests create the
+        # 'Deadman Test Target Update' code class and the 'Deadman Test Target Trigger' code
+        # class + instance, and the @test("driver_code_update") test creates the 'Deadman Test
+        # Target Driver' driver code class (all named to ride this same startswith match); none
+        # carry the BAT_E2E_ prefix, so a crash/kill between a create and its finally would
+        # strand them past the other sweeps. Reclaim instance(s) + code classes by
+        # namespace+name (idempotent across runs).
         try:
             dtypes = self.client.call_tool("hub_read_apps_code",
                                            {"tool": "hub_list_apps", "args": {"scope": "types"}})
@@ -10080,13 +10763,15 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
 
         # Layer 6: rooms with the BAT_E2E_ prefix (issue #209 McpRoomsLib round-trip).
         # The create/rename/delete test cleans up in its own finally; this reclaims a
-        # room a crashed run stranded.
+        # room a crashed run stranded. KEEP_-prefixed rooms are standing fixtures
+        # (BAT_E2E_KEEP_Room) and are exempt, same as the KEEP_ scaffold devices --
+        # this sweep deleted the fixture room on its first run without the exemption.
         try:
             rooms_result = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
             rlist = rooms_result.get("rooms", []) if isinstance(rooms_result, dict) else []
             for rm in rlist:
                 rname = rm.get("name") or ""
-                if PREFIX in rname:
+                if PREFIX in rname and not rname.startswith(SCAFFOLD_PREFIX):
                     rid = str(rm.get("id", ""))
                     if rid:
                         try:

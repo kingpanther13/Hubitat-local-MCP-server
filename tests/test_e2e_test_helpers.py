@@ -5,8 +5,10 @@ Scanned e2e_test.py for testable pure helpers; found one:
 
 All other code in e2e_test.py requires a live Hubitat hub (HubitatMcpClient,
 TestRunner, load_config) and cannot be exercised without network access.
-Importing the module itself is skipped if the 'requests' library is not available
-(not installed in the CI environment for this repo).
+Importing the module itself is skipped if the 'requests' library is not available,
+which keeps a bare `pytest` invocation usable; CI installs requests so this module
+actually runs there (it did not until the install line was fixed, which is how two
+broken fixtures in here went unnoticed).
 """
 
 import os
@@ -17,8 +19,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 
 import pytest
 
-# e2e_test.py imports `requests` at module level. Skip the whole module
-# gracefully if requests is not installed (base CI only has pytest).
+# e2e_test.py imports `requests` at module level. Skip the whole module gracefully if
+# requests is not installed, so a bare `pytest` run still works locally. CI installs it.
 requests = pytest.importorskip("requests", reason="'requests' not installed; skipping e2e helpers")
 
 import e2e_test as et  # noqa: E402 -- must follow the importorskip above (e2e_test imports requests at module level)
@@ -237,10 +239,21 @@ def test_members_map_flat_catalog_is_empty():
 
 
 def _client_with_catalog(tools: list) -> "et.HubitatMcpClient":
-    """A client whose catalog maps are pre-seeded from `tools` without any network I/O."""
+    """A client whose catalog maps are pre-seeded from `tools` without any network I/O.
+
+    Built via __new__ so __init__ (URL assembly + a requests.Session) never runs, which
+    means every attribute call_tool touches has to be seeded here. Its per-op timing
+    bookkeeping needs op_timings / _active_test / _last_op; a stub missing any of them
+    fails in call_tool's `finally` — after the guard under test already passed — so the
+    seed list belongs in one place rather than ad hoc per test.
+    """
     c = et.HubitatMcpClient.__new__(et.HubitatMcpClient)
     c._gateway_members = et._gateway_members_from_catalog(tools)
     c._gateway_route = et._gateway_route_from_catalog(tools)
+    c._request_id = 0
+    c.op_timings = []
+    c._active_test = ""
+    c._last_op = None
     return c
 
 
@@ -265,8 +278,6 @@ def test_membership_guard_allows_valid_membership_then_routes():
     c = _client_with_catalog([_gw("hub_manage_rooms", ["hub_list_rooms", "hub_delete_room"])])
     # No McpError from the guard for a real member; _send would be next (not exercised here).
     # Drive only the guard by monkeypatching _send to short-circuit.
-    c._request_id = 0
-    c.op_timings = []
     c._send = lambda method, params: {"content": [{"type": "text", "text": "{}"}]}
     c.call_tool("hub_manage_rooms", {"tool": "hub_delete_room", "args": {"room": "X", "confirm": True}})
 
@@ -275,7 +286,6 @@ def test_membership_guard_skipped_for_flat_calls():
     """flat=True bypasses the guard entirely (deliberate flat-dispatch proofs)."""
     c = _client_with_catalog([_gw("hub_manage_rooms", ["hub_list_rooms"])])
     c._send = lambda method, params: {"content": [{"type": "text", "text": "{}"}]}
-    c.op_timings = []
     # A leaf name with flat=True is never treated as a gateway envelope; no guard, no raise.
     c.call_tool("hub_list_rooms", flat=True)
 

@@ -61,9 +61,10 @@ class McpRequestDriverSpec extends ToolSpecBase {
         e.is(oops)
     }
 
-    def "reset clears request, throwing state, and lastRenderArgs"() {
+    def "reset clears request, headers, throwing state, and lastRenderArgs"() {
         given:
         driver.pushBody([some: 'body'])
+        driver.pushHeaders(['Mcp-Method': 'tools/list'])
         driver.captureRender([status: 200, data: '{}'])
 
         when:
@@ -71,8 +72,92 @@ class McpRequestDriverSpec extends ToolSpecBase {
 
         then:
         driver.scriptRequest.getJSON() == null
+        driver.scriptRequest.getHeaders() == [:]
         driver.lastRenderArgs == null
         driver.throwingRequest == null
+        driver.throwingHeaders == null
+        !driver.nullHeaders
+    }
+
+    def "pushHeaders reproduces the hub's wire shape — names case-normalized, values List-wrapped"() {
+        // The live probe showed the hub normalizes header names to
+        // first-character-upper/rest-lower and List-wraps every value. Staging that
+        // shape is what makes the production case-insensitive lookup + unwrap the
+        // thing under test.
+        given:
+        driver.pushHeaders([
+            'MCP-Protocol-Version': '2026-07-28',
+            'Mcp-Method': 'tools/call',
+            'X-Custom-Probe': 'hello123',
+        ])
+
+        expect:
+        driver.scriptRequest.getHeaders() == [
+            'Mcp-protocol-version': ['2026-07-28'],
+            'Mcp-method': ['tools/call'],
+            'X-custom-probe': ['hello123'],
+        ]
+    }
+
+    def "pushHeaders keeps an already-List value verbatim so a spec can stage an empty or multi-valued header"() {
+        given:
+        driver.pushHeaders(['Mcp-Method': [], 'Mcp-Name': ['a', 'b']])
+
+        expect:
+        driver.scriptRequest.getHeaders() == ['Mcp-method': [], 'Mcp-name': ['a', 'b']]
+    }
+
+    @spock.lang.Unroll
+    def "hubHeaderName normalizes #raw to #expected"() {
+        expect:
+        McpRequestDriver.hubHeaderName(raw) == expected
+
+        where:
+        raw                     || expected
+        'MCP-Protocol-Version'  || 'Mcp-protocol-version'
+        'mcp-method'            || 'Mcp-method'
+        'User-Agent'            || 'User-agent'
+        'Host'                  || 'Host'
+        ''                      || ''
+        null                    || null
+    }
+
+    def "nullHeaders makes request.headers read back null (older firmware)"() {
+        given:
+        driver.pushHeaders(['Mcp-Method': 'tools/list'])
+
+        when:
+        driver.nullHeaders = true
+
+        then:
+        driver.scriptRequest.getHeaders() == null
+    }
+
+    def "throwingHeaders makes request.headers throw (firmware without the property)"() {
+        given:
+        def oops = new MissingPropertyException('headers', McpRequestDriver)
+        driver.throwingHeaders = oops
+
+        when:
+        driver.scriptRequest.getHeaders()
+
+        then:
+        def e = thrown(MissingPropertyException)
+        e.is(oops)
+    }
+
+    def "pushHeaders clears any prior null/throwing header state"() {
+        given:
+        driver.nullHeaders = true
+        driver.throwingHeaders = new RuntimeException('earlier test')
+
+        when:
+        driver.pushHeaders(['Mcp-Method': 'ping'])
+
+        then:
+        driver.scriptRequest.getHeaders() == ['Mcp-method': ['ping']]
+        !driver.nullHeaders
+        driver.throwingHeaders == null
     }
 
     def "captureRender stores the Map and returns the same Map for caller assignment"() {
@@ -96,9 +181,9 @@ class McpRequestDriverSpec extends ToolSpecBase {
         e.message.contains('No render() call captured')
     }
 
-    def "parseResponseJson returns null for empty data — the 204 case"() {
+    def "parseResponseJson returns null for empty data — the 202 all-notifications case"() {
         given:
-        driver.captureRender([status: 204, data: ''])
+        driver.captureRender([status: 202, data: ''])
 
         expect:
         driver.parseResponseJson() == null
@@ -106,7 +191,7 @@ class McpRequestDriverSpec extends ToolSpecBase {
 
     def "parseResponseJson returns null when data is null"() {
         given:
-        driver.captureRender([status: 204, data: null])
+        driver.captureRender([status: 202, data: null])
 
         expect:
         driver.parseResponseJson() == null

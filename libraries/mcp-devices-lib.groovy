@@ -2627,7 +2627,9 @@ def toolUpdateDevice(args) {
             try {
                 def showVal = args.showOnHome ? "true" : "false"
                 try {
-                    hubInternalGet("/device/setShowOnHome?deviceId=${deviceId}&show=${showVal}")
+                    hubInternalGet("/device/setShowOnHome", [deviceId: deviceId, show: showVal])
+                } catch (IllegalStateException guardErr) {
+                    throw guardErr   // ?-in-path guard: a coding bug, never a fallback trigger
                 } catch (Exception primaryErr) {
                     mcpLog("debug", "device", "hub_update_device showOnHome: dedicated endpoint failed (${primaryErr.message}); falling back to /device/preference/save")
                     hubInternalPostJson("/device/preference/save", groovy.json.JsonOutput.toJson([deviceId: _prefSaveDeviceId(deviceId), showOnHome: args.showOnHome]))
@@ -2669,12 +2671,14 @@ def toolUpdateDevice(args) {
                     // The dedicated endpoint returns the literal `true` on success. A 200 carrying
                     // anything else (e.g. `false` for an unknown attribute name) is a real rejection
                     // -- record an error, do NOT fall back (the endpoint exists, the value is bad).
-                    def result = hubInternalGet("/device/setDefaultCurrentState?id=${deviceId}&currentState=${java.net.URLEncoder.encode(csVal, 'UTF-8')}")
+                    def result = hubInternalGet("/device/setDefaultCurrentState", [id: deviceId, currentState: csVal])
                     if (result?.toString()?.trim()?.toLowerCase() == "true") {
                         applied = true
                     } else {
                         errors << [property: "defaultCurrentState", error: "Hub did not accept defaultCurrentState='${csVal}' (returned '${result?.toString()?.take(120)}'). Use an attribute name from the device's current states."]
                     }
+                } catch (IllegalStateException guardErr) {
+                    throw guardErr   // ?-in-path guard: a coding bug, never a fallback trigger
                 } catch (Exception primaryErr) {
                     // Dedicated endpoint absent on some hubs (404) -- fall back to the Preferences-pane save.
                     mcpLog("debug", "device", "hub_update_device defaultCurrentState: dedicated endpoint failed (${primaryErr.message}); falling back to /device/preference/save")
@@ -2934,7 +2938,7 @@ private Map _toolUpdateDeviceBypass(args, deviceId, Map fj) {
                 // otherwise pass the case-insensitive existence check yet create a duplicate.
                 def matchedRoom = _assertRoomExistsForBypass(args.room)
                 def canonicalName = matchedRoom.name.toString()
-                def r = hubInternalGet("/device/updateRoom?deviceId=${deviceId}&room=${java.net.URLEncoder.encode(canonicalName, 'UTF-8')}")
+                def r = hubInternalGet("/device/updateRoom", [deviceId: deviceId, room: canonicalName])
                 if (r?.toString()?.trim()?.toLowerCase() == "true") {
                     // A "true" return doesn't prove the assignment landed -- re-read and confirm,
                     // mirroring the unassign leg.
@@ -3114,12 +3118,14 @@ def toolCreateDevice(args) {
         // fallback and, if that also fails, the warning text.
         def labelFailNote = null
         try {
-            def labelResult = hubInternalGet("/device/updateLabel?deviceId=${newId}&label=${java.net.URLEncoder.encode(wantLabel, 'UTF-8')}")
+            def labelResult = hubInternalGet("/device/updateLabel", [deviceId: newId, label: wantLabel])
             if (labelResult?.toString()?.trim()?.toLowerCase() == "true") {
                 appliedLabel = wantLabel
             } else {
                 labelFailNote = "hub returned '${labelResult?.toString()?.take(120)}'"
             }
+        } catch (IllegalStateException guardErr) {
+            throw guardErr   // ?-in-path guard: a coding bug, never a fallback trigger
         } catch (Exception e) {
             // The dedicated GET /device/updateLabel setter 404s on some firmwares (e.g. 2.5.0.157).
             labelFailNote = "${e.message ?: e.toString()}"
@@ -3613,7 +3619,7 @@ def toolCallDeviceReplace(args) {
 
     mcpLog("warn", "device-replace", "Replacing device ${oldId} with ${newId} via /device/replace (old id + references preserved)")
     try {
-        def raw = hubInternalGet("/device/replace?oldId=${java.net.URLEncoder.encode(oldId, 'UTF-8')}&newId=${java.net.URLEncoder.encode(newId, 'UTF-8')}")
+        def raw = hubInternalGet("/device/replace", [oldId: oldId, newId: newId])
         def parsed = null
         try { parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null } catch (Exception ignore) { }
         if (parsed instanceof Map && parsed.success == true) {

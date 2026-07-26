@@ -35,11 +35,10 @@ private void _attachRadioIncludes(result, args) {
     def radio = args?.radio?.toString()?.toLowerCase()
     def nodeId = args?.node_id?.toString()?.trim()
     if (nodeId) {
-        def encoded = java.net.URLEncoder.encode(nodeId, 'UTF-8')
         if (radio == "matter") {
-            result.matterPairStatus = _radioGetSafe("/hub/matterPairDeviceStatus?nodeId=${encoded}")
+            result.matterPairStatus = _radioGetSafe("/hub/matterPairDeviceStatus", [nodeId: nodeId])
         } else {
-            result.nodeState = _radioGetSafe("/hub/zwave2/getNodeState?node=${encoded}")
+            result.nodeState = _radioGetSafe("/hub/zwave2/getNodeState", [node: nodeId])
         }
     }
 
@@ -68,7 +67,7 @@ private void _attachRadioIncludes(result, args) {
     if (args?.include_channel_scan) result.channelScan = _radioGetSafe("/hub/zigbeeChannelScanJson")
 
     // SmartStart provisioning entries (cache-bust the list like the UI does).
-    if (args?.include_smartstart) result.smartStart = _radioGetSafe("/mobileapi/zwave/smartstart/list?t=${now()}")
+    if (args?.include_smartstart) result.smartStart = _radioGetSafe("/mobileapi/zwave/smartstart/list", [t: now()])
 
     // Firmware-eligible Z-Wave devices + available files.
     if (args?.include_firmware) {
@@ -85,8 +84,10 @@ private void _attachRadioIncludes(result, args) {
 // timeout) so a WRITE path's existing catch reports success:false rather than a
 // fabricated success:true with the error buried in the response. Resilient READS
 // (the hub_get_radio_details includes) use _radioGetSafe instead.
-private _radioGet(String path) {
-    def txt = hubInternalGet(path)
+// `query` rides hubInternalGet's query MAP -- an embedded '?' in the path is escaped into the
+// literal path by the platform client, which 404s these exact routes (see the _hubRequest guard).
+private _radioGet(String path, Map query = null) {
+    def txt = hubInternalGet(path, query)
     if (!txt) return null
     try { return new groovy.json.JsonSlurper().parseText(txt) }
     catch (Exception parseErr) { return txt.take(8000) }
@@ -95,8 +96,14 @@ private _radioGet(String path) {
 // Non-throwing read variant: a hub fault becomes an {error} map instead of
 // propagating, so one bad include (an absent radio or older firmware) does not
 // fail the whole hub_get_radio_details read -- the miss stays visible per-include.
-private _radioGetSafe(String path) {
-    try { return _radioGet(path) }
+private _radioGetSafe(String path, Map query = null) {
+    try { return _radioGet(path, query) }
+    catch (IllegalStateException guardErr) {
+        // The ?-in-path guard is a server coding bug, not a hub fault -- rethrow it so it cannot
+        // be laundered into an {error} map that a caller reports as a per-include miss (see
+        // _hubRequest's rethrow contract).
+        throw guardErr
+    }
     catch (Exception e) {
         mcpLog("debug", "hub-admin", "_radioGetSafe ${path} failed: ${e.message}")
         return [error: "Failed to fetch ${path}: ${e.message}"]
@@ -1407,9 +1414,9 @@ def toolSetZwave(args) {
         } else if (cur.longRangeChannel != null) {
             params.longRangeChannel = cur.longRangeChannel
         }
-        // Drop null params so v.toString() can't NPE (e.g. region-less hub + region-omitting call).
-        def query = params.findAll { k, v -> v != null }.collect { k, v -> "${k}=${java.net.URLEncoder.encode(v.toString(), 'UTF-8')}" }.join("&")
-        def resp = _radioGet("/hub/zwaveDetails/update?${query}")
+        // Drop null params -- an absent value must not reach the hub as the string "null"
+        // (e.g. region-less hub + region-omitting call).
+        def resp = _radioGet("/hub/zwaveDetails/update", params.findAll { k, v -> v != null })
         mcpLog("info", "hub-admin", "Z-Wave region/long-range config updated via MCP")
         return [success: true, radio: "zwave", region: params.region, longRangeChannel: params.longRangeChannel,
                 message: "Z-Wave radio configuration updated.", response: resp]
@@ -1483,7 +1490,8 @@ def toolSetZigbee(args) {
             }
             boolean rebuild = (args.rebuild_on_reboot != null) ? (args.rebuild_on_reboot == true) : (rebuildCur == true)
             boolean ping = (args.ping_inactive != null) ? (args.ping_inactive == true) : (pingCur == true)
-            def resp = _radioGet("/hub/zigbee/updateSettings?rebuildNetworkOnReboot=${rebuild}&inactiveDevicePingEnabled=${ping}")
+            def resp = _radioGet("/hub/zigbee/updateSettings",
+                              [rebuildNetworkOnReboot: rebuild, inactiveDevicePingEnabled: ping])
             mcpLog("info", "hub-admin", "Zigbee radio settings updated via MCP")
             return [success: true, radio: "zigbee", rebuildNetworkOnReboot: rebuild, inactiveDevicePingEnabled: ping,
                     message: "Zigbee radio settings updated.", response: resp]
@@ -1507,8 +1515,8 @@ def toolSetZigbee(args) {
         throw new IllegalArgumentException("channel and power_level must be set together.")
     }
     try {
-        def query = "channel=${java.net.URLEncoder.encode(args.channel.toString(), 'UTF-8')}&powerLevel=${java.net.URLEncoder.encode(args.power_level.toString(), 'UTF-8')}"
-        def resp = _radioGet("/hub/zigbee/updateChannelAndPower?${query}")
+        def resp = _radioGet("/hub/zigbee/updateChannelAndPower",
+                             [channel: args.channel, powerLevel: args.power_level])
         mcpLog("info", "hub-admin", "Zigbee channel/power updated via MCP")
         return [success: true, radio: "zigbee", channel: args.channel, powerLevel: args.power_level,
                 message: "Zigbee radio channel/power updated.",
@@ -1543,7 +1551,7 @@ def toolCallZwave(args) {
                 // the non-throwing _radioGetSafe so we can detect the {error} map and fall back;
                 // the legacy attempt uses throwing _radioGet so a real failure there surfaces as
                 // success:false rather than a fabricated success.
-                resp = _radioGetSafe("/hub/zwaveRepair2?resetStats=false&maxHealth=10")
+                resp = _radioGetSafe("/hub/zwaveRepair2", [resetStats: false, maxHealth: 10])
                 if (resp instanceof Map && resp.error) {
                     mcpLog("debug", "hub-admin", "zwaveRepair2 missed (${resp.error}); trying legacy /hub/zwaveRepair")
                     resp = _radioGet("/hub/zwaveRepair")
@@ -1557,7 +1565,7 @@ def toolCallZwave(args) {
                 resp = _radioGet("/hub/zwaveCancelRepair")
                 return [success: true, action: action, message: "Z-Wave repair cancel requested.", response: resp]
             case "repair_node":
-                resp = _radioGet("/hub/zwaveNodeRepair2?zwaveNodeId=${java.net.URLEncoder.encode(nodeId, 'UTF-8')}")
+                resp = _radioGet("/hub/zwaveNodeRepair2", [zwaveNodeId: nodeId])
                 return [success: true, action: action, nodeId: nodeId, message: "Per-node Z-Wave repair started for node ${nodeId}.", response: resp]
             case "inclusion_start":
                 resp = _radioGet("/hub/startZwaveJoin")
@@ -1614,7 +1622,7 @@ def toolCallZwave(args) {
                         warning: "This force-removes a non-responding node from the Z-Wave mesh; it does not gracefully exclude a live device.", response: resp]
             case "antenna_test_start":
                 if (!nodeId) throw new IllegalArgumentException("antenna_test_start requires node_id (the device to test against).")
-                resp = _radioGet("/hub/zwave2/startAntennaTest?node=${java.net.URLEncoder.encode(nodeId, 'UTF-8')}")
+                resp = _radioGet("/hub/zwave2/startAntennaTest", [node: nodeId])
                 return [success: true, action: action, nodeId: nodeId, message: "Z-Wave antenna test started.", response: resp]
             case "antenna_test_continue":
                 resp = _radioGet("/hub/zwave2/antennaTestContinue")
@@ -1684,13 +1692,13 @@ def toolCallMatter(args) {
                         warning: "Matter enable/disable requires a HUB REBOOT to take effect. Reboot via hub_reboot when ready.", response: resp]
             case "pair":
                 if (!args.setup_code) throw new IllegalArgumentException("pair requires setup_code (the 11- or 21-digit Matter setup code / pairing code).")
-                resp = _radioGet("/hub/matter/pair?setupCode=${java.net.URLEncoder.encode(args.setup_code.toString(), 'UTF-8')}")
+                resp = _radioGet("/hub/matter/pair", [setupCode: args.setup_code.toString()])
                 return [success: true, action: action,
                         message: "Matter commissioning started for the given setup code.",
                         note: "Poll hub_get_radio_details(radio='matter', include_status=true) for commissioning progress.", response: resp]
             case "open_pairing_window":
                 if (!args.node_id) throw new IllegalArgumentException("open_pairing_window requires node_id (the commissioned Matter node to share).")
-                resp = _radioGet("/hub/matter/openPairingWindow?node=${java.net.URLEncoder.encode(args.node_id.toString(), 'UTF-8')}")
+                resp = _radioGet("/hub/matter/openPairingWindow", [node: args.node_id.toString()])
                 return [success: true, action: action, nodeId: args.node_id?.toString(),
                         message: "Matter pairing/share window opened.",
                         note: "The response carries the setup code for sharing this device to another fabric.", response: resp]

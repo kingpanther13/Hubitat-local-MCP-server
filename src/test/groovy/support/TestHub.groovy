@@ -14,11 +14,11 @@ import me.biocomp.hubitat_ci.api.common_api.Hub
  * dispatch on concrete TestHub instances even though they aren't part of the
  * interface contract — mirroring how the real hub runtime behaves.
  *
- * As of hubitat_ci v0.28.6 (the tag pinned in build.gradle at the time of this
- * file's creation), Hub declares getZigbeeId()/getUptime() but does NOT declare
- * getZwaveVersion()/getZigbeeChannel(). Revisit on eighty20results bumps — if a
- * newer tag adds either property to the interface, drop it from the RUNTIME-ONLY
- * section and let @AutoImplement absorb the new abstract.
+ * As of hubitat_ci v0.28.6 (the tag pinned in build.gradle), Hub declares
+ * getZigbeeId()/getUptime()/getFirmwareVersionString()/getLocalIP() but does NOT
+ * declare getZwaveVersion()/getZigbeeChannel(). Revisit on eighty20results bumps — if
+ * a newer tag adds either remaining property to the interface, move it up to the
+ * INTERFACE section.
  *
  * Usage: {@code new TestHub(zwaveVersion: '7.17.1', uptime: 172800G)}
  */
@@ -27,6 +27,13 @@ class TestHub implements Hub {
     // --- INTERFACE (declared abstract on Hub — auto-generated getters satisfy the contract) ---
     String zigbeeId
     BigInteger uptime
+    // location.hub.firmwareVersionString — read by toolInstallBundle to pick the
+    // bundle endpoint (>= 2.3.8.108 -> /bundle2/uploadZipFromUrl, else /bundle/...).
+    // (Declared on Hub in v0.28.6; it sat under RUNTIME-ONLY until this was checked.)
+    String firmwareVersionString
+    // location.hub.localIP — hub_get_info reports it, and the transport's Origin check
+    // uses it as one of the server-known identities an inbound Origin may name.
+    String localIP
 
     // --- RUNTIME-ONLY (not on Hub interface — property-access only, resolved
     // via Groovy's dynamic property dispatch when tools read e.g.
@@ -34,7 +41,4 @@ class TestHub implements Hub {
     // zwaveVersion read and :5202 for the zigbeeChannel read) ---
     String zwaveVersion
     Integer zigbeeChannel
-    // location.hub.firmwareVersionString — read by toolInstallBundle to pick the
-    // bundle endpoint (>= 2.3.8.108 -> /bundle2/uploadZipFromUrl, else /bundle/...).
-    String firmwareVersionString
 }

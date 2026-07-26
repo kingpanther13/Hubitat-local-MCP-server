@@ -256,10 +256,11 @@ class GatewayToggleSpec extends ToolSpecBase {
                 if (e.message.startsWith('Missing required parameter')) {
                     assert e.message.contains(st), "pre-check for '${st}' named a different tool: ${e.message}"
                 }
-            } catch (MissingMethodException | MissingPropertyException | IllegalStateException | NullPointerException ignored) {
+            } catch (MissingMethodException | MissingPropertyException | IllegalStateException | NullPointerException | support.UnstubbedPathException ignored) {
                 // The ONLY tolerated non-IAE classes: a handler that RAN and hit an unstubbed
-                // hub endpoint / null device. Any OTHER exception type is NOT caught here, so it
-                // propagates out of the closure and FAILS the test -- surfacing a suspected
+                // hub endpoint (UnstubbedPathException is the mock's dedicated signal for
+                // exactly that) / null device. Any OTHER exception type is NOT caught here, so
+                // it propagates out of the closure and FAILS the test -- surfacing a suspected
                 // routing-layer failure instead of masking it.
             }
             assert routed, "handleGateway('${gw}', '${st}') failed to route -- gateway membership/dispatch drift"

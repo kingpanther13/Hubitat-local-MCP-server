@@ -26,7 +26,9 @@ jobs:
         with:
           python-version: '3.x'
       - name: Install pytest
-        run: pip install pytest
+        # requests satisfies tests/test_e2e_test_helpers.py's importorskip —
+        # without it that module's 28 tests are silently skipped on every PR.
+        run: pip install pytest requests
       - name: Run Python unit tests
         # --doctest-modules makes the `>>> parse_release_notes(...)` examples
         # in release_bump.py executable; without this they're documentation only.

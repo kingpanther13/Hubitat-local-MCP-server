@@ -448,4 +448,85 @@ class HubInternalRetrySpec extends ToolSpecBase {
         and: 'the error log names the failing path'
         errorLogs.any { it.contains('/app/saveOrUpdateJson') && it.contains('not JSON') }
     }
+
+    // ---------- querystring-in-path guard ----------
+
+    @spock.lang.Unroll
+    def "a path carrying a querystring is refused up front (#variant)"() {
+        // The platform client ESCAPES a '?' embedded in `path`, so it stops separating the
+        // querystring and becomes part of the literal path. Exact hub routes then 404
+        // (/app/updateOAuth, /device/updateLabel, /device/setShowOnHome -- all verified live on
+        // firmware 2.5.0.159), while WILDCARD routes MASK it by swallowing the junk into their
+        // path-parameter. That asymmetry is why this is a hard guard and not a comment: without
+        // it, a converted-back caller returns a 404 that several call sites swallow, and the
+        // regression is invisible until someone probes the hub by hand.
+        given: 'a handler that must never be reached'
+        boolean reached = false
+        httpGetHandler = { Map params, Closure cb -> reached = true; cb.call([status: 200, data: 'x']) }
+        httpPostHandler = { Map params, Closure cb -> reached = true; cb.call([status: 200, data: 'x']) }
+
+        when:
+        invoke.call(script)
+
+        then: 'IllegalStateException, NOT IllegalArgumentException'
+        // An IAE maps to -32602, and the opToken machinery RELEASES a token on -32602 because
+        // that code promises nothing was committed. This guard can fire on a LATER leg of a
+        // multi-step tool whose earlier legs already wrote, so a release would license a
+        // same-token double-run over committed work. An ISE lands in the generic catch
+        // (-32603/isError), which SPENDS the token.
+        def ex = thrown(IllegalStateException)
+        !(ex instanceof IllegalArgumentException)
+        ex.message.contains('must not contain a querystring')
+        ex.message.contains('query map')
+
+        and: 'the request was never issued'
+        !reached
+
+        where:
+        // hubInternalGet is deliberately absent: HarnessSpec metaClass-shadows it onto the
+        // HubInternalGetMock, so a call here would never reach _hubRequest. That shadow is why
+        // the mock enforces the same guard itself (see HubInternalGetMock.call). Every variant
+        // below reaches _hubRequest, and they all funnel through the same guard line.
+        variant                  | invoke
+        'hubInternalGetRaw'      | { s -> s.hubInternalGetRaw('/installedapp/create/5?x=1') }
+        'hubInternalPost'        | { s -> s.hubInternalPost('/hub/x?y=1', [:]) }
+        'hubInternalPostForm'    | { s -> s.hubInternalPostForm('/installedapp/update/json?a=b', [:]) }
+        'hubInternalPostJson'    | { s -> s.hubInternalPostJson('/app/saveOrUpdateJson?a=b', '{}') }
+        'hubInternalPostFormRaw' | { s -> s.hubInternalPostFormRaw('/installedapp/btn?a=b', 'k=v') }
+    }
+
+    def "the guard message redacts a secret-bearing path"() {
+        // The WiFi-join leg carries the network password. Even though that path now rides a query
+        // map, a REGRESSION that put it back in the path must not leak the psk into the error
+        // envelope or the hub log.
+        when:
+        script.hubInternalPost('/hub/advanced/setWiFiNetworkInfo?ssid=Net&psk=supersecret', [:])
+
+        then:
+        def ex = thrown(IllegalStateException)
+        !ex.message.contains('supersecret')
+        ex.message.contains('psk=***')
+    }
+
+    def "a bare path with query parameters supplied as a map is passed through as path + query"() {
+        // The correct shape: parameters ride `query`, and the platform client -- not us -- does
+        // the URL-encoding. A value pre-encoded by the caller would be double-encoded on the wire.
+        // Driven through hubInternalGetRaw because hubInternalGet is metaClass-shadowed onto the
+        // mock in the harness; both build the same params map in _hubRequest.
+        given:
+        Map seen = null
+        httpGetHandler = { Map params, Closure cb -> seen = params; cb.call([status: 200, data: 'true']) }
+
+        when:
+        def out = script.hubInternalGetRaw('/device/updateLabel', [deviceId: '777', label: 'Garage Bridge'])
+
+        then:
+        out.status == 200
+        out.data == 'true'
+
+        and: 'the path stays bare and the parameters ride query, verbatim'
+        seen.path == '/device/updateLabel'
+        !seen.path.contains('?')
+        seen.query == [deviceId: '777', label: 'Garage Bridge']
+    }
 }
