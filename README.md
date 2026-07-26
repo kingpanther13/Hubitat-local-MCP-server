@@ -1654,6 +1654,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v3.5.0** - feat: add MCP 2026-07-28 support (server/discover, modern-transport validation, cache hints). PRs: [#365](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/365)
 - **v3.4.4** - fix: heartbeat-based e2e dead-man + deferred opToken result uploads. PRs: [#363](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/363)
 - **v3.4.3** - fix: backup gate and create-backup confirmation read the hub's real backup list. PRs: [#362](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/362)
 - **v3.4.2** - chore: disable sunset Gemini Code Assist reviews; build(deps): bump actions/setup-python from 6 to 7 in the github-actions group ([#358](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/358), @app/dependabot); feat: expose live enabled/paused/disabled status in hub_list_rules (#359). PRs: [#357](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/357), [#358](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/358), [#360](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/360)
