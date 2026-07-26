@@ -318,10 +318,11 @@ class HubitatMcpClient:
 
         `headers` sets extra request headers, which is how the modern (2026-07-28)
         transport tests drive the MCP-Protocol-Version / Mcp-Method / Mcp-Name
-        validation and the Origin check. The cloud relay forwards these to the hub
-        intact and preserves the hub's status code, both probe-verified. Omitting
-        `headers` leaves the request HEADERLESS, i.e. on the legacy path — which is
-        what every other call in this suite does.
+        validation. The cloud relay forwards these to the hub intact and preserves the
+        hub's status code, both probe-verified. Omitting `headers` leaves the request
+        HEADERLESS, i.e. on the legacy path — which is what every other call in this
+        suite does. Do NOT send an `Origin` here: Origin handling is covered by the
+        Spock matrix only, so the suite's own hub connection can never depend on it.
         """
         time.sleep(0.2)   # same per-call duty-cycle pacing as _send (see the limiter note there)
         last_exc: Exception | None = None
@@ -10052,7 +10053,7 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             print(f"    [WARN] Could not check hub logs: {exc}")
 
     # -----------------------------------------------------------------------
-    # GROUP 13: protocol (23 tests — initialize echo-allowlist (legacy-capped),
+    # GROUP 13: protocol (22 tests — initialize echo-allowlist (legacy-capped),
     # instructions, server/discover, the era-gated resultType decoration + the
     # unconditional serverInfo _meta, the tools/list cache hints, legacy per-request
     # _meta version tolerance, the ERA SWITCH (a MCP-Protocol-Version header naming a
@@ -10060,11 +10061,15 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
     # 2025-06-18, so presence must never be read as "modern"), the modern 2026-07-28
     # header validation (Mcp-Method / Mcp-Name incl. the base64 sentinel → 400 + -32020,
     # unsupported version → 400 + -32022, batch body → 400 + -32600, unknown method →
-    # 404 + -32601), Origin validation → 403, inbound batch cap, and
-    # 202-for-notifications. These exercise the transport/protocol layer end-to-end
-    # through the cloud relay, which the Spock harness (in-process dispatch) cannot
-    # reach — and the relay both forwards the Mcp-*/Origin headers and preserves the
-    # hub's status code, so the HTTP-status half of the contract is only provable here.)
+    # 404 + -32601), the inbound batch cap, and 202-for-notifications. These exercise the
+    # transport/protocol layer end-to-end through the cloud relay, which the Spock harness
+    # (in-process dispatch) cannot reach — and the relay both forwards the Mcp-* headers
+    # and preserves the hub's status code, so the HTTP-status half of the contract is only
+    # provable here.
+    #
+    # Origin validation is deliberately NOT exercised here in any form: sending an Origin
+    # header to the test hub risks the suite's own connection to it, so that contract lives
+    # entirely in the Spock matrix.)
     # -----------------------------------------------------------------------
 
     @test("protocol")
@@ -10438,41 +10443,6 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         err = resp.json().get("error", {})
         assert err.get("code") == -32601, \
             f"the 404 body must still carry -32601 (the era signal): {str(resp.json())[:300]}"
-
-    @test("protocol")
-    def test_foreign_origin_is_served_by_default(self) -> None:
-        """Origin validation is LOG-ONLY by default, so a foreign Origin is SERVED (HTTP 200).
-
-        The transport spec says reject with 403, and this endpoint deliberately does not by default:
-        its access token rides in the URL, so a DNS-rebound page cannot authenticate and a tokenless
-        request never reaches the handler, while enforcing would newly break reverse-proxy and
-        browser-client setups no shipped version ever rejected. Enforcement is an opt-in Advanced
-        toggle (enforceOriginValidation); the 403 path is covered by the Spock suite, not here --
-        flipping a hub setting mid-run to prove it would race every other scenario.
-
-        What this asserts live is the DEFAULT: the request is served, and the mismatch is logged
-        rather than silently ignored.
-        """
-        resp = self.client.raw_request(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
-            headers={"Origin": "http://evil.example"},
-        )
-        assert resp.status_code == 200, \
-            ("a foreign Origin must be SERVED in the default log-only mode, got "
-             f"{resp.status_code}: {resp.text[:300]!r} -- if this is a 403, enforceOriginValidation "
-             "is ON for this install (it ships OFF)")
-        assert isinstance(resp.json().get("result", {}).get("tools"), list), \
-            f"the foreign-Origin request did not dispatch: {str(resp.json())[:300]}"
-
-        # ALLOW branch: the relay fronts this endpoint, so cloud.hubitat.com is a known identity and
-        # produces no mismatch log at all. Both branches return 200 in this mode -- the difference is
-        # only in the hub log -- so this pins that a KNOWN origin is at least not broken by the check.
-        allowed = self.client.raw_request(
-            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
-            headers={"Origin": "https://cloud.hubitat.com"},
-        )
-        assert allowed.status_code == 200, \
-            f"Origin https://cloud.hubitat.com must be allowed, got {allowed.status_code}: {allowed.text[:300]!r}"
 
     @test("protocol")
     def test_initialize_returns_instructions(self) -> None:

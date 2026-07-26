@@ -887,7 +887,10 @@ def _requestHeader(String name) {
         if (hit == null) return null
         def value = hit.value
         if (value instanceof List) value = value.isEmpty() ? null : value[0]
-        return value == null ? null : value.toString()
+        // Trim: RFC 9110 excludes leading/trailing optional whitespace from a field VALUE, so
+        // "2026-07-28 " is the same version as "2026-07-28". Without this a padded header falls
+        // outside supportedProtocolVersions() and 400s as an unsupported version.
+        return value == null ? null : value.toString().trim()
     } catch (Exception ignored) {
         _noteHeadersReadable(false)
         return null
@@ -903,10 +906,17 @@ def _requestHeader(String name) {
 // error level once per state change rather than per request.
 def _noteHeadersReadable(boolean readable) {
     try {
-        if (state.headersReadable == readable) return
+        def prev = state.headersReadable
+        if (prev == readable) return
         state.headersReadable = readable
         if (readable) {
-            mcpLog("info", "server", "request.headers is readable -- Origin validation and 2026-07-28 modern-era detection are active")
+            // ONLY on recovery. The first-ever null->true transition is the normal healthy case, and
+            // logging it wrote a line into every install's debug buffer on the first request -- which
+            // also broke every spec that counts buffer entries. hub_get_info.headerValidation is
+            // where the healthy state is READ; this log is for the abnormal one.
+            if (prev == false) {
+                mcpLog("info", "server", "request.headers is readable again -- Origin validation and modern-era detection are active")
+            }
         } else {
             mcpLog("error", "server", "request.headers is NOT readable on this firmware -- Origin validation is INACTIVE (the DNS-rebinding check cannot run) and every request is served as legacy-era regardless of its MCP-Protocol-Version header")
         }

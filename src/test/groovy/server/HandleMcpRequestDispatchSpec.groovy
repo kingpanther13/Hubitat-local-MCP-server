@@ -1684,22 +1684,53 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         response.error.message.contains('Mcp-Method')
     }
 
-    def "an MCP-Protocol-Version value with trailing whitespace is NOT the modern era"() {
-        // Header VALUES compare exactly (RFC 9110 makes only NAMES case-insensitive), and the era
-        // switch is an exact value match. A padded value is therefore legacy -- pinned so nobody
-        // "helpfully" adds a trim() and silently widens the era switch.
+    @spock.lang.Unroll
+    def "a padded MCP-Protocol-Version is trimmed per RFC 9110, so #version lands on its proper era"() {
+        // RFC 9110 excludes leading/trailing optional whitespace from a field VALUE, so
+        // "2026-07-28 " IS "2026-07-28". Trimming in _requestHeader is what makes that true; without
+        // it a padded value matches nothing in supportedProtocolVersions() and 400s as unsupported,
+        // which is neither era and is wrong for both. Each padded version must reach exactly the
+        // path its trimmed form would.
         given:
-        mcpDriver.pushHeaders(['MCP-Protocol-Version': '2026-07-28 '])
+        mcpDriver.pushHeaders(['MCP-Protocol-Version': version] + extraHeaders)
         mcpDriver.pushBody([jsonrpc: '2.0', id: 451, method: 'tools/list', params: [:]])
 
         when:
         script.handleMcpRequest()
 
-        then: 'not modern: no Mcp-Method demanded, no resultType stamped, 200'
+        then: 'served normally -- never the -32022 an untrimmed value would produce'
         mcpDriver.lastRenderArgs.status == null
         def response = mcpDriver.parseResponseJson()
         response.error == null
-        !response.result.containsKey('resultType')
+        response.result.tools instanceof List
+
+        and: 'and it landed on the expected era, which resultType reveals'
+        response.result.containsKey('resultType') == modernExpected
+
+        where:
+        // A padded MODERN version is modern, so it also has to satisfy the mirrored-header contract
+        // -- Mcp-Method is supplied here for exactly that reason, which is itself the proof that the
+        // trimmed value took the modern path.
+        version         | extraHeaders                | modernExpected
+        '2026-07-28 '   | ['Mcp-Method': 'tools/list'] | true
+        ' 2026-07-28'   | ['Mcp-Method': 'tools/list'] | true
+        '2025-06-18 '   | [:]                          | false
+        ' 2025-11-25 '  | [:]                          | false
+    }
+
+    def "a padded MODERN version still enforces the mirrored-header contract"() {
+        // The other half of the trim: once " 2026-07-28 " IS the modern era, a missing Mcp-Method
+        // must fail it. Otherwise trimming would have quietly created a header-validation bypass.
+        given:
+        mcpDriver.pushHeaders(['MCP-Protocol-Version': '2026-07-28 '])
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 452, method: 'tools/list', params: [:]])
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        mcpDriver.lastRenderArgs.status == 400
+        mcpDriver.parseResponseJson().error.code == -32020
     }
 
     def "server/discover works on the modern era too, with its headers validated"() {
@@ -1738,6 +1769,10 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
     // rebinding attack the browser sends Origin AND Host both naming the attacker's
     // domain, so they agree. The Host-match rows below are therefore localIP-match rows,
     // and the harness seeds localIP in setup().
+    //
+    // This matrix is the ONLY coverage of Origin handling: the e2e suite deliberately
+    // carries no Origin scenarios, so connectivity to the live test hub can never depend
+    // on Origin behavior. Anything provable about Origin has to be proven here.
 
     def "a present Origin naming none of the server's known identities is rejected with 403"() {
         // Streamable HTTP: "servers MUST validate the Origin header on all incoming
@@ -1931,7 +1966,9 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
 
         then: 'served, and an error-level entry explains why it was not rejected'
         mcpDriver.lastRenderArgs.status == null
-        def entry = (stateMap.debugLogs?.entries ?: []).find { it.message?.contains('Origin') }
+        // Match the MISMATCH line specifically. 'Origin' alone also matches the header-readability
+        // entry, which is how this originally picked up an info-level record and failed.
+        def entry = (stateMap.debugLogs?.entries ?: []).find { it.message?.contains('Origin MISMATCH') }
         entry != null
         entry.level == 'error'
         entry.message.contains('evil.example')

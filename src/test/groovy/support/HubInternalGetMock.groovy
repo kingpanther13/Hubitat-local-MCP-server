@@ -48,7 +48,10 @@ class HubInternalGetMock {
         calls << [path: path, params: params, key: composed]
         def handler = handlers[composed] ?: handlers[path]
         if (!handler) {
-            throw new IllegalStateException(
+            // UnstubbedPathException, NOT IllegalStateException -- see that class for why: ISE is
+            // reserved for the ?-in-path guard, which several production callers rethrow instead of
+            // degrading, so an unstubbed path must not masquerade as it.
+            throw new UnstubbedPathException(
                 "Unstubbed hubInternalGet: ${path} (params=${params}). Tried keys: '${composed}' then '${path}'.")
         }
         return handler(params)

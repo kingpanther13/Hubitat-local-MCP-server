@@ -949,6 +949,29 @@ private Map _submitAppDoneForm(Integer instanceId, String pageName, boolean requ
             liveSettingsUnavailable: liveSettingsUnavailable, shapeRejections: shapeRejections]
 }
 
+// Whether a stored settings value can go straight to _rmBuildSettingsBody, which CSV-encodes a
+// List (capability), JSON-encodes an enum List, and toString()s everything else. Scalars and lists
+// of scalars round-trip exactly; a Map -- or a List carrying one, which is how a device input can
+// render -- would toString() into junk and POST that junk back, so those defer to the page value.
+// NOT private: _submitAppDoneForm calls this from inside a schema.each {} closure, and a closure
+// resolves owner calls through the metaClass, which does not expose private methods.
+boolean _isSimpleSettingValue(v) {
+    if (v instanceof Map) return false
+    if (v instanceof List) {
+        return v.every { it == null || it instanceof CharSequence || it instanceof Number || it instanceof Boolean }
+    }
+    return (v instanceof CharSequence || v instanceof Number || v instanceof Boolean)
+}
+
+// Coarse shape label for a log line: never getClass() (reflection is sandbox-blocked) and never the
+// value, which can be a password. Closure-callable for the same reason as above.
+def _settingShapeName(v) {
+    if (v == null) return "null"
+    if (v instanceof Map) return "Map"
+    if (v instanceof List) return "List(with a non-scalar element)"
+    return "non-scalar"
+}
+
 private Map _commitUserAppInstall(Integer instanceId, String pageName) {
     // requireLiveSettings=false: a fresh shell has no configured values to protect, so the page
     // defaults ARE correct and refusing over an unreadable statusJson would block the install for
