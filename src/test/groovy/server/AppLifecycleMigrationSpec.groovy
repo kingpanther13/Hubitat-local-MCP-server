@@ -318,9 +318,10 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         response.jsonrpc == '2.0'
         response.id == 42
         response.error == null
-        // ping carries no payload of its own; resultType + _meta are the universal
-        // envelope keys jsonRpcResult stamps on every result.
-        response.result.keySet() == ['resultType', '_meta'] as Set
+        // ping carries no payload of its own; _meta (serverInfo) is the only universal
+        // envelope key -- resultType is stamped on modern-era responses only, and this
+        // headerless request is legacy-era.
+        response.result.keySet() == ['_meta'] as Set
     }
 
     def "a normal MCP request still succeeds when the migration helper throws"() {
@@ -343,7 +344,8 @@ class AppLifecycleMigrationSpec extends ToolSpecBase {
         def response = mcpDriver.parseResponseJson()
         response.id == 7
         response.error == null
-        response.result.keySet() == ['resultType', '_meta'] as Set
+        // Headerless legacy-era ping: _meta only, no resultType (modern-era-only key).
+        response.result.keySet() == ['_meta'] as Set
 
         and: 'the helper threw before setting the marker (proves it really failed mid-run)'
         atomicStateMap.publishOutputSchemasForcedOff == null
