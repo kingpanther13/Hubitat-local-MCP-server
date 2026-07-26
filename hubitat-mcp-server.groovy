@@ -4228,10 +4228,20 @@ def hubBaseUri() { "http://127.0.0.1:8080" }
 // admin UI uses can 404 on :8080 while working on :80. Verified on firmware 2.5.0.159:
 // /app/updateOAuth 404s on :8080 and the identical query succeeds on :80 (curl-verified;
 // resources/hub2-source/vue-hub2.min.js calls it from the browser, i.e. against :80).
+//
+// The :80 server is NOT bound on loopback -- http://127.0.0.1:80 is Connection-refused
+// (verified live on the same firmware) -- so this base must target the hub's own LAN IP.
+// When the LAN IP is unreadable there is no reachable admin base; returning null makes the
+// caller surface the original :8080 error instead of a misleading connection failure.
+//
 // :8080 stays the default for everything -- reach for this ONLY per-endpoint, where the
 // :8080 miss is proven, and go through the same cookie path since :80 enforces Hub
 // Security login when it is enabled.
-def hubAdminBaseUri() { "http://127.0.0.1:80" }
+def hubAdminBaseUri() {
+    def localIp = null
+    try { localIp = location?.hub?.localIP?.toString() } catch (Exception ignored) { localIp = null }
+    return localIp ? "http://${localIp}:80" : null
+}
 
 // Timeout rationale: reads are fast localhost fetches; writes (native-RM wizard steps,
 // large app/driver/library save+compile) can legitimately take minutes.
@@ -4432,8 +4442,15 @@ def hubInternalGet(String path, Map query = null, int timeout = 30, boolean isRe
  * :8080; see hubAdminBaseUri() for why that happens and which endpoint needs it.
  */
 def hubAdminGet(String path, Map query = null, int timeout = 30, boolean isRetry = false) {
+    def base = hubAdminBaseUri()
+    if (!base) {
+        // Null base means the hub's LAN IP is unreadable, so there is no reachable :80
+        // server to try -- failing loudly here beats silently re-hitting :8080 (the
+        // baseUri fallback in _hubRequest would do exactly that with a null override).
+        throw new IllegalStateException("hubAdminGet: the hub's LAN IP is unreadable, so the port-80 admin server cannot be reached")
+    }
     _hubRequest('GET', path, [query: query, timeout: timeout, returnShape: 'text',
-                              isRetry: isRetry, baseUri: hubAdminBaseUri()])
+                              isRetry: isRetry, baseUri: base])
 }
 
 /**

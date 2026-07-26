@@ -1659,9 +1659,15 @@ private String _updateOAuthGet(String pathWithQuery) {
     } catch (Exception e) {
         if (_httpStatusOf(e) != 404) throw e
         mcpLog("info", "hub-admin", "/app/updateOAuth returned 404 on ${hubBaseUri()} -- retrying against the admin server ${hubAdminBaseUri()} (this firmware's internal router does not serve it)")
-        String text = hubAdminGet(pathWithQuery, null, 30)
-        mcpLog("debug", "hub-admin", "/app/updateOAuth served by ${hubAdminBaseUri()}")
-        return text
+        try {
+            String text = hubAdminGet(pathWithQuery, null, 30)
+            mcpLog("debug", "hub-admin", "/app/updateOAuth served by ${hubAdminBaseUri()}")
+            return text
+        } catch (Exception adminErr) {
+            // Name both legs: the :8080 404 alone would misread as "wrong app id", and the
+            // admin-leg error alone would hide that the normal router already missed.
+            throw new RuntimeException("/app/updateOAuth: 404 on ${hubBaseUri()} and the port-80 admin fallback also failed (${adminErr.message})")
+        }
     }
 }
 

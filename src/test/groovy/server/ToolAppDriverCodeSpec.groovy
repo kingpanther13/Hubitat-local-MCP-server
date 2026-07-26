@@ -2054,6 +2054,10 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.oauth.success == false
         result.oauth.error.contains('OAuth update failed')
         result.oauth.note.contains('Hub Security')
+
+        and: 'the error names BOTH legs -- the :8080 404 alone reads as "wrong app id", and the admin-leg error alone hides that the normal router already missed'
+        result.oauth.error.contains('404 on')
+        result.oauth.error.contains('admin fallback also failed')
     }
 
 
