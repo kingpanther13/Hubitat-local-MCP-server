@@ -7042,6 +7042,16 @@ def updateLegMarker() { return "UPDATE-LEG-MARKER-V1" }
         the refresh -- so "settings survived" is distinguishable from "defaults re-applied",
         which would read back false.
 
+        It also declares a DEVICE input (capability.switch, multiple) assigned the scaffold
+        switch, because that is the shape real apps overwhelmingly have and the one that cannot
+        be answered off-hub. /installedapp/configure/json renders a device setting as an OBJECT
+        with value=null, which is unencodable, so the Done body is built from statusJson
+        appSettings instead: _rmLiveSettingsFromStatus rebuilds the assignment from
+        deviceIdsForDeviceList into the id List the form CSV-encodes. If this hub reports device
+        settings some other way the assignment is re-submitted as "" and the assertion below
+        fails -- precisely the signal wanted, since the shape handling would then need extending
+        rather than being assumed correct.
+
         Needs a running INSTANCE (not just a code class), so it creates and cleans up both.
         Named "Deadman Test Target ..." in namespace mcptest so the Layer 5 sweep reclaims a
         stranded copy -- instance included -- if a crash skips the finally."""
@@ -7060,6 +7070,7 @@ preferences {
     page(name: "p", title: "Trigger Leg Target", install: true, uninstall: true) {
         section {
             input name: "refreshProbe", type: "bool", title: "Round-trip probe", defaultValue: false
+            input name: "probeSwitches", type: "capability.switch", title: "Round-trip devices", multiple: true, required: false
             paragraph "Throwaway triggerUpdated target. Marker: ${triggerLegMarker()}"
         }
     }
@@ -7077,6 +7088,21 @@ def triggerLegMarker() { return "TRIGGER-LEG-MARKER-V1" }
             or as its string form, so compare case-folded text rather than an identity."""
             settings = (cfg.get("settings") or {}) if isinstance(cfg, dict) else {}
             return str(settings.get("refreshProbe")).strip().lower()
+
+        def probe_device_ids(cfg: dict) -> set:
+            """probeSwitches as a set of device-id strings. A device setting comes back in more
+            than one shape depending on how the hub renders it -- an id->label object (what
+            configure/json produces), a plain list of ids, or a CSV string -- so normalize all
+            three rather than pinning one and calling a mere shape change a regression."""
+            settings = (cfg.get("settings") or {}) if isinstance(cfg, dict) else {}
+            raw = settings.get("probeSwitches")
+            if isinstance(raw, dict):
+                return {str(k) for k in raw}
+            if isinstance(raw, list):
+                return {str(v) for v in raw}
+            if isinstance(raw, str) and raw.strip():
+                return {part.strip() for part in raw.split(",") if part.strip()}
+            return set()
 
         code_app_id = None
         instance_app_id = None
@@ -7102,9 +7128,12 @@ def triggerLegMarker() { return "TRIGGER-LEG-MARKER-V1" }
             # precondition for the settings-preservation assertion at the end -- verified here
             # so a later read of "false" can only mean the Done re-submit blanked it, never
             # that the write never landed.
+            scaffold_switch = self.get_test_switch_id()
             self.client.call_tool("hub_manage_native_rules_and_apps", {
                 "tool": "hub_set_native_app",
-                "args": {"appId": instance_app_id, "settings": {"refreshProbe": True}, "confirm": True},
+                "args": {"appId": instance_app_id,
+                         "settings": {"refreshProbe": True, "probeSwitches": [scaffold_switch]},
+                         "confirm": True},
             })
             before_cfg = self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_app_config",
@@ -7112,6 +7141,9 @@ def triggerLegMarker() { return "TRIGGER-LEG-MARKER-V1" }
             })
             assert probe_value(before_cfg) == "true", \
                 f"could not configure refreshProbe=true, so the round-trip check has no baseline: settings={before_cfg.get('settings')!r}"
+            assert probe_device_ids(before_cfg) == {str(scaffold_switch)}, \
+                ("could not assign the scaffold switch to probeSwitches, so the device round-trip check "
+                 f"has no baseline: settings.probeSwitches={(before_cfg.get('settings') or {}).get('probeSwitches')!r}")
 
             # Save new code AND fire updated() on the instance in one call.
             source_v2 = source_v1.replace("TRIGGER-LEG-MARKER-V1", "TRIGGER-LEG-MARKER-V2")
@@ -7144,8 +7176,14 @@ def triggerLegMarker() { return "TRIGGER-LEG-MARKER-V1" }
                 ("the lifecycle refresh did not preserve the instance's configured settings: "
                  f"refreshProbe went true -> {probe_value(cfg)!r} (defaults re-applied instead of "
                  f"round-tripped). settings={cfg.get('settings')!r}")
+            assert probe_device_ids(cfg) == {str(scaffold_switch)}, \
+                ("the lifecycle refresh did not preserve the instance's DEVICE selection: "
+                 f"probeSwitches went [{scaffold_switch}] -> {sorted(probe_device_ids(cfg))} -- the Done "
+                 "re-submit blanked it, so the statusJson deviceIdsForDeviceList reconstruction does not "
+                 f"cover this hub's shape. settings.probeSwitches={(cfg.get('settings') or {}).get('probeSwitches')!r}")
 
-            print(f"    TRIGGER_UPDATED ok -- updatedFired on instance {instance_app_id}, still installed, configured setting preserved")
+            print(f"    TRIGGER_UPDATED ok -- updatedFired on instance {instance_app_id}, still installed, "
+                  f"bool + device selection both preserved")
         finally:
             if instance_app_id:
                 try:
@@ -9343,11 +9381,21 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
 
             # ---- WRITE bypass endpoints (live proof; spec-stubs masked the updateRoom name bug) ----
             # All reversible / no-op so an arbitrary unlisted device is left exactly as found.
+            #
+            # Legs (a) and (c) are the ONLY live coverage of /device/updateLabel and
+            # /device/updateRoom, and both are gated on what the arbitrarily-picked unlisted
+            # device happens to have. A device with no label or no room silently skips them, so
+            # those endpoints can regress with the suite still green. Each skip PRINTS below so
+            # the gap is visible in every run summary instead of being invisible; closing it
+            # properly needs a fixture device we control with a room assigned.
             orig_label = dev.get("label") or dev.get("name")
             cmd_names = [c.get("name") for c in (dev.get("commands") or []) if isinstance(c, dict)]
             orig_room = dev.get("room")
 
             # (a) label rename via /device/updateLabel, then restore the original (reversible write).
+            if not orig_label:
+                print(f"    [COVERAGE GAP] bypass leg (a) SKIPPED: device {unauth} has no label/name, "
+                      f"so /device/updateLabel got NO live coverage this run")
             if orig_label:
                 up = self.client.call_tool("hub_update_device", {"deviceId": unauth, "label": f"{orig_label} _BWTEST"})
                 assert up.get("success") is True, f"bypass label rename did not succeed: {up}"
@@ -9363,6 +9411,9 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
 
             # (c) room assign via /device/updateRoom, re-assigning to the SAME room (a no-op move that
             # proves the NAME-keyed endpoint returns true without relocating the device).
+            if not orig_room:
+                print(f"    [COVERAGE GAP] bypass leg (c) SKIPPED: device {unauth} is in no room, "
+                      f"so /device/updateRoom got NO live coverage this run")
             if orig_room:
                 rr = self.client.call_tool("hub_update_device", {"deviceId": unauth, "room": orig_room})
                 assert rr.get("success") is True, f"bypass same-room re-assign did not succeed: {rr}"

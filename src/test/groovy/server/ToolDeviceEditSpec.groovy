@@ -15,8 +15,12 @@ import support.ToolSpecBase
  *
  * Mocking strategy (see docs/testing.md + ToolAppsDriversSpec):
  *   - hubInternalGet         : routed by HarnessSpec to the @Shared HubInternalGetMock
- *                              (hubGet.register(path) closures; exact-path match including
- *                              the query string, e.g. '/device/setShowOnHome?deviceId=10&show=true').
+ *                              (hubGet.register(key) closures). Production passes query
+ *                              parameters as a MAP (an embedded '?' in the path 404s exact hub
+ *                              routes -- see the _hubRequest guard), and the mock recomposes
+ *                              'path?k=v&k=v' from that map, so a registration key still reads
+ *                              like '/device/setShowOnHome?deviceId=10&show=true'. Values in the
+ *                              key are RAW -- never pre-encoded, since the query map encodes.
  *   - hubInternalPostFormRaw : not on HubitatAppScript, stubbed per-test on script.metaClass
  *                              (captures the wholesale /device/update form the tags path POSTs).
  *
@@ -44,7 +48,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         then:
         result.success == true
         result.changes.find { it.property == 'showOnHome' }?.newValue == false
-        hubGet.calls.any { it.path == '/device/setShowOnHome?deviceId=10&show=false' }
+        hubGet.calls.any { it.key == '/device/setShowOnHome?deviceId=10&show=false' }
     }
 
     // ============================================================
@@ -210,7 +214,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         then:
         result.success == true
         result.changes.find { it.property == 'defaultCurrentState' }?.newValue == 'temperature'
-        hubGet.calls.any { it.path == '/device/setDefaultCurrentState?id=10&currentState=temperature' }
+        hubGet.calls.any { it.key == '/device/setDefaultCurrentState?id=10&currentState=temperature' }
     }
 
     def "toolUpdateDevice defaultCurrentState empty string selects None"() {
@@ -227,7 +231,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         then:
         result.success == true
         result.changes.find { it.property == 'defaultCurrentState' }?.newValue == ''
-        hubGet.calls.any { it.path == '/device/setDefaultCurrentState?id=10&currentState=' }
+        hubGet.calls.any { it.key == '/device/setDefaultCurrentState?id=10&currentState=' }
     }
 
     @spock.lang.Unroll
@@ -596,7 +600,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/777') { params ->
             '{"device":{"id":777,"label":"My LAN Device","name":"Generic LAN Driver","deviceTypeName":"Generic LAN Driver","virtual":false,"capabilities":["Switch"]}}'
         }
-        hubGet.register('/device/updateLabel?deviceId=777&label=Garage+Bridge') { params -> 'true' }
+        hubGet.register('/device/updateLabel?deviceId=777&label=Garage Bridge') { params -> 'true' }
 
         when:
         def result = script.toolCreateDevice([deviceTypeId: '500', label: 'Garage Bridge', confirm: true])
@@ -607,7 +611,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         result.label == 'Garage Bridge'
         result.deviceTypeId == '500'
         result.warnings == null
-        hubGet.calls.any { it.path == '/device/updateLabel?deviceId=777&label=Garage+Bridge' }
+        hubGet.calls.any { it.path == '/device/updateLabel?deviceId=777&label=Garage Bridge' }
     }
 
     @spock.lang.Unroll
@@ -618,7 +622,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/777') { params ->
             groovy.json.JsonOutput.toJson([device: [id: 777, label: fjLabel, name: 'Generic LAN Driver', deviceTypeName: 'Generic LAN Driver', virtual: false, capabilities: ['Switch']]])
         }
-        hubGet.register('/device/updateLabel?deviceId=777&label=Garage+Bridge') { params ->
+        hubGet.register('/device/updateLabel?deviceId=777&label=Garage Bridge') { params ->
             if (scenario == 'throws') throw new RuntimeException('status code: 404, reason phrase: Not Found')
             return 'false'
         }
@@ -710,7 +714,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/777') { params ->
             groovy.json.JsonOutput.toJson([device: [id: 777, label: fjLabel, name: 'Generic LAN Driver', deviceTypeName: 'Generic LAN Driver', virtual: false, capabilities: ['Switch']]])
         }
-        hubGet.register('/device/updateLabel?deviceId=777&label=Garage+Bridge') { params -> 'false' }
+        hubGet.register('/device/updateLabel?deviceId=777&label=Garage Bridge') { params -> 'false' }
         // The form POST is 'accepted' but a no-op, so the read-back still shows the original label.
         script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 420, boolean r = false -> [status: 200] }
 

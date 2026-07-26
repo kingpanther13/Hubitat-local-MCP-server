@@ -402,18 +402,17 @@ private _applyNetworkConfig(network, List applied) {
         def mode = network.ipMode?.toString()
         try {
             if (mode == "static") {
-                def q = [
-                    "address=${_urlEnc(network.address)}",
-                    "netmask=${_urlEnc(network.netmask)}",
-                    "gateway=${_urlEnc(network.gateway)}",
-                    "nameserver=${_urlEnc(network.nameserver ?: '')}"
-                ].join("&")
-                hubInternalGet("/hub/advanced/switchToStaticIp?${q}")
+                hubInternalGet("/hub/advanced/switchToStaticIp", [
+                    address: network.address,
+                    netmask: network.netmask,
+                    gateway: network.gateway,
+                    nameserver: (network.nameserver ?: '')
+                ])
                 applied << "network.staticIp"
             } else {   // dhcp (validated)
                 def fallover = network.containsKey("useDNSFallover") ? ("${network.useDNSFallover}".equalsIgnoreCase("true")) : false
-                def q = "nameserver=${_urlEnc(network.nameserver ?: '')}&useDNSFallover=${fallover}"
-                hubInternalGet("/hub/advanced/switchToDhcp?${q}")
+                hubInternalGet("/hub/advanced/switchToDhcp",
+                               [nameserver: (network.nameserver ?: ''), useDNSFallover: fallover])
                 applied << "network.dhcp"
             }
         } catch (Exception e) {
@@ -439,8 +438,8 @@ private _applyNetworkConfig(network, List applied) {
     // WiFi join (ssid/psk -- RE'd param names).
     if (network.wifiSsid) {
         try {
-            def q = "ssid=${_urlEnc(network.wifiSsid)}&psk=${_urlEnc(network.wifiPassword ?: '')}"
-            hubInternalGet("/hub/advanced/setWiFiNetworkInfo?${q}")
+            hubInternalGet("/hub/advanced/setWiFiNetworkInfo",
+                           [ssid: network.wifiSsid, psk: (network.wifiPassword ?: '')])
             applied << "network.wifi"
         } catch (Exception e) {
             mcpLogError("hub-admin", "hub_set_system_settings setWiFiNetworkInfo failed", e)
@@ -450,12 +449,6 @@ private _applyNetworkConfig(network, List applied) {
     }
 
     return null
-}
-
-// URL-encode a network query value (UTF-8). Centralizes the encode so a value with spaces or symbols
-// (a WiFi SSID/password, a nameserver list) is wired correctly.
-private String _urlEnc(v) {
-    return java.net.URLEncoder.encode(v?.toString() ?: "", "UTF-8")
 }
 
 // Validate an optional lat/long arg: coerce a string to a number and bound the range (-> -32602 on a

@@ -575,6 +575,132 @@ class ToolImportUrlSpec extends ToolSpecBase {
         """{"app":{"id":${id},"version":7,"installed":true},"configPage":{"name":"mainPage","sections":[]}}"""
     }
 
+    /**
+     * A configured instance: one bool input whose configPage render shows the DEFAULT (false)
+     * while the stored setting is true. That divergence is what the e2e hub actually returns and
+     * what made the Done re-submit blank settings when the builder trusted the configPage.
+     */
+    private static String configuredInstanceConfigJson(int id, Map settings, Object renderedValue = null) {
+        def inputValue = (renderedValue == null) ? '' : ""","value":${groovy.json.JsonOutput.toJson(renderedValue)}"""
+        """{"app":{"id":${id},"version":7,"installed":true},
+            "configPage":{"name":"mainPage","sections":[
+              {"input":[{"name":"refreshProbe","type":"bool","defaultValue":false${inputValue}}]}]},
+            "settings":${groovy.json.JsonOutput.toJson(settings)}}"""
+    }
+
+    /**
+     * /installedapp/statusJson/<id> appSettings, the source _submitAppDoneForm consults FIRST.
+     * `entries` are raw appSettings records, so a spec can model a device setting the way the hub
+     * really reports one: value=null with the assigned ids in deviceIdsForDeviceList.
+     */
+    private static String statusJson(List entries) {
+        """{"appSettings":${groovy.json.JsonOutput.toJson(entries)},"scheduledJobs":[],"eventSubscriptions":[]}"""
+    }
+
+    /** Register a statusJson response for an instance; [] means "no stored settings". */
+    private void stubStatusJson(int id, List entries) {
+        hubGet.register("/installedapp/statusJson/${id}".toString()) { params -> statusJson(entries) }
+    }
+
+    def "the Done submit re-sends the instance's STORED setting, not the configPage default"() {
+        // Regression pin for the live e2e failure: refreshProbe was set true, the configPage
+        // render reported the default (false), and the Done re-submit posted false -- blanking a
+        // configured instance. cfg.settings is the source of truth.
+        given:
+        enableWrite()
+        hubGet.register('/app/ajax/code') { params -> '{"status": "ok", "source": "old", "version": 5}' }
+        hubGet.register('/installedapp/configure/json/194') { params ->
+            configuredInstanceConfigJson(194, [refreshProbe: true])
+        }
+        stubStatusJson(194, [[name: 'refreshProbe', value: true, type: 'bool']])
+        def doneBody = null
+        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true] }
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            doneBody = body
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
+
+        when:
+        def result = script.toolUpdateAppCode([
+            appId: '42', source: 'new source', triggerUpdated: 194, confirm: true])
+
+        then:
+        result.updatedFired == true
+
+        and: 'the STORED true is what was submitted -- not the configPage default false'
+        doneBody['settings[refreshProbe]'] == 'true'
+        doneBody['refreshProbe.type'] == 'bool'
+    }
+
+    @spock.lang.Unroll
+    def "the Done submit falls back to the configPage value when the stored setting is #scenario"() {
+        // The fallback is deliberately narrow: it only engages where there is no usable stored
+        // value, so the pre-fix behaviour is preserved exactly for those cases.
+        given:
+        enableWrite()
+        hubGet.register('/app/ajax/code') { params -> '{"status": "ok", "source": "old", "version": 5}' }
+        hubGet.register('/installedapp/configure/json/194') { params ->
+            configuredInstanceConfigJson(194, storedSettings, 'rendered')
+        }
+        stubStatusJson(194, statusEntries)
+        def doneBody = null
+        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true] }
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            doneBody = body
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
+
+        when:
+        script.toolUpdateAppCode([appId: '42', source: 'new source', triggerUpdated: 194, confirm: true])
+
+        then:
+        doneBody['settings[refreshProbe]'] == 'rendered'
+
+        where:
+        scenario                               | statusEntries                          | storedSettings
+        'absent from both live sources'        | []                                     | [somethingElse: 1]
+        'null in both live sources'            | [[name: 'refreshProbe', value: null]]  | [refreshProbe: null]
+        // A Map (or a List carrying one) would toString() into junk and POST the junk back.
+        'a Map (shape that would not encode)'  | []                                     | [refreshProbe: [id: 7, label: 'Den']]
+        'a List of Maps'                       | []                                     | [refreshProbe: [[id: 7]]]
+    }
+
+    def "a stored List setting is preserved (CSV-encoded), not dropped as an unusable shape"() {
+        // A List of scalars DOES round-trip through _rmBuildSettingsBody, so it must be trusted --
+        // narrowing the shape guard too far would blank multi-select and device inputs.
+        given:
+        enableWrite()
+        hubGet.register('/app/ajax/code') { params -> '{"status": "ok", "source": "old", "version": 5}' }
+        hubGet.register('/installedapp/configure/json/194') { params ->
+            // The REAL hub shape for a device input: configure/json renders it as an OBJECT
+            // (unencodable), which is exactly why statusJson is the primary source.
+            """{"app":{"id":194,"version":7,"installed":true},
+                "configPage":{"name":"mainPage","sections":[
+                  {"input":[{"name":"picks","type":"capability.switch","multiple":true}]}]},
+                "settings":{"picks":{"8":"Kitchen","9":"Den"}}}"""
+        }
+        // statusJson reports value=null for a capability setting, with the assigned ids in
+        // deviceIdsForDeviceList -- _rmLiveSettingsFromStatus rebuilds them into a List.
+        stubStatusJson(194, [[name: 'picks', value: null, type: 'capability.switch',
+                              multiple: true, deviceIdsForDeviceList: ['8', '9']]])
+        def doneBody = null
+        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true] }
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            doneBody = body
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
+
+        when:
+        script.toolUpdateAppCode([appId: '42', source: 'new source', triggerUpdated: 194, confirm: true])
+
+        then: 'capability multi encodes as CSV, and the multiple sidecar stays true'
+        doneBody['settings[picks]'] == '8,9'
+        doneBody['picks.multiple'] == 'true'
+    }
+
     def "hub_update_app with triggerUpdated submits Done to /installedapp/update/json and reports updatedFired=true"() {
         given:
         enableWrite()
@@ -583,6 +709,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         }
         and: 'the lifecycle Done submit reads the target instance configPage first'
         hubGet.register('/installedapp/configure/json/194') { params -> instanceConfigJson(194) }
+        stubStatusJson(194, [])
         // The code save rides hubInternalPostJson; the lifecycle fire rides hubInternalPostForm.
         // Both append to one list so the save-then-fire ordering stays pinned.
         def posts = []
@@ -632,6 +759,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
             '{"status": "ok", "source": "old", "version": 5}'
         }
         hubGet.register('/installedapp/configure/json/194') { params -> instanceConfigJson(194) }
+        stubStatusJson(194, [])
         def savePostCount = 0
         script.metaClass.hubInternalPostJson = { String path, String body ->
             savePostCount++
@@ -677,6 +805,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
             '{"status": "ok", "source": "old", "version": 5}'
         }
         hubGet.register('/installedapp/configure/json/194') { params -> instanceConfigJson(194) }
+        stubStatusJson(194, [])
         script.metaClass.hubInternalPostJson = { String path, String body -> [success: true] }
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 405, location: null, data: 'Method Not Allowed']
@@ -740,6 +869,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
             '{"status": "ok", "source": "old", "version": 5}'
         }
         hubGet.register('/installedapp/configure/json/194') { params -> instanceConfigJson(194) }
+        stubStatusJson(194, [])
         script.metaClass.hubInternalPostJson = { String path, String body -> [success: true] }
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             throw new RuntimeException('hub rejected lifecycle POST')

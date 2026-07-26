@@ -458,7 +458,7 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
         then:
         result.success == true
         result.applied == ['network.dhcp']
-        hubGet.calls.any { it.path == '/hub/advanced/switchToDhcp?nameserver=8.8.8.8&useDNSFallover=true' }
+        hubGet.calls.any { it.key == '/hub/advanced/switchToDhcp?nameserver=8.8.8.8&useDNSFallover=true' }
         posted.isEmpty()   // network is its own leg, never /location/update
     }
 
@@ -474,7 +474,7 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
         then:
         result.success == true
         result.applied == ['network.staticIp']
-        hubGet.calls.any { it.path == '/hub/advanced/switchToStaticIp?address=192.168.1.50&netmask=255.255.255.0&gateway=192.168.1.1&nameserver=1.1.1.1' }
+        hubGet.calls.any { it.key == '/hub/advanced/switchToStaticIp?address=192.168.1.50&netmask=255.255.255.0&gateway=192.168.1.1&nameserver=1.1.1.1' }
     }
 
     def "network ethernetAutoneg fires GET /hub/advanced/network/ethernetMode/<bool>"() {
@@ -502,7 +502,7 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
         then:
         result.success == true
         result.applied == ['network.wifi']
-        hubGet.calls.any { it.path == '/hub/advanced/setWiFiNetworkInfo?ssid=MyNet&psk=secret123' }
+        hubGet.calls.any { it.key == '/hub/advanced/setWiFiNetworkInfo?ssid=MyNet&psk=secret123' }
     }
 
     def "a network-only call makes NO /location/update POST"() {
@@ -615,7 +615,7 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
         result.applied as Set == ['hubName', 'network.dhcp'] as Set
         posted.path == '/location/update'
         posted.body.name == 'Loft'
-        hubGet.calls.any { it.path == '/hub/advanced/switchToDhcp?nameserver=&useDNSFallover=false' }
+        hubGet.calls.any { it.key == '/hub/advanced/switchToDhcp?nameserver=&useDNSFallover=false' }
     }
 
     def "network via dispatch returns the success envelope (useGateways=#useGateways)"() {
@@ -636,13 +636,19 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    // ---------- WiFi URL-encoding ----------
+    // ---------- WiFi values with characters that need encoding ----------
 
-    def "WiFi ssid+psk are URL-encoded (space -> '+', symbols percent-encoded)"() {
+    def "WiFi ssid+psk reach the query map RAW -- the encoding is HTTPBuilder's job, not ours"() {
+        // These values are exactly the ones that used to be hand-encoded (space, @, &, =).
+        // They now ride the query map untouched: HTTPBuilder URL-encodes query values itself,
+        // so pre-encoding would DOUBLE-encode ('My Net' -> 'My+Net' -> 'My%2BNet') and the hub
+        // would store the literal '+'. The mock recomposes path?k=v from the map without
+        // encoding, which is why the expected key below carries the raw characters -- including
+        // a '&' and '=' inside the psk value, harmless here because registration and lookup
+        // compose the key identically.
         given:
         enableWrite()
-        // URLEncoder encodes a space as '+'; @ -> %40, & -> %26, = -> %3D.
-        hubGet.register('/hub/advanced/setWiFiNetworkInfo?ssid=My+Net&psk=p%40ss%26w%3Drd') { params -> "ok" }
+        hubGet.register('/hub/advanced/setWiFiNetworkInfo?ssid=My Net&psk=p@ss&w=rd') { params -> "ok" }
 
         when:
         def result = script.toolSetSystemSettings([network: [wifiSsid: 'My Net', wifiPassword: 'p@ss&w=rd'], confirm: true])
@@ -650,7 +656,12 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
         then:
         result.success == true
         result.applied == ['network.wifi']
-        hubGet.calls.any { it.path == '/hub/advanced/setWiFiNetworkInfo?ssid=My+Net&psk=p%40ss%26w%3Drd' }
+
+        and: 'the values are verbatim in the query map -- no %40/%26/%3D and no + for the space'
+        def call = hubGet.calls.find { it.path == '/hub/advanced/setWiFiNetworkInfo' }
+        call != null
+        call.params.ssid == 'My Net'
+        call.params.psk == 'p@ss&w=rd'
     }
 
     // ---------- ordered multi-leg apply ----------

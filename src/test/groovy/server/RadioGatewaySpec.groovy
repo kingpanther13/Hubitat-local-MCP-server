@@ -708,7 +708,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         then:
         r.success == false
         // (a) the requested path is EXACTLY the zigbee updateSettings path with both query flags
-        hubGet.calls*.path.contains('/hub/zigbee/updateSettings?rebuildNetworkOnReboot=true&inactiveDevicePingEnabled=false')
+        hubGet.calls*.key.contains('/hub/zigbee/updateSettings?rebuildNetworkOnReboot=true&inactiveDevicePingEnabled=false')
         // (b) the note names an absent Zigbee radio and does NOT mislead toward credentials
         r.note?.contains('Zigbee radio')
         r.note?.toLowerCase()?.contains('absent')

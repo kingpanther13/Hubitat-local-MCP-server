@@ -182,6 +182,28 @@ RULES = [
         "message": "java.io stream/reader/writer class referenced as a ClassExpression -- blocked by the Hubitat sandbox at parse time ('ClassExpression not allowed'). Duck-type instead: branch on byte[]/CharSequence and read via .bytes/.text rather than naming the class (e.g. avoid `instanceof InputStream`).",
         "severity": "error",
     },
+    {
+        # The platform's httpGet/httpPost ESCAPE a '?' embedded in the `path` param, so it
+        # stops separating the querystring and becomes part of the literal path. EXACT hub
+        # routes then 404 (/app/updateOAuth, /device/updateLabel, /device/setShowOnHome --
+        # all verified live on firmware 2.5.0.159); WILDCARD routes MASK it by swallowing the
+        # junk into their path-parameter, which is why this shipped unnoticed on some
+        # endpoints for a long time. Parameters belong in the query MAP, which also does the
+        # URL-encoding -- pre-encoding a value AND passing it through the map double-encodes.
+        #
+        # `raw: True` because this rule has to see the string literal itself; the normal
+        # comment/string-stripped scan removes exactly the text being matched.
+        #
+        # The pattern requires the '?' to precede any '${' in the literal, so a Groovy
+        # ternary inside an interpolation (e.g. "/hub/x/${on ? 'true' : 'false'}") is not a
+        # false positive. The trade-off is that a querystring placed AFTER an interpolation
+        # is not caught statically -- _hubRequest's runtime guard is what makes that safe.
+        "id": "SANDBOX-016",
+        "pattern": r'(?:hubInternal\w*|hubAdmin\w*|_radioGet(?:Safe)?|_radioPost|_modePost)\(\s*"[^"$]*\?',
+        "message": "Querystring embedded in a hub-request PATH. The platform client escapes the '?' into the literal path -- exact hub routes 404 and wildcard routes silently swallow it. Pass the parameters as the query map instead, e.g. hubInternalGet('/device/updateLabel', [deviceId: id, label: name]), and do NOT pre-encode the values (the query map encodes them; pre-encoding double-encodes).",
+        "severity": "error",
+        "raw": True,
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -447,6 +469,23 @@ def _scrub_gstring_body(body: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _strip_line_comment(line: str) -> str:
+    """Drop a trailing `//` line comment, leaving `://` (a URL) alone.
+
+    Only used by `raw: True` rules, which match the original source line and would otherwise
+    fire on a comment that merely describes the anti-pattern it is looking for.
+    """
+    idx = 0
+    while True:
+        idx = line.find("//", idx)
+        if idx == -1:
+            return line
+        if idx > 0 and line[idx - 1] == ":":
+            idx += 2      # part of a scheme (http://), keep scanning
+            continue
+        return line[:idx]
+
+
 def scan_source(source: str, display_path: str) -> list[dict]:
     """Scan Groovy source text for sandbox anti-patterns.
 
@@ -458,8 +497,13 @@ def scan_source(source: str, display_path: str) -> list[dict]:
     source_lines = source.split("\n")
 
     for line_num, line in enumerate(stripped_lines, start=1):
+        # A `raw: True` rule matches against the ORIGINAL line, because the text it looks for
+        # lives inside a string literal that stripping removes (see SANDBOX-016). Its comment
+        # tail is dropped first so prose describing the anti-pattern isn't flagged as it.
+        raw_line = _strip_line_comment(source_lines[line_num - 1])
         for rule in RULES:
-            if re.search(rule["pattern"], line):
+            target = raw_line if rule.get("raw") else line
+            if re.search(rule["pattern"], target):
                 findings.append(
                     {
                         "file": display_path,
@@ -2714,6 +2758,41 @@ def format_annotation(f: dict) -> str:
 
 SELF_TEST_CASES = [
     # (description, groovy source, list of (rule_id, should_match))
+    (
+        "querystring embedded in a hubInternalGet path is flagged",
+        'def r = hubInternalGet("/device/updateLabel?deviceId=${id}&label=${name}")',
+        [("SANDBOX-016", True)],
+    ),
+    (
+        "querystring embedded in a _radioGet path is flagged (it funnels into hubInternalGet)",
+        'def resp = _radioGet("/hub/zigbee/updateChannelAndPower?channel=${c}")',
+        [("SANDBOX-016", True)],
+    ),
+    (
+        "querystring embedded in a _radioGetSafe path is flagged",
+        'result.x = _radioGetSafe("/hub/zwaveRepair2?resetStats=false")',
+        [("SANDBOX-016", True)],
+    ),
+    (
+        "the query-map form is NOT flagged",
+        'def r = hubInternalGet("/device/updateLabel", [deviceId: id, label: name])',
+        [("SANDBOX-016", False)],
+    ),
+    (
+        "a Groovy ternary inside an interpolation is NOT flagged (its '?' is not a querystring)",
+        'hubInternalGet("/hub/advanced/network/ethernetMode/${on ? \'true\' : \'false\'}")',
+        [("SANDBOX-016", False)],
+    ),
+    (
+        "a plain path segment is NOT flagged",
+        'def txt = hubInternalGet("/device/fullJson/${deviceId}")',
+        [("SANDBOX-016", False)],
+    ),
+    (
+        "prose in a line comment describing the anti-pattern is NOT flagged",
+        '// never write hubInternalGet("/device/updateLabel?deviceId=1") -- use the query map',
+        [("SANDBOX-016", False)],
+    ),
     (
         "getClass() inside a GString interpolation is flagged",
         'log.warn "type=${obj?.getClass()?.simpleName}"',

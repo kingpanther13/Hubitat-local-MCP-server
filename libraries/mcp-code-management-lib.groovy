@@ -849,16 +849,46 @@ private Map _createUserAppInstance(Integer codeAppId) {
 // path here has always used successfully.
 //
 // Returns [status: <HTTP status or null>, page: <page name submitted>].
+//
+// Whether a stored settings value can be handed straight to _rmBuildSettingsBody, which
+// serializes a List as CSV (capability) or a JSON array (enum) and everything else via
+// toString(). Scalars and lists of scalars round-trip exactly. A richer shape -- a Map, or a
+// List carrying one, which is how a device input could conceivably render -- would toString()
+// into junk and POST that junk back, so those defer to the configPage value instead. Narrow on
+// purpose: only the shapes proven to round-trip are trusted.
+private boolean _isSimpleSettingValue(v) {
+    if (v == null) return true
+    if (v instanceof Map) return false
+    if (v instanceof List) {
+        return v.every { it == null || it instanceof CharSequence || it instanceof Number || it instanceof Boolean }
+    }
+    return (v instanceof CharSequence || v instanceof Number || v instanceof Boolean)
+}
+
 private Map _submitAppDoneForm(Integer instanceId, String pageName) {
     def cfg = _rmFetchConfigJson(instanceId, pageName)
     def page = pageName ?: (cfg?.configPage?.name?.toString()) ?: "mainPage"
     def schema = _rmCollectInputSchema(cfg?.configPage)
-    // The UI's Done submits each input's rendered value -- the saved value on a configured
-    // instance, the default on a fresh shell (e.g. a bool's "true"/"false"). Sending "" for
-    // a typed input, notably a bool, makes the hub's update handler 500. Read each value
-    // straight from the configPage inputs (value, else defaultValue), which is also what
-    // makes this safe on an ALREADY-configured instance: it round-trips the live settings
-    // rather than blanking them.
+    // The UI's Done re-submits every input on the page, so a value this builder gets wrong is
+    // a value the submit OVERWRITES. Sending "" for a typed input, notably a bool, also makes
+    // the hub's update handler 500.
+    //
+    // Value precedence: statusJson appSettings -> configure/json settings -> configPage.
+    //
+    // Reading the configPage's value/defaultValue as primary was DISPROVEN LIVE on the e2e
+    // hub: for a configured bool the render returned the input's DEFAULT, not the saved value,
+    // so a Done submit re-applied defaults and silently blanked the instance's settings (a
+    // refreshProbe set true read back false after the triggerUpdated refresh). The e2e
+    // settings-preservation assertion in test_update_app_code_trigger_updated is the gate.
+    //
+    // statusJson is primary because it is the ONLY source that survives a DEVICE input.
+    // /installedapp/configure/json renders a capability setting as an object, which cannot be
+    // form-encoded, and its `value` is null; _rmLiveSettingsFromStatus reconstructs the assigned
+    // ids from appSettings.deviceIdsForDeviceList as a List of id strings, which is exactly what
+    // _rmBuildSettingsBody serializes to the CSV the form wants. That is the same source and the
+    // same helper the native-RM sub-page Done uses, and its comment records the identical wipe
+    // (verified live on fw 2.5.0.143: the Button Controller buttonDev assignment was CLEARED by
+    // a Done rebuilt from `value` alone).
     def pageValues = [:]
     for (s in (cfg?.configPage?.sections ?: [])) {
         for (i in (s?.input ?: [])) {
@@ -869,9 +899,34 @@ private Map _submitAppDoneForm(Integer instanceId, String pageName) {
             }
         }
     }
+    def liveSettings = [:]
+    try {
+        liveSettings = _rmLiveSettingsFromStatus(_rmFetchStatusJson(instanceId)) ?: [:]
+    } catch (Exception statusErr) {
+        // A dropped statusJson read must not silently degrade into "re-apply defaults" -- say so,
+        // then fall through to the configure/json settings map, which still carries scalars
+        // correctly even though it cannot represent a device input.
+        mcpLog("warn", "hub-admin", "_submitAppDoneForm: statusJson read for ${instanceId} failed (${statusErr.message}) -- falling back to the configure/json settings map for the Done body; a DEVICE input may not survive this submit")
+    }
+    def cfgSettings = (cfg?.settings instanceof Map) ? cfg.settings : [:]
     def settingsMap = [:]
     schema.each { name, meta ->
-        settingsMap[name] = pageValues.containsKey(name) ? pageValues[name] : ""
+        // Each tier is consulted only for a value the previous one does not have, and only when
+        // its SHAPE round-trips through _rmBuildSettingsBody (see _isSimpleSettingValue) -- an
+        // unencodable value would be POSTed back as junk. A null is treated as unset so it defers
+        // onward, which keeps the fresh-shell default path behaving exactly as before.
+        def chosen = null
+        for (candidate in [liveSettings[name], cfgSettings[name]]) {
+            if (candidate != null && _isSimpleSettingValue(candidate)) {
+                chosen = candidate
+                break
+            }
+        }
+        if (chosen != null) {
+            settingsMap[name] = chosen
+        } else {
+            settingsMap[name] = pageValues.containsKey(name) ? pageValues[name] : ""
+        }
     }
     def body = _rmBuildSettingsBody(instanceId, settingsMap, schema)
     body.formAction = "update"
@@ -1573,11 +1628,6 @@ def toolUpdateAppCode(args) {
 // has empty creds and the hub generates them. If the current-creds read FAILS, it refuses (returns
 // success:false) rather than submit empty creds and risk blanking a live client. Returns the
 // resulting clientId/clientSecret.
-//
-// Firmware fact (verified live on 2.5.0.159): /app/updateOAuth is NOT served by the hub's :8080
-// internal router -- it 404s there -- while the identical query against the port-80 admin server
-// succeeds and returns the generated creds. The creds pre-read (/app/list/single/data/<id>) IS on
-// :8080, so this function legitimately spans both. _updateOAuthGet handles the fallback.
 private Map _updateAppOAuth(appId, oauth) {
     if (!(oauth instanceof Map)) {
         throw new IllegalArgumentException("oauth must be an object, e.g. {enabled: true} (optionally client_id, client_secret, refresh_secret).")
@@ -1617,12 +1667,17 @@ private Map _updateAppOAuth(appId, oauth) {
     }
 
     try {
-        def q = ["id=${java.net.URLEncoder.encode(appId.toString(), 'UTF-8')}",
-                 "oauthEnabled=${enabled}",
-                 "clientId=${java.net.URLEncoder.encode(clientId, 'UTF-8')}",
-                 "clientSecret=${java.net.URLEncoder.encode(clientSecret, 'UTF-8')}",
-                 "refreshSecret=${refreshSecret}"].join("&")
-        def respText = _updateOAuthGet("/app/updateOAuth?${q}")
+        // Query MAP, not an embedded querystring: the platform client escapes an embedded '?'
+        // into the literal path and /app/updateOAuth is an EXACT route, so the embedded form
+        // 404s (see the _hubRequest guard). No manual URLEncoder here either -- the query map
+        // encodes the values, and pre-encoding them would double-encode.
+        def respText = hubInternalGet("/app/updateOAuth", [
+            id: appId.toString(),
+            oauthEnabled: enabled,
+            clientId: clientId,
+            clientSecret: clientSecret,
+            refreshSecret: refreshSecret
+        ], 30)
         def parsed = null
         try { parsed = respText ? new groovy.json.JsonSlurper().parseText(respText) : null } catch (Exception ignore) { }
         if (parsed instanceof Map) {
@@ -1642,32 +1697,6 @@ private Map _updateAppOAuth(appId, oauth) {
     } catch (Exception e) {
         mcpLogError("hub-admin", "OAuth update failed", e)
         return [success: false, error: "OAuth update failed: ${e.message}", note: "Check the app id and Hub Security credentials."]
-    }
-}
-
-// Run the /app/updateOAuth query against the :8080 internal router first, falling back to the
-// port-80 admin server on a 404 ONLY. :8080 is tried first because older firmware may well serve
-// it there and this must not regress those hubs; the fallback is scoped to 404 alone because that
-// is the "this router does not have the endpoint" signal -- a 401/403 (Hub Security) or 500 (real
-// hub-side failure) is a genuine answer and retrying it against another port would just double the
-// work and muddy the error. Logs which base served the call so a support report says so plainly.
-private String _updateOAuthGet(String pathWithQuery) {
-    try {
-        String text = hubInternalGet(pathWithQuery, null, 30)
-        mcpLog("debug", "hub-admin", "/app/updateOAuth served by ${hubBaseUri()}")
-        return text
-    } catch (Exception e) {
-        if (_httpStatusOf(e) != 404) throw e
-        mcpLog("info", "hub-admin", "/app/updateOAuth returned 404 on ${hubBaseUri()} -- retrying against the admin server ${hubAdminBaseUri()} (this firmware's internal router does not serve it)")
-        try {
-            String text = hubAdminGet(pathWithQuery, null, 30)
-            mcpLog("debug", "hub-admin", "/app/updateOAuth served by ${hubAdminBaseUri()}")
-            return text
-        } catch (Exception adminErr) {
-            // Name both legs: the :8080 404 alone would misread as "wrong app id", and the
-            // admin-leg error alone would hide that the normal router already missed.
-            throw new RuntimeException("/app/updateOAuth: 404 on ${hubBaseUri()} and the port-80 admin fallback also failed (${adminErr.message})")
-        }
     }
 }
 

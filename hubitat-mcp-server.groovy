@@ -4223,26 +4223,6 @@ def getSelectedDevices() {
 // Single source for the hub's internal API base URI (was an 11x-repeated literal).
 def hubBaseUri() { "http://127.0.0.1:8080" }
 
-// The hub also runs its ADMIN HTTP server on port 80 -- the one the browser talks to.
-// The :8080 internal router serves only a SUBSET of admin endpoints, so an endpoint the
-// admin UI uses can 404 on :8080 while working on :80. Verified on firmware 2.5.0.159:
-// /app/updateOAuth 404s on :8080 and the identical query succeeds on :80 (curl-verified;
-// resources/hub2-source/vue-hub2.min.js calls it from the browser, i.e. against :80).
-//
-// The :80 server is NOT bound on loopback -- http://127.0.0.1:80 is Connection-refused
-// (verified live on the same firmware) -- so this base must target the hub's own LAN IP.
-// When the LAN IP is unreadable there is no reachable admin base; returning null makes the
-// caller surface the original :8080 error instead of a misleading connection failure.
-//
-// :8080 stays the default for everything -- reach for this ONLY per-endpoint, where the
-// :8080 miss is proven, and go through the same cookie path since :80 enforces Hub
-// Security login when it is enabled.
-def hubAdminBaseUri() {
-    def localIp = null
-    try { localIp = location?.hub?.localIP?.toString() } catch (Exception ignored) { localIp = null }
-    return localIp ? "http://${localIp}:80" : null
-}
-
 // Timeout rationale: reads are fast localhost fetches; writes (native-RM wizard steps,
 // large app/driver/library save+compile) can legitimately take minutes.
 def hubReadTimeoutSec() { 30 }
@@ -4335,10 +4315,11 @@ private String _readRespText(resp) {
     return d.text  // Reader/InputStream -- may throw on a mid-stream read failure
 }
 
-// Redact secret query values from a path before it is written to a log line. The WiFi-join leg
-// (/hub/advanced/setWiFiNetworkInfo?ssid=...&psk=...) carries the network password in the URL, so a
-// raw debug log of the path would leak the PSK to the hub system log. Masks psk/password/psw values
-// only; the real request still uses the unredacted path.
+// Redact secret query values from a path before it is written to a log line. Kept as a BACKSTOP:
+// querystrings now ride the query map (enforced by the _hubRequest guard) and the query map is never
+// logged, so the WiFi-join leg's psk no longer reaches this at all. It stays because the [hubrt] log
+// line below takes whatever path it is handed, and a future path-segment value carrying a secret
+// would otherwise land in the hub system log unmasked. Masks psk/password/psw values only.
 private String _redactSecretsInPath(String path) {
     if (path == null) return path
     return path.replaceAll(/(?i)(psk|password|psw)=[^&]*/, '$1=***')
@@ -4349,14 +4330,36 @@ private String _redactSecretsInPath(String path) {
  * (read failures are re-thrown, never swallowed into a Reader.toString() junk string), and the
  * single cookie-refresh retry. The thin public wrappers below project their distinguishing
  * options + return shape. This is the clean seam #209 can later lift into a HubHttpClientLib.
+ *
+ * QUERYSTRINGS RIDE `query:`, NEVER THE PATH -- enforced by the guard below.
+ *
+ * The platform's httpGet/httpPost ESCAPE a '?' embedded in `path`, so it stops being a
+ * query separator and becomes part of the literal path. Verified live on firmware
+ * 2.5.0.159 with an on-hub probe matrix, and the failure mode is split in a way that hides
+ * itself:
+ *
+ *   EXACT routes 404. /app/updateOAuth?id=316 embedded -> 404; the same call with a query
+ *   MAP -> 200. /device/updateLabel and /device/setShowOnHome behave identically.
+ *
+ *   WILDCARD routes MASK it. /app/list/single/data/316?x=1 embedded -> 200, because the
+ *   trailing junk lands in the route's path-parameter and the handler leniently parses the
+ *   leading id. So an embedded querystring can look fine for years on one endpoint while
+ *   silently 404ing the endpoint next to it.
+ *
+ * That asymmetry is why this is a guard and not a comment: a missed caller now fails loudly
+ * at the call site instead of returning a 404 that some callers swallow. It also means the
+ * query map -- not manual java.net.URLEncoder.encode -- does the escaping: HTTPBuilder
+ * URL-encodes query values itself, so a hand-encoded value passed through a query map is
+ * DOUBLE-encoded.
  */
 private _hubRequest(String method, String path, Map opts = [:]) {
+    if (path?.contains("?")) {
+        throw new IllegalArgumentException(
+            "hubInternal* path must not contain a querystring: '${path}'. The platform client escapes an embedded '?' into the literal path (exact routes then 404, wildcard routes silently swallow it) -- pass the parameters as the query map instead, e.g. hubInternalGet('/device/updateLabel', [deviceId: id, label: name]). Do NOT pre-encode the values; the query map does that.")
+    }
     def cookie = getHubSecurityCookie()
     def params = [
-        // opts.baseUri lets a single endpoint target the hub's port-80 admin server
-        // instead of the :8080 internal router (see hubAdminBaseUri / hubAdminGet);
-        // everything else keeps the default.
-        uri: (opts.baseUri ?: hubBaseUri()),
+        uri: hubBaseUri(),
         path: path,
         textParser: true,
         ignoreSSLIssues: true,
@@ -4432,25 +4435,6 @@ private _hubRequest(String method, String path, Map opts = [:]) {
  */
 def hubInternalGet(String path, Map query = null, int timeout = 30, boolean isRetry = false) {
     _hubRequest('GET', path, [query: query, timeout: timeout, returnShape: 'text', isRetry: isRetry])
-}
-
-/**
- * Authenticated GET against the hub's port-80 ADMIN server instead of the :8080 internal
- * router -- identical in every other respect to hubInternalGet (same cookie, same
- * cookie-refresh retry, same text return), so a caller can fall back to it for one
- * endpoint without changing anything else. Use ONLY for an endpoint proven absent from
- * :8080; see hubAdminBaseUri() for why that happens and which endpoint needs it.
- */
-def hubAdminGet(String path, Map query = null, int timeout = 30, boolean isRetry = false) {
-    def base = hubAdminBaseUri()
-    if (!base) {
-        // Null base means the hub's LAN IP is unreadable, so there is no reachable :80
-        // server to try -- failing loudly here beats silently re-hitting :8080 (the
-        // baseUri fallback in _hubRequest would do exactly that with a null override).
-        throw new IllegalStateException("hubAdminGet: the hub's LAN IP is unreadable, so the port-80 admin server cannot be reached")
-    }
-    _hubRequest('GET', path, [query: query, timeout: timeout, returnShape: 'text',
-                              isRetry: isRetry, baseUri: base])
 }
 
 /**
@@ -6304,6 +6288,33 @@ private Map _rmBuildSettingsBody(Integer appId, Map settingsMap, Map schema) {
         }
     }
     return body
+}
+
+// Shared classic-dynamicPage primitive (lives in main, not a library: two domains call it --
+// the native-RM sub-page Done and the code-management app Done submit).
+//
+// Rebuild a name->value map of an app's live settings from statusJson
+// appSettings, for re-submitting a full page form. Capability/device
+// settings report value=null even when devices ARE assigned -- the live
+// ids sit in deviceIdsForDeviceList (with a deviceList id->label map
+// alongside). Rebuilding a form from `value` alone re-submits
+// settings[<name>]="" which, combined with _action_update=Done, actively
+// CLEARS the device assignment (verified live on fw 2.5.0.143: the Button
+// Controller buttonDev wipe -- RM rules never hit it on mainPage because
+// their device pickers live on sub-pages). Device-backed null values are
+// reconstructed as a List of id strings so _rmBuildSettingsBody
+// serializes them as the CSV the form expects.
+private Map _rmLiveSettingsFromStatus(Map status) {
+    return (status?.appSettings ?: []).collectEntries { s ->
+        def v = s?.value
+        if (v == null) {
+            def ids = (s?.deviceIdsForDeviceList instanceof List && s.deviceIdsForDeviceList) ?
+                s.deviceIdsForDeviceList :
+                ((s?.deviceList instanceof Map && s.deviceList) ? s.deviceList.keySet().toList() : null)
+            if (ids) v = ids.collect { it.toString() }
+        }
+        [(s?.name?.toString()): v]
+    }
 }
 
 /**
