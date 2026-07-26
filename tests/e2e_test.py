@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import random
@@ -46,9 +47,17 @@ SCAFFOLD_PREFIX = f"{PREFIX}KEEP_"  # "BAT_E2E_KEEP_"
 # Mirror of supportedProtocolVersions() in hubitat-mcp-server.groovy, newest first.
 # The protocol group pins the live list against this, so a version added or removed
 # server-side without updating the e2e expectation fails loudly instead of silently
-# widening what the hub claims to speak. "2026-07-28" is deliberately absent until
-# request-header validation lands.
-SUPPORTED_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
+# widening what the hub claims to speak. This is the TRANSPORT list: it is what
+# server/discover advertises, what a modern MCP-Protocol-Version header is checked
+# against, and what a -32022 rejection hands back in data.supported.
+SUPPORTED_PROTOCOL_VERSIONS = ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
+
+# Mirror of initializeProtocolVersions() — the subset `initialize` may negotiate.
+# 2026-07-28 deleted the initialize handshake, so a client that reaches that method is
+# legacy-era by construction and is never handed the modern version: initialize echoes
+# only these, and every other requested value (unknown, omitted, or "2026-07-28")
+# falls back to INITIALIZE_PROTOCOL_VERSIONS[0], NOT SUPPORTED_PROTOCOL_VERSIONS[0].
+INITIALIZE_PROTOCOL_VERSIONS = [v for v in SUPPORTED_PROTOCOL_VERSIONS if v != "2026-07-28"]
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -297,13 +306,20 @@ class HubitatMcpClient:
             "clientInfo": {"name": "e2e-test", "version": "1.0.0"},
         })
 
-    def raw_request(self, payload: Any) -> requests.Response:
+    def raw_request(self, payload: Any, headers: dict | None = None) -> requests.Response:
         """POST a raw JSON-RPC body (single object, batch array, or notification)
         and return the raw requests.Response — no result-unwrapping, no
         error-raising. Retries transient 5xx/network flake like _send. Used by
         transport/protocol tests that must inspect the raw HTTP status and
         envelope (batch caps, 202-for-notifications, JSON-RPC framing) — paths
         the result-unwrapping call_tool/_send helpers deliberately hide.
+
+        `headers` sets extra request headers, which is how the modern (2026-07-28)
+        transport tests drive the MCP-Protocol-Version / Mcp-Method / Mcp-Name
+        validation and the Origin check. The cloud relay forwards these to the hub
+        intact and preserves the hub's status code, both probe-verified. Omitting
+        `headers` leaves the request HEADERLESS, i.e. on the legacy path — which is
+        what every other call in this suite does.
         """
         time.sleep(0.2)   # same per-call duty-cycle pacing as _send (see the limiter note there)
         last_exc: Exception | None = None
@@ -313,6 +329,7 @@ class HubitatMcpClient:
                     self.endpoint,
                     params={"access_token": self.access_token},
                     json=payload,
+                    headers=headers,
                     timeout=60,
                 )
                 if 500 <= resp.status_code < 600:
@@ -9739,13 +9756,19 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             print(f"    [WARN] Could not check hub logs: {exc}")
 
     # -----------------------------------------------------------------------
-    # GROUP 13: protocol (12 tests — initialize echo-allowlist, instructions,
-    # server/discover, the universal resultType + serverInfo _meta decoration,
-    # the tools/list cache hints, per-request _meta version tolerance (a -32022
-    # rejection is a modern-era signature this legacy-era server must not emit),
-    # inbound batch cap, and 202-for-notifications. These exercise the
-    # transport/protocol layer end-to-end through the cloud relay, which the
-    # Spock harness (in-process dispatch) cannot reach.)
+    # GROUP 13: protocol (23 tests — initialize echo-allowlist (legacy-capped),
+    # instructions, server/discover, the era-gated resultType decoration + the
+    # unconditional serverInfo _meta, the tools/list cache hints, legacy per-request
+    # _meta version tolerance, the ERA SWITCH (a MCP-Protocol-Version header naming a
+    # legacy revision is served as legacy — that header has been mandatory since
+    # 2025-06-18, so presence must never be read as "modern"), the modern 2026-07-28
+    # header validation (Mcp-Method / Mcp-Name incl. the base64 sentinel → 400 + -32020,
+    # unsupported version → 400 + -32022, batch body → 400 + -32600, unknown method →
+    # 404 + -32601), Origin validation → 403, inbound batch cap, and
+    # 202-for-notifications. These exercise the transport/protocol layer end-to-end
+    # through the cloud relay, which the Spock harness (in-process dispatch) cannot
+    # reach — and the relay both forwards the Mcp-*/Origin headers and preserves the
+    # hub's status code, so the HTTP-status half of the contract is only provable here.)
     # -----------------------------------------------------------------------
 
     @test("protocol")
@@ -9765,21 +9788,35 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
 
     @test("protocol")
     def test_initialize_echoes_newest_protocol(self) -> None:
-        """The NEWEST supported revision is echoed when explicitly requested. Distinct
-        from the no-version fallback case: this proves the newest entry is genuinely on
-        the allowlist, not merely the value the fallback happens to return."""
-        newest = SUPPORTED_PROTOCOL_VERSIONS[0]
+        """The newest revision initialize may negotiate is echoed when explicitly
+        requested. Distinct from the no-version fallback case: this proves the newest
+        legacy entry is genuinely on the allowlist, not merely the value the fallback
+        happens to return."""
+        newest = INITIALIZE_PROTOCOL_VERSIONS[0]
         result = self.client.initialize(newest)
         assert result.get("protocolVersion") == newest, \
             f"Expected echoed {newest}, got: {result.get('protocolVersion')}"
 
     @test("protocol")
     def test_initialize_falls_back_on_unsupported_protocol(self) -> None:
-        """An unsupported protocolVersion falls back to the newest supported
-        revision rather than erroring — initialize never rejects."""
+        """An unsupported protocolVersion falls back to the newest revision initialize
+        may negotiate rather than erroring — initialize never rejects."""
         result = self.client.initialize("1999-01-01")
-        assert result.get("protocolVersion") == SUPPORTED_PROTOCOL_VERSIONS[0], \
-            f"Expected fallback {SUPPORTED_PROTOCOL_VERSIONS[0]}, got: {result.get('protocolVersion')}"
+        assert result.get("protocolVersion") == INITIALIZE_PROTOCOL_VERSIONS[0], \
+            f"Expected fallback {INITIALIZE_PROTOCOL_VERSIONS[0]}, got: {result.get('protocolVersion')}"
+
+    @test("protocol")
+    def test_initialize_never_negotiates_the_modern_revision(self) -> None:
+        """initialize must NOT echo 2026-07-28 even though the transport supports it.
+        That revision deleted the initialize handshake, so a client reaching this method
+        is legacy-era by construction — echoing the modern version would let it cache an
+        era it cannot actually speak. It negotiates down to the newest legacy revision
+        like any other non-allowlisted value."""
+        result = self.client.initialize("2026-07-28")
+        assert result.get("protocolVersion") == INITIALIZE_PROTOCOL_VERSIONS[0], \
+            f"initialize must cap at {INITIALIZE_PROTOCOL_VERSIONS[0]}, got: {result.get('protocolVersion')}"
+        assert result.get("protocolVersion") != "2026-07-28", \
+            "initialize echoed the modern revision — the handshake must stay legacy-capped"
 
     @test("protocol")
     def test_server_discover(self) -> None:
@@ -9804,30 +9841,68 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             f"discover must carry instructions: {result.get('instructions')!r}"
 
     @test("protocol")
-    def test_results_carry_result_type_and_server_info_meta(self) -> None:
-        """SEP-2575: every result carries resultType 'complete' plus an _meta
-        io.modelcontextprotocol/serverInfo identifying the server. Checked across
-        three shapes — initialize, tools/list, and a real tools/call — because
-        tools/call serializes its envelope on a separate preserialized fast path."""
+    def test_legacy_results_carry_server_info_meta_but_no_result_type(self) -> None:
+        """A LEGACY-era result carries the _meta io.modelcontextprotocol/serverInfo key and
+        must NOT carry resultType. resultType is a 2026-07-28 field, and legacy clients
+        parse an empty result with a STRICT schema (the MCP TypeScript SDK's
+        EmptyResultSchema is ResultSchema.strict(), which REJECTS unknown keys) — so a
+        resultType on a legacy `ping` reply turns every keepalive into a client-side
+        protocol error. `_meta` is a modeled key in every revision's Result schema, so it
+        survives that same strict parse and stays unconditional.
+
+        Checked across initialize, tools/list, ping, and a real tools/call — tools/call
+        serializes its envelope on a separate preserialized fast path."""
+        ping = self.client._send("ping")
         for label, result in (
             ("initialize", self.client.initialize()),
             ("tools/list", self.client._send("tools/list")),
+            ("ping", ping),
+            # tools/call goes through _send (which stops at the JSON-RPC result) rather
+            # than call_tool, which unwraps to the tool payload and would hide these keys.
+            ("tools/call", self.client._send("tools/call", {"name": "hub_get_info", "arguments": {}})),
         ):
-            assert result.get("resultType") == "complete", \
-                f"{label} result missing resultType 'complete': {result.get('resultType')!r}"
+            assert "resultType" not in result, \
+                f"{label} legacy result must NOT carry resultType (breaks strict EmptyResult parsing): {sorted(result.keys())}"
             info = (result.get("_meta") or {}).get("io.modelcontextprotocol/serverInfo") or {}
             assert info.get("name") == "hubitat-mcp-rule-server", \
                 f"{label} result missing the serverInfo _meta key: {result.get('_meta')!r}"
             assert info.get("version"), f"{label} serverInfo carries no version: {info!r}"
 
-        # tools/call goes through _send (which stops at the JSON-RPC result) rather
-        # than call_tool, which unwraps to the tool payload and would hide these keys.
-        call_result = self.client._send("tools/call", {"name": "hub_get_info", "arguments": {}})
-        assert call_result.get("resultType") == "complete", \
-            f"tools/call result missing resultType (preserialized fast path): {sorted(call_result.keys())}"
-        call_info = (call_result.get("_meta") or {}).get("io.modelcontextprotocol/serverInfo") or {}
-        assert call_info.get("name") == "hubitat-mcp-rule-server", \
-            f"tools/call result missing the serverInfo _meta key: {call_result.get('_meta')!r}"
+        # The exact shape a legacy client's strict EmptyResultSchema sees for ping.
+        assert set(ping.keys()) == {"_meta"}, \
+            f"legacy ping result must be exactly the _meta envelope, got: {sorted(ping.keys())}"
+
+    @test("protocol")
+    def test_modern_results_carry_result_type(self) -> None:
+        """SEP-2575: a MODERN-era result carries resultType 'complete'. The companion to
+        the legacy test above — together they pin that the stamp is era-gated rather than
+        simply absent. Driven through raw_request because the modern era is selected by a
+        request header that _send does not set."""
+        for label, body, headers in (
+            (
+                "tools/list",
+                {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+                {"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/list"},
+            ),
+            (
+                # The preserialized fast path: the decoration has to already be baked into
+                # the string handleToolsCall hands back.
+                "tools/call",
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                 "params": {"name": "hub_get_info", "arguments": {}}},
+                {"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call",
+                 "Mcp-Name": "hub_get_info"},
+            ),
+        ):
+            resp = self.client.raw_request(body, headers=headers)
+            assert resp.status_code == 200, \
+                f"modern {label} must ride HTTP 200, got {resp.status_code}: {resp.text[:300]!r}"
+            result = resp.json().get("result", {})
+            assert result.get("resultType") == "complete", \
+                f"modern {label} result missing resultType 'complete': {sorted(result.keys())}"
+            info = (result.get("_meta") or {}).get("io.modelcontextprotocol/serverInfo") or {}
+            assert info.get("name") == "hubitat-mcp-rule-server", \
+                f"modern {label} result missing the serverInfo _meta key: {result.get('_meta')!r}"
 
     @test("protocol")
     def test_tools_list_carries_cache_hints(self) -> None:
@@ -9842,16 +9917,17 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             f"Expected cacheScope 'private', got: {result.get('cacheScope')!r}"
 
     @test("protocol")
-    def test_request_meta_protocol_version_tolerated(self) -> None:
-        """EVERY per-request _meta protocolVersion (SEP-2575) is tolerated at HTTP 200,
-        including unknown ones. Rejecting with -32022 is a modern-era (2026-07-28+)
-        signature: the spec's era-detection rule makes a dual-era client treat that
-        recognized modern error as "modern server — do not fall back to initialize"
-        and cache the verdict, permanently misidentifying this legacy-era server.
-        Verified through the relay because the status is the era signal. -32022
-        ships together with advertising 2026-07-28, not before."""
+    def test_request_meta_protocol_version_tolerated_without_headers(self) -> None:
+        """On the HEADERLESS (legacy) path every per-request _meta protocolVersion
+        (SEP-2575) is tolerated at HTTP 200, unknown ones included. A POST with no
+        MCP-Protocol-Version header never claimed the modern transport, so answering it
+        with -32022 would tell a dual-era client "modern server — do not fall back to
+        initialize" and wedge it out of the handshake it still needs. The -32022
+        rejection is scoped to the header path (see the modern tests below).
+        Verified through the relay because the HTTP status is the era signal."""
         for label, version in (
-            ("supported", SUPPORTED_PROTOCOL_VERSIONS[0]),
+            ("supported", "2025-11-25"),
+            ("modern", "2026-07-28"),
             ("unknown", "2099-01-01"),
         ):
             resp = self.client.raw_request({
@@ -9859,12 +9935,235 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                 "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": version}},
             })
             assert resp.status_code == 200, \
-                f"a {label} per-request version must ride HTTP 200, got {resp.status_code}: {resp.text[:200]!r}"
+                f"a {label} headerless per-request version must ride HTTP 200, got {resp.status_code}: {resp.text[:200]!r}"
             data = resp.json()
             assert "error" not in data, \
-                f"a {label} per-request version must not be rejected: {str(data)[:200]}"
+                f"a {label} headerless per-request version must not be rejected: {str(data)[:200]}"
             assert isinstance(data.get("result", {}).get("tools"), list), \
                 f"Expected a tools/list catalog for the {label} version, got: {str(data)[:200]}"
+
+    @test("protocol")
+    def test_legacy_protocol_version_header_is_served_as_legacy(self) -> None:
+        """THE compatibility regression pin. MCP-Protocol-Version has been REQUIRED on
+        every POST since 2025-06-18, so a client that negotiated 2025-06-18 or 2025-11-25
+        through initialize sends it on every subsequent request — and sends NO Mcp-Method
+        or Mcp-Name, because those headers do not exist before 2026-07-28. Reading header
+        PRESENCE as "modern" would answer every one of those with 400 + -32020, i.e. break
+        every current production client on deploy. The era switch is the header's VALUE.
+
+        Also proves the modern-only rules stay off: an unknown method keeps its 200 +
+        -32601 instead of the modern 404, and no resultType is stamped."""
+        for version in ("2025-06-18", "2025-11-25"):
+            resp = self.client.raw_request(
+                {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+                headers={"MCP-Protocol-Version": version},
+            )
+            assert resp.status_code == 200, \
+                f"a {version} header with no Mcp-Method must ride HTTP 200, got {resp.status_code}: {resp.text[:300]!r}"
+            data = resp.json()
+            assert "error" not in data, \
+                f"a {version} request must not be rejected for missing modern headers: {str(data)[:300]}"
+            result = data.get("result", {})
+            assert isinstance(result.get("tools"), list), \
+                f"Expected a tools/list catalog for {version}, got: {str(data)[:300]}"
+            assert "resultType" not in result, \
+                f"a {version} result must not carry the modern resultType: {sorted(result.keys())}"
+
+        # A legacy-versioned tools/call needs no Mcp-Name either.
+        call = self.client.raw_request(
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+             "params": {"name": "hub_get_info", "arguments": {}}},
+            headers={"MCP-Protocol-Version": "2025-06-18"},
+        )
+        assert call.status_code == 200, \
+            f"a legacy-versioned tools/call must not require Mcp-Name, got {call.status_code}: {call.text[:300]!r}"
+        assert "error" not in call.json(), f"legacy tools/call rejected: {str(call.json())[:300]}"
+
+        # And the modern 404 mapping must not reach it.
+        unknown = self.client.raw_request(
+            {"jsonrpc": "2.0", "id": 3, "method": "does/not/exist"},
+            headers={"MCP-Protocol-Version": "2025-11-25"},
+        )
+        assert unknown.status_code == 200, \
+            f"a legacy-versioned unknown method must stay on HTTP 200, got {unknown.status_code}: {unknown.text[:300]!r}"
+        assert unknown.json().get("error", {}).get("code") == -32601, \
+            f"Expected -32601, got: {str(unknown.json())[:300]}"
+
+    @test("protocol")
+    def test_modern_headers_dispatch_normally(self) -> None:
+        """A 2026-07-28 request carrying the full standard header set, matching the body,
+        dispatches normally at HTTP 200. This is the positive control for every rejection
+        test below — it proves the hub really does read inbound headers through the cloud
+        relay, so a 400 elsewhere is a validation verdict and not a header the hub never
+        saw."""
+        resp = self.client.raw_request(
+            {
+                "jsonrpc": "2.0", "id": 1, "method": "tools/list",
+                "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}},
+            },
+            headers={"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/list"},
+        )
+        assert resp.status_code == 200, \
+            f"a valid modern request must ride HTTP 200, got {resp.status_code}: {resp.text[:300]!r}"
+        data = resp.json()
+        assert "error" not in data, f"a valid modern request must not be rejected: {str(data)[:300]}"
+        assert isinstance(data.get("result", {}).get("tools"), list), \
+            f"Expected a tools/list catalog, got: {str(data)[:300]}"
+
+    @test("protocol")
+    def test_modern_header_method_mismatch_rejected(self) -> None:
+        """Mcp-Method mirrors the body `method`; a disagreement MUST be rejected with
+        HTTP 400 + -32020 HeaderMismatch. This is the vulnerability the mirroring
+        exists to close — an intermediary routing on the header while the server
+        executes the body."""
+        resp = self.client.raw_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}},
+            headers={"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/list"},
+        )
+        assert resp.status_code == 400, \
+            f"a header/body method mismatch must be HTTP 400, got {resp.status_code}: {resp.text[:300]!r}"
+        err = resp.json().get("error", {})
+        assert err.get("code") == -32020, f"Expected -32020 HeaderMismatch, got: {str(resp.json())[:300]}"
+        assert "Mcp-Method" in err.get("message", ""), \
+            f"the message must name the offending header: {err.get('message')!r}"
+
+    @test("protocol")
+    def test_modern_tools_call_requires_matching_mcp_name(self) -> None:
+        """Mcp-Name mirrors params.name and is REQUIRED on tools/call. A missing one is a
+        -32020 (a missing required header IS a mismatch per the spec), and so is one that
+        names a different tool — rejected BEFORE dispatch, so the wrong tool never runs."""
+        body = {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "hub_get_info", "arguments": {}},
+        }
+        missing = self.client.raw_request(
+            body, headers={"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call"})
+        assert missing.status_code == 400, \
+            f"a tools/call with no Mcp-Name must be HTTP 400, got {missing.status_code}: {missing.text[:300]!r}"
+        assert missing.json().get("error", {}).get("code") == -32020, \
+            f"Expected -32020, got: {str(missing.json())[:300]}"
+
+        wrong = self.client.raw_request(body, headers={
+            "MCP-Protocol-Version": "2026-07-28",
+            "Mcp-Method": "tools/call",
+            "Mcp-Name": "hub_list_rooms",
+        })
+        assert wrong.status_code == 400, \
+            f"a mismatched Mcp-Name must be HTTP 400, got {wrong.status_code}: {wrong.text[:300]!r}"
+        err = wrong.json().get("error", {})
+        assert err.get("code") == -32020, f"Expected -32020, got: {str(wrong.json())[:300]}"
+        assert "hub_list_rooms" in err.get("message", "") and "hub_get_info" in err.get("message", ""), \
+            f"the message must name both the header and body values: {err.get('message')!r}"
+
+    @test("protocol")
+    def test_modern_base64_sentinel_mcp_name_decodes(self) -> None:
+        """An Mcp-Name carried in the spec's Base64 sentinel wrapper (=?base64?<data>?=)
+        must be decoded before it is compared to params.name, so the call goes through.
+
+        This is the ONLY proof that Groovy's String.decodeBase64() is permitted in the
+        Hubitat sandbox — the Spock suite runs on a real JVM where it always works, so a
+        sandbox rejection would stay green there and only surface here, on real firmware."""
+        tool = "hub_get_info"
+        encoded = "=?base64?" + base64.b64encode(tool.encode()).decode() + "?="
+        # Pin the wire form so a fixture that stopped producing a real sentinel (and thus
+        # proved nothing) fails loudly instead of passing as a plain value.
+        assert encoded == "=?base64?aHViX2dldF9pbmZv?=", f"unexpected sentinel encoding: {encoded!r}"
+
+        resp = self.client.raw_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+             "params": {"name": tool, "arguments": {}}},
+            headers={
+                "MCP-Protocol-Version": "2026-07-28",
+                "Mcp-Method": "tools/call",
+                "Mcp-Name": encoded,
+            },
+        )
+        assert resp.status_code == 200, \
+            f"a base64-sentinel Mcp-Name must decode and pass, got {resp.status_code}: {resp.text[:300]!r}"
+        data = resp.json()
+        assert "error" not in data, \
+            f"sentinel decode failed server-side (decodeBase64 blocked in the sandbox?): {str(data)[:300]}"
+        assert data.get("result", {}).get("content"), \
+            f"Expected a tools/call content envelope, got: {str(data)[:300]}"
+
+    @test("protocol")
+    def test_modern_batch_rejected_with_invalid_request(self) -> None:
+        """The modern transport requires the POST body to be a single JSON-RPC message, so
+        a batch is a malformed BODY: HTTP 400 + -32600 Invalid Request. Deliberately NOT
+        -32020, whose definition covers header/body disagreement and missing or malformed
+        headers — a different fault. Legacy batches keep their 200 array (see the
+        batch-cap test below, which rides headerless)."""
+        resp = self.client.raw_request(
+            [
+                {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+                {"jsonrpc": "2.0", "id": 2, "method": "ping", "params": {}},
+            ],
+            headers={"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/list"},
+        )
+        assert resp.status_code == 400, \
+            f"a modern batch must be HTTP 400, got {resp.status_code}: {resp.text[:300]!r}"
+        data = resp.json()
+        assert isinstance(data, dict), \
+            f"Expected one error object, not an array of per-element results: {str(data)[:300]}"
+        assert data.get("error", {}).get("code") == -32600, \
+            f"Expected -32600 Invalid Request, got: {str(data)[:300]}"
+
+    @test("protocol")
+    def test_modern_unsupported_version_header_rejected(self) -> None:
+        """A MCP-Protocol-Version header naming a revision the server does not implement
+        MUST be answered with HTTP 400 + -32022 UnsupportedProtocolVersionError carrying
+        data.requested and data.supported — both REQUIRED, because `supported` is how the
+        client picks a mutually supported version and retries instead of giving up."""
+        resp = self.client.raw_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+            headers={"MCP-Protocol-Version": "2099-01-01", "Mcp-Method": "tools/list"},
+        )
+        assert resp.status_code == 400, \
+            f"an unsupported version header must be HTTP 400, got {resp.status_code}: {resp.text[:300]!r}"
+        err = resp.json().get("error", {})
+        assert err.get("code") == -32022, f"Expected -32022, got: {str(resp.json())[:300]}"
+        data = err.get("data") or {}
+        assert data.get("requested") == "2099-01-01", f"data.requested wrong: {data!r}"
+        assert data.get("supported") == SUPPORTED_PROTOCOL_VERSIONS, \
+            f"data.supported must be the live supported list {SUPPORTED_PROTOCOL_VERSIONS}, got: {data.get('supported')!r}"
+
+    @test("protocol")
+    def test_modern_unknown_method_returns_404(self) -> None:
+        """2026-07-28 pins an unknown method on the modern transport to HTTP 404 while
+        keeping -32601 in the body — that body is what lets a dual-era client tell this
+        apart from the 404 a legacy HTTP+SSE server returns for a path it does not host.
+        Only provable through the relay, which preserves the hub's status."""
+        resp = self.client.raw_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "does/not/exist"},
+            headers={"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "does/not/exist"},
+        )
+        assert resp.status_code == 404, \
+            f"an unknown modern method must be HTTP 404, got {resp.status_code}: {resp.text[:300]!r}"
+        err = resp.json().get("error", {})
+        assert err.get("code") == -32601, \
+            f"the 404 body must still carry -32601 (the era signal): {str(resp.json())[:300]}"
+
+    @test("protocol")
+    def test_spoofed_origin_rejected_with_403(self) -> None:
+        """Streamable HTTP security MUST: a present Origin naming none of the server's
+        known identities (its LAN IP, cloud.hubitat.com, loopback) is answered with HTTP
+        403 Forbidden. Applies on both eras, so this rides a headerless request.
+
+        The comparison is deliberately NOT against the request's Host header: through the
+        relay Host is cloud.hubitat.com, and in a real rebinding attack Origin and Host
+        both name the attacker's domain, so a self-referential check would pass. Every
+        other call in this suite sends no Origin at all, which is the pass case — that is
+        how server-to-server MCP clients look."""
+        resp = self.client.raw_request(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+            headers={"Origin": "http://evil.example"},
+        )
+        assert resp.status_code == 403, \
+            f"a spoofed Origin must be HTTP 403, got {resp.status_code}: {resp.text[:300]!r}"
+        body = resp.json()
+        assert body.get("id") is None, f"the 403 body must be a JSON-RPC error with no id: {str(body)[:300]}"
+        assert "Origin" in body.get("error", {}).get("message", ""), \
+            f"the 403 body must name the Origin header: {str(body)[:300]}"
 
     @test("protocol")
     def test_initialize_returns_instructions(self) -> None:

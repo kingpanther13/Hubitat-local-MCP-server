@@ -278,15 +278,16 @@ Some seams only come alive at tier 2. Two are wired into the harness:
 
 ### 1. `handleMcpRequest()` — dispatch pipeline
 
-`McpRequestDriver` lets a spec push a JSON-RPC body, invoke `handleMcpRequest()`, and read back the captured `render(...)` envelope. Covers the two hub-runtime seams that the JSON-RPC-layer specs skip:
+`McpRequestDriver` lets a spec push a JSON-RPC body, invoke `handleMcpRequest()`, and read back the captured `render(...)` envelope. Covers the three hub-runtime seams that the JSON-RPC-layer specs skip:
 
 - `request.JSON` — the sandbox dynamic property the hub populates with the parsed POST body. `handleMcpRequest()` wraps the read in try/catch to surface malformed bodies as JSON-RPC -32700 parse errors. The driver can stage either a staged body (`pushBody(...)`) OR a throwing access (`pushBodyThrowing(t)`) so both the `null`-body branch and the try/catch branch are reachable.
-- `render(Map)` — the hub-side response writer. Production assembles status / contentType / data; driving `handleToolsCall()` directly bypasses this.
+- `request.headers` — the inbound HTTP headers, which the 2026-07-28 transport validates against the body (`MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name`) and which the Origin check reads. `pushHeaders(map)` takes names in whatever casing a client would send and rewrites them into the hub's own wire shape before staging — names case-normalized to first-char-upper (`MCP-Protocol-Version` → `Mcp-protocol-version`), values List-wrapped — so the production case-insensitive lookup and List-unwrap are what a spec exercises rather than a convenient plain map the hub never sends. Because `pushHeaders` normalizes both the input and the expectation, a spec proving the lookup is genuinely case-insensitive must write `mcpDriver.headers` directly with a third casing. `nullHeaders = true` and `throwingHeaders = t` model firmware that exposes no header map; production must degrade to the headerless legacy path.
+- `render(Map)` — the hub-side response writer. Production assembles status / contentType / data; driving `handleToolsCall()` directly bypasses this. The driver's captured `lastRenderArgs.status` is how the transport-status contract is pinned (absent = the JSON-RPC-native 200; 400 / 403 / 404 / 202 / 405 are each asserted explicitly).
 
 Wiring (in `HarnessSpec`):
 
 - `render(Map)` is on `AppExecutor` (class-2 on the dispatch cheat sheet), stubbed via a `>>` dispatcher in `setupSpec()` that hands the Map to `McpRequestDriver.captureRender()`. A no-arg `render()` stub is also installed that throws — nothing in production calls it today, but if a future handler picked it up, silently dropping the call would let `parseResponseJson` read the previous test's state.
-- `request` is resolved by `HubitatAppScript`'s own `@CompileStatic getProperty(String)` override, which checks `injectedMappingHandlerData['request']` before falling through to MOP (only when the *map itself* is null — not when the map lacks the `request` key). That short-circuit means a metaClass hook on the script is *never consulted* for this property. The driver's stable `ScriptRequestProxy` is installed directly into that private field via reflection in `wireScriptOverrides()`, which runs per-test in `setup()` (after the metaClass wipe). The proxy dispatches `getJSON()` dynamically at access time — tests can call `pushBody` / `pushBodyThrowing` from their `given:` block and have the change take effect without re-running the wire step. (Same dispatch trap as `parent` — see `RuleHarnessSpec`'s Javadoc for the parallel case.)
+- `request` is resolved by `HubitatAppScript`'s own `@CompileStatic getProperty(String)` override, which checks `injectedMappingHandlerData['request']` before falling through to MOP (only when the *map itself* is null — not when the map lacks the `request` key). That short-circuit means a metaClass hook on the script is *never consulted* for this property. The driver's stable `ScriptRequestProxy` is installed directly into that private field via reflection in `wireScriptOverrides()`, which runs per-test in `setup()` (after the metaClass wipe). The proxy dispatches `getJSON()` and `getHeaders()` dynamically at access time — tests can call `pushBody` / `pushBodyThrowing` / `pushHeaders` from their `given:` block and have the change take effect without re-running the wire step. (Same dispatch trap as `parent` — see `RuleHarnessSpec`'s Javadoc for the parallel case.)
 
 Spec pattern:
 
@@ -309,6 +310,10 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
 ```
 
 `pushBody(null)` simulates a missing body (→ -32700 empty-body branch). `pushBodyThrowing(throwable)` simulates a hub-side JSON parse failure (→ -32700 try/catch branch). `pushBody([...])` (a List) exercises the batch-request branch.
+
+Adding `pushHeaders(['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'tools/list'])` flips the same request onto the **modern** era, so a spec can assert the 400 / 404 mappings and the `resultType` stamp. The era switch is the header's **value**: `pushHeaders(['MCP-Protocol-Version': '2025-11-25'])` is a *legacy* request that merely carries the header (which has been mandatory since 2025-06-18), and it must behave exactly like a headerless one — that pairing is the compatibility regression pin. Omitting `pushHeaders` entirely keeps the request headerless, which is what every pre-existing spec in the file relies on.
+
+The Origin check reads `location.hub.localIP`, so `HandleMcpRequestDispatchSpec` stubs `appExecutor.getLocation()` in `setupSpec()` and re-seeds `sharedLocation.hub = new TestHub(localIP: ...)` per test (`TestHub` carries `localIP` for exactly this).
 
 ### 2. `subscribe(...)` + event replay — rule-engine install loop
 

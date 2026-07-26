@@ -680,19 +680,39 @@ def handleMcpGet() {
 // Transport contract: JSON-RPC application errors (parse / invalid-request /
 // method-not-found / internal) are returned with HTTP 200 and an error envelope
 // per JSON-RPC 2.0. Do NOT convert application-level JSON-RPC errors to 4xx --
-// spec-compliant clients expect the error inside a 200 body. The non-200 statuses
+// legacy-era clients expect the error inside a 200 body. The non-200 statuses
 // are enumerated and each is spec-mandated:
 //
 //   405 -- GET on this endpoint (handleMcpGet); POST-only by design.
-//   202 -- an all-notifications POST (no response objects), per MCP Streamable HTTP.
+//   403 -- a present Origin header naming none of this server's known identities, on
+//          ANY request (DNS-rebinding defence; body is a JSON-RPC error, null id).
+//   202 -- a POST carrying no request objects (all notifications), per MCP
+//          Streamable HTTP. Unconditional: the spec leaves notification-POST
+//          header requirements undefined, so no header validation applies.
+//   400 -- -32022 UnsupportedProtocolVersion when the MCP-Protocol-Version header
+//          names a revision outside supportedProtocolVersions(); this one spans BOTH
+//          eras, since 2025-06-18 already mandated 400 for it. Plus, on a MODERN
+//          request only: -32020 HeaderMismatch (mirrored header disagrees with the
+//          body, or a required one is missing/malformed) and -32600 (a batch body,
+//          which the modern transport forbids).
+//   404 -- an unknown method on a MODERN request (body still carries -32601, so
+//          a dual-era client can tell this from a legacy HTTP+SSE server's 404).
 //
-// The 2026-07-28 revision adds HTTP status mappings this server must adopt WITH
-// that revision and not before: -32020 HeaderMismatch, -32021
-// MissingRequiredClientCapability and -32022 UnsupportedProtocolVersion are each
-// pinned to 400 Bad Request, and an unknown method on the modern transport is
-// pinned to 404 + -32601. Emitting any of those today would misidentify this
-// legacy-era server as modern -- see the era note in processJsonRpcMessage.
+// "MODERN" means the MCP-Protocol-Version header's VALUE is modernProtocolVersion() --
+// NOT merely that the header is present. That header has been required since
+// 2025-06-18, so a legacy client sends it too; see the era-split note below. A request
+// on any legacy revision (header-bearing or headerless) keeps every pre-2026 behaviour,
+// batch responses included (a legacy batch still renders 200).
 def handleMcpRequest() {
+    // Streamable HTTP security MUST: validate Origin on EVERY inbound request to
+    // block DNS rebinding. First thing in the handler, so a rejected request costs
+    // nothing and touches no state -- not even the migration below. Runs in both
+    // eras: this is a transport security control, not a protocol-revision feature.
+    if (!_originAllowed()) {
+        return render(status: 403, contentType: "application/json", data: groovy.json.JsonOutput.toJson(
+            jsonRpcError(null, -32600, "Forbidden: the Origin header does not name a known identity for this MCP endpoint.")))
+    }
+
     // Issue #354: reset publishOutputSchemas OFF once. Hooked here (not only in
     // updated()) because an HPM code deploy recompiles the class without firing
     // updated(), so HPM updaters would otherwise never get the reset until they
@@ -703,10 +723,11 @@ def handleMcpRequest() {
 
     def requestBody
     try {
-        // Content-Type is intentionally not validated: Hubitat's mapped-endpoint
-        // inbound request object does not reliably expose the header in the
-        // sandbox, and a wrong content-type already degrades to the -32700
-        // parse-error path below (request.JSON throws or returns null).
+        // Content-Type is intentionally left unvalidated: a wrong content-type
+        // already degrades to the -32700 parse-error path below (request.JSON
+        // throws or returns null), which is a sufficient answer. Inbound headers
+        // ARE readable here (see _requestHeader) -- that is what the modern
+        // MCP-Protocol-Version / Mcp-Method / Mcp-Name validation below reads.
         requestBody = request.JSON
     } catch (Exception e) {
         // Bug fix: return proper JSON-RPC parse error (-32700)
@@ -720,6 +741,53 @@ def handleMcpRequest() {
     }
 
     logDebug("MCP Request: ${requestBody.toString().take(500)}${requestBody.toString().length() > 500 ? '...[truncated]' : ''}")
+
+    // ---- Era split -------------------------------------------------------
+    // The era switch is the MCP-Protocol-Version header's VALUE, never its mere
+    // presence. That header has been REQUIRED on every POST since 2025-06-18, so a
+    // client that negotiated 2025-06-18 or 2025-11-25 through initialize sends it on
+    // every subsequent request -- and sends NO Mcp-Method / Mcp-Name, because those
+    // headers do not exist before 2026-07-28. Treating presence as "modern" would
+    // reject every one of those requests as a header mismatch.
+    //
+    // So: header value == modernProtocolVersion() -> modern, mirrored-header contract
+    // applies. Header value == a supported legacy revision -> served exactly like a
+    // headerless request; that revision defines neither the mirrored headers nor the
+    // per-request _meta version, so there is nothing to cross-check. Headerless ->
+    // read as a pre-2025-06-18 client, which the spec explicitly permits, keeping the
+    // tolerant _meta handling in processJsonRpcMessage.
+    //
+    // Both checks below are scoped to POSTs carrying at least one request object:
+    // header requirements for a notification POST are explicitly undefined by the
+    // spec, so an all-notifications POST always ends at the 202 further down.
+    String headerVersion = _requestHeader("MCP-Protocol-Version")
+    boolean bodyCarriesRequest = false
+    if (requestBody instanceof List) {
+        bodyCarriesRequest = requestBody.any { it instanceof Map && it?.id != null }
+    } else if (requestBody instanceof Map) {
+        bodyCarriesRequest = requestBody.id != null
+    }
+
+    // Unsupported header version -> 400 + -32022, in BOTH eras. 2025-06-18 already
+    // required a server to answer an unsupported MCP-Protocol-Version with 400, so
+    // this is not a modern-only rejection, and it cannot wedge a dual-era client the
+    // way a bare 400 would: -32022 carries the `supported` list to retry from.
+    if (headerVersion != null && bodyCarriesRequest && !supportedProtocolVersions().contains(headerVersion)) {
+        // Echo the id when the POST carried one message; a batch has no single id.
+        def unsupportedId = (requestBody instanceof Map) ? requestBody.id : null
+        return render(status: 400, contentType: "application/json", data: groovy.json.JsonOutput.toJson(
+            jsonRpcError(unsupportedId, -32022, "Unsupported protocol version: ${headerVersion}",
+                         [requested: headerVersion, supported: supportedProtocolVersions()])))
+    }
+
+    boolean modernRequest = _modernEraRequest() && bodyCarriesRequest
+    if (modernRequest) {
+        def rejection = _modernRequestRejection(headerVersion, requestBody)
+        if (rejection != null) {
+            return render(status: 400, contentType: "application/json",
+                          data: groovy.json.JsonOutput.toJson(rejection))
+        }
+    }
 
     def response
     if (requestBody instanceof List) {
@@ -746,6 +814,15 @@ def handleMcpRequest() {
     // nothing. MCP Streamable HTTP prescribes 202 Accepted for this case.
     if (response == null || (response instanceof List && response.isEmpty())) {
         return render(status: 202, contentType: "application/json", data: "")
+    }
+
+    // 2026-07-28 pins an unknown method on the modern transport to 404, with the
+    // -32601 still in the body -- that body is exactly what lets a dual-era client
+    // tell this 404 apart from the 404 a legacy HTTP+SSE server returns for a path
+    // it does not host. Legacy-era requests keep the JSON-RPC-native 200.
+    Integer httpStatus = null
+    if (modernRequest && response instanceof Map && response.error?.code == -32601) {
+        httpStatus = 404
     }
 
     // Single-message verbatim-passthrough: when handleToolsCall already produced the wire
@@ -775,10 +852,222 @@ def handleMcpRequest() {
             "Response too large (${responseBytes} bytes exceeds hub's 128KB limit). Try requesting less data or use a more specific query."
         )
         jsonResponse = groovy.json.JsonOutput.toJson(errResp)
+        // Body and status must stay in lockstep. The guard REPLACED the body, so any
+        // status derived from the original response no longer describes what ships --
+        // a 404 carrying a -32603 would read as a transport-level miss.
+        httpStatus = null
     }
 
     logDebug("MCP Response: ${jsonResponse.take(500)}${jsonResponse.length() > 500 ? '...[' + jsonResponse.length() + ' bytes total]' : ''}")
-    return render(contentType: "application/json", data: jsonResponse)
+    def renderArgs = [contentType: "application/json", data: jsonResponse]
+    if (httpStatus != null) renderArgs.status = httpStatus
+    return render(renderArgs)
+}
+
+// Inbound HTTP headers ARE exposed on the hub's mapped-endpoint request object --
+// probed live on real firmware over BOTH the LAN endpoint and the cloud.hubitat.com
+// relay, which forwards the Mcp-* and Origin headers intact. Two quirks the callers
+// depend on: header NAMES arrive case-normalized (first character upper, rest lower
+// -- "Mcp-protocol-version", "User-agent"), so lookups must be case-insensitive; and
+// VALUES arrive List-wrapped, so the first element is the value. Older or unknown
+// firmware may not expose the map at all, so every failure mode returns null and the
+// caller falls back to the headerless legacy path rather than throwing.
+def _requestHeader(String name) {
+    try {
+        def headers = request?.headers
+        if (!(headers instanceof Map)) return null
+        String wanted = name?.toLowerCase()
+        def hit = headers.find { k, v -> k?.toString()?.toLowerCase() == wanted }
+        if (hit == null) return null
+        def value = hit.value
+        if (value instanceof List) value = value.isEmpty() ? null : value[0]
+        return value == null ? null : value.toString()
+    } catch (Exception ignored) {
+        return null
+    }
+}
+
+// Origin check (Streamable HTTP: "servers MUST validate the Origin header on all
+// incoming connections to prevent DNS rebinding attacks"). An ABSENT Origin passes --
+// server-to-server MCP clients never send one, and the spec only mandates rejection
+// when the header is present and invalid. Anything malformed counts as invalid.
+//
+// A present Origin is compared against the identities this SERVER knows for itself
+// (_allowedOriginHosts). It is deliberately NOT compared against the request's own
+// Host header: in a DNS rebinding attack the browser sends Origin AND Host both naming
+// the attacker's domain (that IS the URL it fetched), so the two agree and a
+// self-referential comparison passes the attacker straight through. Only server-known
+// names actually exclude an attacker-controlled origin.
+//
+// This pins Origin to server-known identities as defence in depth; it is not the
+// primary control. The endpoint's per-install OAuth access_token remains what
+// authorizes a request.
+def _originAllowed() {
+    try {
+        String origin = _requestHeader("Origin")
+        if (!origin) return true
+        String originHost = _originHost(origin)
+        if (!originHost) return false
+        return _allowedOriginHosts().contains(originHost)
+    } catch (Exception ignored) {
+        return false
+    }
+}
+
+// Hosts an inbound Origin may legitimately name: the Hubitat cloud relay that fronts
+// this endpoint, loopback, and the hub's own LAN address. The LAN address is read
+// defensively from location.hub.localIP (the same source hub_get_info uses; it can be
+// null on some firmware), so an unreadable IP narrows the allowed set to the static
+// entries rather than failing open or throwing.
+def _allowedOriginHosts() {
+    def allowed = ["cloud.hubitat.com", "localhost", "127.0.0.1", "::1"]
+    try {
+        def localIp = location?.hub?.localIP?.toString()
+        if (localIp) allowed << localIp.trim().toLowerCase()
+    } catch (Exception ignored) { }
+    return allowed
+}
+
+// "http://192.168.1.133:8080" -> "192.168.1.133". Hand-parsed rather than handed to
+// a URI class: the sandbox rejects several java.* class expressions outright, and a
+// malformed Origin must read as invalid instead of throwing. A value with no scheme
+// separator (a browser's opaque "null" origin included) is not a valid origin.
+def _originHost(String origin) {
+    String s = origin?.trim()
+    if (!s) return null
+    int scheme = s.indexOf("://")
+    if (scheme < 0) return null
+    return _authorityHost(s.substring(scheme + 3))
+}
+
+// Reduce an HTTP authority ("user@host:port/path") to its bare lowercase host.
+// Bracketed IPv6 literals keep their inner address so the colons are not read as a
+// port separator.
+def _authorityHost(String authority) {
+    String s = authority?.trim()
+    if (!s) return null
+    int slash = s.indexOf("/")
+    if (slash >= 0) s = s.substring(0, slash)
+    int at = s.indexOf("@")
+    if (at >= 0) s = s.substring(at + 1)
+    if (s.startsWith("[")) {
+        int close = s.indexOf("]")
+        if (close < 0) return null
+        s = s.substring(1, close)
+    } else {
+        int colon = s.indexOf(":")
+        if (colon >= 0) s = s.substring(0, colon)
+    }
+    s = s.trim().toLowerCase()
+    return s.isEmpty() ? null : s
+}
+
+// The one revision that defines the mirrored request-metadata headers, the
+// `resultType` result field, and the 400/404 status mappings. Named rather than
+// inlined because three places branch on it: the supported list, the initialize
+// exclusion, and the per-request era test.
+def modernProtocolVersion() { "2026-07-28" }
+
+// Era test for the modern revision, used by the request validation in
+// handleMcpRequest and by jsonRpcResult's resultType stamp. The header VALUE is the
+// switch, not its presence -- the header itself has been required since 2025-06-18.
+// Reads through _requestHeader, so a call from outside a request context (a scheduled
+// handler, a direct unit call) answers false instead of throwing.
+def _modernEraRequest() {
+    return _requestHeader("MCP-Protocol-Version") == modernProtocolVersion()
+}
+
+// Modern-era (2026-07-28) body + mirrored-header validation. Returns a
+// ready-to-render JSON-RPC error for the caller to ship at HTTP 400, or null when the
+// request passes. The unsupported-version rejection is NOT here -- it lives in
+// handleMcpRequest because it applies to both eras.
+//
+// A batch is refused as -32600 Invalid Request, not -32020: this revision requires the
+// POST body to be a single JSON-RPC request or notification, so an array is a
+// malformed BODY. -32020 is defined for header/body disagreement and for missing or
+// malformed headers, which is a different fault. HTTP 400 either way.
+def _modernRequestRejection(String headerVersion, requestBody) {
+    if (requestBody instanceof List) {
+        return jsonRpcError(null, -32600,
+            "Invalid Request: a ${headerVersion} POST body must be a single JSON-RPC message, not a batch array -- the Mcp-Method / Mcp-Name headers describe exactly one message.")
+    }
+    return _mirroredHeaderRejection(headerVersion, requestBody)
+}
+
+// Compare each mirrored header against the single message it describes. Header
+// NAMES are case-insensitive (handled in _requestHeader) but header VALUES are
+// case-sensitive, so every comparison here is exact.
+def _mirroredHeaderRejection(String headerVersion, msg) {
+    def id = msg?.id
+    String bodyMethod = msg?.method == null ? null : msg.method.toString()
+    String methodHeader = _requestHeader("Mcp-Method")
+    if (methodHeader == null) {
+        return jsonRpcError(id, -32020,
+            "Header mismatch: the Mcp-Method header is required on ${headerVersion} requests.")
+    }
+    if (methodHeader != bodyMethod) {
+        return jsonRpcError(id, -32020,
+            "Header mismatch: Mcp-Method header value '${methodHeader}' does not match the body method '${bodyMethod}'.")
+    }
+    // Mcp-Name mirrors params.name / params.uri and is required only for the methods
+    // that HAVE one -- tools/call, resources/read, prompts/get. This server implements
+    // neither resources/read nor prompts/get, so tools/call is the whole set. Other
+    // methods carry no name to mirror, so an extraneous Mcp-Name on one is ignored
+    // rather than rejected: the spec defines no body value for it to disagree with.
+    if (bodyMethod == "tools/call") {
+        String nameHeader = _requestHeader("Mcp-Name")
+        if (nameHeader == null) {
+            return jsonRpcError(id, -32020,
+                "Header mismatch: the Mcp-Name header is required on a ${headerVersion} tools/call request.")
+        }
+        String decodedName = _decodeHeaderValue(nameHeader)
+        if (decodedName == null) {
+            return jsonRpcError(id, -32020,
+                "Header mismatch: the Mcp-Name header value is a malformed =?base64?...?= sentinel.")
+        }
+        def bodyName = msg?.params instanceof Map ? msg.params.name : null
+        if (decodedName != (bodyName == null ? null : bodyName.toString())) {
+            return jsonRpcError(id, -32020,
+                "Header mismatch: Mcp-Name header value '${decodedName}' does not match the body params.name '${bodyName}'.")
+        }
+    }
+    // The header value MUST equal params._meta's protocol version when the body
+    // carries one; an absent _meta version is not a mismatch (the header is the
+    // authoritative copy and the only REQUIRED one).
+    String metaVersion = _requestMetaProtocolVersion(msg)
+    if (metaVersion != null && metaVersion != headerVersion) {
+        return jsonRpcError(id, -32020,
+            "Header mismatch: MCP-Protocol-Version header '${headerVersion}' does not match the body params._meta io.modelcontextprotocol/protocolVersion '${metaVersion}'.")
+    }
+    return null
+}
+
+def _requestMetaProtocolVersion(msg) {
+    def meta = msg?.params instanceof Map ? msg.params["_meta"] : null
+    if (!(meta instanceof Map)) return null
+    def version = meta["io.modelcontextprotocol/protocolVersion"]
+    return version == null ? null : version.toString()
+}
+
+// A header value that cannot ride as plain visible-ASCII arrives wrapped in the
+// spec's Base64 sentinel -- "=?base64?<data>?=", markers lowercase and
+// case-sensitive -- and MUST be decoded before it is compared to the body value.
+// A plain value passes through untouched. Returns null when the wrapper is present
+// but its payload will not decode, so the caller can answer -32020.
+def _decodeHeaderValue(String value) {
+    if (value == null) return null
+    if (value.length() < 11 || !value.startsWith("=?base64?") || !value.endsWith("?=")) return value
+    String payload = value.substring(9, value.length() - 2)
+    // Screen the payload against the base64 alphabet first. The spec makes an invalid
+    // header value a rejection outright, and screening keeps that verdict independent
+    // of how leniently the decoder treats stray characters. The try/catch still covers
+    // a well-charactered but wrongly-padded payload.
+    if (!(payload ==~ '[A-Za-z0-9+/]*={0,2}')) return null
+    try {
+        return new String(payload.decodeBase64(), "UTF-8")
+    } catch (Exception ignored) {
+        return null
+    }
 }
 
 def processJsonRpcMessage(msg) {
@@ -801,20 +1090,20 @@ def processJsonRpcMessage(msg) {
         return null
     }
 
-    // Per-request protocol version (SEP-2575, params._meta
-    // "io.modelcontextprotocol/protocolVersion") is DELIBERATELY tolerated, never
-    // rejected. Rejecting one with -32022 UnsupportedProtocolVersionError is a
-    // modern-era (2026-07-28+) signature: the spec's era-detection rule tells a
-    // dual-era client that a recognized modern error body means "modern server --
-    // retry from data.supported, do NOT fall back to initialize", and lets it
-    // cache that verdict per origin. This server speaks only legacy revisions
-    // (see supportedProtocolVersions()), so answering the modern probe with a
-    // modern error would permanently misidentify the era while offering a
-    // supported list with zero modern entries. Ignoring the key -- exactly what a
-    // legacy server that predates SEP-2575 does -- is what routes those clients
-    // onto the initialize fallback the spec prescribes. -32022 (and the -32020 /
-    // -32021 header/capability rejections) ship together with advertising
-    // 2026-07-28, not before.
+    // Dispatch is era-agnostic: a MODERN request (MCP-Protocol-Version ==
+    // modernProtocolVersion()) was already validated in handleMcpRequest -- Mcp-Method /
+    // Mcp-Name and the header-vs-_meta version agreement -- so anything arriving here
+    // has either passed that or is on a LEGACY revision.
+    //
+    // On a legacy revision the per-request protocol version (SEP-2575, params._meta
+    // "io.modelcontextprotocol/protocolVersion") stays DELIBERATELY tolerated, never
+    // rejected — including unknown values. That key does not exist before 2026-07-28, so
+    // a legacy request carrying one is either a dual-era client probing or noise;
+    // rejecting it with -32022 would tell such a client "modern server, do NOT fall back
+    // to initialize" about an exchange that never claimed the modern transport, wedging
+    // it out of the handshake it still needs. The header-vs-_meta cross-check is
+    // modern-only. (An unsupported HEADER version is a different matter and is rejected
+    // in both eras -- see handleMcpRequest.)
     try {
         switch (msg.method) {
             case "initialize":
@@ -863,26 +1152,35 @@ def serverInstructions() {
     "Gateway tools (hub_manage_* / hub_read_*) expose sub-tools -- call a gateway with no arguments to list its sub-tools and their schemas. hub_manage_virtual_device and hub_manage_mode are direct tools (not gateways) -- call them with their own arguments. Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page)."
 }
 
-// Protocol versions this server can speak, newest first. Single source for both
-// surfaces that publish it: the handleInitialize echo-allowlist and the
-// `supportedVersions` server/discover advertises.
+// Protocol versions this server can speak, newest first. Single source for the
+// `supportedVersions` server/discover advertises, the MCP-Protocol-Version header
+// allowlist (any version here is served; anything else is a -32022), and the
+// `supported` list a -32022 rejection hands back.
 //
-// "2026-07-28" is deliberately ABSENT. That revision requires the standard MCP
-// request headers (Mcp-Method / Mcp-Name / MCP-Protocol-Version) to be validated
-// against the request body, answering a mismatch with -32020; the hub's
-// mapped-endpoint request object does not expose inbound headers reliably in the
-// sandbox, so header validation is the prerequisite -- advertise the version only
-// once it lands.
+// modernProtocolVersion() is advertised now that its prerequisite is in: the standard
+// request headers (MCP-Protocol-Version / Mcp-Method / Mcp-Name) are validated against
+// the body in handleMcpRequest. A header naming one of the LEGACY entries is served as
+// legacy -- those revisions define no mirrored headers to check.
 //
 // outputSchema (a 2025-06-18 feature) is declared on every tool but, by default,
 // NOT advertised on the wire (issue #290); enabling publishOutputSchemas
 // advertises it in wire form AND attaches structuredContent to advertised tools'
 // results per the spec MUST (issue #342).
-def supportedProtocolVersions() { ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"] }
-// Newest supported revision -- what a client that omits (or requests an unknown)
-// protocolVersion negotiates down to. Derived from the newest-first list above so
-// the two can never drift.
-def defaultProtocolVersion() { supportedProtocolVersions()[0] }
+def supportedProtocolVersions() {
+    [modernProtocolVersion(), "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
+}
+
+// The subset `initialize` may negotiate: every supported revision EXCEPT the modern
+// one. `initialize` is a legacy-era method -- 2026-07-28 deleted the handshake in
+// favour of per-request metadata -- so a client that reaches it is speaking the old
+// era by construction and must never be handed a modern version to cache. Derived
+// from the list above so a future revision cannot drift the two apart.
+def initializeProtocolVersions() {
+    supportedProtocolVersions().findAll { it != modernProtocolVersion() }
+}
+// Newest revision `initialize` will negotiate -- what a client that omits (or
+// requests an unknown, or requests the modern) protocolVersion negotiates down to.
+def defaultProtocolVersion() { initializeProtocolVersions()[0] }
 
 // Freshness hint for the cacheable list results (SEP-2549 CacheableResult:
 // tools/list and server/discover). Both payloads only shift when this app's
@@ -906,10 +1204,12 @@ def serverIdentity() {
 }
 
 def handleInitialize(msg) {
-    // Echo the client's requested protocolVersion when supported; otherwise the
-    // default. A client that omits it (or sends an unknown one) gets the default.
+    // Echo the client's requested protocolVersion when it is one initialize may
+    // negotiate; otherwise the default. Omitted, unknown, AND "2026-07-28" all land
+    // on the default -- see initializeProtocolVersions() for why the modern revision
+    // is not negotiable through this legacy-era handshake.
     def requested = msg.params?.protocolVersion
-    def negotiated = supportedProtocolVersions().contains(requested) ? requested : defaultProtocolVersion()
+    def negotiated = initializeProtocolVersions().contains(requested) ? requested : defaultProtocolVersion()
     return jsonRpcResult(msg.id, [
         protocolVersion: negotiated,
         capabilities: [
@@ -929,6 +1229,17 @@ def handleInitialize(msg) {
 // calls initialize, so this is its only path to the server's usage guidance.
 // serverInfo is mirrored top-level (alongside the spec's `_meta` home) so a
 // client reading the initialize-shaped identity finds it in the same place.
+//
+// `supportedVersions` advertises EVERY revision this transport speaks, legacy ones
+// included, and that is safe to do statelessly: a client that picks a legacy version
+// off this list and sends it as its MCP-Protocol-Version header is served correctly
+// without ever calling initialize, because nothing on this server requires the
+// handshake -- initialize only ever negotiated a version string.
+//
+// `resultType` is set explicitly rather than left to jsonRpcResult's era-gated stamp:
+// DiscoverResult REQUIRES the field, and discover may legitimately arrive headerless as
+// a dual-era compatibility probe. jsonRpcResult preserves a caller-set value, so this
+// composes with the gate instead of fighting it.
 def handleServerDiscover(msg) {
     return jsonRpcResult(msg.id, [
         supportedVersions: supportedProtocolVersions(),
@@ -938,7 +1249,8 @@ def handleServerDiscover(msg) {
         serverInfo: serverIdentity(),
         instructions: serverInstructions(),
         ttlMs: cacheHintTtlMs(),
-        cacheScope: "private"
+        cacheScope: "private",
+        resultType: "complete"
     ])
 }
 
@@ -4495,23 +4807,34 @@ def formatAge(Long timestamp) {
     return "${days} ${days == 1 ? 'day' : 'days'} ago"
 }
 
-// Central result decoration (SEP-2575): EVERY result carries `resultType` and
-// identifies the server in `_meta`, so both are stamped here rather than in each
-// handler -- that also covers the tools/call envelope, which serializes through
-// this same helper on its preserialized fast path. Clients on earlier revisions
-// ignore both keys, and a client on this revision treats an absent resultType as
-// "complete", so the decoration is backwards-safe.
+// Central result decoration (SEP-2575): stamped here rather than in each handler, so
+// it also covers the tools/call envelope, which serializes through this same helper on
+// its preserialized fast path.
 //
-// A caller that already set either key keeps its own value: the MRTR pattern
-// returns resultType "input_required", so a future handler must be able to
-// override. The result map is shallow-copied before decoration so a caller's map
-// is never mutated. tools/list nextCursor stays deliberately unimplemented --
-// see handleToolsList for why the whole catalog ships in one response.
+// The two keys have DIFFERENT era rules, and the difference is load-bearing:
+//
+//   `resultType` is a 2026-07-28 field and is stamped ONLY on modern-era requests.
+//   Legacy-era clients parse an empty result with a STRICT schema -- the MCP
+//   TypeScript SDK's EmptyResultSchema is ResultSchema.strict(), which REJECTS unknown
+//   keys -- so stamping resultType onto a legacy `ping` reply turns every keepalive
+//   into a client-side protocol error. A handler that needs it regardless of era sets
+//   it itself; handleServerDiscover does, because DiscoverResult requires the field and
+//   discover may legitimately arrive headerless as a compatibility probe.
+//
+//   `_meta` is stamped unconditionally. It is a MODELED key in every revision's Result
+//   schema, so it survives the same strict parse resultType fails, and identifying the
+//   server there is a draft SHOULD.
+//
+// A caller that already set either key keeps its own value: the MRTR pattern returns
+// resultType "input_required", so a future handler must be able to override. The result
+// map is shallow-copied before decoration so a caller's map is never mutated.
+// tools/list nextCursor stays deliberately unimplemented -- see handleToolsList for why
+// the whole catalog ships in one response.
 def jsonRpcResult(id, result) {
     def body = result
     if (body instanceof Map) {
         body = [:] + body
-        if (!body.containsKey("resultType")) body.resultType = "complete"
+        if (!body.containsKey("resultType") && _modernEraRequest()) body.resultType = "complete"
         def meta = (body["_meta"] instanceof Map) ? ([:] + body["_meta"]) : [:]
         if (!meta.containsKey("io.modelcontextprotocol/serverInfo")) {
             // serverIdentity() is the single identity source; its optional

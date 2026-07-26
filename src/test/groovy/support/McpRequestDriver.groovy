@@ -24,10 +24,16 @@ import java.util.concurrent.atomic.AtomicInteger
  *   2. {@code render(Map)} — the hub-side response writer. Production code
  *      assembles status / contentType / data and hands them to render; tests
  *      that bypass render never verify the envelope the hub actually sends.
+ *   3. {@code request.headers} — the inbound HTTP headers, which the modern
+ *      (2026-07-28) transport validates against the body. The hub hands them
+ *      over case-normalized and List-wrapped, and older firmware may not hand
+ *      them over at all; {@link #pushHeaders} reproduces that shape (see
+ *      {@link #headers}) so the production lookup is what gets exercised.
  *
- * Both are in the {@code handleMcpRequest()} path in hubitat-mcp-server.groovy.
- * This driver plugs into the harness so specs can push a body, invoke
- * {@code handleMcpRequest}, and read the captured render args.
+ * All three are in the {@code handleMcpRequest()} path in
+ * hubitat-mcp-server.groovy. This driver plugs into the harness so specs can
+ * push a body and headers, invoke {@code handleMcpRequest}, and read the
+ * captured render args.
  *
  * Wiring (done by {@link HarnessSpec}):
  *   - {@code render(Map)} is declared on {@code AppExecutor} — stubbed in
@@ -86,6 +92,39 @@ class McpRequestDriver {
     Throwable throwingRequest = null
 
     /**
+     * Backing store for the inbound HTTP headers the script sees when it reads
+     * {@code request.headers}. Shaped like the map REAL hub firmware exposes —
+     * verified by a live probe over both the LAN endpoint and the
+     * cloud.hubitat.com relay:
+     *
+     *   - header NAMES arrive case-normalized to first-character-upper /
+     *     rest-lower ({@code MCP-Protocol-Version} → {@code Mcp-protocol-version},
+     *     {@code User-Agent} → {@code User-agent});
+     *   - header VALUES arrive List-wrapped ({@code ["tools/list"]}).
+     *
+     * Staging headers through {@link #pushHeaders} therefore exercises the
+     * production case-insensitive lookup and List-unwrap rather than a
+     * convenient plain-map shape the hub never sends. Default is an empty map
+     * (headers exposed, none set) — which is what the headerless legacy path
+     * sees, so every spec that never calls {@code pushHeaders} is unaffected.
+     */
+    final Map headers = [:]
+
+    /**
+     * When true, {@code request.headers} reads back {@code null} — firmware that
+     * exposes the property but no map. Production must degrade to the legacy
+     * headerless path rather than crash.
+     */
+    boolean nullHeaders = false
+
+    /**
+     * If non-null, {@code request.headers} throws this — firmware that does not
+     * expose the property at all (a {@code MissingPropertyException} in the
+     * sandbox). Production must swallow it and fall back to the legacy path.
+     */
+    Throwable throwingHeaders = null
+
+    /**
      * Proxy the harness wires into {@code injectedMappingHandlerData['request']}.
      * Its {@code getJSON()} dispatches dynamically at access time: if
      * {@link #throwingRequest} is set it throws, otherwise it returns the
@@ -130,13 +169,49 @@ class McpRequestDriver {
     }
 
     /**
+     * Stage the inbound HTTP headers for the next {@code handleMcpRequest()}
+     * call, given in whatever casing a real client would send
+     * ({@code ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'tools/list']}).
+     * Each entry is rewritten into the hub's own wire shape before it lands in
+     * {@link #headers} — name case-normalized, value List-wrapped — so the
+     * production case-insensitive lookup and List-unwrap are what a spec
+     * exercises. An already-List value is kept as-is (so a spec can stage a
+     * multi-valued or empty-list header deliberately).
+     *
+     * Mutates {@link #headers} in place: the map reference is read live by
+     * {@link ScriptRequestProxy#getHeaders()}.
+     */
+    void pushHeaders(Map raw) {
+        nullHeaders = false
+        throwingHeaders = null
+        headers.clear()
+        raw?.each { k, v ->
+            headers[hubHeaderName(k as String)] = (v instanceof List) ? v : [v?.toString()]
+        }
+    }
+
+    /**
+     * Case-normalize a header name the way the hub does: first character upper,
+     * every other character lower. Exposed so a spec can pin the normalization
+     * against the live probe independently of {@link #pushHeaders}.
+     */
+    static String hubHeaderName(String name) {
+        if (name == null || name.isEmpty()) return name
+        return name.substring(0, 1).toUpperCase() + name.substring(1).toLowerCase()
+    }
+
+    /**
      * Clear per-test fixture state. Called from the harness's {@code setup()}.
-     * Mutates the existing {@link #request} map so the reference stays
-     * stable for the {@code injectedMappingHandlerData['request']} wiring.
+     * Mutates the existing {@link #request} / {@link #headers} maps so the
+     * references stay stable for the
+     * {@code injectedMappingHandlerData['request']} wiring.
      */
     void reset() {
         request.clear()
         request.JSON = null
+        headers.clear()
+        nullHeaders = false
+        throwingHeaders = null
         lastRenderArgs = null
         throwingRequest = null
     }
@@ -240,6 +315,24 @@ class McpRequestDriver {
                 throw driver.throwingRequest
             }
             return driver.request.JSON
+        }
+
+        /**
+         * Called at each {@code request.headers} access. Dispatches the same way
+         * {@link #getJSON()} does so a spec's {@code given:} block can stage
+         * headers (or an absent/throwing header map) without re-wiring: throws
+         * {@link McpRequestDriver#throwingHeaders} when set, returns null when
+         * {@link McpRequestDriver#nullHeaders} is set, otherwise the live
+         * {@link McpRequestDriver#headers} map in the hub's wire shape.
+         */
+        Object getHeaders() {
+            if (driver.throwingHeaders != null) {
+                throw driver.throwingHeaders
+            }
+            if (driver.nullHeaders) {
+                return null
+            }
+            return driver.headers
         }
     }
 }
