@@ -302,7 +302,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         then:
         mcpDriver.lastRenderArgs.contentType == 'application/json'
         def response = mcpDriver.parseResponseJson()
-        response.result.protocolVersion == '2024-11-05'
+        response.result.protocolVersion == '2025-11-25'
         response.result.serverInfo.name == 'hubitat-mcp-rule-server'
     }
 }

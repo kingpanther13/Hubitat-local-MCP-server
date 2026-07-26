@@ -43,6 +43,13 @@ PREFIX = "BAT_E2E_"
 # no watchdog change is needed -- the devices are simply named to dodge the sweep.)
 SCAFFOLD_PREFIX = f"{PREFIX}KEEP_"  # "BAT_E2E_KEEP_"
 
+# Mirror of supportedProtocolVersions() in hubitat-mcp-server.groovy, newest first.
+# The protocol group pins the live list against this, so a version added or removed
+# server-side without updating the e2e expectation fails loudly instead of silently
+# widening what the hub claims to speak. "2026-07-28" is deliberately absent until
+# request-header validation lands.
+SUPPORTED_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
+
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
@@ -9732,7 +9739,10 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             print(f"    [WARN] Could not check hub logs: {exc}")
 
     # -----------------------------------------------------------------------
-    # GROUP 13: protocol (6 tests — initialize echo-allowlist, instructions,
+    # GROUP 13: protocol (12 tests — initialize echo-allowlist, instructions,
+    # server/discover, the universal resultType + serverInfo _meta decoration,
+    # the tools/list cache hints, per-request _meta version tolerance (a -32022
+    # rejection is a modern-era signature this legacy-era server must not emit),
     # inbound batch cap, and 202-for-notifications. These exercise the
     # transport/protocol layer end-to-end through the cloud relay, which the
     # Spock harness (in-process dispatch) cannot reach.)
@@ -9754,12 +9764,107 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             f"Expected echoed 2025-03-26, got: {result.get('protocolVersion')}"
 
     @test("protocol")
+    def test_initialize_echoes_newest_protocol(self) -> None:
+        """The NEWEST supported revision is echoed when explicitly requested. Distinct
+        from the no-version fallback case: this proves the newest entry is genuinely on
+        the allowlist, not merely the value the fallback happens to return."""
+        newest = SUPPORTED_PROTOCOL_VERSIONS[0]
+        result = self.client.initialize(newest)
+        assert result.get("protocolVersion") == newest, \
+            f"Expected echoed {newest}, got: {result.get('protocolVersion')}"
+
+    @test("protocol")
     def test_initialize_falls_back_on_unsupported_protocol(self) -> None:
-        """An unsupported protocolVersion falls back to the server default
-        (2024-11-05) rather than erroring."""
+        """An unsupported protocolVersion falls back to the newest supported
+        revision rather than erroring — initialize never rejects."""
         result = self.client.initialize("1999-01-01")
-        assert result.get("protocolVersion") == "2024-11-05", \
-            f"Expected fallback 2024-11-05, got: {result.get('protocolVersion')}"
+        assert result.get("protocolVersion") == SUPPORTED_PROTOCOL_VERSIONS[0], \
+            f"Expected fallback {SUPPORTED_PROTOCOL_VERSIONS[0]}, got: {result.get('protocolVersion')}"
+
+    @test("protocol")
+    def test_server_discover(self) -> None:
+        """server/discover (SEP-2575) advertises the supported protocol versions,
+        capabilities and identity so a stateless client can pick a version before
+        sending anything else. DiscoverResult is a CacheableResult, so ttlMs and
+        cacheScope are REQUIRED fields of it."""
+        result = self.client._send("server/discover")
+        assert result.get("supportedVersions") == SUPPORTED_PROTOCOL_VERSIONS, \
+            f"Expected {SUPPORTED_PROTOCOL_VERSIONS}, got: {result.get('supportedVersions')}"
+        assert isinstance(result.get("capabilities"), dict) and "tools" in result["capabilities"], \
+            f"discover must advertise the tools capability: {result.get('capabilities')}"
+        assert result.get("serverInfo", {}).get("name") == "hubitat-mcp-rule-server", \
+            f"discover serverInfo missing/wrong: {result.get('serverInfo')}"
+        assert isinstance(result.get("ttlMs"), int) and result["ttlMs"] > 0, \
+            f"DiscoverResult requires a positive ttlMs, got: {result.get('ttlMs')!r}"
+        assert result.get("cacheScope") == "private", \
+            f"Expected cacheScope 'private' on a per-token endpoint, got: {result.get('cacheScope')!r}"
+        # A stateless client never calls initialize, so discover is its only route
+        # to the usage guidance.
+        assert isinstance(result.get("instructions"), str) and result["instructions"].strip(), \
+            f"discover must carry instructions: {result.get('instructions')!r}"
+
+    @test("protocol")
+    def test_results_carry_result_type_and_server_info_meta(self) -> None:
+        """SEP-2575: every result carries resultType 'complete' plus an _meta
+        io.modelcontextprotocol/serverInfo identifying the server. Checked across
+        three shapes — initialize, tools/list, and a real tools/call — because
+        tools/call serializes its envelope on a separate preserialized fast path."""
+        for label, result in (
+            ("initialize", self.client.initialize()),
+            ("tools/list", self.client._send("tools/list")),
+        ):
+            assert result.get("resultType") == "complete", \
+                f"{label} result missing resultType 'complete': {result.get('resultType')!r}"
+            info = (result.get("_meta") or {}).get("io.modelcontextprotocol/serverInfo") or {}
+            assert info.get("name") == "hubitat-mcp-rule-server", \
+                f"{label} result missing the serverInfo _meta key: {result.get('_meta')!r}"
+            assert info.get("version"), f"{label} serverInfo carries no version: {info!r}"
+
+        # tools/call goes through _send (which stops at the JSON-RPC result) rather
+        # than call_tool, which unwraps to the tool payload and would hide these keys.
+        call_result = self.client._send("tools/call", {"name": "hub_get_info", "arguments": {}})
+        assert call_result.get("resultType") == "complete", \
+            f"tools/call result missing resultType (preserialized fast path): {sorted(call_result.keys())}"
+        call_info = (call_result.get("_meta") or {}).get("io.modelcontextprotocol/serverInfo") or {}
+        assert call_info.get("name") == "hubitat-mcp-rule-server", \
+            f"tools/call result missing the serverInfo _meta key: {call_result.get('_meta')!r}"
+
+    @test("protocol")
+    def test_tools_list_carries_cache_hints(self) -> None:
+        """SEP-2549 CacheableResult: tools/list carries a ttlMs freshness hint and a
+        cacheScope. Scope must be 'private' — the endpoint is authenticated by a
+        per-install token and the catalog is shaped by that install's settings, so a
+        shared intermediary must never serve it across authorization contexts."""
+        result = self.client._send("tools/list")
+        assert isinstance(result.get("ttlMs"), int) and result["ttlMs"] > 0, \
+            f"Expected a positive integer ttlMs, got: {result.get('ttlMs')!r}"
+        assert result.get("cacheScope") == "private", \
+            f"Expected cacheScope 'private', got: {result.get('cacheScope')!r}"
+
+    @test("protocol")
+    def test_request_meta_protocol_version_tolerated(self) -> None:
+        """EVERY per-request _meta protocolVersion (SEP-2575) is tolerated at HTTP 200,
+        including unknown ones. Rejecting with -32022 is a modern-era (2026-07-28+)
+        signature: the spec's era-detection rule makes a dual-era client treat that
+        recognized modern error as "modern server — do not fall back to initialize"
+        and cache the verdict, permanently misidentifying this legacy-era server.
+        Verified through the relay because the status is the era signal. -32022
+        ships together with advertising 2026-07-28, not before."""
+        for label, version in (
+            ("supported", SUPPORTED_PROTOCOL_VERSIONS[0]),
+            ("unknown", "2099-01-01"),
+        ):
+            resp = self.client.raw_request({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/list",
+                "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": version}},
+            })
+            assert resp.status_code == 200, \
+                f"a {label} per-request version must ride HTTP 200, got {resp.status_code}: {resp.text[:200]!r}"
+            data = resp.json()
+            assert "error" not in data, \
+                f"a {label} per-request version must not be rejected: {str(data)[:200]}"
+            assert isinstance(data.get("result", {}).get("tools"), list), \
+                f"Expected a tools/list catalog for the {label} version, got: {str(data)[:200]}"
 
     @test("protocol")
     def test_initialize_returns_instructions(self) -> None:

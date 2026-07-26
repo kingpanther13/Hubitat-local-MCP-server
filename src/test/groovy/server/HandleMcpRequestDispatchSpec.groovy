@@ -22,7 +22,7 @@ import support.ToolSpecBase
  *     handleToolsCall (#174) -- tools/call returns a structured
  *     response_too_large envelope on success, not a JSON-RPC error. The outer
  *     handleMcpRequest guard remains as a backstop for other RPC methods.
- *   - Notification short-circuit (id-less request → 204 no-content)
+ *   - Notification short-circuit (id-less request → 202 Accepted, empty body)
  *   - Batch per-item error isolation (a failing item must not poison a
  *     later success)
  *   - tools/call error-envelope at the HTTP shell (isError: true wrapped
@@ -50,8 +50,8 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         response.id == 1
         response.error == null
 
-        and: 'MCP initialize response shape'
-        response.result.protocolVersion == '2024-11-05'
+        and: 'MCP initialize response shape — no requested version, so the newest supported one'
+        response.result.protocolVersion == '2025-11-25'
         response.result.capabilities.tools == [:]
         response.result.serverInfo.name == 'hubitat-mcp-rule-server'
         // Semver pattern — a regression that returned '' or 'unknown' would
@@ -707,11 +707,204 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
 
         where:
         requested      || expected
+        '2025-11-25'   || '2025-11-25'
         '2025-06-18'   || '2025-06-18'
         '2025-03-26'   || '2025-03-26'
         '2024-11-05'   || '2024-11-05'
-        'garbage-9999' || '2024-11-05'
-        null           || '2024-11-05'
+        // Unknown / omitted both negotiate DOWN to the newest version this server
+        // speaks rather than erroring -- pre-2026 clients depend on that.
+        'garbage-9999' || '2025-11-25'
+        null           || '2025-11-25'
+    }
+
+    def "supportedProtocolVersions is newest-first, defaultProtocolVersion is its head, and 2026-07-28 is deliberately absent"() {
+        // The list is the single source for the initialize echo-allowlist and the
+        // server/discover supportedVersions array.
+        // 2026-07-28 stays out until header validation (Mcp-Method / Mcp-Name /
+        // MCP-Protocol-Version, -32020 on mismatch) lands -- advertising it without
+        // that would claim a conformance this transport cannot honour.
+        expect:
+        script.supportedProtocolVersions() == ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']
+        script.defaultProtocolVersion() == script.supportedProtocolVersions()[0]
+        script.defaultProtocolVersion() == '2025-11-25'
+        !script.supportedProtocolVersions().contains('2026-07-28')
+    }
+
+    def "every result carries resultType 'complete' and the io.modelcontextprotocol/serverInfo _meta key"() {
+        // SEP-2575: servers on this revision MUST send resultType and SHOULD identify
+        // themselves in each result's _meta. jsonRpcResult stamps both centrally, so
+        // this asserts through the render envelope (proving they survive serialization)
+        // for initialize, and the tools/list + ping cases are pinned below.
+        given:
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 1, method: 'initialize', params: [:]])
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        def response = mcpDriver.parseResponseJson()
+        response.result.resultType == 'complete'
+        response.result._meta['io.modelcontextprotocol/serverInfo'].name == 'hubitat-mcp-rule-server'
+        // Semver shape, not a literal — avoids churn on every release bump.
+        response.result._meta['io.modelcontextprotocol/serverInfo'].version ==~ /\d+\.\d+\.\d+.*/
+    }
+
+    def "jsonRpcResult does not clobber a resultType or _meta the caller already set"() {
+        // The MRTR pattern returns resultType 'input_required', and a future handler may
+        // set its own _meta keys, so the central decoration must defer to the caller.
+        when:
+        def out = script.jsonRpcResult(5, [resultType: 'input_required', _meta: [somekey: 'kept']])
+
+        then: 'the caller-set resultType survives'
+        out.result.resultType == 'input_required'
+
+        and: 'the caller _meta keys survive AND serverInfo is merged in beside them'
+        out.result._meta.somekey == 'kept'
+        out.result._meta['io.modelcontextprotocol/serverInfo'].name == 'hubitat-mcp-rule-server'
+    }
+
+    def "jsonRpcResult copies the result map instead of mutating the caller's"() {
+        // Decoration must not write into a map the caller may reuse or hold elsewhere.
+        given:
+        def original = [tools: []]
+
+        when:
+        script.jsonRpcResult(6, original)
+
+        then:
+        original == [tools: []]
+    }
+
+    def "tools/call carries resultType + serverInfo _meta through the preserialized fast path"() {
+        // tools/call serializes its envelope inside handleToolsCall and hands
+        // handleMcpRequest a preserialized string, so the central decoration has to
+        // already be baked into that string -- a decoration applied later would miss
+        // the single-message fast path entirely (the hottest path on the server).
+        given:
+        script.metaClass.getRooms = { -> [[id: 1L, name: 'Den']] }
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 8, method: 'tools/call', params: [name: 'hub_list_rooms', arguments: [:]]])
+
+        when:
+        script.handleMcpRequest()
+
+        then: 'read off the RAW rendered body — that is the preserialized string itself'
+        def raw = mcpDriver.lastRenderArgs.data as String
+        !raw.contains('__preserialized')
+        def response = new groovy.json.JsonSlurper().parseText(raw)
+        response.result.resultType == 'complete'
+        response.result._meta['io.modelcontextprotocol/serverInfo'].name == 'hubitat-mcp-rule-server'
+
+        and: 'the tool payload is untouched alongside the new envelope keys'
+        new groovy.json.JsonSlurper().parseText(response.result.content[0].text).rooms*.name == ['Den']
+    }
+
+    def "tools/list result carries the CacheableResult ttlMs + cacheScope hints"() {
+        // SEP-2549 requires both on tools/list. cacheScope is 'private' because the
+        // endpoint is per-install token-authed and the catalog is shaped by that
+        // install's settings, so a shared proxy must not serve it across contexts.
+        given:
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 9, method: 'tools/list', params: [:]])
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        def response = mcpDriver.parseResponseJson()
+        response.result.ttlMs == 300000
+        response.result.cacheScope == 'private'
+        response.result.resultType == 'complete'
+        response.result._meta['io.modelcontextprotocol/serverInfo'].name == 'hubitat-mcp-rule-server'
+
+        and: 'the ttl comes from the single cacheHintTtlMs() source'
+        script.cacheHintTtlMs() == 300000
+    }
+
+    def "server/discover returns supportedVersions, capabilities, serverInfo and the required cache hints"() {
+        // SEP-2575: servers MUST implement server/discover so a stateless client can
+        // pick a mutually supported version before sending anything else.
+        // DiscoverResult is a CacheableResult — ttlMs + cacheScope are REQUIRED
+        // fields of it, not optional extras.
+        given:
+        settingsMap.useGateways = true  // instructions prose is mode-branched
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 12, method: 'server/discover', params: [:]])
+
+        when:
+        script.handleMcpRequest()
+
+        then: 'a well-formed JSON-RPC success envelope'
+        def response = mcpDriver.parseResponseJson()
+        response.jsonrpc == '2.0'
+        response.id == 12
+        response.error == null
+
+        and: 'the DiscoverResult shape'
+        response.result.supportedVersions == ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']
+        response.result.capabilities.tools == [:]
+        response.result.serverInfo.name == 'hubitat-mcp-rule-server'
+        response.result.serverInfo.version ==~ /\d+\.\d+\.\d+.*/
+        response.result.ttlMs == 300000
+        response.result.cacheScope == 'private'
+        response.result.resultType == 'complete'
+
+        and: 'instructions ride discover too — a stateless client never calls initialize'
+        response.result.instructions instanceof String
+        response.result.instructions.toLowerCase().contains('gateway')
+    }
+
+
+    @spock.lang.Unroll
+    def "no non-200 status leaks onto #scenario"() {
+        // Guards the enumeration in handleMcpRequest's transport-contract comment: the
+        // only explicit statuses are 405 (GET) and 202 (all-notifications POST) -- every
+        // application-level JSON-RPC error rides the bare default-200 render. The
+        // 2026-07-28 status mappings (-32020/-32021/-32022 -> 400, -32601 -> 404) arrive
+        // only with that revision.
+        given:
+        mcpDriver.pushBody(body)
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        mcpDriver.lastRenderArgs.status == null
+
+        where:
+        scenario                | body
+        'method-not-found'      | [jsonrpc: '2.0', id: 40, method: 'does/not/exist']
+        'missing method'        | [jsonrpc: '2.0', id: 41]
+        'wrong jsonrpc version' | [jsonrpc: '1.0', id: 42, method: 'ping']
+        'a plain success'       | [jsonrpc: '2.0', id: 43, method: 'ping', params: [:]]
+    }
+
+    @spock.lang.Unroll
+    def "a request whose _meta protocolVersion is #scenario dispatches normally"() {
+        // EVERY per-request _meta version is tolerated, including unknown ones. A
+        // -32022 rejection is a modern-era (2026-07-28+) signature: the spec's
+        // era-detection rule makes a dual-era client treat that recognized modern
+        // error as "modern server -- do not fall back to initialize" and cache the
+        // verdict, which would permanently misidentify this legacy-era server.
+        // Ignoring the key routes such clients onto the initialize fallback the
+        // spec prescribes; -32022 ships together with advertising 2026-07-28.
+        given:
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 14, method: 'tools/list', params: requestParams])
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        def response = mcpDriver.parseResponseJson()
+        response.error == null
+        response.result.tools instanceof List
+
+        where:
+        scenario                 | requestParams
+        'supported'              | ['_meta': ['io.modelcontextprotocol/protocolVersion': '2025-11-25']]
+        'an older supported one' | ['_meta': ['io.modelcontextprotocol/protocolVersion': '2024-11-05']]
+        'unknown (tolerated)'    | ['_meta': ['io.modelcontextprotocol/protocolVersion': '2099-01-01']]
+        'absent'                 | [:]
+        // A malformed _meta must fall through to the legacy path, not throw: the
+        // check reads it defensively because it runs outside the dispatch try/catch.
+        'a non-Map _meta'        | ['_meta': 'not-an-object']
     }
 
     def "batch request returns an array of responses with matching shapes, skipping notifications"() {
@@ -732,12 +925,15 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
 
         and: 'initialize response (id=10) carries the expected MCP shape'
         def init = response.find { it.id == 10 }
-        init.result.protocolVersion == '2024-11-05'
+        init.result.protocolVersion == '2025-11-25'
         init.result.serverInfo.name == 'hubitat-mcp-rule-server'
 
-        and: 'ping response (id=11) is the empty-map success shape'
+        and: 'ping response (id=11) carries no payload beyond the universal envelope keys'
+        // ping still returns an empty result body; resultType + _meta are stamped onto
+        // EVERY result by jsonRpcResult, so pin exactly those two and nothing else.
         def ping = response.find { it.id == 11 }
-        ping.result == [:]
+        ping.result.keySet() == ['resultType', '_meta'] as Set
+        ping.result.resultType == 'complete'
 
         and: 'both entries are well-formed success envelopes'
         response.every { it.jsonrpc == '2.0' && it.error == null }
@@ -761,7 +957,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
 
         and: 'item 20 is a success'
         def first = response.find { it.id == 20 }
-        first.result.protocolVersion == '2024-11-05'
+        first.result.protocolVersion == '2025-11-25'
         first.error == null
 
         and: 'item 21 is a method-not-found error — isolated, does not affect neighbours'
@@ -770,7 +966,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
 
         and: 'item 22 is a success — not contaminated by item 21'
         def last = response.find { it.id == 22 }
-        last.result == [:]
+        last.result.keySet() == ['resultType', '_meta'] as Set
         last.error == null
     }
 
@@ -820,11 +1016,11 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         when:
         script.handleMcpRequest()
 
-        then: 'a 50-element response array, each an empty-map ping success'
+        then: 'a 50-element response array, each a payload-free ping success'
         def response = mcpDriver.parseResponseJson()
         response instanceof List
         response.size() == 50
-        response.every { it.jsonrpc == '2.0' && it.error == null && it.result == [:] }
+        response.every { it.jsonrpc == '2.0' && it.error == null && it.result.keySet() == ['resultType', '_meta'] as Set }
     }
 
     def "null body returns parse error -32700 (requestBody == null branch)"() {
@@ -927,13 +1123,15 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         settingsMap.useGateways = false
         settingsMap.enableCustomRuleEngine = true
 
-        when:
-        def flat = script.getToolDefinitions()
-        int flatBytes = groovy.json.JsonOutput.toJson([tools: flat]).getBytes("UTF-8").length
+        when: 'sized as the REAL wire response — that is what the outer guard measures'
+        // Measuring handleToolsList's own envelope (not a bare [tools: ...] wrap) keeps
+        // the tripwire honest: the JSON-RPC frame, the resultType/_meta decoration and
+        // the ttlMs/cacheScope cache hints all spend budget on a user's hub too.
+        int flatBytes = groovy.json.JsonOutput.toJson(script.handleToolsList([id: 1])).getBytes("UTF-8").length
         int fullBytes = groovy.json.JsonOutput.toJson([tools: script.getAllToolDefinitions()]).getBytes("UTF-8").length
 
         then: 'the flat catalog fits under the cap'
-        assert flatBytes < 124000 : "flat tools/list catalog is ${flatBytes} bytes, over the 124,000 cap"
+        assert flatBytes < 124000 : "flat tools/list wire response is ${flatBytes} bytes, over the 124,000 cap"
 
         and: 'the strip + [[FLAT_TRIM]] is load-bearing: the un-stripped defs are materially larger'
         fullBytes > flatBytes

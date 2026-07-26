@@ -96,9 +96,9 @@ class McpRequestDriverSpec extends ToolSpecBase {
         e.message.contains('No render() call captured')
     }
 
-    def "parseResponseJson returns null for empty data — the 204 case"() {
+    def "parseResponseJson returns null for empty data — the 202 all-notifications case"() {
         given:
-        driver.captureRender([status: 204, data: ''])
+        driver.captureRender([status: 202, data: ''])
 
         expect:
         driver.parseResponseJson() == null
@@ -106,7 +106,7 @@ class McpRequestDriverSpec extends ToolSpecBase {
 
     def "parseResponseJson returns null when data is null"() {
         given:
-        driver.captureRender([status: 204, data: null])
+        driver.captureRender([status: 202, data: null])
 
         expect:
         driver.parseResponseJson() == null

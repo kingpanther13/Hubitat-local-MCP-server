@@ -659,10 +659,11 @@ mappings {
 def hubResponseCapBytes() { 131072 }
 
 def handleHealth() {
+    def ident = serverIdentity()
     return render(contentType: "application/json", data: groovy.json.JsonOutput.toJson([
         status: "ok",
-        server: "hubitat-mcp-rule-server",
-        version: currentVersion()
+        server: ident.name,
+        version: ident.version
     ]))
 }
 
@@ -678,10 +679,19 @@ def handleMcpGet() {
 
 // Transport contract: JSON-RPC application errors (parse / invalid-request /
 // method-not-found / internal) are returned with HTTP 200 and an error envelope
-// per JSON-RPC 2.0. Only transport-level conditions set a non-200 status:
-// 405 for GET (handleMcpGet), and 204/202 for an all-notifications POST (no
-// response objects). Do NOT convert application-level JSON-RPC errors to 4xx --
-// spec-compliant clients expect the error inside a 200 body.
+// per JSON-RPC 2.0. Do NOT convert application-level JSON-RPC errors to 4xx --
+// spec-compliant clients expect the error inside a 200 body. The non-200 statuses
+// are enumerated and each is spec-mandated:
+//
+//   405 -- GET on this endpoint (handleMcpGet); POST-only by design.
+//   202 -- an all-notifications POST (no response objects), per MCP Streamable HTTP.
+//
+// The 2026-07-28 revision adds HTTP status mappings this server must adopt WITH
+// that revision and not before: -32020 HeaderMismatch, -32021
+// MissingRequiredClientCapability and -32022 UnsupportedProtocolVersion are each
+// pinned to 400 Bad Request, and an unknown method on the modern transport is
+// pinned to 404 + -32601. Emitting any of those today would misidentify this
+// legacy-era server as modern -- see the era note in processJsonRpcMessage.
 def handleMcpRequest() {
     // Issue #354: reset publishOutputSchemas OFF once. Hooked here (not only in
     // updated()) because an HPM code deploy recompiles the class without firing
@@ -791,10 +801,26 @@ def processJsonRpcMessage(msg) {
         return null
     }
 
+    // Per-request protocol version (SEP-2575, params._meta
+    // "io.modelcontextprotocol/protocolVersion") is DELIBERATELY tolerated, never
+    // rejected. Rejecting one with -32022 UnsupportedProtocolVersionError is a
+    // modern-era (2026-07-28+) signature: the spec's era-detection rule tells a
+    // dual-era client that a recognized modern error body means "modern server --
+    // retry from data.supported, do NOT fall back to initialize", and lets it
+    // cache that verdict per origin. This server speaks only legacy revisions
+    // (see supportedProtocolVersions()), so answering the modern probe with a
+    // modern error would permanently misidentify the era while offering a
+    // supported list with zero modern entries. Ignoring the key -- exactly what a
+    // legacy server that predates SEP-2575 does -- is what routes those clients
+    // onto the initialize fallback the spec prescribes. -32022 (and the -32020 /
+    // -32021 header/capability rejections) ship together with advertising
+    // 2026-07-28, not before.
     try {
         switch (msg.method) {
             case "initialize":
                 return handleInitialize(msg)
+            case "server/discover":
+                return handleServerDiscover(msg)
             case "tools/list":
                 return handleToolsList(msg)
             case "tools/call":
@@ -837,16 +863,38 @@ def serverInstructions() {
     "Gateway tools (hub_manage_* / hub_read_*) expose sub-tools -- call a gateway with no arguments to list its sub-tools and their schemas. hub_manage_virtual_device and hub_manage_mode are direct tools (not gateways) -- call them with their own arguments. Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page)."
 }
 
-// Protocol versions this server can speak, newest first. Echo-allowlist:
-// handleInitialize honors the client's requested version when it is one of
-// these, else falls back to the default. outputSchema (a 2025-06-18 feature) is
-// declared on every tool but, by default, NOT advertised on the wire (issue #290);
-// enabling publishOutputSchemas advertises it in wire form AND attaches
-// structuredContent to advertised tools' results per the spec MUST (issue #342).
-def supportedProtocolVersions() { ["2025-06-18", "2025-03-26", "2024-11-05"] }
-def defaultProtocolVersion() { "2024-11-05" }
+// Protocol versions this server can speak, newest first. Single source for both
+// surfaces that publish it: the handleInitialize echo-allowlist and the
+// `supportedVersions` server/discover advertises.
+//
+// "2026-07-28" is deliberately ABSENT. That revision requires the standard MCP
+// request headers (Mcp-Method / Mcp-Name / MCP-Protocol-Version) to be validated
+// against the request body, answering a mismatch with -32020; the hub's
+// mapped-endpoint request object does not expose inbound headers reliably in the
+// sandbox, so header validation is the prerequisite -- advertise the version only
+// once it lands.
+//
+// outputSchema (a 2025-06-18 feature) is declared on every tool but, by default,
+// NOT advertised on the wire (issue #290); enabling publishOutputSchemas
+// advertises it in wire form AND attaches structuredContent to advertised tools'
+// results per the spec MUST (issue #342).
+def supportedProtocolVersions() { ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"] }
+// Newest supported revision -- what a client that omits (or requests an unknown)
+// protocolVersion negotiates down to. Derived from the newest-first list above so
+// the two can never drift.
+def defaultProtocolVersion() { supportedProtocolVersions()[0] }
 
-def handleInitialize(msg) {
+// Freshness hint for the cacheable list results (SEP-2549 CacheableResult:
+// tools/list and server/discover). Both payloads only shift when this app's
+// settings change (Read/Write masters, gateway mode, per-tool overrides) or the
+// code is redeployed, so 5 minutes buys real caching while still letting a
+// settings edit propagate without a client restart.
+def cacheHintTtlMs() { 300000 }
+
+// Server identity advertised by initialize and server/discover. updateAvailable
+// is a non-spec extra this app's own daily update check surfaces to clients; the
+// spec-required name/version pair also rides every result's `_meta` (jsonRpcResult).
+def serverIdentity() {
     def info = [
         name: "hubitat-mcp-rule-server",
         version: currentVersion()
@@ -854,6 +902,10 @@ def handleInitialize(msg) {
     if (state.updateCheck?.updateAvailable) {
         info.updateAvailable = state.updateCheck.latestVersion
     }
+    return info
+}
+
+def handleInitialize(msg) {
     // Echo the client's requested protocolVersion when supported; otherwise the
     // default. A client that omits it (or sends an unknown one) gets the default.
     def requested = msg.params?.protocolVersion
@@ -863,8 +915,30 @@ def handleInitialize(msg) {
         capabilities: [
             tools: [:]
         ],
-        serverInfo: info,
+        serverInfo: serverIdentity(),
         instructions: serverInstructions()
+    ])
+}
+
+// server/discover (SEP-2575): the stateless successor to the initialize
+// handshake -- servers MUST implement it, and a client MAY call it before any
+// other request to pick a mutually supported version up front. DiscoverResult is
+// a CacheableResult, so ttlMs + cacheScope are REQUIRED fields here, not
+// optional extras; resultType and the serverInfo `_meta` key come from
+// jsonRpcResult. `instructions` rides discover too: a stateless client never
+// calls initialize, so this is its only path to the server's usage guidance.
+// serverInfo is mirrored top-level (alongside the spec's `_meta` home) so a
+// client reading the initialize-shaped identity finds it in the same place.
+def handleServerDiscover(msg) {
+    return jsonRpcResult(msg.id, [
+        supportedVersions: supportedProtocolVersions(),
+        capabilities: [
+            tools: [:]
+        ],
+        serverInfo: serverIdentity(),
+        instructions: serverInstructions(),
+        ttlMs: cacheHintTtlMs(),
+        cacheScope: "private"
     ])
 }
 
@@ -887,7 +961,12 @@ def handleToolsList(msg) {
     // -- that is opt-in and the size guard's "suggestion" hints already point
     // callers at it when needed.
     def all = getToolDefinitions()
-    return jsonRpcResult(msg.id, [tools: all])
+    // CacheableResult (SEP-2549): tools/list results carry the ttlMs freshness
+    // hint plus cacheScope. Scope is "private" -- the endpoint is authenticated by
+    // a per-install OAuth token and the catalog it returns is shaped by that
+    // install's settings, so a shared intermediary must never serve one install's
+    // catalog to another authorization context.
+    return jsonRpcResult(msg.id, [tools: all, ttlMs: cacheHintTtlMs(), cacheScope: "private"])
 }
 
 def handleToolsCall(msg) {
@@ -4416,12 +4495,33 @@ def formatAge(Long timestamp) {
     return "${days} ${days == 1 ? 'day' : 'days'} ago"
 }
 
-// RC-only protocol items (_meta request echo, ttlMs/cacheScope list-cache
-// hints, tools/list nextCursor) are intentionally NOT implemented -- they are
-// next-revision RC features and no shipped client negotiates that
-// protocolVersion yet. Revisit when the spec publishes and a client uses it.
+// Central result decoration (SEP-2575): EVERY result carries `resultType` and
+// identifies the server in `_meta`, so both are stamped here rather than in each
+// handler -- that also covers the tools/call envelope, which serializes through
+// this same helper on its preserialized fast path. Clients on earlier revisions
+// ignore both keys, and a client on this revision treats an absent resultType as
+// "complete", so the decoration is backwards-safe.
+//
+// A caller that already set either key keeps its own value: the MRTR pattern
+// returns resultType "input_required", so a future handler must be able to
+// override. The result map is shallow-copied before decoration so a caller's map
+// is never mutated. tools/list nextCursor stays deliberately unimplemented --
+// see handleToolsList for why the whole catalog ships in one response.
 def jsonRpcResult(id, result) {
-    return [jsonrpc: "2.0", id: id, result: result]
+    def body = result
+    if (body instanceof Map) {
+        body = [:] + body
+        if (!body.containsKey("resultType")) body.resultType = "complete"
+        def meta = (body["_meta"] instanceof Map) ? ([:] + body["_meta"]) : [:]
+        if (!meta.containsKey("io.modelcontextprotocol/serverInfo")) {
+            // serverIdentity() is the single identity source; its optional
+            // updateAvailable extra is permitted -- Implementation requires only
+            // name + version, other fields are open.
+            meta["io.modelcontextprotocol/serverInfo"] = serverIdentity()
+        }
+        body["_meta"] = meta
+    }
+    return [jsonrpc: "2.0", id: id, result: body]
 }
 
 def jsonRpcError(id, code, message, data = null) {

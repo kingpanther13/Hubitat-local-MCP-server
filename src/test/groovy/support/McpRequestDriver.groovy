@@ -158,7 +158,8 @@ class McpRequestDriver {
     /**
      * Parse the captured {@code data} as JSON and return the result. The
      * production code passes {@code data: groovy.json.JsonOutput.toJson(...)}
-     * when the response has a body; for empty responses (204) {@code data}
+     * when the response has a body; for empty responses (the 202 all-notifications
+     * POST) {@code data}
      * is an empty string and this returns {@code null}. Throws if render
      * was never called (which means {@code handleMcpRequest} returned before
      * reaching any render — a bug to surface loudly, not swallow). Throws

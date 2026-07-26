@@ -611,12 +611,15 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 
 ### MCP Protocol Implementation
 
-The server implements MCP protocol version `2024-11-05`:
+The server speaks the protocol versions in `supportedProtocolVersions()` — `2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05`, newest first (`2026-07-28` is deliberately withheld until request-header validation lands):
 - **Transport**: Streamable HTTP (not SSE/stdio) with OAuth access token (`?access_token=<token>`)
 - **Format**: JSON-RPC 2.0 (supports batch requests)
-- **Methods**: `initialize`, `tools/list`, `tools/call`, `ping`
-- **Notifications**: Handled silently (HTTP 204)
+- **Methods**: `initialize`, `server/discover`, `tools/list`, `tools/call`, `ping`
+- **Version negotiation**: `initialize` echoes a requested version that is in the supported list and otherwise falls back to the newest supported one; a per-request `params._meta["io.modelcontextprotocol/protocolVersion"]` (SEP-2575) is deliberately **tolerated, never rejected** — emitting `-32022` is a modern-era (2026-07-28+) signature that would make dual-era clients skip the `initialize` fallback and cache this legacy-era server as modern; it ships together with advertising `2026-07-28`
+- **Every result** carries `resultType: "complete"` plus an `_meta` `io.modelcontextprotocol/serverInfo` (name + version) stamped centrally in `jsonRpcResult`; `tools/list` and `server/discover` additionally carry the `ttlMs` / `cacheScope` cache hints
+- **Notifications**: Handled silently (HTTP 202 Accepted, empty body)
 - **Error codes**: `-32700` (parse), `-32600` (invalid request), `-32601` (method not found), `-32602` (invalid params from `IllegalArgumentException`), `-32603` (internal error)
+- **HTTP status**: application-level JSON-RPC errors ride a **200** body; the only non-200 statuses are `405` (GET) and `202` (all-notifications POST). The 2026-07-28 status mappings (`-32020`/`-32021`/`-32022` → 400, unknown method → 404 + `-32601`) arrive only with that revision
 - **`tools/list` returns the full catalog in one response.** Pagination was tried (page size 50, cursor-based) but removed because many MCP clients — including the Claude.ai connector — don't iterate `nextCursor`, which silently truncated the flat-mode catalog at 50 tools. The full-catalog response is backstopped by the universal response-size guard at `handleMcpRequest` (124,000-byte threshold) that emits a loud `-32603 "Response too large"` envelope if the catalog ever exceeds the hub cap. Stale clients passing a `cursor` get the full catalog and find no `nextCursor`. Opt-in cursor pagination on `tools/call` (`hub_list_devices`, `hub_list_apps`, `hub_list_rules`, etc.) is unaffected.
 
 ### Common Pitfalls
