@@ -428,7 +428,11 @@ That last one is the load-bearing scenario. Once `initialize` negotiates, the SD
 
 The script also **preflights the SDK surface it calls** for `@deprecated` markers and fails if any is found. `streamable_http_client` replaced `streamablehttp_client` within the 1.x line, and a bump that deprecates something else this file uses should surface as a failed run with the replacement named — not as a warning nobody reads.
 
-It shares config with `tests/e2e_test.py` (`tests/e2e_config.json` or `HUBITAT_HUB_URL`/`HUBITAT_APP_ID`/`HUBITAT_ACCESS_TOKEN`) and derives the endpoint URL from `HubitatMcpClient`, so the cloud-vs-LAN path shapes can't drift between the two.
+It shares config with `tests/e2e_test.py` (`tests/e2e_config.json` or `HUBITAT_HUB_URL`/`HUBITAT_APP_ID`/`HUBITAT_ACCESS_TOKEN`) and derives the endpoint path from `HubitatMcpClient`, so the cloud-vs-LAN path shapes can't drift between the two.
+
+**The token must be in the URL query.** `HubitatMcpClient.endpoint` is the bare `<prefix>/mcp` — that client keeps `access_token` separate and attaches it per request as `params={"access_token": …}`. The SDK's transport takes one URL and nothing else, so handing it `client.endpoint` sends a tokenless request and the hub answers a bare **401** that reads like a hub or permissions problem rather than a harness bug. This endpoint authenticates by token-in-URL only; there is no bearer fallback (Hubitat's OAuth endpoints ignore `Authorization`, and this server never reads it). `_load_hub_config` appends it and asserts it is present.
+
+That token in the URL is also why **every string the script prints or raises goes through `_redact`**: httpx quotes the full URL in the message of every URL-bearing exception it raises, so an unredacted 401 would put a live credential in the CI log. The connect banner prints a masked endpoint, the request trace records headers but deliberately never a URL, and the SDK's own DEBUG line that logs the endpoint is silenced. CI masks the token in its logs as well, but the script does not rely on that — it also runs locally.
 
 ```bash
 pip install -r tests/sdk-conformance-requirements.txt

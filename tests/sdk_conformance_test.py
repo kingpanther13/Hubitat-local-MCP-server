@@ -39,6 +39,14 @@ config all FAIL with a remediation message. A skip here would look like coverage
 Configuration is shared with tests/e2e_test.py — `tests/e2e_config.json` (gitignored) or
 HUBITAT_HUB_URL / HUBITAT_APP_ID / HUBITAT_ACCESS_TOKEN.
 
+SECRET HANDLING. This endpoint authenticates by the access token in the URL QUERY — there is
+no bearer alternative — so the token is part of every URL the SDK touches, and httpx quotes
+that URL in the message of every URL-bearing exception it raises. Every string this script
+prints or raises therefore goes through `_redact`, the connect banner prints
+`config["safe_endpoint"]` rather than the live URL, the request trace stores headers but never
+a URL, and the SDK's own DEBUG line that logs the endpoint is silenced. CI masks the token in
+its logs too, but this script does not rely on that — it also runs locally.
+
 Usage:
     pip install -r tests/sdk-conformance-requirements.txt
     python tests/sdk_conformance_test.py
@@ -47,6 +55,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Any
@@ -109,26 +118,60 @@ def deprecated_sdk_usages() -> list[str]:
             for label, fn in checked if getattr(fn, "__deprecated__", None)]
 
 
+# Values that must never reach stdout/stderr. The access token rides in the endpoint URL
+# (this endpoint has no other auth), so httpx puts it in the message of every URL-bearing
+# exception it raises -- an HTTPStatusError reads "Client error '401 Unauthorized' for url
+# '<endpoint>?access_token=<secret>'". CI masks the secret in its own logs, but this script
+# must not depend on that: it may run locally, and a log that escapes CI keeps the token.
+_SECRETS: list[str] = []
+
+
+def _register_secret(value: str) -> None:
+    """Mark a value for redaction from every string this script prints or raises."""
+    if value and value not in _SECRETS:
+        _SECRETS.append(value)
+
+
+def _redact(text: str) -> str:
+    """Replace every registered secret with a masked stand-in.
+
+    The first four characters survive, matching tests/e2e_test.py's own masking convention,
+    so a wrong-token diagnosis is still possible without disclosing the token.
+    """
+    for secret in _SECRETS:
+        text = text.replace(secret, f"{secret[:4]}...<redacted>" if len(secret) > 4 else "<redacted>")
+    return text
+
+
 def _describe_exception(exc: BaseException) -> str:
-    """`type: message`, flattening anyio's ExceptionGroup wrappers.
+    """Redacted `type: message`, flattening anyio's ExceptionGroup wrappers.
 
     A transport failure surfaces as "unhandled errors in a TaskGroup", which names nothing
     actionable -- the real cause (ConnectError, ReadTimeout, an HTTP status error) is a
-    sub-exception. Recurse so the printed line says what actually went wrong.
+    sub-exception. Recurse so the printed line says what actually went wrong, and redact,
+    because the URL those messages quote carries the access token.
     """
     if isinstance(exc, BaseExceptionGroup):
         return "; ".join(_describe_exception(sub) for sub in exc.exceptions)
-    return f"{type(exc).__name__}: {exc}"
+    return _redact(f"{type(exc).__name__}: {exc}")
 
 
 def _load_hub_config() -> dict:
-    """Reuse tests/e2e_test.py's config resolution and endpoint-URL construction verbatim.
+    """Reuse tests/e2e_test.py's config resolution and endpoint-path construction.
 
     Imported lazily because it needs this file's directory on sys.path first, and because
     a `--help`-style invocation should not pay for importing the whole e2e runner.
     The cloud-vs-LAN URL shape is a genuine trap (the cloud form already carries
     /api/<UUID>/, so the app path differs) -- deriving it from HubitatMcpClient means the
     two legs can never disagree about where the endpoint is.
+
+    The TOKEN, though, has to be appended here. `HubitatMcpClient.endpoint` is the bare
+    `<prefix>/mcp`; that client keeps `access_token` separate and passes it as a per-request
+    `params={"access_token": ...}` on every call. The SDK's transport takes one URL and
+    nothing else, so handing it `client.endpoint` sends a TOKENLESS request and the hub
+    answers 401. This endpoint authenticates by the token IN THE URL QUERY -- there is no
+    bearer support to fall back on (Hubitat's OAuth endpoints ignore Authorization, and this
+    server never reads it), so the query parameter is the only way in.
     """
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     try:
@@ -139,11 +182,25 @@ def _load_hub_config() -> dict:
             "Install its dependency with `pip install requests`."
         ) from exc
     config = e2e_test.load_config()
+    token = config["access_token"]
     client = e2e_test.HubitatMcpClient(
-        hub_url=config["hub_url"], app_id=config["app_id"], access_token=config["access_token"]
+        hub_url=config["hub_url"], app_id=config["app_id"], access_token=token
     )
+    # Register the secret BEFORE any URL built from it can reach a print or an exception.
+    _register_secret(token)
+    separator = "&" if "?" in client.endpoint else "?"
+    endpoint = f"{client.endpoint}{separator}access_token={token}"
+    if "access_token=" not in endpoint:
+        # Unreachable as written; kept because the failure it guards against (a tokenless
+        # URL) surfaces as a bare 401 that reads like a hub/permissions problem rather than
+        # a harness bug -- which is exactly how it was missed once already.
+        raise RuntimeError(
+            "Refusing to connect: the endpoint URL carries no access_token query parameter, "
+            "so the hub would answer 401. This endpoint authenticates by token-in-URL only."
+        )
     return {
-        "endpoint": client.endpoint,
+        "endpoint": endpoint,
+        "safe_endpoint": _redact(endpoint),
         "initialize_versions": e2e_test.INITIALIZE_PROTOCOL_VERSIONS,
         "supported_versions": e2e_test.SUPPORTED_PROTOCOL_VERSIONS,
     }
@@ -158,6 +215,10 @@ class RequestTrace:
     the SDK's transport supplies, so what lands here is what the SDK actually put on the
     wire -- not a reconstruction of it. That is what lets the legacy-header scenario
     assert on the header rather than assume it.
+
+    Deliberately records NO url: the endpoint carries the access token in its query, and
+    these dicts are echoed verbatim in assertion messages. Method + headers are all the
+    scenarios need.
     """
 
     def __init__(self) -> None:
@@ -319,7 +380,12 @@ class Scenarios:
         assert block.type == "text", f"expected a text content block, got {block.type!r}"
         payload = json.loads(block.text)
         assert isinstance(payload, dict), f"hub_get_info payload is not an object: {type(payload)}"
-        assert payload.get("success") is not False, f"hub_get_info returned a failure envelope: {payload}"
+        # Redacted defensively: toolGetHubInfo returns no token or server URL today (the only
+        # access_token in the app's Groovy is on its settings PAGE), but this is the one
+        # message here that echoes a whole hub payload, so it should not become a leak if
+        # that tool ever grows an endpoint field.
+        assert payload.get("success") is not False, \
+            _redact(f"hub_get_info returned a failure envelope: {payload}")
         print(f"         hub_get_info returned {len(block.text)} chars of JSON, keys={sorted(payload)[:6]}")
 
     async def _legacy_header_contract(self) -> None:
@@ -345,7 +411,8 @@ class Scenarios:
 
 async def _main_async(config: dict) -> int:
     trace = RequestTrace()
-    print(f"Connecting the official MCP Python SDK client to {config['endpoint'].split('?')[0]} ...")
+    # safe_endpoint, never config['endpoint'] -- the live URL carries the access token.
+    print(f"Connecting the official MCP Python SDK client to {config['safe_endpoint']} ...")
     # `streamable_http_client` is the current transport entry point; its predecessor
     # `streamablehttp_client` is @deprecated in the pinned SDK. It takes a caller-owned
     # httpx.AsyncClient rather than the old headers/timeout/factory parameters -- and
@@ -394,6 +461,12 @@ def main() -> None:
     except RuntimeError as exc:
         print(f"ERROR: {exc}")
         sys.exit(1)
+
+    # The SDK logs the endpoint URL -- token and all -- at DEBUG ("Connecting to
+    # StreamableHTTP endpoint: {url}"). Nothing configures logging here so it is not emitted
+    # today, but this script must not be one global logging.basicConfig(DEBUG) away from
+    # printing a live credential, and _redact cannot reach a library's own log call.
+    logging.getLogger("mcp.client.streamable_http").setLevel(logging.INFO)
 
     print("=" * 60)
     print(f"Hubitat MCP Server — official-SDK conformance (mcp=={pin})")
