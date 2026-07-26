@@ -3225,22 +3225,41 @@ class TestRunner:
             assert match is not None, f"rule {target_id} not found in hub_list_rules: {listed}"
             return match
 
+        def _rule_status_when(target_id, predicate, attempts: int = 8, gap: float = 2.0):
+            """Read the rule's status until `predicate` holds, then return it (last read on
+            timeout). RM decorates its appsList entry ("(Paused)") asynchronously after the
+            write commits, so a fixed sleep + single read is a timing bet: it lost on a slow
+            run where hub_set_rule:create took 9.4s and hub_set_rule:edit p95 hit the relay
+            ceiling. Same fix as _poll_switch above -- short retried reads instead of one
+            long wait, each well inside the ~10s relay budget."""
+            status = {}
+            for _ in range(attempts):
+                status = _rule_status(target_id)
+                if predicate(status):
+                    return status
+                time.sleep(gap)
+            return status
+
         active = _rule_status(app_id)
         assert active.get("status") == "active", f"new rule should read status active, got: {active}"
         assert active.get("paused") is False and active.get("disabled") is False, \
             f"new rule should be neither paused nor disabled, got: {active}"
 
-        self.client.call_tool("hub_manage_rule_machine", {
+        # Assert the write's OWN envelope before polling the read side: without it a
+        # genuine pause failure and a slow status decoration produce the same symptom.
+        pause_res = self.client.call_tool("hub_manage_rule_machine", {
             "tool": "hub_set_rule_paused", "args": {"ruleId": app_id, "paused": True}})
-        time.sleep(2.0)  # let the (Paused) appsList decoration settle before re-reading status
-        paused = _rule_status(app_id)
+        assert not (isinstance(pause_res, dict) and pause_res.get("success") is False), \
+            f"hub_set_rule_paused(paused=True) reported failure: {pause_res}"
+        paused = _rule_status_when(app_id, lambda s: s.get("status") == "paused" and s.get("paused") is True)
         assert paused.get("status") == "paused" and paused.get("paused") is True, \
             f"paused rule should read status paused + paused:true, got: {paused}"
 
-        self.client.call_tool("hub_manage_rule_machine", {
+        resume_res = self.client.call_tool("hub_manage_rule_machine", {
             "tool": "hub_set_rule_paused", "args": {"ruleId": app_id, "paused": False}})
-        time.sleep(2.0)
-        resumed = _rule_status(app_id)
+        assert not (isinstance(resume_res, dict) and resume_res.get("success") is False), \
+            f"hub_set_rule_paused(paused=False) reported failure: {resume_res}"
+        resumed = _rule_status_when(app_id, lambda s: s.get("status") == "active" and s.get("paused") is False)
         assert resumed.get("status") == "active" and resumed.get("paused") is False, \
             f"resumed rule should read status active again, got: {resumed}"
 
@@ -3252,15 +3271,13 @@ class TestRunner:
         # parsing.)
         self.client.call_tool("hub_manage_native_rules_and_apps", {
             "tool": "hub_set_app_disabled", "args": {"appId": app_id, "disabled": True}})
-        time.sleep(2.0)
-        disabled = _rule_status(app_id)
+        disabled = _rule_status_when(app_id, lambda s: s.get("status") == "disabled" and s.get("disabled") is True)
         assert disabled.get("status") == "disabled" and disabled.get("disabled") is True, \
             f"disabled rule should read status disabled + disabled:true, got: {disabled}"
 
         self.client.call_tool("hub_manage_native_rules_and_apps", {
             "tool": "hub_set_app_disabled", "args": {"appId": app_id, "disabled": False}})
-        time.sleep(2.0)
-        reenabled = _rule_status(app_id)
+        reenabled = _rule_status_when(app_id, lambda s: s.get("status") == "active" and s.get("disabled") is False)
         assert reenabled.get("status") == "active" and reenabled.get("disabled") is False, \
             f"re-enabled rule should read status active again, got: {reenabled}"
 
