@@ -25,6 +25,7 @@ class HarnessLoadingSpec extends HarnessSpec {
 
         then:
         result == [ok: true, echo: [key: 'value']]
-        hubGet.calls[0] == [path: '/test/path', params: [key: 'value']]
+        // Call records carry the composed path?query `key` alongside the bare path.
+        hubGet.calls[0] == [path: '/test/path', params: [key: 'value'], key: '/test/path?key=value']
     }
 }

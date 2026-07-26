@@ -697,7 +697,7 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
         then:
         result.success == true
         result.applied == ['network.dhcp']
-        hubGet.calls.any { it.path.endsWith('useDNSFallover=false') }
+        hubGet.calls.any { it.key.endsWith('useDNSFallover=false') }
     }
 
     // ---------- network-only first-leg failure ----------
