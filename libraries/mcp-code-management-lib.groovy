@@ -834,61 +834,29 @@ private Map _createUserAppInstance(Integer codeAppId) {
     return out
 }
 
-// The ONE Done-submit implementation for an installed-app instance. Builds the classic
-// "Done" form off the instance's live configPage and POSTs it to /installedapp/update/json.
-//
-// Two callers, one mechanism, because they ARE the same UI action: submitting Done on a
-// pending shell fires installed()/initialize() (_commitUserAppInstall), and submitting it
-// on an already-installed instance fires updated() (the triggerUpdated lifecycle refresh
-// after a code save). The hub picks the callback from the instance's installed state; the
-// request is identical.
-//
-// Firmware fact (verified live on 2.5.0.159): /installedapp/configure/<id>/<page> is the
-// HTML UI PAGE and rejects POST with 405 -- it is not a submit target. The submit target is
-// /installedapp/update/json, which is what the admin UI posts and what the install-commit
-// path here has always used successfully.
-//
-// Returns [status: <HTTP status or null>, page: <page name submitted>].
-//
-// Whether a stored settings value can be handed straight to _rmBuildSettingsBody, which
-// serializes a List as CSV (capability) or a JSON array (enum) and everything else via
-// toString(). Scalars and lists of scalars round-trip exactly. A richer shape -- a Map, or a
-// List carrying one, which is how a device input could conceivably render -- would toString()
-// into junk and POST that junk back, so those defer to the configPage value instead. Narrow on
-// purpose: only the shapes proven to round-trip are trusted.
-private boolean _isSimpleSettingValue(v) {
-    if (v == null) return true
-    if (v instanceof Map) return false
-    if (v instanceof List) {
-        return v.every { it == null || it instanceof CharSequence || it instanceof Number || it instanceof Boolean }
-    }
-    return (v instanceof CharSequence || v instanceof Number || v instanceof Boolean)
-}
-
-private Map _submitAppDoneForm(Integer instanceId, String pageName) {
+// The ONE Done-submit implementation for an installed-app instance. Both callers ARE the same
+// UI action -- Done on a pending shell fires installed()/initialize(), on an installed instance
+// it fires updated() (the triggerUpdated refresh); the hub picks the callback, the request is
+// identical. Firmware fact (live, 2.5.0.159): /installedapp/configure/<id>/<page> is the HTML
+// page and answers POST with 405; the submit target is /installedapp/update/json.
+// Returns [status, page, submitted, liveSettingsUnavailable, shapeRejections].
+// `requireLiveSettings` = "a wrong value here OVERWRITES a configured instance, so refuse rather
+// than guess". The triggerUpdated refresh passes true: its whole job is a no-op re-submit, and if
+// the live settings cannot be read there is nothing to gain and a device wipe to lose. The install
+// commit passes false -- a fresh shell HAS no configured values, so the page defaults are correct
+// and refusing would block the install for no benefit.
+private Map _submitAppDoneForm(Integer instanceId, String pageName, boolean requireLiveSettings = false) {
     def cfg = _rmFetchConfigJson(instanceId, pageName)
     def page = pageName ?: (cfg?.configPage?.name?.toString()) ?: "mainPage"
     def schema = _rmCollectInputSchema(cfg?.configPage)
-    // The UI's Done re-submits every input on the page, so a value this builder gets wrong is
-    // a value the submit OVERWRITES. Sending "" for a typed input, notably a bool, also makes
-    // the hub's update handler 500.
-    //
-    // Value precedence: statusJson appSettings -> configure/json settings -> configPage.
-    //
-    // Reading the configPage's value/defaultValue as primary was DISPROVEN LIVE on the e2e
-    // hub: for a configured bool the render returned the input's DEFAULT, not the saved value,
-    // so a Done submit re-applied defaults and silently blanked the instance's settings (a
-    // refreshProbe set true read back false after the triggerUpdated refresh). The e2e
-    // settings-preservation assertion in test_update_app_code_trigger_updated is the gate.
-    //
-    // statusJson is primary because it is the ONLY source that survives a DEVICE input.
-    // /installedapp/configure/json renders a capability setting as an object, which cannot be
-    // form-encoded, and its `value` is null; _rmLiveSettingsFromStatus reconstructs the assigned
-    // ids from appSettings.deviceIdsForDeviceList as a List of id strings, which is exactly what
-    // _rmBuildSettingsBody serializes to the CSV the form wants. That is the same source and the
-    // same helper the native-RM sub-page Done uses, and its comment records the identical wipe
-    // (verified live on fw 2.5.0.143: the Button Controller buttonDev assignment was CLEARED by
-    // a Done rebuilt from `value` alone).
+    // Done re-submits EVERY input, so a wrong value here is a value it overwrites. Precedence:
+    // statusJson appSettings -> configure/json settings -> configPage. configPage-as-primary was
+    // DISPROVEN LIVE (a configured bool renders its DEFAULT, so Done blanked the instance -- the
+    // e2e settings-preservation assertion is the gate). statusJson is primary because it is the
+    // only source that survives a DEVICE input: configure/json renders those unencodable with
+    // value=null, while _rmLiveSettingsFromStatus rebuilds ids from deviceIdsForDeviceList into
+    // the List _rmBuildSettingsBody CSV-encodes -- same helper the native-RM sub-page Done uses,
+    // whose comment records the identical wipe on fw 2.5.0.143 (Button Controller buttonDev).
     def pageValues = [:]
     for (s in (cfg?.configPage?.sections ?: [])) {
         for (i in (s?.input ?: [])) {
@@ -900,27 +868,46 @@ private Map _submitAppDoneForm(Integer instanceId, String pageName) {
         }
     }
     def liveSettings = [:]
+    boolean liveSettingsUnavailable = false
     try {
         liveSettings = _rmLiveSettingsFromStatus(_rmFetchStatusJson(instanceId)) ?: [:]
     } catch (Exception statusErr) {
-        // A dropped statusJson read must not silently degrade into "re-apply defaults" -- say so,
-        // then fall through to the configure/json settings map, which still carries scalars
-        // correctly even though it cannot represent a device input.
-        mcpLog("warn", "hub-admin", "_submitAppDoneForm: statusJson read for ${instanceId} failed (${statusErr.message}) -- falling back to the configure/json settings map for the Done body; a DEVICE input may not survive this submit")
+        // A dropped statusJson read must not silently degrade into "re-apply defaults".
+        liveSettingsUnavailable = true
+        mcpLog("error", "hub-admin", "_submitAppDoneForm: statusJson read for ${instanceId} failed (${statusErr.message}) -- the Done body cannot be built from live settings, so a DEVICE input would be re-submitted empty and CLEARED")
+    }
+    if (requireLiveSettings && liveSettingsUnavailable) {
+        // Refuse rather than submit a body that would blank the instance. No POST is issued, so
+        // nothing is committed and the caller reports the refusal.
+        return [status: null, page: page, submitted: false, liveSettingsUnavailable: true, shapeRejections: 0]
     }
     def cfgSettings = (cfg?.settings instanceof Map) ? cfg.settings : [:]
     def settingsMap = [:]
+    int shapeRejections = 0
     schema.each { name, meta ->
         // Each tier is consulted only for a value the previous one does not have, and only when
         // its SHAPE round-trips through _rmBuildSettingsBody (see _isSimpleSettingValue) -- an
-        // unencodable value would be POSTed back as junk. A null is treated as unset so it defers
-        // onward, which keeps the fresh-shell default path behaving exactly as before.
+        // unencodable value would be POSTed back as junk.
+        //
+        // A null OR an empty string defers to the next tier. Null means unset; "" is what a
+        // never-configured typed input reports, and re-submitting "" for a typed input (a bool
+        // especially) makes the hub's update handler 500 -- deferring to the page default is the
+        // pre-existing behaviour that avoided exactly that. A stored `false` or `0` is a REAL
+        // value and must win, which is why the test is emptiness rather than Groovy truthiness.
         def chosen = null
         for (candidate in [liveSettings[name], cfgSettings[name]]) {
-            if (candidate != null && _isSimpleSettingValue(candidate)) {
-                chosen = candidate
-                break
+            if (candidate == null) continue
+            if (candidate instanceof CharSequence && candidate.toString().isEmpty()) continue
+            if (!_isSimpleSettingValue(candidate)) {
+                // Name + shape only, NEVER the value: a setting can be a password. Error level
+                // because a rejection here means the Done body carries a page default over a
+                // configured value, i.e. this submit may change state the caller did not ask to.
+                shapeRejections++
+                mcpLog("error", "hub-admin", "_submitAppDoneForm: setting '${name}' on app ${instanceId} has an unencodable shape (${_settingShapeName(candidate)}); the Done body falls back to the page default for it, which may OVERWRITE the configured value")
+                continue
             }
+            chosen = candidate
+            break
         }
         if (chosen != null) {
             settingsMap[name] = chosen
@@ -958,11 +945,15 @@ private Map _submitAppDoneForm(Integer instanceId, String pageName) {
     body._cancellable = "false"
 
     def resp = hubInternalPostForm("/installedapp/update/json", body)
-    return [status: resp?.status, page: page]
+    return [status: resp?.status, page: page, submitted: true,
+            liveSettingsUnavailable: liveSettingsUnavailable, shapeRejections: shapeRejections]
 }
 
 private Map _commitUserAppInstall(Integer instanceId, String pageName) {
-    def submit = _submitAppDoneForm(instanceId, pageName)
+    // requireLiveSettings=false: a fresh shell has no configured values to protect, so the page
+    // defaults ARE correct and refusing over an unreadable statusJson would block the install for
+    // nothing. The degradation still has to be VISIBLE, so it rides out as a note below.
+    def submit = _submitAppDoneForm(instanceId, pageName, false)
     def st = submit.status
     def page = submit.page
     if (st != null && st >= 400) {
@@ -1000,9 +991,22 @@ private Map _commitUserAppInstall(Integer instanceId, String pageName) {
     def subCount = (post?.eventSubscriptions instanceof List) ? post.eventSubscriptions.size() : 0
     def out = [success: true, scheduledJobCount: schedCount, eventSubscriptionCount: subCount,
                installedConfirmed: (installedConfirmed == true)]
+    // Every degradation on this path gets a sentence -- an unexplained zero count or a silent
+    // settings fallback is indistinguishable from a healthy install otherwise.
+    def notes = []
     if (installedConfirmed == null) {
-        out.note = "Install commit submitted but app.installed could not be independently confirmed (config read failed); scheduledJobCount/eventSubscriptionCount are the lifecycle evidence."
+        notes << "app.installed could not be independently confirmed (the config read failed); scheduledJobCount/eventSubscriptionCount are the lifecycle evidence."
     }
+    if (post == null) {
+        notes << "The post-commit statusJson read failed, so scheduledJobCount/eventSubscriptionCount are reported as 0 rather than measured -- they are not evidence that initialize() registered nothing."
+    }
+    if (submit?.liveSettingsUnavailable) {
+        notes << "The instance's live settings could not be read before the Done submit, so the form carried this page's defaults. Harmless on a fresh install (there was nothing configured yet), but re-check the instance if it was pre-seeded."
+    }
+    if (submit?.shapeRejections) {
+        notes << "${submit.shapeRejections} setting(s) had a shape that cannot be form-encoded and fell back to the page default; see the hub log for their names."
+    }
+    if (notes) out.note = notes.join(" ")
     return out
 }
 
@@ -1535,12 +1539,25 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
                     // matters: hubInternalPostForm hands back a status for a response the
                     // platform client does not throw on, and without this a rejected Done
                     // would report updatedFired:true.
-                    def submit = _submitAppDoneForm(triggerId, null)
+                    // requireLiveSettings=true: this instance is CONFIGURED, and a Done built from
+                    // page defaults would overwrite it. Refusing loses only the refresh.
+                    def submit = _submitAppDoneForm(triggerId, null, true)
+                    if (submit?.liveSettingsUnavailable) {
+                        throw new IllegalStateException("the instance's live settings (statusJson) could not be read, so the Done was NOT submitted -- submitting it would have re-sent this page's defaults and cleared the instance's configured settings, device selections included")
+                    }
                     def submitStatus = submit?.status
                     if (submitStatus != null && submitStatus >= 400) {
                         throw new RuntimeException("Done POST to /installedapp/update/json returned status ${submitStatus}")
                     }
                     successResult.updatedFired = true
+                    if (submit?.shapeRejections) {
+                        // The refresh DID fire, so this is not a failure -- but a setting whose shape
+                        // could not be encoded was re-sent as its page default, which may have changed
+                        // state the caller never asked to change.
+                        successResult.repairHints = ((successResult.repairHints ?: []) + [
+                            "${submit.shapeRejections} setting(s) on instance ${triggerId} could not be form-encoded and were re-submitted as this page's defaults, which may have overwritten their configured values -- see the hub log for the setting names, then re-check them via hub_get_app_config(appId:${triggerId}, includeSettings:true)."
+                        ])
+                    }
                     mcpLog("info", "hub-admin", "triggerUpdated: fired updated() on instance ${triggerId} via /installedapp/update/json after app code save")
                 } catch (Exception updErr) {
                     // Half-failure: the code was deployed (success:true holds) but the
@@ -1678,8 +1695,16 @@ private Map _updateAppOAuth(appId, oauth) {
             clientSecret: clientSecret,
             refreshSecret: refreshSecret
         ], 30)
+        // Distinguish "the hub answered, and said no" from "that was not a hub answer at all",
+        // mirroring hubInternalPostJson's _unparseable split. An HTML body here is almost always a
+        // Hub Security login page, and telling the caller to add an oauth block for that is a
+        // wrong-diagnosis dead end.
         def parsed = null
-        try { parsed = respText ? new groovy.json.JsonSlurper().parseText(respText) : null } catch (Exception ignore) { }
+        boolean unparseable = false
+        if (respText) {
+            try { parsed = new groovy.json.JsonSlurper().parseText(respText) }
+            catch (Exception parseErr) { unparseable = true }
+        }
         if (parsed instanceof Map) {
             if (parsed.success == true) {
                 return [success: true, enabled: enabled,
@@ -1691,6 +1716,14 @@ private Map _updateAppOAuth(appId, oauth) {
                 return [success: false, error: (parsed.error ?: parsed.message)?.toString(), response: respText?.take(300),
                         note: "The app's source must declare OAuth (an oauth block + mappings) before it can be enabled."]
             }
+        }
+        if (unparseable) {
+            return [success: false, error: "/app/updateOAuth returned a non-JSON body", response: respText?.take(300),
+                    note: "That is not a hub OAuth answer -- an HTML body here is typically the Hub Security login page, so check the MCP app's Hub Security credentials (and that the hub is not mid-reboot). This says nothing about whether the app's source declares OAuth."]
+        }
+        if (!respText) {
+            return [success: false, error: "/app/updateOAuth returned an empty body",
+                    note: "The request reached the hub but produced no answer -- retry; if it persists, check Hub Security credentials."]
         }
         return [success: false, error: "/app/updateOAuth did not report success", response: respText?.take(300),
                 note: "The app's source must declare OAuth (an oauth block + mappings) before it can be enabled."]
@@ -2814,7 +2847,7 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
                     resave: [type: "boolean", description: "Re-save the current source without changes; runs entirely on-hub."],
                     expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] Stringified integers coerced; explicit null rejected.[[/FLAT_TRIM]]"],
-                    triggerUpdated: [type: "integer", description: "OPTIONAL: running instance appId to fire updated() after save."],
+                    triggerUpdated: [type: "integer", description: "OPTIONAL: running instance appId to fire updated() on after the code save, so its subscriptions/schedules/atomicState re-initialize against the new code. Mechanically this submits the app's mainPage 'Done' form, which RE-SENDS EVERY input on that page -- the tool rebuilds them from the instance's live settings so nothing is blanked, and REFUSES to submit (updatedFired:false, partial:true) if it cannot read them, rather than risk clearing device selections. On failure the code save still stands: success stays true with partial:true, updatedFired:false and repairHints. Omit it to match what the hub's own editor Save does (no lifecycle call)."],
                     oauth: [type: "object", description: "OPTIONAL: enable/configure OAuth on this app (apps only); e.g. {enabled:true}. Full shape: hub_get_tool_guide(section='hub_admin_write')."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
                     opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If the transport drops the response, re-issue this call with the SAME token (the token alone is enough) to poll/replay the committed result instead of re-running the operation. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]

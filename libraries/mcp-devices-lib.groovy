@@ -2628,6 +2628,8 @@ def toolUpdateDevice(args) {
                 def showVal = args.showOnHome ? "true" : "false"
                 try {
                     hubInternalGet("/device/setShowOnHome", [deviceId: deviceId, show: showVal])
+                } catch (IllegalStateException guardErr) {
+                    throw guardErr   // ?-in-path guard: a coding bug, never a fallback trigger
                 } catch (Exception primaryErr) {
                     mcpLog("debug", "device", "hub_update_device showOnHome: dedicated endpoint failed (${primaryErr.message}); falling back to /device/preference/save")
                     hubInternalPostJson("/device/preference/save", groovy.json.JsonOutput.toJson([deviceId: _prefSaveDeviceId(deviceId), showOnHome: args.showOnHome]))
@@ -2675,6 +2677,8 @@ def toolUpdateDevice(args) {
                     } else {
                         errors << [property: "defaultCurrentState", error: "Hub did not accept defaultCurrentState='${csVal}' (returned '${result?.toString()?.take(120)}'). Use an attribute name from the device's current states."]
                     }
+                } catch (IllegalStateException guardErr) {
+                    throw guardErr   // ?-in-path guard: a coding bug, never a fallback trigger
                 } catch (Exception primaryErr) {
                     // Dedicated endpoint absent on some hubs (404) -- fall back to the Preferences-pane save.
                     mcpLog("debug", "device", "hub_update_device defaultCurrentState: dedicated endpoint failed (${primaryErr.message}); falling back to /device/preference/save")
@@ -3120,6 +3124,8 @@ def toolCreateDevice(args) {
             } else {
                 labelFailNote = "hub returned '${labelResult?.toString()?.take(120)}'"
             }
+        } catch (IllegalStateException guardErr) {
+            throw guardErr   // ?-in-path guard: a coding bug, never a fallback trigger
         } catch (Exception e) {
             // The dedicated GET /device/updateLabel setter 404s on some firmwares (e.g. 2.5.0.157).
             labelFailNote = "${e.message ?: e.toString()}"

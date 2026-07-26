@@ -605,7 +605,8 @@ class ToolImportUrlSpec extends ToolSpecBase {
     def "the Done submit re-sends the instance's STORED setting, not the configPage default"() {
         // Regression pin for the live e2e failure: refreshProbe was set true, the configPage
         // render reported the default (false), and the Done re-submit posted false -- blanking a
-        // configured instance. cfg.settings is the source of truth.
+        // configured instance. statusJson appSettings is tier 1 of the sourcing (what this test
+        // stages and proves); cfg.settings is tier 2; the configPage render is last.
         given:
         enableWrite()
         hubGet.register('/app/ajax/code') { params -> '{"status": "ok", "source": "old", "version": 5}' }
@@ -665,6 +666,72 @@ class ToolImportUrlSpec extends ToolSpecBase {
         // A Map (or a List carrying one) would toString() into junk and POST the junk back.
         'a Map (shape that would not encode)'  | []                                     | [refreshProbe: [id: 7, label: 'Den']]
         'a List of Maps'                       | []                                     | [refreshProbe: [[id: 7]]]
+        // "" is what a never-configured typed input reports, and re-submitting "" for a typed
+        // input (a bool especially) makes the hub's update handler 500 -- defer to the default.
+        'an empty string in both'              | [[name: 'refreshProbe', value: '']]    | [refreshProbe: '']
+    }
+
+    @spock.lang.Unroll
+    def "a FALSEY stored value still wins over the configPage default: #label"() {
+        // Emptiness, not Groovy truthiness, is the defer test. `false` and `0` are REAL configured
+        // values -- treating them as absent would flip a deliberately-off toggle back on, which is
+        // the same blanking bug in miniature.
+        given:
+        enableWrite()
+        hubGet.register('/app/ajax/code') { params -> '{"status": "ok", "source": "old", "version": 5}' }
+        hubGet.register('/installedapp/configure/json/194') { params ->
+            configuredInstanceConfigJson(194, [:], 'true')
+        }
+        stubStatusJson(194, [[name: 'refreshProbe', value: stored, type: 'bool']])
+        def doneBody = null
+        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true] }
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            doneBody = body
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
+
+        when:
+        script.toolUpdateAppCode([appId: '42', source: 'new source', triggerUpdated: 194, confirm: true])
+
+        then: 'the stored falsey value was submitted, NOT the rendered "true"'
+        doneBody['settings[refreshProbe]'] == expected
+
+        where:
+        label            | stored | expected
+        'stored false'   | false  | 'false'
+        'stored zero'    | 0      | '0'
+    }
+
+    def "triggerUpdated REFUSES to submit the Done when the live settings cannot be read"() {
+        // The refresh is a no-op re-submit, so if the live settings are unreadable there is nothing
+        // to gain and a device wipe to lose. Refusing keeps the code save (success stays true) and
+        // reports the half-failure -- it must NOT submit a Done built from page defaults.
+        given:
+        enableWrite()
+        hubGet.register('/app/ajax/code') { params -> '{"status": "ok", "source": "old", "version": 5}' }
+        hubGet.register('/installedapp/configure/json/194') { params -> instanceConfigJson(194) }
+        hubGet.register('/installedapp/statusJson/194') { params ->
+            throw new RuntimeException('statusJson read failed (transient)')
+        }
+        boolean donePosted = false
+        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true] }
+        script.metaClass.hubInternalPostForm = { String path, Map body -> donePosted = true; [status: 200] }
+        script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
+
+        when:
+        def result = script.toolUpdateAppCode([
+            appId: '42', source: 'new source', triggerUpdated: 194, confirm: true])
+
+        then: 'the code save stands; the Done was never POSTed'
+        result.success == true
+        !donePosted
+
+        and: 'the half-failure is reported with the device-wipe reason named'
+        result.updatedFired == false
+        result.partial == true
+        result.repairHints?.any { it.toString().contains('statusJson') }
+        result.repairHints?.any { it.toString().contains('cleared') }
     }
 
     def "a stored List setting is preserved (CSV-encoded), not dropped as an unusable shape"() {

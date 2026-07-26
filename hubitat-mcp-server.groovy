@@ -412,6 +412,19 @@ def advancedOverridesPage() {
                   description: "Leave OFF (default). ON: gateway-mode base tools and the gateway catalog advertise outputSchema (wire form, no required arrays) and successful results carry structuredContent per the MCP spec. The flat tool list never advertises outputSchema regardless of this setting.",
                   defaultValue: false
         }
+        // Deny-by-default stays: this only ADDS names. It exists for reverse-proxy / remote-access
+        // setups where a browser client's Origin reaches the hub and is neither the hub's own LAN
+        // address nor cloud.hubitat.com.
+        section("Origin validation") {
+            paragraph "The MCP transport spec says a server should REJECT a request whose <b>Origin</b> header names a host it does not recognize, to block DNS-rebinding attacks. This endpoint <b>logs</b> such a mismatch and serves the request anyway, because its access token lives in the URL: a rebound page cannot know that token, and a request without it never reaches the server. Recognized by default: this hub's LAN address, <code>cloud.hubitat.com</code>, and loopback.<br>" +
+                      "Turn enforcement ON for the strict spec behaviour (HTTP 403). Before you do, add any legitimate browser-facing hostname below -- a reverse proxy or remote-access service in front of the hub sends its own Origin, and enforcement would start rejecting it. A server-to-server MCP client sends no Origin at all and is unaffected either way."
+            input "enforceOriginValidation", "bool", title: "Enforce Origin validation (reject with HTTP 403)",
+                  description: "Leave OFF (default): a mismatch is logged and the request is served. ON: a mismatched Origin is rejected with 403, per the transport spec.",
+                  defaultValue: false
+            input "additionalAllowedOrigins", "text", title: "Extra Origin hostnames (comma-separated)",
+                  description: "e.g. mcp.example.com, hubitat.tailnet-1234.ts.net -- recognized in BOTH modes. Hostnames only; a pasted URL is reduced to its hostname.",
+                  required: false
+        }
         section("Slow-write time budgets") {
             paragraph "The cloud relay severs a slow /mcp call at a fixed ceiling while the hub keeps running the operation to completion. When a slow multi-step write reaches its budget, the server pauses BETWEEN committed sub-steps and returns a resumable in_progress envelope so no step is lost. The relay budget defaults ON (under the relay ceiling); the LAN budget defaults OFF -- LAN has no transport ceiling, so enable it only when your MCP client's own request timeout kills slow writes (set it just under that timeout). Set 0 to disable either."
             input "relayBudgetMs", "number", title: "Cloud-relay time budget (ms, 0 = off)",
@@ -677,40 +690,37 @@ def handleMcpGet() {
                       "This MCP endpoint is request-response only (POST). SSE/GET streaming is not supported.")))
 }
 
-// Transport contract: JSON-RPC application errors (parse / invalid-request /
-// method-not-found / internal) are returned with HTTP 200 and an error envelope
-// per JSON-RPC 2.0. Do NOT convert application-level JSON-RPC errors to 4xx --
-// legacy-era clients expect the error inside a 200 body. The non-200 statuses
-// are enumerated and each is spec-mandated:
+// Transport contract: application-level JSON-RPC errors ride HTTP 200 -- do NOT convert them
+// to 4xx, legacy clients expect the error inside the body. Every non-200 is spec-mandated:
 //
-//   405 -- GET on this endpoint (handleMcpGet); POST-only by design.
-//   403 -- a present Origin header naming none of this server's known identities, on
-//          ANY request (DNS-rebinding defence; body is a JSON-RPC error, null id).
-//   202 -- a POST carrying no request objects (all notifications), per MCP
-//          Streamable HTTP. Unconditional: the spec leaves notification-POST
-//          header requirements undefined, so no header validation applies.
-//   400 -- -32022 UnsupportedProtocolVersion when the MCP-Protocol-Version header
-//          names a revision outside supportedProtocolVersions(); this one spans BOTH
-//          eras, since 2025-06-18 already mandated 400 for it. Plus, on a MODERN
-//          request only: -32020 HeaderMismatch (mirrored header disagrees with the
-//          body, or a required one is missing/malformed) and -32600 (a batch body,
-//          which the modern transport forbids).
-//   404 -- an unknown method on a MODERN request (body still carries -32601, so
-//          a dual-era client can tell this from a legacy HTTP+SSE server's 404).
+//   405 -- GET (handleMcpGet); POST-only by design.
+//   403 -- present Origin naming no known identity; ANY POST, either era. Null-id error body.
+//          GET never reaches it -- handleMcpGet answers 405 first.
+//   202 -- POST with no request objects. Unconditional: notification-POST header
+//          requirements are undefined by the spec, so no validation applies.
+//   400 -- -32022 unsupported MCP-Protocol-Version (BOTH eras; 2025-06-18 mandated it too);
+//          MODERN only: -32020 header/body mismatch, -32600 batch body.
+//   404 -- unknown method, MODERN only; body keeps -32601 so a dual-era client can tell it
+//          from a legacy HTTP+SSE server's 404.
 //
-// "MODERN" means the MCP-Protocol-Version header's VALUE is modernProtocolVersion() --
-// NOT merely that the header is present. That header has been required since
-// 2025-06-18, so a legacy client sends it too; see the era-split note below. A request
-// on any legacy revision (header-bearing or headerless) keeps every pre-2026 behaviour,
-// batch responses included (a legacy batch still renders 200).
+// "MODERN" = the header's VALUE is modernProtocolVersion(), not its presence (see the era
+// split below). Legacy revisions keep every pre-2026 behaviour, batch included.
 def handleMcpRequest() {
-    // Streamable HTTP security MUST: validate Origin on EVERY inbound request to
+    // Streamable HTTP security MUST: validate Origin on every inbound POST to
     // block DNS rebinding. First thing in the handler, so a rejected request costs
     // nothing and touches no state -- not even the migration below. Runs in both
     // eras: this is a transport security control, not a protocol-revision feature.
     if (!_originAllowed()) {
-        return render(status: 403, contentType: "application/json", data: groovy.json.JsonOutput.toJson(
-            jsonRpcError(null, -32600, "Forbidden: the Origin header does not name a known identity for this MCP endpoint.")))
+        // Error level with both sides named: a mismatch is either an attack or a misconfiguration,
+        // and neither is diagnosable from a bare 403 -- or, in the default log-only mode, from
+        // nothing at all.
+        boolean enforcing = settings.enforceOriginValidation == true
+        def extras = _configuredExtraOriginHosts()
+        mcpLog("error", "server", "Origin ${enforcing ? 'REJECTED (403)' : 'MISMATCH -- request SERVED because enforceOriginValidation is off'}: '${_requestHeader("Origin")}' names none of this endpoint's known identities ${_allowedOriginHosts()}${extras ? " (of which ${extras} came from additionalAllowedOrigins)" : " (additionalAllowedOrigins is unset -- add the host there if a browser client legitimately fronts this endpoint)"}")
+        if (enforcing) {
+            return render(status: 403, contentType: "application/json", data: groovy.json.JsonOutput.toJson(
+                jsonRpcError(null, -32600, "Forbidden: the Origin header does not name a known identity for this MCP endpoint.")))
+        }
     }
 
     // Issue #354: reset publishOutputSchemas OFF once. Hooked here (not only in
@@ -742,24 +752,13 @@ def handleMcpRequest() {
 
     logDebug("MCP Request: ${requestBody.toString().take(500)}${requestBody.toString().length() > 500 ? '...[truncated]' : ''}")
 
-    // ---- Era split -------------------------------------------------------
-    // The era switch is the MCP-Protocol-Version header's VALUE, never its mere
-    // presence. That header has been REQUIRED on every POST since 2025-06-18, so a
-    // client that negotiated 2025-06-18 or 2025-11-25 through initialize sends it on
-    // every subsequent request -- and sends NO Mcp-Method / Mcp-Name, because those
-    // headers do not exist before 2026-07-28. Treating presence as "modern" would
-    // reject every one of those requests as a header mismatch.
-    //
-    // So: header value == modernProtocolVersion() -> modern, mirrored-header contract
-    // applies. Header value == a supported legacy revision -> served exactly like a
-    // headerless request; that revision defines neither the mirrored headers nor the
-    // per-request _meta version, so there is nothing to cross-check. Headerless ->
-    // read as a pre-2025-06-18 client, which the spec explicitly permits, keeping the
-    // tolerant _meta handling in processJsonRpcMessage.
-    //
-    // Both checks below are scoped to POSTs carrying at least one request object:
-    // header requirements for a notification POST are explicitly undefined by the
-    // spec, so an all-notifications POST always ends at the 202 further down.
+    // ---- Era split: the header's VALUE, never its presence ----
+    // MCP-Protocol-Version has been REQUIRED since 2025-06-18, so a legacy client sends it too
+    // -- with NO Mcp-Method/Mcp-Name, which only 2026-07-28 defines. Reading presence as
+    // "modern" would reject every current production client as a header mismatch. A legacy
+    // VALUE is therefore served exactly like a headerless request (nothing to cross-check).
+    // Both checks below need a request object: notification-POST header rules are undefined by
+    // the spec, so an all-notifications POST falls through to the 202.
     String headerVersion = _requestHeader("MCP-Protocol-Version")
     boolean bodyCarriesRequest = false
     if (requestBody instanceof List) {
@@ -780,7 +779,10 @@ def handleMcpRequest() {
                          [requested: headerVersion, supported: supportedProtocolVersions()])))
     }
 
-    boolean modernRequest = _modernEraRequest() && bodyCarriesRequest
+    // Compare the header value already in hand rather than re-scanning via _modernEraRequest():
+    // same verdict, one header lookup instead of two. jsonRpcResult keeps its own read because it
+    // runs outside this scope.
+    boolean modernRequest = headerVersion == modernProtocolVersion() && bodyCarriesRequest
     if (modernRequest) {
         def rejection = _modernRequestRejection(headerVersion, requestBody)
         if (rejection != null) {
@@ -875,7 +877,11 @@ def handleMcpRequest() {
 def _requestHeader(String name) {
     try {
         def headers = request?.headers
-        if (!(headers instanceof Map)) return null
+        if (!(headers instanceof Map)) {
+            _noteHeadersReadable(false)
+            return null
+        }
+        _noteHeadersReadable(true)
         String wanted = name?.toLowerCase()
         def hit = headers.find { k, v -> k?.toString()?.toLowerCase() == wanted }
         if (hit == null) return null
@@ -883,25 +889,45 @@ def _requestHeader(String name) {
         if (value instanceof List) value = value.isEmpty() ? null : value[0]
         return value == null ? null : value.toString()
     } catch (Exception ignored) {
+        _noteHeadersReadable(false)
         return null
     }
 }
 
-// Origin check (Streamable HTTP: "servers MUST validate the Origin header on all
-// incoming connections to prevent DNS rebinding attacks"). An ABSENT Origin passes --
-// server-to-server MCP clients never send one, and the spec only mandates rejection
-// when the header is present and invalid. Anything malformed counts as invalid.
+// Record whether the hub exposes request.headers, ONCE, and shout the first time it does not.
 //
-// A present Origin is compared against the identities this SERVER knows for itself
-// (_allowedOriginHosts). It is deliberately NOT compared against the request's own
-// Host header: in a DNS rebinding attack the browser sends Origin AND Host both naming
-// the attacker's domain (that IS the URL it fetched), so the two agree and a
-// self-referential comparison passes the attacker straight through. Only server-known
-// names actually exclude an attacker-controlled origin.
+// An unreadable header map silently disables two things: Origin validation (a spec-MUST security
+// control) and modern-era detection (every request is served as legacy). Both degrade safely, and
+// that is exactly the problem -- nothing anywhere said so. hub_get_info surfaces the flag
+// (headerValidation) so a support read shows it without needing the log, and the transition logs at
+// error level once per state change rather than per request.
+def _noteHeadersReadable(boolean readable) {
+    try {
+        if (state.headersReadable == readable) return
+        state.headersReadable = readable
+        if (readable) {
+            mcpLog("info", "server", "request.headers is readable -- Origin validation and 2026-07-28 modern-era detection are active")
+        } else {
+            mcpLog("error", "server", "request.headers is NOT readable on this firmware -- Origin validation is INACTIVE (the DNS-rebinding check cannot run) and every request is served as legacy-era regardless of its MCP-Protocol-Version header")
+        }
+    } catch (Exception ignored) {
+        // Never let bookkeeping break request handling.
+    }
+}
+
+// Origin check (Streamable HTTP: servers MUST validate Origin to prevent DNS rebinding). An
+// ABSENT Origin passes -- server-to-server clients send none, and the spec only mandates
+// rejecting a present-and-invalid one; malformed counts as invalid. Compared against
+// _allowedOriginHosts (server-known identities), deliberately NOT the request's Host: in a
+// rebinding attack Origin and Host BOTH name the attacker's domain, so they agree and a
+// self-referential check passes the attacker through.
 //
-// This pins Origin to server-known identities as defence in depth; it is not the
-// primary control. The endpoint's per-install OAuth access_token remains what
-// authorizes a request.
+// A mismatch is LOG-ONLY unless enforceOriginValidation is set -- a deliberate deviation from the
+// spec MUST, not an oversight. The rebinding threat this guards is already neutralized here: the
+// endpoint authenticates by a per-install token IN THE URL, which a rebound page cannot know, and
+// a tokenless request never reaches this handler. Meanwhile no shipped version ever origin-checked,
+// so enforcing by default would newly 403 working reverse-proxy and browser-client setups. Opt in
+// via the Advanced toggle; additionalAllowedOrigins feeds the allowlist in BOTH modes.
 def _originAllowed() {
     try {
         String origin = _requestHeader("Origin")
@@ -920,13 +946,53 @@ def _originAllowed() {
 // null on some firmware), so an unreadable IP narrows the allowed set to the static
 // entries rather than failing open or throwing.
 def _allowedOriginHosts() {
-    def allowed = ["cloud.hubitat.com", "localhost", "127.0.0.1", "::1"]
+    def allowed = [] + _originStaticHosts()
     try {
         def localIp = location?.hub?.localIP?.toString()
-        if (localIp) allowed << localIp.trim().toLowerCase()
-    } catch (Exception ignored) { }
-    return allowed
+        if (localIp) {
+            allowed << localIp.trim().toLowerCase()
+        } else {
+            _noteLocalIpForOrigin(false)
+        }
+    } catch (Exception ignored) {
+        _noteLocalIpForOrigin(false)
+    }
+    return allowed + _configuredExtraOriginHosts()
 }
+
+// The additionalAllowedOrigins setting, normalized: split on commas, run each entry through
+// _authorityHost so a pasted "https://host:8443/path" still reduces to its hostname, and drop
+// blanks. Additive only -- deny-by-default is unchanged.
+def _configuredExtraOriginHosts() {
+    try {
+        def raw = settings.additionalAllowedOrigins?.toString()
+        if (!raw?.trim()) return []
+        return raw.split(",").collect { entry ->
+            def e = entry?.trim()
+            if (!e) return null
+            e.contains("://") ? _originHost(e) : _authorityHost(e)
+        }.findAll { it }
+    } catch (Exception ignored) {
+        return []
+    }
+}
+
+// An unreadable hub LAN IP NARROWS the Origin allowlist -- a LAN browser origin naming the hub by
+// address stops being accepted. That is the safe direction, but silent narrowing is a support
+// mystery ("it worked yesterday"), so say it once.
+def _noteLocalIpForOrigin(boolean readable) {
+    try {
+        if (state.originLocalIpReadable == readable) return
+        state.originLocalIpReadable = readable
+        if (!readable) {
+            mcpLog("error", "server", "location.hub.localIP is unreadable -- the Origin allowlist is NARROWED to ${_originStaticHosts()}; a browser origin naming this hub by its LAN address will now get a 403")
+        }
+    } catch (Exception ignored) { }
+}
+
+// The static half of the allowlist, named separately so the narrowing log can show exactly what
+// remains without recursing back into _allowedOriginHosts.
+def _originStaticHosts() { ["cloud.hubitat.com", "localhost", "127.0.0.1", "::1"] }
 
 // "http://192.168.1.133:8080" -> "192.168.1.133". Hand-parsed rather than handed to
 // a URI class: the sandbox rejects several java.* class expressions outright, and a
@@ -1189,7 +1255,7 @@ def defaultProtocolVersion() { initializeProtocolVersions()[0] }
 // settings edit propagate without a client restart.
 def cacheHintTtlMs() { 300000 }
 
-// Server identity advertised by initialize and server/discover. updateAvailable
+// Server identity advertised by initialize, server/discover, and /health. updateAvailable
 // is a non-spec extra this app's own daily update check surfaces to clients; the
 // spec-required name/version pair also rides every result's `_meta` (jsonRpcResult).
 def serverIdentity() {
@@ -1220,26 +1286,12 @@ def handleInitialize(msg) {
     ])
 }
 
-// server/discover (SEP-2575): the stateless successor to the initialize
-// handshake -- servers MUST implement it, and a client MAY call it before any
-// other request to pick a mutually supported version up front. DiscoverResult is
-// a CacheableResult, so ttlMs + cacheScope are REQUIRED fields here, not
-// optional extras; resultType and the serverInfo `_meta` key come from
-// jsonRpcResult. `instructions` rides discover too: a stateless client never
-// calls initialize, so this is its only path to the server's usage guidance.
-// serverInfo is mirrored top-level (alongside the spec's `_meta` home) so a
-// client reading the initialize-shaped identity finds it in the same place.
-//
-// `supportedVersions` advertises EVERY revision this transport speaks, legacy ones
-// included, and that is safe to do statelessly: a client that picks a legacy version
-// off this list and sends it as its MCP-Protocol-Version header is served correctly
-// without ever calling initialize, because nothing on this server requires the
-// handshake -- initialize only ever negotiated a version string.
-//
-// `resultType` is set explicitly rather than left to jsonRpcResult's era-gated stamp:
-// DiscoverResult REQUIRES the field, and discover may legitimately arrive headerless as
-// a dual-era compatibility probe. jsonRpcResult preserves a caller-set value, so this
-// composes with the gate instead of fighting it.
+// server/discover (SEP-2575): the stateless successor to initialize -- servers MUST implement it.
+// DiscoverResult is a CacheableResult, so ttlMs + cacheScope are REQUIRED, and `instructions`
+// rides along because a stateless client never calls initialize. supportedVersions advertises
+// legacy revisions too -- safe statelessly, since a client sending one as its header is served
+// correctly without the handshake. resultType is explicit (DiscoverResult requires it; discover
+// may arrive headerless as a compat probe) and jsonRpcResult preserves a caller-set value.
 def handleServerDiscover(msg) {
     return jsonRpcResult(msg.id, [
         supportedVersions: supportedProtocolVersions(),
@@ -4272,8 +4324,9 @@ def getHubSecurityCookie() {
 /**
  * HTTP status carried by an HTTPBuilder error, or null when it carries none. Duck-typed
  * (e.response.status) rather than naming HttpResponseException, which NCDFEs at parse
- * time on the test classpath. Single source for every "what status did the hub return"
- * read on an exception path.
+ * time on the test classpath. One caller today (shouldRetryWithFreshCookie); kept separate
+ * because reading a status off an exception is the fiddly part and any future exception-path
+ * status check belongs here rather than re-deriving it.
  */
 private Integer _httpStatusOf(Exception e) {
     def resp = null
@@ -4327,35 +4380,26 @@ private String _redactSecretsInPath(String path) {
 
 /**
  * Shared core for the six hubInternal* variants: cookie attach, request, duck-typed body read
- * (read failures are re-thrown, never swallowed into a Reader.toString() junk string), and the
- * single cookie-refresh retry. The thin public wrappers below project their distinguishing
- * options + return shape. This is the clean seam #209 can later lift into a HubHttpClientLib.
+ * (read failures re-thrown, never swallowed into a Reader.toString() junk string), and the single
+ * cookie-refresh retry. The thin wrappers below project their return shape.
  *
- * QUERYSTRINGS RIDE `query:`, NEVER THE PATH -- enforced by the guard below.
- *
- * The platform's httpGet/httpPost ESCAPE a '?' embedded in `path`, so it stops being a
- * query separator and becomes part of the literal path. Verified live on firmware
- * 2.5.0.159 with an on-hub probe matrix, and the failure mode is split in a way that hides
- * itself:
- *
- *   EXACT routes 404. /app/updateOAuth?id=316 embedded -> 404; the same call with a query
- *   MAP -> 200. /device/updateLabel and /device/setShowOnHome behave identically.
- *
- *   WILDCARD routes MASK it. /app/list/single/data/316?x=1 embedded -> 200, because the
- *   trailing junk lands in the route's path-parameter and the handler leniently parses the
- *   leading id. So an embedded querystring can look fine for years on one endpoint while
- *   silently 404ing the endpoint next to it.
- *
- * That asymmetry is why this is a guard and not a comment: a missed caller now fails loudly
- * at the call site instead of returning a 404 that some callers swallow. It also means the
- * query map -- not manual java.net.URLEncoder.encode -- does the escaping: HTTPBuilder
- * URL-encodes query values itself, so a hand-encoded value passed through a query map is
- * DOUBLE-encoded.
+ * QUERYSTRINGS RIDE `query:`, NEVER THE PATH -- enforced by the guard below, because the platform
+ * client escapes a '?' in `path` into literal path content. Probed live on fw 2.5.0.159: EXACT
+ * routes 404 (/app/updateOAuth, /device/updateLabel, /device/setShowOnHome) while WILDCARD routes
+ * MASK it by absorbing the junk into their path-parameter. The query map also URL-encodes, so
+ * pre-encoding a value double-encodes it. RETHROW CONTRACT: a degrading catch must rethrow
+ * IllegalStateException before falling back (see _radioGetSafe and the showOnHome /
+ * setDefaultCurrentState / create-label legs in McpDevicesLib) or the guard becomes the silent
+ * 404 it exists to end.
  */
 private _hubRequest(String method, String path, Map opts = [:]) {
     if (path?.contains("?")) {
-        throw new IllegalArgumentException(
-            "hubInternal* path must not contain a querystring: '${path}'. The platform client escapes an embedded '?' into the literal path (exact routes then 404, wildcard routes silently swallow it) -- pass the parameters as the query map instead, e.g. hubInternalGet('/device/updateLabel', [deviceId: id, label: name]). Do NOT pre-encode the values; the query map does that.")
+        // ISE, not IAE: an IAE maps to -32602, which RELEASES the opToken on the promise that
+        // nothing committed -- but this can fire on a later leg of a multi-step tool whose
+        // earlier legs already wrote, licensing a same-token double-run. ISE -> -32603, token
+        // SPENT. Path redacted so a psk-bearing path never reaches a log or error envelope.
+        throw new IllegalStateException(
+            "hubInternal* path must not contain a querystring: '${_redactSecretsInPath(path)}'. The platform client escapes an embedded '?' into the literal path (exact routes then 404, wildcard routes silently swallow it) -- pass the parameters as the query map instead, e.g. hubInternalGet('/device/updateLabel', [deviceId: id, label: name]). Do NOT pre-encode the values; the query map does that.")
     }
     def cookie = getHubSecurityCookie()
     def params = [
@@ -4841,29 +4885,13 @@ def formatAge(Long timestamp) {
     return "${days} ${days == 1 ? 'day' : 'days'} ago"
 }
 
-// Central result decoration (SEP-2575): stamped here rather than in each handler, so
-// it also covers the tools/call envelope, which serializes through this same helper on
-// its preserialized fast path.
-//
-// The two keys have DIFFERENT era rules, and the difference is load-bearing:
-//
-//   `resultType` is a 2026-07-28 field and is stamped ONLY on modern-era requests.
-//   Legacy-era clients parse an empty result with a STRICT schema -- the MCP
-//   TypeScript SDK's EmptyResultSchema is ResultSchema.strict(), which REJECTS unknown
-//   keys -- so stamping resultType onto a legacy `ping` reply turns every keepalive
-//   into a client-side protocol error. A handler that needs it regardless of era sets
-//   it itself; handleServerDiscover does, because DiscoverResult requires the field and
-//   discover may legitimately arrive headerless as a compatibility probe.
-//
-//   `_meta` is stamped unconditionally. It is a MODELED key in every revision's Result
-//   schema, so it survives the same strict parse resultType fails, and identifying the
-//   server there is a draft SHOULD.
-//
-// A caller that already set either key keeps its own value: the MRTR pattern returns
-// resultType "input_required", so a future handler must be able to override. The result
-// map is shallow-copied before decoration so a caller's map is never mutated.
-// tools/list nextCursor stays deliberately unimplemented -- see handleToolsList for why
-// the whole catalog ships in one response.
+// Central result decoration (SEP-2575), stamped here so the preserialized tools/call fast path
+// gets it too. The two keys have DIFFERENT era rules and the difference is load-bearing:
+// `resultType` is 2026-07-28-only, because legacy clients parse an empty result with a STRICT
+// schema (the TS SDK's EmptyResultSchema rejects unknown keys) and would fail every `ping`
+// keepalive; `_meta` is unconditional, being a modeled key in every revision. A handler needing
+// resultType regardless of era sets it itself (handleServerDiscover does). A caller-set value
+// always wins -- MRTR returns "input_required" -- and the map is copied before decoration.
 def jsonRpcResult(id, result) {
     def body = result
     if (body instanceof Map) {

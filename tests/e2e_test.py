@@ -37,9 +37,11 @@ import requests
 # ---------------------------------------------------------------------------
 
 PREFIX = "BAT_E2E_"
-# Persistent scaffold devices (the shared switch + temp sensors that rule fixtures reference and the
-# poll tests read) carry this marker so the cleanup sweeps SKIP them by name -- created once and
-# reused across runs, never deleted. Under-test fixtures use the bare PREFIX and are still reaped.
+# Persistent scaffold FIXTURES (the shared switch + temp sensors that rule fixtures reference and the
+# poll tests read, plus the BAT_E2E_KEEP_Room the /device/updateRoom scenario moves a device into)
+# carry this marker so the cleanup sweeps SKIP them by name -- created once and reused across runs,
+# never deleted. Under-test fixtures use the bare PREFIX and are still reaped. A missing KEEP_
+# fixture is a hub-provisioning problem, not a test bug: the owning scenario says how to recreate it.
 # (The watchdog purges apps/vars only, never devices, so this is purely the test-side device sweep;
 # no watchdog change is needed -- the devices are simply named to dodge the sweep.)
 SCAFFOLD_PREFIX = f"{PREFIX}KEEP_"  # "BAT_E2E_KEEP_"
@@ -2102,6 +2104,63 @@ class TestRunner:
         assert show.get("success") is True, f"show-on-home restore failed: {show}"
 
     @test("devices")
+    def test_update_device_room_assign_and_unassign(self) -> None:
+        """UNCONDITIONAL live proof of /device/updateRoom (name-keyed room assignment).
+
+        The bypass-block leg that also touches this endpoint only runs when the arbitrarily-picked
+        unlisted device happens to already be in a room, so it can skip an entire run. This one owns
+        its inputs: the KEEP_ scaffold room (standing infra, see SCAFFOLD_PREFIX) and the scaffold
+        switch. It creates and deletes NOTHING -- it moves the switch in, asserts, reads back, and
+        restores the switch's prior membership.
+        """
+        dev_id = self.get_test_switch_id()
+        room_name = f"{SCAFFOLD_PREFIX}Room"
+
+        # Standing infra, like the KEEP_ devices: resolve it, never create it.
+        rooms = self.client.call_tool("hub_manage_rooms", {"tool": "hub_list_rooms"})
+        room = next((r for r in (rooms.get("rooms", []) if isinstance(rooms, dict) else [])
+                     if r.get("name") == room_name), None)
+        assert room is not None, (
+            f"the standing fixture room '{room_name}' is missing from the test hub. It is permanent "
+            "infra (the KEEP_ prefix keeps it out of every cleanup sweep) -- recreate it once via "
+            f"hub_manage_rooms(tool='hub_create_room', args={{'name': '{room_name}', 'confirm': True}}) "
+            "and this scenario will pass again. Do NOT make this test create it: a per-run create/delete "
+            "churns room ids and races the sweeps.")
+        room_id = str(room.get("id"))
+
+        # Where the switch started, so the finally can put it back.
+        before = self.client.call_tool("hub_manage_devices", {
+            "tool": "hub_get_device", "args": {"deviceId": dev_id}})
+        original_room = (before.get("room") or before.get("roomName")) if isinstance(before, dict) else None
+
+        try:
+            # THE surface under test: name-keyed assignment via /device/updateRoom.
+            assigned = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "room": room_name})
+            assert assigned.get("success") is True, \
+                f"hub_update_device room assign failed -- /device/updateRoom rejected it: {assigned}"
+            assert any(c.get("property") == "room" for c in (assigned.get("changes") or [])), \
+                f"room change not recorded: {assigned}"
+
+            # Independent read-back through the ROOM surface: the device really is in the room.
+            got = self.client.call_tool("hub_manage_rooms", {
+                "tool": "hub_get_room", "args": {"room": room_id}})
+            assert any(str(d.get("id")) == str(dev_id) for d in (got.get("devices") or [])), \
+                f"room '{room_name}' does not list device {dev_id} after the assign: {got}"
+
+            # The unassign leg shares the endpoint and has its own read-back guard in production.
+            unassigned = self.client.call_tool("hub_update_device", {"deviceId": dev_id, "room": ""})
+            assert unassigned.get("success") is True, f"hub_update_device room unassign failed: {unassigned}"
+
+            print(f"    ROOM_ASSIGN ok -- /device/updateRoom moved {dev_id} into '{room_name}' and out again")
+        finally:
+            # Restore prior membership; if it had none, the unassign above already left it correct.
+            if original_room:
+                try:
+                    self.client.call_tool("hub_update_device", {"deviceId": dev_id, "room": str(original_room)})
+                except Exception as exc:
+                    print(f"  [WARN] room-assign cleanup: restoring device {dev_id} to '{original_room}' failed: {exc}")
+
+    @test("devices")
     def test_update_device_default_current_state(self) -> None:
         # Intent: choose which attribute appears in the Status column for a device.
         dev_id = self.get_test_switch_id()
@@ -2182,6 +2241,18 @@ class TestRunner:
         assert created.get("success") is True, f"create from driver failed: {created}"
         new_id = str(created.get("deviceId") or "")
         assert new_id, f"create from driver returned no deviceId: {created}"
+
+        # The label leg is /device/updateLabel -- and this is its only UNCONDITIONAL live proof.
+        # (The bypass-block leg that also exercises it is gated on the arbitrarily-picked device
+        # having a label, so it can skip entirely; see the [COVERAGE GAP] print there.) The envelope
+        # reports `label` as the APPLIED label, falling back to the driver's own default when the
+        # dedicated setter AND the wholesale /device/update fallback both missed -- so a requested
+        # label reading back means the leg worked, and a label warning is the tool's own admission
+        # that it did not.
+        assert created.get("label") == f"{PREFIX}FromDriver",             ("hub_create_device did not apply the requested label -- /device/updateLabel and the "
+             f"wholesale /device/update fallback both missed: label={created.get('label')!r} "
+             f"warnings={created.get('warnings')!r}")
+        assert not [w for w in (created.get("warnings") or []) if "label" in str(w).lower()],             f"hub_create_device warned about the label: {created.get('warnings')!r}"
         try:
             # A freshly created REAL device is NOT MCP-selected, so the scoped hub_get_device
             # (selected/child devices only) can't resolve it. Confirm it exists via the
@@ -6841,8 +6912,9 @@ class TestRunner:
     # hub's verbatim compile error on broken Groovy (not our generic fallback),
     # the client-side expectedVersion optimistic lock (refused, no write), a
     # hub_restore_backup of the pre-update auto-backup (V1 back, undo key returned), and the
-    # OAuth fold (asserted as a hard success -- it covers the /app/updateOAuth port-80
-    # fallback, which only a live hub can prove).
+    # OAuth fold (asserted as a hard success -- it covers /app/updateOAuth reached with a
+    # query MAP, which only a live hub can prove: the old embedded-querystring form 404s
+    # that exact route).
     #
     # test_update_app_code_trigger_updated: the triggerUpdated lifecycle refresh, which needs
     # a running INSTANCE and so creates + cleans up one. Pins that the Done submit lands on
@@ -6991,11 +7063,11 @@ def updateLegMarker() { return "UPDATE-LEG-MARKER-V1" }
             # (Throwaway app, never the MCP server -- the self-OAuth guard protects that.)
             #
             # This asserts SUCCESS outright. It used to accept a structured failure as a pass,
-            # which is exactly how the live 404 hid: /app/updateOAuth is not served by the hub's
-            # :8080 internal router on current firmware, so this leg failed on every run and the
-            # soft branch reported green. The tool now falls back to the port-80 admin server,
-            # so a failure here is a real regression -- either the fallback broke or the hub
-            # stopped serving the endpoint on both bases.
+            # which is exactly how a live 404 hid for months: the tool embedded the querystring
+            # in the request PATH, which the platform's http client treats as literal path
+            # content -- the exact route /app/updateOAuth then never matched. The tool now
+            # passes a query map, so a failure here is a real regression in that conversion
+            # (or the hub stopped serving the endpoint).
             oauth_res = self.client.call_tool("hub_manage_code", {
                 "tool": "hub_update_app",
                 "args": {"appId": code_app_id, "oauth": {"enabled": True}, "confirm": True},
@@ -7008,7 +7080,7 @@ def updateLegMarker() { return "UPDATE-LEG-MARKER-V1" }
             # carries the client secret, and CodeQL's clear-text-logging guard taints anything whose
             # value is control-dependent on it.
             assert ob.get("success") is True, \
-                f"OAuth enable failed -- /app/updateOAuth reachable on neither base? error={ob.get('error')!r} note={ob.get('note')!r}"
+                f"OAuth enable failed -- /app/updateOAuth query-map request rejected? error={ob.get('error')!r} note={ob.get('note')!r}"
             assert ob.get("enabled") is True, "OAuth reported success but not enabled"
             assert ob.get("clientId"), "OAuth enabled but no clientId returned"
 
@@ -7071,6 +7143,7 @@ preferences {
         section {
             input name: "refreshProbe", type: "bool", title: "Round-trip probe", defaultValue: false
             input name: "probeSwitches", type: "capability.switch", title: "Round-trip devices", multiple: true, required: false
+            input name: "lifecycleStamp", type: "text", title: "Lifecycle stamp", required: false
             paragraph "Throwaway triggerUpdated target. Marker: ${triggerLegMarker()}"
         }
     }
@@ -7078,7 +7151,11 @@ preferences {
 
 def installed() { updateStamp("installed") }
 def updated() { updateStamp("updated") }
-def updateStamp(String which) { state.lastLifecycle = which }
+
+// The stamp goes into a SETTING, not state: hub_get_app_config(includeSettings) can read a
+// setting, which is what lets the test prove updated() actually RAN. updatedFired only proves
+// the hub accepted the Done POST.
+def updateStamp(String which) { app.updateSetting("lifecycleStamp", [type: "text", value: which]) }
 
 def triggerLegMarker() { return "TRIGGER-LEG-MARKER-V1" }
 '''
@@ -7182,8 +7259,17 @@ def triggerLegMarker() { return "TRIGGER-LEG-MARKER-V1" }
                  "re-submit blanked it, so the statusJson deviceIdsForDeviceList reconstruction does not "
                  f"cover this hub's shape. settings.probeSwitches={(cfg.get('settings') or {}).get('probeSwitches')!r}")
 
-            print(f"    TRIGGER_UPDATED ok -- updatedFired on instance {instance_app_id}, still installed, "
-                  f"bool + device selection both preserved")
+            # updatedFired only says the hub ACCEPTED the Done POST. The stamp says updated() ran:
+            # installed() wrote "installed" at commit time, so reading "updated" here is the
+            # lifecycle callback's own footprint.
+            stamp = str(((cfg.get("settings") or {}).get("lifecycleStamp")) or "")
+            assert stamp == "updated", \
+                ("triggerUpdated reported updatedFired but updated() left no footprint: "
+                 f"lifecycleStamp={stamp!r} (expected 'updated'; 'installed' means only installed() "
+                 "ever ran, so the Done was accepted without firing the lifecycle callback)")
+
+            print(f"    TRIGGER_UPDATED ok -- updated() ran on instance {instance_app_id} "
+                  f"(lifecycleStamp={stamp}), still installed, bool + device selection both preserved")
         finally:
             if instance_app_id:
                 try:
@@ -9382,20 +9468,22 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             # ---- WRITE bypass endpoints (live proof; spec-stubs masked the updateRoom name bug) ----
             # All reversible / no-op so an arbitrary unlisted device is left exactly as found.
             #
-            # Legs (a) and (c) are the ONLY live coverage of /device/updateLabel and
-            # /device/updateRoom, and both are gated on what the arbitrarily-picked unlisted
-            # device happens to have. A device with no label or no room silently skips them, so
-            # those endpoints can regress with the suite still green. Each skip PRINTS below so
-            # the gap is visible in every run summary instead of being invisible; closing it
-            # properly needs a fixture device we control with a room assigned.
+            # Legs (a) and (c) are gated on what the arbitrarily-picked unlisted device happens to
+            # have, so either can skip an entire run. Neither is the ONLY coverage of its endpoint
+            # any more, so a skip is no longer a hole: /device/updateLabel is proven
+            # unconditionally by test_create_device_from_driver_type (it asserts the applied label),
+            # and /device/updateRoom by test_update_device_room_assign_and_unassign (own fixture
+            # room + the scaffold switch). What these legs add is the UNLISTED-device path -- the
+            # allowlist bypass itself -- which is why the skip still prints.
             orig_label = dev.get("label") or dev.get("name")
             cmd_names = [c.get("name") for c in (dev.get("commands") or []) if isinstance(c, dict)]
             orig_room = dev.get("room")
 
             # (a) label rename via /device/updateLabel, then restore the original (reversible write).
             if not orig_label:
-                print(f"    [COVERAGE GAP] bypass leg (a) SKIPPED: device {unauth} has no label/name, "
-                      f"so /device/updateLabel got NO live coverage this run")
+                print(f"    [BYPASS LEG SKIPPED] leg (a): device {unauth} has no label/name, so the "
+                      f"UNLISTED-device path for /device/updateLabel was not exercised this run "
+                      f"(the endpoint itself is covered unconditionally elsewhere)")
             if orig_label:
                 up = self.client.call_tool("hub_update_device", {"deviceId": unauth, "label": f"{orig_label} _BWTEST"})
                 assert up.get("success") is True, f"bypass label rename did not succeed: {up}"
@@ -9412,8 +9500,9 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             # (c) room assign via /device/updateRoom, re-assigning to the SAME room (a no-op move that
             # proves the NAME-keyed endpoint returns true without relocating the device).
             if not orig_room:
-                print(f"    [COVERAGE GAP] bypass leg (c) SKIPPED: device {unauth} is in no room, "
-                      f"so /device/updateRoom got NO live coverage this run")
+                print(f"    [BYPASS LEG SKIPPED] leg (c): device {unauth} is in no room, so the "
+                      f"UNLISTED-device path for /device/updateRoom was not exercised this run "
+                      f"(the endpoint itself is covered unconditionally elsewhere)")
             if orig_room:
                 rr = self.client.call_tool("hub_update_device", {"deviceId": unauth, "room": orig_room})
                 assert rr.get("success") is True, f"bypass same-room re-assign did not succeed: {rr}"
@@ -10351,26 +10440,39 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             f"the 404 body must still carry -32601 (the era signal): {str(resp.json())[:300]}"
 
     @test("protocol")
-    def test_spoofed_origin_rejected_with_403(self) -> None:
-        """Streamable HTTP security MUST: a present Origin naming none of the server's
-        known identities (its LAN IP, cloud.hubitat.com, loopback) is answered with HTTP
-        403 Forbidden. Applies on both eras, so this rides a headerless request.
+    def test_foreign_origin_is_served_by_default(self) -> None:
+        """Origin validation is LOG-ONLY by default, so a foreign Origin is SERVED (HTTP 200).
 
-        The comparison is deliberately NOT against the request's Host header: through the
-        relay Host is cloud.hubitat.com, and in a real rebinding attack Origin and Host
-        both name the attacker's domain, so a self-referential check would pass. Every
-        other call in this suite sends no Origin at all, which is the pass case — that is
-        how server-to-server MCP clients look."""
+        The transport spec says reject with 403, and this endpoint deliberately does not by default:
+        its access token rides in the URL, so a DNS-rebound page cannot authenticate and a tokenless
+        request never reaches the handler, while enforcing would newly break reverse-proxy and
+        browser-client setups no shipped version ever rejected. Enforcement is an opt-in Advanced
+        toggle (enforceOriginValidation); the 403 path is covered by the Spock suite, not here --
+        flipping a hub setting mid-run to prove it would race every other scenario.
+
+        What this asserts live is the DEFAULT: the request is served, and the mismatch is logged
+        rather than silently ignored.
+        """
         resp = self.client.raw_request(
             {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
             headers={"Origin": "http://evil.example"},
         )
-        assert resp.status_code == 403, \
-            f"a spoofed Origin must be HTTP 403, got {resp.status_code}: {resp.text[:300]!r}"
-        body = resp.json()
-        assert body.get("id") is None, f"the 403 body must be a JSON-RPC error with no id: {str(body)[:300]}"
-        assert "Origin" in body.get("error", {}).get("message", ""), \
-            f"the 403 body must name the Origin header: {str(body)[:300]}"
+        assert resp.status_code == 200, \
+            ("a foreign Origin must be SERVED in the default log-only mode, got "
+             f"{resp.status_code}: {resp.text[:300]!r} -- if this is a 403, enforceOriginValidation "
+             "is ON for this install (it ships OFF)")
+        assert isinstance(resp.json().get("result", {}).get("tools"), list), \
+            f"the foreign-Origin request did not dispatch: {str(resp.json())[:300]}"
+
+        # ALLOW branch: the relay fronts this endpoint, so cloud.hubitat.com is a known identity and
+        # produces no mismatch log at all. Both branches return 200 in this mode -- the difference is
+        # only in the hub log -- so this pins that a KNOWN origin is at least not broken by the check.
+        allowed = self.client.raw_request(
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+            headers={"Origin": "https://cloud.hubitat.com"},
+        )
+        assert allowed.status_code == 200, \
+            f"Origin https://cloud.hubitat.com must be allowed, got {allowed.status_code}: {allowed.text[:300]!r}"
 
     @test("protocol")
     def test_initialize_returns_instructions(self) -> None:
@@ -10408,8 +10510,7 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
     @test("protocol")
     def test_notification_returns_202(self) -> None:
         """An all-notifications POST (no id) returns HTTP 202 Accepted with an
-        empty body per MCP Streamable HTTP — replaces the prior 204, which some
-        clients/relays mishandle."""
+        empty body, per MCP Streamable HTTP."""
         resp = self.client.raw_request({"jsonrpc": "2.0", "method": "notifications/initialized"})
         assert resp.status_code == 202, \
             f"Expected HTTP 202 for a notification, got {resp.status_code}: {resp.text[:200]!r}"

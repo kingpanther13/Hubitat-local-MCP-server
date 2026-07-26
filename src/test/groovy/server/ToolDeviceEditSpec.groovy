@@ -141,6 +141,32 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         !hubGet.calls.any { it.path.startsWith('/device/setShowOnHome') }
     }
 
+    def "toolUpdateDevice showOnHome does NOT fall back when the ?-in-path guard fires"() {
+        // A real hub 404 SHOULD reach the preference/save fallback (the feature below). The guard
+        // must NOT: it means a caller regressed to an embedded querystring, and laundering it into
+        // the fallback would let the broken dedicated endpoint report success forever.
+        given:
+        def device = new TestDevice(id: 10, label: 'Porch Light')
+        childDevicesList << device
+        hubGet.register('/device/setShowOnHome') { params ->
+            throw new IllegalStateException(
+                "hubInternal* path must not contain a querystring: '/device/setShowOnHome?deviceId=10' -- pass the query map instead")
+        }
+        hubGet.register('/device/fullJson/10') { params -> '{"device":{"id":10,"label":"Porch Light","showOnHome":true}}' }
+        boolean fellBack = false
+        script.metaClass.hubInternalPostJson = { String path, String jsonBody, int timeout = 420, boolean isRetry = false ->
+            fellBack = true; return [status: 200]
+        }
+
+        when:
+        def result = script.toolUpdateDevice([deviceId: '10', showOnHome: true])
+
+        then: 'the guard surfaces as a per-property error and the fallback was never attempted'
+        !fellBack
+        result.changes.find { it.property == 'showOnHome' } == null
+        result.errors.find { it.property == 'showOnHome' }?.error?.contains('querystring')
+    }
+
     def "toolUpdateDevice showOnHome falls back to /device/preference/save when the dedicated GET is absent"() {
         given: 'the dedicated setShowOnHome endpoint 404s (older firmware) -- the GET throws'
         def device = new TestDevice(id: 10, label: 'Porch Light')

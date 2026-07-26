@@ -1,20 +1,16 @@
 package support
 
 /**
- * Programmable stub for hubInternalGet(path, params).
- * Call register(path, responseClosure) to define a stubbed response;
- * calling hubInternalGet with a registered path returns the closure's
- * result; unregistered paths throw so tests fail loudly.
+ * Programmable stub for hubInternalGet(path, params). {@code register(key, closure)} defines a
+ * response; an unregistered call throws so tests fail loudly. A key is either the bare path or
+ * {@code path?k=v&k=v} -- production passes query parameters as a MAP, so {@link #composeKey}
+ * recomposes that form and it is tried first, keeping a query-bearing registration meaningful.
+ * Key values are RAW; the query map does the wire encoding, so registrations never pre-encode.
  *
- * A registration key may be either the bare path ({@code '/app/ajax/code'}) or the path with
- * its querystring ({@code '/device/updateLabel?deviceId=5&label=Den'}). Production passes
- * query parameters as a MAP -- an embedded '?' in the path is escaped into the literal path
- * by the platform client and 404s exact hub routes, which is why the query map is mandatory
- * (see the guard in {@code _hubRequest}) -- so this mock recomposes {@code path?k=v&k=v} from
- * the map and tries that key FIRST, falling back to the bare path. That keeps a
- * query-bearing registration meaningful: it pins the exact parameters production sent, and it
- * matches the pre-query-map spelling byte for byte, so a conversion that changed the wire
- * form would fail its existing test rather than silently pass.
+ * {@link #call} re-enforces {@code _hubRequest}'s ?-in-path guard: the harness metaClass-shadows
+ * hubInternalGet so production's guard never runs in a spec, and without it an embedded call and
+ * a query-map call compose to the SAME key, leaving every conversion unpinned. Keys legitimately
+ * contain '?', so only the path ARGUMENT is gated.
  */
 class HubInternalGetMock {
     private final Map<String, Closure> handlers = [:]
@@ -36,6 +32,15 @@ class HubInternalGetMock {
     }
 
     Object call(String path, Map params = [:]) {
+        // Mirror production's _hubRequest guard, which the harness's metaClass shadow bypasses.
+        // Same exception type as production so a spec asserting the guard sees the real thing.
+        if (path?.contains('?')) {
+            throw new IllegalStateException(
+                "hubInternal* path must not contain a querystring: '${path}'. The platform client " +
+                "escapes an embedded '?' into the literal path (exact routes then 404) -- pass the " +
+                "parameters as the query map instead. This mock enforces the same guard as " +
+                "_hubRequest, which the harness metaClass shadow would otherwise bypass.")
+        }
         String composed = composeKey(path, params)
         // `path` is what production actually passed (bare, no querystring -- that is the
         // contract now). `key` is the recomposed path?query form, which is what a spec

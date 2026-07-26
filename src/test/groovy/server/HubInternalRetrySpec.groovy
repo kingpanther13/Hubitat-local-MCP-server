@@ -468,8 +468,14 @@ class HubInternalRetrySpec extends ToolSpecBase {
         when:
         invoke.call(script)
 
-        then:
-        def ex = thrown(IllegalArgumentException)
+        then: 'IllegalStateException, NOT IllegalArgumentException'
+        // An IAE maps to -32602, and the opToken machinery RELEASES a token on -32602 because
+        // that code promises nothing was committed. This guard can fire on a LATER leg of a
+        // multi-step tool whose earlier legs already wrote, so a release would license a
+        // same-token double-run over committed work. An ISE lands in the generic catch
+        // (-32603/isError), which SPENDS the token.
+        def ex = thrown(IllegalStateException)
+        !(ex instanceof IllegalArgumentException)
         ex.message.contains('must not contain a querystring')
         ex.message.contains('query map')
 
@@ -478,15 +484,28 @@ class HubInternalRetrySpec extends ToolSpecBase {
 
         where:
         // hubInternalGet is deliberately absent: HarnessSpec metaClass-shadows it onto the
-        // HubInternalGetMock, so a call here would never reach _hubRequest. Every variant below
-        // does reach it, and they all funnel through the same guard line, so the shadowed one is
-        // covered by construction.
+        // HubInternalGetMock, so a call here would never reach _hubRequest. That shadow is why
+        // the mock enforces the same guard itself (see HubInternalGetMock.call). Every variant
+        // below reaches _hubRequest, and they all funnel through the same guard line.
         variant                  | invoke
         'hubInternalGetRaw'      | { s -> s.hubInternalGetRaw('/installedapp/create/5?x=1') }
         'hubInternalPost'        | { s -> s.hubInternalPost('/hub/x?y=1', [:]) }
         'hubInternalPostForm'    | { s -> s.hubInternalPostForm('/installedapp/update/json?a=b', [:]) }
         'hubInternalPostJson'    | { s -> s.hubInternalPostJson('/app/saveOrUpdateJson?a=b', '{}') }
         'hubInternalPostFormRaw' | { s -> s.hubInternalPostFormRaw('/installedapp/btn?a=b', 'k=v') }
+    }
+
+    def "the guard message redacts a secret-bearing path"() {
+        // The WiFi-join leg carries the network password. Even though that path now rides a query
+        // map, a REGRESSION that put it back in the path must not leak the psk into the error
+        // envelope or the hub log.
+        when:
+        script.hubInternalPost('/hub/advanced/setWiFiNetworkInfo?ssid=Net&psk=supersecret', [:])
+
+        then:
+        def ex = thrown(IllegalStateException)
+        !ex.message.contains('supersecret')
+        ex.message.contains('psk=***')
     }
 
     def "a bare path with query parameters supplied as a map is passed through as path + query"() {

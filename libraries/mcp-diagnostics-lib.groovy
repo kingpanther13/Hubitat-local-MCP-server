@@ -98,6 +98,12 @@ private _radioGet(String path, Map query = null) {
 // fail the whole hub_get_radio_details read -- the miss stays visible per-include.
 private _radioGetSafe(String path, Map query = null) {
     try { return _radioGet(path, query) }
+    catch (IllegalStateException guardErr) {
+        // The ?-in-path guard is a server coding bug, not a hub fault -- rethrow it so it cannot
+        // be laundered into an {error} map that a caller reports as a per-include miss (see
+        // _hubRequest's rethrow contract).
+        throw guardErr
+    }
     catch (Exception e) {
         mcpLog("debug", "hub-admin", "_radioGetSafe ${path} failed: ${e.message}")
         return [error: "Failed to fetch ${path}: ${e.message}"]

@@ -1634,6 +1634,102 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         response.result.tools instanceof List
     }
 
+    def "GET on the endpoint is 405 regardless of Origin -- the POST-only rule is the outer boundary"() {
+        // Documents the real boundary: handleMcpGet answers before any Origin logic, so a browser
+        // GET from a foreign origin gets the POST-only 405, not the 403. Neither leaks anything;
+        // pinning it stops a future reader "fixing" handleMcpGet to 403 and changing the contract.
+        given:
+        mcpDriver.pushHeaders(['Origin': 'http://evil.example'])
+
+        when:
+        script.handleMcpGet()
+
+        then:
+        mcpDriver.lastRenderArgs.status == 405
+        mcpDriver.parseResponseJson().error.code == -32600
+    }
+
+    def "a modern-header all-notifications batch still answers 202"() {
+        // Header requirements for a notification POST are undefined by the spec, and that exemption
+        // must survive a BATCH of them -- the batch rejection is scoped to POSTs carrying a request.
+        given:
+        mcpDriver.pushHeaders(['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'tools/list'])
+        mcpDriver.pushBody([
+            [jsonrpc: '2.0', method: 'notifications/initialized', params: [:]],
+            [jsonrpc: '2.0', method: 'notifications/initialized', params: [:]],
+        ])
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        mcpDriver.lastRenderArgs.status == 202
+        mcpDriver.lastRenderArgs.data == ''
+    }
+
+    def "a modern request with an Mcp-Method header but NO body method is a -32020 mismatch"() {
+        // The mirrored header must match the body, and "the body has no method at all" is a
+        // mismatch, not a pass -- otherwise a malformed body could smuggle past the check.
+        given:
+        mcpDriver.pushHeaders(['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'tools/list'])
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 450])
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        mcpDriver.lastRenderArgs.status == 400
+        def response = mcpDriver.parseResponseJson()
+        response.error.code == -32020
+        response.error.message.contains('Mcp-Method')
+    }
+
+    def "an MCP-Protocol-Version value with trailing whitespace is NOT the modern era"() {
+        // Header VALUES compare exactly (RFC 9110 makes only NAMES case-insensitive), and the era
+        // switch is an exact value match. A padded value is therefore legacy -- pinned so nobody
+        // "helpfully" adds a trim() and silently widens the era switch.
+        given:
+        mcpDriver.pushHeaders(['MCP-Protocol-Version': '2026-07-28 '])
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 451, method: 'tools/list', params: [:]])
+
+        when:
+        script.handleMcpRequest()
+
+        then: 'not modern: no Mcp-Method demanded, no resultType stamped, 200'
+        mcpDriver.lastRenderArgs.status == null
+        def response = mcpDriver.parseResponseJson()
+        response.error == null
+        !response.result.containsKey('resultType')
+    }
+
+    def "server/discover works on the modern era too, with its headers validated"() {
+        // discover is reachable in BOTH eras. Headerless is pinned above; this is the modern side,
+        // where the mirrored Mcp-Method must match or the call never reaches the handler.
+        given:
+        settingsMap.useGateways = true
+        mcpDriver.pushHeaders(['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'server/discover'])
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 452, method: 'server/discover', params: [:]])
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        mcpDriver.lastRenderArgs.status == null
+        def response = mcpDriver.parseResponseJson()
+        response.error == null
+        response.result.supportedVersions[0] == '2026-07-28'
+        response.result.resultType == 'complete'
+
+        when: 'the same call with a MISMATCHED Mcp-Method never reaches the handler'
+        mcpDriver.pushHeaders(['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'tools/list'])
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 453, method: 'server/discover', params: [:]])
+        script.handleMcpRequest()
+
+        then:
+        mcpDriver.lastRenderArgs.status == 400
+        mcpDriver.parseResponseJson().error.code == -32020
+    }
+
     // ---- Origin validation (DNS-rebinding defence, both eras) ----
     //
     // The comparison is against identities the SERVER knows for itself
@@ -1647,7 +1743,8 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         // Streamable HTTP: "servers MUST validate the Origin header on all incoming
         // connections to prevent DNS rebinding attacks... respond with HTTP 403
         // Forbidden. The body MAY comprise a JSON-RPC error response that has no id."
-        given: 'the attacker sends a matching Host too -- exactly what a rebinding browser does'
+        given: 'enforcement ON (opt-in; the default is log-only) and the attacker sends a matching Host too -- exactly what a rebinding browser does'
+        settingsMap.enforceOriginValidation = true
         mcpDriver.pushHeaders(['Origin': 'http://evil.example', 'Host': 'evil.example'])
         mcpDriver.pushBody([jsonrpc: '2.0', id: 400, method: 'tools/list', params: [:]])
 
@@ -1665,7 +1762,8 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
 
     @spock.lang.Unroll
     def "Origin #origin gives allowed=#allowed when the hub's localIP is 192.168.1.133"() {
-        given: 'a Host that always AGREES with the Origin, to prove Host plays no part'
+        given: 'enforcement ON so a mismatch is observable as a status, plus a Host that always AGREES with the Origin to prove Host plays no part'
+        settingsMap.enforceOriginValidation = true
         mcpDriver.pushHeaders(['Origin': origin, 'Host': 'whatever.example'])
         mcpDriver.pushBody([jsonrpc: '2.0', id: 401, method: 'ping', params: [:]])
 
@@ -1700,7 +1798,8 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
     }
 
     def "an unreadable hub localIP narrows the allowed set to the static identities instead of failing open"() {
-        given: 'firmware with no localIP -- location.hub present but the property is null'
+        given: 'enforcement ON, and firmware with no localIP -- location.hub present but the property is null'
+        settingsMap.enforceOriginValidation = true
         sharedLocation.hub = new TestHub()
         mcpDriver.pushHeaders(['Origin': 'https://cloud.hubitat.com'])
         mcpDriver.pushBody([jsonrpc: '2.0', id: 403, method: 'ping', params: [:]])
@@ -1734,6 +1833,124 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         mcpDriver.parseResponseJson().error == null
     }
 
+    @spock.lang.Unroll
+    def "additionalAllowedOrigins admits #origin when configured as #setting"() {
+        // Additive escape hatch for reverse-proxy / remote-access fronting, where a browser
+        // client's Origin is neither the hub's LAN address nor cloud.hubitat.com. Deny-by-default
+        // is unchanged: only names listed here are added.
+        given: 'enforcement ON, so an allow verdict is observable as "not 403"'
+        settingsMap.enforceOriginValidation = true
+        settingsMap.additionalAllowedOrigins = setting
+        mcpDriver.pushHeaders(['Origin': origin])
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 410, method: 'ping', params: [:]])
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        mcpDriver.lastRenderArgs.status == null
+
+        where:
+        setting                                    | origin
+        'mcp.example.com'                          | 'https://mcp.example.com'
+        // whitespace and case are tolerated, and a port on the request side is ignored
+        '  mcp.example.com  '                      | 'https://MCP.Example.COM:8443'
+        // multi-entry, with a blank the split must drop
+        'a.example.com, ,mcp.example.com'          | 'https://mcp.example.com'
+        // a pasted URL still reduces to its hostname
+        'https://mcp.example.com:8443/mcp'         | 'https://mcp.example.com'
+    }
+
+    def "an origin NOT in additionalAllowedOrigins is still rejected (the hatch is additive, not a bypass)"() {
+        given:
+        settingsMap.enforceOriginValidation = true
+        settingsMap.additionalAllowedOrigins = 'mcp.example.com'
+        mcpDriver.pushHeaders(['Origin': 'http://evil.example'])
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 411, method: 'ping', params: [:]])
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        mcpDriver.lastRenderArgs.status == 403
+    }
+
+    def "an unset additionalAllowedOrigins changes nothing"() {
+        given: 'enforcement ON and the setting absent entirely -- the default allowlist still governs'
+        settingsMap.enforceOriginValidation = true
+        settingsMap.remove('additionalAllowedOrigins')
+        mcpDriver.pushHeaders(['Origin': 'https://mcp.example.com'])
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 412, method: 'ping', params: [:]])
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        mcpDriver.lastRenderArgs.status == 403
+
+        and: 'and the hub LAN address is still admitted'
+        mcpDriver.pushHeaders(['Origin': 'http://192.168.1.133'])
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 413, method: 'ping', params: [:]])
+        script.handleMcpRequest()
+        mcpDriver.lastRenderArgs.status == null
+    }
+
+    def "by DEFAULT a mismatched Origin is SERVED, not rejected (validation is log-only)"() {
+        // Deliberate deviation from the spec MUST, recorded on _originAllowed: the token lives in
+        // the request URL, so a rebound page cannot authenticate and a tokenless request never
+        // reaches this handler -- while enforcing by default would newly 403 working reverse-proxy
+        // and browser-client setups that no shipped version ever rejected.
+        given: 'enforceOriginValidation unset -- the shipped default'
+        settingsMap.remove('enforceOriginValidation')
+        mcpDriver.pushHeaders(['Origin': 'http://evil.example', 'Host': 'evil.example'])
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 420, method: 'tools/list', params: [:]])
+
+        when:
+        script.handleMcpRequest()
+
+        then: 'served normally -- no 403, and the request actually dispatched'
+        mcpDriver.lastRenderArgs.status == null
+        def response = mcpDriver.parseResponseJson()
+        response.id == 420
+        response.error == null
+        response.result.tools instanceof List
+    }
+
+    def "the log-only mismatch is still reported at error level with both sides named"() {
+        // Log-only must not mean silent: the mismatch is the only trace, so it carries the offending
+        // origin, the allowed set, and the fact that enforcement is off.
+        given:
+        settingsMap.enforceOriginValidation = false
+        stateMap.debugLogs = [entries: [], config: [logLevel: 'debug', maxEntries: 1000]]
+        settingsMap.mcpLogLevel = 'debug'
+        mcpDriver.pushHeaders(['Origin': 'http://evil.example'])
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 421, method: 'ping', params: [:]])
+
+        when:
+        script.handleMcpRequest()
+
+        then: 'served, and an error-level entry explains why it was not rejected'
+        mcpDriver.lastRenderArgs.status == null
+        def entry = (stateMap.debugLogs?.entries ?: []).find { it.message?.contains('Origin') }
+        entry != null
+        entry.level == 'error'
+        entry.message.contains('evil.example')
+        entry.message.contains('enforceOriginValidation is off')
+    }
+
+    def "explicitly enabling enforcement restores the 403"() {
+        given:
+        settingsMap.enforceOriginValidation = true
+        mcpDriver.pushHeaders(['Origin': 'http://evil.example'])
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 422, method: 'ping', params: [:]])
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        mcpDriver.lastRenderArgs.status == 403
+    }
+
     def "an absent Origin always passes -- server-to-server MCP clients never send one"() {
         given: 'a Host but no Origin at all'
         mcpDriver.pushHeaders(['Host': '192.168.1.133'])
@@ -1748,7 +1965,8 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
     }
 
     def "the Origin check runs before the body is parsed -- a rebinding POST cannot reach dispatch"() {
-        given: 'a bad Origin AND a body whose read would throw'
+        given: 'enforcement ON, a bad Origin, AND a body whose read would throw'
+        settingsMap.enforceOriginValidation = true
         mcpDriver.pushHeaders(['Origin': 'http://evil.example'])
         mcpDriver.pushBodyThrowing(new RuntimeException('body must never be read'))
 
