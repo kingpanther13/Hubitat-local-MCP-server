@@ -8,3 +8,7 @@ gradlew text eol=lf
 *.bat text eol=crlf
 *.jar binary
 *.zip binary
+# Vendored upstream MCP JSON Schemas. Their byte hashes are recorded as provenance in
+# src/test/resources/mcp-schema/README.md, so they must never be line-ending-normalized
+# (core.autocrlf=true would otherwise rewrite them on a Windows checkout).
+src/test/resources/mcp-schema/** -text
