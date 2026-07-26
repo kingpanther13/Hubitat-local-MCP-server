@@ -563,13 +563,26 @@ class ToolImportUrlSpec extends ToolSpecBase {
     }
 
     // -------- triggerUpdated --------
+    //
+    // The lifecycle refresh submits the classic "Done" form to /installedapp/update/json --
+    // NOT a POST to /installedapp/configure/<id>/<page>, which is the HTML UI page and
+    // answers POST with 405 on current firmware (verified live on 2.5.0.159). It shares
+    // _submitAppDoneForm with the install-commit path, so it first reads the instance's
+    // configPage; these specs register that GET.
 
-    def "hub_update_app with triggerUpdated fires updated() POST after save and reports updatedFired=true"() {
+    /** Minimal /installedapp/configure/json/<id> payload _submitAppDoneForm can build a Done body from. */
+    private static String instanceConfigJson(int id) {
+        """{"app":{"id":${id},"version":7,"installed":true},"configPage":{"name":"mainPage","sections":[]}}"""
+    }
+
+    def "hub_update_app with triggerUpdated submits Done to /installedapp/update/json and reports updatedFired=true"() {
         given:
         enableWrite()
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "source": "old", "version": 5}'
         }
+        and: 'the lifecycle Done submit reads the target instance configPage first'
+        hubGet.register('/installedapp/configure/json/194') { params -> instanceConfigJson(194) }
         // The code save rides hubInternalPostJson; the lifecycle fire rides hubInternalPostForm.
         // Both append to one list so the save-then-fire ordering stays pinned.
         def posts = []
@@ -578,7 +591,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
             [success: true]
         }
         script.metaClass.hubInternalPostForm = { String path, Map body ->
-            posts << [helper: 'form', path: path]
+            posts << [helper: 'form', path: path, body: body]
             [status: 200, location: null, data: '']
         }
         script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
@@ -596,16 +609,29 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.triggerUpdated == 194
         result.updatedFired == true
         posts.size() == 2
-        posts[0] == [helper: 'json', path: '/app/saveOrUpdateJson']
-        posts[1] == [helper: 'form', path: '/installedapp/configure/194/mainPage']
+        posts[0].helper == 'json'
+        posts[0].path == '/app/saveOrUpdateJson'
+
+        and: 'the lifecycle leg is the Done form submit, aimed at the instance, NOT the configure page'
+        posts[1].helper == 'form'
+        posts[1].path == '/installedapp/update/json'
+        posts[1].path != '/installedapp/configure/194/mainPage'   // the 405 route this replaced
+
+        and: 'the body is a real Done submit for that instance, not a bare _action_Done'
+        posts[1].body.id == '194'
+        posts[1].body.formAction == 'update'
+        posts[1].body._action_update == 'Done'
+        posts[1].body.currentPage == 'mainPage'
+        posts[1].body.version == '7'
     }
 
-    def "hub_update_app with triggerUpdated reports updatedFired=false + repairHints when lifecycle POST throws"() {
+    def "hub_update_app with triggerUpdated reports updatedFired=false + repairHints when the Done submit throws"() {
         given:
         enableWrite()
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "source": "old", "version": 5}'
         }
+        hubGet.register('/installedapp/configure/json/194') { params -> instanceConfigJson(194) }
         def savePostCount = 0
         script.metaClass.hubInternalPostJson = { String path, String body ->
             savePostCount++
@@ -631,12 +657,45 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.success == true
         result.triggerUpdated == 194
         result.updatedFired == false
-        result.repairHints?.any { it.toString().contains('lifecycle-fire POST failed') }
+        result.repairHints?.any { it.toString().contains('/installedapp/update/json') }
+        result.repairHints?.any { it.toString().contains('194') }
         // Pins that BOTH posts were attempted -- the save + the lifecycle fire.
         // Without this, a regression that throws before reaching the lifecycle POST
         // could produce the same envelope shape while never trying the second POST.
         savePostCount == 1
-        lifecyclePaths == ['/installedapp/configure/194/mainPage']
+        lifecyclePaths == ['/installedapp/update/json']
+    }
+
+    def "hub_update_app with triggerUpdated treats a 4xx Done response as a failure, not a fired lifecycle"() {
+        // Regression pin for the live 405: hubInternalPostForm hands back a status for any
+        // response the platform client does not throw on, and the pre-fix code never looked
+        // at it -- so a rejected Done reported updatedFired:true and the caller believed the
+        // lifecycle had refreshed when it had not.
+        given:
+        enableWrite()
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "source": "old", "version": 5}'
+        }
+        hubGet.register('/installedapp/configure/json/194') { params -> instanceConfigJson(194) }
+        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true] }
+        script.metaClass.hubInternalPostForm = { String path, Map body ->
+            [status: 405, location: null, data: 'Method Not Allowed']
+        }
+        script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
+
+        when:
+        def result = script.toolUpdateAppCode([
+            appId: '42',
+            source: 'new source',
+            triggerUpdated: 194,
+            confirm: true
+        ])
+
+        then: 'the code save still committed, but the lifecycle refresh is reported as failed'
+        result.success == true
+        result.updatedFired == false
+        result.partial == true
+        result.repairHints?.any { it.toString().contains('405') }
     }
 
     def "hub_update_app without triggerUpdated does NOT fire updated() (negative pin matches UI behavior)"() {
@@ -680,6 +739,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "source": "old", "version": 5}'
         }
+        hubGet.register('/installedapp/configure/json/194') { params -> instanceConfigJson(194) }
         script.metaClass.hubInternalPostJson = { String path, String body -> [success: true] }
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             throw new RuntimeException('hub rejected lifecycle POST')

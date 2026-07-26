@@ -6833,12 +6833,22 @@ class TestRunner:
                     print(f"  [WARN] deadman cleanup: delete code class {code_app_id} failed: {exc}")
 
     # -----------------------------------------------------------------------
-    # GROUP 4d: app_code_update (1 test) -- the hub_update_app code-deploy path
-    # (POST /app/saveOrUpdateJson). One throwaway code class, four legs before its delete:
+    # GROUP 4d: app_code_update (2 tests) -- the hub_update_app code-deploy path
+    # (POST /app/saveOrUpdateJson).
+    #
+    # test_update_app_code_lifecycle: one throwaway code class, five legs before its delete:
     # a real round-trip edit (success + version advance + source landed), the
     # hub's verbatim compile error on broken Groovy (not our generic fallback),
-    # the client-side expectedVersion optimistic lock (refused, no write), and a
-    # hub_restore_backup of the pre-update auto-backup (V1 back, undo key returned).
+    # the client-side expectedVersion optimistic lock (refused, no write), a
+    # hub_restore_backup of the pre-update auto-backup (V1 back, undo key returned), and the
+    # OAuth fold (asserted as a hard success -- it covers the /app/updateOAuth port-80
+    # fallback, which only a live hub can prove).
+    #
+    # test_update_app_code_trigger_updated: the triggerUpdated lifecycle refresh, which needs
+    # a running INSTANCE and so creates + cleans up one. Pins that the Done submit lands on
+    # /installedapp/update/json (the old /installedapp/configure/<id>/mainPage route is a 405
+    # on current firmware and silently never fired) AND that the re-submit round-trips the
+    # instance's configured settings instead of re-applying the code's defaults.
     # -----------------------------------------------------------------------
 
     @test("app_code_update")
@@ -6977,9 +6987,15 @@ def updateLegMarker() { return "UPDATE-LEG-MARKER-V1" }
                 f"restore reported success but the version did not advance ({version_after} -> {after_restore.get('version')})"
 
             # Leg 5 (#259): enable OAuth on the (oauth:true-declaring) code class via the
-            # hub_update_app oauth fold -- the programmatic "Enable OAuth in App". The leg MUST
-            # dispatch and return a structured oauth block; on success the hub returns the generated
-            # clientId. (Throwaway app, never the MCP server -- the self-OAuth guard protects that.)
+            # hub_update_app oauth fold -- the programmatic "Enable OAuth in App".
+            # (Throwaway app, never the MCP server -- the self-OAuth guard protects that.)
+            #
+            # This asserts SUCCESS outright. It used to accept a structured failure as a pass,
+            # which is exactly how the live 404 hid: /app/updateOAuth is not served by the hub's
+            # :8080 internal router on current firmware, so this leg failed on every run and the
+            # soft branch reported green. The tool now falls back to the port-80 admin server,
+            # so a failure here is a real regression -- either the fallback broke or the hub
+            # stopped serving the endpoint on both bases.
             oauth_res = self.client.call_tool("hub_manage_code", {
                 "tool": "hub_update_app",
                 "args": {"appId": code_app_id, "oauth": {"enabled": True}, "confirm": True},
@@ -6991,11 +7007,10 @@ def updateLegMarker() { return "UPDATE-LEG-MARKER-V1" }
             # ob-derived value -- not even a branch-chosen literal note -- into the print below: ob
             # carries the client secret, and CodeQL's clear-text-logging guard taints anything whose
             # value is control-dependent on it.
-            assert "success" in ob, "oauth block missing 'success'"
-            if ob.get("success") is True:
-                assert ob.get("clientId"), "OAuth enabled but no clientId returned"
-            else:
-                assert ob.get("error"), "OAuth leg failed without a structured error"
+            assert ob.get("success") is True, \
+                f"OAuth enable failed -- /app/updateOAuth reachable on neither base? error={ob.get('error')!r} note={ob.get('note')!r}"
+            assert ob.get("enabled") is True, "OAuth reported success but not enabled"
+            assert ob.get("clientId"), "OAuth enabled but no clientId returned"
 
             print(f"    APP_CODE_UPDATE ok -- v{version_before}->v{version_after}; compile error + lock conflict both refused with no write; restore brought V1 back (undo key {pre_restore_key}); OAuth leg checked")
         finally:
@@ -7007,6 +7022,147 @@ def updateLegMarker() { return "UPDATE-LEG-MARKER-V1" }
                     })
                 except Exception as exc:
                     print(f"  [WARN] app-code update cleanup: delete code class {code_app_id} failed: {exc}")
+
+    @test("app_code_update")
+    def test_update_app_code_trigger_updated(self) -> None:
+        """hub_update_app(triggerUpdated=<instance>) must fire updated() on a running instance
+        after the code save AND leave that instance's configured settings intact.
+
+        The lifecycle refresh submits the classic "Done" form to /installedapp/update/json --
+        the same submit the install-commit uses. It previously POSTed to
+        /installedapp/configure/<id>/mainPage, which is the HTML UI page: current firmware
+        answers POST there with 405, so the refresh never fired and the caller got
+        updatedFired:false + partial:true. Only a live hub proves which route the firmware
+        accepts, so this scenario is the regression pin.
+
+        Sharing the Done-submit with the install path brings a blanking hazard with it: that
+        submit re-sends every input on the page, so on an already-CONFIGURED instance it must
+        round-trip the stored values rather than re-apply the code's defaults. The target
+        therefore declares a bool input defaulting to FALSE which the test sets to TRUE before
+        the refresh -- so "settings survived" is distinguishable from "defaults re-applied",
+        which would read back false.
+
+        Needs a running INSTANCE (not just a code class), so it creates and cleans up both.
+        Named "Deadman Test Target ..." in namespace mcptest so the Layer 5 sweep reclaims a
+        stranded copy -- instance included -- if a crash skips the finally."""
+        source_v1 = '''\
+definition(
+    name: "Deadman Test Target Trigger",
+    namespace: "mcptest",
+    author: "ci",
+    description: "Throwaway e2e triggerUpdated target",
+    category: "Utility",
+    iconUrl: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png",
+    iconX2Url: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png"
+)
+
+preferences {
+    page(name: "p", title: "Trigger Leg Target", install: true, uninstall: true) {
+        section {
+            input name: "refreshProbe", type: "bool", title: "Round-trip probe", defaultValue: false
+            paragraph "Throwaway triggerUpdated target. Marker: ${triggerLegMarker()}"
+        }
+    }
+}
+
+def installed() { updateStamp("installed") }
+def updated() { updateStamp("updated") }
+def updateStamp(String which) { state.lastLifecycle = which }
+
+def triggerLegMarker() { return "TRIGGER-LEG-MARKER-V1" }
+'''
+
+        def probe_value(cfg: dict) -> str:
+            """refreshProbe as read back. The hub may render a bool setting as a real boolean
+            or as its string form, so compare case-folded text rather than an identity."""
+            settings = (cfg.get("settings") or {}) if isinstance(cfg, dict) else {}
+            return str(settings.get("refreshProbe")).strip().lower()
+
+        code_app_id = None
+        instance_app_id = None
+        try:
+            created = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_create_app",
+                "args": {"source": source_v1, "confirm": True},
+            })
+            code_app_id = created.get("appId")
+            assert code_app_id, f"hub_create_app(source) did not return an appId (code class): {created}"
+
+            # A committed instance is required: triggerUpdated fires updated() on a RUNNING app.
+            installed = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_create_app",
+                "args": {"codeAppId": code_app_id, "confirm": True},
+            })
+            instance_app_id = installed.get("instanceAppId")
+            assert installed.get("committed") is True, \
+                f"could not commit the instance the triggerUpdated leg needs: {installed}"
+            assert instance_app_id, f"instance committed but no instanceAppId returned: {installed}"
+
+            # CONFIGURE the instance: flip refreshProbe off its false default. This is the
+            # precondition for the settings-preservation assertion at the end -- verified here
+            # so a later read of "false" can only mean the Done re-submit blanked it, never
+            # that the write never landed.
+            self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_set_native_app",
+                "args": {"appId": instance_app_id, "settings": {"refreshProbe": True}, "confirm": True},
+            })
+            before_cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config",
+                "args": {"appId": instance_app_id, "includeSettings": True},
+            })
+            assert probe_value(before_cfg) == "true", \
+                f"could not configure refreshProbe=true, so the round-trip check has no baseline: settings={before_cfg.get('settings')!r}"
+
+            # Save new code AND fire updated() on the instance in one call.
+            source_v2 = source_v1.replace("TRIGGER-LEG-MARKER-V1", "TRIGGER-LEG-MARKER-V2")
+            res = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_update_app",
+                "args": {"appId": code_app_id, "source": source_v2,
+                         "triggerUpdated": instance_app_id, "confirm": True},
+            })
+            assert res.get("success") is True, f"code save leg failed: {res}"
+            assert res.get("triggerUpdated") is not None, \
+                f"triggerUpdated was requested but is absent from the envelope: {res}"
+            assert res.get("updatedFired") is True, \
+                ("triggerUpdated did not fire -- the Done submit to /installedapp/update/json was "
+                 f"rejected by this firmware: partial={res.get('partial')!r} hints={res.get('repairHints')!r}")
+            assert res.get("partial") is not True, \
+                f"updatedFired reported true yet the envelope is flagged partial: {res}"
+
+            # Independent check: the instance is still a committed install after the refresh,
+            # and its CONFIGURED setting survived the Done re-submit. A helper that re-applied
+            # the code's defaults instead of round-tripping the stored values reads back
+            # "false" here -- that is the blanking hazard the shared Done-submit introduces.
+            cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config",
+                "args": {"appId": instance_app_id, "includeSettings": True},
+            })
+            app_obj = (cfg.get("app") or {}) if isinstance(cfg, dict) else {}
+            assert app_obj.get("installed") is True, \
+                f"the lifecycle refresh left the instance uninstalled: {app_obj}"
+            assert probe_value(cfg) == "true", \
+                ("the lifecycle refresh did not preserve the instance's configured settings: "
+                 f"refreshProbe went true -> {probe_value(cfg)!r} (defaults re-applied instead of "
+                 f"round-tripped). settings={cfg.get('settings')!r}")
+
+            print(f"    TRIGGER_UPDATED ok -- updatedFired on instance {instance_app_id}, still installed, configured setting preserved")
+        finally:
+            if instance_app_id:
+                try:
+                    self.client.call_tool("hub_manage_native_rules_and_apps", {
+                        "tool": "hub_delete_native_app",
+                        "args": {"appId": instance_app_id, "force": True, "confirm": True},
+                    })
+                except Exception as exc:
+                    print(f"  [WARN] triggerUpdated cleanup: delete instance {instance_app_id} failed: {exc}")
+            if code_app_id:
+                try:
+                    self.client.call_tool("hub_manage_code", {
+                        "tool": "hub_delete_item",
+                        "args": {"type": "app", "item_id": code_app_id, "confirm": True},
+                    })
+                except Exception as exc:
+                    print(f"  [WARN] triggerUpdated cleanup: delete code class {code_app_id} failed: {exc}")
 
     # -----------------------------------------------------------------------
     # GROUP 4e: driver_code_update (1 test) -- the hub_update_driver code-deploy
@@ -10433,12 +10589,13 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                 print(f"  [WARN] Visual Rule sweep failed: {exc}")
 
         # Layer 5: stranded mcptest throwaways. The @test("deadman") test installs 'Deadman Test
-        # Target' (instance + code class), the @test("app_code_update") test creates the
-        # 'Deadman Test Target Update' code class, and the @test("driver_code_update") test
-        # creates the 'Deadman Test Target Driver' driver code class (all named to ride this
-        # same startswith match); none carry the BAT_E2E_ prefix, so a crash/kill between a
-        # create and its finally would strand them past the other sweeps. Reclaim instance(s)
-        # + code classes by namespace+name (idempotent across runs).
+        # Target' (instance + code class), the @test("app_code_update") tests create the
+        # 'Deadman Test Target Update' code class and the 'Deadman Test Target Trigger' code
+        # class + instance, and the @test("driver_code_update") test creates the 'Deadman Test
+        # Target Driver' driver code class (all named to ride this same startswith match); none
+        # carry the BAT_E2E_ prefix, so a crash/kill between a create and its finally would
+        # strand them past the other sweeps. Reclaim instance(s) + code classes by
+        # namespace+name (idempotent across runs).
         try:
             dtypes = self.client.call_tool("hub_read_apps_code",
                                            {"tool": "hub_list_apps", "args": {"scope": "types"}})

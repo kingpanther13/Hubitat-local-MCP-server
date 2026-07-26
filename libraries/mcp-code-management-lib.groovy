@@ -834,14 +834,31 @@ private Map _createUserAppInstance(Integer codeAppId) {
     return out
 }
 
-private Map _commitUserAppInstall(Integer instanceId, String pageName) {
+// The ONE Done-submit implementation for an installed-app instance. Builds the classic
+// "Done" form off the instance's live configPage and POSTs it to /installedapp/update/json.
+//
+// Two callers, one mechanism, because they ARE the same UI action: submitting Done on a
+// pending shell fires installed()/initialize() (_commitUserAppInstall), and submitting it
+// on an already-installed instance fires updated() (the triggerUpdated lifecycle refresh
+// after a code save). The hub picks the callback from the instance's installed state; the
+// request is identical.
+//
+// Firmware fact (verified live on 2.5.0.159): /installedapp/configure/<id>/<page> is the
+// HTML UI PAGE and rejects POST with 405 -- it is not a submit target. The submit target is
+// /installedapp/update/json, which is what the admin UI posts and what the install-commit
+// path here has always used successfully.
+//
+// Returns [status: <HTTP status or null>, page: <page name submitted>].
+private Map _submitAppDoneForm(Integer instanceId, String pageName) {
     def cfg = _rmFetchConfigJson(instanceId, pageName)
     def page = pageName ?: (cfg?.configPage?.name?.toString()) ?: "mainPage"
     def schema = _rmCollectInputSchema(cfg?.configPage)
-    // The UI's Done submits each input's rendered value -- its default on a fresh
-    // shell (e.g. a bool's "true"/"false"). Sending "" for a typed input, notably
-    // a bool, makes the hub's update handler 500. Read each value straight from the
-    // configPage inputs (value, else defaultValue).
+    // The UI's Done submits each input's rendered value -- the saved value on a configured
+    // instance, the default on a fresh shell (e.g. a bool's "true"/"false"). Sending "" for
+    // a typed input, notably a bool, makes the hub's update handler 500. Read each value
+    // straight from the configPage inputs (value, else defaultValue), which is also what
+    // makes this safe on an ALREADY-configured instance: it round-trips the live settings
+    // rather than blanking them.
     def pageValues = [:]
     for (s in (cfg?.configPage?.sections ?: [])) {
         for (i in (s?.input ?: [])) {
@@ -878,15 +895,21 @@ private Map _commitUserAppInstall(Integer instanceId, String pageName) {
     if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
     // Fields the classic "Done" form also submits. _rmSubmitMainPageDone (RM)
     // omits them and gets away with it because RM commits via updateRule first
-    // and tolerates a failing Done; a standalone app's Done is the ONLY commit,
-    // and the hub's update handler 500s without these (verified live). The UI's
+    // and tolerates a failing Done; here Done is the whole operation, and the
+    // hub's update handler 500s without these (verified live). The UI's
     // referrer/url fields are navigation hints only and are NOT required.
     body.appTypeId = ""
     body.appTypeName = ""
     body._cancellable = "false"
 
     def resp = hubInternalPostForm("/installedapp/update/json", body)
-    def st = resp?.status
+    return [status: resp?.status, page: page]
+}
+
+private Map _commitUserAppInstall(Integer instanceId, String pageName) {
+    def submit = _submitAppDoneForm(instanceId, pageName)
+    def st = submit.status
+    def page = submit.page
     if (st != null && st >= 400) {
         return [
             success: false,
@@ -1451,11 +1474,19 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
                 }
                 successResult.triggerUpdated = triggerId
                 try {
-                    hubInternalPostForm("/installedapp/configure/${triggerId}/mainPage", [
-                        "_action_Done": "Done"
-                    ])
+                    // Submitting Done on an already-installed instance is what fires
+                    // updated(). Goes through the SAME _submitAppDoneForm the install-commit
+                    // uses -- one Done-submit implementation, one endpoint. The status check
+                    // matters: hubInternalPostForm hands back a status for a response the
+                    // platform client does not throw on, and without this a rejected Done
+                    // would report updatedFired:true.
+                    def submit = _submitAppDoneForm(triggerId, null)
+                    def submitStatus = submit?.status
+                    if (submitStatus != null && submitStatus >= 400) {
+                        throw new RuntimeException("Done POST to /installedapp/update/json returned status ${submitStatus}")
+                    }
                     successResult.updatedFired = true
-                    mcpLog("info", "hub-admin", "triggerUpdated: fired updated() on instance ${triggerId} after app code save")
+                    mcpLog("info", "hub-admin", "triggerUpdated: fired updated() on instance ${triggerId} via /installedapp/update/json after app code save")
                 } catch (Exception updErr) {
                     // Half-failure: the code was deployed (success:true holds) but the
                     // opt-in lifecycle refresh failed. The whole point of triggerUpdated
@@ -1465,7 +1496,7 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
                     // elsewhere (e.g. the RM wizard's partial-success envelope).
                     successResult.updatedFired = false
                     successResult.partial = true
-                    successResult.repairHints = ["triggerUpdated requested but lifecycle-fire POST failed: ${updErr.toString()}. The new code is deployed (success:true) but subscriptions/schedules may not have refreshed -- toggle the app off/on, or POST /installedapp/configure/${triggerId}/mainPage manually."]
+                    successResult.repairHints = ["triggerUpdated requested but the Done submit to /installedapp/update/json for instance ${triggerId} failed: ${updErr.toString()}. The new code is deployed (success:true) but subscriptions/schedules may not have refreshed -- open the app in the hub UI and click Done, or toggle it off/on."]
                     mcpLog("warn", "hub-admin", "triggerUpdated failed on instance ${triggerId}: ${updErr.toString()}")
                 }
             }
@@ -1542,6 +1573,11 @@ def toolUpdateAppCode(args) {
 // has empty creds and the hub generates them. If the current-creds read FAILS, it refuses (returns
 // success:false) rather than submit empty creds and risk blanking a live client. Returns the
 // resulting clientId/clientSecret.
+//
+// Firmware fact (verified live on 2.5.0.159): /app/updateOAuth is NOT served by the hub's :8080
+// internal router -- it 404s there -- while the identical query against the port-80 admin server
+// succeeds and returns the generated creds. The creds pre-read (/app/list/single/data/<id>) IS on
+// :8080, so this function legitimately spans both. _updateOAuthGet handles the fallback.
 private Map _updateAppOAuth(appId, oauth) {
     if (!(oauth instanceof Map)) {
         throw new IllegalArgumentException("oauth must be an object, e.g. {enabled: true} (optionally client_id, client_secret, refresh_secret).")
@@ -1586,7 +1622,7 @@ private Map _updateAppOAuth(appId, oauth) {
                  "clientId=${java.net.URLEncoder.encode(clientId, 'UTF-8')}",
                  "clientSecret=${java.net.URLEncoder.encode(clientSecret, 'UTF-8')}",
                  "refreshSecret=${refreshSecret}"].join("&")
-        def respText = hubInternalGet("/app/updateOAuth?${q}", null, 30)
+        def respText = _updateOAuthGet("/app/updateOAuth?${q}")
         def parsed = null
         try { parsed = respText ? new groovy.json.JsonSlurper().parseText(respText) : null } catch (Exception ignore) { }
         if (parsed instanceof Map) {
@@ -1606,6 +1642,26 @@ private Map _updateAppOAuth(appId, oauth) {
     } catch (Exception e) {
         mcpLogError("hub-admin", "OAuth update failed", e)
         return [success: false, error: "OAuth update failed: ${e.message}", note: "Check the app id and Hub Security credentials."]
+    }
+}
+
+// Run the /app/updateOAuth query against the :8080 internal router first, falling back to the
+// port-80 admin server on a 404 ONLY. :8080 is tried first because older firmware may well serve
+// it there and this must not regress those hubs; the fallback is scoped to 404 alone because that
+// is the "this router does not have the endpoint" signal -- a 401/403 (Hub Security) or 500 (real
+// hub-side failure) is a genuine answer and retrying it against another port would just double the
+// work and muddy the error. Logs which base served the call so a support report says so plainly.
+private String _updateOAuthGet(String pathWithQuery) {
+    try {
+        String text = hubInternalGet(pathWithQuery, null, 30)
+        mcpLog("debug", "hub-admin", "/app/updateOAuth served by ${hubBaseUri()}")
+        return text
+    } catch (Exception e) {
+        if (_httpStatusOf(e) != 404) throw e
+        mcpLog("info", "hub-admin", "/app/updateOAuth returned 404 on ${hubBaseUri()} -- retrying against the admin server ${hubAdminBaseUri()} (this firmware's internal router does not serve it)")
+        String text = hubAdminGet(pathWithQuery, null, 30)
+        mcpLog("debug", "hub-admin", "/app/updateOAuth served by ${hubAdminBaseUri()}")
+        return text
     }
 }
 

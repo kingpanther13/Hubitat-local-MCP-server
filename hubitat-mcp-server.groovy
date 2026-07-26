@@ -4223,6 +4223,16 @@ def getSelectedDevices() {
 // Single source for the hub's internal API base URI (was an 11x-repeated literal).
 def hubBaseUri() { "http://127.0.0.1:8080" }
 
+// The hub also runs its ADMIN HTTP server on port 80 -- the one the browser talks to.
+// The :8080 internal router serves only a SUBSET of admin endpoints, so an endpoint the
+// admin UI uses can 404 on :8080 while working on :80. Verified on firmware 2.5.0.159:
+// /app/updateOAuth 404s on :8080 and the identical query succeeds on :80 (curl-verified;
+// resources/hub2-source/vue-hub2.min.js calls it from the browser, i.e. against :80).
+// :8080 stays the default for everything -- reach for this ONLY per-endpoint, where the
+// :8080 miss is proven, and go through the same cookie path since :80 enforces Hub
+// Security login when it is enabled.
+def hubAdminBaseUri() { "http://127.0.0.1:80" }
+
 // Timeout rationale: reads are fast localhost fetches; writes (native-RM wizard steps,
 // large app/driver/library save+compile) can legitimately take minutes.
 def hubReadTimeoutSec() { 30 }
@@ -4270,18 +4280,26 @@ def getHubSecurityCookie() {
 }
 
 /**
+ * HTTP status carried by an HTTPBuilder error, or null when it carries none. Duck-typed
+ * (e.response.status) rather than naming HttpResponseException, which NCDFEs at parse
+ * time on the test classpath. Single source for every "what status did the hub return"
+ * read on an exception path.
+ */
+private Integer _httpStatusOf(Exception e) {
+    def resp = null
+    try { resp = e.response } catch (Exception ignore) { resp = null }
+    try { return resp?.status as Integer } catch (Exception ignore) { return null }
+}
+
+/**
  * Check if an exception indicates an auth failure that should be retried with a fresh cookie.
  * If so, clears the cached cookie and returns true.
  */
 private boolean shouldRetryWithFreshCookie(Exception e, boolean isRetry) {
     if (isRetry || !settings.hubSecurityEnabled) return false
-    // Prefer the HTTP status the exception carries (duck-typed e.response.status -- naming
-    // HttpResponseException NCDFEs at parse time on the test classpath). Fall back to a
-    // message substring only when no status is available.
-    def resp = null
-    try { resp = e.response } catch (Exception ignore) { resp = null }
-    Integer status = null
-    try { status = resp?.status as Integer } catch (Exception ignore) { status = null }
+    // Prefer the HTTP status the exception carries; fall back to a message substring only
+    // when no status is available.
+    Integer status = _httpStatusOf(e)
     boolean authFail = (status == 401 || status == 403) ||
         (status == null && (e.message?.contains("401") || e.message?.contains("403") || e.message?.contains("Unauthorized")))
     if (authFail) {
@@ -4325,7 +4343,10 @@ private String _redactSecretsInPath(String path) {
 private _hubRequest(String method, String path, Map opts = [:]) {
     def cookie = getHubSecurityCookie()
     def params = [
-        uri: hubBaseUri(),
+        // opts.baseUri lets a single endpoint target the hub's port-80 admin server
+        // instead of the :8080 internal router (see hubAdminBaseUri / hubAdminGet);
+        // everything else keeps the default.
+        uri: (opts.baseUri ?: hubBaseUri()),
         path: path,
         textParser: true,
         ignoreSSLIssues: true,
@@ -4401,6 +4422,18 @@ private _hubRequest(String method, String path, Map opts = [:]) {
  */
 def hubInternalGet(String path, Map query = null, int timeout = 30, boolean isRetry = false) {
     _hubRequest('GET', path, [query: query, timeout: timeout, returnShape: 'text', isRetry: isRetry])
+}
+
+/**
+ * Authenticated GET against the hub's port-80 ADMIN server instead of the :8080 internal
+ * router -- identical in every other respect to hubInternalGet (same cookie, same
+ * cookie-refresh retry, same text return), so a caller can fall back to it for one
+ * endpoint without changing anything else. Use ONLY for an endpoint proven absent from
+ * :8080; see hubAdminBaseUri() for why that happens and which endpoint needs it.
+ */
+def hubAdminGet(String path, Map query = null, int timeout = 30, boolean isRetry = false) {
+    _hubRequest('GET', path, [query: query, timeout: timeout, returnShape: 'text',
+                              isRetry: isRetry, baseUri: hubAdminBaseUri()])
 }
 
 /**
