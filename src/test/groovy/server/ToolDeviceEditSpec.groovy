@@ -611,7 +611,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         result.label == 'Garage Bridge'
         result.deviceTypeId == '500'
         result.warnings == null
-        hubGet.calls.any { it.path == '/device/updateLabel?deviceId=777&label=Garage Bridge' }
+        hubGet.calls.any { it.key == '/device/updateLabel?deviceId=777&label=Garage Bridge' }
     }
 
     @spock.lang.Unroll
