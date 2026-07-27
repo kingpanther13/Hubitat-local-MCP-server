@@ -411,7 +411,7 @@ jobs:
           while IFS= read -r f; do
             [ -z "$f" ] && continue
             case "$f" in
-              hubitat-mcp-server.groovy|hubitat-mcp-rule.groovy|e2e-deadman-watchdog.groovy|e2e-deadman-watchdog-v2.groovy|tests/e2e_test.py|tests/sdk_conformance_test.py|tests/sdk-conformance-requirements.txt|.github/workflows/hub-e2e.yml|.github/scripts/lease_acquire.sh|.github/scripts/lease_release.sh|.github/scripts/mcp_setup_env.sh|.github/scripts/mcp_restore_env.sh|.github/scripts/mcp_validate_package_tool.sh|.github/scripts/mcp_watchdog_lib.sh|.github/scripts/mcp_watchdog_deploy.sh|.github/scripts/mcp_arm_watchdog.sh|.github/scripts/mcp_disarm_watchdog.sh|libraries/*|bundles/*)
+              hubitat-mcp-server.groovy|hubitat-mcp-rule.groovy|e2e-deadman-watchdog.groovy|e2e-deadman-watchdog-v2.groovy|tests/e2e_test.py|tests/sdk_conformance_test.py|tests/sdk-conformance-requirements.txt|.github/workflows/hub-e2e.yml|.github/scripts/lease_acquire.sh|.github/scripts/lease_release.sh|.github/scripts/mcp_setup_env.sh|.github/scripts/mcp_restore_env.sh|.github/scripts/mcp_validate_package_tool.sh|.github/scripts/mcp_watchdog_lib.sh|.github/scripts/mcp_watchdog_deploy.sh|.github/scripts/mcp_arm_watchdog.sh|.github/scripts/mcp_disarm_watchdog.sh|.github/scripts/e2e_scope.py|libraries/*|bundles/*)
                 relevant=true ;;
             esac
           done <<< "$files"
@@ -674,14 +674,19 @@ jobs:
           # WATCHDOG_URL, overlapping the restore-poll wait) instead of the test critical path.
           # NOT set on the post-restore --cleanup-only step below, which stays the idempotent backstop.
           E2E_DEFER_NATIVE_DELETES: '1'
-          # Escalate a RECURRING platform load limiter to a hub reboot at EVERY multiple of this
-          # many app bounces (2nd, 4th, 6th...), capped at 3 reboots per run. An app bounce only
-          # clears the app INSTANCE; the limiter lives on the platform's load counters, which only
-          # a reboot resets, so bouncing can and does fail to clear it.
-          # The cost, stated honestly: the full lane has ALWAYS tripped the limiter more than
-          # twice (the last green run before this was enabled logged 10 THROTTLE lines), so at
-          # least one test-hub reboot is the EXPECTED outcome of a full lane, not an exception.
-          E2E_LIMITER_REBOOT_AFTER: '2'
+          # 0 = NEVER reboot the test hub from a CI run. Keep it that way.
+          # This escalates a recurring platform load limiter to a hub REBOOT at every multiple of N
+          # app bounces (an app bounce only clears the app INSTANCE; the limiter lives on the
+          # platform's load counters, which only a reboot resets). It was set to '2' in #367 -- but
+          # the full lane ALWAYS trips the limiter more than twice, so '2' meant a reboot was the
+          # EXPECTED outcome of EVERY full lane, costing ~60s down plus recovery polling, and one
+          # observed run then re-ran its most expensive test whole on top of that. A routine reboot
+          # is not an acceptable price for the merge path.
+          # The trade-off, honestly: with reboots off, a limiter that outlives the bounce falls back
+          # to the SOFT-PASS path (reported under [SOFT-PASS] in the run summary) instead of being
+          # actively cleared -- which is the behaviour every run before #367 already had.
+          # To debug a limiter, set this temporarily on a workflow_dispatch run; do not commit it.
+          E2E_LIMITER_REBOOT_AFTER: '0'
           E2E_LANE: ${{ steps.gate.outputs.lane }}
           E2E_GROUPS: ${{ steps.gate.outputs.groups }}
           E2E_TESTS: ${{ steps.gate.outputs.tests }}

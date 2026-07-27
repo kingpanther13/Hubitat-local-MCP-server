@@ -1,0 +1,74 @@
+name: E2E setup permanent fixtures (manual)
+
+# ONE-SHOT BOOTSTRAP for the test hub's permanent non-child fixture devices. Manual only.
+#
+# The e2e suite uses PERMANENT fixture devices (E2E_PERM_*) created once per hub via
+# hub_create_device and never deleted. They are NOT children of the MCP app, so they survive a run,
+# cost no create/delete per test, and their `installed` events are never charged to the app's
+# per-app load budget. Being neither children nor in selectedDevices, reaching them requires
+# bypassDeviceAllowlist ON -- which this also pins.
+#
+# The suite self-bootstraps identically at startup, so this is not required for a run to work. It
+# exists so a hub can be prepared and INSPECTED first: a full lane costs ~50 minutes, and finding a
+# fixture problem inside one is a poor trade against a 30-second bootstrap that prints every device
+# id and asserts the two properties the model depends on (readable, and NOT an app child). Run it
+# after pointing at a new test hub, or to confirm hub state when a fixture test fails.
+#
+# It runs `python tests/e2e_test.py --setup-perm-fixtures` -- the SAME code path the suite uses -- so
+# a green run here is real evidence about the suite, not a parallel implementation that can drift.
+#
+# Scope: talks ONLY to MCP_URL (the server under test). It does not arm the watchdog, deploy code,
+# take the lease, or run a single test. It creates devices and flips one setting; it deletes nothing.
+# No `environment:` on purpose -- the hub secret is repo-level (the e2e job declares none either;
+# environments there exist only as the fork-PR approval gate).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Share the e2e job's FIFO group so this cannot run while a suite is mid-flight on the same hub.
+  group: hub-e2e-serialized
+  cancel-in-progress: false
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.x'
+
+      - run: pip install requests
+
+      - name: Parse MCP_URL into HUBITAT_* env vars
+        # Same contract as hub-e2e.yml's step of the same name: tests/e2e_test.py reads these three,
+        # not MCP_URL. Kept byte-compatible with that step so the two cannot diverge in how they
+        # validate the secret's shape.
+        env:
+          MCP_URL: ${{ secrets.LEVEL99_TEST_HUB_MCP_URL }}
+        run: |
+          if [ -z "${MCP_URL:-}" ]; then
+            echo "::error::LEVEL99_TEST_HUB_MCP_URL is not configured; nothing to bootstrap."
+            exit 1
+          fi
+          if [[ ! "$MCP_URL" =~ ^https://cloud\.hubitat\.com/api/[^/]+/apps/[0-9]+/mcp\?access_token=.+$ ]]; then
+            echo "::error::MCP_URL does not match the expected cloud-endpoint shape — refusing to parse a malformed value into HUBITAT_* env vars."
+            exit 1
+          fi
+          BASE=$(echo "$MCP_URL"  | sed -E 's|(https://cloud\.hubitat\.com/api/[^/]+)/apps/([0-9]+)/mcp\?access_token=(.*)|\1|')
+          APPID=$(echo "$MCP_URL" | sed -E 's|(https://cloud\.hubitat\.com/api/[^/]+)/apps/([0-9]+)/mcp\?access_token=(.*)|\2|')
+          TOKEN=$(echo "$MCP_URL" | sed -E 's|(https://cloud\.hubitat\.com/api/[^/]+)/apps/([0-9]+)/mcp\?access_token=(.*)|\3|')
+          {
+            echo "HUBITAT_HUB_URL=$BASE"
+            echo "HUBITAT_APP_ID=$APPID"
+            echo "HUBITAT_ACCESS_TOKEN=$TOKEN"
+          } >> "$GITHUB_ENV"
+
+      - name: Bootstrap permanent fixtures on the test hub
+        run: python tests/e2e_test.py --setup-perm-fixtures
