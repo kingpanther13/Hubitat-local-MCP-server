@@ -34,11 +34,12 @@ updates:
   #     We only carry the dep to satisfy eighty20results' bytecode ref
   #     to `common_api.ChromeCast`; we don't consume its API, so holding
   #     the version is risk-free.
-  #   - com.networknt:json-schema-validator stays on the 2.0.x line. 3.x
-  #     targets Java 17 and this project's test toolchain is JDK 11, so a
-  #     major bump fails to compile; 3.x also renames the API again. Minor
-  #     and patch bumps within 2.0.x are welcome. Moving to 3.x is a
-  #     deliberate change that has to raise the toolchain first.
+  #   - com.networknt:json-schema-validator is pinned against MAJORS only (the
+  #     ignore below is semver-major). 3.x targets Java 17 and this project's
+  #     test toolchain is JDK 11, so a major bump fails to compile, and 3.x
+  #     renames the API again. Minor and patch bumps inside 2.x are welcome and
+  #     WILL still be proposed. Moving to 3.x is a deliberate change that has to
+  #     raise the toolchain first.
   - package-ecosystem: "gradle"
     directory: "/"
     schedule:

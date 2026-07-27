@@ -9,35 +9,25 @@ import groovy.json.JsonSlurper
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Validates rendered MCP wire payloads against the OFFICIAL Model Context Protocol
- * JSON Schemas vendored under {@code src/test/resources/mcp-schema/} — the referee
- * for {@code server.McpWireSchemaConformanceSpec}. Provenance, dialects, and the
- * refresh procedure live in that folder's {@code README.md}.
+ * Validates rendered MCP wire payloads against the OFFICIAL Model Context Protocol JSON Schemas
+ * vendored under {@code src/test/resources/mcp-schema/} — the referee for
+ * {@code server.McpWireSchemaConformanceSpec}. Provenance and refresh: that folder's README.
  *
- * Why a wrapper document is spliced per type: the MCP schemas have NO root schema.
- * The legacy file is {@code $schema} + {@code definitions}, the draft is
- * {@code $schema} + {@code $defs}; every type is reachable only as a named entry.
- * So {@link #schemaFor} builds
+ * Why a wrapper document is spliced per type: the MCP schemas have NO root schema. The legacy
+ * file is {@code $schema} + {@code definitions}, the draft is {@code $schema} + {@code $defs};
+ * every type is reachable only as a named entry. So {@link #schemaFor} builds
  *
  * <pre>{ "$schema": …, "$ref": "#/definitions/InitializeResult", "definitions": { … } }</pre>
  *
- * from the vendored definitions map verbatim. Every reference stays an internal JSON
- * pointer, so nothing resolves over the network — and neither does the meta-schema:
- * com.networknt ships every standard dialect inside its own jar.
+ * from the vendored map verbatim. Every reference stays an internal JSON pointer, so nothing
+ * resolves over the network — nor does the meta-schema, which ships inside com.networknt's jar.
  *
- * {@link #strictErrors} additionally forces {@code additionalProperties: false} onto one
- * named definition. That reproduces the MCP TypeScript SDK's {@code EmptyResultSchema}
- * ({@code ResultSchema.strict()}), whose unknown-key rejection is what turned a stray
- * {@code resultType} on a legacy {@code ping} into a client-side protocol error. The
- * published draft-07 {@code Result} carries {@code additionalProperties: {}} and accepts
- * anything, so plain validation against it cannot express that check.
+ * Both documents and every compiled schema are cached statically: recompiling the whole
+ * definitions map per feature would dominate the suite's runtime.
  *
- * Both schema documents and every compiled schema are cached statically: compiling the
- * ~150-entry definitions map per feature would dominate the suite's runtime.
- *
- * NOTE for callers: {@code com.networknt.schema.Error} collides with
- * {@code java.lang.Error} under Groovy's default imports, so that type is never named
- * here or in a spec — the validate calls return plain {@code List<String>} messages.
+ * NOTE for callers: {@code com.networknt.schema.Error} collides with {@code java.lang.Error}
+ * under Groovy's default imports, so that type is never named here or in a spec — which is why
+ * the validate calls return plain {@code List<String>} messages.
  */
 class McpSchemaValidator {
 

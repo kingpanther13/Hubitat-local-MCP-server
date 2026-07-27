@@ -4273,7 +4273,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Pause and resume share ONE toggle page button, pausRule, whose title flips with the rule's run
         // state (like stopRule) -- clicking pausRule on a paused rule resumes it. There is no resRule button,
         // so BOTH the pause and resume notes must steer to pausRule and neither may mention resRule. The
-        // per-app load limiter is sticky (clears only on reboot / app disable-enable), so the note must not
+        // per-app load limiter is sticky (an app disable/enable clears only the app instance's block, so a
+        // bounced retry can re-trip at once; only a reboot resets the counters), so the note must not
         // advise a bare retry. A non-load failure keeps the plain note. Both-ways: re-introducing a resRule
         // steer for resume makes the resume assertion red; dropping the sticky wording drops it from the
         // note; dropping the marker gate makes an unrelated error emit the load steer.

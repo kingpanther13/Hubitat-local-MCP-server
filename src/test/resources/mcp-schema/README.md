@@ -43,6 +43,13 @@ Source repository: <https://github.com/modelcontextprotocol/modelcontextprotocol
 `.gitattributes` marks this directory `-text`, so the bytes above survive a checkout on any
 platform (`core.autocrlf=true` would otherwise rewrite the newlines and invalidate the hashes).
 
+**The byte counts and hashes above are ENFORCED, not documentation.** `python tests/sandbox_lint.py`
+(rule `MCP_SCHEMA_PROVENANCE`, run by the `sandbox-lint` CI workflow) re-hashes both files and fails
+on any drift in either direction — an edited schema, a refreshed file whose provenance wasn't
+re-recorded, or a re-recorded hash with no matching file. It also fails on a schema vendored here
+with no provenance section at all. So a loosened or half-refreshed schema can't quietly weaken every
+`McpWireSchemaConformanceSpec` verdict.
+
 ## Refreshing
 
 The draft schema moves until the revision publishes; refresh it when adopting a spec change.
@@ -56,7 +63,7 @@ curl -sSfo src/test/resources/mcp-schema/draft/schema.json \
 ```
 
 Then re-record provenance in this file — the commit SHA, date, byte count, and hash — and re-run
-the suite:
+both the lint (which fails until the recorded hash matches the new bytes) and the suite:
 
 ```bash
 # commit SHA + date the file was last changed upstream
@@ -66,6 +73,7 @@ gh api "repos/modelcontextprotocol/modelcontextprotocol/commits?path=schema/draf
 python -c "import hashlib,sys; b=open(sys.argv[1],'rb').read(); print(len(b), hashlib.sha256(b).hexdigest())" \
   src/test/resources/mcp-schema/draft/schema.json
 
+python tests/sandbox_lint.py                                       # enforces the recorded hashes
 ./gradlew test --tests "server.McpWireSchemaConformanceSpec"
 ```
 

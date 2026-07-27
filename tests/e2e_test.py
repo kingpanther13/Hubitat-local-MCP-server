@@ -641,10 +641,14 @@ class TestRunner:
     def _clear_load_throttle(self, reason: str) -> bool:
         """Bounce (disable/enable) the server app via the WATCHDOG to clear the
         platform's per-app load-limiter block (LimitExceededException -- device
-        commands false-succeed with no event until the app instance bounces).
+        commands false-succeed with no event while it holds).
         Returns True when the bounce fully verified, so the caller can retry its
-        dispatch exactly once. LOUD on purpose: a recovery that happened must be
-        visible in the run log and the summary."""
+        dispatch exactly once. A bounce is NOT a reset: it clears the block on the
+        app INSTANCE, but the platform's load counters survive it, so the retry can
+        re-trip the limiter immediately -- only a hub reboot resets those counters
+        (hence _reboot_hub_for_limiter). Callers must handle a still-limited retry.
+        LOUD on purpose: a recovery that happened must be visible in the run log
+        and the summary."""
         if not (self.watchdog_url and self.server_app_id):
             print(f"    [THROTTLE] suspected load-limiter block ({reason}) but "
                   "WATCHDOG_URL/HUBITAT_APP_ID not set -- cannot bounce, failing as-is.")
@@ -3233,11 +3237,17 @@ class TestRunner:
             ceiling. Same fix as _poll_switch above -- short retried reads instead of one
             long wait, each well inside the ~10s relay budget."""
             status = {}
+            started = time.monotonic()
             for _ in range(attempts):
                 status = _rule_status(target_id)
                 if predicate(status):
                     return status
                 time.sleep(gap)
+            # Say so on the timeout path: otherwise "waited the full budget and never converged"
+            # and "read the wrong value once, immediately" reach the caller's assertion looking
+            # identical -- the confusion this helper was added to end.
+            print(f"    [STATUS] rule {target_id} never satisfied the predicate: {attempts} reads "
+                  f"over {time.monotonic() - started:.1f}s, last status {status}")
             return status
 
         active = _rule_status(app_id)
@@ -3247,42 +3257,62 @@ class TestRunner:
 
         # Every status write goes through _status_write so an "excessive hub load" limiter trip
         # bounces the app and retries once -- the same contract the mode-lifecycle and
-        # system-settings tests use. One difference drove the wrapper's shape: those tools RAISE
-        # on the limiter, while hub_set_rule_paused returns it inside a structured envelope
-        # ({'success': False, 'error': 'RMUtils.sendAction failed: App N generates excessive hub
-        # load'}), so the envelope has to be inspected too or the bounce never fires. The limiter
-        # is sticky (only an app bounce or hub reboot clears it), which is why retrying alone
-        # cannot work -- it tripped here on a full-lane run at ~43 minutes in.
+        # system-settings tests use. The limiter is sticky: retrying alone cannot clear it (it
+        # tripped here on a full-lane run at ~43 minutes in), and a bounce clears only the app
+        # instance's block, so even the bounced retry can hit it again.
         def _status_write(tool: str, args: dict, label: str) -> Any:
             gateway = "hub_manage_rule_machine" if tool == "hub_set_rule_paused" else "hub_manage_native_rules_and_apps"
-            try:
-                res = self.client.call_tool(gateway, {"tool": tool, "args": args})
-            except McpToolError as exc:
-                if "excessive hub load" in str(exc) and self._clear_load_throttle(f"{label}: {exc}"):
-                    res = self.client.call_tool(gateway, {"tool": tool, "args": args})
-                else:
-                    raise
-            if (isinstance(res, dict) and res.get("success") is False
-                    and "excessive hub load" in str(res.get("error", ""))
-                    and self._clear_load_throttle(f"{label}: {res.get('error')}")):
-                res = self.client.call_tool(gateway, {"tool": tool, "args": args})
-            # An app bounce clears the app INSTANCE; the limiter that blocks RMUtils lives on
-            # the platform's load counters, so the retry above can hit it again (observed: the
-            # full lane trips the limiter several times per run, and bounce+retry still failed
-            # here). hub_set_rule_paused's own note documents the load-immune route -- drive
-            # the RM page button, which bypasses RMUtils entirely. pausRule is a TOGGLE, so it
-            # is only correct to click when the current state differs from the target; the
-            # read-back assertions after this call still prove the end state.
-            if (tool == "hub_set_rule_paused" and isinstance(res, dict) and res.get("success") is False
-                    and "excessive hub load" in str(res.get("error", ""))):
-                want_paused = bool(args.get("paused"))
-                if bool(_rule_status(app_id).get("paused")) != want_paused:
+
+            def _attempt():
+                """(envelope, limiter_message) for one call. The limiter reaches us in TWO
+                shapes -- hub_set_app_disabled RAISES it, hub_set_rule_paused returns it inside
+                a {'success': False, 'error': '...excessive hub load'} envelope -- so both are
+                normalized into the second element and take the SAME recovery path below.
+                Anything that is not the limiter propagates."""
+                try:
+                    envelope = self.client.call_tool(gateway, {"tool": tool, "args": args})
+                except McpToolError as exc:
+                    if "excessive hub load" not in str(exc):
+                        raise
+                    return None, str(exc)
+                if (isinstance(envelope, dict) and envelope.get("success") is False
+                        and "excessive hub load" in str(envelope.get("error", ""))):
+                    return envelope, str(envelope.get("error"))
+                return envelope, None
+
+            res, limited = _attempt()
+            if limited and self._clear_load_throttle(f"{label}: {limited}"):
+                res, limited = _attempt()
+            if limited:
+                # An app bounce clears the app INSTANCE; the limiter that blocks RMUtils lives on
+                # the platform's load counters, so the retry above can hit it again (observed: the
+                # full lane trips the limiter several times per run, and bounce+retry still failed
+                # here). POLL the read side before believing the failure envelope: the limiter can
+                # abort the reply to a write that already COMMITTED, and RM decorates its appsList
+                # entry asynchronously -- exactly the lag _rule_status_when exists to absorb -- so
+                # a converged read means the write landed and the envelope is stale.
+                axis = "paused" if tool == "hub_set_rule_paused" else "disabled"
+                want = bool(args.get(axis))
+                converged = _rule_status_when(app_id, lambda s: bool(s.get(axis)) == want)
+                if bool(converged.get(axis)) == want:
+                    print(f"    [LIMITER] {label} answered with the limiter envelope, but the rule "
+                          f"now reads {axis}={want} -- the write landed; counting it as success.")
+                    return converged
+                if tool == "hub_set_rule_paused":
+                    # hub_set_rule_paused's own note documents the load-immune route -- drive the RM
+                    # page button, which bypasses RMUtils entirely. pausRule is a TOGGLE, so clicking
+                    # it on an already-converged rule would UNDO the write; the poll above is what
+                    # makes "has not converged" a demonstrated fact rather than one stale read.
                     print(f"    [LIMITER] {label} blocked by the platform limiter -- "
                           "falling back to the load-immune pausRule button drive.")
-                    res = self._set_rule(app_id, {"button": "pausRule"})
-            # Assert the write's OWN envelope before polling the read side: without it a genuine
+                    res, limited = self._set_rule(app_id, {"button": "pausRule"}), None
+            # Assert the write's OWN outcome before polling the read side: without it a genuine
             # failure and a slow status decoration produce the same symptom (that is how the
             # limiter trip first presented -- as an unexplained 'paused: False' read-back).
+            assert not limited, (
+                f"{label} stayed blocked by the platform load limiter and the rule never reached the "
+                f"target state: {limited}"
+            )
             assert not (isinstance(res, dict) and res.get("success") is False), \
                 f"{label} reported failure: {res}"
             return res
