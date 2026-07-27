@@ -1,12 +1,12 @@
 {
     "packageName": "MCP Rule Server",
     "author": "kingpanther13",
-    "version": "3.5.0",
+    "version": "3.5.1",
     "minimumHEVersion": "2.3.0",
-    "dateReleased": "2026-07-26",
+    "dateReleased": "2026-07-27",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/README.md",
     "communityLink": "",
-    "releaseNotes": "v3.5.0 - 2026-07-26\n- feat: add MCP 2026-07-28 support (server/discover, modern-transport validation, cache hints) (#365)\n  - Full MCP 2026-07-28 spec support: new `server/discover` method, stateless per-request protocol versioning with standard-header validation, and cache hints on `tools/list` — fully backward compatible; existing clients continue on the classic `initialize` path unchanged (now negotiating up to `2025-11-25`)\n  - Fixed `hub_update_app`: enabling OAuth programmatically and the `triggerUpdated` lifecycle refresh both work again on current firmware, and the refresh now guarantees a configured instance's settings — including device selections — survive\n  - Fixed silent failures in device show-on-home, default-state, room, label, and replace operations, WiFi/static-IP network config, and several Z-Wave/Zigbee/Matter radio operations (a URL-building bug made the hub reject these requests on current firmware)\n  - New advanced settings: `Origin` request validation (log-only by default, optional strict enforcement, custom allowlist)",
+    "releaseNotes": "v3.5.1 - 2026-07-27\n- test: add conformance harness — official MCP SDK client + wire-schema validation (#367)\n\nv3.5.0 - 2026-07-26\n- feat: add MCP 2026-07-28 support (server/discover, modern-transport validation, cache hints) (#365)\n  - Full MCP 2026-07-28 spec support: new `server/discover` method, stateless per-request protocol versioning with standard-header validation, and cache hints on `tools/list` — fully backward compatible; existing clients continue on the classic `initialize` path unchanged (now negotiating up to `2025-11-25`)\n  - Fixed `hub_update_app`: enabling OAuth programmatically and the `triggerUpdated` lifecycle refresh both work again on current firmware, and the refresh now guarantees a configured instance's settings — including device selections — survive\n  - Fixed silent failures in device show-on-home, default-state, room, label, and replace operations, WiFi/static-IP network config, and several Z-Wave/Zigbee/Matter radio operations (a URL-building bug made the hub reject these requests on current firmware)\n  - New advanced settings: `Origin` request validation (log-only by default, optional strict enforcement, custom allowlist)",
     "apps": [
         {
             "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",

@@ -1654,6 +1654,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v3.5.1** - test: add conformance harness — official MCP SDK client + wire-schema validation. PRs: [#367](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/367)
 - **v3.5.0** - feat: add MCP 2026-07-28 support (server/discover, modern-transport validation, cache hints). PRs: [#365](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/365)
 - **v3.4.4** - fix: heartbeat-based e2e dead-man + deferred opToken result uploads. PRs: [#363](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/363)
 - **v3.4.3** - fix: backup gate and create-backup confirmation read the hub's real backup list. PRs: [#362](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/362)
