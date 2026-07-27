@@ -1,0 +1,318 @@
+package server
+
+import spock.lang.Shared
+import spock.lang.Unroll
+import support.McpSchemaValidator
+import support.TestHub
+import support.TestLocation
+import support.ToolSpecBase
+
+/**
+ * Validates REAL rendered wire responses against the OFFICIAL MCP JSON Schemas vendored
+ * under {@code src/test/resources/mcp-schema/} (provenance + refresh procedure in that
+ * folder's README). The sibling of the SDK leg in {@code tests/sdk_conformance_test.py}:
+ * there the official Python client is the referee against a live hub; here the spec
+ * authors' own schema is the referee against the in-process dispatch harness.
+ *
+ * Every payload here comes out of {@code handleMcpRequest()} through {@code render(...)}
+ * — the bytes a client receives, after JSON serialization — never a hand-written fixture.
+ * {@code HandleMcpRequestDispatchSpec} pins the field-by-field contract this server
+ * INTENDS; this spec asks a different question: does what it emits satisfy the PUBLISHED
+ * schema? A field renamed by a revision refresh fails here, not there.
+ *
+ * The two eras are validated against DIFFERENT schemas on purpose, because the shapes
+ * genuinely differ: the draft {@code ListToolsResult} REQUIRES {@code resultType}, which a
+ * legacy result must not carry (see the ping feature below — that asymmetry is the #365
+ * regression). Validating a legacy payload against the draft schema, or vice versa, would
+ * be a bug in the test rather than a finding.
+ *
+ * Each assertion is a plain {@code errors == []}: Spock's power assert then prints every
+ * violation message, with its JSON-pointer location, straight into the failure output.
+ *
+ * The last two features are NEGATIVE CONTROLS. A validator wired up wrongly — bad path,
+ * empty definitions map, swallowed messages — reports "no violations" for everything and
+ * green-washes the whole spec. Those two prove it rejects.
+ */
+class McpWireSchemaConformanceSpec extends ToolSpecBase {
+
+    /**
+     * {@code location.hub.localIP} is read by the Origin check on every request through
+     * {@code handleMcpRequest}. That read goes through {@code appExecutor.getLocation()}
+     * (a class-2 seam per the docs/testing.md cheat sheet), so it is stubbed once and the
+     * hub re-seeded per test — the same wiring HandleMcpRequestDispatchSpec uses.
+     */
+    @Shared private TestLocation sharedLocation = new TestLocation()
+
+    def setupSpec() {
+        appExecutor.getLocation() >> sharedLocation
+    }
+
+    def setup() {
+        sharedLocation.hub = new TestHub(localIP: '192.168.1.133')
+    }
+
+    /** Drive one request through the dispatch pipeline and return the parsed response. */
+    private Map dispatch(Map body, Map headers = null) {
+        if (headers != null) mcpDriver.pushHeaders(headers)
+        mcpDriver.pushBody(body)
+        script.handleMcpRequest()
+        return mcpDriver.parseResponseJson() as Map
+    }
+
+    // ---------------------------------------------------------------------
+    // Legacy era — the published 2025-06-18 schema
+    // ---------------------------------------------------------------------
+
+    def "a legacy initialize response conforms to InitializeResult and the JSONRPCResponse envelope"() {
+        given: 'gateway mode explicit -- the instructions prose is mode-branched'
+        settingsMap.useGateways = true
+
+        when:
+        def response = dispatch([jsonrpc: '2.0', id: 1, method: 'initialize', params: [:]])
+
+        then: 'the result satisfies InitializeResult (protocolVersion + capabilities + serverInfo all required)'
+        McpSchemaValidator.legacyErrors('InitializeResult', response.result) == []
+
+        and: 'and the whole rendered envelope satisfies JSONRPCResponse'
+        McpSchemaValidator.legacyErrors('JSONRPCResponse', response) == []
+    }
+
+    @Unroll
+    def "a legacy tools/list catalog conforms to ListToolsResult in #mode mode"() {
+        // Validates every advertised Tool entry, not just the wrapper: name, the inputSchema
+        // `type: "object"` const, each properties value being an object, and the
+        // ToolAnnotations hint types. Both catalog SHAPES are checked because different code
+        // paths build them -- gateway envelopes vs. the flat leaf catalog.
+        given:
+        settingsMap.useGateways = useGateways
+
+        when:
+        def response = dispatch([jsonrpc: '2.0', id: 2, method: 'tools/list', params: [:]])
+
+        then: 'a non-trivial catalog really was rendered -- an empty list would validate vacuously'
+        response.result.tools.size() > 5
+
+        and:
+        McpSchemaValidator.legacyErrors('ListToolsResult', response.result) == []
+
+        where:
+        mode      | useGateways
+        'gateway' | true
+        'flat'    | false
+    }
+
+    def "a legacy tools/list catalog still conforms with publishOutputSchemas ON"() {
+        // Issues #290/#342: with the advanced toggle on, base-tool entries carry the WIRE
+        // form of their outputSchema (required arrays stripped by _wireOutputSchema). The
+        // legacy Tool schema constrains outputSchema too -- `type` is required and const
+        // "object" -- so the emitted wire form has to satisfy it, not just the definition.
+        given:
+        settingsMap.useGateways = true
+        settingsMap.publishOutputSchemas = true
+
+        when:
+        def response = dispatch([jsonrpc: '2.0', id: 3, method: 'tools/list', params: [:]])
+
+        then: 'at least one entry really did carry an outputSchema -- otherwise this proves nothing'
+        response.result.tools.any { it.outputSchema != null }
+
+        and:
+        McpSchemaValidator.legacyErrors('ListToolsResult', response.result) == []
+    }
+
+    def "a legacy tools/call result conforms to CallToolResult"() {
+        given:
+        script.metaClass.getRooms = { -> [[id: 1L, name: 'Den']] }
+
+        when:
+        def response = dispatch([jsonrpc: '2.0', id: 4, method: 'tools/call',
+                                 params: [name: 'hub_list_rooms', arguments: [:]]])
+
+        then: 'the tool really ran -- so the content block under test is a tool payload'
+        response.result.isError != true
+        response.result.content[0].type == 'text'
+
+        and:
+        McpSchemaValidator.legacyErrors('CallToolResult', response.result) == []
+    }
+
+    def "an isError tools/call envelope also conforms to CallToolResult"() {
+        // The error path is a DIFFERENT construction site in handleToolsCall (content plus
+        // isError: true) and, per the spec, still rides a JSON-RPC success envelope -- so it
+        // has to satisfy the same result schema as a happy path.
+        given: 'a tool whose implementation throws'
+        script.metaClass.getRooms = { -> throw new RuntimeException('simulated hub failure') }
+
+        when:
+        def response = dispatch([jsonrpc: '2.0', id: 5, method: 'tools/call',
+                                 params: [name: 'hub_list_rooms', arguments: [:]]])
+
+        then: 'this really is the isError shape, not a JSON-RPC error'
+        response.error == null
+        response.result.isError == true
+
+        and:
+        McpSchemaValidator.legacyErrors('CallToolResult', response.result) == []
+    }
+
+    // ---------------------------------------------------------------------
+    // Modern era (2026-07-28) — upstream's draft schema
+    // ---------------------------------------------------------------------
+
+    def "a modern tools/list result conforms to the draft ListToolsResult"() {
+        // The draft ListToolsResult REQUIRES resultType, ttlMs, cacheScope and tools -- which
+        // makes this the schema-side proof that the CacheableResult hints and the era-gated
+        // resultType stamp are all present together on the modern path.
+        given:
+        settingsMap.useGateways = true
+
+        when:
+        def response = dispatch(
+            [jsonrpc: '2.0', id: 6, method: 'tools/list', params: [:]],
+            ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'tools/list'])
+
+        then: 'served, not rejected'
+        mcpDriver.lastRenderArgs.status == null
+
+        and:
+        McpSchemaValidator.draftErrors('ListToolsResult', response.result) == []
+    }
+
+    def "a modern tools/call result conforms to the draft CallToolResult"() {
+        // Draft CallToolResult requires content AND resultType. tools/call answers from the
+        // preserialized fast path, so this also proves the central decoration was baked into
+        // that string rather than applied to a map that never reached the wire.
+        given:
+        script.metaClass.getRooms = { -> [[id: 1L, name: 'Den']] }
+
+        when:
+        def response = dispatch(
+            [jsonrpc: '2.0', id: 7, method: 'tools/call', params: [name: 'hub_list_rooms', arguments: [:]]],
+            ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'tools/call', 'Mcp-Name': 'hub_list_rooms'])
+
+        then:
+        response.result.resultType == 'complete'
+
+        and:
+        McpSchemaValidator.draftErrors('CallToolResult', response.result) == []
+    }
+
+    def "a server/discover result conforms to the draft DiscoverResult"() {
+        // DiscoverResult requires supportedVersions, capabilities, ttlMs, cacheScope AND
+        // resultType. Driven HEADERLESS on purpose: discover is the compat probe a stateless
+        // client sends before it knows what to put in the header, which is exactly why
+        // handleServerDiscover sets resultType itself instead of relying on the era gate.
+        given:
+        settingsMap.useGateways = true
+
+        when:
+        def response = dispatch([jsonrpc: '2.0', id: 8, method: 'server/discover', params: [:]])
+
+        then:
+        McpSchemaValidator.draftErrors('DiscoverResult', response.result) == []
+    }
+
+    def "an unsupported protocol version rejection conforms to the draft UnsupportedProtocolVersionError"() {
+        // The draft models this as a whole RESPONSE envelope, and both data.requested and
+        // data.supported are REQUIRED -- they are what a client retries from, so a rejection
+        // omitting either would wedge it. Schema-checking the envelope is how that stays true.
+        when:
+        def response = dispatch(
+            [jsonrpc: '2.0', id: 9, method: 'tools/list', params: [:]],
+            ['MCP-Protocol-Version': '2099-01-01'])
+
+        then: 'the spec mandates 400 for this one'
+        mcpDriver.lastRenderArgs.status == 400
+        response.error.code == -32022
+
+        and:
+        McpSchemaValidator.draftErrors('UnsupportedProtocolVersionError', response) == []
+    }
+
+    def "a header mismatch rejection conforms to the draft HeaderMismatchError"() {
+        when: 'a modern request with no Mcp-Method header -- a missing required header is a mismatch'
+        def response = dispatch(
+            [jsonrpc: '2.0', id: 10, method: 'tools/list', params: [:]],
+            ['MCP-Protocol-Version': '2026-07-28'])
+
+        then:
+        mcpDriver.lastRenderArgs.status == 400
+        response.error.code == -32020
+
+        and:
+        McpSchemaValidator.draftErrors('HeaderMismatchError', response) == []
+    }
+
+    def "a modern unknown method rejection conforms to the draft error envelope and MethodNotFoundError"() {
+        // A modern unknown method answers 404, and the -32601 BODY is what distinguishes it
+        // from a legacy HTTP+SSE server's 404. The draft models MethodNotFoundError as the
+        // error OBJECT (code const -32601) and JSONRPCErrorResponse as the envelope, so both
+        // halves are checked.
+        when:
+        def response = dispatch(
+            [jsonrpc: '2.0', id: 11, method: 'nope/nope', params: [:]],
+            ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'nope/nope'])
+
+        then:
+        mcpDriver.lastRenderArgs.status == 404
+
+        and:
+        McpSchemaValidator.draftErrors('JSONRPCErrorResponse', response) == []
+
+        and:
+        McpSchemaValidator.draftErrors('MethodNotFoundError', response.error) == []
+    }
+
+    // ---------------------------------------------------------------------
+    // The ping / EmptyResult regression (#365)
+    // ---------------------------------------------------------------------
+
+    def "a legacy ping result conforms to EmptyResult under a STRICT unknown-key parse"() {
+        // THE regression this leg exists for. The published draft-07 Result carries
+        // additionalProperties: {} and accepts anything, so plain conformance proves little
+        // here -- but the MCP TypeScript SDK parses an empty result with
+        // ResultSchema.strict(), which REJECTS unknown keys, so stamping the modern
+        // resultType onto a legacy ping breaks every keepalive on a real client.
+        // legacyStrictErrors reproduces that parse from the SAME vendored definitions.
+        when:
+        def response = dispatch([jsonrpc: '2.0', id: 12, method: 'ping', params: [:]])
+
+        then: 'permissive conformance -- the weak half, kept so a shape break is attributed correctly'
+        McpSchemaValidator.legacyErrors('EmptyResult', response.result) == []
+
+        and: 'and the strict view a real legacy client applies'
+        McpSchemaValidator.legacyStrictErrors('EmptyResult', 'Result', response.result) == []
+    }
+
+    // ---------------------------------------------------------------------
+    // Negative controls — prove the referee actually rejects
+    // ---------------------------------------------------------------------
+
+    def "the validator rejects an initialize result with a required field removed"() {
+        given: 'a REAL rendered result, then one required field deleted'
+        def response = dispatch([jsonrpc: '2.0', id: 13, method: 'initialize', params: [:]])
+        def doctored = new LinkedHashMap(response.result as Map)
+        doctored.remove('protocolVersion')
+
+        expect: 'the same schema that passes above now reports the violation, naming the field'
+        McpSchemaValidator.legacyErrors('InitializeResult', doctored)
+            .any { it.contains('protocolVersion') }
+
+        and: 'the undoctored original is still clean -- so the rejection is about the edit, not the schema'
+        McpSchemaValidator.legacyErrors('InitializeResult', response.result) == []
+    }
+
+    def "the strict EmptyResult view rejects a resultType stamped onto a legacy ping"() {
+        given: 'the real legacy ping result, with the modern stamp added as the regression would'
+        def response = dispatch([jsonrpc: '2.0', id: 14, method: 'ping', params: [:]])
+        def regressed = new LinkedHashMap(response.result as Map)
+        regressed.resultType = 'complete'
+
+        expect: 'the permissive schema shrugs -- which is exactly why the strict view exists'
+        McpSchemaValidator.legacyErrors('EmptyResult', regressed) == []
+
+        and: 'the strict view catches it, naming the offending key'
+        McpSchemaValidator.legacyStrictErrors('EmptyResult', 'Result', regressed)
+            .any { it.contains('resultType') }
+    }
+}

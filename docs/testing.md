@@ -387,6 +387,86 @@ Some production code references platform helper classes like `hubitat.helper.RMU
 3. If you want per-test behaviour mocking, add a `FooUtilsMock` in `src/test/groovy/support/` mirroring `RMUtilsMock`'s shape. Use `GroovySystem.metaClassRegistry.removeMetaClass()` in `uninstall()` for reliable teardown.
 4. Add a `FooUtilsSandboxInterceptionSpec` modeled on `RMUtilsSandboxInterceptionSpec` if sandbox-side interception matters for your tools; it's the bump-canary when eighty20results upgrades.
 
+## Conformance harness — official MCP tooling as the referee
+
+This server's protocol layer is **hand-written**. It has to be: the hub's Groovy sandbox whitelists imports (`Importing [com.fasterxml.jackson.databind.ObjectMapper] is not allowed`) and has no jar-loading mechanism, so no MCP SDK can run *on* the hub. Every other spec in this repo therefore checks the protocol layer against *our reading* of the spec. The conformance harness closes that gap with two legs whose referee is somebody else's code:
+
+| Leg | Referee | Runs | Proves |
+|---|---|---|---|
+| `src/test/groovy/server/McpWireSchemaConformanceSpec.groovy` | The MCP authors' own JSON Schemas, vendored under `src/test/resources/mcp-schema/` | Every `./gradlew test` (both lanes) | Rendered wire payloads satisfy the published schema for their era |
+| `tests/sdk_conformance_test.py` | The official `mcp` Python package's client, over Streamable HTTP | The e2e job's **SDK conformance** step, against the live test hub | A real client can negotiate, list, and call — through the SDK's own validators |
+
+The two are complements, not duplicates: the schema leg covers shapes the SDK's permissive Python models don't police (and both protocol eras, including 2026-07-28, which the pinned SDK cannot speak); the SDK leg covers what only a real client exercises — version negotiation it will *reject*, transport status codes, and the actual HTTP headers it puts on the wire.
+
+**Neither leg may skip.** A soft skip that reports green is this repo's documented antipattern, and it is worse here than anywhere: "no violations found" and "the referee never ran" look identical from the outside. So `sdk_conformance_test.py` **fails** — nonzero exit, remediation printed — when the `mcp` package is missing, when the installed version isn't the pin, or when hub config is absent. The schema leg raises with the resolved absolute path if a vendored schema file isn't where it expects.
+
+### Leg 1 — wire-schema validation (unit side)
+
+`McpWireSchemaConformanceSpec` drives `handleMcpRequest()` through the normal `mcpDriver` seam and validates what `render(...)` produced — the bytes a client receives — against the vendored schema:
+
+- **legacy (2025-06-18, draft-07):** `initialize` → `InitializeResult` + the `JSONRPCResponse` envelope; `tools/list` → `ListToolsResult` in **both** catalog shapes (gateway and flat) and again with `publishOutputSchemas` ON; `tools/call` → `CallToolResult` on both the success and `isError` paths; `ping` → `EmptyResult`.
+- **draft (2026-07-28, 2020-12):** modern `tools/list` and `tools/call` (whose `ListToolsResult`/`CallToolResult` *require* `resultType`, `ttlMs`, `cacheScope`), `server/discover` → `DiscoverResult`, and the `-32022` / `-32020` / `-32601` rejections against `UnsupportedProtocolVersionError`, `HeaderMismatchError`, and `MethodNotFoundError` + `JSONRPCErrorResponse`.
+
+Two details worth knowing before you edit it:
+
+- **The eras use different schemas on purpose.** The draft `ListToolsResult` *requires* `resultType`, which a legacy result must never carry. Cross-validating an era against the other schema is a test bug, not a finding.
+- **The `ping` regression needs a strict view.** `McpSchemaValidator.legacyStrictErrors` forces `additionalProperties: false` onto one named definition, reproducing the MCP TypeScript SDK's `EmptyResultSchema` (`ResultSchema.strict()`) — whose unknown-key rejection is what makes a stray `resultType` on a legacy `ping` a client-side protocol error. Published draft-07 can't express that: its `Result` carries `additionalProperties: {}` and accepts anything. The spec's last two features are **negative controls** that prove the validator actually rejects; keep them.
+
+```bash
+./gradlew test --tests "server.McpWireSchemaConformanceSpec"
+```
+
+The validator is `com.networknt:json-schema-validator`, a `testImplementation` dep. It bundles every standard meta-schema inside its own jar, so **validation never touches the network** — which is the whole reason the schemas are vendored rather than fetched. It is held on the **2.0.x** line deliberately: 3.x targets Java 17 and this project's test toolchain is JDK 11, so a major bump won't compile (pinned against Dependabot majors in `.github/dependabot.yml`). Note also that `com.networknt.schema.Error` collides with `java.lang.Error` under Groovy's default imports — never name that type in a spec; `McpSchemaValidator` returns plain `List<String>` messages for exactly that reason.
+
+**Refreshing the vendored schemas** — full procedure, provenance (source URLs, upstream commit SHAs, byte hashes), and the `curl` commands are in [`src/test/resources/mcp-schema/README.md`](../src/test/resources/mcp-schema/README.md). The short version: re-`curl` the two files, re-record the provenance block, re-run the spec. The draft schema moves until the revision publishes, so refresh it when adopting a spec change. `.gitattributes` marks that directory `-text` so the recorded hashes survive a checkout on any platform. **Never hand-edit the schemas** — if a refresh turns the spec red, fix the server.
+
+### Leg 2 — official Python SDK client (e2e side)
+
+`tests/sdk_conformance_test.py` connects the official SDK's `streamable_http_client` + `ClientSession` to a real hub `/mcp` endpoint and runs five scenarios: `initialize` (the SDK *raises* if the echoed version isn't one it supports), `ping`, `tools/list` (every entry parsed into `types.Tool`, plus catalog sanity — `hub_`-prefixed, no duplicates, described, object `inputSchema`), a benign read-only `hub_get_info` `tools/call`, and the legacy-header contract.
+
+That last one is the load-bearing scenario. Once `initialize` negotiates, the SDK stamps `mcp-protocol-version: <negotiated>` onto every subsequent POST while sending **no** `Mcp-Method`/`Mcp-Name` (those exist only in 2026-07-28). A server reading header *presence* as "modern era" would answer every one with 400 + `-32020` — i.e. break every deployed client. The script owns the `httpx.AsyncClient` it hands the transport and attaches an `event_hooks["request"]` observer to it, so it asserts on the **real outbound headers** rather than assuming them.
+
+The script also **preflights the SDK surface it calls** for `@deprecated` markers and fails if any is found. `streamable_http_client` replaced `streamablehttp_client` within the 1.x line, and a bump that deprecates something else this file uses should surface as a failed run with the replacement named — not as a warning nobody reads.
+
+It shares config with `tests/e2e_test.py` (`tests/e2e_config.json` or `HUBITAT_HUB_URL`/`HUBITAT_APP_ID`/`HUBITAT_ACCESS_TOKEN`) and derives the endpoint path from `HubitatMcpClient`, so the cloud-vs-LAN path shapes can't drift between the two.
+
+**The token must be in the URL query.** `HubitatMcpClient.endpoint` is the bare `<prefix>/mcp` — that client keeps `access_token` separate and attaches it per request as `params={"access_token": …}`. The SDK's transport takes one URL and nothing else, so handing it `client.endpoint` sends a tokenless request and the hub answers a bare **401** that reads like a hub or permissions problem rather than a harness bug. This endpoint authenticates by token-in-URL only; there is no bearer fallback (Hubitat's OAuth endpoints ignore `Authorization`, and this server never reads it). `_load_hub_config` appends it and asserts it is present.
+
+That token in the URL is also why the script's printed output is **structurally token-free rather than scrubbed**. httpx quotes the full URL in the message of every URL-bearing exception it raises, so a 401 would otherwise put a live credential in the CI log. Instead of masking those messages, nothing printed is derived from them:
+
+- the tokenized URL lives only in `config["endpoint"]` and is passed to `streamable_http_client` and nowhere else — never printed, never string-sliced;
+- every printed message uses `config["safe_endpoint"]`, i.e. `HubitatMcpClient.endpoint`, built from `hub_url` + `app_id` only, so it never held the token;
+- httpx failures are described by `_http_failure_detail` from structured fields — exception class, numeric status, its standard reason phrase, request method — and never from `str(exc)`;
+- the request trace records headers but deliberately no URL;
+- the SDK's own DEBUG line that logs the endpoint is silenced.
+
+Diagnosability is unaffected: a wrong token still prints `HTTPStatusError HTTP 401 Unauthorized on POST to <endpoint>` plus the remediation line.
+
+**Why structural and not a `_redact` helper:** an earlier version did scrub, and CodeQL's `py/clear-text-logging-sensitive-data` flagged three sinks — correctly. A mask built by slicing the token (`token[:4] + "…"`) still discloses part of it, and the "sanitizer" was itself what fed token-derived data into a `print`. The repo has no suppression comments anywhere; the precedent for this query is `tests/e2e_test.py`'s OAuth leg, which keeps secret-bearing values out of prints entirely and validates them through asserts instead (`assert` is not a logging sink). Follow that pattern rather than adding a scrubber.
+
+```bash
+pip install -r tests/sdk-conformance-requirements.txt
+python tests/sdk_conformance_test.py
+```
+
+**Why a separate script instead of an `e2e_test.py` group:** the SDK client is async (anyio) while the e2e runner is sync, so an in-suite group would need an async bridge. The deciding reason is different, though — see the `pull_request_target` note below.
+
+**Bumping the SDK pin.** The version lives in `tests/sdk-conformance-requirements.txt` and nowhere else; `hub-e2e.yml` installs that file and the script refuses to run against any other version, so CI and a local run cannot silently diverge. To bump: edit the file, reinstall, run the script, and **read the SDK's release notes for protocol-version changes** — a release that adds `2026-07-28` to its `SUPPORTED_PROTOCOL_VERSIONS` changes which *era* this leg exercises, which is a real change in what it proves (the script's own legacy-header scenario fails loudly if the SDK starts sending `Mcp-Method`, rather than quietly asserting nothing).
+
+### `pull_request_target`: why the SDK leg's badge can't go green in-PR
+
+The e2e job runs on `pull_request_target`, so the **workflow file** always comes from `main` while the **checkout** is the PR head (see AGENTS.md § *e2e CI: `pull_request_target` trigger*). The SDK leg needs two workflow-file changes — the `pip install -r tests/sdk-conformance-requirements.txt` line and the **SDK conformance** step itself — so on the PR's own auto e2e run, neither exists: main's file installs only `requests` and never invokes the script.
+
+That is precisely why the scenarios live in their own file and their own step rather than inside `tests/e2e_test.py`. A new group in `e2e_test.py` *would* be picked up in-PR (the test file is the PR's), and — since it must fail rather than skip when `mcp` is absent — it would turn the whole e2e lane red for a reason unrelated to the rest of the suite. A module-level `import mcp` there would be worse still: the import failure would kill the entire runner, not one group. Keeping the SDK leg in a step main's workflow doesn't know about means the existing suite's in-PR signal stays clean and meaningful.
+
+Validate it the documented way:
+
+```bash
+gh workflow run hub-e2e.yml --ref <branch>    # workflow_dispatch runs the BRANCH's own workflow file
+```
+
+Watch that run; it is the merge-readiness proof for the workflow-file half. The step's outcome **is** folded into the required `Full e2e (runs with label)` gate status, so once merged it cannot fail silently — the gate is computed from named step outcomes, and a step left out of that condition would fail the job while the gate still posted success.
+
 ## CI
 
 - Workflow: `.github/workflows/unit-tests.yml`

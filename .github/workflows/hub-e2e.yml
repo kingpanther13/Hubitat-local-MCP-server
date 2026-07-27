@@ -411,7 +411,7 @@ jobs:
           while IFS= read -r f; do
             [ -z "$f" ] && continue
             case "$f" in
-              hubitat-mcp-server.groovy|hubitat-mcp-rule.groovy|e2e-deadman-watchdog.groovy|e2e-deadman-watchdog-v2.groovy|tests/e2e_test.py|.github/workflows/hub-e2e.yml|.github/scripts/lease_acquire.sh|.github/scripts/lease_release.sh|.github/scripts/mcp_setup_env.sh|.github/scripts/mcp_restore_env.sh|.github/scripts/mcp_validate_package_tool.sh|.github/scripts/mcp_watchdog_lib.sh|.github/scripts/mcp_watchdog_deploy.sh|.github/scripts/mcp_arm_watchdog.sh|.github/scripts/mcp_disarm_watchdog.sh|libraries/*|bundles/*)
+              hubitat-mcp-server.groovy|hubitat-mcp-rule.groovy|e2e-deadman-watchdog.groovy|e2e-deadman-watchdog-v2.groovy|tests/e2e_test.py|tests/sdk_conformance_test.py|tests/sdk-conformance-requirements.txt|.github/workflows/hub-e2e.yml|.github/scripts/lease_acquire.sh|.github/scripts/lease_release.sh|.github/scripts/mcp_setup_env.sh|.github/scripts/mcp_restore_env.sh|.github/scripts/mcp_validate_package_tool.sh|.github/scripts/mcp_watchdog_lib.sh|.github/scripts/mcp_watchdog_deploy.sh|.github/scripts/mcp_arm_watchdog.sh|.github/scripts/mcp_disarm_watchdog.sh|libraries/*|bundles/*)
                 relevant=true ;;
             esac
           done <<< "$files"
@@ -458,7 +458,14 @@ jobs:
 
       - name: Install Python dependencies
         if: steps.gate.outputs.available == 'true'
-        run: pip install requests
+        # requests drives tests/e2e_test.py; the second install is the OFFICIAL MCP Python
+        # SDK used as an independent conformance referee by the "SDK conformance" step
+        # below. Its version is pinned in tests/sdk-conformance-requirements.txt (a
+        # deliberate pin -- see that file's header), and sdk_conformance_test.py refuses
+        # to run against any other version, so CI and a local run cannot silently diverge.
+        run: |
+          pip install requests
+          pip install -r tests/sdk-conformance-requirements.txt
 
       - name: Mask access token in subsequent log lines
         if: steps.gate.outputs.available == 'true'
@@ -670,6 +677,15 @@ jobs:
           # WATCHDOG_URL, overlapping the restore-poll wait) instead of the test critical path.
           # NOT set on the post-restore --cleanup-only step below, which stays the idempotent backstop.
           E2E_DEFER_NATIVE_DELETES: '1'
+          # Escalate a RECURRING platform load limiter to a hub reboot after this many trips.
+          # The full lane has always tripped it (a 208-test / ~42-minute run: the last green
+          # run before this was enabled logged 10 THROTTLE lines and several trips) -- it
+          # simply landed on tests whose writes already bounce-and-retry, so it recovered
+          # silently. An app bounce only clears the app INSTANCE; the limiter lives on the
+          # platform's load counters, which only a reboot resets, so bouncing can and does
+          # fail to clear it. The suite caps this at 3 reboots per run and it is a no-op
+          # unless the limiter actually trips that often.
+          E2E_LIMITER_REBOOT_AFTER: '2'
           E2E_LANE: ${{ steps.gate.outputs.lane }}
           E2E_GROUPS: ${{ steps.gate.outputs.groups }}
           E2E_TESTS: ${{ steps.gate.outputs.tests }}
@@ -690,6 +706,28 @@ jobs:
             echo "Running the FULL lane -- whole suite"
             python tests/e2e_test.py
           fi
+
+      # Conformance leg: drive the OFFICIAL MCP Python SDK's client against the deployed PR
+      # over Streamable HTTP and let ITS validators judge the negotiation path
+      # (initialize -> tools/list -> a benign read-only hub_get_info). This server's protocol
+      # layer is hand-written -- the hub sandbox whitelists imports and cannot load jars, so no
+      # MCP SDK can run ON the hub -- which is exactly why an independent referee is worth a
+      # step. The unit-side sibling is McpWireSchemaConformanceSpec, which validates rendered
+      # wire payloads against the spec authors' vendored JSON Schemas.
+      #
+      # Runs in EVERY lane (focused included): it is one short read-only session, and the
+      # transport contract it checks is the thing most likely to break for every deployed
+      # client at once. It never writes, so it is safe on the shared test hub, and it does not
+      # depend on the install (a skip_install one-off dispatch still exercises it).
+      #
+      # NOTE (pull_request_target): this step lives only in the PR's workflow file, so the PR's
+      # own auto e2e run -- which executes MAIN's file -- never reaches it. Validate it with
+      # `gh workflow run hub-e2e.yml --ref <branch>`; see AGENTS.md "e2e CI: pull_request_target
+      # trigger". Its outcome IS folded into the required gate below, so it cannot green-wash.
+      - name: SDK conformance (official MCP Python SDK client)
+        id: sdk_conformance
+        if: steps.gate.outputs.available == 'true'
+        run: python tests/sdk_conformance_test.py
 
       # The install above landed THIS PR's app on the hub, so hub_update_package now
       # exists there. Exercise its discovery path live (dryRun: fetch PR source ->
@@ -733,9 +771,15 @@ jobs:
           if [ "$AVAIL" != "true" ]; then
             STATE=success; DESC="e2e skipped (no hub-relevant change / no test-hub secret); not required to run"
           elif [ "$LANE" = "full" ]; then
-            # pkg_validate is SKIPPED (not failed) under a skip_install one-off dispatch; only an actual
-            # failure should fail the gate, so a skipped validate counts as a pass.
-            if [ "${{ steps.run_e2e.outcome }}" = "success" ] && [ "${{ steps.pkg_validate.outcome }}" != "failure" ]; then
+            # pkg_validate is SKIPPED (not failed) under a skip_install one-off dispatch, and
+            # sdk_conformance is SKIPPED whenever an earlier step already failed; only an actual
+            # failure should fail the gate, so a skipped step counts as a pass. sdk_conformance
+            # MUST be read here -- the gate is a posted commit status computed from named step
+            # outcomes, so a step left out of this condition can fail the JOB while the required
+            # gate still posts success.
+            if [ "${{ steps.run_e2e.outcome }}" = "success" ] \
+               && [ "${{ steps.pkg_validate.outcome }}" != "failure" ] \
+               && [ "${{ steps.sdk_conformance.outcome }}" != "failure" ]; then
               STATE=success; DESC="full e2e passed"
             else
               STATE=failure; DESC="full e2e failed"

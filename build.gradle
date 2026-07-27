@@ -96,6 +96,33 @@ dependencies {
     // backend; neither is a transitive dep of spock-core.
     testImplementation 'net.bytebuddy:byte-buddy:1.18.10'
 
+    // JSON Schema validator — the referee for McpWireSchemaConformanceSpec, which
+    // validates real rendered wire responses against the OFFICIAL MCP schemas
+    // vendored under src/test/resources/mcp-schema/ (see that folder's README).
+    // Handles both dialects those schemas declare: draft-07 (2025-06-18) and
+    // 2020-12 (draft/2026-07-28). Every standard meta-schema ships inside the jar
+    // (`draft-07/schema`, `draft/2020-12/…`), so validation never touches the
+    // network — required, since the vendored schemas are the whole point.
+    //
+    // Held at 2.0.x deliberately: 3.x targets Java 17, and this project's test
+    // toolchain is JDK 11 (see the java{} block below), so a 3.x bump fails to
+    // compile. Pinned against Dependabot majors in .github/dependabot.yml.
+    // NOTE the 2.x API is a rename of 1.x's: SchemaRegistry (was
+    // JsonSchemaFactory), Schema (was JsonSchema), Error (was ValidationMessage).
+    // `com.networknt.schema.Error` collides with java.lang.Error under Groovy's
+    // default imports, so specs must never name that type — see McpSchemaValidator.
+    //
+    // Its jackson-databind 2.18.4 and slf4j-api 2.0.17 both land ABOVE the
+    // Maven-style ranges su.litvak.chromecast:api-v2:0.11.1 declares
+    // (jackson `[2.8.11,2.10.0)`, slf4j `[1.7.2,1.7.100]`). That is a plain
+    // upgrade, not a conflict: a range declared as `require` "can be higher
+    // through conflict resolution, even if the higher version has an exclusive
+    // upper bound" (Gradle rich-version semantics), which is already how quartz's
+    // fixed slf4j-api:2.0.16 wins over that same chromecast range today. The
+    // chromecast dep is only on the classpath to satisfy a bytecode reference to
+    // `common_api.ChromeCast`; nothing here consumes its jackson.
+    testImplementation 'com.networknt:json-schema-validator:2.0.4'
+
     // Security pin: commons-collections 3.2.x carries the InvokeTransformer
     // deserialization RCE (CVE-2015-7501, CVE-2015-6420). 3.2.2 is a drop-in
     // patch on the same 3.2.x release line — adds FunctorUtils serialization
