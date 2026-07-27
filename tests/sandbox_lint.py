@@ -10,6 +10,7 @@ Exit 0 = clean, exit 1 = errors found.
 Outputs GitHub Actions annotations when running in CI.
 """
 
+import hashlib
 import os
 import re
 import sys
@@ -3821,6 +3822,9 @@ def run_self_test() -> int:
     # BP20 library file-scope block-comment guard: must-catch / must-not-catch fixtures.
     failures += _run_library_block_comment_self_test()
 
+    # Vendored MCP schema provenance guard: must-catch / must-not-catch fixtures.
+    failures += _run_vendored_schema_hash_self_test()
+
     if failures:
         print(f"--- {failures} self-test failure(s) ---")
         return 1
@@ -4082,6 +4086,130 @@ def _run_library_block_comment_self_test() -> int:
     return failures
 
 
+MCP_SCHEMA_DIR = REPO_ROOT / "src" / "test" / "resources" / "mcp-schema"
+
+
+def _scan_vendored_schema_hashes(readme: str, actual: dict) -> list[dict]:
+    """Compare each vendored MCP schema's bytes against the provenance the mcp-schema README
+    records for it. `actual` maps '<dir>/schema.json' -> (byte_count, sha256).
+
+    The schemas are the conformance leg's whole referee and the README says they are never
+    hand-edited, but until this check nothing verified it: the recorded hashes matched, and
+    would have kept reading as if they matched after a loosened schema or a half-refresh that
+    updated the file without the provenance (or the reverse). This is what makes a recorded
+    hash a checked fact rather than a claim.
+    """
+    rel = "src/test/resources/mcp-schema/README.md"
+    findings: list[dict] = []
+    recorded: dict[str, tuple[int, str, int]] = {}
+    for m in re.finditer(r"(?m)^###\s+`([^`]+)`\s*$", readme):
+        name = m.group(1)
+        if not name.endswith("schema.json"):
+            continue
+        line = readme[:m.start()].count("\n") + 1
+        section = readme[m.end():]
+        nxt = re.search(r"(?m)^#{1,3}\s", section)
+        if nxt:
+            section = section[:nxt.start()]
+        bullet = re.search(r"(?m)^-\s*([0-9]+)\s+bytes,\s*`sha256\s+([0-9a-f]{64})`", section)
+        if not bullet:
+            findings.append({
+                "file": rel, "line": line, "severity": "error", "rule": "MCP_SCHEMA_PROVENANCE",
+                "source": "",
+                "message": (
+                    f"The `{name}` provenance section records no '- <N> bytes, `sha256 <hex>`' "
+                    "bullet, so nothing pins the vendored bytes. Re-record it (the README's "
+                    "Refreshing section has the command)."
+                ),
+            })
+            continue
+        recorded[name] = (int(bullet.group(1)), bullet.group(2), line)
+
+    for name, (size, digest, line) in sorted(recorded.items()):
+        if name not in actual:
+            findings.append({
+                "file": rel, "line": line, "severity": "error", "rule": "MCP_SCHEMA_PROVENANCE",
+                "source": "",
+                "message": (
+                    f"The README records provenance for `{name}`, but no such file is vendored "
+                    "under src/test/resources/mcp-schema/ -- the conformance spec cannot load it."
+                ),
+            })
+            continue
+        got_size, got_digest = actual[name]
+        if (got_size, got_digest) != (size, digest):
+            findings.append({
+                "file": f"src/test/resources/mcp-schema/{name}", "line": 1, "severity": "error",
+                "rule": "MCP_SCHEMA_PROVENANCE", "source": "",
+                "message": (
+                    f"Vendored schema drifted from the provenance in {rel}:{line} -- recorded "
+                    f"{size} bytes / sha256 {digest}, found {got_size} bytes / sha256 {got_digest}. "
+                    "These files are verbatim upstream copies and are never hand-edited: if this is "
+                    "a deliberate refresh, re-record the byte count, hash, and upstream commit in "
+                    "the README; if it is not, restore the file."
+                ),
+            })
+
+    for name in sorted(set(actual) - set(recorded)):
+        findings.append({
+            "file": f"src/test/resources/mcp-schema/{name}", "line": 1, "severity": "error",
+            "rule": "MCP_SCHEMA_PROVENANCE", "source": "",
+            "message": (
+                f"`{name}` is vendored but has no provenance section in {rel}, so its bytes are "
+                "unpinned. Add a '### `<name>`' section recording the source URL, upstream commit, "
+                "byte count, and sha256."
+            ),
+        })
+    return findings
+
+
+def check_vendored_mcp_schema_hashes() -> list[dict]:
+    """The vendored MCP JSON Schemas must match the hashes recorded in their README."""
+    readme = MCP_SCHEMA_DIR / "README.md"
+    if not readme.is_file():
+        return []
+    actual = {}
+    for f in sorted(MCP_SCHEMA_DIR.glob("*/schema.json")):
+        raw = f.read_bytes()
+        actual[f"{f.parent.name}/{f.name}"] = (len(raw), hashlib.sha256(raw).hexdigest())
+    return _scan_vendored_schema_hashes(readme.read_text(encoding="utf-8", errors="replace"), actual)
+
+
+def _run_vendored_schema_hash_self_test() -> int:
+    """Must-catch / must-not-catch fixtures for check_vendored_mcp_schema_hashes."""
+    failures = 0
+    good_digest = "a" * 64
+    readme = (
+        "# Vendored\n\n"
+        "### `draft/schema.json`\n\n"
+        "- URL: <https://example.invalid/schema.json>\n"
+        f"- 42 bytes, `sha256 {good_digest}`\n\n"
+        "## Refreshing\n"
+    )
+    clean = _scan_vendored_schema_hashes(readme, {"draft/schema.json": (42, good_digest)})
+    if clean:
+        failures += 1
+        print(f"SELF-TEST FAIL [mcp-schema-provenance]: false positive(s) {[f['message'] for f in clean]}")
+    for label, actual in (
+        ("a changed hash", {"draft/schema.json": (42, "b" * 64)}),
+        ("a changed byte count", {"draft/schema.json": (43, good_digest)}),
+        ("a missing file", {}),
+        ("an unrecorded extra schema", {"draft/schema.json": (42, good_digest),
+                                       "2025-06-18/schema.json": (7, "c" * 64)}),
+    ):
+        if not _scan_vendored_schema_hashes(readme, actual):
+            failures += 1
+            print(f"SELF-TEST FAIL [mcp-schema-provenance]: {label} was not flagged")
+    if not _scan_vendored_schema_hashes(
+            "### `draft/schema.json`\n\n- URL: <https://example.invalid/>\n",
+            {"draft/schema.json": (42, good_digest)}):
+        failures += 1
+        print("SELF-TEST FAIL [mcp-schema-provenance]: a provenance section with no hash bullet was not flagged")
+    if failures == 0:
+        print("mcp-schema provenance self-test: PASS (6 fixtures)")
+    return failures
+
+
 def main() -> int:
     if "--self-test" in sys.argv[1:]:
         return run_self_test()
@@ -4138,6 +4266,11 @@ def main() -> int:
 
     # BP20: no file-scope block comments in #include libraries (hub-parser hazard).
     all_findings.extend(check_library_no_file_scope_block_comments())
+
+    # The conformance leg's referee is the vendored MCP JSON Schemas; make the byte hashes
+    # their README records ENFORCED, so a loosened or half-refreshed schema fails here
+    # instead of quietly weakening every McpWireSchemaConformanceSpec verdict.
+    all_findings.extend(check_vendored_mcp_schema_hashes())
 
     # Sort by file, then line
     all_findings.sort(key=lambda f: (f["file"], f["line"]))

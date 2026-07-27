@@ -996,9 +996,11 @@ private Map sendRmAction(Integer ruleId, String rmAction, String logContext) {
 private String _rmExcessiveLoadMarker() { "excessive hub load" }
 
 // Build the actionable note for a failed RMUtils.sendAction. When RMUtils reports the hub's
-// per-app load limiter, steer recovery correctly: that limiter is STICKY -- it does NOT lift
-// when hub load drains, only a hub reboot or an app disable/enable clears it, so an immediate
-// retry of the same call just fails again. On a pause/resume call the direct page-button escape
+// per-app load limiter, steer recovery correctly: that limiter is STICKY -- it does NOT lift when
+// hub load drains, so an immediate retry of the same call just fails again. An app disable/enable
+// only clears the block on the app INSTANCE and the platform's load counters survive it, so the
+// retry after a bounce can re-trip immediately (observed live); only a hub REBOOT resets those
+// counters. On a pause/resume call the direct page-button escape
 // bypasses RMUtils and is load-immune, so it IS the real recovery. Pause and resume share a
 // SINGLE toggle button, pausRule, whose title flips between "Pause" and "Resume" with the rule's
 // current run state (the same one-button toggle pattern as stopRule); clicking pausRule on a
@@ -1009,9 +1011,9 @@ private String _rmSendActionErrorNote(String rmAction, Integer ruleId, String me
     if (message && message.toLowerCase().contains(_rmExcessiveLoadMarker())) {
         if (rmAction == "pauseRule" || rmAction == "resumeRule") {
             def verb = (rmAction == "resumeRule") ? "resume" : "pause"
-            return "RMUtils hit the hub's per-app load limiter (sticky -- it clears only on a hub reboot or an app disable/enable, not by retrying). To ${verb} the rule now, drive the page button directly with hub_set_rule(appId=${ruleId}, button:'pausRule', confirm:true), which bypasses RMUtils and is load-immune (pausRule is a single toggle -- clicking it on a paused rule resumes it). ${base}"
+            return "RMUtils hit the hub's per-app load limiter (sticky -- retrying does not clear it; an app disable/enable clears only the block on the app instance and the platform's load counters can re-trip it at once, so only a hub reboot fully resets it). To ${verb} the rule now, drive the page button directly with hub_set_rule(appId=${ruleId}, button:'pausRule', confirm:true), which bypasses RMUtils and is load-immune (pausRule is a single toggle -- clicking it on a paused rule resumes it). ${base}"
         }
-        return "RMUtils hit the hub's per-app load limiter. It is sticky -- it does NOT lift when load drains and an immediate retry fails the same way; it clears only on a hub reboot or an app disable/enable. Clear it, then reissue. ${base}"
+        return "RMUtils hit the hub's per-app load limiter. It is sticky -- it does NOT lift when load drains and an immediate retry fails the same way. An app disable/enable clears the block on the app instance but not the platform's load counters, so it can re-trip immediately; a hub reboot is what resets them. Clear it, then reissue. ${base}"
     }
     return base
 }

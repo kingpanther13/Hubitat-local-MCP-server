@@ -8,6 +8,10 @@ on:
       - 'tests/sandbox_lint.py'
       - 'libraries/**'
       - 'tools/build-bundle.py'
+      # The MCP_SCHEMA_PROVENANCE check enforces the byte hashes recorded for the vendored
+      # MCP schemas. Without this entry a schema-only or README-only edit -- the exact change
+      # it guards -- would not run the lint at all.
+      - 'src/test/resources/mcp-schema/**'
 
 permissions:
   contents: read

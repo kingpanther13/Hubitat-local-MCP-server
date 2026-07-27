@@ -8,39 +8,21 @@ import support.TestLocation
 import support.ToolSpecBase
 
 /**
- * Validates REAL rendered wire responses against the OFFICIAL MCP JSON Schemas vendored
- * under {@code src/test/resources/mcp-schema/} (provenance + refresh procedure in that
- * folder's README). The sibling of the SDK leg in {@code tests/sdk_conformance_test.py}:
- * there the official Python client is the referee against a live hub; here the spec
- * authors' own schema is the referee against the in-process dispatch harness.
+ * Validates REAL rendered wire responses against the OFFICIAL MCP JSON Schemas vendored under
+ * {@code src/test/resources/mcp-schema/}. See docs/testing.md § Conformance harness.
  *
- * Every payload here comes out of {@code handleMcpRequest()} through {@code render(...)}
- * — the bytes a client receives, after JSON serialization — never a hand-written fixture.
- * {@code HandleMcpRequestDispatchSpec} pins the field-by-field contract this server
- * INTENDS; this spec asks a different question: does what it emits satisfy the PUBLISHED
- * schema? A field renamed by a revision refresh fails here, not there.
+ * The two eras are validated against DIFFERENT schemas on purpose, because the shapes genuinely
+ * differ: the draft {@code ListToolsResult} REQUIRES {@code resultType}, which a legacy result
+ * must not carry. Cross-validating an era against the other schema is a bug in the test rather
+ * than a finding.
  *
- * The two eras are validated against DIFFERENT schemas on purpose, because the shapes
- * genuinely differ: the draft {@code ListToolsResult} REQUIRES {@code resultType}, which a
- * legacy result must not carry (see the ping feature below — that asymmetry is the #365
- * regression). Validating a legacy payload against the draft schema, or vice versa, would
- * be a bug in the test rather than a finding.
- *
- * Each assertion is a plain {@code errors == []}: Spock's power assert then prints every
- * violation message, with its JSON-pointer location, straight into the failure output.
- *
- * The last two features are NEGATIVE CONTROLS. A validator wired up wrongly — bad path,
- * empty definitions map, swallowed messages — reports "no violations" for everything and
- * green-washes the whole spec. Those two prove it rejects.
+ * The last three features are NEGATIVE CONTROLS — one per schema plus the strict view. A
+ * validator wired up wrongly (bad path, empty definitions map, swallowed messages) reports "no
+ * violations" for everything and green-washes the whole spec. Keep them.
  */
 class McpWireSchemaConformanceSpec extends ToolSpecBase {
 
-    /**
-     * {@code location.hub.localIP} is read by the Origin check on every request through
-     * {@code handleMcpRequest}. That read goes through {@code appExecutor.getLocation()}
-     * (a class-2 seam per the docs/testing.md cheat sheet), so it is stubbed once and the
-     * hub re-seeded per test — the same wiring HandleMcpRequestDispatchSpec uses.
-     */
+    /** Stubbed once because the Origin check reads {@code location.hub.localIP} on every request. */
     @Shared private TestLocation sharedLocation = new TestLocation()
 
     def setupSpec() {
@@ -174,6 +156,9 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
         then: 'served, not rejected'
         mcpDriver.lastRenderArgs.status == null
 
+        and: 'a non-trivial catalog really was rendered -- the draft schema permits tools: []'
+        response.result.tools.size() > 5
+
         and:
         McpSchemaValidator.draftErrors('ListToolsResult', response.result) == []
     }
@@ -192,6 +177,10 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
 
         then:
         response.result.resultType == 'complete'
+
+        and: 'the tool really ran -- the draft schema permits content: []'
+        response.result.isError != true
+        response.result.content[0].type == 'text'
 
         and:
         McpSchemaValidator.draftErrors('CallToolResult', response.result) == []
@@ -267,21 +256,32 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
     // The ping / EmptyResult regression (#365)
     // ---------------------------------------------------------------------
 
-    def "a legacy ping result conforms to EmptyResult under a STRICT unknown-key parse"() {
+    @Unroll
+    def "a legacy ping result conforms to EmptyResult under a STRICT unknown-key parse (#era)"() {
         // THE regression this leg exists for. The published draft-07 Result carries
         // additionalProperties: {} and accepts anything, so plain conformance proves little
         // here -- but the MCP TypeScript SDK parses an empty result with
         // ResultSchema.strict(), which REJECTS unknown keys, so stamping the modern
         // resultType onto a legacy ping breaks every keepalive on a real client.
         // legacyStrictErrors reproduces that parse from the SAME vendored definitions.
+        //
+        // Both header shapes, because the era gate keys on the header's VALUE: a headerless
+        // request is the pre-2025-06-18 client, but the clients #365 actually broke SEND
+        // MCP-Protocol-Version on every POST (required since 2025-06-18) -- so the
+        // header-bearing case is the deployed one and headerless alone would not cover it.
         when:
-        def response = dispatch([jsonrpc: '2.0', id: 12, method: 'ping', params: [:]])
+        def response = dispatch([jsonrpc: '2.0', id: 12, method: 'ping', params: [:]], headers)
 
         then: 'permissive conformance -- the weak half, kept so a shape break is attributed correctly'
         McpSchemaValidator.legacyErrors('EmptyResult', response.result) == []
 
         and: 'and the strict view a real legacy client applies'
         McpSchemaValidator.legacyStrictErrors('EmptyResult', 'Result', response.result) == []
+
+        where:
+        era                            | headers
+        'headerless'                   | null
+        'legacy MCP-Protocol-Version'  | ['MCP-Protocol-Version': '2025-11-25']
     }
 
     // ---------------------------------------------------------------------
@@ -300,6 +300,31 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
 
         and: 'the undoctored original is still clean -- so the rejection is about the edit, not the schema'
         McpSchemaValidator.legacyErrors('InitializeResult', response.result) == []
+    }
+
+    def "the DRAFT validator rejects a -32022 rejection with error.data.supported removed"() {
+        // The legacy control above cannot speak for the draft leg: that leg reaches a different
+        // $defs key, the #/$defs/ ref prefix, the 2020-12 dialect, and -- here -- an allOf whose
+        // second branch nests the required data object. Doctoring the REAL rejection is what
+        // proves all four resolve, so a draftErrors(...) == [] elsewhere means "conformant"
+        // rather than "the draft half never validated anything".
+        given: 'the real rendered rejection, then the field a client retries from deleted'
+        def response = dispatch(
+            [jsonrpc: '2.0', id: 15, method: 'tools/list', params: [:]],
+            ['MCP-Protocol-Version': '2099-01-01'])
+        def data = new LinkedHashMap(response.error.data as Map)
+        data.remove('supported')
+        def error = new LinkedHashMap(response.error as Map)
+        error.data = data
+        def doctored = new LinkedHashMap(response as Map)
+        doctored.error = error
+
+        expect: 'the same schema that passes above now reports the violation, naming the field'
+        McpSchemaValidator.draftErrors('UnsupportedProtocolVersionError', doctored)
+            .any { it.contains('supported') }
+
+        and: 'the undoctored original is still clean -- so the rejection is about the edit, not the schema'
+        McpSchemaValidator.draftErrors('UnsupportedProtocolVersionError', response) == []
     }
 
     def "the strict EmptyResult view rejects a resultType stamped onto a legacy ping"() {

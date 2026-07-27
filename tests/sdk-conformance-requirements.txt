@@ -1,30 +1,35 @@
-# Pinned dependency for tests/sdk_conformance_test.py — the official Model Context
-# Protocol Python SDK, used as an INDEPENDENT REFEREE for this server's hand-written
-# protocol layer. Its strict parsing is the point: the SDK validates the negotiated
-# protocol version, the transport's status codes, and every result it parses, so a
-# conformance verdict comes from real client behaviour rather than from this repo's
-# reading of the spec.
+# Pinned dependencies for tests/sdk_conformance_test.py -- the official Model Context Protocol
+# Python SDK as an INDEPENDENT REFEREE for this server's hand-written protocol layer. The pin is
+# DELIBERATE, not incidental: an unpinned SDK would silently change what "conformant" means
+# between runs, so the script reads `mcp==` from this file and refuses to run against any other
+# version. It is deliberately NOT Dependabot-tracked -- a bump changes what the harness asserts.
 #
-# The pin is DELIBERATE, not incidental — an unpinned SDK would silently change what
-# "conformant" means between runs. sdk_conformance_test.py reads the version from this
-# file and refuses to run against a different one, so CI and a local run always agree.
+# On a bump, read the SDK's release notes for protocol-version changes: a release that adds
+# 2026-07-28 to its SUPPORTED_PROTOCOL_VERSIONS changes which ERA this leg exercises, which is a
+# real change in what it proves. Procedure: docs/testing.md § Conformance harness.
 #
-# Bumping it (see docs/testing.md § Conformance harness):
-#   1. edit the version below
-#   2. pip install -r tests/sdk-conformance-requirements.txt
-#   3. python tests/sdk_conformance_test.py   (against a hub, or the e2e dispatch run)
-#   4. read the SDK's release notes for protocol-version changes — a bump that adds
-#      2026-07-28 to its SUPPORTED_PROTOCOL_VERSIONS changes which ERA the SDK
-#      exercises, which is a real change in what this leg proves
+# Pinned here are ONLY the packages whose behaviour can move a verdict: pydantic/pydantic-core
+# (`model_extra` semantics the ping scenario reads), typing-extensions (the `__deprecated__`
+# markers the preflight reads), jsonschema (the SDK's structuredContent validator), httpx + anyio
+# (the transport and the exception-group shapes `_failure_detail` unwraps), and httpx-sse -- pinned
+# not because its SSE branch runs (it does not; this server answers application/json and issues no
+# session id) but because mcp.client.streamable_http imports it at MODULE scope, so a breaking
+# rename there kills the harness on import. The rest of the closure is left to the resolver ON
+# PURPOSE: it is ASGI/auth-server plumbing which mcp's package init does IMPORT but which never
+# EXECUTES on this client-only path, so its version cannot change a verdict. This file is not
+# Dependabot-tracked, so every extra pin rots silently, and each one is another way for the e2e
+# step to fail on `pip install` for a reason that has nothing to do with conformance (a
+# cryptography pin needing a wheel for whatever `python-version: '3.x'` resolves to being the
+# sharpest example).
 #
-# 1.28.1 caps at LATEST_PROTOCOL_VERSION = "2025-11-25" and its
-# SUPPORTED_PROTOCOL_VERSIONS is ["2024-11-05","2025-03-26","2025-06-18","2025-11-25"],
-# so today this leg exercises the LEGACY era through a real client — which is exactly
-# the compatibility surface that matters: every currently deployed MCP client is
-# legacy-era, and it is legacy traffic that a presence-based (rather than value-based)
-# read of the MCP-Protocol-Version header would break.
-#
-# Deliberately NOT tracked by Dependabot: this is a test-referee pin whose bump changes
-# what the harness asserts, so it stays a human decision (see the ignore list rationale
-# in .github/dependabot.yml for the same reasoning applied to the Gradle referees).
+# `requests` is deliberately NOT here -- this file stays single-purpose -- but a clean venv needs
+# it too: the script imports tests/e2e_test.py for the shared hub config, and that module imports
+# requests at module scope. hub-e2e.yml installs it on its own line.
 mcp==1.28.1
+anyio==4.12.1
+httpx==0.28.1
+httpx-sse==0.4.3
+jsonschema==4.26.0
+pydantic==2.12.5
+pydantic-core==2.41.5
+typing-extensions==4.15.0
