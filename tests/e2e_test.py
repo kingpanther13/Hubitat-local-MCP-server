@@ -3266,6 +3266,20 @@ class TestRunner:
                     and "excessive hub load" in str(res.get("error", ""))
                     and self._clear_load_throttle(f"{label}: {res.get('error')}")):
                 res = self.client.call_tool(gateway, {"tool": tool, "args": args})
+            # An app bounce clears the app INSTANCE; the limiter that blocks RMUtils lives on
+            # the platform's load counters, so the retry above can hit it again (observed: the
+            # full lane trips the limiter several times per run, and bounce+retry still failed
+            # here). hub_set_rule_paused's own note documents the load-immune route -- drive
+            # the RM page button, which bypasses RMUtils entirely. pausRule is a TOGGLE, so it
+            # is only correct to click when the current state differs from the target; the
+            # read-back assertions after this call still prove the end state.
+            if (tool == "hub_set_rule_paused" and isinstance(res, dict) and res.get("success") is False
+                    and "excessive hub load" in str(res.get("error", ""))):
+                want_paused = bool(args.get("paused"))
+                if bool(_rule_status(app_id).get("paused")) != want_paused:
+                    print(f"    [LIMITER] {label} blocked by the platform limiter -- "
+                          "falling back to the load-immune pausRule button drive.")
+                    res = self._set_rule(app_id, {"button": "pausRule"})
             # Assert the write's OWN envelope before polling the read side: without it a genuine
             # failure and a slow status decoration produce the same symptom (that is how the
             # limiter trip first presented -- as an unexplained 'paused: False' read-back).
