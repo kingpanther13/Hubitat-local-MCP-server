@@ -674,7 +674,8 @@ jobs:
           # WATCHDOG_URL, overlapping the restore-poll wait) instead of the test critical path.
           # NOT set on the post-restore --cleanup-only step below, which stays the idempotent backstop.
           E2E_DEFER_NATIVE_DELETES: '1'
-          # 0 = NEVER reboot the test hub from a CI run. Keep it that way.
+          # 0 = this limiter escalation NEVER reboots the test hub. Keep it that way. (The separate
+          # reboot_first dispatch input still reboots on explicit maintainer request.)
           # This escalates a recurring platform load limiter to a hub REBOOT at every multiple of N
           # app bounces (an app bounce only clears the app INSTANCE; the limiter lives on the
           # platform's load counters, which only a reboot resets). It was set to '2' in #367 -- but
@@ -685,7 +686,8 @@ jobs:
           # The trade-off, honestly: with reboots off, a limiter that outlives the bounce falls back
           # to the SOFT-PASS path (reported under [SOFT-PASS] in the run summary) instead of being
           # actively cleared -- which is the behaviour every run before #367 already had.
-          # To debug a limiter, set this temporarily on a workflow_dispatch run; do not commit it.
+          # To debug a limiter, change this value on a scratch branch and dispatch that branch --
+          # there is no workflow_dispatch input for it, so it cannot be overridden per-run.
           E2E_LIMITER_REBOOT_AFTER: '0'
           E2E_LANE: ${{ steps.gate.outputs.lane }}
           E2E_GROUPS: ${{ steps.gate.outputs.groups }}

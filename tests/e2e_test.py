@@ -512,6 +512,11 @@ class TestRunner:
         # catalog they resolve through. Both are per-run caches only; the DEVICES persist on the hub.
         self._perm_fixture_ids: dict[str, str] = {}
         self._driver_type_ids: dict[str, str] = {}
+        self._driver_buckets: dict[str, str | None] = {}
+        # Permanent fixtures are reset rather than deleted, so a reset that fails leaves cross-run
+        # state behind. Counted (not just printed) because a dimmer stuck at 60 makes the gt/between
+        # legs vacuous on the NEXT run -- a silent one-line warning in a 40-minute log is not enough.
+        self._fixture_reset_failures: list[str] = []
         self.created_dashboard_ids: list[str] = []
         # When set (the CI 'Run E2E tests' step only), per-test native-rule fixture deletes are SKIPPED
         # (see _delete_native + cleanup Layer 4) and the rules are reaped by the disarm step's force
@@ -814,17 +819,12 @@ class TestRunner:
         self._test_shade_id = str(dev_id) if dev_id else ""
         return self._test_shade_id
 
-    # PERMANENT fixture devices: created ONCE per hub, never deleted, and NOT children of the MCP app.
-    #
-    # hub_manage_virtual_device uses addChildDevice, so every device it makes is owned by the MCP app
-    # and each test that created one paid a create + a delete. hub_create_device instead instantiates
-    # from a driver-type id via the hub's own add-device path, producing a standalone device with no
-    # parent app -- which is why these can outlive a run. They are reachable because main() pins
-    # bypassDeviceAllowlist ON (they are in neither selectedDevices nor getChildDevices()).
-    #
-    # Tests whose SUBJECT is the MCP-managed virtual-device lifecycle (create / control / delete) keep
-    # using hub_manage_virtual_device -- that surface still needs proving. These fixtures replace the
-    # incidental "I just need a switch to poke" case.
+    # PERMANENT fixture devices: created once per hub via hub_create_device (the add-device-by-driver
+    # path, so they have NO parent app) and never deleted, unlike hub_manage_virtual_device's
+    # addChildDevice. Reachable only because main() pins bypassDeviceAllowlist ON -- they are in
+    # neither selectedDevices nor getChildDevices(). Tests whose SUBJECT is the MCP-managed
+    # virtual-device lifecycle keep using hub_manage_virtual_device; these replace the incidental
+    # "I just need a switch to poke" case.
     PERM_FIXTURES: ClassVar[dict[str, tuple[str, str]]] = {
         "switch_a": ("E2E_PERM_Switch_A", "Virtual Switch"),
         "switch_b": ("E2E_PERM_Switch_B", "Virtual Switch"),
@@ -844,7 +844,12 @@ class TestRunner:
             return cached
 
         found = self.client.call_tool("hub_list_devices", {"scope": "all", "labelFilter": label})
-        for d in (found.get("devices") or []):
+        # A structured failure ([success:false,...]) carries no isError, so call_tool returns it as an
+        # ordinary dict with no "devices" key. Treating that as "absent" would create a duplicate
+        # PERMANENT device on every incident, and nothing ever sweeps E2E_PERM_*.
+        assert found.get("success") is not False,             f"could not look up permanent fixture '{label}' -- refusing to create a duplicate: {found}"
+        assert isinstance(found.get("devices"), list),             f"fixture lookup returned no device list (hub contract drift?) -- refusing to create a duplicate: {found}"
+        for d in found["devices"]:
             if (d.get("label") or "") == label and d.get("id") is not None:
                 self._perm_fixture_ids[key] = str(d["id"])
                 return self._perm_fixture_ids[key]
@@ -856,6 +861,12 @@ class TestRunner:
         })
         dev_id = created.get("deviceId")
         assert dev_id, f"could not create permanent fixture '{label}' (driver-type {type_id}): {created}"
+        # hub_create_device returns success:true WITH warnings when both label-setting paths fail on
+        # some firmwares. An unlabelled device is invisible to the exact-label lookup above, so the
+        # next run creates another one, forever. Fail here instead.
+        assert created.get("label") == label and not created.get("warnings"),             (f"permanent fixture created as device {dev_id} but its label did not land as '{label}' "
+             f"(got {created.get('label')!r}, warnings={created.get('warnings')!r}) -- a later run "
+             f"would not find it and would create a duplicate")
         print(f"    [PERM FIXTURE] created '{label}' (id {dev_id}, driver-type {type_id}) -- "
               "permanent, non-child; it will be reused by every later run")
         self._perm_fixture_ids[key] = str(dev_id)
@@ -871,12 +882,17 @@ class TestRunner:
                     args["cursor"] = cursor
                 page = self.client.call_tool("hub_read_apps_code",
                                              {"tool": "hub_list_drivers", "args": args})
-                for d in (page.get("drivers") or []):
-                    name, did = d.get("name"), d.get("id")
-                    # First id wins: the catalog can carry a user-installed driver with the same name
-                    # as a built-in, and the built-in is what these fixtures want.
-                    if name and did is not None and name not in self._driver_type_ids:
+                assert isinstance(page.get("drivers"), list),                     f"driver catalog read failed (not a driver list) -- this is NOT 'driver absent': {page}"
+                for d in page["drivers"]:
+                    name, did, bucket = d.get("name"), d.get("id"), d.get("bucket")
+                    # Prefer a BUILT-IN over a user driver of the same name -- the catalog exposes
+                    # `bucket` for exactly this, and relying on list order would silently adopt a
+                    # user-installed "Virtual Switch" as every fixture's driver.
+                    if not name or did is None:
+                        continue
+                    if name not in self._driver_type_ids or (bucket != "user" and self._driver_buckets.get(name) == "user"):
                         self._driver_type_ids[name] = str(did)
+                        self._driver_buckets[name] = bucket
                 cursor = page.get("nextCursor")
                 if not cursor:
                     break
@@ -2495,10 +2511,31 @@ class TestRunner:
             print(f"    DIAG[{dev_id}] " + " | ".join(parts))
             return "full diagnostics printed above (DIAG line in the test output)"
 
-        def _drive(value: str) -> Any:
-            cmd = self.client.call_tool("hub_call_device_command", {"deviceId": dev_id, "command": value})
+        def _drive(value: str, with_wait: bool = False) -> Any:
+            # with_wait keeps ONE command-waitFor scenario on the LISTED (Groovy-device) path. Every
+            # other live waitFor now runs against a permanent non-child fixture, i.e. the bypass
+            # implementation -- which fires /device/runmethod and re-reads fullJson instead of using
+            # the Groovy device handle. The listed path is what a real user's own devices ride, so a
+            # break in its polling loop or post-waitFor snapshot must not be invisible to e2e.
+            cargs: dict[str, Any] = {"deviceId": dev_id, "command": value}
+            if with_wait:
+                cargs["waitFor"] = {"attribute": "switch", "expectedValue": value, "timeoutMs": 5000}
+            cmd = self.client.call_tool("hub_call_device_command", cargs)
             assert not (isinstance(cmd, dict) and cmd.get("success") is False), \
                 f"'{value}' command reported failure: {cmd}"
+            if with_wait:
+                wf = cmd.get("waitFor") if isinstance(cmd, dict) else None
+                assert isinstance(wf, dict), f"listed-path waitFor result block missing: {cmd}"
+                lim_base = self._limiter_lines(dev_id, method=value)
+                if wf.get("converged") is not True and self._limiter_logged(dev_id, method=value,
+                                                                           baseline=lim_base):
+                    self._soft_passes.append(
+                        "virtual_device_lifecycle/test_command_virtual_switch: limiter-proven "
+                        "(listed-path waitFor could not converge; platform throttled event delivery)")
+                else:
+                    assert wf.get("converged") is True, f"listed-path waitFor did not converge: {wf}"
+                    assert str(wf.get("finalValue")) == value, \
+                        f"listed-path waitFor finalValue != '{value}': {wf}"
             # The response always carries an immediate state snapshot ({attr: {value,
             # timestamp}}). Assert SHAPE + timestamp FORMAT here -- NOT the value: the
             # snapshot is read in the same request that fires the command, and the hub
@@ -2559,7 +2596,7 @@ class TestRunner:
                     f"limiter evidence in the hub log, got: {result}\n    DIAG {_switch_diagnostics()}"
 
             # Toggle back the other way
-            result = _drive(second)
+            result = _drive(second, with_wait=True)
             if (result.get("timedOut") is not False or result.get("finalValue") != second) \
                     and self._clear_load_throttle(f"'{second}' on fresh device {dev_id} never landed: {result}"):
                 result = _drive(second)
@@ -2593,7 +2630,7 @@ class TestRunner:
         # AND the post-waitFor snapshot value == the target.
         #
         # Uses a PERMANENT non-child fixture instead of a throwaway child: no per-test create or
-        # delete, and no `installed` event charged to this app's load budget. Safe against a fixture
+        # delete, and no device-creation event at all. Safe against a fixture
         # that carries state from a previous run because the target is derived from the CURRENT value
         # below -- it drives a real transition either way.
         dev_id = self._ensure_perm_fixture("switch_a")
@@ -2603,6 +2640,10 @@ class TestRunner:
         start = cur.get("value") if isinstance(cur, dict) else None
         target = "off" if start == "on" else "on"
 
+        # Baseline BEFORE the dispatch: this is a PERMANENT shared device, so a limiter line from an
+        # earlier test -- or an earlier RUN, since the id is now stable forever -- still sits in the
+        # hub's 40-entry error ring and would satisfy the soft-pass without a fresh trip.
+        limiter_base = self._limiter_lines(dev_id, method=target)
         cmd = self.client.call_tool("hub_call_device_command", {
             "deviceId": dev_id,
             "command": target,
@@ -2612,7 +2653,7 @@ class TestRunner:
         wf = cmd.get("waitFor")
         assert isinstance(wf, dict), f"waitFor result block missing: {cmd}"
         # The discriminator: converged True + finalValue == target.
-        if wf.get("converged") is not True and self._limiter_logged(dev_id, method=target):
+        if wf.get("converged") is not True and self._limiter_logged(dev_id, method=target, baseline=limiter_base):
             self._soft_passes.append(
                 "virtual_device_lifecycle/test_command_waitfor_converges: limiter-proven "
                 "(command dispatched; platform throttled event delivery so waitFor could not converge)")
@@ -2630,7 +2671,7 @@ class TestRunner:
         #   - numeric comparator (gt) on a dimmer's level via hub_get_device_attribute poll mode
         #   - stableForMs (debounce) on a switch via the hub_call_device_command waitFor path
         # PERMANENT non-child fixtures (dimmer + switch): no per-test create/delete, and no `installed`
-        # events charged to this app's load budget. Both legs below DRIVE the attribute to a known
+        # device-creation events. Both legs below DRIVE the attribute to a known
         # value before asserting (setLevel 60, then an explicit on/off transition), so a fixture
         # carrying state from an earlier run cannot change the verdict.
         dim_id = self._ensure_perm_fixture("dimmer")
@@ -2639,6 +2680,7 @@ class TestRunner:
             # --- numeric comparator on a dimmer ---
             # Drive level to 60 then poll for level > 50 (numeric gt). Use the waitFor on the
             # command itself so the level has converged before we assert the comparator poll.
+            dim_base = self._limiter_lines(dim_id, method="setLevel")
             self.client.call_tool("hub_call_device_command", {
                 "deviceId": dim_id, "command": "setLevel", "parameters": ["60"],
                 "waitFor": {"attribute": "level", "comparator": "gte", "expectedValue": "60", "timeoutMs": 5000},
@@ -2648,7 +2690,7 @@ class TestRunner:
                 "comparator": "gt", "expectedValue": "50", "timeoutMs": 5000,
             })
             assert isinstance(poll, dict), f"comparator poll unexpected response: {poll!r}"
-            if poll.get("success") is not True and self._limiter_logged(dim_id, method="setLevel"):
+            if poll.get("success") is not True and self._limiter_logged(dim_id, method="setLevel", baseline=dim_base):
                 self._soft_passes.append(
                     "virtual_device_lifecycle/test_poll_comparator_and_stable: limiter-proven "
                     "(setLevel dispatched; platform throttled event delivery so the gt poll could not converge)")
@@ -2672,7 +2714,7 @@ class TestRunner:
                 "comparator": "between", "expectedValues": ["50", "70"], "timeoutMs": 5000,
             })
             assert isinstance(bpoll, dict), f"between poll unexpected response: {bpoll!r}"
-            if bpoll.get("success") is not True and self._limiter_logged(dim_id, method="setLevel"):
+            if bpoll.get("success") is not True and self._limiter_logged(dim_id, method="setLevel", baseline=dim_base):
                 self._soft_passes.append(
                     "virtual_device_lifecycle/test_poll_comparator_and_stable: limiter-proven "
                     "(between: setLevel dispatched; platform throttled event delivery)")
@@ -2685,6 +2727,7 @@ class TestRunner:
             cur = self.client.call_tool("hub_get_device_attribute", {"deviceId": sw_id, "attribute": "switch"})
             start = cur.get("value") if isinstance(cur, dict) else None
             target = "off" if start == "on" else "on"
+            sw_base = self._limiter_lines(sw_id, method=target)
             cmd = self.client.call_tool("hub_call_device_command", {
                 "deviceId": sw_id, "command": target,
                 "waitFor": {"attribute": "switch", "expectedValue": target, "stableForMs": 300, "timeoutMs": 5000},
@@ -2692,7 +2735,7 @@ class TestRunner:
             assert isinstance(cmd, dict), f"stableForMs command unexpected response: {cmd!r}"
             wf = cmd.get("waitFor")
             assert isinstance(wf, dict), f"waitFor result block missing: {cmd}"
-            if wf.get("converged") is not True and self._limiter_logged(sw_id, method=target):
+            if wf.get("converged") is not True and self._limiter_logged(sw_id, method=target, baseline=sw_base):
                 self._soft_passes.append(
                     "virtual_device_lifecycle/test_poll_comparator_and_stable: limiter-proven "
                     "(command dispatched; platform throttled event delivery so the stableForMs waitFor could not converge)")
@@ -2715,6 +2758,7 @@ class TestRunner:
             # which converges once the value leaves the set. Drive the flip with a command waitFor
             # so the value has settled at `start` before the ne poll asserts.
             other = "off" if target == "on" else "on"   # == start (the pre-flip value)
+            ne_base = self._limiter_lines(sw_id, method=other)
             nepoll = self.client.call_tool("hub_call_device_command", {
                 "deviceId": sw_id, "command": other,
                 "waitFor": {"attribute": "switch", "comparator": "ne", "expectedValue": target, "timeoutMs": 5000},
@@ -2722,7 +2766,7 @@ class TestRunner:
             assert isinstance(nepoll, dict), f"ne command unexpected response: {nepoll!r}"
             nwf = nepoll.get("waitFor")
             assert isinstance(nwf, dict), f"ne waitFor result block missing: {nepoll}"
-            if nwf.get("converged") is not True and self._limiter_logged(sw_id, method=other):
+            if nwf.get("converged") is not True and self._limiter_logged(sw_id, method=other, baseline=ne_base):
                 self._soft_passes.append(
                     "virtual_device_lifecycle/test_poll_comparator_and_stable: limiter-proven "
                     "(ne: command dispatched; platform throttled event delivery)")
@@ -2731,10 +2775,12 @@ class TestRunner:
                 assert nwf.get("finalValue") == other, f"ne finalValue should be the new value '{other}': {nwf}"
         finally:
             # The fixtures are PERMANENT, so teardown normalizes them instead of deleting: hand the
-            # next run (and the next test) a predictable starting point rather than whatever the last
-            # assertion happened to leave. Best-effort -- a failed reset must not mask a real failure,
-            # and every test using these fixtures derives its own target from the CURRENT value.
-            for dev, cmd, params in ((dim_id, "setLevel", ["50"]), (sw_id, "off", None)):
+            # next run a predictable starting point. Level 10 is deliberately OUTSIDE both asserted
+            # ranges (gt 50, between [50,70]) -- resetting to 50 would sit inside between[], so a
+            # setLevel that silently did nothing would still satisfy that leg. Best-effort, but a
+            # failure is COUNTED (see _fixture_reset_failures): a fixture left at 60 makes both legs
+            # vacuous for the next run, which is exactly the state that must not pass unnoticed.
+            for dev, cmd, params in ((dim_id, "setLevel", ["10"]), (sw_id, "off", None)):
                 if not dev:
                     continue
                 try:
@@ -2743,6 +2789,7 @@ class TestRunner:
                         args["parameters"] = params
                     self.client.call_tool("hub_call_device_command", args)
                 except Exception as exc:
+                    self._fixture_reset_failures.append(f"{dev} via {cmd}: {exc}")
                     print(f"  [WARN] could not reset permanent fixture {dev} via {cmd}: {exc}")
 
     @test("virtual_device_lifecycle")
@@ -4581,9 +4628,8 @@ class TestRunner:
         try:
             # Button device for the controller to bind to: a PERMANENT non-child fixture, so this
             # test no longer creates one per run. Nothing here depends on the device being fresh --
-            # it is only ever a bind TARGET (the assertions are about the controller's wire format,
-            # valueEcho and the submitOnChange origLabel reveal), and a button holds no state a
-            # previous run could leave behind.
+            # it is only ever a bind TARGET -- the assertions are about the controller's wire format
+            # (valueEcho and the submitOnChange origLabel reveal), never about the device's state.
             device_id = self._ensure_perm_fixture("button")
 
             # Button Controller instance (tracked for cleanup).
@@ -4618,8 +4664,8 @@ class TestRunner:
             assert "origLabel" in after_names, \
                 f"submitOnChange reveal: origLabel should appear once a button device is assigned: {after_names}"
         finally:
-            # The controller delete is the only inline teardown; the device is swept by
-            # created_device_dnis. _delete_native handles the deferred-delete mode.
+            # The controller delete is the only teardown here. The button is a PERMANENT fixture and
+            # must NOT be added to created_device_dnis -- the sweep would delete it.
             if controller_id:
                 self._delete_native(controller_id, gateway="hub_manage_native_rules_and_apps")
 
@@ -9444,9 +9490,12 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             })
 
         original = _authorized_ids()
-        # Pick a device that is NOT currently authorized so add+remove nets to no change.
+        # Pick a device that is NOT currently authorized so add+remove nets to no change. Permanent
+        # fixtures are unauthorized by construction -- exclude them so this never mutates one.
+        _perm_labels = {lbl for lbl, _ in self.PERM_FIXTURES.values()}
         unauth = next((str(d["id"]) for d in _all_devices()
-                       if not d.get("mcpAuthorized") and d.get("id") is not None), None)
+                       if not d.get("mcpAuthorized") and d.get("id") is not None
+                       and (d.get("label") or "") not in _perm_labels), None)
         if unauth is None:
             # Environmental precondition, not a defect: if every hub device is already authorized
             # there is no add candidate. Skip (harness-native) rather than red-fail the suite.
@@ -9519,12 +9568,19 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         Picks an UNAUTHORIZED device (scope='all', mcpAuthorized=false), confirms hub_get_device
         404s for it while the toggle is OFF, flips bypassDeviceAllowlist ON via hub_update_mcp_settings,
         confirms hub_get_device now resolves it through the id-keyed /device/fullJson fallback, then
-        restores the toggle OFF in a finally (and re-confirms the boundary is back). Validated live
+        restores the suite's bypass-ON baseline in a finally (the boundary half runs with it forced
+        OFF, and the boundary is re-confirmed before the restore). Validated live
         because the bypass routes to real hub endpoints the Spock harness only mocks.
         """
         all_devs = self.client.call_tool("hub_list_devices", {"scope": "all"}).get("devices") or []
+        # EXCLUDE the permanent fixtures. They are mcpAuthorized=false by construction, so they are
+        # candidates here -- and leg (a) below RENAMES the chosen device. Since _ensure_perm_fixture
+        # identifies a fixture by exact label, a rename left unrestored orphans it permanently and
+        # every later run creates a duplicate instead.
+        _perm_labels = {lbl for lbl, _ in self.PERM_FIXTURES.values()}
         unauth = next((str(d["id"]) for d in all_devs
-                       if not d.get("mcpAuthorized") and d.get("id") is not None), None)
+                       if not d.get("mcpAuthorized") and d.get("id") is not None
+                       and (d.get("label") or "") not in _perm_labels), None)
         if unauth is None:
             raise SkipTest("no unauthorized device available to exercise the allowlist bypass")
 
@@ -9559,7 +9615,21 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         base_off = _set_bypass(False)
         assert base_off.get("success") is True, f"could not force bypass OFF for the boundary check: {base_off}"
 
-        # Toggle OFF (established above): the unlisted device is not reachable.
+        try:
+            self._bypass_boundary_checks(unauth, _set_bypass)
+        finally:
+            # ALWAYS hand the suite back its ON baseline. Everything above can raise -- the two
+            # boundary assertions, any of the ~20 tool calls in the leg block, or the inner
+            # restore-OFF -- and leaving it OFF makes every LATER permanent-fixture test fail with
+            # "Device not found", burying the real cause under unrelated red.
+            back_on = _set_bypass(True)
+            assert back_on.get("success") is True,                 f"could not restore the suite's bypass-ON baseline; later fixture tests would fail: {back_on}"
+
+    def _bypass_boundary_checks(self, unauth, _set_bypass) -> None:
+        """Boundary + bypass-reach assertions for test_bypass_device_allowlist_reaches_unlisted_device.
+
+        Split out only so the caller can guarantee the ON-baseline restore in a finally."""
+        # Toggle OFF (established by the caller): the unlisted device is not reachable.
         try:
             self.client.call_tool("hub_get_device", {"deviceId": unauth})
             assert False, "expected hub_get_device to 404 for an unlisted device with bypass OFF"
@@ -9658,7 +9728,11 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         finally:
             if flipped:
                 off = _set_bypass(False)
-                assert off.get("success") is True, f"restoring bypass OFF did not succeed: {off}"
+                if off.get("success") is not True:
+                    # NOT an assert: this runs in a finally, so raising here would replace whatever
+                    # real failure is in flight with a teardown error. The caller's finally restores
+                    # the ON baseline regardless, so a failed OFF cannot strand the run either.
+                    print(f"    [WARN] restoring bypass OFF did not succeed: {off}")
 
         # Boundary restored: the device is unreachable again.
         try:
@@ -9667,12 +9741,8 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         except McpError:
             pass
 
-        # Hand the suite back its baseline. Leaving it OFF would break every LATER test that reads or
-        # commands a permanent non-child fixture, so this is not optional cleanup -- it is a
-        # precondition for the rest of the run.
-        back_on = _set_bypass(True)
-        assert back_on.get("success") is True, \
-            f"could not restore the suite's bypass-ON baseline; later fixture tests would fail: {back_on}"
+        # The ON baseline is restored by the CALLER's finally, not here -- a restore on this path
+        # would only run when every assertion above passed, which is the case that never needed it.
 
     # -----------------------------------------------------------------------
     # GROUP 10b: best-practice gate + reactive hints (issue #299)
@@ -10065,10 +10135,13 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
 
         Uses the permanent fixtures rather than creating two throwaway children: this test drives both
         switches to a known state before every assertion, so carried-over state is irrelevant, and it
-        drops four device writes (2 creates + 2 deletes) from the run."""
+        drops two net device writes -- 2 creates and 2 deletes removed, 2 resets added."""
         a_id = self._ensure_perm_fixture("switch_a")
         b_id = self._ensure_perm_fixture("switch_b")
         try:
+            # Baselines BEFORE any dispatch: both are PERMANENT shared devices, so a limiter line from
+            # an earlier test or an earlier RUN would otherwise satisfy the soft-pass with no fresh trip.
+            multi_base = {did: self._limiter_lines(did, method="on") for did in (a_id, b_id)}
             # Drive both to 'on' so all-mode can converge. waitFor confirms each landed.
             for did in (a_id, b_id):
                 self.client.call_tool("hub_call_device_command", {
@@ -10095,7 +10168,8 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             # them but the platform limiter aborted delivery, soft-pass -- the tool worked; this is a
             # tail-of-run capacity signal, not a product failure.
             if all_poll.get("success") is not True and (
-                    self._limiter_logged(a_id, method="on") or self._limiter_logged(b_id, method="on")):
+                    self._limiter_logged(a_id, method="on", baseline=multi_base[a_id])
+                    or self._limiter_logged(b_id, method="on", baseline=multi_base[b_id])):
                 self._soft_passes.append(
                     "poll_until_attribute/test_poll_multi_device: limiter-proven "
                     "('on' dispatched to both; platform throttled event delivery so all-mode could not converge)")
@@ -10128,6 +10202,7 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                 try:
                     self.client.call_tool("hub_call_device_command", {"deviceId": did, "command": "off"})
                 except Exception as exc:
+                    self._fixture_reset_failures.append(f"{did} to off: {exc}")
                     print(f"  [WARN] could not reset permanent fixture {did} to off: {exc}")
 
     # -----------------------------------------------------------------------
@@ -11129,6 +11204,13 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                   "load limiter tripped under the accumulated back-to-back load. The retried "
                   "dispatches passed; this is a capacity signal, not a product failure.")
 
+        if self._fixture_reset_failures:
+            print(f"\n  [FIXTURE-RESET] {len(self._fixture_reset_failures)} permanent-fixture reset(s) FAILED -- "
+                  "the next run starts from carried-over state, which can make level/threshold "
+                  "assertions vacuous:")
+            for line in self._fixture_reset_failures:
+                print(f"    {line}")
+
         if self._soft_passes:
             print(f"\n  [SOFT-PASS] {len(self._soft_passes)} test(s) passed via a soft contract "
                   "(relay-504 retry or limiter-proven dispatch; see the run log):")
@@ -11173,7 +11255,7 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             _op_shown_s = sum(sum(xs) for _, xs in _shown_ops)
             print(f"\n  Per-op wall-clock (total / count / avg / max / p95, slowest total first; "
                   f"top {len(_shown_ops)} of {len(_ranked_ops)} op kinds, "
-                  f"{_op_shown_s:.0f}s of {_op_total:.0f}s in all hub ops):")
+                  f"{_op_shown_s:.0f}s of {_op_total:.0f}s in TRACKED hub ops):")
             for op_key, xs in _shown_ops:
                 tot, cnt = sum(xs), len(xs)
                 print(f"    {tot:6.1f}s  {cnt:3d}x  {tot / cnt:4.1f}s avg  {max(xs):4.1f}s max  {_p95(xs):4.1f}s p95  {op_key}")
@@ -11332,7 +11414,20 @@ def main() -> None:
             # Prove the device is reachable AND non-child, the two properties the model depends on.
             dev = client.call_tool("hub_get_device", {"deviceId": dev_id})
             assert str(dev.get("id")) == str(dev_id), f"fixture '{label}' not readable after setup: {dev}"
-            print(f"  {key:<10} id={dev_id:<6} '{label}' ({driver}) -- readable")
+            # PRIME the attribute the tests poll. On the bypass path a read of an attribute missing
+            # from currentStates THROWS, and a device that has never been commanded has reported
+            # nothing -- so without this a fresh hub bootstraps green and fails its first real lane.
+            prime = {"Virtual Dimmer": ("setLevel", ["10"], "level"),
+                     "Virtual Button": (None, None, None)}.get(driver, ("off", None, "switch"))
+            cmd, params, attr = prime
+            if cmd:
+                cargs = {"deviceId": dev_id, "command": cmd}
+                if params:
+                    cargs["parameters"] = params
+                client.call_tool("hub_call_device_command", cargs)
+                read = client.call_tool("hub_get_device_attribute", {"deviceId": dev_id, "attribute": attr})
+                assert read.get("value") is not None,                     f"fixture '{label}' did not report '{attr}' after priming -- polling tests would throw: {read}"
+            print(f"  {key:<10} id={dev_id:<6} '{label}' ({driver}) -- readable, primed")
         children = client.call_tool("hub_list_devices", {"filter": "virtual"}).get("devices") or []
         child_ids = {str(d.get("id")) for d in children}
         overlap = {k: v for k, v in runner._perm_fixture_ids.items() if v in child_ids}
@@ -11488,9 +11583,14 @@ def main() -> None:
     # test hub is dedicated to e2e, and the watchdog restores main's code (not settings) afterwards.
     # test_bypass_device_allowlist_reaches_unlisted_device flips it OFF and back around its own
     # assertions, so it still proves the boundary works rather than assuming this baseline.
-    client.call_tool("hub_manage_mcp", {
+    _bypass_res = client.call_tool("hub_manage_mcp", {
         "tool": "hub_update_mcp_settings",
         "args": {"settings": {"bypassDeviceAllowlist": True}, "confirm": True}})
+    # Assert rather than announce: every fixture test depends on this single write, and an
+    # unchecked banner would claim a precondition it never established, then produce a cascade
+    # of "Device not found" pointing nowhere near the cause.
+    assert _bypass_res.get("success") is True, \
+        f"could not pin bypassDeviceAllowlist ON; every permanent-fixture test would fail: {_bypass_res}"
     print("Device allowlist: bypass ON for the suite (permanent non-child fixtures are reachable)\n")
 
     _grps = [s.strip() for s in args.groups.split(",") if s.strip()] if args.groups else None
