@@ -677,6 +677,15 @@ jobs:
           # WATCHDOG_URL, overlapping the restore-poll wait) instead of the test critical path.
           # NOT set on the post-restore --cleanup-only step below, which stays the idempotent backstop.
           E2E_DEFER_NATIVE_DELETES: '1'
+          # Escalate a RECURRING platform load limiter to a hub reboot after this many trips.
+          # The full lane has always tripped it (a 208-test / ~42-minute run: the last green
+          # run before this was enabled logged 10 THROTTLE lines and several trips) -- it
+          # simply landed on tests whose writes already bounce-and-retry, so it recovered
+          # silently. An app bounce only clears the app INSTANCE; the limiter lives on the
+          # platform's load counters, which only a reboot resets, so bouncing can and does
+          # fail to clear it. The suite caps this at 3 reboots per run and it is a no-op
+          # unless the limiter actually trips that often.
+          E2E_LIMITER_REBOOT_AFTER: '2'
           E2E_LANE: ${{ steps.gate.outputs.lane }}
           E2E_GROUPS: ${{ steps.gate.outputs.groups }}
           E2E_TESTS: ${{ steps.gate.outputs.tests }}
