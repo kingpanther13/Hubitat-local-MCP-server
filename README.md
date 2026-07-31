@@ -153,6 +153,8 @@ Add the block for your OS — use your **local** URL (`http://YOUR_HUB_IP/apps/a
     "hubitat": {
       "command": "uvx",
       "args": [
+        "--with",
+        "mcp<2.0.0",
         "mcp-proxy",
         "--transport",
         "streamablehttp",
@@ -162,6 +164,8 @@ Add the block for your OS — use your **local** URL (`http://YOUR_HUB_IP/apps/a
   }
 }
 ```
+
+> **The `--with "mcp<2.0.0"` lines are required** (and must come *before* `mcp-proxy` — `--with` is a `uv` option, not an `mcp-proxy` one): the `mcp` Python SDK 2.0.0 release (28 July 2026) removed an API that `mcp-proxy` 0.12.0 imports, and `mcp-proxy` sets no upper bound on the dependency, so an unpinned `uvx mcp-proxy` crashes on startup (`ImportError: cannot import name 'request_ctx'`) and the server never connects. Tracked upstream at [sparfenyuk/mcp-proxy#235](https://github.com/sparfenyuk/mcp-proxy/issues/235); once a fixed `mcp-proxy` release ships, the pin becomes unnecessary but is harmless to leave in place. If your previously working config broke around that date, this is why — add the two lines and fully restart Claude Desktop.
 
 **macOS — [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) (via `npx`).** Add `--allow-http` for a **local** (plain-HTTP) URL; omit it for the **cloud** (HTTPS) URL:
 ```json
