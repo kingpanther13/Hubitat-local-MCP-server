@@ -1372,8 +1372,11 @@ def _guideResourceUriPrefix() { "hubitat://guide/" }
 // getHiddenToolNames() -- the same source of truth the catalog and search consume ("a
 // disabled tool disappears from every surface"). That covers the Read master AND the
 // #114 Advanced per-tool overrides, so the resources surface can never serve content
-// its tool counterpart is gated from serving. (The best-practice acknowledgment gate is
-// a different, write-only gate and does not apply to resources at all.)
+// its tool counterpart is gated from serving. Mirroring is at TOOL granularity: the
+// mode/HSM header data in the context snapshot is part of hub_list_devices' own
+// format='context' output (the tool serves it under the same gate), not a reach into
+// hub_list_modes / hub_get_hsm_status. (The best-practice acknowledgment gate is a
+// different, write-only gate and does not apply to resources at all.)
 def _contextResourcesEnabled() { !getHiddenToolNames().contains("hub_list_devices") }
 def _guideResourcesEnabled() { !getHiddenToolNames().contains("hub_get_tool_guide") }
 
@@ -1386,7 +1389,10 @@ def _resourceGateCause() {
 
 def _resourceCatalog() {
     def entries = []
-    if (_contextResourcesEnabled()) {
+    // One getHiddenToolNames() computation for both group checks (it rebuilds the
+    // gateway config each call; the per-read helpers stay separate for the read paths).
+    def hidden = getHiddenToolNames()
+    if (!hidden.contains("hub_list_devices")) {
         entries << [
             uri: "hubitat://context-summary",
             name: "context-summary",
@@ -1402,7 +1408,7 @@ def _resourceCatalog() {
             mimeType: "application/json"
         ]
     }
-    if (_guideResourcesEnabled()) {
+    if (!hidden.contains("hub_get_tool_guide")) {
         getToolGuideSections().each { section, text ->
             entries << [
                 uri: "${_guideResourceUriPrefix()}${section}".toString(),
@@ -1437,8 +1443,11 @@ def handleResourcesRead(msg) {
             return jsonRpcError(msg.id, -32002, "Resource not available: ${uri} reads live device state and ${_resourceGateCause()}.", [uri: uri])
         }
         // Live state: ttlMs 0 tells caching intermediaries the content is immediately stale.
-        // These are the only protocol handlers that enumerate devices, so a throw here gets
-        // the rich mcpLog treatment before the top-level catch maps it to -32603.
+        // Unlike tools/call, resources/read has no per-call error logging of its own, so a
+        // builder throw would otherwise reach the client as a bare -32603 with nothing in
+        // the hub log -- log it richly here, then map like handleToolsCall would: an
+        // IllegalArgumentException is caller-recoverable (-32602), anything else rethrows
+        // into the top-level -32603.
         try {
             if (uri == "hubitat://context-summary") {
                 return jsonRpcResult(msg.id, [
@@ -1450,6 +1459,8 @@ def handleResourcesRead(msg) {
                 contents: [[uri: uri, mimeType: "application/json", text: groovy.json.JsonOutput.toJson(_buildContextJson())]],
                 ttlMs: 0, cacheScope: "private"
             ])
+        } catch (IllegalArgumentException iae) {
+            return jsonRpcError(msg.id, -32602, "Invalid params: ${iae.message}")
         } catch (Exception e) {
             mcpLogError("resources", "resources/read ${uri} failed", e)
             throw e
@@ -3526,9 +3537,14 @@ def executeTool(toolName, args) {
             // filter='virtual' routes to the MCP-managed virtual-device listing (a distinct
             // population -- this app's child devices -- with a richer driver-namespace shape).
             // That handler evaluates none of the state filters or the context format, so
-            // reject the combination rather than silently dropping the arguments.
+            // reject the combination rather than silently dropping the arguments. onlyOn and
+            // roomFilter compare by their documented no-op values (false / empty string are
+            // no-ops everywhere, so they must not become errors only here).
             if (args.filter == "virtual") {
-                if (args.format == "context" || args.roomFilter != null || args.onlyOn != null || args.changedSince != null || args.attributeNames != null) {
+                // Malformed values must be -32602 on this route too, not silently carried
+                // past the guard (a non-Boolean onlyOn would otherwise slip through).
+                _validateListDeviceStateArgTypes(args.roomFilter, args.onlyOn, args.changedSince, args.attributeNames, args.format)
+                if (args.format == "context" || args.roomFilter || args.onlyOn == true || args.changedSince != null || args.attributeNames != null) {
                     throw new IllegalArgumentException("filter='virtual' lists MCP-managed virtual devices and does not support format='context', roomFilter, onlyOn, changedSince, or attributeNames.")
                 }
                 return toolListVirtualDevices(args)
@@ -7291,7 +7307,9 @@ Rule routing: a legacy custom MCP rule-engine rule id goes in the `ruleId` param
 
 **Response shapes & general behaviour.** Summary mode returns `currentStates`; detailed mode replaces that with `capabilities`, `attributes`, and `commands` (full field list in the tool's `outputSchema`). `scope='all'` lists every hub device (not just MCP-authorized ones), each tagged with an `mcpAuthorized` flag (true/false). To count a parent's children, group the response by `parentDeviceId`.
 
-**format='context' (the house-snapshot primitive).** One call answers "what's in this house and what state is it in": the `summary` field is a self-contained plain-text block -- a header (`Mode:`, `HSM:` when available, `Devices: N of M`) plus one line per device (`- Label (id, room) - Cap1, Cap2; attr=value, ...`). Attribute values come from one currentStates read per device (cheap) and cover a broad default set (switch/level/motion/contact/presence/lock/temperature/humidity/illuminance/battery/power/energy/thermostat fields/speed/position/valve/water/smoke); pass `attributeNames` to project a custom set. Page size defaults to 50 (set `limit` to change); `nextCursor` is always emitted when more devices remain, and the header repeats it. Structured fields (`mode`, `hsmStatus`, `count`, `total`, filter echoes) ride alongside the text. Combine with the filters below for scoped snapshots ("what's on in the Kitchen" = `roomFilter` + `onlyOn`). Ignores `fields`/`detailed`; not available with `scope='all'`.
+**format='context' (the house-snapshot primitive).** One call answers "what's in this house and what state is it in": the `summary` field is a self-contained plain-text block -- a header (`Mode:`, `HSM:` when available, `Devices: N of M`) plus one line per device (`- Label (id, room) - Cap1, Cap2; attr=value, ...`). Attribute values carry the reported unit directly appended with no separator (`temperature=72.5°F`, `battery=87%`) -- parse on `=` accordingly -- and come from one currentStates read per device: the SAME per-device hub read summary mode pays (the saving vs ~21 per-attribute currentValue() calls is hub-side; the "cheap" part is the compact output). A device whose state read fails is marked `(state unavailable)` on its line rather than silently rendered attribute-less. The default attribute set: switch/level/motion/contact/presence/lock/temperature/humidity/illuminance/battery/power/energy/thermostat fields/speed/position/valve/water/smoke. Page size defaults to 50 (set `limit` to change); `nextCursor` is always emitted when more devices remain, and the header repeats it. Structured fields (`mode`, `hsmStatus`, `count`, `total`, filter echoes) ride alongside the text. Combine with the filters below for scoped snapshots ("what's on in the Kitchen" = `roomFilter` + `onlyOn`). Ignores `fields`/`detailed`; not available with `scope='all'`.
+
+- **attributeNames** -- format='context' only (rejected on every other format rather than silently ignored): replaces the default per-line attribute set with the named attributes, in caller order. An EMPTY array means the default set, not "no attributes" (same convention as `fields`). When an explicit projection matches no attribute on any returned line, the response carries `attributeNamesMatchedNoAttributes: true` -- the typo-vs-absence diagnostic (attribute names are camelCase, e.g. `temperature`, not `temp`).
 
 **Filter ordering.** Server-side filtering via the `filter` / `labelFilter` / `capabilityFilter` / `roomFilter` / `onlyOn` / `changedSince` params is all applied *before* pagination (each is documented on its own parameter). Effective order: `filter` -> `labelFilter` -> `capabilityFilter` -> `roomFilter` -> `onlyOn` -> `changedSince` -> pagination.
 
@@ -7300,7 +7318,7 @@ Rule routing: a legacy custom MCP rule-engine rule id goes in the `ruleId` param
 - **capabilityFilter** -- applied after `labelFilter`, before pagination. When `count=0`, the response includes `capabilityFilterMatchedKnownCapability` to distinguish "no devices have this capability" from a typo.
 - **roomFilter** -- case-insensitive EXACT match on the device's assigned room name. When the filtered total is 0, the response includes `roomFilterMatchedKnownRoom` to distinguish "room exists but matched nothing after earlier filters" from a typo. The diagnostic checks MCP-VISIBLE devices only -- a real hub room whose devices are all outside this app's authorized list reads `false`; list every hub room via hub_list_rooms.
 - **onlyOn** -- `true` keeps only devices whose `switch` attribute currently reads `on`. `false` is a no-op (it does NOT mean "only off"). Devices without a switch attribute are excluded when active.
-- **changedSince** -- keeps devices with `lastActivity` at/after the timestamp; the inverse of `filter='stale:<hours>'`. Accepts epoch milliseconds or ISO-8601 with a numeric offset in either spelling (`-0600` or `-06:00`; trailing `Z` accepted) -- offset-less (`2026-06-23T10:00:00`) and date-only forms are REJECTED. Same forms as hub_list_device_events' `since`, plus the colon-offset spelling so a returned `lastActivity` value round-trips directly. Epoch-ms input echoes back as canonical ISO (the echo is always a string). Devices with no readable lastActivity are excluded (they can't prove they changed). Change-watching loop: snapshot a `lastActivity` (or the echoed `changedSince`), act, then pass it back to see exactly what changed.
+- **changedSince** -- keeps devices with `lastActivity` at/after the timestamp; the inverse of `filter='stale:<hours>'`. Accepts epoch milliseconds or ISO-8601 with a numeric offset in either spelling (`-0600` or `-06:00`; trailing `Z` accepted) -- offset-less (`2026-06-23T10:00:00`) and date-only forms are REJECTED. Same forms as hub_list_device_events' `since` (the two share one parser, so both accept either offset spelling), and a returned `lastActivity` value round-trips directly. Epoch-ms input echoes back as canonical ISO (the echo is always a string). Devices with no readable lastActivity are excluded (they can't prove they changed). Change-watching loop: snapshot a `lastActivity` (or the echoed `changedSince`), act, then pass it back to see exactly what changed.
 - **format** -- `'detailed'` is the same as `detailed=true`; `detailed=true` overrides `format='summary'`.
 - **fields** -- valid names: `id`, `name`, `label`, `room`, `disabled`, `deviceNetworkId`, `lastActivity`, `parentDeviceId`, `mcpManaged`, `currentStates`, `capabilities`, `attributes`, `commands`. Omitted or empty = all default fields for the active format. Ignored when `format='ids'`. `id` is always included regardless of projection (use `format='ids'` for id-only results). Including `capabilities`, `attributes`, or `commands` auto-promotes the response to detailed mode (those fields require detailed-mode device introspection).
 - **cursor** -- `nextCursor` is returned alongside `nextOffset`.

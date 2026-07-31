@@ -1786,6 +1786,22 @@ class TestRunner:
         assert got == ever_reported, \
             f"changedSince=0 must keep exactly the ever-reported devices: got {len(got)}, expected {len(ever_reported)}"
 
+        # Round-trip: a lastActivity value THIS tool emitted (XXX form -- colon offset on a
+        # non-UTC hub, trailing Z on UTC) must be accepted verbatim by changedSince AND by
+        # hub_list_device_events' since (they share the parser).
+        reported = [d for d in everything.get("devices", []) if d.get("lastActivity")]
+        if reported:
+            bookmark = reported[0]["lastActivity"]
+            rt = self.client.call_tool("hub_list_devices", {"changedSince": bookmark})
+            assert reported[0]["id"] in [d["id"] for d in rt.get("devices", [])], \
+                f"a device's own lastActivity {bookmark!r} passed back as changedSince must keep that device"
+            ev = self.client.call_tool("hub_list_device_events",
+                                       {"deviceId": reported[0]["id"], "since": bookmark})
+            assert isinstance(ev, dict) and "events" in ev, \
+                f"hub_list_device_events rejected the emitted lastActivity form {bookmark!r}: {ev}"
+        else:
+            print("    [INFO] no device reports lastActivity; round-trip leg did not run")
+
         try:
             self.client.call_tool("hub_list_devices", {"changedSince": "banana"})
             raise AssertionError("unparseable changedSince should have been rejected (-32602)")
@@ -10892,6 +10908,18 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         body = resp.json()
         assert body.get("error") is None and body.get("result") is not None, \
             f"Bearer-only ping did not return a JSON-RPC result: {body!r}"
+
+        # The negative half is what makes the positive one meaningful: a WRONG bearer must
+        # be refused, or the 200 above would also pass on an endpoint that requires no
+        # auth at all -- the one (security-relevant) regression this test exists to catch.
+        bad = self.client.session.post(
+            self.client.endpoint,
+            headers={"Authorization": "Bearer 00000000-dead-beef-0000-000000000000"},
+            json={"jsonrpc": "2.0", "id": 2, "method": "ping"},
+            timeout=60,
+        )
+        assert bad.status_code != 200, \
+            f"a WRONG bearer token was served HTTP 200 -- the endpoint is not authenticating: {bad.text[:200]!r}"
 
     # -----------------------------------------------------------------------
     # Cleanup

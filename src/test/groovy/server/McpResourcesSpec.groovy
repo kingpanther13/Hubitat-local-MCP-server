@@ -31,6 +31,7 @@ class McpResourcesSpec extends ToolSpecBase {
     def setup() {
         sharedLocation.hub = new TestHub(localIP: '192.168.1.133')
         sharedLocation.hsmStatus = null
+        sharedLocation.modes = []
     }
 
     private Map dispatch(Map body, Map headers = null) {
@@ -154,9 +155,6 @@ class McpResourcesSpec extends ToolSpecBase {
         then:
         read.error.code == -32002
         read.error.message.contains('Per-tool Overrides')
-
-        cleanup:
-        settingsMap.remove('disabled_tools')
     }
 
     // ---- resources/read: live context -----------------------------------
@@ -264,9 +262,6 @@ class McpResourcesSpec extends ToolSpecBase {
         read.error.code == -32002
         read.error.message.contains('Per-tool Overrides')
         read.error.data.uri == 'hubitat://context'
-
-        cleanup:
-        settingsMap.remove('disabled_tools')
     }
 
     // ---- resources/read: error contract ---------------------------------
@@ -312,7 +307,7 @@ class McpResourcesSpec extends ToolSpecBase {
     def "an oversized inventory truncates the context resources instead of dying behind the -32603 guard"() {
         // resources/read takes only a uri -- an over-cap body would be PERMANENTLY dead on
         // that hub (the outer guard's "request less data" advice is unactionable). Both
-        // builders stop at _contextResourceCharBudget() and say so.
+        // builders stop at _contextResourceByteBudget() and say so.
         given: 'enough long-labelled devices to overrun the budget'
         settingsMap.selectedDevices = (0..<2500).collect { i ->
             new TestDevice(id: i + 1, label: "Truncation Fixture Device ${String.format('%04d', i)} With A Long Label",
@@ -326,7 +321,7 @@ class McpResourcesSpec extends ToolSpecBase {
         then: 'served (not the -32603 size guard), with an explicit truncation pointer'
         text.error == null
         def body = text.result.contents[0].text
-        body.length() <= script._contextResourceCharBudget() + 300
+        body.getBytes('UTF-8').length <= script._contextResourceByteBudget() + 300
         body.contains('truncated at')
         body.contains("hub_list_devices")
 
@@ -336,15 +331,66 @@ class McpResourcesSpec extends ToolSpecBase {
 
         then:
         json.error == null
-        def ctx = new groovy.json.JsonSlurper().parseText(json.result.contents[0].text)
+        def jsonBody = json.result.contents[0].text
+        def ctx = new groovy.json.JsonSlurper().parseText(jsonBody)
         ctx.truncated == true
         ctx.totalDevices == 2500
         ctx.deviceCount < 2500
         ctx.deviceCount == ctx.devices.size()
         ctx.note.contains('hub_list_devices')
 
+        and: 'the whole JSON body honours the byte budget -- the one number the builder exists to control'
+        jsonBody.getBytes('UTF-8').length <= script._contextResourceByteBudget() + 1000
+
         and: 'the rooms index stays complete'
         ctx.rooms.size() == 20
+    }
+
+    def "a multibyte inventory with an oversized rooms index stays under the wire guard on both axes"() {
+        // CJK labels escape to 6-char \\uXXXX sequences in the envelope, so a byte-naive
+        // budget passes content the 124,000-byte wire guard then kills; and one room per
+        // device makes the rooms index alone outgrow the whole budget. Both must truncate
+        // and the FINAL rendered envelope must stay under the guard.
+        given:
+        settingsMap.selectedDevices = (0..<3000).collect { i ->
+            new TestDevice(id: i + 1, label: "客厅智能灯具装置编号${String.format('%04d', i)}测试",
+                roomName: "Extremely Long Distinct Room Name For Coverage ${String.format('%04d', i)}",
+                capabilities: [[name: 'Switch']], attributeValues: [switch: 'on'])
+        }
+
+        when:
+        def text = dispatch([jsonrpc: '2.0', id: 45, method: 'resources/read',
+                             params: [uri: 'hubitat://context-summary']])
+
+        then: 'served, and the rendered envelope honours the 124,000-byte guard'
+        text.error == null
+        mcpDriver.lastRenderArgs.data.getBytes('UTF-8').length <= 124000
+        text.result.contents[0].text.contains('truncated at')
+
+        when:
+        def json = dispatch([jsonrpc: '2.0', id: 46, method: 'resources/read',
+                             params: [uri: 'hubitat://context']])
+
+        then:
+        json.error == null
+        mcpDriver.lastRenderArgs.data.getBytes('UTF-8').length <= 124000
+        def ctx = new groovy.json.JsonSlurper().parseText(json.result.contents[0].text)
+        ctx.roomsTruncated == true
+        ctx.rooms.size() < 3000
+        ctx.note.contains('hub_list_rooms')
+    }
+
+    def "reading the context summary on an empty install serves the no-devices message"() {
+        // The summary ?: message fallback in _buildContextSummaryText, driven end-to-end.
+        when:
+        def response = dispatch([jsonrpc: '2.0', id: 42, method: 'resources/read',
+                                 params: [uri: 'hubitat://context-summary']])
+
+        then:
+        response.error == null
+        def body = response.result.contents[0].text
+        body.readLines()[0] == 'Mode: Home'
+        body.contains('No devices selected')
     }
 
     // ---- resources/templates/list ---------------------------------------

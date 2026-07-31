@@ -2008,7 +2008,8 @@ class ToolListDevicesSpec extends ToolSpecBase {
 
     def "context lines append the reported unit directly after the value"() {
         // Real hub State objects carry a unit (degrees-F, "%"); the line renders value+unit
-        // with no separator, matching the native connector's context-summary format.
+        // with no separator -- compact and unambiguous for a model reader, and pinned here
+        // because the guide documents the exact shape.
         given:
         def dev = makeDevice(id: 9, label: 'Attic T&H', room: 'Attic', capabilities: [[name: 'TemperatureMeasurement']])
         dev.currentStates = [[name: 'temperature', value: '71.5', unit: '°F'], [name: 'humidity', value: '48', unit: '%']]
@@ -2034,24 +2035,147 @@ class ToolListDevicesSpec extends ToolSpecBase {
         when:
         def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null)
 
-        then: 'the snapshot survives; the broken device shows capabilities but no attributes'
+        then: 'the snapshot survives; the failed read is marked IN the payload, not just logged'
         result.count == 2
-        result.summary.readLines().contains('- Broken Driver (5, Den) - Switch')
-        result.summary.contains('- Fine (6, No room) - ; switch=on') || result.summary.contains('- Fine (6, No room); switch=on')
+        result.summary.readLines().contains('- Broken Driver (5, Den) - Switch (state unavailable)')
+
+        and: 'the healthy capability-less device renders the exact no-caps shape'
+        result.summary.readLines().contains('- Fine (6, No room); switch=on')
     }
 
-    def "via dispatch: filter='virtual' rejects the state filters and context format"() {
+    @spock.lang.Unroll
+    def "via dispatch: filter='virtual' rejects #label"() {
         // toolListVirtualDevices evaluates none of the new args; silently dropping them
-        // would leave the caller believing the filter applied.
+        // would leave the caller believing the filter applied. All five clauses of the
+        // guard are exercised so none can be dropped while the suite stays green.
         given:
         settingsMap.useGateways = true
         settingsMap.selectedDevices = [makeDevice(id: 1)]
 
         when:
-        def response = mcpDriver.callTool('hub_list_devices', [filter: 'virtual', onlyOn: true])
+        def response = mcpDriver.callTool('hub_list_devices', [filter: 'virtual'] + extra)
 
         then:
         response.error?.code == -32602
         response.error?.message?.contains("filter='virtual'")
+
+        where:
+        label                | extra
+        "format='context'"   | [format: 'context']
+        'roomFilter'         | [roomFilter: 'Kitchen']
+        'onlyOn=true'        | [onlyOn: true]
+        'changedSince'       | [changedSince: 0]
+        'attributeNames'     | [attributeNames: ['switch']]
+    }
+
+    def "via dispatch: filter='virtual' rejects a MALFORMED state arg instead of silently routing"() {
+        // A non-Boolean onlyOn fails the == true guard, so without up-front type
+        // validation it would silently route to the virtual listing as if never passed.
+        given:
+        settingsMap.useGateways = true
+        settingsMap.selectedDevices = [makeDevice(id: 1)]
+
+        when:
+        def response = mcpDriver.callTool('hub_list_devices', [filter: 'virtual', onlyOn: 'true'])
+
+        then:
+        response.error?.code == -32602
+        response.error?.message?.contains('boolean')
+    }
+
+    def "via dispatch: filter='virtual' tolerates the documented no-op values"() {
+        // onlyOn=false and roomFilter='' are no-ops everywhere else; a generic client
+        // that populates every schema property must not be rejected for them here.
+        given:
+        settingsMap.useGateways = true
+        settingsMap.selectedDevices = [makeDevice(id: 1)]
+
+        when:
+        def response = mcpDriver.callTool('hub_list_devices', [filter: 'virtual', onlyOn: false, roomFilter: ''])
+
+        then:
+        response.error == null
+        !response.result.isError
+    }
+
+    def "scope='all' tolerates the documented no-op values too"() {
+        given:
+        hubGet.register('/device/listWithCapabilities/json') { params ->
+            '[{"id": 1, "label": "Hub Device", "capabilities": ["Switch"]}]'
+        }
+        settingsMap.selectedDevices = [makeDevice(id: 1)]
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, 'all', '', false)
+
+        then:
+        notThrown(IllegalArgumentException)
+        result.devices.size() == 1
+    }
+
+    def "via dispatch: every new argument plumbs through the positional call"() {
+        // The dispatch case is a fourteen-argument positional call -- this pins the
+        // plumbing of all five new args at the Spock layer, not just live e2e.
+        given:
+        settingsMap.useGateways = true
+        settingsMap.selectedDevices = seedContextDevices()
+
+        when:
+        def response = mcpDriver.callTool('hub_list_devices',
+            [format: 'context', roomFilter: 'Kitchen', onlyOn: true, changedSince: 0, attributeNames: ['switch']])
+
+        then:
+        response.error == null
+        def inner = mcpDriver.parseInner(response)
+        inner.roomFilter == 'Kitchen'
+        inner.onlyOn == true
+        inner.changedSince instanceof String
+
+        and: 'Kitchen Light is on but has no lastActivity, so changedSince=0 excludes it'
+        inner.count == 0
+        inner.unfilteredTotal == 4
+    }
+
+    def "format='context' includes MCP-managed child devices in the population"() {
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1, label: 'Authorized', attrValues: [switch: 'on'])]
+        childDevicesList << new TestDevice(id: 900, label: 'MCP Virtual Switch',
+            capabilities: [[name: 'Switch']], attributeValues: [switch: 'off'])
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null)
+
+        then:
+        result.count == 2
+        result.summary.readLines().contains('- MCP Virtual Switch (900, No room) - Switch; switch=off')
+    }
+
+    def "attributeNames: [] means the default set, matching the fields convention"() {
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1, label: 'D', attrValues: [switch: 'on', temperature: 71])]
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null, null, null, null, [])
+
+        then:
+        result.summary.readLines().last() == '- D (1, No room); switch=on, temperature=71'
+        !result.containsKey('attributeNamesMatchedNoAttributes')
+    }
+
+    def "an explicit projection that matches nothing reports the typo-vs-absence diagnostic"() {
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1, label: 'D', attrValues: [temperature: 71])]
+
+        when: "'temp' is the classic mistyping of 'temperature'"
+        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null, null, null, null, ['temp'])
+
+        then:
+        result.attributeNamesMatchedNoAttributes == true
+
+        when: 'a matching projection does not carry the diagnostic'
+        def ok = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null, null, null, null, ['temperature'])
+
+        then:
+        !ok.containsKey('attributeNamesMatchedNoAttributes')
     }
 }

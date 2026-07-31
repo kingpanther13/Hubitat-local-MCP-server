@@ -332,6 +332,24 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
         McpSchemaValidator.draftErrors('HeaderMismatchError', response) == []
     }
 
+    def "a modern resources/read whose Mcp-Name disagrees with params.uri is a HeaderMismatch rejection"() {
+        // The mismatch branch names the mirrored field (params.uri) -- distinct from the
+        // missing-header case above and from the tools/call twin (params.name).
+        when:
+        def response = dispatch(
+            [jsonrpc: '2.0', id: 27, method: 'resources/read', params: [uri: 'hubitat://guide/performance']],
+            ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'resources/read',
+             'Mcp-Name': 'hubitat://guide/rooms'])
+
+        then:
+        mcpDriver.lastRenderArgs.status == 400
+        response.error.code == -32020
+        response.error.message.contains('params.uri')
+
+        and:
+        McpSchemaValidator.draftErrors('HeaderMismatchError', response) == []
+    }
+
     def "resources/templates/list conforms in both eras"() {
         when:
         def legacy = dispatch([jsonrpc: '2.0', id: 24, method: 'resources/templates/list', params: [:]])
