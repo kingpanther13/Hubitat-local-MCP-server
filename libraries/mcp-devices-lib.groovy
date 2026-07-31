@@ -474,6 +474,9 @@ def _buildContextSummaryText() {
 // The hubitat://context resource body: the JSON twin of the context summary -- current
 // mode (+ HSM when available), the mode list, a rooms[] index with deviceIds, and one
 // compact record per MCP-visible device (id, label, room, capabilities, attribute values).
+// Attributes are projected through the same default set as the text form: an unfiltered
+// currentStates dump drags in driver-internal rows (e.g. tile-text attributes like "_1")
+// that only add noise to a context snapshot -- verified live on a real inventory.
 def _buildContextJson() {
     def allDevices = (selectedDevices ?: []).toList()
     def childDevs = getChildDevices() ?: []
@@ -481,11 +484,14 @@ def _buildContextJson() {
     childDevs.each { cd ->
         if (!selectedIds.contains(cd.id.toString())) allDevices.add(cd)
     }
+    def contextAttrs = _contextAttributeNames() as Set
     def devices = allDevices.collect { d ->
         def attrs = [:]
         try {
             d.currentStates?.each { st ->
-                if (st?.name != null && st.value != null) attrs[st.name.toString()] = st.value.toString()
+                if (st?.name != null && st.value != null && contextAttrs.contains(st.name.toString())) {
+                    attrs[st.name.toString()] = st.value.toString()
+                }
             }
         } catch (Exception ignore) {}
         [id: d.id.toString(), label: d.label ?: d.name, room: d.roomName,

@@ -162,7 +162,10 @@ class McpResourcesSpec extends ToolSpecBase {
         sharedLocation.hsmStatus = 'disarmed'
         settingsMap.selectedDevices = [
             new TestDevice(id: 7, label: 'Kitchen Light', roomName: 'Kitchen',
-                capabilities: [[name: 'Switch']], attributeValues: [switch: 'on']),
+                capabilities: [[name: 'Switch']],
+                // '_1' models the driver-internal tile-text attributes real inventories
+                // carry -- the projection must keep them out of the snapshot.
+                attributeValues: [switch: 'on', '_1': 'junk row']),
             new TestDevice(id: 8, label: 'Roomless Plug',
                 capabilities: [[name: 'Switch']], attributeValues: [switch: 'off'])
         ]
@@ -186,6 +189,9 @@ class McpResourcesSpec extends ToolSpecBase {
         dev.label == 'Kitchen Light'
         dev.capabilities == ['Switch']
         dev.attributes['switch'] == 'on'
+
+        and: 'attributes are projected through the default context set -- no driver junk'
+        !dev.attributes.containsKey('_1')
     }
 
     def "resources/read of a context resource is refused with -32002 when the Read master is off"() {
