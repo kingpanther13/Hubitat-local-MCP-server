@@ -1087,25 +1087,26 @@ def _mirroredHeaderRejection(String headerVersion, msg) {
             "Header mismatch: Mcp-Method header value '${methodHeader}' does not match the body method '${bodyMethod}'.")
     }
     // Mcp-Name mirrors params.name / params.uri and is required only for the methods
-    // that HAVE one -- tools/call, resources/read, prompts/get. This server implements
-    // neither resources/read nor prompts/get, so tools/call is the whole set. Other
-    // methods carry no name to mirror, so an extraneous Mcp-Name on one is ignored
-    // rather than rejected: the spec defines no body value for it to disagree with.
-    if (bodyMethod == "tools/call") {
+    // that HAVE one -- tools/call (params.name), resources/read (params.uri), and
+    // prompts/get (params.name; not implemented here). Other methods carry no name to
+    // mirror, so an extraneous Mcp-Name on one is ignored rather than rejected: the
+    // spec defines no body value for it to disagree with.
+    String nameField = bodyMethod == "tools/call" ? "name" : (bodyMethod == "resources/read" ? "uri" : null)
+    if (nameField != null) {
         String nameHeader = _requestHeader("Mcp-Name")
         if (nameHeader == null) {
             return jsonRpcError(id, -32020,
-                "Header mismatch: the Mcp-Name header is required on a ${headerVersion} tools/call request.")
+                "Header mismatch: the Mcp-Name header is required on a ${headerVersion} ${bodyMethod} request.")
         }
         String decodedName = _decodeHeaderValue(nameHeader)
         if (decodedName == null) {
             return jsonRpcError(id, -32020,
                 "Header mismatch: the Mcp-Name header value is a malformed =?base64?...?= sentinel.")
         }
-        def bodyName = msg?.params instanceof Map ? msg.params.name : null
+        def bodyName = msg?.params instanceof Map ? msg.params[nameField] : null
         if (decodedName != (bodyName == null ? null : bodyName.toString())) {
             return jsonRpcError(id, -32020,
-                "Header mismatch: Mcp-Name header value '${decodedName}' does not match the body params.name '${bodyName}'.")
+                "Header mismatch: Mcp-Name header value '${decodedName}' does not match the body params.${nameField} '${bodyName}'.")
         }
     }
     // The header value MUST equal params._meta's protocol version when the body
@@ -1230,9 +1231,9 @@ def serverInstructions() {
     // straight into an error (worse: hub_manage_virtual_device / hub_manage_mode
     // match the hub_manage_* pattern but are direct tools, not gateways).
     if (settings.useGateways == false) {
-        return "Every tool is advertised individually on tools/list (flat catalog; there are no gateway tools). Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page). MCP resources are also served (resources/list): the tool-guide sections plus a live house-state context summary (hubitat://context-summary)."
+        return "Every tool is advertised individually on tools/list (flat catalog; there are no gateway tools). Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page). MCP resources are also served (resources/list): the tool-guide sections and a live house-state context summary (hubitat://context-summary), each gated like its tool counterpart."
     }
-    "Gateway tools (hub_manage_* / hub_read_*) expose sub-tools -- call a gateway with no arguments to list its sub-tools and their schemas. hub_manage_virtual_device and hub_manage_mode are direct tools (not gateways) -- call them with their own arguments. Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page). MCP resources are also served (resources/list): the tool-guide sections plus a live house-state context summary (hubitat://context-summary)."
+    "Gateway tools (hub_manage_* / hub_read_*) expose sub-tools -- call a gateway with no arguments to list its sub-tools and their schemas. hub_manage_virtual_device and hub_manage_mode are direct tools (not gateways) -- call them with their own arguments. Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page). MCP resources are also served (resources/list): the tool-guide sections and a live house-state context summary (hubitat://context-summary), each gated like its tool counterpart."
 }
 
 // Protocol versions this server can speak, newest first. Single source for the
@@ -1367,10 +1368,21 @@ def handleToolsList(msg) {
 
 def _guideResourceUriPrefix() { "hubitat://guide/" }
 
-// The context resources read live device state, so they are gated by the Read master
-// exactly like the read tools. The guide resources mirror hub_get_tool_guide, which is
-// deliberately never gated (it documents how to recover from gating).
-def _contextResourcesEnabled() { settings.enableRead != false }
+// Each resource group mirrors the VISIBILITY of the tool whose content it serves, via
+// getHiddenToolNames() -- the same source of truth the catalog and search consume ("a
+// disabled tool disappears from every surface"). That covers the Read master AND the
+// #114 Advanced per-tool overrides, so the resources surface can never serve content
+// its tool counterpart is gated from serving. (The best-practice acknowledgment gate is
+// a different, write-only gate and does not apply to resources at all.)
+def _contextResourcesEnabled() { !getHiddenToolNames().contains("hub_list_devices") }
+def _guideResourcesEnabled() { !getHiddenToolNames().contains("hub_get_tool_guide") }
+
+// Names the gate that hid a mirrored tool, for the -32002 refusal text.
+def _resourceGateCause() {
+    settings.enableRead == false ?
+        "Read tools are disabled in MCP Rule Server settings (Enable Read Tools)" :
+        "the mirrored tool is disabled in Advanced settings (Per-tool Overrides)"
+}
 
 def _resourceCatalog() {
     def entries = []
@@ -1379,25 +1391,27 @@ def _resourceCatalog() {
             uri: "hubitat://context-summary",
             name: "context-summary",
             title: "Live Context Summary",
-            description: "One-read plain-text house snapshot: current mode (+ HSM when available) and one line per MCP-visible device -- 'Label (id, room) - capabilities; attr=value, ...'. The paginated/filtered tool form is hub_list_devices format='context'.",
+            description: "One-read plain-text house snapshot: current mode (+ HSM when available) and one line per MCP-visible device -- 'Label (id, room) - capabilities; attr=value, ...'. Truncates on very large inventories (with an explicit marker); the paginated/filtered tool form is hub_list_devices format='context'.",
             mimeType: "text/plain"
         ]
         entries << [
             uri: "hubitat://context",
             name: "context",
             title: "Live Context (JSON)",
-            description: "JSON twin of the context summary: currentMode, hsmStatus (when available), modes, rooms[] with deviceIds, and one compact record per MCP-visible device (id, label, room, capabilities, attribute values projected through the default context attribute set).",
+            description: "JSON twin of the context summary: currentMode, hsmStatus (when available), modes, rooms[] with deviceIds, and one compact record per MCP-visible device (id, label, room, capabilities, attribute values projected through the default context attribute set). Device records truncate on very large inventories (truncated: true + note); the paginated tool form is hub_list_devices format='context'.",
             mimeType: "application/json"
         ]
     }
-    getToolGuideSections().each { section, text ->
-        entries << [
-            uri: "${_guideResourceUriPrefix()}${section}".toString(),
-            name: "guide-${section}".toString(),
-            title: "Tool Guide: ${section}".toString(),
-            description: "The '${section}' section of the MCP tool guide (same content as hub_get_tool_guide(section='${section}')).".toString(),
-            mimeType: "text/markdown"
-        ]
+    if (_guideResourcesEnabled()) {
+        getToolGuideSections().each { section, text ->
+            entries << [
+                uri: "${_guideResourceUriPrefix()}${section}".toString(),
+                name: "guide-${section}".toString(),
+                title: "Tool Guide: ${section}".toString(),
+                description: "The '${section}' section of the MCP tool guide (same content as hub_get_tool_guide(section='${section}')).".toString(),
+                mimeType: "text/markdown"
+            ]
+        }
     }
     return entries
 }
@@ -1419,25 +1433,35 @@ def handleResourcesRead(msg) {
     }
     if (uri == "hubitat://context-summary" || uri == "hubitat://context") {
         if (!_contextResourcesEnabled()) {
-            // Spec resource-error code -32002; the message mirrors the read-tool master-gate text.
-            return jsonRpcError(msg.id, -32002, "Resource not available: ${uri} reads live device state and Read tools are disabled in MCP Rule Server settings (Enable Read Tools).", [uri: uri])
+            // Spec resource-error code -32002; the message names the gate that actually applied.
+            return jsonRpcError(msg.id, -32002, "Resource not available: ${uri} reads live device state and ${_resourceGateCause()}.", [uri: uri])
         }
         // Live state: ttlMs 0 tells caching intermediaries the content is immediately stale.
-        if (uri == "hubitat://context-summary") {
+        // These are the only protocol handlers that enumerate devices, so a throw here gets
+        // the rich mcpLog treatment before the top-level catch maps it to -32603.
+        try {
+            if (uri == "hubitat://context-summary") {
+                return jsonRpcResult(msg.id, [
+                    contents: [[uri: uri, mimeType: "text/plain", text: _buildContextSummaryText()]],
+                    ttlMs: 0, cacheScope: "private"
+                ])
+            }
             return jsonRpcResult(msg.id, [
-                contents: [[uri: uri, mimeType: "text/plain", text: _buildContextSummaryText()]],
+                contents: [[uri: uri, mimeType: "application/json", text: groovy.json.JsonOutput.toJson(_buildContextJson())]],
                 ttlMs: 0, cacheScope: "private"
             ])
+        } catch (Exception e) {
+            mcpLogError("resources", "resources/read ${uri} failed", e)
+            throw e
         }
-        return jsonRpcResult(msg.id, [
-            contents: [[uri: uri, mimeType: "application/json", text: groovy.json.JsonOutput.toJson(_buildContextJson())]],
-            ttlMs: 0, cacheScope: "private"
-        ])
     }
     if (uri.startsWith(_guideResourceUriPrefix())) {
         def section = uri.substring(_guideResourceUriPrefix().length())
         def sections = getToolGuideSections()
         if (sections.containsKey(section)) {
+            if (!_guideResourcesEnabled()) {
+                return jsonRpcError(msg.id, -32002, "Resource not available: ${uri} mirrors hub_get_tool_guide and ${_resourceGateCause()}.", [uri: uri])
+            }
             return jsonRpcResult(msg.id, [
                 contents: [[uri: uri, mimeType: "text/markdown", text: sections[section]]],
                 ttlMs: cacheHintTtlMs(), cacheScope: "private"
@@ -3501,7 +3525,14 @@ def executeTool(toolName, args) {
         case "hub_list_devices":
             // filter='virtual' routes to the MCP-managed virtual-device listing (a distinct
             // population -- this app's child devices -- with a richer driver-namespace shape).
-            if (args.filter == "virtual") return toolListVirtualDevices(args)
+            // That handler evaluates none of the state filters or the context format, so
+            // reject the combination rather than silently dropping the arguments.
+            if (args.filter == "virtual") {
+                if (args.format == "context" || args.roomFilter != null || args.onlyOn != null || args.changedSince != null || args.attributeNames != null) {
+                    throw new IllegalArgumentException("filter='virtual' lists MCP-managed virtual devices and does not support format='context', roomFilter, onlyOn, changedSince, or attributeNames.")
+                }
+                return toolListVirtualDevices(args)
+            }
             return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.fields, args.cursor, args.scope, args.roomFilter, args.onlyOn, args.changedSince, args.attributeNames)
         case "hub_get_device": return toolGetDevice(args.deviceId)
         case "hub_call_device_command": return toolSendCommand(args.deviceId, args.command, args.parameters, args.waitFor)
@@ -7187,7 +7218,7 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 **hub_list_device_events:**
 - Default: most-recent events for a device (deviceId + limit)
 - Add hoursBack for up to 7 days of relative history; omit deviceId for location-level events (mode/HSM/hub variable)
-- Add since for an absolute bookmark -- return only events AFTER an exact timestamp (ISO-8601 in the same format the tool emits in date/sinceTimestamp -- a numeric offset with no colon, e.g. 2026-06-23T10:00:00.000-0600; a trailing Z for UTC and a millis-less variant are also accepted -- or epoch milliseconds). since takes precedence over hoursBack; a future since yields an empty list. Both since and hoursBack route to history mode
+- Add since for an absolute bookmark -- return only events AFTER an exact timestamp (ISO-8601 in the same format the tool emits in date/sinceTimestamp -- a numeric offset in either spelling (-0600 or -06:00), e.g. 2026-06-23T10:00:00.000-0600; a trailing Z for UTC and a millis-less variant are also accepted -- or epoch milliseconds). since takes precedence over hoursBack; a future since yields an empty list. Both since and hoursBack route to history mode
 - Change-watching loop: record a returned event date, run your action, then pass that date back as since to get exactly the new events. The response echoes sinceMode ("explicit" when since drove it, "relative" for hoursBack) and the bounding field (since or hoursBack)
 - appId (mutually exclusive with deviceId) returns the events an installed app/rule emitted; rows are {name, value, description, date}
 - Use the attribute filter to reduce data volume
@@ -7264,12 +7295,12 @@ Rule routing: a legacy custom MCP rule-engine rule id goes in the `ruleId` param
 
 **Filter ordering.** Server-side filtering via the `filter` / `labelFilter` / `capabilityFilter` / `roomFilter` / `onlyOn` / `changedSince` params is all applied *before* pagination (each is documented on its own parameter). Effective order: `filter` -> `labelFilter` -> `capabilityFilter` -> `roomFilter` -> `onlyOn` -> `changedSince` -> pagination.
 
-- **filter** -- `stale:<hours>` example: `stale:24` = no activity in the last 24 hours; never-reported devices count as stale. `virtual` returns a *different* population and shape from the other filters, including driver namespace/type.
+- **filter** -- `stale:<hours>` example: `stale:24` = no activity in the last 24 hours; never-reported devices count as stale. `virtual` returns a *different* population and shape from the other filters, including driver namespace/type; it is not combinable with `roomFilter`/`onlyOn`/`changedSince`/`attributeNames` or `format='context'` (rejected rather than silently ignored).
 - **labelFilter** -- applied after `filter`, before pagination.
 - **capabilityFilter** -- applied after `labelFilter`, before pagination. When `count=0`, the response includes `capabilityFilterMatchedKnownCapability` to distinguish "no devices have this capability" from a typo.
-- **roomFilter** -- case-insensitive EXACT match on the device's assigned room name. When `count=0`, the response includes `roomFilterMatchedKnownRoom` to distinguish "room exists but matched nothing after earlier filters" from a typo (list room names via hub_list_rooms).
+- **roomFilter** -- case-insensitive EXACT match on the device's assigned room name. When the filtered total is 0, the response includes `roomFilterMatchedKnownRoom` to distinguish "room exists but matched nothing after earlier filters" from a typo. The diagnostic checks MCP-VISIBLE devices only -- a real hub room whose devices are all outside this app's authorized list reads `false`; list every hub room via hub_list_rooms.
 - **onlyOn** -- `true` keeps only devices whose `switch` attribute currently reads `on`. `false` is a no-op (it does NOT mean "only off"). Devices without a switch attribute are excluded when active.
-- **changedSince** -- keeps devices with `lastActivity` at/after the timestamp; the inverse of `filter='stale:<hours>'`. Accepts epoch milliseconds or ISO-8601 with a numeric offset (trailing `Z` accepted) -- same forms as hub_list_device_events' `since`. Devices with no readable lastActivity are excluded (they can't prove they changed). Change-watching loop: snapshot a timestamp, act, then pass it back to see exactly what changed.
+- **changedSince** -- keeps devices with `lastActivity` at/after the timestamp; the inverse of `filter='stale:<hours>'`. Accepts epoch milliseconds or ISO-8601 with a numeric offset in either spelling (`-0600` or `-06:00`; trailing `Z` accepted) -- offset-less (`2026-06-23T10:00:00`) and date-only forms are REJECTED. Same forms as hub_list_device_events' `since`, plus the colon-offset spelling so a returned `lastActivity` value round-trips directly. Epoch-ms input echoes back as canonical ISO (the echo is always a string). Devices with no readable lastActivity are excluded (they can't prove they changed). Change-watching loop: snapshot a `lastActivity` (or the echoed `changedSince`), act, then pass it back to see exactly what changed.
 - **format** -- `'detailed'` is the same as `detailed=true`; `detailed=true` overrides `format='summary'`.
 - **fields** -- valid names: `id`, `name`, `label`, `room`, `disabled`, `deviceNetworkId`, `lastActivity`, `parentDeviceId`, `mcpManaged`, `currentStates`, `capabilities`, `attributes`, `commands`. Omitted or empty = all default fields for the active format. Ignored when `format='ids'`. `id` is always included regardless of projection (use `format='ids'` for id-only results). Including `capabilities`, `attributes`, or `commands` auto-promotes the response to detailed mode (those fields require detailed-mode device introspection).
 - **cursor** -- `nextCursor` is returned alongside `nextOffset`.

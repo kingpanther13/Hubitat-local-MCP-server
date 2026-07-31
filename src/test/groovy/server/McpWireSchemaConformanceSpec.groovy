@@ -301,16 +301,35 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
     }
 
     def "a modern resources/read result conforms to the draft ReadResourceResult"() {
+        // Mcp-Name mirrors params.uri on resources/read, exactly as it mirrors
+        // params.name on tools/call -- required on the modern transport.
         when:
         def response = dispatch(
             [jsonrpc: '2.0', id: 23, method: 'resources/read', params: [uri: 'hubitat://guide/performance']],
-            ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'resources/read'])
+            ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'resources/read',
+             'Mcp-Name': 'hubitat://guide/performance'])
 
         then:
         mcpDriver.lastRenderArgs.status == null
 
         and:
         McpSchemaValidator.draftErrors('ReadResourceResult', response.result) == []
+    }
+
+    def "a modern resources/read without Mcp-Name is a HeaderMismatch rejection"() {
+        // resources/read carries a body field for Mcp-Name to mirror (params.uri), so a
+        // missing header is a -32020 on the modern transport -- same contract as tools/call.
+        when:
+        def response = dispatch(
+            [jsonrpc: '2.0', id: 26, method: 'resources/read', params: [uri: 'hubitat://guide/performance']],
+            ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'resources/read'])
+
+        then:
+        mcpDriver.lastRenderArgs.status == 400
+        response.error.code == -32020
+
+        and:
+        McpSchemaValidator.draftErrors('HeaderMismatchError', response) == []
     }
 
     def "resources/templates/list conforms in both eras"() {

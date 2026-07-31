@@ -2,10 +2,10 @@ library(name: "McpDevicesLib", namespace: "mcp", author: "kingpanther13", descri
 
 def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, capabilityFilter = null, format = null, fields = null, cursor = null, scope = null, roomFilter = null, onlyOn = null, changedSince = null, attributeNames = null) {
     // Opt-in cursor pagination decodes onto the existing offset/limit mechanics. The
-    // real range check against the filtered total happens further down (line ~3585)
-    // because we don't have the filtered count yet; pass Integer.MAX_VALUE so the
-    // helper only does the parse + negative check. cursor='' / null returns offset 0
-    // exactly like every other paginated tool.
+    // real range check against the filtered total happens further down (the
+    // offset-exceeds early return) because we don't have the filtered count yet; pass
+    // Integer.MAX_VALUE so the helper only does the parse + negative check.
+    // cursor='' / null returns offset 0 exactly like every other paginated tool.
     if (cursor != null) {
         // Reject ambiguous combinations -- a caller passing both cursor and a non-default
         // offset is asking for two different starting points; pick one.
@@ -35,36 +35,22 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         // The scope='all' records are lightweight endpoint maps with no room/attribute/
         // activity data, so none of the state-based filters (or the state-bearing context
         // format) can be evaluated for them.
-        if (format == "context" || roomFilter != null || onlyOn != null || changedSince != null || attributeNames != null) {
+        // onlyOn compares == true: false is the documented no-op everywhere else, so it
+        // must not become an error only under scope='all'.
+        if (format == "context" || roomFilter != null || onlyOn == true || changedSince != null || attributeNames != null) {
             throw new IllegalArgumentException("scope='all' does not support format='context', roomFilter, onlyOn, changedSince, or attributeNames (those need MCP-authorized device state); use scope='authorized' (default).")
         }
         return _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, format, cursor)
     }
-    // Combine selected devices and MCP-managed child devices (virtual devices)
-    def allDevices = (selectedDevices ?: []).toList()
+    // Combine selected devices and MCP-managed child devices (virtual devices); childDevs
+    // is kept separately for the mcpManaged flag below.
     def childDevs = getChildDevices() ?: []
-    // Add child devices that aren't already in the selected list (avoid duplicates)
-    def selectedIds = allDevices.collect { it.id.toString() } as Set
-    childDevs.each { cd ->
-        if (!selectedIds.contains(cd.id.toString())) {
-            allDevices.add(cd)
-        }
-    }
+    def allDevices = _mcpVisibleDevices()
 
-    if (!allDevices) {
-        return [devices: [], message: "No devices selected for MCP access and no MCP-managed virtual devices", total: 0]
-    }
-
-    // Capture the full set BEFORE any filter/labelFilter/capabilityFilter narrows it. Used
-    // by the capabilityFilterMatchedKnownCapability typo-vs-absence diagnostic so a
-    // mistyped capability can be distinguished from a real-but-excluded one even when
-    // labelFilter has already removed every device that would have matched.
-    def unfilteredDevices = allDevices
-
-    def unfilteredTotal = allDevices.size()
-
-    // Type validation for caller-supplied filter args. Groovy coercion would otherwise surface
-    // as MissingMethodException deep in the filter logic rather than a clear -32602 error.
+    // Type/format validation for caller-supplied args, BEFORE the empty-inventory early
+    // return so a bad argument is a -32602 even on a hub with no authorized devices.
+    // Groovy coercion would otherwise surface as MissingMethodException deep in the
+    // filter logic rather than a clear -32602 error.
     if (labelFilter != null && !(labelFilter instanceof String)) {
         throw new IllegalArgumentException("labelFilter must be a string")
     }
@@ -83,6 +69,15 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     if (attributeNames != null && (!(attributeNames instanceof List) || attributeNames.any { !(it instanceof String) })) {
         throw new IllegalArgumentException("attributeNames must be an array of attribute-name strings")
     }
+    def resolvedFormat = format ?: "summary"
+    if (format && !["summary", "detailed", "ids", "context"].contains(resolvedFormat)) {
+        throw new IllegalArgumentException("Invalid format '${format}'. Must be one of: summary, detailed, ids, context")
+    }
+    // attributeNames only shapes the context lines; on any other format it would be
+    // silently ignored, and the caller would believe the projection applied.
+    if (attributeNames != null && resolvedFormat != "context") {
+        throw new IllegalArgumentException("attributeNames applies only to format='context' (got format '${resolvedFormat}'); it would be silently ignored otherwise.")
+    }
     // Parse changedSince up front so a malformed timestamp is a -32602 before any filtering.
     // Same accepted forms as hub_list_device_events' `since` (epoch ms or ISO-8601).
     def changedSinceDate = null
@@ -92,6 +87,29 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
             throw new IllegalArgumentException("Unparseable changedSince '${changedSince}'. Pass epoch milliseconds or ISO-8601 with a numeric offset (e.g. 2026-06-23T10:00:00-0600; trailing Z accepted).")
         }
     }
+
+    if (!allDevices) {
+        def emptyMsg = "No devices selected for MCP access and no MCP-managed virtual devices"
+        // format='context' keeps its shape contract even on an empty install: a caller
+        // reading `summary` must never get a bare devices-array shape instead.
+        if (resolvedFormat == "context") {
+            def header = _contextHeaderLines()
+            header << "Devices: 0 of 0"
+            def r = [mode: location.mode?.toString(), summary: (header + [emptyMsg]).join("\n"), count: 0, total: 0, message: emptyMsg]
+            def hsm = _safeHsmStatus()
+            if (hsm) r.hsmStatus = hsm
+            return r
+        }
+        return [devices: [], message: emptyMsg, total: 0]
+    }
+
+    // Capture the full set BEFORE any filter/labelFilter/capabilityFilter narrows it. Used
+    // by the capabilityFilterMatchedKnownCapability typo-vs-absence diagnostic so a
+    // mistyped capability can be distinguished from a real-but-excluded one even when
+    // labelFilter has already removed every device that would have matched.
+    def unfilteredDevices = allDevices
+
+    def unfilteredTotal = allDevices.size()
 
     // Parse and apply server-side filter BEFORE pagination so limit/offset respect the filtered set.
     // Supported filters: null/"all" (default), "enabled", "disabled", "stale:<hours>" (e.g. "stale:24").
@@ -164,7 +182,8 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
 
     // changedSince keeps devices ACTIVE since the timestamp -- the inverse of filter=stale:N.
     // A device with no readable lastActivity is excluded here (it cannot prove it changed),
-    // where stale:N counts the same device as stale; both err toward "unproven = filtered".
+    // where stale:N KEEPS the same device (counts it stale) -- both treat unproven as
+    // not-recently-active, which lands on opposite sides of inclusion.
     if (changedSinceDate != null) {
         allDevices = allDevices.findAll { d ->
             def la = safeLastActivity(d)
@@ -182,12 +201,6 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         endIndex = Math.min(startIndex + limit, totalCount)
     }
 
-    // Validate format before any early-return so invalid format always throws.
-    def resolvedFormat = format ?: "summary"
-    if (format && !["summary", "detailed", "ids", "context"].contains(resolvedFormat)) {
-        throw new IllegalArgumentException("Invalid format '${format}'. Must be one of: summary, detailed, ids, context")
-    }
-
     // Shared filter-echo block for every result shape (summary/detailed/ids/context and the
     // early returns): echo each active filter, report unfilteredTotal when anything narrowed
     // the set, and attach the zero-match typo-vs-absence diagnostics.
@@ -200,7 +213,12 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         if (capabilityFilter) r.capabilityFilter = capabilityFilter
         if (roomFilter) r.roomFilter = roomFilter
         if (onlyOn == true) r.onlyOn = true
-        if (changedSinceDate != null) r.changedSince = changedSince
+        if (changedSinceDate != null) {
+            // Epoch-ms input echoes as canonical ISO (same policy as _resolveSinceWindow) so
+            // the echo always satisfies the string-typed outputSchema field.
+            r.changedSince = (changedSince instanceof Number || changedSince.toString().trim().isLong()) ?
+                changedSinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ") : changedSince.toString().trim()
+        }
         if (capabilityFilter && totalCount == 0) {
             def allCaps = unfilteredDevices.collectMany { d -> d.capabilities?.collect { cap -> cap.name?.toLowerCase() } ?: [] } as Set
             r.capabilityFilterMatchedKnownCapability = allCaps.contains(capabilityFilter.toLowerCase())
@@ -212,20 +230,29 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         return r
     }
 
-    // Validate offset (after format validation so callers always get the format error first).
+    // Validate offset (after the argument validation above, so callers always get the
+    // format/type errors first). Every branch keeps its format's shape contract and the
+    // shared filter echoes.
     if (totalCount > 0 && startIndex >= totalCount) {
+        def offsetMsg = "Offset ${startIndex} exceeds filtered device count ${totalCount}".toString()
         if (resolvedFormat == "ids") {
             return applyFilterEchoes([deviceIds: [], count: 0, total: totalCount, hasMore: false, nextOffset: null])
         }
-        return [
-            devices: [],
-            total: totalCount,
-            unfilteredTotal: unfilteredTotal,
-            offset: startIndex,
-            limit: limit ?: 0,
-            filter: filter ?: "all",
-            message: "Offset ${startIndex} exceeds filtered device count ${totalCount}"
-        ]
+        if (resolvedFormat == "context") {
+            def header = _contextHeaderLines()
+            header << "Devices: 0 of ${totalCount}".toString()
+            def r = applyFilterEchoes([mode: location.mode?.toString(), summary: (header + [offsetMsg]).join("\n"), count: 0, total: totalCount, message: offsetMsg])
+            def hsm = _safeHsmStatus()
+            if (hsm) r.hsmStatus = hsm
+            r.offset = startIndex
+            r.limit = limit ?: 0
+            return r
+        }
+        def r = applyFilterEchoes([devices: [], total: totalCount, offset: startIndex, limit: limit ?: 0, message: offsetMsg])
+        // Preserve this branch's historical unconditional echoes alongside the shared block.
+        if (!r.containsKey("filter")) r.filter = filter ?: "all"
+        if (!r.containsKey("unfilteredTotal")) r.unfilteredTotal = unfilteredTotal
+        return r
     }
 
     // format="ids" returns a flat array of integer IDs; ignores detailed/fields
@@ -255,9 +282,8 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         def pagedDevices = totalCount > 0 ? allDevices.subList(startIndex, endIndex) : []
         def attrNames = (attributeNames && !attributeNames.isEmpty()) ? attributeNames.collect { it.toString() } : _contextAttributeNames()
         def lines = pagedDevices.collect { d -> _contextDeviceLine(d, attrNames) }
-        def header = ["Mode: ${location.mode}".toString()]
+        def header = _contextHeaderLines()
         def hsm = _safeHsmStatus()
-        if (hsm) header << "HSM: ${hsm}".toString()
         def deviceLine = "Devices: ${lines.size()} of ${totalCount}"
         if (endIndex < totalCount) deviceLine += " (nextCursor=${endIndex} -- pass cursor:'${endIndex}' for the next page)"
         header << deviceLine.toString()
@@ -428,6 +454,15 @@ private List _contextAttributeNames() {
      "heatingSetpoint", "coolingSetpoint", "speed", "position", "valve", "water", "smoke"]
 }
 
+// The "Mode:" (+ optional "HSM:") header lines every context-format result leads with;
+// each call site appends its own "Devices: N of M" line.
+private List _contextHeaderLines() {
+    def header = ["Mode: ${location.mode}".toString()]
+    def hsm = _safeHsmStatus()
+    if (hsm) header << "HSM: ${hsm}".toString()
+    return header
+}
+
 // One context-summary line: "- Label (id, room) - Cap1, Cap2; attr=value, ...". Reads the
 // device's currentStates ONCE (one live event-store read) instead of per-attribute
 // currentValue() calls, then projects the requested attribute names in caller order.
@@ -437,7 +472,11 @@ private String _contextDeviceLine(device, List attrNames) {
         device.currentStates?.each { st ->
             if (st?.name != null && st.value != null) states[st.name.toString()] = st
         }
-    } catch (Exception ignore) {}
+    } catch (Exception e) {
+        // Serve the line without attributes rather than failing the whole snapshot, but
+        // log it: a silently state-less device reads as "reports nothing" to the model.
+        mcpLog("warn", "device", "context snapshot: currentStates read failed for device ${device?.id}: ${e.message}")
+    }
     def attrParts = []
     attrNames.each { an ->
         def st = states[an]
@@ -464,11 +503,47 @@ private String _safeHsmStatus() {
     }
 }
 
+// The MCP-visible device population: authorized devices plus this app's own child
+// (virtual) devices, deduplicated by id. Shared by toolListDevices and the context
+// resource builders so the populations cannot drift.
+private List _mcpVisibleDevices() {
+    def all = (selectedDevices ?: []).toList()
+    def ids = all.collect { it.id.toString() } as Set
+    (getChildDevices() ?: []).each { cd ->
+        if (!ids.contains(cd.id.toString())) all.add(cd)
+    }
+    return all
+}
+
+// Size budget for the unpaginated context RESOURCES (resources/read takes only a uri, so
+// an oversized body would be permanently dead behind the outer -32603 guard with no
+// narrower request to retry). Sized well under the 124,000-byte wire guard to leave room
+// for JSON-in-JSON escaping and the result envelope.
+def _contextResourceCharBudget() { 90000 }
+
 // The hubitat://context-summary resource body: the full (unpaginated) format='context'
-// snapshot. Shared with the tool path so resource and tool can never drift.
+// snapshot, truncated at the resource budget with an explicit pointer at the paginated
+// tool form. Shared with the tool path so resource and tool can never drift.
 def _buildContextSummaryText() {
     def res = toolListDevices(false, 0, 1000000, null, null, null, "context", null, null, null, null, null, null, null)
-    return res.summary ?: res.message ?: "No devices selected for MCP access."
+    def total = (res.total ?: 0) as Integer
+    return _truncateContextText(res.summary ?: res.message, total)
+}
+
+private String _truncateContextText(String text, int totalDevices) {
+    int budget = _contextResourceCharBudget()
+    if (text == null || text.length() <= budget) return text
+    def kept = []
+    int size = 0
+    int deviceLinesKept = 0
+    for (ln in text.readLines()) {
+        if (size + ln.length() + 1 > budget) break
+        kept << ln
+        size += ln.length() + 1
+        if (ln.startsWith("- ")) deviceLinesKept++
+    }
+    kept << "... truncated at ${deviceLinesKept} of ${totalDevices} devices (hub response-size cap). Use the hub_list_devices tool (format='context', cursor pagination) for the full inventory.".toString()
+    return kept.join("\n")
 }
 
 // The hubitat://context resource body: the JSON twin of the context summary -- current
@@ -477,15 +552,25 @@ def _buildContextSummaryText() {
 // Attributes are projected through the same default set as the text form: an unfiltered
 // currentStates dump drags in driver-internal rows (e.g. tile-text attributes like "_1")
 // that only add noise to a context snapshot -- verified live on a real inventory.
+// Device records stop at the resource byte budget (rooms stay complete); a truncated
+// result says so and points at the paginated tool form.
 def _buildContextJson() {
-    def allDevices = (selectedDevices ?: []).toList()
-    def childDevs = getChildDevices() ?: []
-    def selectedIds = allDevices.collect { it.id.toString() } as Set
-    childDevs.each { cd ->
-        if (!selectedIds.contains(cd.id.toString())) allDevices.add(cd)
-    }
+    def allDevices = _mcpVisibleDevices()
     def contextAttrs = _contextAttributeNames() as Set
-    def devices = allDevices.collect { d ->
+    def roomIndex = [:]
+    allDevices.each { d ->
+        def r = d.roomName?.toString() ?: "No room"
+        if (!roomIndex.containsKey(r)) roomIndex[r] = []
+        roomIndex[r] << d.id.toString()
+    }
+    def rooms = roomIndex.collect { name, ids -> [name: name, deviceIds: ids] }
+    // The budget covers the WHOLE body -- the rooms index scales with the inventory too,
+    // so device records get whatever the budget leaves after it (never less than zero).
+    int budget = _contextResourceCharBudget() - groovy.json.JsonOutput.toJson(rooms).length() - 1000
+    int used = 0
+    boolean truncated = false
+    def devices = []
+    for (d in allDevices) {
         def attrs = [:]
         try {
             d.currentStates?.each { st ->
@@ -493,24 +578,31 @@ def _buildContextJson() {
                     attrs[st.name.toString()] = st.value.toString()
                 }
             }
-        } catch (Exception ignore) {}
-        [id: d.id.toString(), label: d.label ?: d.name, room: d.roomName,
-         capabilities: d.capabilities?.collect { it.name }?.findAll { it != null } ?: [],
-         attributes: attrs]
-    }
-    def roomIndex = [:]
-    allDevices.each { d ->
-        def r = d.roomName?.toString() ?: "No room"
-        if (!roomIndex.containsKey(r)) roomIndex[r] = []
-        roomIndex[r] << d.id.toString()
+        } catch (Exception e) {
+            mcpLog("warn", "device", "context snapshot: currentStates read failed for device ${d?.id}: ${e.message}")
+        }
+        def rec = [id: d.id.toString(), label: d.label ?: d.name, room: d.roomName,
+                   capabilities: d.capabilities?.collect { it.name }?.findAll { it != null } ?: [],
+                   attributes: attrs]
+        used += groovy.json.JsonOutput.toJson(rec).length()
+        if (used > budget) {
+            truncated = true
+            break
+        }
+        devices << rec
     }
     def result = [
         currentMode: location.mode?.toString(),
         modes: location.modes?.collect { it?.name?.toString() }?.findAll { it != null } ?: [],
         deviceCount: devices.size(),
-        rooms: roomIndex.collect { name, ids -> [name: name, deviceIds: ids] },
+        totalDevices: allDevices.size(),
+        rooms: rooms,
         devices: devices
     ]
+    if (truncated) {
+        result.truncated = true
+        result.note = "Device records truncated at ${devices.size()} of ${allDevices.size()} (hub response-size cap). Use the hub_list_devices tool (format='context', cursor pagination) for the full inventory.".toString()
+    }
     def hsm = _safeHsmStatus()
     if (hsm) result.hsmStatus = hsm
     return result
@@ -2126,7 +2218,7 @@ def _resolveSinceWindow(args, hoursBack) {
     if (parsed == null) {
         throw new IllegalArgumentException("since is not a valid timestamp: '${args.since}'. " +
             "Use the same ISO-8601 form this tool emits in 'date'/'sinceTimestamp' -- a NUMERIC " +
-            "offset with no colon, e.g. 2026-06-23T10:00:00.000-0600 (a trailing 'Z' for UTC and a " +
+            "offset, e.g. 2026-06-23T10:00:00.000-0600 or -06:00 (a trailing 'Z' for UTC and a " +
             "millis-less variant are also accepted), or epoch milliseconds (an integer).")
     }
     // Echo a real ISO bookmark String verbatim (the round-trip case, trimmed so a
@@ -2140,9 +2232,10 @@ def _resolveSinceWindow(args, hoursBack) {
 
 // Parse a `since` arg to a Date, or null if unparseable. Accepts epoch milliseconds
 // (Number or all-digit String) and ISO-8601 strings -- the canonical round-trip
-// format and a cheap millis-less variant, both with a numeric offset. A trailing
-// 'Z' (Zulu/UTC) is normalized to +0000 first so it parses as UTC, not the hub's
-// local zone. The 2-arg Date.parse(format, str) overload is sandbox-allowed (unlike
+// format and a cheap millis-less variant, each with a numeric offset in either the
+// colon-less (-0600) or colon (-06:00) spelling. A trailing 'Z' (Zulu/UTC) is
+// normalized to +0000 first so it parses as UTC, not the hub's local zone. The
+// 2-arg Date.parse(format, str) overload is sandbox-allowed (unlike
 // Date.format(String, Locale)).
 def _parseSinceArg(since) {
     if (since instanceof Number) {
@@ -2157,6 +2250,11 @@ def _parseSinceArg(since) {
     def formats = [
         "yyyy-MM-dd'T'HH:mm:ss.SSSZ",   // canonical round-trip: 2026-06-23T10:00:00.000-0600
         "yyyy-MM-dd'T'HH:mm:ssZ",       // no millis, offset:    2026-06-23T10:00:00-0600
+        // Colon-bearing offsets (2026-06-23T10:00:00-06:00) -- the XXX form
+        // formatLastActivity emits, so a lastActivity value round-trips into
+        // changedSince on a non-UTC hub.
+        "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
+        "yyyy-MM-dd'T'HH:mm:ssXXX",
     ]
     // NOTE: Date.parse() is backed by a lenient SimpleDateFormat, so a structurally-valid
     // but out-of-range field (e.g. month 13) parses to a rolled-over date rather than
@@ -3917,8 +4015,8 @@ Call `hub_get_tool_guide(section='performance')` for response-shape details, fil
                     capabilityFilter: [type: "string", description: "Case-insensitive exact match against capability name. Capability names are camelCase (e.g. 'ColorControl')."],
                     roomFilter: [type: "string", description: "Case-insensitive exact match against the device's assigned room name."],
                     onlyOn: [type: "boolean", description: "true = only devices whose switch currently reads 'on'.[[FLAT_TRIM]] \"What's on right now\" in one call; false is a no-op.[[/FLAT_TRIM]]"],
-                    changedSince: [type: "string", description: "Only devices with activity at/after this timestamp (ISO-8601 or epoch ms).[[FLAT_TRIM]] E.g. 2026-06-23T10:00:00Z. Inverse of filter='stale:<hours>'; devices with no readable lastActivity are excluded.[[/FLAT_TRIM]]"],
-                    attributeNames: [type: "array", items: [type: "string"], description: "format='context' only: which attributes to show per device line[[FLAT_TRIM]], replacing the default set[[/FLAT_TRIM]]."],
+                    changedSince: [type: ["string", "integer"], description: "Only devices with activity at/after this timestamp: epoch ms, or ISO-8601 with a numeric offset (e.g. 2026-06-23T10:00:00Z; -0600 and -06:00 both accepted -- offset-less or date-only forms are rejected).[[FLAT_TRIM]] A returned lastActivity value round-trips. Inverse of filter='stale:<hours>'; devices with no readable lastActivity are excluded. Epoch-ms input echoes back as canonical ISO.[[/FLAT_TRIM]]"],
+                    attributeNames: [type: "array", items: [type: "string"], description: "format='context' only (rejected on other formats): which attributes to show per device line[[FLAT_TRIM]], replacing the default set. Empty array = the default set[[/FLAT_TRIM]]."],
                     format: [type: "string", enum: ["summary", "detailed", "ids", "context"], description: "Response shape. 'summary' (default) = standard fields + currentStates. 'detailed' = capabilities/attributes/commands. 'ids' = flat array of device ID integers (cheapest, ignores fields arg). 'context' = plain-text house snapshot in `summary`[[FLAT_TRIM]] (mode + 'Label (id, room) - capabilities; attr=value' lines; page size 50 unless limit set; ignores fields arg)[[/FLAT_TRIM]]."],
                     fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object. Call `hub_get_tool_guide(section='performance')` for valid field names and projection semantics."],
                     cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor."],
@@ -3956,9 +4054,9 @@ Call `hub_get_tool_guide(section='performance')` for response-shape details, fil
                     capabilityFilter: [type: "string", description: "Echoed capabilityFilter; present when set"],
                     roomFilter: [type: "string", description: "Echoed roomFilter; present when set"],
                     onlyOn: [type: "boolean", description: "Echoed onlyOn; present when true"],
-                    changedSince: [type: "string", description: "Echoed changedSince; present when set"],
+                    changedSince: [type: "string", description: "Echoed changedSince (epoch-ms input echoes as canonical ISO); present when set"],
                     capabilityFilterMatchedKnownCapability: [type: "boolean", description: "When capabilityFilter yields 0: whether the capability exists on any device"],
-                    roomFilterMatchedKnownRoom: [type: "boolean", description: "When roomFilter yields 0: whether any device is assigned to that room"],
+                    roomFilterMatchedKnownRoom: [type: "boolean", description: "When the filtered total is 0 with roomFilter set: whether any MCP-visible device is assigned to that room (a hub room with no MCP-authorized device reads false)"],
                     scope: [type: "string", description: "Echoed 'all' when scope='all' was requested"],
                     mcpAuthorizedCount: [type: "integer", description: "scope='all': count over the full filtered (pre-pagination) set that ARE in the MCP authorized list; sums with unauthorizedCount to total, not to the returned page"],
                     unauthorizedCount: [type: "integer", description: "scope='all': count over the full filtered (pre-pagination) set NOT in the MCP authorized list"],
@@ -4126,7 +4224,7 @@ Default: most-recent events for a device (deviceId + optional limit).
                     deviceId: [type: "string", description: "Device ID. Mutually exclusive with appId; omit both for location-level events (mode/HSM/hub variable)."],
                     appId: [type: "integer", description: "Installed-app ID for per-app events (what the app/rule emitted). Mutually exclusive with deviceId."],
                     hoursBack: [type: "integer", description: "If set, return up to this many hours of history (max 168 = 7 days) instead of just the most recent events.[[FLAT_TRIM]] Ignored when since is given.[[/FLAT_TRIM]]"],
-                    since: [type: ["string", "integer"], description: "Absolute window start -- return only events AFTER this timestamp; ISO-8601 (e.g. 2026-06-23T10:00:00.000-0600, a numeric offset with no colon) or epoch milliseconds.[[FLAT_TRIM]] This is the format this tool emits in `date`/`sinceTimestamp`. Takes precedence over hoursBack; a future timestamp yields an empty list.[[/FLAT_TRIM]]"],
+                    since: [type: ["string", "integer"], description: "Absolute window start -- return only events AFTER this timestamp; ISO-8601 with a numeric offset (-0600 or -06:00; e.g. 2026-06-23T10:00:00.000-0600) or epoch milliseconds.[[FLAT_TRIM]] This is the format this tool emits in `date`/`sinceTimestamp`. Takes precedence over hoursBack; a future timestamp yields an empty list.[[/FLAT_TRIM]]"],
                     attribute: [type: "string", description: "Event-name filter. Device: an attribute (e.g. 'switch').[[FLAT_TRIM]] Location: 'mode', 'hsmStatus', 'hsmAlert', or a hub-variable name.[[/FLAT_TRIM]]"],
                     limit: [type: "integer", description: "Max events to return. Recent mode default 10; history mode default 100 (max 500).[[FLAT_TRIM]] Higher values may slow hub.[[/FLAT_TRIM]]", default: 10]
                 ]

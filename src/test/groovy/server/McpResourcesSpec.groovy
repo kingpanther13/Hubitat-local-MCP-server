@@ -12,9 +12,12 @@ import support.ToolSpecBase
  * server/discover. Driven through handleMcpRequest (the tier-2 dispatch seam) so the
  * JSON-RPC envelope, era gating, and render path are all exercised.
  *
- * The catalog under test: the tool-guide sections (hubitat://guide/&lt;section&gt;,
- * never gated -- mirroring hub_get_tool_guide) plus the live context snapshot
- * (hubitat://context-summary and hubitat://context, gated by the Read master).
+ * The catalog under test: the tool-guide sections (hubitat://guide/&lt;section&gt;)
+ * plus the live context snapshot (hubitat://context-summary and hubitat://context).
+ * Each group mirrors the VISIBILITY of the tool whose content it serves
+ * (hub_get_tool_guide / hub_list_devices), so the Read master and the #114 per-tool
+ * overrides both apply -- the resources surface can never serve content its tool
+ * counterpart is gated from serving.
  */
 class McpResourcesSpec extends ToolSpecBase {
 
@@ -84,18 +87,16 @@ class McpResourcesSpec extends ToolSpecBase {
         response.result.cacheScope == 'private'
     }
 
-    def "resources/list omits the context resources when the Read master is off, keeping the guide"() {
+    def "resources/list is empty when the Read master is off -- both mirrored tools are read tools"() {
         given:
         settingsMap.enableRead = false
 
         when:
         def response = dispatch([jsonrpc: '2.0', id: 4, method: 'resources/list', params: [:]])
 
-        then:
-        def uris = response.result.resources*.uri
-        !uris.contains('hubitat://context-summary')
-        !uris.contains('hubitat://context')
-        uris.any { it.startsWith('hubitat://guide/') }
+        then: 'hub_list_devices AND hub_get_tool_guide are both Read-master-hidden, so nothing is served'
+        response.error == null
+        response.result.resources == []
     }
 
     // ---- resources/read: guide sections ---------------------------------
@@ -115,9 +116,11 @@ class McpResourcesSpec extends ToolSpecBase {
         response.result.cacheScope == 'private'
     }
 
-    def "resources/read serves guide sections even when the Read master is off"() {
-        // Mirrors hub_get_tool_guide, which is deliberately never gated (it documents
-        // how to recover from gating).
+    def "resources/read refuses guide sections when the Read master is off, mirroring hub_get_tool_guide"() {
+        // hub_get_tool_guide is a read tool: with the Read master off it is hidden from
+        // tools/list and rejected at dispatch, so serving the same content here would be
+        // a Read-master bypass. (The BEST-PRACTICE gate is the one that exempts the guide
+        // tool -- a different, write-only gate that does not apply to resources.)
         given:
         settingsMap.enableRead = false
 
@@ -126,8 +129,34 @@ class McpResourcesSpec extends ToolSpecBase {
                                  params: [uri: 'hubitat://guide/best_practice_reference']])
 
         then:
-        response.error == null
-        response.result.contents[0].text.contains('bps-ack-299')
+        response.error.code == -32002
+        response.error.message.contains('Read tools are disabled')
+        response.error.data.uri == 'hubitat://guide/best_practice_reference'
+    }
+
+    def "the #114 per-tool override on hub_get_tool_guide hides the guide resources, keeping context"() {
+        given:
+        settingsMap.disabled_tools = ['hub_get_tool_guide']
+
+        when:
+        def listed = dispatch([jsonrpc: '2.0', id: 32, method: 'resources/list', params: [:]])
+
+        then:
+        def uris = listed.result.resources*.uri
+        !uris.any { it.startsWith('hubitat://guide/') }
+        uris.contains('hubitat://context-summary')
+        uris.contains('hubitat://context')
+
+        when:
+        def read = dispatch([jsonrpc: '2.0', id: 33, method: 'resources/read',
+                             params: [uri: 'hubitat://guide/performance']])
+
+        then:
+        read.error.code == -32002
+        read.error.message.contains('Per-tool Overrides')
+
+        cleanup:
+        settingsMap.remove('disabled_tools')
     }
 
     // ---- resources/read: live context -----------------------------------
@@ -194,18 +223,50 @@ class McpResourcesSpec extends ToolSpecBase {
         !dev.attributes.containsKey('_1')
     }
 
-    def "resources/read of a context resource is refused with -32002 when the Read master is off"() {
+    @spock.lang.Unroll
+    def "resources/read of #uri is refused with -32002 when the Read master is off"() {
         given:
         settingsMap.enableRead = false
 
         when:
         def response = dispatch([jsonrpc: '2.0', id: 9, method: 'resources/read',
-                                 params: [uri: 'hubitat://context-summary']])
+                                 params: [uri: uri]])
 
         then:
         response.error.code == -32002
         response.error.message.contains('Read tools are disabled')
-        response.error.data.uri == 'hubitat://context-summary'
+        response.error.data.uri == uri
+
+        where:
+        uri << ['hubitat://context-summary', 'hubitat://context']
+    }
+
+    def "the #114 per-tool override on hub_list_devices also hides and refuses the context resources"() {
+        // The context resources ARE hub_list_devices data by another route, so a disabled
+        // tool must disappear from this surface too ("everywhere it appears").
+        given:
+        settingsMap.disabled_tools = ['hub_list_devices']
+
+        when:
+        def listed = dispatch([jsonrpc: '2.0', id: 30, method: 'resources/list', params: [:]])
+
+        then:
+        def uris = listed.result.resources*.uri
+        !uris.contains('hubitat://context-summary')
+        !uris.contains('hubitat://context')
+        uris.any { it.startsWith('hubitat://guide/') }
+
+        when:
+        def read = dispatch([jsonrpc: '2.0', id: 31, method: 'resources/read',
+                             params: [uri: 'hubitat://context']])
+
+        then:
+        read.error.code == -32002
+        read.error.message.contains('Per-tool Overrides')
+        read.error.data.uri == 'hubitat://context'
+
+        cleanup:
+        settingsMap.remove('disabled_tools')
     }
 
     // ---- resources/read: error contract ---------------------------------
@@ -230,13 +291,60 @@ class McpResourcesSpec extends ToolSpecBase {
         response.error.code == -32002
     }
 
-    def "resources/read without a uri returns -32602"() {
+    @spock.lang.Unroll
+    def "resources/read with #label uri returns -32602"() {
         when:
-        def response = dispatch([jsonrpc: '2.0', id: 12, method: 'resources/read', params: [:]])
+        def response = dispatch([jsonrpc: '2.0', id: 12, method: 'resources/read', params: params])
 
         then:
         response.error.code == -32602
         response.error.message.contains('uri')
+
+        where:
+        label          | params
+        'a missing'    | [:]
+        'an empty'     | [uri: '']
+        'a non-string' | [uri: 123]
+    }
+
+    // ---- resource size cap ----------------------------------------------
+
+    def "an oversized inventory truncates the context resources instead of dying behind the -32603 guard"() {
+        // resources/read takes only a uri -- an over-cap body would be PERMANENTLY dead on
+        // that hub (the outer guard's "request less data" advice is unactionable). Both
+        // builders stop at _contextResourceCharBudget() and say so.
+        given: 'enough long-labelled devices to overrun the budget'
+        settingsMap.selectedDevices = (0..<2500).collect { i ->
+            new TestDevice(id: i + 1, label: "Truncation Fixture Device ${String.format('%04d', i)} With A Long Label",
+                roomName: "Room ${i % 20}", capabilities: [[name: 'Switch']], attributeValues: [switch: 'on'])
+        }
+
+        when:
+        def text = dispatch([jsonrpc: '2.0', id: 40, method: 'resources/read',
+                             params: [uri: 'hubitat://context-summary']])
+
+        then: 'served (not the -32603 size guard), with an explicit truncation pointer'
+        text.error == null
+        def body = text.result.contents[0].text
+        body.length() <= script._contextResourceCharBudget() + 300
+        body.contains('truncated at')
+        body.contains("hub_list_devices")
+
+        when:
+        def json = dispatch([jsonrpc: '2.0', id: 41, method: 'resources/read',
+                             params: [uri: 'hubitat://context']])
+
+        then:
+        json.error == null
+        def ctx = new groovy.json.JsonSlurper().parseText(json.result.contents[0].text)
+        ctx.truncated == true
+        ctx.totalDevices == 2500
+        ctx.deviceCount < 2500
+        ctx.deviceCount == ctx.devices.size()
+        ctx.note.contains('hub_list_devices')
+
+        and: 'the rooms index stays complete'
+        ctx.rooms.size() == 20
     }
 
     // ---- resources/templates/list ---------------------------------------

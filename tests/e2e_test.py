@@ -1739,12 +1739,17 @@ class TestRunner:
         # ['switch'] must never surface another attribute after the ';' separator.
         result = self.client.call_tool("hub_list_devices",
                                        {"format": "context", "attributeNames": ["switch"]})
-        for ln in result["summary"].splitlines():
-            if ln.startswith("- ") and ";" in ln:
-                attrs = ln.split(";", 1)[1]
-                assert "switch=" in attrs, f"projected line lost its switch attribute: {ln!r}"
-                assert "temperature=" not in attrs and "battery=" not in attrs, \
-                    f"attributeNames=['switch'] leaked other attributes: {ln!r}"
+        attr_lines = [ln for ln in result["summary"].splitlines()
+                      if ln.startswith("- ") and ";" in ln]
+        # Anti-vacuity: the scaffold guarantees at least one switch-bearing device, so a
+        # projection that dropped every attribute line would otherwise pass silently.
+        assert attr_lines, \
+            f"attributeNames=['switch'] produced no attribute-bearing lines at all: {result['summary'][:300]!r}"
+        for ln in attr_lines:
+            attrs = ln.split(";", 1)[1]
+            assert "switch=" in attrs, f"projected line lost its switch attribute: {ln!r}"
+            assert "temperature=" not in attrs and "battery=" not in attrs, \
+                f"attributeNames=['switch'] leaked other attributes: {ln!r}"
 
     @test("devices")
     def test_list_devices_only_on_filter(self) -> None:
@@ -1753,7 +1758,12 @@ class TestRunner:
         result = self.client.call_tool("hub_list_devices", {"onlyOn": True})
         assert result.get("onlyOn") is True, f"onlyOn not echoed: {list(result)}"
         assert "unfilteredTotal" in result, "active filter must report unfilteredTotal"
-        for dev in result.get("devices", []):
+        if not result.get("devices"):
+            # Nothing on right now is a legitimate hub state; say so instead of passing
+            # a loop that never ran (mirrors test_list_devices_room_filter's guard).
+            print("    [INFO] no device is currently on; per-device assertion body did not run")
+            return
+        for dev in result["devices"]:
             sw = (dev.get("currentStates") or {}).get("switch")
             assert sw == "on", f"onlyOn=true returned {dev.get('label')!r} with switch={sw!r}"
 

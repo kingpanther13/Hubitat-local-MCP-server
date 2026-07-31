@@ -1726,8 +1726,10 @@ class ToolListDevicesSpec extends ToolSpecBase {
 
         then:
         result.devices*.id == ['2']
-        result.changedSince == 3000000L
         result.unfilteredTotal == 3
+
+        and: 'the epoch input echoes as canonical ISO -- the string the outputSchema declares'
+        result.changedSince == new Date(3000000L).format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
     }
 
     def "changedSince accepts ISO-8601 and rejects an unparseable value with -32602 guidance"() {
@@ -1749,6 +1751,22 @@ class ToolListDevicesSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('changedSince')
         ex.message.contains('ISO-8601')
+    }
+
+    def "a colon-offset timestamp (the lastActivity XXX form) parses in changedSince"() {
+        // formatLastActivity emits yyyy-MM-dd'T'HH:mm:ssXXX -- a COLON offset (-06:00) on a
+        // non-UTC hub -- so the documented change-watching loop only works if the parser
+        // accepts that spelling alongside the colon-less one.
+        given:
+        def activity = Date.parse("yyyy-MM-dd'T'HH:mm:ssZ", '2026-06-23T12:00:00+0000')
+        settingsMap.selectedDevices = [makeDevice(id: 1, label: 'Fresh', lastActivity: activity)]
+
+        when: '05:59:59-06:00 == 11:59:59Z, one second before the device activity'
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, null, null, null, '2026-06-23T05:59:59-06:00')
+
+        then:
+        result.devices*.id == ['1']
+        result.changedSince == '2026-06-23T05:59:59-06:00'
     }
 
     @spock.lang.Unroll
@@ -1897,5 +1915,143 @@ class ToolListDevicesSpec extends ToolSpecBase {
         inner.mode == 'Home'
         inner.count == 2
         inner.summary.contains('- Kitchen Sensor (2, Kitchen)')
+    }
+
+    def "attributeNames without format='context' is rejected instead of silently ignored"() {
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1)]
+
+        when:
+        script.toolListDevices(false, 0, 0, null, null, null, fmt, null, null, null, null, null, null, ['switch'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('attributeNames')
+        ex.message.contains("format='context'")
+
+        where:
+        fmt << [null, 'summary', 'detailed', 'ids']
+    }
+
+    def "bad arguments are rejected even when no devices are authorized"() {
+        // The type/format validations run BEFORE the empty-inventory early return, so an
+        // empty hub answers a bad call with -32602 instead of a success envelope.
+        given:
+        settingsMap.selectedDevices = []
+
+        when:
+        script.toolListDevices(false, 0, 0, null, null, null, 'bogus', null, null, null)
+
+        then:
+        thrown(IllegalArgumentException)
+
+        when:
+        script.toolListDevices(false, 0, 0, null, null, null, null, null, null, null, null, 'yes')
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
+    def "format='context' keeps its shape on an empty install"() {
+        given:
+        settingsMap.selectedDevices = []
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null)
+
+        then: 'context shape, not the bare devices-array shape'
+        result.mode == 'Home'
+        result.count == 0
+        result.total == 0
+        !result.containsKey('devices')
+        result.message
+
+        and: 'the summary is still a self-contained snapshot'
+        def lines = result.summary.readLines()
+        lines[0] == 'Mode: Home'
+        lines[1] == 'Devices: 0 of 0'
+        lines[2] == result.message
+    }
+
+    def "format='context' keeps its shape and the filter echoes when offset exceeds the filtered total"() {
+        given:
+        settingsMap.selectedDevices = seedContextDevices()
+
+        when:
+        def result = script.toolListDevices(false, 50, 0, null, null, null, 'context', null, null, null, 'Kitchen')
+
+        then: 'context shape with the shared echoes, not the devices-array shape'
+        result.mode == 'Home'
+        result.count == 0
+        result.total == 2
+        result.roomFilter == 'Kitchen'
+        result.unfilteredTotal == 4
+        !result.containsKey('devices')
+        result.summary.readLines()[0] == 'Mode: Home'
+        result.message.contains('exceeds')
+    }
+
+    def "summary offset-exceeds early return now carries the new filter echoes too"() {
+        given:
+        settingsMap.selectedDevices = seedContextDevices()
+
+        when:
+        def result = script.toolListDevices(false, 50, 0, null, null, null, null, null, null, null, null, true)
+
+        then:
+        result.devices == []
+        result.onlyOn == true
+        result.unfilteredTotal == 4
+        result.filter == 'all'
+        result.message.contains('exceeds')
+    }
+
+    def "context lines append the reported unit directly after the value"() {
+        // Real hub State objects carry a unit (degrees-F, "%"); the line renders value+unit
+        // with no separator, matching the native connector's context-summary format.
+        given:
+        def dev = makeDevice(id: 9, label: 'Attic T&H', room: 'Attic', capabilities: [[name: 'TemperatureMeasurement']])
+        dev.currentStates = [[name: 'temperature', value: '71.5', unit: '°F'], [name: 'humidity', value: '48', unit: '%']]
+        settingsMap.selectedDevices = [dev]
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null)
+
+        then:
+        result.summary.readLines().last() == '- Attic T&H (9, Attic) - TemperatureMeasurement; temperature=71.5°F, humidity=48%'
+    }
+
+    private static class ThrowingStatesDevice extends TestDevice {
+        List getCurrentStates() { throw new RuntimeException('driver exploded') }
+    }
+
+    def "a device whose currentStates read throws still gets a line, without attributes"() {
+        given:
+        def broken = new ThrowingStatesDevice(id: 5, label: 'Broken Driver', roomName: 'Den',
+            capabilities: [[name: 'Switch']])
+        settingsMap.selectedDevices = [broken, makeDevice(id: 6, label: 'Fine', attrValues: [switch: 'on'])]
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null)
+
+        then: 'the snapshot survives; the broken device shows capabilities but no attributes'
+        result.count == 2
+        result.summary.readLines().contains('- Broken Driver (5, Den) - Switch')
+        result.summary.contains('- Fine (6, No room) - ; switch=on') || result.summary.contains('- Fine (6, No room); switch=on')
+    }
+
+    def "via dispatch: filter='virtual' rejects the state filters and context format"() {
+        // toolListVirtualDevices evaluates none of the new args; silently dropping them
+        // would leave the caller believing the filter applied.
+        given:
+        settingsMap.useGateways = true
+        settingsMap.selectedDevices = [makeDevice(id: 1)]
+
+        when:
+        def response = mcpDriver.callTool('hub_list_devices', [filter: 'virtual', onlyOn: true])
+
+        then:
+        response.error?.code == -32602
+        response.error?.message?.contains("filter='virtual'")
     }
 }
