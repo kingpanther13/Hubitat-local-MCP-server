@@ -1,6 +1,6 @@
 library(name: "McpDevicesLib", namespace: "mcp", author: "kingpanther13", description: "Device tool implementations (list/get/attribute/events/command/update/delete) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
-def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, capabilityFilter = null, format = null, fields = null, cursor = null, scope = null) {
+def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, capabilityFilter = null, format = null, fields = null, cursor = null, scope = null, roomFilter = null, onlyOn = null, changedSince = null, attributeNames = null) {
     // Opt-in cursor pagination decodes onto the existing offset/limit mechanics. The
     // real range check against the filtered total happens further down (line ~3585)
     // because we don't have the filtered count yet; pass Integer.MAX_VALUE so the
@@ -18,6 +18,10 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         // on offset; limit just sizes the page).
         if (!limit || limit <= 0) limit = 50
     }
+    // context format defaults to a 50-device page (same size cursor mode uses) so an
+    // unpaginated call on a large hub stays token-cheap; limit is read at pagination time,
+    // so defaulting here (before resolvedFormat exists) is safe.
+    if (format == "context" && (!limit || limit <= 0)) limit = 50
     // scope='all' lists EVERY hub device (not just MCP-authorized), tagging each mcpAuthorized
     // true/false so a caller who can't control a device sees it must be added to the MCP list.
     // Distinct lightweight path (plain endpoint maps, not Groovy device objects).
@@ -27,6 +31,12 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     if (scope == "all") {
         if (detailed) {
             throw new IllegalArgumentException("scope='all' does not support detailed=true (attributes/commands/currentStates require MCP-authorized devices); use scope='authorized' for detail.")
+        }
+        // The scope='all' records are lightweight endpoint maps with no room/attribute/
+        // activity data, so none of the state-based filters (or the state-bearing context
+        // format) can be evaluated for them.
+        if (format == "context" || roomFilter != null || onlyOn != null || changedSince != null || attributeNames != null) {
+            throw new IllegalArgumentException("scope='all' does not support format='context', roomFilter, onlyOn, changedSince, or attributeNames (those need MCP-authorized device state); use scope='authorized' (default).")
         }
         return _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, format, cursor)
     }
@@ -63,6 +73,24 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     }
     if (fields != null && !(fields instanceof List)) {
         throw new IllegalArgumentException("fields must be an array")
+    }
+    if (roomFilter != null && !(roomFilter instanceof String)) {
+        throw new IllegalArgumentException("roomFilter must be a string")
+    }
+    if (onlyOn != null && !(onlyOn instanceof Boolean)) {
+        throw new IllegalArgumentException("onlyOn must be a boolean")
+    }
+    if (attributeNames != null && (!(attributeNames instanceof List) || attributeNames.any { !(it instanceof String) })) {
+        throw new IllegalArgumentException("attributeNames must be an array of attribute-name strings")
+    }
+    // Parse changedSince up front so a malformed timestamp is a -32602 before any filtering.
+    // Same accepted forms as hub_list_device_events' `since` (epoch ms or ISO-8601).
+    def changedSinceDate = null
+    if (changedSince != null) {
+        changedSinceDate = _parseSinceArg(changedSince)
+        if (changedSinceDate == null) {
+            throw new IllegalArgumentException("Unparseable changedSince '${changedSince}'. Pass epoch milliseconds or ISO-8601 with a numeric offset (e.g. 2026-06-23T10:00:00-0600; trailing Z accepted).")
+        }
     }
 
     // Parse and apply server-side filter BEFORE pagination so limit/offset respect the filtered set.
@@ -123,6 +151,27 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         }
     }
 
+    // Apply roomFilter (case-insensitive exact match on the device's assigned room).
+    if (roomFilter) {
+        allDevices = allDevices.findAll { d -> d.roomName?.toString()?.equalsIgnoreCase(roomFilter) }
+    }
+
+    // onlyOn keeps devices whose switch attribute currently reads "on" -- "what's on right
+    // now" in one call. onlyOn=false is a no-op (not "only off"): absence of the filter.
+    if (onlyOn == true) {
+        allDevices = allDevices.findAll { d -> d.currentValue("switch")?.toString() == "on" }
+    }
+
+    // changedSince keeps devices ACTIVE since the timestamp -- the inverse of filter=stale:N.
+    // A device with no readable lastActivity is excluded here (it cannot prove it changed),
+    // where stale:N counts the same device as stale; both err toward "unproven = filtered".
+    if (changedSinceDate != null) {
+        allDevices = allDevices.findAll { d ->
+            def la = safeLastActivity(d)
+            la != null && la.time >= changedSinceDate.time
+        }
+    }
+
     def totalCount = allDevices.size()
 
     // Apply pagination (post-filter)
@@ -135,20 +184,38 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
 
     // Validate format before any early-return so invalid format always throws.
     def resolvedFormat = format ?: "summary"
-    if (format && !["summary", "detailed", "ids"].contains(resolvedFormat)) {
-        throw new IllegalArgumentException("Invalid format '${format}'. Must be one of: summary, detailed, ids")
+    if (format && !["summary", "detailed", "ids", "context"].contains(resolvedFormat)) {
+        throw new IllegalArgumentException("Invalid format '${format}'. Must be one of: summary, detailed, ids, context")
+    }
+
+    // Shared filter-echo block for every result shape (summary/detailed/ids/context and the
+    // early returns): echo each active filter, report unfilteredTotal when anything narrowed
+    // the set, and attach the zero-match typo-vs-absence diagnostics.
+    def anyFilterActive = (filter && filter != "all") || labelFilter || capabilityFilter ||
+        roomFilter || (onlyOn == true) || changedSinceDate != null
+    def applyFilterEchoes = { Map r ->
+        if (filter && filter != "all") r.filter = filter
+        if (anyFilterActive) r.unfilteredTotal = unfilteredTotal
+        if (labelFilter) r.labelFilter = labelFilter
+        if (capabilityFilter) r.capabilityFilter = capabilityFilter
+        if (roomFilter) r.roomFilter = roomFilter
+        if (onlyOn == true) r.onlyOn = true
+        if (changedSinceDate != null) r.changedSince = changedSince
+        if (capabilityFilter && totalCount == 0) {
+            def allCaps = unfilteredDevices.collectMany { d -> d.capabilities?.collect { cap -> cap.name?.toLowerCase() } ?: [] } as Set
+            r.capabilityFilterMatchedKnownCapability = allCaps.contains(capabilityFilter.toLowerCase())
+        }
+        if (roomFilter && totalCount == 0) {
+            def allRooms = unfilteredDevices.collect { d -> d.roomName?.toString()?.toLowerCase() }.findAll { it != null } as Set
+            r.roomFilterMatchedKnownRoom = allRooms.contains(roomFilter.toLowerCase())
+        }
+        return r
     }
 
     // Validate offset (after format validation so callers always get the format error first).
     if (totalCount > 0 && startIndex >= totalCount) {
         if (resolvedFormat == "ids") {
-            def earlyResult = [deviceIds: [], count: 0, total: totalCount, hasMore: false, nextOffset: null]
-            def anyFilterActive = (filter && filter != "all") || labelFilter || capabilityFilter
-            if (filter && filter != "all") earlyResult.filter = filter
-            if (anyFilterActive) earlyResult.unfilteredTotal = unfilteredTotal
-            if (labelFilter) earlyResult.labelFilter = labelFilter
-            if (capabilityFilter) earlyResult.capabilityFilter = capabilityFilter
-            return earlyResult
+            return applyFilterEchoes([deviceIds: [], count: 0, total: totalCount, hasMore: false, nextOffset: null])
         }
         return [
             devices: [],
@@ -165,16 +232,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     if (resolvedFormat == "ids") {
         def pagedDevices = totalCount > 0 ? allDevices.subList(startIndex, endIndex) : []
         def ids = pagedDevices.collect { it.id as Integer }
-        def result = [deviceIds: ids, count: ids.size(), total: totalCount]
-        def anyFilterActive = (filter && filter != "all") || labelFilter || capabilityFilter
-        if (filter && filter != "all") result.filter = filter
-        if (anyFilterActive) result.unfilteredTotal = unfilteredTotal
-        if (labelFilter) result.labelFilter = labelFilter
-        if (capabilityFilter) result.capabilityFilter = capabilityFilter
-        if (capabilityFilter && totalCount == 0) {
-            def allCaps = unfilteredDevices.collectMany { d -> d.capabilities?.collect { cap -> cap.name?.toLowerCase() } ?: [] } as Set
-            result.capabilityFilterMatchedKnownCapability = allCaps.contains(capabilityFilter.toLowerCase())
-        }
+        def result = applyFilterEchoes([deviceIds: ids, count: ids.size(), total: totalCount])
         if (limit && limit > 0) {
             result.offset = startIndex
             result.limit = limit
@@ -183,6 +241,41 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
             // Cursor mode also emits nextCursor (opaque string) alongside nextOffset so a
             // client iterating cursor sees the same shape used by other paginated tools.
             if (cursor != null && endIndex < totalCount) result.nextCursor = endIndex.toString()
+        }
+        return result
+    }
+
+    // format="context" (issue #366): a token-cheap plain-text house snapshot modeled on the
+    // native AI Connector's context-summary primitive -- mode + one line per device
+    // ("Label (id, room) - capabilities; attr=value, ...") with the standard filters and
+    // pagination applied. The summary string is self-contained (header + lines) so a client
+    // can drop it straight into model context; structured fields ride alongside for chaining.
+    // Ignores detailed/fields like format='ids'.
+    if (resolvedFormat == "context") {
+        def pagedDevices = totalCount > 0 ? allDevices.subList(startIndex, endIndex) : []
+        def attrNames = (attributeNames && !attributeNames.isEmpty()) ? attributeNames.collect { it.toString() } : _contextAttributeNames()
+        def lines = pagedDevices.collect { d -> _contextDeviceLine(d, attrNames) }
+        def header = ["Mode: ${location.mode}".toString()]
+        def hsm = _safeHsmStatus()
+        if (hsm) header << "HSM: ${hsm}".toString()
+        def deviceLine = "Devices: ${lines.size()} of ${totalCount}"
+        if (endIndex < totalCount) deviceLine += " (nextCursor=${endIndex} -- pass cursor:'${endIndex}' for the next page)"
+        header << deviceLine.toString()
+        def result = applyFilterEchoes([
+            mode: location.mode?.toString(),
+            summary: (header + lines).join("\n"),
+            count: lines.size(),
+            total: totalCount
+        ])
+        if (hsm) result.hsmStatus = hsm
+        if (limit && limit > 0) {
+            result.offset = startIndex
+            result.limit = limit
+            result.hasMore = endIndex < totalCount
+            if (endIndex < totalCount) {
+                result.nextOffset = endIndex
+                result.nextCursor = endIndex.toString()
+            }
         }
         return result
     }
@@ -260,21 +353,11 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         return info
     }
 
-    def result = [
+    def result = applyFilterEchoes([
         devices: devices,
         count: devices.size(),
         total: totalCount
-    ]
-    // Report unfilteredTotal whenever any filter narrowed the set (filter, labelFilter, or capabilityFilter).
-    def anyFilterActive = (filter && filter != "all") || labelFilter || capabilityFilter
-    if (filter && filter != "all") result.filter = filter
-    if (anyFilterActive) result.unfilteredTotal = unfilteredTotal
-    if (labelFilter) result.labelFilter = labelFilter
-    if (capabilityFilter) result.capabilityFilter = capabilityFilter
-    if (capabilityFilter && totalCount == 0) {
-        def allCaps = unfilteredDevices.collectMany { d -> d.capabilities?.collect { cap -> cap.name?.toLowerCase() } ?: [] } as Set
-        result.capabilityFilterMatchedKnownCapability = allCaps.contains(capabilityFilter.toLowerCase())
-    }
+    ])
 
     // Include pagination info if pagination was used
     if (limit && limit > 0) {
@@ -334,6 +417,97 @@ private String formatLastActivity(Date d) {
     } catch (Exception ignore) {
         return d.toString()
     }
+}
+
+// Default attribute set for format='context' lines when the caller passes no attributeNames.
+// The common state-bearing attributes an LLM needs to answer "what's going on in the house";
+// a device reports only the ones it has, so unused entries cost nothing per device.
+private List _contextAttributeNames() {
+    ["switch", "level", "motion", "contact", "presence", "lock", "temperature", "humidity",
+     "illuminance", "battery", "power", "energy", "thermostatMode", "thermostatOperatingState",
+     "heatingSetpoint", "coolingSetpoint", "speed", "position", "valve", "water", "smoke"]
+}
+
+// One context-summary line: "- Label (id, room) - Cap1, Cap2; attr=value, ...". Reads the
+// device's currentStates ONCE (one live event-store read) instead of per-attribute
+// currentValue() calls, then projects the requested attribute names in caller order.
+private String _contextDeviceLine(device, List attrNames) {
+    def states = [:]
+    try {
+        device.currentStates?.each { st ->
+            if (st?.name != null && st.value != null) states[st.name.toString()] = st
+        }
+    } catch (Exception ignore) {}
+    def attrParts = []
+    attrNames.each { an ->
+        def st = states[an]
+        if (st != null) {
+            def unit = null
+            try { unit = st.unit } catch (Exception ignore) {}
+            attrParts << "${an}=${st.value}${unit ?: ''}"
+        }
+    }
+    def caps = device.capabilities?.collect { it.name }?.findAll { it != null } ?: []
+    def line = "- ${device.label ?: device.name} (${device.id}, ${device.roomName ?: 'No room'})"
+    if (caps) line += " - ${caps.join(', ')}"
+    if (attrParts) line += "; ${attrParts.join(', ')}"
+    return line.toString()
+}
+
+// location.hsmStatus is a dynamic property (not on every firmware's Location model) --
+// absent/unreadable degrades to "no HSM line" rather than throwing.
+private String _safeHsmStatus() {
+    try {
+        return location.hsmStatus?.toString()
+    } catch (Exception ignore) {
+        return null
+    }
+}
+
+// The hubitat://context-summary resource body: the full (unpaginated) format='context'
+// snapshot. Shared with the tool path so resource and tool can never drift.
+def _buildContextSummaryText() {
+    def res = toolListDevices(false, 0, 1000000, null, null, null, "context", null, null, null, null, null, null, null)
+    return res.summary ?: res.message ?: "No devices selected for MCP access."
+}
+
+// The hubitat://context resource body: the JSON twin of the context summary -- current
+// mode (+ HSM when available), the mode list, a rooms[] index with deviceIds, and one
+// compact record per MCP-visible device (id, label, room, capabilities, attribute values).
+def _buildContextJson() {
+    def allDevices = (selectedDevices ?: []).toList()
+    def childDevs = getChildDevices() ?: []
+    def selectedIds = allDevices.collect { it.id.toString() } as Set
+    childDevs.each { cd ->
+        if (!selectedIds.contains(cd.id.toString())) allDevices.add(cd)
+    }
+    def devices = allDevices.collect { d ->
+        def attrs = [:]
+        try {
+            d.currentStates?.each { st ->
+                if (st?.name != null && st.value != null) attrs[st.name.toString()] = st.value.toString()
+            }
+        } catch (Exception ignore) {}
+        [id: d.id.toString(), label: d.label ?: d.name, room: d.roomName,
+         capabilities: d.capabilities?.collect { it.name }?.findAll { it != null } ?: [],
+         attributes: attrs]
+    }
+    def roomIndex = [:]
+    allDevices.each { d ->
+        def r = d.roomName?.toString() ?: "No room"
+        if (!roomIndex.containsKey(r)) roomIndex[r] = []
+        roomIndex[r] << d.id.toString()
+    }
+    def result = [
+        currentMode: location.mode?.toString(),
+        modes: location.modes?.collect { it?.name?.toString() }?.findAll { it != null } ?: [],
+        deviceCount: devices.size(),
+        rooms: roomIndex.collect { name, ids -> [name: name, deviceIds: ids] },
+        devices: devices
+    ]
+    def hsm = _safeHsmStatus()
+    if (hsm) result.hsmStatus = hsm
+    return result
 }
 
 // scope='all' implementation: every hub device + an mcpAuthorized flag. Sourced from the admin
@@ -3718,7 +3892,7 @@ def _getAllToolDefinitions_partDevices() {
         // Device Tools
         [
             name: "hub_list_devices",
-            description: """List all devices available to MCP with current states.
+            description: """List all devices available to MCP with current states. format='context' returns a token-cheap plain-text house snapshot (mode + one line per device)[[FLAT_TRIM]] -- the best first call for broad "what's going on / what's in this house" questions[[/FLAT_TRIM]].
 
 DEVICE AUTHORIZATION: Exact name match -> use directly. No exact match -> suggest similar, ASK USER before using. NEVER control unconfirmed devices (HVAC/locks risk). Report tool failures; don't silently fall back to existing devices.
 
@@ -3735,7 +3909,11 @@ Call `hub_get_tool_guide(section='performance')` for response-shape details, fil
                     filter: [type: "string", description: "Server-side filter (applied before pagination). 'all' (default) | 'enabled' | 'disabled' | 'stale:<hours>' | 'virtual'[[FLAT_TRIM]] (this MCP app's own virtual devices; use to find their IDs/DNIs)[[/FLAT_TRIM]]."],
                     labelFilter: [type: "string", description: "Case-insensitive substring match against device label; falls back to name for devices without a label set."],
                     capabilityFilter: [type: "string", description: "Case-insensitive exact match against capability name. Capability names are camelCase (e.g. 'ColorControl')."],
-                    format: [type: "string", enum: ["summary", "detailed", "ids"], description: "Response shape. 'summary' (default) = standard fields + currentStates. 'detailed' = capabilities/attributes/commands. 'ids' = flat array of device ID integers (cheapest, ignores fields arg)."],
+                    roomFilter: [type: "string", description: "Case-insensitive exact match against the device's assigned room name."],
+                    onlyOn: [type: "boolean", description: "true = only devices whose switch currently reads 'on'.[[FLAT_TRIM]] \"What's on right now\" in one call; false is a no-op.[[/FLAT_TRIM]]"],
+                    changedSince: [type: "string", description: "Only devices with activity at/after this timestamp (ISO-8601 or epoch ms).[[FLAT_TRIM]] E.g. 2026-06-23T10:00:00Z. Inverse of filter='stale:<hours>'; devices with no readable lastActivity are excluded.[[/FLAT_TRIM]]"],
+                    attributeNames: [type: "array", items: [type: "string"], description: "format='context' only: which attributes to show per device line[[FLAT_TRIM]], replacing the default set[[/FLAT_TRIM]]."],
+                    format: [type: "string", enum: ["summary", "detailed", "ids", "context"], description: "Response shape. 'summary' (default) = standard fields + currentStates. 'detailed' = capabilities/attributes/commands. 'ids' = flat array of device ID integers (cheapest, ignores fields arg). 'context' = plain-text house snapshot in `summary`[[FLAT_TRIM]] (mode + 'Label (id, room) - capabilities; attr=value' lines; page size 50 unless limit set; ignores fields arg)[[/FLAT_TRIM]]."],
                     fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object. Call `hub_get_tool_guide(section='performance')` for valid field names and projection semantics."],
                     cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor."],
                     scope: [type: "string", enum: ["authorized", "all"], description: "Which devices to list. 'authorized' (default) = only devices granted to this MCP app (full detail/currentStates). 'all' = EVERY device on the hub, each tagged mcpAuthorized true/false."]
@@ -3761,13 +3939,20 @@ Call `hub_get_tool_guide(section='performance')` for response-shape details, fil
                         commands: [type: "array", description: "Detailed mode: command names", items: [type: "string"]]
                     ]]],
                     deviceIds: [type: "array", description: "format='ids' mode: flat array of integer device IDs", items: [type: "integer"]],
+                    mode: [type: "string", description: "format='context' mode: current location mode"],
+                    summary: [type: "string", description: "format='context' mode: the plain-text house snapshot (header + one line per device)"],
+                    hsmStatus: [type: "string", description: "format='context' mode: HSM status; present when the hub exposes one"],
                     count: [type: "integer", description: "Devices in this response"],
                     total: [type: "integer", description: "Total devices after filtering"],
                     unfilteredTotal: [type: "integer", description: "Total before filters; present when a filter is active"],
                     filter: [type: "string", description: "Echoed filter; present when non-default"],
                     labelFilter: [type: "string", description: "Echoed labelFilter; present when set"],
                     capabilityFilter: [type: "string", description: "Echoed capabilityFilter; present when set"],
+                    roomFilter: [type: "string", description: "Echoed roomFilter; present when set"],
+                    onlyOn: [type: "boolean", description: "Echoed onlyOn; present when true"],
+                    changedSince: [type: "string", description: "Echoed changedSince; present when set"],
                     capabilityFilterMatchedKnownCapability: [type: "boolean", description: "When capabilityFilter yields 0: whether the capability exists on any device"],
+                    roomFilterMatchedKnownRoom: [type: "boolean", description: "When roomFilter yields 0: whether any device is assigned to that room"],
                     scope: [type: "string", description: "Echoed 'all' when scope='all' was requested"],
                     mcpAuthorizedCount: [type: "integer", description: "scope='all': count over the full filtered (pre-pagination) set that ARE in the MCP authorized list; sums with unauthorizedCount to total, not to the returned page"],
                     unauthorizedCount: [type: "integer", description: "scope='all': count over the full filtered (pre-pagination) set NOT in the MCP authorized list"],

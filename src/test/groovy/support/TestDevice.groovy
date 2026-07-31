@@ -36,6 +36,11 @@ class TestDevice {
     // The device's disabled flag. Default null = unset (the device exposes no explicit value).
     Boolean disabled = null
 
+    // Last-activity timestamp read via getLastActivity() (safeLastActivity in the
+    // devices lib). Default null = never reported, which is what the real accessor
+    // yields for a device with no activity record.
+    Date lastActivity = null
+
     // Device data values -- backing store for getDataValue/updateDataValue.
     // toolCreateVirtualDevice persists mcpDriverNamespace here; toolListVirtualDevices reads it back.
     Map dataValues = [:]

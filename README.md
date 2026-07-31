@@ -103,6 +103,8 @@ The app shows two endpoint URLs:
   https://cloud.hubitat.com/api/YOUR_HUB_ID/apps/123/mcp?access_token=YOUR_TOKEN
   ```
 
+> **Header auth**: clients that expect bearer-token auth can send the token as an `Authorization: Bearer YOUR_TOKEN` header instead of the `?access_token=` query parameter — the Hubitat platform accepts either, on both the local endpoint and the cloud relay.
+
 ### 3. Connect Your AI Client
 
 > **Transport**: This server uses **Streamable HTTP** (not SSE or stdio). Your MCP client must support HTTP transport — most do by default.

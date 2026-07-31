@@ -467,7 +467,10 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
   - `filter` — `'enabled'` / `'disabled'` / `'stale:<hours>'` (boolean and time-relative queries)
   - `labelFilter` — case-insensitive substring match on device label (e.g. `'kitchen'` returns all devices whose label contains "kitchen")
   - `capabilityFilter` — case-insensitive exact match on capability name (e.g. `'Switch'`, `'TemperatureMeasurement'`)
-- **Format shortcuts**: `format='ids'` returns a flat integer array `deviceIds: [1,2,3]` (cheapest shape for "which devices exist" queries)
+  - `roomFilter` — case-insensitive EXACT match on the device's assigned room name; zero matches report `roomFilterMatchedKnownRoom` (typo-vs-absence)
+  - `onlyOn` — `true` keeps only devices whose `switch` currently reads `on` ("what's on right now" in one call); `false` is a no-op
+  - `changedSince` — keeps devices with activity at/after the timestamp (epoch ms or ISO-8601, same forms as `hub_list_device_events`' `since`); the inverse of `filter='stale:<hours>'`; never-reported devices are excluded
+- **Format shortcuts**: `format='ids'` returns a flat integer array `deviceIds: [1,2,3]` (cheapest shape for "which devices exist" queries). `format='context'` returns a token-cheap plain-text house snapshot in `summary` — a `Mode:`/`HSM:`/`Devices: N of M` header plus one `- Label (id, room) - capabilities; attr=value, ...` line per device (page size 50 unless `limit` set, `nextCursor` emitted when more remain; `attributeNames` projects which attributes appear; ignores `fields`; not available with `scope='all'`) — the best first call for broad "what's going on in this house" questions
 - **Field projection**: `fields=['id','label']` skips `currentStates` and `attributes` (the expensive ones -- they trigger per-device hub reads); `capabilities` and `commands` are in-memory and cheap. Only named fields are populated -- reduces both payload size and hub CPU. Unknown field names throw. `id` is always included regardless of projection.
 - With `detailed=true` (or `format='detailed'`), paginate: 20-30 devices per request
 - Make tool calls sequentially, not in parallel

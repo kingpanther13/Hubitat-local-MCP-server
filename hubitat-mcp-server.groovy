@@ -137,6 +137,7 @@ def mainPage() {
                 paragraph "<code>${getFullLocalApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
                 paragraph "<b>Cloud Endpoint:</b>"
                 paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
+                paragraph "Clients that expect header auth can instead send the token as <code>Authorization: Bearer &lt;token&gt;</code> (no <code>?access_token=</code> needed) -- the Hubitat platform accepts it on both endpoints."
                 paragraph "<b>App ID:</b> ${app.id}"
                 paragraph "<b>Version:</b> ${currentVersion()}"
                 if (state.updateCheck?.updateAvailable) {
@@ -1190,6 +1191,12 @@ def processJsonRpcMessage(msg) {
                 return handleToolsList(msg)
             case "tools/call":
                 return handleToolsCall(msg)
+            case "resources/list":
+                return handleResourcesList(msg)
+            case "resources/read":
+                return handleResourcesRead(msg)
+            case "resources/templates/list":
+                return handleResourcesTemplatesList(msg)
             case "ping":
                 return jsonRpcResult(msg.id, [:])
             default:
@@ -1223,9 +1230,9 @@ def serverInstructions() {
     // straight into an error (worse: hub_manage_virtual_device / hub_manage_mode
     // match the hub_manage_* pattern but are direct tools, not gateways).
     if (settings.useGateways == false) {
-        return "Every tool is advertised individually on tools/list (flat catalog; there are no gateway tools). Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page)."
+        return "Every tool is advertised individually on tools/list (flat catalog; there are no gateway tools). Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page). MCP resources are also served (resources/list): the tool-guide sections plus a live house-state context summary (hubitat://context-summary)."
     }
-    "Gateway tools (hub_manage_* / hub_read_*) expose sub-tools -- call a gateway with no arguments to list its sub-tools and their schemas. hub_manage_virtual_device and hub_manage_mode are direct tools (not gateways) -- call them with their own arguments. Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page)."
+    "Gateway tools (hub_manage_* / hub_read_*) expose sub-tools -- call a gateway with no arguments to list its sub-tools and their schemas. hub_manage_virtual_device and hub_manage_mode are direct tools (not gateways) -- call them with their own arguments. Tool responses are capped near 120KB; on large lists use cursor pagination (pass the returned nextCursor to fetch the next page). MCP resources are also served (resources/list): the tool-guide sections plus a live house-state context summary (hubitat://context-summary)."
 }
 
 // Protocol versions this server can speak, newest first. Single source for the
@@ -1288,12 +1295,20 @@ def handleInitialize(msg) {
     def negotiated = initializeProtocolVersions().contains(requested) ? requested : defaultProtocolVersion()
     return jsonRpcResult(msg.id, [
         protocolVersion: negotiated,
-        capabilities: [
-            tools: [:]
-        ],
+        capabilities: serverCapabilities(),
         serverInfo: serverIdentity(),
         instructions: serverInstructions()
     ])
+}
+
+// Capabilities advertised by initialize and server/discover. resources (issue #366) is
+// stateless read-only: this endpoint is request-response only (no SSE), so subscribe
+// change-notifications are impossible by design and both flags are explicitly false.
+def serverCapabilities() {
+    [
+        tools: [:],
+        resources: [subscribe: false, listChanged: false]
+    ]
 }
 
 // server/discover (SEP-2575): the stateless successor to initialize -- servers MUST implement it.
@@ -1305,9 +1320,7 @@ def handleInitialize(msg) {
 def handleServerDiscover(msg) {
     return jsonRpcResult(msg.id, [
         supportedVersions: supportedProtocolVersions(),
-        capabilities: [
-            tools: [:]
-        ],
+        capabilities: serverCapabilities(),
         serverInfo: serverIdentity(),
         instructions: serverInstructions(),
         ttlMs: cacheHintTtlMs(),
@@ -1341,6 +1354,97 @@ def handleToolsList(msg) {
     // install's settings, so a shared intermediary must never serve one install's
     // catalog to another authorization context.
     return jsonRpcResult(msg.id, [tools: all, ttlMs: cacheHintTtlMs(), cacheScope: "private"])
+}
+
+// ==================== MCP RESOURCES (issue #366) ====================
+// A stateless read-only resources surface: resources/list + resources/read, no
+// subscriptions (see serverCapabilities). Exposed resources are the tool-guide sections
+// (the same content hub_get_tool_guide serves -- clients that prefer resources over an
+// extra tool call read them here) plus the live context snapshot in both plain-text
+// (hubitat://context-summary) and JSON (hubitat://context) forms. Like tools/list, the
+// SEP-2549 cache hints ride unconditionally: the draft-era result schemas REQUIRE
+// ttlMs/cacheScope and the legacy list/read result schemas are passthrough.
+
+def _guideResourceUriPrefix() { "hubitat://guide/" }
+
+// The context resources read live device state, so they are gated by the Read master
+// exactly like the read tools. The guide resources mirror hub_get_tool_guide, which is
+// deliberately never gated (it documents how to recover from gating).
+def _contextResourcesEnabled() { settings.enableRead != false }
+
+def _resourceCatalog() {
+    def entries = []
+    if (_contextResourcesEnabled()) {
+        entries << [
+            uri: "hubitat://context-summary",
+            name: "context-summary",
+            title: "Live Context Summary",
+            description: "One-read plain-text house snapshot: current mode (+ HSM when available) and one line per MCP-visible device -- 'Label (id, room) - capabilities; attr=value, ...'. The paginated/filtered tool form is hub_list_devices format='context'.",
+            mimeType: "text/plain"
+        ]
+        entries << [
+            uri: "hubitat://context",
+            name: "context",
+            title: "Live Context (JSON)",
+            description: "JSON twin of the context summary: currentMode, hsmStatus (when available), modes, rooms[] with deviceIds, and one compact record per MCP-visible device (id, label, room, capabilities, attribute values).",
+            mimeType: "application/json"
+        ]
+    }
+    getToolGuideSections().each { section, text ->
+        entries << [
+            uri: "${_guideResourceUriPrefix()}${section}".toString(),
+            name: "guide-${section}".toString(),
+            title: "Tool Guide: ${section}".toString(),
+            description: "The '${section}' section of the MCP tool guide (same content as hub_get_tool_guide(section='${section}')).".toString(),
+            mimeType: "text/markdown"
+        ]
+    }
+    return entries
+}
+
+def handleResourcesList(msg) {
+    return jsonRpcResult(msg.id, [resources: _resourceCatalog(), ttlMs: cacheHintTtlMs(), cacheScope: "private"])
+}
+
+// No URI templates are served; an empty list (not -32601) tells spec-following clients
+// the surface exists and is simply empty.
+def handleResourcesTemplatesList(msg) {
+    return jsonRpcResult(msg.id, [resourceTemplates: [], ttlMs: cacheHintTtlMs(), cacheScope: "private"])
+}
+
+def handleResourcesRead(msg) {
+    def uri = msg.params?.uri
+    if (!(uri instanceof String) || uri.isEmpty()) {
+        return jsonRpcError(msg.id, -32602, "Invalid params: 'uri' is required (call resources/list for available URIs)")
+    }
+    if (uri == "hubitat://context-summary" || uri == "hubitat://context") {
+        if (!_contextResourcesEnabled()) {
+            // Spec resource-error code -32002; the message mirrors the read-tool master-gate text.
+            return jsonRpcError(msg.id, -32002, "Resource not available: ${uri} reads live device state and Read tools are disabled in MCP Rule Server settings (Enable Read Tools).", [uri: uri])
+        }
+        // Live state: ttlMs 0 tells caching intermediaries the content is immediately stale.
+        if (uri == "hubitat://context-summary") {
+            return jsonRpcResult(msg.id, [
+                contents: [[uri: uri, mimeType: "text/plain", text: _buildContextSummaryText()]],
+                ttlMs: 0, cacheScope: "private"
+            ])
+        }
+        return jsonRpcResult(msg.id, [
+            contents: [[uri: uri, mimeType: "application/json", text: groovy.json.JsonOutput.toJson(_buildContextJson())]],
+            ttlMs: 0, cacheScope: "private"
+        ])
+    }
+    if (uri.startsWith(_guideResourceUriPrefix())) {
+        def section = uri.substring(_guideResourceUriPrefix().length())
+        def sections = getToolGuideSections()
+        if (sections.containsKey(section)) {
+            return jsonRpcResult(msg.id, [
+                contents: [[uri: uri, mimeType: "text/markdown", text: sections[section]]],
+                ttlMs: cacheHintTtlMs(), cacheScope: "private"
+            ])
+        }
+    }
+    return jsonRpcError(msg.id, -32002, "Resource not found: ${uri}. Call resources/list for available URIs.", [uri: uri])
 }
 
 def handleToolsCall(msg) {
@@ -2435,14 +2539,14 @@ def getGatewayConfig() {
             description: "Read-only device inspection: list devices with current states, get one device's full detail, read or block-poll a single attribute, read device/location event history, and search Hubitat's compatible-device catalog (models + pairing/reset instructions). All operations are read-only; device commands and updates live in hub_manage_devices.",
             tools: ["hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events", "hub_get_compatible_devices"],
             summaries: [
-                hub_list_devices: "List devices with current states. Args: detailed?, filter (enabled/disabled/stale:N/virtual), labelFilter?, capabilityFilter?, format (summary/detailed/ids), fields?, limit?, cursor?",
+                hub_list_devices: "List devices with current states; format='context' = plain-text house snapshot (mode + one line per device). Args: detailed?, filter (enabled/disabled/stale:N/virtual), labelFilter?, capabilityFilter?, roomFilter?, onlyOn?, changedSince?, attributeNames?, format (summary/detailed/ids/context), fields?, limit?, cursor?",
                 hub_get_device: "Get one device's full detail (capabilities, attributes, commands). Args: deviceId",
                 hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
                 hub_list_device_events: "Recent device events, a time-windowed history (hoursBack, max 168), an absolute bookmark (since -- events after an exact timestamp; round-trip a returned date), per-app events (appId), or location events (mode/HSM/hub-variable; omit deviceId/appId). Args: deviceId?, appId?, hoursBack?, since?, attribute?, limit?",
                 hub_get_compatible_devices: "Search Hubitat's compatible-device catalog (brands/models + pairing/exclude/factory-reset instructions). Args: query?, brand?, protocol?, deviceType?, includeInstructions?, cursor?"
             ],
             searchHints: [
-                hub_list_devices: "show all devices switches lights sensors locks state inventory enumerate",
+                hub_list_devices: "show all devices switches lights sensors locks state inventory enumerate context summary snapshot overview house whats on right now changed since room",
                 hub_get_device: "device detail capabilities attributes commands info inspect one",
                 hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed inclusion compare numeric range debounce stable multiple devices deviceIds any all converge across",
                 hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted since bookmark timestamp after new events change watch",
@@ -2496,7 +2600,7 @@ def getGatewayConfig() {
                 hub_call_device_replace: "Replace a dead device's hardware while KEEPING its id + all app/rule references (re-points to new_device_id; list_options=true reads compatible candidates). Args: old_device_id, new_device_id?, list_options?, confirm",
                 hub_update_device: "Update a device's properties: label, name, room, deviceNetworkId, enabled, dataValues, preferences, showOnHome, defaultCurrentState (Status-column attribute), tags. Args: deviceId, label?, name?, room?, deviceNetworkId?, enabled?, dataValues?, preferences?, showOnHome?, defaultCurrentState?, tags?",
                 hub_create_device: "Create a device from a driver-type id (hub_list_drivers include='all'); for LAN/integration/software drivers, NOT radio hardware (pair those). Args: deviceTypeId, label?, confirm",
-                hub_list_devices: "List devices with current states. Args: detailed?, filter, labelFilter?, capabilityFilter?, format, fields?, limit?, cursor?",
+                hub_list_devices: "List devices with current states; format='context' = plain-text house snapshot. Args: detailed?, filter, labelFilter?, capabilityFilter?, roomFilter?, onlyOn?, changedSince?, attributeNames?, format, fields?, limit?, cursor?",
                 hub_get_device: "Get one device's full detail (capabilities, attributes, commands). Args: deviceId",
                 hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
                 hub_list_device_events: "Recent device events, a time-windowed history, an absolute bookmark (since), per-app events (appId), or location events. Args: deviceId?, appId?, hoursBack?, since?, attribute?, limit?"
@@ -2507,7 +2611,7 @@ def getGatewayConfig() {
                 hub_call_device_replace: "replace device hardware failed dead broken re-point preserve keep id references rules dashboard compatible replacement candidates getReplacementOptions",
                 hub_update_device: "rename relabel move room device edit show on home status attribute default current state tags label preferences",
                 hub_create_device: "create add device from driver type instantiate lan integration cloud software component install new deviceTypeId driverId",
-                hub_list_devices: "show all devices switches lights sensors locks state inventory",
+                hub_list_devices: "show all devices switches lights sensors locks state inventory context summary snapshot overview house whats on right now changed since room",
                 hub_get_device: "device detail capabilities attributes commands info inspect one",
                 hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed compare numeric range debounce stable multiple devices deviceIds any all converge across",
                 hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted since bookmark timestamp after new events change watch"
@@ -3398,7 +3502,7 @@ def executeTool(toolName, args) {
             // filter='virtual' routes to the MCP-managed virtual-device listing (a distinct
             // population -- this app's child devices -- with a richer driver-namespace shape).
             if (args.filter == "virtual") return toolListVirtualDevices(args)
-            return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.fields, args.cursor, args.scope)
+            return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.fields, args.cursor, args.scope, args.roomFilter, args.onlyOn, args.changedSince, args.attributeNames)
         case "hub_get_device": return toolGetDevice(args.deviceId)
         case "hub_call_device_command": return toolSendCommand(args.deviceId, args.command, args.parameters, args.waitFor)
         case "hub_call_device_swap": return toolCallDeviceSwap(args)
@@ -7156,11 +7260,16 @@ Rule routing: a legacy custom MCP rule-engine rule id goes in the `ruleId` param
 
 **Response shapes & general behaviour.** Summary mode returns `currentStates`; detailed mode replaces that with `capabilities`, `attributes`, and `commands` (full field list in the tool's `outputSchema`). `scope='all'` lists every hub device (not just MCP-authorized ones), each tagged with an `mcpAuthorized` flag (true/false). To count a parent's children, group the response by `parentDeviceId`.
 
-**Filter ordering.** Server-side filtering via the `filter` / `labelFilter` / `capabilityFilter` params is all applied *before* pagination (each is documented on its own parameter). Effective order: `filter` -> `labelFilter` -> `capabilityFilter` -> pagination.
+**format='context' (the house-snapshot primitive).** One call answers "what's in this house and what state is it in": the `summary` field is a self-contained plain-text block -- a header (`Mode:`, `HSM:` when available, `Devices: N of M`) plus one line per device (`- Label (id, room) - Cap1, Cap2; attr=value, ...`). Attribute values come from one currentStates read per device (cheap) and cover a broad default set (switch/level/motion/contact/presence/lock/temperature/humidity/illuminance/battery/power/energy/thermostat fields/speed/position/valve/water/smoke); pass `attributeNames` to project a custom set. Page size defaults to 50 (set `limit` to change); `nextCursor` is always emitted when more devices remain, and the header repeats it. Structured fields (`mode`, `hsmStatus`, `count`, `total`, filter echoes) ride alongside the text. Combine with the filters below for scoped snapshots ("what's on in the Kitchen" = `roomFilter` + `onlyOn`). Ignores `fields`/`detailed`; not available with `scope='all'`.
+
+**Filter ordering.** Server-side filtering via the `filter` / `labelFilter` / `capabilityFilter` / `roomFilter` / `onlyOn` / `changedSince` params is all applied *before* pagination (each is documented on its own parameter). Effective order: `filter` -> `labelFilter` -> `capabilityFilter` -> `roomFilter` -> `onlyOn` -> `changedSince` -> pagination.
 
 - **filter** -- `stale:<hours>` example: `stale:24` = no activity in the last 24 hours; never-reported devices count as stale. `virtual` returns a *different* population and shape from the other filters, including driver namespace/type.
 - **labelFilter** -- applied after `filter`, before pagination.
 - **capabilityFilter** -- applied after `labelFilter`, before pagination. When `count=0`, the response includes `capabilityFilterMatchedKnownCapability` to distinguish "no devices have this capability" from a typo.
+- **roomFilter** -- case-insensitive EXACT match on the device's assigned room name. When `count=0`, the response includes `roomFilterMatchedKnownRoom` to distinguish "room exists but matched nothing after earlier filters" from a typo (list room names via hub_list_rooms).
+- **onlyOn** -- `true` keeps only devices whose `switch` attribute currently reads `on`. `false` is a no-op (it does NOT mean "only off"). Devices without a switch attribute are excluded when active.
+- **changedSince** -- keeps devices with `lastActivity` at/after the timestamp; the inverse of `filter='stale:<hours>'`. Accepts epoch milliseconds or ISO-8601 with a numeric offset (trailing `Z` accepted) -- same forms as hub_list_device_events' `since`. Devices with no readable lastActivity are excluded (they can't prove they changed). Change-watching loop: snapshot a timestamp, act, then pass it back to see exactly what changed.
 - **format** -- `'detailed'` is the same as `detailed=true`; `detailed=true` overrides `format='summary'`.
 - **fields** -- valid names: `id`, `name`, `label`, `room`, `disabled`, `deviceNetworkId`, `lastActivity`, `parentDeviceId`, `mcpManaged`, `currentStates`, `capabilities`, `attributes`, `commands`. Omitted or empty = all default fields for the active format. Ignored when `format='ids'`. `id` is always included regardless of projection (use `format='ids'` for id-only results). Including `capabilities`, `attributes`, or `commands` auto-promotes the response to detailed mode (those fields require detailed-mode device introspection).
 - **cursor** -- `nextCursor` is returned alongside `nextOffset`.

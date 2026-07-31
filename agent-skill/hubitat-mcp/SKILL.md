@@ -29,7 +29,7 @@ All tools in this server follow these conventions. Use the conventions to predic
 
 ### Finding Devices
 
-Start with `hub_list_devices(detailed=false)` to get names and IDs. Use `hub_get_device` for full details on a specific device.
+For broad "what's going on / what's in this house" questions, start with `hub_list_devices(format='context')` — one token-cheap plain-text snapshot (mode + one `Label (id, room) - capabilities; attr=value` line per device), filterable with `roomFilter` / `onlyOn` / `changedSince` / `attributeNames`. For targeted lookups, `hub_list_devices(detailed=false)` gets names and IDs; use `hub_get_device` for full details on a specific device.
 
 ### Device Authorization (CRITICAL)
 

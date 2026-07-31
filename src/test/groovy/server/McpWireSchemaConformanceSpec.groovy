@@ -253,6 +253,79 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
     }
 
     // ---------------------------------------------------------------------
+    // Resources (issue #366) — both eras
+    // ---------------------------------------------------------------------
+
+    def "a legacy resources/list result conforms to ListResourcesResult and each Resource entry"() {
+        when:
+        def response = dispatch([jsonrpc: '2.0', id: 20, method: 'resources/list', params: [:]])
+
+        then: 'a non-trivial catalog really was rendered -- an empty list would validate vacuously'
+        response.result.resources.size() > 2
+
+        and:
+        McpSchemaValidator.legacyErrors('ListResourcesResult', response.result) == []
+    }
+
+    def "a modern resources/list result conforms to the draft ListResourcesResult"() {
+        // The draft REQUIRES resultType, ttlMs and cacheScope alongside resources -- the
+        // schema-side proof the cache hints and era-gated stamp are present together here too.
+        when:
+        def response = dispatch(
+            [jsonrpc: '2.0', id: 21, method: 'resources/list', params: [:]],
+            ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'resources/list'])
+
+        then: 'served, not rejected'
+        mcpDriver.lastRenderArgs.status == null
+
+        and:
+        McpSchemaValidator.draftErrors('ListResourcesResult', response.result) == []
+    }
+
+    @Unroll
+    def "a legacy resources/read of #label conforms to ReadResourceResult"() {
+        when:
+        def response = dispatch([jsonrpc: '2.0', id: 22, method: 'resources/read', params: [uri: uri]])
+
+        then: 'a real text body was served'
+        response.result.contents[0].text
+
+        and:
+        McpSchemaValidator.legacyErrors('ReadResourceResult', response.result) == []
+
+        where:
+        label             | uri
+        'a guide section' | 'hubitat://guide/performance'
+        'the context summary' | 'hubitat://context-summary'
+        'the context JSON'    | 'hubitat://context'
+    }
+
+    def "a modern resources/read result conforms to the draft ReadResourceResult"() {
+        when:
+        def response = dispatch(
+            [jsonrpc: '2.0', id: 23, method: 'resources/read', params: [uri: 'hubitat://guide/performance']],
+            ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'resources/read'])
+
+        then:
+        mcpDriver.lastRenderArgs.status == null
+
+        and:
+        McpSchemaValidator.draftErrors('ReadResourceResult', response.result) == []
+    }
+
+    def "resources/templates/list conforms in both eras"() {
+        when:
+        def legacy = dispatch([jsonrpc: '2.0', id: 24, method: 'resources/templates/list', params: [:]])
+        def modern = dispatch(
+            [jsonrpc: '2.0', id: 25, method: 'resources/templates/list', params: [:]],
+            ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'resources/templates/list'])
+
+        then:
+        McpSchemaValidator.legacyErrors('ListResourceTemplatesResult', legacy.result) == []
+        McpSchemaValidator.draftErrors('ListResourceTemplatesResult', modern.result) == []
+    }
+
+    // ---------------------------------------------------------------------
     // The ping / EmptyResult regression (#365)
     // ---------------------------------------------------------------------
 
