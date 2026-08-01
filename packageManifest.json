@@ -1,12 +1,12 @@
 {
     "packageName": "MCP Rule Server",
     "author": "kingpanther13",
-    "version": "3.6.0",
+    "version": "3.7.0",
     "minimumHEVersion": "2.3.0",
-    "dateReleased": "2026-07-27",
+    "dateReleased": "2026-08-01",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/README.md",
     "communityLink": "",
-    "releaseNotes": "v3.6.0 - 2026-07-27\n- test: close review findings on the conformance harness (#369)\n  - Fixed a hub load-limiter recovery path in the test suite that could undo the write it was recovering, and corrected the `hub_set_rule_paused` guidance that said an app disable/enable clears the limiter — only a hub reboot resets the platform's load counters.",
+    "releaseNotes": "v3.7.0 - 2026-08-01\n- build(deps): bump net.bytebuddy:byte-buddy from 1.18.10 to 1.18.11 in the gradle-dependencies group across 1 directory ([#368](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/368), @app/dependabot)\n- chore: renormalize gradlew.bat to match its eol=crlf attribute (#370)\n- ci: stop rebooting the test hub, move device fixtures off the app (#371)\n- docs: pin mcp SDK <2.0.0 in the Claude Desktop mcp-proxy config (#372)\n- feat: context snapshot, device-state filters, MCP resources, bearer-auth docs (#374)\n  - hub_list_devices: new format='context' — a one-call, token-cheap plain-text snapshot of the whole house (mode + one line per device with room, capabilities, and current attribute values)\n  - hub_list_devices: new filters — roomFilter, onlyOn (what's on right now), changedSince (what changed since a timestamp), attributeNames\n  - MCP resources support: resources/list + resources/read serve the tool-guide sections and a live house context snapshot (hubitat://context-summary) for clients that prefer resources over tool calls\n  - The access token can now also be sent as an Authorization: Bearer header (works on both the local endpoint and the cloud relay)",
     "apps": [
         {
             "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",

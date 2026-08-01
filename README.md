@@ -1660,6 +1660,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v3.7.0** - build(deps): bump net.bytebuddy:byte-buddy from 1.18.10 to 1.18.11 in the gradle-dependencies group across 1 directory ([#368](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/368), @app/dependabot); chore: renormalize gradlew.bat to match its eol=crlf attribute; ci: stop rebooting the test hub, move device fixtures off the app; docs: pin mcp SDK <2.0.0 in the Claude Desktop mcp-proxy config; feat: context snapshot, device-state filters, MCP resources, bearer-auth docs. PRs: [#368](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/368), [#370](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/370), [#371](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/371), [#372](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/372), [#374](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/374)
 - **v3.6.0** - test: close review findings on the conformance harness. PRs: [#369](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/369)
 - **v3.5.1** - test: add conformance harness — official MCP SDK client + wire-schema validation. PRs: [#367](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/367)
 - **v3.5.0** - feat: add MCP 2026-07-28 support (server/discover, modern-transport validation, cache hints). PRs: [#365](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/365)
