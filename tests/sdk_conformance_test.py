@@ -82,7 +82,8 @@ def deprecated_sdk_usages() -> list[str]:
     """
     checked = [("streamable_http_client", streamable_http_client)] + [
         (f"ClientSession.{name}", getattr(ClientSession, name))
-        for name in ("initialize", "send_ping", "list_tools", "call_tool")
+        for name in ("initialize", "send_ping", "list_tools", "call_tool",
+                     "list_resources", "read_resource", "list_resource_templates")
     ]
     return [f"{label}: {fn.__deprecated__}"
             for label, fn in checked if getattr(fn, "__deprecated__", None)]
@@ -137,8 +138,9 @@ def _load_hub_config() -> dict:
 
     The TOKEN has to be appended here. `HubitatMcpClient.endpoint` is the bare `<prefix>/mcp`
     and that client passes `access_token` per request; the SDK's transport takes one URL and
-    nothing else, so a tokenless URL earns a bare 401. There is no bearer fallback -- Hubitat's
-    OAuth endpoints ignore Authorization and this server never reads it.
+    nothing else, so a tokenless URL earns a bare 401. (Hubitat's OAuth layer also accepts the
+    token as `Authorization: Bearer` on both the LAN endpoint and the cloud relay -- covered by
+    tests/e2e_test.py's bearer scenario -- but the query form stays the canonical one here.)
     """
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     try:
@@ -272,6 +274,11 @@ class Scenarios:
                         lambda: self._list_tools(session))
         await self._run("a benign tools/call (hub_get_info) parses as a CallToolResult",
                         lambda: self._call_tool(session))
+        await self._run("resources/list + templates parse through the SDK's models and match the "
+                        "advertised capability",
+                        lambda: self._list_resources(session))
+        await self._run("resources/read round-trips a guide section and the live context summary",
+                        lambda: self._read_resources(session))
         await self._run("with publishOutputSchemas ON, the SDK's own validator accepts the "
                         "structuredContent against the advertised outputSchema",
                         lambda: self._published_output_schema(session))
@@ -307,6 +314,15 @@ class Scenarios:
         assert result.serverInfo.version, "serverInfo carries no version"
         assert result.capabilities.tools is not None, \
             f"server must advertise the tools capability: {result.capabilities!r}"
+        # Issue #366: resources advertised, with both change-notification flags false --
+        # this endpoint is request-response only (no SSE), so a true here would promise
+        # notifications the transport cannot deliver.
+        assert result.capabilities.resources is not None, \
+            f"server must advertise the resources capability: {result.capabilities!r}"
+        assert result.capabilities.resources.subscribe is not True, \
+            "resources.subscribe must not be advertised true on a no-SSE endpoint"
+        assert result.capabilities.resources.listChanged is not True, \
+            "resources.listChanged must not be advertised true on a no-SSE endpoint"
         assert result.instructions and result.instructions.strip(), \
             "initialize must carry non-empty instructions"
         print(f"         negotiated={self.negotiated} server={result.serverInfo.name} "
@@ -373,6 +389,51 @@ class Scenarios:
         assert payload.get("success") is not False, \
             f"hub_get_info returned a failure envelope: keys={sorted(payload)}, error={payload.get('error')!r}"
         print(f"         hub_get_info returned {len(block.text)} chars of JSON, keys={sorted(payload)[:6]}")
+
+    async def _list_resources(self, session: ClientSession) -> None:
+        # Issue #366: every entry is parsed into types.Resource by the SDK (uri + name
+        # required). The assertions add catalog sanity: the guide sections and both live
+        # context resources are advertised, and the templates surface is empty rather
+        # than -32601.
+        result = await session.list_resources()
+        uris = [str(r.uri) for r in result.resources]
+        assert len(uris) == len(set(uris)), "resources/list advertises duplicate URIs"
+        guide_uris = [u for u in uris if u.startswith("hubitat://guide/")]
+        assert guide_uris, f"no hubitat://guide/* resources advertised (saw: {uris[:5]})"
+        for expected in ("hubitat://context-summary", "hubitat://context"):
+            assert expected in uris, f"{expected} missing from resources/list: {uris[:8]}"
+        unnamed = [str(r.uri) for r in result.resources if not r.name]
+        assert not unnamed, f"resources advertised without the required name: {unnamed}"
+        templates = await session.list_resource_templates()
+        assert templates.resourceTemplates == [], \
+            f"expected an empty template list, got: {templates.resourceTemplates!r}"
+        print(f"         {len(uris)} resources advertised ({len(guide_uris)} guide sections + context pair)")
+
+    async def _read_resources(self, session: ClientSession) -> None:
+        # Round-trips the URI OBJECT the SDK parsed off resources/list back into
+        # resources/read -- if pydantic's AnyUrl normalization ever disagrees with the
+        # server's literal URI strings, this is the scenario that catches it. Both reads
+        # are read-only against the shared hub.
+        listed = await session.list_resources()
+        by_uri = {str(r.uri): r for r in listed.resources}
+        guide = next(r for r in listed.resources if str(r.uri).startswith("hubitat://guide/"))
+        guide_result = await session.read_resource(guide.uri)
+        content = guide_result.contents[0]
+        assert str(content.uri) == str(guide.uri), \
+            f"read echoed a different uri: sent {guide.uri!r}, got {content.uri!r}"
+        guide_text = getattr(content, "text", None)
+        assert guide_text, f"guide read returned no text content: {content!r}"
+        assert content.mimeType == "text/markdown", f"unexpected guide mimeType: {content.mimeType!r}"
+
+        summary = by_uri["hubitat://context-summary"]
+        summary_result = await session.read_resource(summary.uri)
+        text = getattr(summary_result.contents[0], "text", "") or ""
+        assert text.startswith("Mode:") or "No devices" in text, (
+            "context-summary must lead with the mode header (or the explicit no-devices "
+            f"message on an empty install); got: {text[:80]!r}"
+        )
+        print(f"         read {str(guide.uri)!r} ({len(guide_text)} chars) and the "
+              f"context summary ({len(text)} chars)")
 
     async def _published_output_schema(self, session: ClientSession) -> None:
         """Hand the SDK's OWN structuredContent validator something to referee (issue #342).

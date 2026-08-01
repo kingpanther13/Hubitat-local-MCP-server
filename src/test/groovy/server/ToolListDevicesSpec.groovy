@@ -1,6 +1,8 @@
 package server
 
+import spock.lang.Shared
 import support.TestDevice
+import support.TestLocation
 import support.ToolSpecBase
 
 /**
@@ -15,6 +17,17 @@ import support.ToolSpecBase
  */
 class ToolListDevicesSpec extends ToolSpecBase {
 
+    /** format='context' reads location.mode (and hsmStatus when present). */
+    @Shared private TestLocation sharedLocation = new TestLocation()
+
+    def setupSpec() {
+        appExecutor.getLocation() >> sharedLocation
+    }
+
+    def setup() {
+        sharedLocation.hsmStatus = null
+    }
+
     // ---- helpers --------------------------------------------------------
 
     private TestDevice makeDevice(Map props) {
@@ -26,7 +39,8 @@ class ToolListDevicesSpec extends ToolSpecBase {
             capabilities: props.capabilities ?: [],
             supportedAttributes: props.attrs ?: [],
             supportedCommands: props.cmds ?: [],
-            attributeValues: props.attrValues ?: [:]
+            attributeValues: props.attrValues ?: [:],
+            lastActivity: props.lastActivity ?: null
         )
     }
 
@@ -1630,5 +1644,538 @@ class ToolListDevicesSpec extends ToolSpecBase {
 
         where:
         useGateways << [true, false]
+    }
+
+    // ---- issue #366: roomFilter / onlyOn / changedSince / attributeNames / format='context'
+
+    private List seedContextDevices() {
+        [
+            makeDevice(id: 1, label: 'Kitchen Light', room: 'Kitchen',
+                capabilities: [[name: 'Switch'], [name: 'SwitchLevel']],
+                attrValues: [switch: 'on', level: 80]),
+            makeDevice(id: 2, label: 'Kitchen Sensor', room: 'Kitchen',
+                capabilities: [[name: 'TemperatureMeasurement']],
+                attrValues: [temperature: 71.5, humidity: 40]),
+            makeDevice(id: 3, label: 'Porch Light', room: 'Porch',
+                capabilities: [[name: 'Switch']],
+                attrValues: [switch: 'off']),
+            makeDevice(id: 4, label: 'Roomless Plug',
+                capabilities: [[name: 'Switch']],
+                attrValues: [switch: 'on'])
+        ]
+    }
+
+    def "roomFilter keeps only devices assigned to that room, case-insensitively"() {
+        given:
+        settingsMap.selectedDevices = seedContextDevices()
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, null, 'kitchen')
+
+        then:
+        result.devices*.id == ['1', '2']
+        result.total == 2
+        result.unfilteredTotal == 4
+        result.roomFilter == 'kitchen'
+    }
+
+    def "roomFilter zero-match reports roomFilterMatchedKnownRoom for typo-vs-absence"() {
+        given:
+        settingsMap.selectedDevices = seedContextDevices()
+
+        when: 'a real room emptied by an earlier filter'
+        def emptied = script.toolListDevices(false, 0, 0, null, 'Sensor', null, null, null, null, null, 'Porch')
+
+        and: 'a room no device is assigned to'
+        def typo = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, null, 'Porsche')
+
+        then:
+        emptied.total == 0
+        emptied.roomFilterMatchedKnownRoom == true
+        typo.total == 0
+        typo.roomFilterMatchedKnownRoom == false
+    }
+
+    def "onlyOn=true keeps only devices whose switch reads on; false is a no-op"() {
+        given:
+        settingsMap.selectedDevices = seedContextDevices()
+
+        when:
+        def on = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, null, null, true)
+        def noop = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, null, null, false)
+
+        then: 'the off switch and the switchless sensor are both excluded'
+        on.devices*.id == ['1', '4']
+        on.onlyOn == true
+        on.unfilteredTotal == 4
+
+        and: 'onlyOn=false filters nothing and is not echoed'
+        noop.devices.size() == 4
+        !noop.containsKey('onlyOn')
+    }
+
+    def "changedSince keeps devices active at/after the timestamp and drops never-reported ones"() {
+        given:
+        def old = makeDevice(id: 1, label: 'Old', lastActivity: new Date(1000000L))
+        def fresh = makeDevice(id: 2, label: 'Fresh', lastActivity: new Date(5000000L))
+        def never = makeDevice(id: 3, label: 'Never')
+        settingsMap.selectedDevices = [old, fresh, never]
+
+        when: 'epoch-millis form'
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, null, null, null, 3000000L)
+
+        then:
+        result.devices*.id == ['2']
+        result.unfilteredTotal == 3
+
+        and: 'the epoch input echoes as canonical ISO -- the string the outputSchema declares'
+        result.changedSince == new Date(3000000L).format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
+    }
+
+    def "changedSince accepts ISO-8601 and rejects an unparseable value with -32602 guidance"() {
+        given:
+        settingsMap.selectedDevices = [
+            makeDevice(id: 1, label: 'Fresh', lastActivity: Date.parse("yyyy-MM-dd'T'HH:mm:ssZ", '2026-06-23T12:00:00+0000'))
+        ]
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, null, null, null, '2026-06-23T10:00:00Z')
+
+        then:
+        result.devices*.id == ['1']
+
+        when:
+        script.toolListDevices(false, 0, 0, null, null, null, null, null, null, null, null, null, 'yesterday-ish')
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('changedSince')
+        ex.message.contains('ISO-8601')
+    }
+
+    def "a colon-offset timestamp (the lastActivity XXX form) parses in changedSince"() {
+        // formatLastActivity emits yyyy-MM-dd'T'HH:mm:ssXXX -- a COLON offset (-06:00) on a
+        // non-UTC hub -- so the documented change-watching loop only works if the parser
+        // accepts that spelling alongside the colon-less one.
+        given:
+        def activity = Date.parse("yyyy-MM-dd'T'HH:mm:ssZ", '2026-06-23T12:00:00+0000')
+        settingsMap.selectedDevices = [makeDevice(id: 1, label: 'Fresh', lastActivity: activity)]
+
+        when: '05:59:59-06:00 == 11:59:59Z, one second before the device activity'
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, null, null, null, '2026-06-23T05:59:59-06:00')
+
+        then:
+        result.devices*.id == ['1']
+        result.changedSince == '2026-06-23T05:59:59-06:00'
+    }
+
+    @spock.lang.Unroll
+    def "type validation: #label throws a recoverable IAE"() {
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1)]
+
+        when:
+        script.toolListDevices(false, 0, 0, null, null, null, null, null, null, null, roomF, onlyOnArg, null, attrNames)
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains(expected)
+
+        where:
+        label                        | roomF | onlyOnArg | attrNames        | expected
+        'non-string roomFilter'      | 42    | null      | null             | 'roomFilter'
+        'non-boolean onlyOn'         | null  | 'yes'     | null             | 'onlyOn'
+        'non-array attributeNames'   | null  | null      | 'switch'         | 'attributeNames'
+        'non-string attribute entry' | null  | null      | ['switch', 7]    | 'attributeNames'
+    }
+
+    def "format='context' returns a self-contained text snapshot with mode header and per-device lines"() {
+        given:
+        settingsMap.selectedDevices = seedContextDevices()
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null)
+
+        then: 'structured fields ride alongside the text'
+        result.mode == 'Home'
+        result.count == 4
+        result.total == 4
+        !result.containsKey('devices')
+
+        and: 'the summary leads with the header'
+        def lines = result.summary.readLines()
+        lines[0] == 'Mode: Home'
+        lines[1] == 'Devices: 4 of 4'
+
+        and: 'device lines carry label (id, room) - capabilities; attr=value'
+        lines.contains('- Kitchen Light (1, Kitchen) - Switch, SwitchLevel; switch=on, level=80')
+        lines.contains('- Porch Light (3, Porch) - Switch; switch=off')
+        lines.contains('- Roomless Plug (4, No room) - Switch; switch=on')
+    }
+
+    def "format='context' includes the HSM line only when the hub exposes a status"() {
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1, label: 'D')]
+        sharedLocation.hsmStatus = 'armedAway'
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null)
+
+        then:
+        result.hsmStatus == 'armedAway'
+        result.summary.readLines()[1] == 'HSM: armedAway'
+    }
+
+    def "format='context' defaults to a 50-device page and emits nextCursor without opting into cursor mode"() {
+        given:
+        settingsMap.selectedDevices = (0..<60).collect { i -> makeDevice(id: i + 1, label: "Device-${String.format('%03d', i)}") }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null)
+
+        then:
+        result.count == 50
+        result.total == 60
+        result.nextCursor == '50'
+        result.nextOffset == 50
+        result.hasMore == true
+
+        and: 'the header names the continuation cursor'
+        result.summary.readLines().find { it.startsWith('Devices:') }.contains('nextCursor=50')
+
+        when: 'the advertised cursor fetches the remainder'
+        def page2 = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, '50', null)
+
+        then:
+        page2.count == 10
+        !page2.containsKey('nextCursor')
+    }
+
+    def "format='context' with attributeNames projects only the named attributes in caller order"() {
+        given:
+        settingsMap.selectedDevices = [
+            makeDevice(id: 1, label: 'Multi', room: 'Den',
+                capabilities: [[name: 'Switch']],
+                attrValues: [switch: 'on', level: 80, temperature: 71])
+        ]
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null, null, null, null, ['temperature', 'switch'])
+
+        then:
+        result.summary.readLines().last() == '- Multi (1, Den) - Switch; temperature=71, switch=on'
+    }
+
+    def "format='context' composes with roomFilter + onlyOn for a scoped what's-on snapshot"() {
+        given:
+        settingsMap.selectedDevices = seedContextDevices()
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null, 'Kitchen', true)
+
+        then:
+        result.count == 1
+        result.total == 1
+        result.unfilteredTotal == 4
+        result.summary.readLines().last().startsWith('- Kitchen Light (1, Kitchen)')
+    }
+
+    def "scope='all' rejects the state-based filters and the context format"() {
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1)]
+
+        when:
+        script.toolListDevices(false, 0, 0, null, null, null, fmt, null, null, 'all', roomF, onlyOnArg, since, attrNames)
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("scope='all'")
+
+        where:
+        fmt       | roomF     | onlyOnArg | since | attrNames
+        'context' | null      | null      | null  | null
+        null      | 'Kitchen' | null      | null  | null
+        null      | null      | true      | null  | null
+        null      | null      | null      | '0'   | null
+        null      | null      | null      | null  | ['switch']
+    }
+
+    def "via dispatch: format='context' + new filters round-trip the tools/call envelope"() {
+        given:
+        settingsMap.useGateways = true
+        settingsMap.selectedDevices = seedContextDevices()
+
+        when:
+        def response = mcpDriver.callTool('hub_list_devices', [format: 'context', roomFilter: 'Kitchen'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.mode == 'Home'
+        inner.count == 2
+        inner.summary.contains('- Kitchen Sensor (2, Kitchen)')
+    }
+
+    def "attributeNames without format='context' is rejected instead of silently ignored"() {
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1)]
+
+        when:
+        script.toolListDevices(false, 0, 0, null, null, null, fmt, null, null, null, null, null, null, ['switch'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('attributeNames')
+        ex.message.contains("format='context'")
+
+        where:
+        fmt << [null, 'summary', 'detailed', 'ids']
+    }
+
+    def "bad arguments are rejected even when no devices are authorized"() {
+        // The type/format validations run BEFORE the empty-inventory early return, so an
+        // empty hub answers a bad call with -32602 instead of a success envelope.
+        given:
+        settingsMap.selectedDevices = []
+
+        when:
+        script.toolListDevices(false, 0, 0, null, null, null, 'bogus', null, null, null)
+
+        then:
+        thrown(IllegalArgumentException)
+
+        when:
+        script.toolListDevices(false, 0, 0, null, null, null, null, null, null, null, null, 'yes')
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
+    def "format='context' keeps its shape on an empty install"() {
+        given:
+        settingsMap.selectedDevices = []
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null)
+
+        then: 'context shape, not the bare devices-array shape'
+        result.mode == 'Home'
+        result.count == 0
+        result.total == 0
+        !result.containsKey('devices')
+        result.message
+
+        and: 'the summary is still a self-contained snapshot'
+        def lines = result.summary.readLines()
+        lines[0] == 'Mode: Home'
+        lines[1] == 'Devices: 0 of 0'
+        lines[2] == result.message
+    }
+
+    def "format='context' keeps its shape and the filter echoes when offset exceeds the filtered total"() {
+        given:
+        settingsMap.selectedDevices = seedContextDevices()
+
+        when:
+        def result = script.toolListDevices(false, 50, 0, null, null, null, 'context', null, null, null, 'Kitchen')
+
+        then: 'context shape with the shared echoes, not the devices-array shape'
+        result.mode == 'Home'
+        result.count == 0
+        result.total == 2
+        result.roomFilter == 'Kitchen'
+        result.unfilteredTotal == 4
+        !result.containsKey('devices')
+        result.summary.readLines()[0] == 'Mode: Home'
+        result.message.contains('exceeds')
+    }
+
+    def "summary offset-exceeds early return now carries the new filter echoes too"() {
+        given:
+        settingsMap.selectedDevices = seedContextDevices()
+
+        when:
+        def result = script.toolListDevices(false, 50, 0, null, null, null, null, null, null, null, null, true)
+
+        then:
+        result.devices == []
+        result.onlyOn == true
+        result.unfilteredTotal == 4
+        result.filter == 'all'
+        result.message.contains('exceeds')
+    }
+
+    def "context lines append the reported unit directly after the value"() {
+        // Real hub State objects carry a unit (degrees-F, "%"); the line renders value+unit
+        // with no separator -- compact and unambiguous for a model reader, and pinned here
+        // because the guide documents the exact shape.
+        given:
+        def dev = makeDevice(id: 9, label: 'Attic T&H', room: 'Attic', capabilities: [[name: 'TemperatureMeasurement']])
+        dev.currentStates = [[name: 'temperature', value: '71.5', unit: '°F'], [name: 'humidity', value: '48', unit: '%']]
+        settingsMap.selectedDevices = [dev]
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null)
+
+        then:
+        result.summary.readLines().last() == '- Attic T&H (9, Attic) - TemperatureMeasurement; temperature=71.5°F, humidity=48%'
+    }
+
+    private static class ThrowingStatesDevice extends TestDevice {
+        List getCurrentStates() { throw new RuntimeException('driver exploded') }
+    }
+
+    def "a device whose currentStates read throws still gets a line, without attributes"() {
+        given:
+        def broken = new ThrowingStatesDevice(id: 5, label: 'Broken Driver', roomName: 'Den',
+            capabilities: [[name: 'Switch']])
+        settingsMap.selectedDevices = [broken, makeDevice(id: 6, label: 'Fine', attrValues: [switch: 'on'])]
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null)
+
+        then: 'the snapshot survives; the failed read is marked IN the payload, not just logged'
+        result.count == 2
+        result.summary.readLines().contains('- Broken Driver (5, Den) - Switch (state unavailable)')
+
+        and: 'the healthy capability-less device renders the exact no-caps shape'
+        result.summary.readLines().contains('- Fine (6, No room); switch=on')
+    }
+
+    @spock.lang.Unroll
+    def "via dispatch: filter='virtual' rejects #label"() {
+        // toolListVirtualDevices evaluates none of the new args; silently dropping them
+        // would leave the caller believing the filter applied. All five clauses of the
+        // guard are exercised so none can be dropped while the suite stays green.
+        given:
+        settingsMap.useGateways = true
+        settingsMap.selectedDevices = [makeDevice(id: 1)]
+
+        when:
+        def response = mcpDriver.callTool('hub_list_devices', [filter: 'virtual'] + extra)
+
+        then:
+        response.error?.code == -32602
+        response.error?.message?.contains("filter='virtual'")
+
+        where:
+        label                | extra
+        "format='context'"   | [format: 'context']
+        'roomFilter'         | [roomFilter: 'Kitchen']
+        'onlyOn=true'        | [onlyOn: true]
+        'changedSince'       | [changedSince: 0]
+        'attributeNames'     | [attributeNames: ['switch']]
+    }
+
+    def "via dispatch: filter='virtual' rejects a MALFORMED state arg instead of silently routing"() {
+        // A non-Boolean onlyOn fails the == true guard, so without up-front type
+        // validation it would silently route to the virtual listing as if never passed.
+        given:
+        settingsMap.useGateways = true
+        settingsMap.selectedDevices = [makeDevice(id: 1)]
+
+        when:
+        def response = mcpDriver.callTool('hub_list_devices', [filter: 'virtual', onlyOn: 'true'])
+
+        then:
+        response.error?.code == -32602
+        response.error?.message?.contains('boolean')
+    }
+
+    def "via dispatch: filter='virtual' tolerates the documented no-op values"() {
+        // onlyOn=false and roomFilter='' are no-ops everywhere else; a generic client
+        // that populates every schema property must not be rejected for them here.
+        given:
+        settingsMap.useGateways = true
+        settingsMap.selectedDevices = [makeDevice(id: 1)]
+
+        when:
+        def response = mcpDriver.callTool('hub_list_devices', [filter: 'virtual', onlyOn: false, roomFilter: ''])
+
+        then:
+        response.error == null
+        !response.result.isError
+    }
+
+    def "scope='all' tolerates the documented no-op values too"() {
+        given:
+        hubGet.register('/device/listWithCapabilities/json') { params ->
+            '[{"id": 1, "label": "Hub Device", "capabilities": ["Switch"]}]'
+        }
+        settingsMap.selectedDevices = [makeDevice(id: 1)]
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, 'all', '', false)
+
+        then:
+        notThrown(IllegalArgumentException)
+        result.devices.size() == 1
+    }
+
+    def "via dispatch: every new argument plumbs through the positional call"() {
+        // The dispatch case is a fourteen-argument positional call -- this pins the
+        // plumbing of all five new args at the Spock layer, not just live e2e.
+        given:
+        settingsMap.useGateways = true
+        settingsMap.selectedDevices = seedContextDevices()
+
+        when:
+        def response = mcpDriver.callTool('hub_list_devices',
+            [format: 'context', roomFilter: 'Kitchen', onlyOn: true, changedSince: 0, attributeNames: ['switch']])
+
+        then:
+        response.error == null
+        def inner = mcpDriver.parseInner(response)
+        inner.roomFilter == 'Kitchen'
+        inner.onlyOn == true
+        inner.changedSince instanceof String
+
+        and: 'Kitchen Light is on but has no lastActivity, so changedSince=0 excludes it'
+        inner.count == 0
+        inner.unfilteredTotal == 4
+    }
+
+    def "format='context' includes MCP-managed child devices in the population"() {
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1, label: 'Authorized', attrValues: [switch: 'on'])]
+        childDevicesList << new TestDevice(id: 900, label: 'MCP Virtual Switch',
+            capabilities: [[name: 'Switch']], attributeValues: [switch: 'off'])
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null)
+
+        then:
+        result.count == 2
+        result.summary.readLines().contains('- MCP Virtual Switch (900, No room) - Switch; switch=off')
+    }
+
+    def "attributeNames: [] means the default set, matching the fields convention"() {
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1, label: 'D', attrValues: [switch: 'on', temperature: 71])]
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null, null, null, null, [])
+
+        then:
+        result.summary.readLines().last() == '- D (1, No room); switch=on, temperature=71'
+        !result.containsKey('attributeNamesMatchedNoAttributes')
+    }
+
+    def "an explicit projection that matches nothing reports the typo-vs-absence diagnostic"() {
+        given:
+        settingsMap.selectedDevices = [makeDevice(id: 1, label: 'D', attrValues: [temperature: 71])]
+
+        when: "'temp' is the classic mistyping of 'temperature'"
+        def result = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null, null, null, null, ['temp'])
+
+        then:
+        result.attributeNamesMatchedNoAttributes == true
+
+        when: 'a matching projection does not carry the diagnostic'
+        def ok = script.toolListDevices(false, 0, 0, null, null, null, 'context', null, null, null, null, null, null, ['temperature'])
+
+        then:
+        !ok.containsKey('attributeNamesMatchedNoAttributes')
     }
 }

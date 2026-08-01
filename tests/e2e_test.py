@@ -1715,6 +1715,122 @@ class TestRunner:
             "scope='all' missing mcpAuthorizedCount/unauthorizedCount"
 
     @test("devices")
+    def test_list_devices_context_format(self) -> None:
+        # Issue #366: format='context' — the token-cheap house snapshot. The summary text
+        # is self-contained (Mode header + one "- Label (id, room)" line per device) and
+        # the structured fields ride alongside; the devices array must NOT.
+        result = self.client.call_tool("hub_list_devices", {"format": "context"})
+        assert isinstance(result, dict) and isinstance(result.get("summary"), str), \
+            f"format='context' must return a summary string: {list(result) if isinstance(result, dict) else type(result)}"
+        lines = result["summary"].splitlines()
+        assert lines[0].startswith("Mode: "), f"summary must lead with the mode header: {lines[0]!r}"
+        assert result.get("mode"), f"structured mode field missing: {list(result)}"
+        assert result.get("count", 0) > 0, f"context snapshot returned no devices: {result.get('count')}"
+        device_lines = [ln for ln in lines if ln.startswith("- ")]
+        assert len(device_lines) == result["count"], \
+            f"count={result['count']} but {len(device_lines)} device lines in the summary"
+        assert all("(" in ln and ")" in ln for ln in device_lines), \
+            "every device line must carry the '(id, room)' pair"
+        assert "devices" not in result, "context format must not also carry the devices array"
+
+    @test("devices")
+    def test_list_devices_context_attribute_names(self) -> None:
+        # attributeNames replaces the default per-line attribute set — a projection to
+        # ['switch'] must never surface another attribute after the ';' separator.
+        result = self.client.call_tool("hub_list_devices",
+                                       {"format": "context", "attributeNames": ["switch"]})
+        attr_lines = [ln for ln in result["summary"].splitlines()
+                      if ln.startswith("- ") and ";" in ln]
+        # Anti-vacuity: the scaffold guarantees at least one switch-bearing device, so a
+        # projection that dropped every attribute line would otherwise pass silently.
+        assert attr_lines, \
+            f"attributeNames=['switch'] produced no attribute-bearing lines at all: {result['summary'][:300]!r}"
+        for ln in attr_lines:
+            attrs = ln.split(";", 1)[1]
+            assert "switch=" in attrs, f"projected line lost its switch attribute: {ln!r}"
+            assert "temperature=" not in attrs and "battery=" not in attrs, \
+                f"attributeNames=['switch'] leaked other attributes: {ln!r}"
+
+    @test("devices")
+    def test_list_devices_only_on_filter(self) -> None:
+        # onlyOn=true keeps only devices whose switch currently reads on. Asserted against
+        # the summary shape's currentStates so the filter's claim is checked per device.
+        result = self.client.call_tool("hub_list_devices", {"onlyOn": True})
+        assert result.get("onlyOn") is True, f"onlyOn not echoed: {list(result)}"
+        assert "unfilteredTotal" in result, "active filter must report unfilteredTotal"
+        if not result.get("devices"):
+            # Nothing on right now is a legitimate hub state; say so instead of passing
+            # a loop that never ran (mirrors test_list_devices_room_filter's guard).
+            print("    [INFO] no device is currently on; per-device assertion body did not run")
+            return
+        for dev in result["devices"]:
+            sw = (dev.get("currentStates") or {}).get("switch")
+            assert sw == "on", f"onlyOn=true returned {dev.get('label')!r} with switch={sw!r}"
+
+    @test("devices")
+    def test_list_devices_changed_since(self) -> None:
+        # A far-future changedSince yields zero devices (not an error); epoch 0 keeps
+        # exactly the devices that have EVER reported activity (never-reported excluded);
+        # an unparseable value is a recoverable -32602 naming the accepted forms.
+        fut = self.client.call_tool("hub_list_devices",
+                                    {"changedSince": "2099-01-01T00:00:00Z"})
+        assert fut.get("total") == 0 and fut.get("devices") == [], \
+            f"future changedSince should yield an empty set: total={fut.get('total')}"
+        assert fut.get("changedSince") == "2099-01-01T00:00:00Z", \
+            f"changedSince not echoed: {fut.get('changedSince')!r}"
+
+        everything = self.client.call_tool("hub_list_devices")
+        ever_reported = sorted(d["id"] for d in everything.get("devices", []) if d.get("lastActivity"))
+        epoch = self.client.call_tool("hub_list_devices", {"changedSince": 0})
+        got = sorted(d["id"] for d in epoch.get("devices", []))
+        assert got == ever_reported, \
+            f"changedSince=0 must keep exactly the ever-reported devices: got {len(got)}, expected {len(ever_reported)}"
+
+        # Round-trip: a lastActivity value THIS tool emitted (XXX form -- colon offset on a
+        # non-UTC hub, trailing Z on UTC) must be accepted verbatim by changedSince AND by
+        # hub_list_device_events' since (they share the parser).
+        reported = [d for d in everything.get("devices", []) if d.get("lastActivity")]
+        if reported:
+            bookmark = reported[0]["lastActivity"]
+            rt = self.client.call_tool("hub_list_devices", {"changedSince": bookmark})
+            assert reported[0]["id"] in [d["id"] for d in rt.get("devices", [])], \
+                f"a device's own lastActivity {bookmark!r} passed back as changedSince must keep that device"
+            ev = self.client.call_tool("hub_list_device_events",
+                                       {"deviceId": reported[0]["id"], "since": bookmark})
+            assert isinstance(ev, dict) and "events" in ev, \
+                f"hub_list_device_events rejected the emitted lastActivity form {bookmark!r}: {ev}"
+        else:
+            print("    [INFO] no device reports lastActivity; round-trip leg did not run")
+
+        try:
+            self.client.call_tool("hub_list_devices", {"changedSince": "banana"})
+            raise AssertionError("unparseable changedSince should have been rejected (-32602)")
+        except McpError as exc:
+            assert "changedSince" in str(exc), f"rejection must name the offending arg: {exc}"
+
+    @test("devices")
+    def test_list_devices_room_filter(self) -> None:
+        # A nonsense room: zero devices + the typo-vs-absence diagnostic. A real room
+        # (read off the live inventory): exactly that room's devices, case-insensitively.
+        miss = self.client.call_tool("hub_list_devices", {"roomFilter": f"{PREFIX}NoSuchRoom"})
+        assert miss.get("total") == 0, f"nonsense room matched devices: {miss.get('total')}"
+        assert miss.get("roomFilterMatchedKnownRoom") is False, \
+            f"unknown room must report roomFilterMatchedKnownRoom=false: {miss.get('roomFilterMatchedKnownRoom')!r}"
+
+        everything = self.client.call_tool("hub_list_devices")
+        roomed = [d for d in everything.get("devices", []) if d.get("room")]
+        if not roomed:
+            print("    [INFO] no device on this hub has a room assignment; skipping the positive match")
+            return
+        room = roomed[0]["room"]
+        expected = sorted(d["id"] for d in everything["devices"]
+                          if (d.get("room") or "").lower() == room.lower())
+        scoped = self.client.call_tool("hub_list_devices", {"roomFilter": room.lower()})
+        got = sorted(d["id"] for d in scoped.get("devices", []))
+        assert got == expected, \
+            f"roomFilter={room.lower()!r} returned {got}, expected {expected} (case-insensitive exact match)"
+
+    @test("devices")
     def test_list_device_events_since_bookmark(self) -> None:
         # The `since` absolute-bookmark filter on hub_list_device_events. READ-DRIVEN:
         # it bookmarks an EXISTING event in the scaffold's history and asserts the filter
@@ -10695,6 +10811,115 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                         "tool": "hub_delete_room", "args": {"room": room_name, "confirm": True}})
                 except Exception as exc:
                     print(f"    [WARN] could not delete {room_name} (prefix sweep will reap it): {exc}")
+
+    @test("protocol")
+    def test_resources_capability_and_list(self) -> None:
+        """Issue #366: initialize advertises the resources capability with both
+        change-notification flags false (no SSE on this endpoint, so a true would promise
+        the impossible), resources/list returns the guide sections plus the live context
+        pair with the SEP-2549 cache hints, and resources/templates/list is an empty
+        list rather than -32601."""
+        init = self.client.initialize()
+        caps = init.get("capabilities", {})
+        assert caps.get("resources") == {"subscribe": False, "listChanged": False}, \
+            f"resources capability wrong/missing: {caps.get('resources')!r}"
+
+        result = self.client._send("resources/list")
+        resources = result.get("resources", [])
+        uris = [r.get("uri") for r in resources]
+        assert len(uris) == len(set(uris)), f"duplicate resource URIs: {uris}"
+        for expected in ("hubitat://context-summary", "hubitat://context"):
+            assert expected in uris, f"{expected} missing from resources/list: {uris[:8]}"
+        guide_uris = [u for u in uris if u.startswith("hubitat://guide/")]
+        assert guide_uris, f"no guide resources advertised: {uris[:8]}"
+        assert all(r.get("uri") and r.get("name") for r in resources), \
+            "every resource must carry the spec-required uri + name pair"
+        assert isinstance(result.get("ttlMs"), int) and result["ttlMs"] > 0, \
+            f"resources/list must carry a positive ttlMs: {result.get('ttlMs')!r}"
+        assert result.get("cacheScope") == "private", \
+            f"expected cacheScope 'private': {result.get('cacheScope')!r}"
+
+        templates = self.client._send("resources/templates/list")
+        assert templates.get("resourceTemplates") == [], \
+            f"expected an empty template list: {templates.get('resourceTemplates')!r}"
+
+    @test("protocol")
+    def test_resources_read_guide_matches_tool_guide(self) -> None:
+        """A guide resource serves the SAME content as hub_get_tool_guide — resources are
+        the alternative surface for the guide, so the two must never drift."""
+        read = self.client._send("resources/read", {"uri": "hubitat://guide/performance"})
+        content = read.get("contents", [{}])[0]
+        assert content.get("uri") == "hubitat://guide/performance", \
+            f"read echoed the wrong uri: {content.get('uri')!r}"
+        assert content.get("mimeType") == "text/markdown", \
+            f"unexpected guide mimeType: {content.get('mimeType')!r}"
+        tool = self.client.call_tool("hub_get_tool_guide", {"section": "performance"})
+        assert content.get("text") == tool.get("content"), \
+            "resources/read guide text differs from hub_get_tool_guide's content for the same section"
+
+    @test("protocol")
+    def test_resources_read_live_context(self) -> None:
+        """The context-summary resource is the full plain-text snapshot (Mode header +
+        device lines) and the context resource is its JSON twin. Both are live state and
+        must be marked immediately stale (ttlMs 0) for caching intermediaries."""
+        read = self.client._send("resources/read", {"uri": "hubitat://context-summary"})
+        text = read.get("contents", [{}])[0].get("text", "")
+        assert text.startswith("Mode: "), f"summary must lead with the mode header: {text[:80]!r}"
+        assert any(ln.startswith("- ") for ln in text.splitlines()), \
+            "summary carries no device lines on a device-bearing hub"
+        assert read.get("ttlMs") == 0, f"live context must carry ttlMs 0: {read.get('ttlMs')!r}"
+
+        ctx = self.client._send("resources/read", {"uri": "hubitat://context"})
+        data = json.loads(ctx.get("contents", [{}])[0].get("text", "{}"))
+        assert data.get("currentMode"), f"context JSON missing currentMode: {sorted(data)[:8]}"
+        assert isinstance(data.get("devices"), list) and data["devices"], \
+            "context JSON carries no devices on a device-bearing hub"
+        assert isinstance(data.get("rooms"), list), f"context JSON missing rooms: {sorted(data)[:8]}"
+        assert data.get("deviceCount") == len(data["devices"]), \
+            f"deviceCount={data.get('deviceCount')} but {len(data['devices'])} device records"
+
+    @test("protocol")
+    def test_resources_read_unknown_uri_error(self) -> None:
+        """An unknown uri is the spec's -32002 resource error with the uri in data —
+        riding HTTP 200 on the legacy path like every application-level JSON-RPC error."""
+        resp = self.client.raw_request({"jsonrpc": "2.0", "id": 1, "method": "resources/read",
+                                        "params": {"uri": "hubitat://no-such-resource"}})
+        assert resp.status_code == 200, \
+            f"legacy JSON-RPC errors ride 200, got {resp.status_code}: {resp.text[:200]!r}"
+        err = resp.json().get("error", {})
+        assert err.get("code") == -32002, f"expected -32002, got: {err!r}"
+        assert err.get("data", {}).get("uri") == "hubitat://no-such-resource", \
+            f"error data must echo the uri: {err.get('data')!r}"
+
+    @test("protocol")
+    def test_bearer_header_auth(self) -> None:
+        """The Hubitat platform accepts the OAuth token as an Authorization: Bearer header
+        in place of ?access_token= — verified on both the LAN endpoint and the cloud relay
+        (issue #366) and documented in the README, so a platform-side change must fail
+        loudly here. This request deliberately carries NO query token."""
+        resp = self.client.session.post(
+            self.client.endpoint,
+            headers={"Authorization": f"Bearer {self.client.access_token}"},
+            json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+            timeout=60,
+        )
+        assert resp.status_code == 200, \
+            f"Bearer-only auth was rejected: HTTP {resp.status_code}: {resp.text[:200]!r}"
+        body = resp.json()
+        assert body.get("error") is None and body.get("result") is not None, \
+            f"Bearer-only ping did not return a JSON-RPC result: {body!r}"
+
+        # The negative half is what makes the positive one meaningful: a WRONG bearer must
+        # be refused, or the 200 above would also pass on an endpoint that requires no
+        # auth at all -- the one (security-relevant) regression this test exists to catch.
+        bad = self.client.session.post(
+            self.client.endpoint,
+            headers={"Authorization": "Bearer 00000000-dead-beef-0000-000000000000"},
+            json={"jsonrpc": "2.0", "id": 2, "method": "ping"},
+            timeout=60,
+        )
+        assert bad.status_code != 200, \
+            f"a WRONG bearer token was served HTTP 200 -- the endpoint is not authenticating: {bad.text[:200]!r}"
 
     # -----------------------------------------------------------------------
     # Cleanup

@@ -104,6 +104,33 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Calls `hub_list_devices` with `format='ids'`. Response is `deviceIds: [...]` flat array, not full device objects.
 
+### T02c — hub_list_devices (context snapshot, issue #366)
+
+```json
+{
+  "test_prompt": "Give me a quick overview of what's going on in my house right now — the current mode and the state of my devices, in one compact view."
+}
+```
+
+**Expected**: Calls `hub_list_devices` with `format='context'` (one call). Answer is built from the returned `summary` text (mode header + per-device lines) rather than iterating `detailed=true` pages or per-device reads.
+
+```json
+{
+  "test_prompt": "Which of my devices are switched on right now?"
+}
+```
+
+**Expected**: Calls `hub_list_devices` with `onlyOn=true` (optionally `format='context'`). Does NOT fetch the whole inventory and filter client-side.
+
+```json
+{
+  "setup_prompt": "Note the current time as an ISO-8601 timestamp.",
+  "test_prompt": "Which devices have reported activity in the last two hours?"
+}
+```
+
+**Expected**: Calls `hub_list_devices` with `changedSince=<timestamp>` (epoch ms or ISO-8601). Does NOT page through events or the full inventory.
+
 ### T03 — hub_get_device
 
 ```json

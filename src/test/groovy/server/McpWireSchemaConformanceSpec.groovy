@@ -253,6 +253,116 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
     }
 
     // ---------------------------------------------------------------------
+    // Resources (issue #366) — both eras
+    // ---------------------------------------------------------------------
+
+    def "a legacy resources/list result conforms to ListResourcesResult and each Resource entry"() {
+        when:
+        def response = dispatch([jsonrpc: '2.0', id: 20, method: 'resources/list', params: [:]])
+
+        then: 'a non-trivial catalog really was rendered -- an empty list would validate vacuously'
+        response.result.resources.size() > 2
+
+        and:
+        McpSchemaValidator.legacyErrors('ListResourcesResult', response.result) == []
+    }
+
+    def "a modern resources/list result conforms to the draft ListResourcesResult"() {
+        // The draft REQUIRES resultType, ttlMs and cacheScope alongside resources -- the
+        // schema-side proof the cache hints and era-gated stamp are present together here too.
+        when:
+        def response = dispatch(
+            [jsonrpc: '2.0', id: 21, method: 'resources/list', params: [:]],
+            ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'resources/list'])
+
+        then: 'served, not rejected'
+        mcpDriver.lastRenderArgs.status == null
+
+        and:
+        McpSchemaValidator.draftErrors('ListResourcesResult', response.result) == []
+    }
+
+    @Unroll
+    def "a legacy resources/read of #label conforms to ReadResourceResult"() {
+        when:
+        def response = dispatch([jsonrpc: '2.0', id: 22, method: 'resources/read', params: [uri: uri]])
+
+        then: 'a real text body was served'
+        response.result.contents[0].text
+
+        and:
+        McpSchemaValidator.legacyErrors('ReadResourceResult', response.result) == []
+
+        where:
+        label             | uri
+        'a guide section' | 'hubitat://guide/performance'
+        'the context summary' | 'hubitat://context-summary'
+        'the context JSON'    | 'hubitat://context'
+    }
+
+    def "a modern resources/read result conforms to the draft ReadResourceResult"() {
+        // Mcp-Name mirrors params.uri on resources/read, exactly as it mirrors
+        // params.name on tools/call -- required on the modern transport.
+        when:
+        def response = dispatch(
+            [jsonrpc: '2.0', id: 23, method: 'resources/read', params: [uri: 'hubitat://guide/performance']],
+            ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'resources/read',
+             'Mcp-Name': 'hubitat://guide/performance'])
+
+        then:
+        mcpDriver.lastRenderArgs.status == null
+
+        and:
+        McpSchemaValidator.draftErrors('ReadResourceResult', response.result) == []
+    }
+
+    def "a modern resources/read without Mcp-Name is a HeaderMismatch rejection"() {
+        // resources/read carries a body field for Mcp-Name to mirror (params.uri), so a
+        // missing header is a -32020 on the modern transport -- same contract as tools/call.
+        when:
+        def response = dispatch(
+            [jsonrpc: '2.0', id: 26, method: 'resources/read', params: [uri: 'hubitat://guide/performance']],
+            ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'resources/read'])
+
+        then:
+        mcpDriver.lastRenderArgs.status == 400
+        response.error.code == -32020
+
+        and:
+        McpSchemaValidator.draftErrors('HeaderMismatchError', response) == []
+    }
+
+    def "a modern resources/read whose Mcp-Name disagrees with params.uri is a HeaderMismatch rejection"() {
+        // The mismatch branch names the mirrored field (params.uri) -- distinct from the
+        // missing-header case above and from the tools/call twin (params.name).
+        when:
+        def response = dispatch(
+            [jsonrpc: '2.0', id: 27, method: 'resources/read', params: [uri: 'hubitat://guide/performance']],
+            ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'resources/read',
+             'Mcp-Name': 'hubitat://guide/rooms'])
+
+        then:
+        mcpDriver.lastRenderArgs.status == 400
+        response.error.code == -32020
+        response.error.message.contains('params.uri')
+
+        and:
+        McpSchemaValidator.draftErrors('HeaderMismatchError', response) == []
+    }
+
+    def "resources/templates/list conforms in both eras"() {
+        when:
+        def legacy = dispatch([jsonrpc: '2.0', id: 24, method: 'resources/templates/list', params: [:]])
+        def modern = dispatch(
+            [jsonrpc: '2.0', id: 25, method: 'resources/templates/list', params: [:]],
+            ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'resources/templates/list'])
+
+        then:
+        McpSchemaValidator.legacyErrors('ListResourceTemplatesResult', legacy.result) == []
+        McpSchemaValidator.draftErrors('ListResourceTemplatesResult', modern.result) == []
+    }
+
+    // ---------------------------------------------------------------------
     // The ping / EmptyResult regression (#365)
     // ---------------------------------------------------------------------
 
