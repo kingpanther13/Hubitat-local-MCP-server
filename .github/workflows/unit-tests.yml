@@ -45,7 +45,7 @@ jobs:
           # toolchain block in build.gradle, which Gradle locates from
           # the runner's pre-installed temurin-11.
           java-version: '17'
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: gradle/actions/setup-gradle@v6.2.0
       - name: Run unit tests
         run: ./gradlew test --info --warning-mode all
           ${{ matrix.mode == 'strict' && '-PharnessStrictMetaClass=true' || '' }}
