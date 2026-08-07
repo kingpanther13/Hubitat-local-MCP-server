@@ -2,6 +2,7 @@ package server
 
 import support.RMUtilsMock
 import support.ToolSpecBase
+import groovy.json.JsonOutput
 
 /**
  * Spec for toolSetRulePaused with paused=true (the pause half of the merged
@@ -232,23 +233,42 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
         rmUtils.calls.isEmpty()
     }
 
+    // Live app-id tree for the batch existence-check specs. _rmValidRuleIds intersects the
+    // RMUtils rule list with this tree, so a rule must appear in BOTH to count as existing.
+    private String appsListWithRules(List ruleIds) {
+        JsonOutput.toJson([apps: [
+            [data: [id: 21, name: "Rule Machine", type: "Rule Machine"],
+             children: ruleIds.collect { [data: [id: it, name: "Rule ${it}".toString(), type: "Rule-5.1"], children: []] }]
+        ]])
+    }
+
+    // Make _rmValidRuleIds resolve to exactly ruleIds. Driven through its own transport --
+    // RMUtils plus /hub2/appsList -- because the helper is private and an intra-script call
+    // to a private method resolves invokespecial, which a per-instance metaClass stub on the
+    // script does not intercept.
+    private void seedValidRuleIds(List ruleIds) {
+        rmUtils.stubRuleList5 = ruleIds.collect { [(it): "Rule ${it}".toString()] }
+        hubGet.register('/hub2/appsList') { params -> appsListWithRules(ruleIds) }
+    }
+
     def "a multi-id batch existence-checks every id and refuses unknown ids BEFORE dispatch"() {
         given: "a verifiable rule-id set that lacks 999"
-        script.metaClass._rmValidRuleIds = { -> [400, 401] as Set }
+        seedValidRuleIds([400, 401])
 
         when:
         script.toolSetRulePaused([ruleId: [400, 999], paused: true])
 
-        then: "the batch is refused naming the unknown id, and nothing reached RMUtils"
+        then: "the batch is refused naming the unknown id, and no dispatch reached RMUtils"
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('999')
         ex.message.contains('hub_list_rules')
-        rmUtils.calls.isEmpty()
+        !rmUtils.calls.any { it.method == 'sendAction' }
+        rmUtils.calls.any { it.method == 'getRuleList' }
     }
 
     def "a multi-id batch whose ids all exist passes the existence check and dispatches once"() {
         given:
-        script.metaClass._rmValidRuleIds = { -> [400, 401] as Set }
+        seedValidRuleIds([400, 401])
 
         when:
         def result = script.toolSetRulePaused([ruleId: [400, 401], paused: true])
@@ -257,6 +277,10 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
         result.success == true
         result.ruleIds == [400, 401]
         rmUtils.calls.findAll { it.method == 'sendAction' }.size() == 1
+
+        and: "the check ran against a VERIFIABLE set, so the pass is not the cannot-verify skip"
+        hubGet.calls.any { it.path == '/hub2/appsList' }
+        script._rmValidRuleIds() == ([400, 401] as Set)
     }
 
     @spock.lang.Unroll

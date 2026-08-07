@@ -4507,14 +4507,12 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
             moveVerifyHint = mv?.verifyHint
             break
         }
-        // RM may renumber action indices when a move crosses the gap the delete
-        // left -- re-resolve the moved action's settings index from the move's
-        // own rich return rather than trusting the pre-move value.
-        if (mv?.indicesAfter instanceof List && mv?.afterPosition instanceof Integer
-                && mv.afterPosition >= 0 && mv.afterPosition < (mv.indicesAfter as List).size()) {
-            def resolved = (mv.indicesAfter as List)[mv.afterPosition as int]
-            try { newIdx = resolved as Integer } catch (Exception ignored) { }
-        }
+        // A move changes the action's POSITION, never its settings index, so
+        // newIdx stays the add's actionIndex. (No index re-resolution from the
+        // move's rich return: indicesAfter is SORTED while afterPosition indexes
+        // the display order -- mixing them corrupts newIdx -- and a true mid-move
+        // renumber would surface as a failed final readback below, which returns
+        // the actionable error instead of a silent wrong index.)
     }
     // Ground-truth readback: the retarget IS the operation, and _rmAddAction can
     // report success:true + partial:true with the target field silently skipped.

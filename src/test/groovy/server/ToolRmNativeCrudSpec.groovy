@@ -2303,10 +2303,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // so the "non-rule app id is rejected" spec can target it: it exists in the app tree yet is
     // absent from the RMUtils rule list, which is what the existence guard resolves against.
     private String appsListWithRule(int ruleId = 555) {
+        appsListWithRules([ruleId])
+    }
+
+    // Same tree for a multi-rule set: the RM parent (id 21) with one child node per rule id.
+    private String appsListWithRules(List ruleIds) {
         JsonOutput.toJson([apps: [
-            [data: [id: 21, name: "Rule Machine", type: "Rule Machine"], children: [
-                [data: [id: ruleId, name: "Target Rule", type: "Rule-5.1"], children: []]
-            ]]
+            [data: [id: 21, name: "Rule Machine", type: "Rule Machine"],
+             children: ruleIds.collect { [data: [id: it, name: "Target Rule", type: "Rule-5.1"], children: []] }]
         ]])
     }
 
@@ -3440,31 +3444,93 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         maPosts.isEmpty()
     }
 
-    def "modifyAction happy path: movesUp arithmetic, newIdx re-resolution from the move's rich return, readback-gated success"() {
+    // ---------- modifyAction composites: real remove / collect / move, driven over the transport ----------
+
+    // _rmCollectActionIndices, _rmDeleteAction and _rmMoveAction are PRIVATE, so the intra-script
+    // call resolves invokespecial and a per-instance metaClass stub on the script never intercepts
+    // them (unlike the non-private _rmAddAction). The composites below run all three for real
+    // against an evolving statusJson: the tier-1 actions map carries display order, and the
+    // /installedapp/btn interceptor applies each delAct / arrowUp click to that order the way RM
+    // would. Returns a control map -- order (display-ordered settings indices), clicks (every
+    // button click the composite fired), moveShifts (set false to model a move-arrow click that
+    // never commits).
+    private Map wireModifyActionTransport(int ruleId, List order, Map committedSettings) {
+        Map ctl = [order: new ArrayList(order), clicks: [], moveShifts: true]
+        def statusFor = { List live ->
+            JsonOutput.toJson([
+                installedApp: [id: ruleId],
+                appSettings: live.collect { [name: "actType.${it}".toString(), value: "rulesActs"] },
+                eventSubscriptions: [[name: "evt1"]],
+                scheduledJobs: [],
+                appState: [],
+                actions: live.collectEntries { [(it.toString()): "action ${it}".toString()] },
+                childAppCount: 0, childDeviceCount: 0
+            ])
+        }
+        hubGet.register("/installedapp/configure/json/${ruleId}".toString()) { params ->
+            ruleConfigJson(ruleId, "r", [], null, committedSettings)
+        }
+        hubGet.register("/installedapp/configure/json/${ruleId}/selectActions".toString()) { params ->
+            ruleConfigJson(ruleId, "r", [], null, committedSettings)
+        }
+        hubGet.register("/installedapp/statusJson/${ruleId}".toString()) { params -> statusFor(ctl.order as List) }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn") {
+                String name = body?.name?.toString()
+                String attr = body?.stateAttribute?.toString()
+                (ctl.clicks as List) << [name: name, stateAttribute: attr]
+                Integer idx = name?.isInteger() ? name.toInteger() : null
+                List cur = ctl.order as List
+                int at = (idx == null) ? -1 : cur.indexOf(idx)
+                if (attr == "delAct" && at >= 0) {
+                    ctl.order = cur.findAll { it != idx }
+                } else if (attr == "arrowUp" && at > 0 && ctl.moveShifts) {
+                    List shifted = cur.findAll { it != idx }
+                    shifted.add(at - 1, idx)
+                    ctl.order = shifted
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        return ctl
+    }
+
+    // The add leg of the composite. _rmAddAction is non-private, so a per-instance metaClass
+    // override DOES intercept it; the rebuilt action lands at the end of the display order,
+    // which is where RM puts it.
+    private void wireModifyAddLeg(Map ctl, List specs, Integer newIndex, Map overrides = [:]) {
+        script.metaClass._rmAddAction = { Integer appId, Map spec ->
+            specs << spec
+            ctl.order = (ctl.order as List) + newIndex
+            [success: true, partial: false, actionIndex: newIndex,
+             settingsApplied: [], settingsSkipped: []] + overrides
+        }
+    }
+
+    private List arrowUpClicks(Map ctl) {
+        return (ctl.clicks as List).findAll { it.stateAttribute == "arrowUp" }
+    }
+
+    def "modifyAction happy path: movesUp arithmetic, stable newIdx across the move, readback-gated success"() {
         given: "a 3-action rule; the MIDDLE action (settings index 2, position 1 of [1,2,3]) is retargeted"
         // One configure/json fixture serves both reads: the entry guard (actSubType.2/ruleAct.2)
-        // and the post-rebuild verification (ruleAct.9 -- the RE-RESOLVED index, proving the
-        // loop trusts the move's indicesAfter over the stale pre-move value).
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null,
-            ["actType.2": "rulesActs", "actSubType.2": "getRuleActions", "ruleAct.2": ["200"], "ruleAct.9": ["300"]]) }
-        script.metaClass._rmCollectActionIndices = { Integer appId -> [1, 2, 3] }
-        script.metaClass._rmDeleteAction = { Integer appId, Integer idx -> [success: true, removedIndex: idx, beforeIndices: [1, 2, 3], afterIndices: [1, 3]] }
-        def capturedSpec = null
-        script.metaClass._rmAddAction = { Integer appId, Map spec -> capturedSpec = spec
-            [success: true, partial: false, actionIndex: 4, settingsApplied: ["ruleAct.4"], settingsSkipped: []] }
-        def moves = []
-        script.metaClass._rmMoveAction = { Integer appId, Integer idx, String dir -> moves << [idx: idx, dir: dir]
-            [success: true, beforePosition: 2, afterPosition: 1, indicesAfter: [1, 9, 3]] }
+        // and the post-rebuild verification (ruleAct.4 -- the ADD's index: a move changes the
+        // action's position, never its settings index, so newIdx must stay 4 while the real move
+        // takes display order [1,3,4] to [1,4,3]).
+        def ma = wireModifyActionTransport(100, [1, 2, 3],
+            ["actType.2": "rulesActs", "actSubType.2": "getRuleActions", "ruleAct.2": ["200"], "ruleAct.4": ["300"]])
+        def specs = []
+        wireModifyAddLeg(ma, specs, 4)
 
         when:
         def result = script._rmModifyAction(100, 2, [ruleIds: [300]])
 
         then: "one move-up (position 1 of 3 -> one action after it), against the add's index"
-        moves == [[idx: 4, dir: "up"]]
-        capturedSpec.capability == "runRule"
+        arrowUpClicks(ma) == [[name: "4", stateAttribute: "arrowUp"]]
+        specs[0].capability == "runRule"
 
-        and: "newActionIndex re-resolves to the move's indicesAfter[afterPosition], and readback against THAT index gates success"
-        result.newActionIndex == 9
+        and: "newActionIndex is the add's settings index (unchanged by the move), and the readback against it gates success"
+        result.newActionIndex == 4
         result.movesUp == 1
         result.movesDone == 1
         result.verifiedTargets == ["300"]
@@ -3473,37 +3539,36 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "modifyAction reposition soft-failure STOPS the move loop and flips success false with the verifyHint"() {
-        given: "the retargeted action needs two moves; the FIRST move returns the asyncCommitLikely soft shape"
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null,
-            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"], "ruleAct.4": ["300"]]) }
-        script.metaClass._rmCollectActionIndices = { Integer appId -> [1, 2, 3] }
-        script.metaClass._rmDeleteAction = { Integer appId, Integer idx -> [success: true, removedIndex: idx, beforeIndices: [1, 2, 3], afterIndices: [2, 3]] }
-        script.metaClass._rmAddAction = { Integer appId, Map spec -> [success: true, partial: false, actionIndex: 4, settingsApplied: ["ruleAct.4"], settingsSkipped: []] }
-        def moves = []
-        script.metaClass._rmMoveAction = { Integer appId, Integer idx, String dir -> moves << idx
-            [success: false, asyncCommitLikely: true, partial: true, verifyHint: "Do not blind-retry: verify the position first."] }
+        given: "the retargeted action needs two moves; the FIRST arrow click never commits"
+        // ruleAct.4 IS committed, so the readback passes and the move soft-failure is the sole
+        // cause of success:false.
+        def ma = wireModifyActionTransport(100, [1, 2, 3],
+            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"], "ruleAct.4": ["300"]])
+        ma.moveShifts = false
+        def specs = []
+        wireModifyAddLeg(ma, specs, 4)
 
         when: "modifying settings index 1 at position 0 of 3 (movesUp == 2)"
         def result = script._rmModifyAction(100, 1, [ruleIds: [300]])
 
         then: "the loop stopped after the first soft failure instead of walking the action further"
-        moves.size() == 1
+        arrowUpClicks(ma).size() == 1
         result.movesUp == 2
         result.movesDone == 1
         result.moveSoftFail == true
-        result.verifyHint.contains("verify the position")
+        result.verifyHint.contains("VERIFY before retrying")
+        result.verifyHint.contains("Do not blind-retry")
         result.success == false
         result.partial == true
     }
 
     def "modifyAction readback mismatch (target field silently skipped) flips success false even when the add reported success"() {
         given: "the add returns success:true + partial:true with ruleAct skipped; the readback finds no committed target"
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null,
-            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]]) }
-        script.metaClass._rmCollectActionIndices = { Integer appId -> [1] }
-        script.metaClass._rmDeleteAction = { Integer appId, Integer idx -> [success: true, removedIndex: idx, beforeIndices: [1], afterIndices: []] }
-        script.metaClass._rmAddAction = { Integer appId, Map spec ->
-            [success: true, partial: true, actionIndex: 2, settingsApplied: ["actType.2", "actSubType.2"], settingsSkipped: [[key: "ruleAct.2", reason: "silent_rejection"]]] }
+        def ma = wireModifyActionTransport(100, [1],
+            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]])
+        def specs = []
+        wireModifyAddLeg(ma, specs, 2, [partial: true, settingsApplied: ["actType.2", "actSubType.2"],
+                                        settingsSkipped: [[key: "ruleAct.2", reason: "silent_rejection"]]])
 
         when:
         def result = script._rmModifyAction(100, 1, [ruleIds: [300]])
@@ -3517,20 +3582,19 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "modifyAction budget pause returns finish-up guidance and never claims success"() {
         given: "two moves needed but the response budget is already exhausted"
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null,
-            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]]) }
-        script.metaClass._rmCollectActionIndices = { Integer appId -> [1, 2, 3] }
-        script.metaClass._rmDeleteAction = { Integer appId, Integer idx -> [success: true, removedIndex: idx, beforeIndices: [1, 2, 3], afterIndices: [2, 3]] }
-        script.metaClass._rmAddAction = { Integer appId, Map spec -> [success: true, partial: false, actionIndex: 4, settingsApplied: ["ruleAct.4"], settingsSkipped: []] }
-        script.metaClass._timeBudgetExceeded = { Long t0 -> true }
-        def moves = []
-        script.metaClass._rmMoveAction = { Integer appId, Integer idx, String dir -> moves << idx; [success: true] }
+        // Real _timeBudgetExceeded: a 1ms LAN budget against a t0 of 1 is past due at the
+        // harness's fixed now(), so the first move-loop checkpoint pauses.
+        settingsMap.lanBudgetMs = 1
+        def ma = wireModifyActionTransport(100, [1, 2, 3],
+            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]])
+        def specs = []
+        wireModifyAddLeg(ma, specs, 4)
 
         when:
-        def result = script._rmModifyAction(100, 1, [ruleIds: [300]], 12345L)
+        def result = script._rmModifyAction(100, 1, [ruleIds: [300]], 1L)
 
         then: "no move fired, the pause is explicit, and the error forbids re-issuing modifyAction"
-        moves.isEmpty()
+        arrowUpClicks(ma).isEmpty()
         result.budgetPaused == true
         result.movesRemaining == 2
         result.success == false
@@ -3541,13 +3605,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "modifyAction pauseRule family: preserved fields decode the inverted pR boolean; mods.action overrides"() {
         given: "a committed PAUSE action (pR.1 'false' = Pause) targeting rule 200"
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null,
-            ["actType.1": "rulesActs", "actSubType.1": "getPauseResumeRules", "pauseRule.1": ["200"], "pR.1": "false", "pauseRule.2": ["200"]]) }
-        script.metaClass._rmCollectActionIndices = { Integer appId -> [1] }
-        script.metaClass._rmDeleteAction = { Integer appId, Integer idx -> [success: true, removedIndex: idx, beforeIndices: [1], afterIndices: []] }
+        def ma = wireModifyActionTransport(100, [1],
+            ["actType.1": "rulesActs", "actSubType.1": "getPauseResumeRules", "pauseRule.1": ["200"], "pR.1": "false", "pauseRule.2": ["200"]])
         def specs = []
-        script.metaClass._rmAddAction = { Integer appId, Map spec -> specs << spec
-            [success: true, partial: false, actionIndex: 2, settingsApplied: ["pauseRule.2"], settingsSkipped: []] }
+        wireModifyAddLeg(ma, specs, 2)
 
         when: "retargeting only (action omitted) preserves the committed pause verb"
         def preserved = script._rmModifyAction(100, 1, [ruleIds: [200]])
@@ -3557,7 +3618,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         specs[0].action == "pause"
         preserved.success == true
 
-        when: "mods.action='resume' overrides it"
+        when: "mods.action='resume' overrides it, against a rule back in its pre-modify shape"
+        ma.order = [1]
         script._rmModifyAction(100, 1, [ruleIds: [200], action: "resume"])
 
         then:
@@ -3566,13 +3628,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "modifyAction privateBoolean family: preserved value decodes the inverted pvTF boolean; mods.value overrides"() {
         given: "a committed set-private-boolean-FALSE action (pvTF.1 'true' = FALSE) targeting rule 200"
-        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null,
-            ["actType.1": "rulesActs", "actSubType.1": "getSetPrivateBoolean", "privateT.1": ["200"], "pvTF.1": "true", "privateT.2": ["200"]]) }
-        script.metaClass._rmCollectActionIndices = { Integer appId -> [1] }
-        script.metaClass._rmDeleteAction = { Integer appId, Integer idx -> [success: true, removedIndex: idx, beforeIndices: [1], afterIndices: []] }
+        def ma = wireModifyActionTransport(100, [1],
+            ["actType.1": "rulesActs", "actSubType.1": "getSetPrivateBoolean", "privateT.1": ["200"], "pvTF.1": "true", "privateT.2": ["200"]])
         def specs = []
-        script.metaClass._rmAddAction = { Integer appId, Map spec -> specs << spec
-            [success: true, partial: false, actionIndex: 2, settingsApplied: ["privateT.2"], settingsSkipped: []] }
+        wireModifyAddLeg(ma, specs, 2)
 
         when: "retargeting only preserves the committed value (pvTF 'true' means FALSE)"
         script._rmModifyAction(100, 1, [ruleIds: [200]])
@@ -3581,7 +3640,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         specs[0].capability == "privateBoolean"
         specs[0].value == false
 
-        when: "mods.value=true overrides"
+        when: "mods.value=true overrides, against a rule back in its pre-modify shape"
+        ma.order = [1]
         script._rmModifyAction(100, 1, [ruleIds: [200], value: true])
 
         then:
@@ -3595,19 +3655,16 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             maPosts << path
             [status: 200, location: null, data: '{"status":"success"}']
         }
-        def deletes = []
-        script.metaClass._rmDeleteAction = { Integer appId, Integer idx -> deletes << idx; [success: true] }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null,
             ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]]) }
 
         when:
         script._rmModifyAction(100, 1, [ruleIds: mods])
 
-        then: "refused with the not-touched sentinel; the delete leg never ran"
+        then: "refused with the not-touched sentinel; the delete leg never ran (its delAct click is the POST that would show)"
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("non-empty ruleIds")
         ex.message.contains("RM is not touched")
-        deletes.isEmpty()
         maPosts.isEmpty()
 
         where:
@@ -3615,20 +3672,26 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "modifyAction refuses a nonexistent target rule BEFORE the delete when the rule list is verifiable"() {
-        given: "a readable rule-id set that does not contain the requested target"
-        script.metaClass._rmValidRuleIds = { -> [200, 300] as Set }
-        def deletes = []
-        script.metaClass._rmDeleteAction = { Integer appId, Integer idx -> deletes << idx; [success: true] }
+        given: "a readable rule-id set -- RMUtils intersected with the app tree -- that lacks 999"
+        rmUtils = new RMUtilsMock()
+        rmUtils.stubRuleList5 = [[200: 'Rule 200'], [300: 'Rule 300']]
+        rmUtils.install()
+        hubGet.register('/hub2/appsList') { params -> appsListWithRules([200, 300]) }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << path
+            [status: 200, location: null, data: '']
+        }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null,
             ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]]) }
 
         when:
         script._rmModifyAction(100, 1, [ruleIds: [999]])
 
-        then:
+        then: "refused pre-write -- the delAct click never went out, in fact no POST of any kind did"
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("999")
-        deletes.isEmpty()
+        posts.isEmpty()
     }
 
     def "modifyAction passes validation on a committed runRule action and reaches the mutation leg (sentinel)"() {
@@ -40131,9 +40194,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // The create arm runs the RE walk between triggers and actions. When the RE
         // helper reports success:false, the create must NOT report clean: the result
         // is success:false + partial:true + non-empty repairHints so an LLM driver
-        // sees the incomplete piece. The shell builder drives the REAL
-        // _createNativeAppShell; only _rmAddRequiredExpression (a same-class helper) is
-        // stubbed to fail, so the partial-rollup logic is what's under test.
+        // sees the incomplete piece. Both _createNativeAppShell and the RE walk run for
+        // real; the mainPage fixture exposes no condition inputs, so the walk genuinely
+        // fails and the partial-rollup logic is what's under test.
         enableWrite()
         hubGet.register('/hub2/appsList') { params -> appsListJson(21) }
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
@@ -40147,7 +40210,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
         hubGet.register('/installedapp/statusJson/988') { params -> statusJson(988) }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass._rmAddRequiredExpression = { Integer appId, Map spec -> [success: false, error: "stub fail"] }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
         }
