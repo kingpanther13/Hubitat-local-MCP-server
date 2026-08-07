@@ -2528,6 +2528,30 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 **Expected**: `hub_set_variable` → `hub_get_variable` → `hub_set_variable` → `hub_get_variable` → `hub_list_variables`.
 **Equivalent to**: T86
 
+#### T302 — Pause a whole set of automations at once
+
+```json
+{
+  "setup_prompt": "Create three test rules called 'BAT NL Cutover A', 'BAT NL Cutover B', and 'BAT NL Cutover C', each with a time trigger at 23:58 and a log action. Mark them as test rules.",
+  "test_prompt": "I'm about to switch over some automations and don't want the old set firing mid-change. Stop 'BAT NL Cutover A', 'BAT NL Cutover B', and 'BAT NL Cutover C' from running — all together, as one step if you can — then confirm none of them is active. When that checks out, bring all three back at once and confirm they're running again.",
+  "teardown_prompt": "Delete the rules 'BAT NL Cutover A', 'BAT NL Cutover B', and 'BAT NL Cutover C'."
+}
+```
+
+**Expected**: `hub_set_rule_paused` with `ruleId=[A,B,C]` (one call, array form) + `paused=true`, verify via `hub_list_rules` status, then one array-form resume + verify. FAIL only if the AI claims batch pause is impossible; three sequential single-rule calls is a soft pass (the array form is the intended one-step path).
+
+#### T303 — Point a caller automation at a replacement rule
+
+```json
+{
+  "setup_prompt": "Create two empty test rules called 'BAT NL Old Target' and 'BAT NL New Target', then a third test rule called 'BAT NL Caller' whose only action runs the actions of 'BAT NL Old Target'. Mark all three as test rules.",
+  "test_prompt": "'BAT NL Caller' currently hands off to 'BAT NL Old Target'. I've rebuilt that logic in 'BAT NL New Target' — switch the hand-off over so 'BAT NL Caller' runs 'BAT NL New Target' instead, without touching anything else about the caller. Show me the caller's config afterward so I can see the hand-off now points at the new rule.",
+  "teardown_prompt": "Delete the rules 'BAT NL Caller', 'BAT NL Old Target', and 'BAT NL New Target'."
+}
+```
+
+**Expected**: `hub_set_rule` with `modifyAction={index, mods:{ruleIds:[<new-target-id>]}}` (one op), then `hub_get_app_config` readback showing the Run Actions reference on the new target. removeAction+addAction via `patches` is a soft pass; FAIL if the caller is rebuilt from scratch or the old target is modified/deleted.
+
 ---
 
 ## Excluded Tests (Destructive — Manual Only)

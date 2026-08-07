@@ -177,4 +177,68 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
         result.success == true
         rmUtils.calls.any { it.method == 'sendAction' && it.action == 'pauseRule' }
     }
+
+    def "array ruleId pauses the whole set in ONE sendAction dispatch"() {
+        when:
+        def result = script.toolSetRulePaused([ruleId: [400, 401, 402], paused: true])
+
+        then:
+        result.success == true
+        result.ruleIds == [400, 401, 402]
+        result.ruleId == null
+        result.paused == true
+        def sends = rmUtils.calls.findAll { it.method == 'sendAction' && it.action == 'pauseRule' }
+        sends.size() == 1
+        sends[0].ruleIds == [400, 401, 402]
+    }
+
+    def "array ruleId coerces String ids and dedupes preserving order"() {
+        when:
+        def result = script.toolSetRulePaused([ruleId: ['402', 400, '400'], paused: false])
+
+        then:
+        result.success == true
+        result.ruleIds == [402, 400]
+        result.paused == false
+        rmUtils.calls.find { it.method == 'sendAction' }.ruleIds == [402, 400]
+    }
+
+    def "single-element array keeps the single-id response shape (ruleId present)"() {
+        when:
+        def result = script.toolSetRulePaused([ruleId: [400], paused: true])
+
+        then:
+        result.success == true
+        result.ruleId == 400
+        result.ruleIds == [400]
+    }
+
+    def "empty ruleId array throws IllegalArgumentException"() {
+        when:
+        script.toolSetRulePaused([ruleId: [], paused: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('must not be empty')
+    }
+
+    @spock.lang.Unroll
+    def "hub_set_rule_paused via dispatch pauses an array of ruleIds in one call (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+
+        when:
+        def response = mcpDriver.callTool('hub_set_rule_paused', [ruleId: [400, 401], paused: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.ruleIds == [400, 401]
+        rmUtils.calls.findAll { it.method == 'sendAction' && it.action == 'pauseRule' }.size() == 1
+
+        where:
+        useGateways << [true, false]
+    }
 }

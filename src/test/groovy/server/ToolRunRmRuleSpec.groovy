@@ -451,4 +451,43 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         result.success == true
         rmUtils.calls.any { it.method == 'sendAction' && it.action == 'runRule' }
     }
+
+    def "array ruleId runs the whole set in ONE sendAction dispatch"() {
+        when:
+        def result = script.toolRunRmRule([ruleId: [300, 301], action: 'rule'])
+
+        then:
+        result.success == true
+        result.ruleIds == [300, 301]
+        result.ruleId == null
+        def sends = rmUtils.calls.findAll { it.method == 'sendAction' && it.action == 'runRule' }
+        sends.size() == 1
+        sends[0].ruleIds == [300, 301]
+    }
+
+    def "array ruleId with action=stop toggles each rule and aggregates per-rule results"() {
+        given:
+        hubGet.register('/installedapp/statusJson/107') { params -> minimalStatusJson(107, false) }
+        hubGet.register('/installedapp/statusJson/108') { params -> minimalStatusJson(108, true) }
+
+        when: 'stop 107 (running -> clicks) and 108 (already stopped -> no-op)'
+        def result = script.toolRunRmRule([ruleId: [107, 108], action: 'stop'])
+
+        then:
+        result.success == true
+        result.ruleIds == [107, 108]
+        result.results.size() == 2
+        result.results[0].ruleId == 107
+        result.results[1].ruleId == 108
+        result.results[1].rmAction == 'noop'
+    }
+
+    def "empty ruleId array throws IllegalArgumentException"() {
+        when:
+        script.toolRunRmRule([ruleId: []])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('must not be empty')
+    }
 }

@@ -330,4 +330,17 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         result.success == true
         rmUtils.calls.any { it.method == 'sendAction' && it.action == 'setRuleBooleanTrue' }
     }
+
+    def "array ruleId sets the private boolean for the whole set in ONE sendAction dispatch"() {
+        when:
+        def result = script.toolSetRmRuleBoolean([ruleId: [900, 901], value: false])
+
+        then:
+        result.success == true
+        result.ruleIds == [900, 901]
+        result.ruleId == null
+        def sends = rmUtils.calls.findAll { it.method == 'sendAction' && it.action == 'setRuleBooleanFalse' }
+        sends.size() == 1
+        sends[0].ruleIds == [900, 901]
+    }
 }

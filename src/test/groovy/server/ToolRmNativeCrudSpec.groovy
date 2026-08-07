@@ -3360,6 +3360,97 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         thrownEx.message.contains("REACHED_EDITCOND_POST")
     }
 
+    // ---------- modifyAction (issue #376) ----------
+
+    def "modifyAction rejects an index that has no committed action"() {
+        given: "a rule whose settings carry only action 1"
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]]) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "actType.1", value: "rulesActs"]]) }
+
+        when:
+        script._rmModifyAction(100, 3, [ruleIds: [200]])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("modifyAction.index 3 not found")
+        ex.message.contains("RM is not touched")
+    }
+
+    def "modifyAction rejects a non-rule-targeting action steering to removeAction + addAction"() {
+        given: "action 1 is a switch action"
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, ["actType.1": "switchActs", "actSubType.1": "getSwitchOn"]) }
+
+        when:
+        script._rmModifyAction(100, 1, [ruleIds: [200]])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("rule-targeting actions")
+        ex.message.contains("removeAction + addAction")
+        ex.message.contains("RM is not touched")
+    }
+
+    def "modifyAction rejects mods keys outside the action family's channel"() {
+        given: "action 1 is runRule (only ruleIds is modifiable)"
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]]) }
+
+        when:
+        script._rmModifyAction(100, 1, [ruleIds: [200], state: "on"])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("supports mods: ruleIds")
+        ex.message.contains("state")
+        ex.message.contains("RM is not touched")
+    }
+
+    def "modifyAction rejects empty mods"() {
+        given:
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]]) }
+
+        when:
+        script._rmModifyAction(100, 1, [:])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("at least one of")
+    }
+
+    def "modifyAction passes validation on a committed runRule action and reaches the mutation leg (sentinel)"() {
+        given: "committed runRule actions at indices 1 and 2; the first mutating POST throws a sentinel"
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"], "actType.2": "rulesActs", "actSubType.2": "getRuleActions", "ruleAct.2": ["201"]]) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "actType.1", value: "rulesActs"], [name: "actType.2", value: "rulesActs"]]) }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            throw new IllegalStateException("REACHED_MUTATION_POST")
+        }
+
+        when: "retargeting action 1 to rule 300 (rule-list existence check skips: app tree unreadable in harness)"
+        Exception thrownEx = null
+        try {
+            script._rmModifyAction(100, 1, [ruleIds: [300]])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "every guard passed and execution reached the first mutating hub write"
+        thrownEx != null
+        thrownEx.message.contains("REACHED_MUTATION_POST")
+    }
+
+    def "modifyAction via toolSetRule dispatch surfaces the guard refusal as the structured error envelope"() {
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, ["actType.1": "switchActs", "actSubType.1": "getSwitchOn"]) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "actType.1", value: "switchActs"]]) }
+
+        when: "modifyAction targets a non-rule-targeting action through the public dispatcher"
+        def result = script.toolSetRule([appId: 100, modifyAction: [index: 1, mods: [ruleIds: [300]]], confirm: true])
+
+        then: "the refusal comes back as the structured error envelope, not a bare throw"
+        result.success == false
+        result.error.contains("rule-targeting actions")
+        result.error.contains("RM is not touched")
+    }
+
     def "modifyTrigger with a normal enum state is not rejected by the state-change guard"() {
         when: "an existing trigger's state is edited to a normal enum value (no mocks)"
         Exception thrownEx = null
@@ -8904,6 +8995,52 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "page-navigation POST uses the discovered href idx (0 for clone confirmation page)"
         def navPost = posts.find { it.path == "/installedapp/update/json" && it.body?.containsKey("_action_href_name|importRule|0") }
         navPost != null
+    }
+
+    def "hub_clone_native_app stageDisabled disables the new app AND its children after the clone"() {
+        given: "the full clone harness, a child under the new clone (Button-Controller shape), and the disable endpoints"
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Source Rule", [], 21) }
+        hubGet.register('/apps/api/4242/app/100') { params -> '<html>source-context page</html>' }
+        hubGet.register('/installedapp/configure/json/4242/main') { params -> clonerPageStateWithIdx("importRule", 0) }
+        int parentCalls = 0
+        hubGet.register('/installedapp/configure/json/21') { params ->
+            parentCalls++
+            parentCalls <= 1
+                ? parentConfigJson(21, [[id: 100, label: "Source Rule"]])
+                : parentConfigJson(21, [[id: 100, label: "Source Rule"], [id: 250, label: "Source Rule clone"]])
+        }
+        hubGet.register('/installedapp/configure/json/250') { params -> parentConfigJson(250, [[id: 251, label: "child button rule"]]) }
+        hubGet.register('/installedapp/json/250') { params -> '{"id":250,"disabled":true}' }
+        hubGet.register('/installedapp/json/251') { params -> '{"id":251,"disabled":true}' }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/apps/api/4242/app/100", data: ""]
+        }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 ->
+            posts << [path: path, body: decodeForm(encodedBody)]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        def disablePosts = []
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            disablePosts << [path: path, body: body]
+            '{"status":"success"}'
+        }
+
+        when:
+        def result = script.toolCloneNativeApp([sourceAppId: 100, stageDisabled: true, confirm: true])
+
+        then: "the clone succeeds and BOTH the new app and its child were disabled + read-back verified"
+        result.success == true
+        result.newAppId == 250
+        result.stagedDisabled == [250, 251]
+        result.stageFailures == null
+        result.note.contains("Staged inactive")
+        disablePosts.count { it.path == "/installedapp/disable" } == 2
     }
 
     def "hub_clone_native_app surfaces isError + error when child discovery returns null (soft-failure shape)"() {

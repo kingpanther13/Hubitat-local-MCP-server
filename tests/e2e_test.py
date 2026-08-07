@@ -3530,6 +3530,23 @@ class TestRunner:
         assert resumed.get("status") == "active" and resumed.get("paused") is False, \
             f"resumed rule should read status active again, got: {resumed}"
 
+        # ARRAY form (issue #376): ruleId also accepts an array -- one RMUtils dispatch covers a
+        # whole set (the staged-migration cutover shape). Exercised with a one-element array
+        # against the SAME rule to keep the RM e2e rule budget flat; multi-rule dispatch
+        # semantics are pinned by Spock. The wire concerns here are the union-typed ruleId
+        # argument surviving the relay and the ruleIds response key.
+        arr_pause = _status_write("hub_set_rule_paused", {"ruleId": [app_id], "paused": True},
+                                  "hub_set_rule_paused(paused=True, array form)")
+        if isinstance(arr_pause, dict) and "ruleIds" in arr_pause:
+            assert [str(x) for x in arr_pause["ruleIds"]] == [str(app_id)], \
+                f"array-form pause should echo ruleIds=[{app_id}], got: {arr_pause}"
+        arr_paused = _rule_status_when(app_id, lambda s: s.get("status") == "paused" and s.get("paused") is True)
+        assert arr_paused.get("paused") is True, f"array-form pause did not land: {arr_paused}"
+        _status_write("hub_set_rule_paused", {"ruleId": [app_id], "paused": False},
+                      "hub_set_rule_paused(paused=False, array form)")
+        arr_resumed = _rule_status_when(app_id, lambda s: s.get("status") == "active" and s.get("paused") is False)
+        assert arr_resumed.get("paused") is False, f"array-form resume did not land: {arr_resumed}"
+
         # DISABLED (issue #359): the red-X disabled flag is the other status axis. Disable the
         # SAME rule via hub_set_app_disabled and confirm hub_list_rules reports status "disabled"
         # + disabled:true, then re-enable and confirm it returns to "active" -- BEFORE the EDIT
@@ -3668,6 +3685,28 @@ class TestRunner:
                              "confirm": True}})
                 assert runrule_ok.get("success") is True, \
                     f"runRule targeting an existing rule id ({runrule_target_id}) should be accepted and commit, got: {runrule_ok}"
+                # modifyAction retarget (issue #376): point the just-committed runRule action at a
+                # SECOND target in one op -- the staged-migration caller-retarget shape. The rebuild
+                # gives the action a NEW settings index (identity-preserving rebuild, position kept);
+                # verify by reading the committed ruleAct.<newIdx> back.
+                runrule_target_b = self._create_native_rule("FailLoudRunRuleTargetB", {
+                    "addActions": [{"capability": "log", "message": "E2E modifyAction retarget target"}],
+                })
+                try:
+                    ma_idx = runrule_ok.get("actionIndex")
+                    assert ma_idx is not None, f"runRule accept response carried no actionIndex: {runrule_ok}"
+                    ma = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                        "args": {"appId": app_id, "modifyAction": {"index": ma_idx, "mods": {"ruleIds": [runrule_target_b]}},
+                                 "confirm": True}})
+                    assert ma.get("success") is True and ma.get("newActionIndex") is not None, \
+                        f"modifyAction retarget should succeed with a newActionIndex, got: {ma}"
+                    ma_cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
+                        "args": {"appId": app_id, "includeSettings": True}})
+                    committed = (ma_cfg.get("settings") or {}).get(f"ruleAct.{ma.get('newActionIndex')}")
+                    assert committed is not None and [str(x) for x in committed] == [str(runrule_target_b)], \
+                        f"retargeted runRule action should commit ruleAct.{ma.get('newActionIndex')}=[{runrule_target_b}], got: {committed!r}"
+                finally:
+                    self._delete_native(runrule_target_b)
             finally:
                 self._delete_native(runrule_target_id)
             # Fail-loud parity on the CONDITION surface (addRequiredExpression): a date/day-window

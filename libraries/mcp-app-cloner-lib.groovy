@@ -349,6 +349,9 @@ def toolCloneNativeApp(args) {
             result.isError = true
             result.error = note
         }
+        if (args?.stageDisabled == true && newAppId != null) {
+            _appClonerApplyStageDisabled(result, newAppId)
+        }
         return result
     } finally {
         // Reap the transient cloner on every path. The cloned rule is already a
@@ -609,12 +612,52 @@ def toolImportNativeApp(args) {
             result.isError = true
             result.error = note
         }
+        if (args?.stageDisabled == true && newAppId != null) {
+            _appClonerApplyStageDisabled(result, newAppId)
+        }
         return result
     } finally {
         // Reap the transient cloner on every path. The imported rule is already a
         // child of the target parent (discovered above), not of the cloner.
         // Prevents accumulating hidden 'Export/Import/Clone' apps (BUG-8).
         _appClonerCleanup(clonerAppId)
+    }
+}
+
+// Stage a freshly cloned/imported app inactive: disable the new app and every
+// child under it via the admin red-X (works on any app type -- RMUtils pause
+// reaches only RM 5.x rules, and a Button Controller clone's child Button
+// Rules subscribe to live button events, so children must be covered too).
+// Verified live on fw 2.5.1.135: a clone of an ACTIVE rule lands ACTIVE and a
+// clone/import is live until this (or a follow-up call) disables it.
+// Children are enumerated BEFORE any disable so a parent flag can't hide them.
+private void _appClonerApplyStageDisabled(Map result, Integer newAppId) {
+    def staged = []
+    def failures = []
+    List targets = [newAppId]
+    try {
+        def newCfg = _rmFetchConfigJson(newAppId)
+        ((newCfg?.childApps ?: []) as List).each { c ->
+            def cid = c?.id?.toString()
+            if (cid?.isInteger()) targets << cid.toInteger()
+        }
+    } catch (Exception childErr) {
+        failures << [appId: newAppId, error: "child enumeration failed: ${childErr.message} -- children (if any) were NOT disabled"]
+    }
+    targets.each { tid ->
+        def dres
+        try { dres = toolSetAppDisabled([appId: tid, disabled: true]) }
+        catch (Exception dErr) { dres = [success: false, error: dErr.message ?: dErr.toString()] }
+        if (dres?.success) staged << tid
+        else failures << [appId: tid, error: dres?.error ?: "disable read-back mismatch"]
+    }
+    result.stagedDisabled = staged
+    if (failures) {
+        result.stageFailures = failures
+        result.partial = true
+        result.note = "${result.note} STAGING PARTIAL: some apps could not be disabled -- see stageFailures; disable them via hub_set_app_disabled before relying on stage-inactive."
+    } else {
+        result.note = "${result.note} Staged inactive: ${staged.size()} app(s) disabled (the new app${staged.size() > 1 ? ' + children' : ''}); re-enable with hub_set_app_disabled(disabled=false)."
     }
 }
 
@@ -737,6 +780,7 @@ def _getAllToolDefinitions_partAppCloner() {
                     sourceAppId: [type: "integer", description: "Installed-app ID of the rule/app to clone. (alias: appId) Either sourceAppId or appId is required."],
                     appId: [type: "integer", description: "Alias for sourceAppId."],
                     newName: [type: "string", description: "Label for the new cloned app.[[FLAT_TRIM]] If omitted, the cloner default ('<source-label> clone') is kept.[[/FLAT_TRIM]]"],
+                    stageDisabled: [type: "boolean", description: "true = disable the new app AND its child apps right after the clone (staged-migration safety: a clone of an ACTIVE rule lands ACTIVE, and a cloned Button Controller's child Button Rules react to live button events). Re-enable via hub_set_app_disabled(disabled=false)."],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
                 // "sourceAppId OR appId" can't be a schema-level anyOf (Anthropic's
@@ -751,6 +795,9 @@ def _getAllToolDefinitions_partAppCloner() {
                     sourceAppId: [type: "integer", description: "Source app ID"],
                     clonerAppId: [type: "integer", description: "Temporary cloner app ID (auto-deleted after the operation)"],
                     newAppId: [type: "integer", description: "New cloned app ID, or null on soft failure"],
+                    stagedDisabled: [type: "array", description: "stageDisabled: app ids disabled (new app + children)", items: [type: "integer"]],
+                    stageFailures: [type: "array", description: "stageDisabled: apps that could NOT be disabled ({appId, error})", items: [type: "object"]],
+                    partial: [type: "boolean", description: "Present (true) when staging was requested but incomplete"],
                     isError: [type: "boolean", description: "Present (true) on soft failure"],
                     error: [type: "string", description: "Present on soft failure"],
                     note: [type: "string", description: "Human-readable result"]
@@ -796,6 +843,7 @@ def _getAllToolDefinitions_partAppCloner() {
                     fromFile: [type: "string", description: "File Manager filename to read the JSON from."],
                     parentHintAppId: [type: "integer", description: "Any existing rule's id under the target parent app.[[FLAT_TRIM]] Used purely to seed the cloner instance — has no semantic effect on the imported rule beyond placing it under the same parent.[[/FLAT_TRIM]]"],
                     newName: [type: "string", description: "Label for the imported app.[[FLAT_TRIM]] If omitted, the cloner default ('<original-label> import') is kept.[[/FLAT_TRIM]]"],
+                    stageDisabled: [type: "boolean", description: "true = disable the new app AND its child apps right after the import (staged-migration safety: an import lands ACTIVE). Re-enable via hub_set_app_disabled(disabled=false)."],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
                 // "jsonContent OR fromFile" is enforced at runtime in
@@ -817,6 +865,9 @@ def _getAllToolDefinitions_partAppCloner() {
                     originalSourceId: [type: "integer", description: "Original source app ID from the export"],
                     originalLabel: [type: "string", description: "Original app label, or null"],
                     contentLength: [type: "integer", description: "Imported JSON length"],
+                    stagedDisabled: [type: "array", description: "stageDisabled: app ids disabled (new app + children)", items: [type: "integer"]],
+                    stageFailures: [type: "array", description: "stageDisabled: apps that could NOT be disabled ({appId, error})", items: [type: "object"]],
+                    partial: [type: "boolean", description: "Present (true) when staging was requested but incomplete"],
                     isError: [type: "boolean", description: "Present (true) on soft failure"],
                     error: [type: "string", description: "Present on soft failure"],
                     note: [type: "string", description: "Human-readable result"]

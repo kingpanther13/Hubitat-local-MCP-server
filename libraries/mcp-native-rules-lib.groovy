@@ -41,11 +41,11 @@ def _getAllToolDefinitions_partNativeRM() {
         ],
         [
             name: "hub_call_rule",
-            description: "Trigger a Rule Machine rule. Not destructive (invokes existing user-configured automation). Requires the Write master. Call `hub_get_tool_guide(section='builtin_app_tools')` for action semantics.",
+            description: "Trigger one or more Rule Machine rules. Not destructive (invokes existing user-configured automation). Requires the Write master. Call `hub_get_tool_guide(section='builtin_app_tools')` for action semantics.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    ruleId: [type: "integer", description: "Rule ID from hub_list_rules"],
+                    ruleId: [type: ["integer", "array"], items: [type: "integer"], description: "Rule ID from hub_list_rules, or an array of rule IDs to act on in one call"],
                     action: [type: "string", enum: ["rule", "actions", "stop", "start"], description: "Which RM action to invoke. Default: rule."]
                 ],
                 required: ["ruleId"]
@@ -53,9 +53,11 @@ def _getAllToolDefinitions_partNativeRM() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    success: [type: "boolean", description: "Whether the action succeeded"],
-                    ruleId: [type: "integer", description: "Rule app ID acted on"],
+                    success: [type: "boolean", description: "Whether the action succeeded (multi-rule: all succeeded)"],
+                    ruleId: [type: "integer", description: "Rule app ID acted on (present when exactly one)"],
+                    ruleIds: [type: "array", items: [type: "integer"], description: "All rule app IDs acted on"],
                     rmAction: [type: "string", description: "RM action performed (runRule, runRuleAct, stopRule toggle, noop)"],
+                    results: [type: "array", items: [type: "object"], description: "Per-rule results (multi-rule stop/start only)"],
                     fallback: [type: "string", description: "Present on old-firmware 3-arg fallback"],
                     note: [type: "string", description: "Present on no-op or informational"],
                     error: [type: "string", description: "Present on failure"]
@@ -65,12 +67,12 @@ def _getAllToolDefinitions_partNativeRM() {
         ],
         [
             name: "hub_set_rule_paused",
-            description: "Pause or resume a Rule Machine rule (paused rules don't fire on triggers). paused=true pauses, paused=false resumes (idempotent on the hub). Requires the Write master.",
+            description: "Pause or resume one or more Rule Machine rules in one call (paused rules don't fire on triggers). paused=true pauses, paused=false resumes (idempotent on the hub). Pass an array of ruleIds to pause/resume a whole set at once — one RMUtils dispatch, e.g. a staged-migration cutover. Requires the Write master.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    ruleId: [type: "integer", description: "Rule ID from hub_list_rules"],
-                    paused: [type: "boolean", description: "true = pause the rule; false = resume it."]
+                    ruleId: [type: ["integer", "array"], items: [type: "integer"], description: "Rule ID from hub_list_rules, or an array of rule IDs to pause/resume together"],
+                    paused: [type: "boolean", description: "true = pause the rule(s); false = resume."]
                 ],
                 required: ["ruleId", "paused"]
             ],
@@ -78,7 +80,8 @@ def _getAllToolDefinitions_partNativeRM() {
                 type: "object",
                 properties: [
                     success: [type: "boolean", description: "Whether the pause/resume succeeded"],
-                    ruleId: [type: "integer", description: "Rule app ID"],
+                    ruleId: [type: "integer", description: "Rule app ID (present when exactly one)"],
+                    ruleIds: [type: "array", items: [type: "integer"], description: "All rule app IDs acted on"],
                     paused: [type: "boolean", description: "Applied pause state (true=paused, false=resumed)"],
                     rmAction: [type: "string", description: "pauseRule or resumeRule"],
                     fallback: [type: "string", description: "Present on old-firmware 3-arg fallback"],
@@ -90,11 +93,11 @@ def _getAllToolDefinitions_partNativeRM() {
         ],
         [
             name: "hub_set_rule_private_boolean",
-            description: "Set a Rule Machine rule's private boolean to true or false (strict: accepts Boolean or lowercase string 'true'/'false' only). Requires the Write master.",
+            description: "Set the private boolean of one or more Rule Machine rules to true or false (strict: accepts Boolean or lowercase string 'true'/'false' only). Requires the Write master.",
             inputSchema: [
                 type: "object",
                 properties: [
-                    ruleId: [type: "integer", description: "Rule ID from hub_list_rules"],
+                    ruleId: [type: ["integer", "array"], items: [type: "integer"], description: "Rule ID from hub_list_rules, or an array of rule IDs to set together"],
                     value: [type: "boolean", description: "Target value for the rule's Private Boolean."]
                 ],
                 required: ["ruleId", "value"]
@@ -103,7 +106,8 @@ def _getAllToolDefinitions_partNativeRM() {
                 type: "object",
                 properties: [
                     success: [type: "boolean", description: "Whether the set succeeded"],
-                    ruleId: [type: "integer", description: "Rule app ID"],
+                    ruleId: [type: "integer", description: "Rule app ID (present when exactly one)"],
+                    ruleIds: [type: "array", items: [type: "integer"], description: "All rule app IDs acted on"],
                     rmAction: [type: "string", description: "setRuleBooleanTrue or setRuleBooleanFalse"],
                     fallback: [type: "string", description: "Present on old-firmware 3-arg fallback"],
                     error: [type: "string", description: "Present on failure"],
@@ -175,7 +179,7 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
             name: "hub_set_rule",
             description: """Create OR edit a Hubitat Rule Machine rule (RM 5.1) — one upsert tool. Omit appId to CREATE (name required; optionally bundle addTriggers/addActions/addRequiredExpression to populate in the same call). Provide appId to EDIT. In trigger/action/condition specs use `capability` NOT `type`. RM-only — for NON-RM classic apps (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule) use hub_set_native_app; not the legacy custom engine (hub_*_custom_rule). Requires the Write master + confirm=true + recent backup; every edit-write snapshots first (backup.backupKey for hub_restore_backup in hub_manage_backup).
 
-Shortcuts, each orchestrating the full RM 5.1 wizard in one call: addTrigger, addAction, addRequiredExpression/replaceRequiredExpression, bulk addTriggers/addActions/replaceActions, removeAction/clearActions/moveAction/removeTrigger/modifyTrigger, addLocalVariable/removeLocalVariable, patches (atomic multi-op). For a capability the shortcuts don't cover, walkStep drives one wizard page at a time (or write inputs via settings + click via button).
+Shortcuts, each orchestrating the full RM 5.1 wizard in one call: addTrigger, addAction, addRequiredExpression/replaceRequiredExpression, bulk addTriggers/addActions/replaceActions, removeAction/clearActions/moveAction/removeTrigger/modifyTrigger/modifyAction, addLocalVariable/removeLocalVariable, patches (atomic multi-op). For a capability the shortcuts don't cover, walkStep drives one wizard page at a time (or write inputs via settings + click via button).
 
 Partial-success (every shortcut): success:true can pair with partial:true — inspect partial/repairHints. A rejected trailing updateRule leaves the change written-but-not-live (subscriptionsNotLive / expressionNotLive / variableNotLive / patchesNotLive); retry hub_set_rule(button='updateRule', confirm=true). If wizardStuck:true, first hub_set_rule(button='cancelCapab', pageName=<page>, confirm=true) — restoreHint carries the exact command. On CREATE the new appId is returned even if a bundled item only partially bakes (partialTriggers/partialActions).
 
@@ -252,6 +256,10 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
                         type: "object",
                         description: "Change a trigger's state field: {index:<N>, mods:{state:'<new-state>'}}. Only the state field is supported, and only on device-state triggers (Switch, Motion, Contact, Lock, Presence, ...) — Time/Periodic/Mode triggers are rejected with a removeTrigger+addTrigger hint. To change capability or deviceIds, use removeTrigger + addTrigger."
                     ],
+                    modifyAction: [
+                        type: "object",
+                        description: "Retarget a rule-targeting action in one op: {index:<N>, mods:{ruleIds:[...]}} — e.g. point a Run Rule Actions caller at a replacement rule during a staged migration. Supported on runRule/cancelTimers/pauseRule (mods also: action 'pause'|'resume') and privateBoolean (mods also: value bool) actions; other action shapes are rejected toward removeAction + addAction. Implemented as an identity-preserving rebuild (remove + re-add + reposition), so the action's settings index changes while its position is kept."
+                    ],
                     walkStep: [
                         type: "object",
                         description: """Raw wizard walker — the escape hatch when addAction/addTrigger don't cover the capability (Periodic sub-pages, conditional-trigger binding, IF/THEN/ELSE, later-firmware features). operation='drive' runs a whole steps=[...] loop in ONE call (introspect → navigate into a sub-page → write each field → done → finalize), carrying the page forward and stopping at the first failed step (stopOnError=false to continue); the single-step primitives drive composes are introspect | write (one field) | click | navigate | done. Spec: {page, operation, write?:{field:value}, click?:{name, stateAttribute?}, navigate?:{targetPage}, hrefContext?:{fromPage, hrefName, hrefParams?}, steps?:[...]}; page is e.g. selectTriggers/selectActions/doActPage/periodic. Always check silentRejection / valueEcho.match / health (the fail-loud signals; health.skipped / health.unreadable mean not-checked, not broken). Full walker mechanics + page names: guide:true or hub_get_tool_guide(section='set_rule_reference')."""
@@ -306,9 +314,12 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
                     wizardStuckHint: [type: "string", description: "Present when wizardStuck:true; carries the cancelCapab recovery command to close the half-open wizard before the next write"],
                     removedIndices: [type: "array", description: "replace/clear-all: indices removed", items: [type: "integer"]],
                     addedActions: [type: "array", description: "replace/clear-all: actions added", items: [type: "object"]],
-                    modifiedIndex: [type: "integer", description: "modifyTrigger: modified trigger index"],
+                    modifiedIndex: [type: "integer", description: "modifyTrigger/modifyAction: modified index"],
                     verifiedState: [description: "modifyTrigger: post-edit verified state"],
                     verificationFetchFailed: [type: "boolean", description: "modifyTrigger: verification fetch failed"],
+                    newActionIndex: [type: "integer", description: "modifyAction: the rebuilt action's new settings index (position unchanged)"],
+                    movesUp: [type: "integer", description: "modifyAction: move-up clicks used to restore the original position"],
+                    spec: [type: "object", description: "modifyAction: the merged addAction spec that was re-added"],
                     triggerIndex: [type: "integer", description: "addTrigger: new trigger index"],
                     configPageError: [description: "Config-page read error, when present"],
                     hubRenderError: [type: "string", description: "addTrigger: hub render error"],
@@ -813,6 +824,21 @@ private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps
     entry.status = disabled ? "disabled" : (paused ? "paused" : "active")
 }
 
+// Normalize a ruleId argument that may be a single id or a list of ids into a
+// deduped List<Integer>. RMUtils.sendAction natively takes a LIST of rule ids,
+// so the RMUtils-backed tools accept either shape and dispatch once.
+private List<Integer> _rmRuleIdListArg(Object raw) {
+    if (raw == null) throw new IllegalArgumentException("ruleId is required")
+    def rawList = (raw instanceof List) ? raw : [raw]
+    if (rawList.isEmpty()) throw new IllegalArgumentException("ruleId array must not be empty")
+    List<Integer> ids = []
+    rawList.each { id ->
+        def n = normalizeRuleId(id)
+        if (!ids.contains(n)) ids << n
+    }
+    return ids
+}
+
 // Trigger a Rule Machine rule via RMUtils.sendAction() or the lifecycle
 // button for stop/start (RMUtils has no startRule verb — the RM 5.1 UI
 // uses the stopRule button as a toggle on state.stopped, and clicking
@@ -821,7 +847,7 @@ private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps
 // Not destructive — invokes existing user-configured automation.
 def toolRunRmRule(args) {
     if (args?.ruleId == null) throw new IllegalArgumentException("ruleId is required")
-    def ruleId = normalizeRuleId(args.ruleId)
+    def ruleIds = _rmRuleIdListArg(args.ruleId)
     def action = args?.action ?: "rule"
 
     // start/stop route through the stopRule button click (a toggle on
@@ -832,7 +858,14 @@ def toolRunRmRule(args) {
     // private boolean. To keep the verb idempotent, we read state before
     // clicking and no-op if the rule is already in the target state.
     if (action == "stop" || action == "start") {
-        return _rmToggleStopped(ruleId, action)
+        if (ruleIds.size() == 1) return _rmToggleStopped(ruleIds[0], action)
+        def results = ruleIds.collect { _rmToggleStopped(it, action) }
+        return [
+            success: results.every { it?.success == true },
+            ruleIds: ruleIds,
+            rmAction: "stopRule toggle x${ruleIds.size()}",
+            results: results
+        ]
     }
 
     def rmAction
@@ -842,7 +875,7 @@ def toolRunRmRule(args) {
         default: throw new IllegalArgumentException("Invalid action '${action}'. Must be 'rule', 'actions', 'stop', or 'start'.")
     }
 
-    return sendRmAction(ruleId, rmAction, "hub_call_rule action=${action}")
+    return sendRmAction(ruleIds, rmAction, "hub_call_rule action=${action}")
 }
 
 // Drive the RM 5.1 stopRule button — the same toggle the hub UI exposes
@@ -922,9 +955,9 @@ def toolSetRulePaused(args) {
     else if (args.paused == "true") paused = true
     else if (args.paused == "false") paused = false
     else throw new IllegalArgumentException("paused must be boolean true/false (got: ${args.paused})")
-    def ruleId = normalizeRuleId(args.ruleId)
-    def result = paused ? sendRmAction(ruleId, "pauseRule", "hub_set_rule_paused")
-                        : sendRmAction(ruleId, "resumeRule", "hub_set_rule_paused")
+    def ruleIds = _rmRuleIdListArg(args.ruleId)
+    def result = paused ? sendRmAction(ruleIds, "pauseRule", "hub_set_rule_paused")
+                        : sendRmAction(ruleIds, "resumeRule", "hub_set_rule_paused")
     // Echo the applied pause state so callers can confirm the outcome without a
     // follow-up read. RMUtils pause/resume is fire-and-forget, so this is the
     // requested/applied value, not a hub read-back.
@@ -958,7 +991,7 @@ def toolSetRmRuleBoolean(args) {
         throw new IllegalArgumentException("value must be boolean true/false (or the string 'true'/'false'), got: ${args.value}")
     }
     def rmAction = resolved ? "setRuleBooleanTrue" : "setRuleBooleanFalse"
-    return sendRmAction(normalizeRuleId(args.ruleId), rmAction, "hub_set_rule_private_boolean value=${resolved}")
+    return sendRmAction(_rmRuleIdListArg(args.ruleId), rmAction, "hub_set_rule_private_boolean value=${resolved}")
 }
 
 // Shared sendAction wrapper. Returns a consistent success/error result map.
@@ -970,23 +1003,29 @@ def toolSetRmRuleBoolean(args) {
 // overload (see sendRmActionFallback). Background on the RM API shape:
 // https://community.hubitat.com/t/rule-machine-api/7104
 private Map sendRmAction(Integer ruleId, String rmAction, String logContext) {
+    return sendRmAction([ruleId], rmAction, logContext)
+}
+
+private Map sendRmAction(List<Integer> ruleIds, String rmAction, String logContext) {
     def appLabel = app?.label ?: "MCP Rule Server"
     try {
-        hubitat.helper.RMUtils.sendAction([ruleId], rmAction, appLabel, "5.0")
-        mcpLog("info", "rm-interop", "${logContext}: sent ${rmAction} to rule ${ruleId}")
-        return [success: true, ruleId: ruleId, rmAction: rmAction]
+        hubitat.helper.RMUtils.sendAction(ruleIds, rmAction, appLabel, "5.0")
+        mcpLog("info", "rm-interop", "${logContext}: sent ${rmAction} to rule(s) ${ruleIds.join(', ')}")
+        def result = [success: true, ruleIds: ruleIds, rmAction: rmAction]
+        if (ruleIds.size() == 1) result.ruleId = ruleIds[0]
+        return result
     } catch (MissingMethodException e) {
-        return sendRmActionFallback(ruleId, rmAction, appLabel, logContext, e)
+        return sendRmActionFallback(ruleIds, rmAction, appLabel, logContext, e)
     } catch (NoSuchMethodError e) {
-        return sendRmActionFallback(ruleId, rmAction, appLabel, logContext, e)
+        return sendRmActionFallback(ruleIds, rmAction, appLabel, logContext, e)
     } catch (Throwable e) {
         // Everything else — NoClassDefFoundError (RM not installed), timeouts, NPEs
         // inside RM internals, invalid ruleId — propagates through a single error
         // response without a second attempt. Retrying a transient failure would
         // double-fire the action if the first call partially succeeded.
         def m = e.message ?: e.toString()
-        mcpLog("error", "rm-interop", "${logContext} failed for rule ${ruleId}: ${m}")
-        return [success: false, error: "RMUtils.sendAction failed: ${m}", note: _rmSendActionErrorNote(rmAction, ruleId, m)]
+        mcpLog("error", "rm-interop", "${logContext} failed for rule(s) ${ruleIds.join(', ')}: ${m}")
+        return [success: false, error: "RMUtils.sendAction failed: ${m}", note: _rmSendActionErrorNote(rmAction, ruleIds, m)]
     }
 }
 
@@ -1006,12 +1045,14 @@ private String _rmExcessiveLoadMarker() { "excessive hub load" }
 // current run state (the same one-button toggle pattern as stopRule); clicking pausRule on a
 // paused rule resumes it, so both the pause and resume cases steer to the same pausRule button.
 // Substring is scoped tightly to RMUtils' load-message text so unrelated failures keep the plain note.
-private String _rmSendActionErrorNote(String rmAction, Integer ruleId, String message) {
+private String _rmSendActionErrorNote(String rmAction, List<Integer> ruleIds, String message) {
     def base = "Verify the ruleId is valid (use hub_list_rules) and Rule Machine is installed."
     if (message && message.toLowerCase().contains(_rmExcessiveLoadMarker())) {
         if (rmAction == "pauseRule" || rmAction == "resumeRule") {
             def verb = (rmAction == "resumeRule") ? "resume" : "pause"
-            return "RMUtils hit the hub's per-app load limiter (sticky -- retrying does not clear it; an app disable/enable clears only the block on the app instance and the platform's load counters can re-trip it at once, so only a hub reboot fully resets it). To ${verb} the rule now, drive the page button directly with hub_set_rule(appId=${ruleId}, button:'pausRule', confirm:true), which bypasses RMUtils and is load-immune (pausRule is a single toggle -- clicking it on a paused rule resumes it). ${base}"
+            def perRule = (ruleIds.size() == 1) ? "hub_set_rule(appId=${ruleIds[0]}, button:'pausRule', confirm:true)"
+                                                : "hub_set_rule(appId=<id>, button:'pausRule', confirm:true) per rule (${ruleIds.join(', ')})"
+            return "RMUtils hit the hub's per-app load limiter (sticky -- retrying does not clear it; an app disable/enable clears only the block on the app instance and the platform's load counters can re-trip it at once, so only a hub reboot fully resets it). To ${verb} the rule now, drive the page button directly with ${perRule}, which bypasses RMUtils and is load-immune (pausRule is a single toggle -- clicking it on a paused rule resumes it). ${base}"
         }
         return "RMUtils hit the hub's per-app load limiter. It is sticky -- it does NOT lift when load drains and an immediate retry fails the same way. An app disable/enable clears the block on the app instance but not the platform's load counters, so it can re-trip immediately; a hub reboot is what resets them. Clear it, then reissue. ${base}"
     }
@@ -1022,16 +1063,18 @@ private String _rmSendActionErrorNote(String rmAction, Integer ruleId, String me
 // shape (MissingMethodException / NoSuchMethodError) — very old firmware that
 // predates the version-discriminator overload. Any other Throwable from the 4-arg
 // call propagates directly in sendRmAction above.
-private Map sendRmActionFallback(Integer ruleId, String rmAction, String appLabel, String logContext, Throwable original) {
+private Map sendRmActionFallback(List<Integer> ruleIds, String rmAction, String appLabel, String logContext, Throwable original) {
     try {
-        hubitat.helper.RMUtils.sendAction([ruleId], rmAction, appLabel)
-        mcpLog("info", "rm-interop", "${logContext}: sent ${rmAction} to rule ${ruleId} (3-arg fallback)")
-        return [success: true, ruleId: ruleId, rmAction: rmAction, fallback: "3-arg"]
+        hubitat.helper.RMUtils.sendAction(ruleIds, rmAction, appLabel)
+        mcpLog("info", "rm-interop", "${logContext}: sent ${rmAction} to rule(s) ${ruleIds.join(', ')} (3-arg fallback)")
+        def result = [success: true, ruleIds: ruleIds, rmAction: rmAction, fallback: "3-arg"]
+        if (ruleIds.size() == 1) result.ruleId = ruleIds[0]
+        return result
     } catch (Throwable e2) {
         def m1 = original.message ?: original.toString()
         def m2 = e2.message ?: e2.toString()
-        mcpLog("error", "rm-interop", "${logContext} failed for rule ${ruleId}: 4-arg=${m1}, 3-arg=${m2}")
-        return [success: false, error: "RMUtils.sendAction failed: ${m2}", note: "4-arg attempt also failed: ${m1}. ${_rmSendActionErrorNote(rmAction, ruleId, m2)}"]
+        mcpLog("error", "rm-interop", "${logContext} failed for rule(s) ${ruleIds.join(', ')}: 4-arg=${m1}, 3-arg=${m2}")
+        return [success: false, error: "RMUtils.sendAction failed: ${m2}", note: "4-arg attempt also failed: ${m1}. ${_rmSendActionErrorNote(rmAction, ruleIds, m2)}"]
     }
 }
 
@@ -4030,7 +4073,7 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
     def editActEntry = (status?.appState ?: []).find { it?.name?.toString() == "editAct" }
     def stuckEditAct = editActEntry?.value
     if (stuckEditAct != null) {
-        throw new IllegalStateException("removeAction(${actionIdx}) blocked: rule ${appId} has state.editAct=${stuckEditAct} set from a prior interrupted action edit. RM 5.1 silently no-ops delAct clicks until this clears. Recovery options: (a) wait ~60s for RM's stale-state timeout and retry, (b) try hub_set_rule(button='cancelAct', pageName='doActPage', confirm=true) to abort the in-flight edit (behavior unverified -- attempt at own risk), (c) hub_restore_backup with a recent snapshot.")
+        throw new IllegalStateException("removeAction(${actionIdx}) blocked: rule ${appId} has state.editAct=${stuckEditAct} set from a prior interrupted action edit. RM 5.1 silently no-ops delAct clicks until this clears. Recovery options: (a) wait ~60s for RM's stale-state timeout and retry; (b) open the rule in the Hubitat UI and finish or cancel the open action editor. Verified live on fw 2.5.1.135: cancelBtn/cancelAct clicks, updateRule, and an in-place hub_restore_backup do NOT clear a stuck editAct (restore-in-place rewrites settings, not app state) -- if (a) and (b) fail, delete the rule and hub_restore_backup(scope='source') a recent snapshot, which RECREATES it with fresh state.")
     }
     // Structural pre-flight: refuse if the deleted index is a block
     // opener/closer AND removing it would introduce a new imbalance not
@@ -4290,6 +4333,86 @@ private Map _rmModifyTrigger(Integer appId, Integer triggerIdx, Map mods) {
     ]
 }
 
+// Modify a single committed action via identity-preserving rebuild: remove the
+// action at `index`, re-add the merged spec (committed values overlaid with
+// mods), then walk the new row back to the original position with move-up
+// clicks. RM 5.1 has no workable headless in-place action editor -- the
+// doActPage edit flow depends on a browser-side btnDone auto-click (verified
+// live on fw 2.5.1.135) -- so the rebuild composes the proven
+// removeAction/addAction/moveAction primitives instead.
+//
+// Scope: rule-targeting actions only (actType rulesActs), the family whose
+// committed settings round-trip losslessly to an addAction spec:
+//   getRuleActions       (runRule)         ruleAct.<N>
+//   getStopActions       (cancelTimers)    stopAct.<N>
+//   getPauseResumeRules  (pauseRule)       pauseRule.<N> + pR.<N> (true=RESUME)
+//   getSetPrivateBoolean (privateBoolean)  privateT.<N> + pvTF.<N> (true=FALSE)
+// Other action shapes refuse toward removeAction + addAction (or patches).
+private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods) {
+    def reverse = [
+        getRuleActions:       [capability: "runRule",        listField: "ruleAct"],
+        getStopActions:       [capability: "cancelTimers",   listField: "stopAct"],
+        getPauseResumeRules:  [capability: "pauseRule",      listField: "pauseRule"],
+        getSetPrivateBoolean: [capability: "privateBoolean", listField: "privateT"]
+    ]
+    def cfg = _rmFetchConfigJson(appId)
+    def committedSettings = (cfg?.settings instanceof Map) ? (cfg.settings as Map) : [:]
+    // String-coerced keys throughout: parsed-JSON maps carry String keys, and a
+    // GString subscript lookup misses them (different hashCode).
+    def actSubType = committedSettings["actSubType.${actionIdx}".toString()]?.toString()
+    if (!actSubType) {
+        def indices = _rmCollectActionIndices(appId)
+        throw new IllegalArgumentException("modifyAction.index ${actionIdx} not found in rule ${appId}. Existing indices: ${indices.sort().join(', ')}. RM is not touched.")
+    }
+    def entry = reverse[actSubType]
+    def actType = committedSettings["actType.${actionIdx}".toString()]?.toString()
+    if (actType != "rulesActs" || entry == null) {
+        throw new IllegalArgumentException("modifyAction currently supports only rule-targeting actions (runRule, cancelTimers, pauseRule, privateBoolean). Action ${actionIdx} is actType='${actType}' actSubType='${actSubType}'. Rebuild other action shapes with removeAction + addAction (one patches call keeps it atomic). RM is not touched.")
+    }
+    def allowedMods = ["ruleIds"]
+    if (actSubType == "getPauseResumeRules") allowedMods << "action"
+    if (actSubType == "getSetPrivateBoolean") allowedMods << "value"
+    def unsupported = mods.keySet() - allowedMods
+    if (unsupported) {
+        throw new IllegalArgumentException("modifyAction on a '${entry.capability}' action supports mods: ${allowedMods.join(', ')}. Unsupported: ${unsupported.sort().join(', ')}. RM is not touched.")
+    }
+    if (mods.isEmpty()) {
+        throw new IllegalArgumentException("modifyAction.mods must set at least one of: ${allowedMods.join(', ')}. RM is not touched.")
+    }
+    def spec = [capability: entry.capability,
+                ruleIds: mods.containsKey("ruleIds") ? mods.ruleIds : committedSettings["${entry.listField}.${actionIdx}".toString()]]
+    if (actSubType == "getPauseResumeRules") {
+        // pR.<N>: true=RESUME, false=Pause (inverted; see the addAction builder).
+        def committedAction = (committedSettings["pR.${actionIdx}".toString()]?.toString() == "true") ? "resume" : "pause"
+        spec.action = mods.containsKey("action") ? mods.action : committedAction
+    }
+    if (actSubType == "getSetPrivateBoolean") {
+        // pvTF.<N>: true=FALSE (inverted; see the addAction builder).
+        def committedValue = !(committedSettings["pvTF.${actionIdx}".toString()]?.toString() == "true")
+        spec.value = mods.containsKey("value") ? mods.value : committedValue
+    }
+    // Refuse a dangling target BEFORE the remove wipes the original action.
+    _rmValidateRuleTargetExists(entry.capability, spec.ruleIds, null)
+    // Position bookkeeping before mutating: the re-added action lands at the
+    // last position and is walked up past every action after the original slot.
+    def beforeIndices = _rmCollectActionIndices(appId)
+    def pos = beforeIndices.indexOf(actionIdx)
+    int movesUp = (pos >= 0) ? (beforeIndices.size() - 1 - pos) : 0
+    def removeResult = _rmDeleteAction(appId, actionIdx)
+    def addResult = _rmAddAction(appId, spec)
+    if (addResult?.success == false) {
+        return [success: false, removedIndex: actionIdx, removeResult: removeResult, addResult: addResult, spec: spec,
+                error: "modifyAction: action ${actionIdx} was removed but the re-add failed -- restore the pre-write snapshot (backup/restoreHint on the outer envelope) or re-issue addAction with the echoed spec."]
+    }
+    def newIdx = addResult?.actionIndex as Integer
+    def moveResults = []
+    for (int i = 0; i < movesUp; i++) {
+        moveResults << _rmMoveAction(appId, newIdx, "up")
+    }
+    return [success: true, removedIndex: actionIdx, newActionIndex: newIdx, movesUp: movesUp,
+            removeResult: removeResult, addResult: addResult, moveResults: moveResults, spec: spec]
+}
+
 // Delete every action on a rule via the trashAll → trashActs flow.
 // Verified live:
 //
@@ -4405,7 +4528,7 @@ private Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
     // an invalid index gets the more actionable IllegalArgumentException first.
     def stuckEditAct = _rmGetStateEditAct(appId)
     if (stuckEditAct != null) {
-        throw new IllegalStateException("moveAction(${actionIdx}, ${direction}) blocked: rule ${appId} has state.editAct=${stuckEditAct} set from a prior interrupted action edit. RM 5.1 silently no-ops move-arrow clicks until this clears. Recovery options: (a) wait ~60s for RM's stale-state timeout and retry, (b) try hub_set_rule(button='cancelAct', pageName='doActPage', confirm=true) to abort the in-flight edit (behavior unverified -- attempt at own risk), (c) hub_restore_backup with a recent snapshot.")
+        throw new IllegalStateException("moveAction(${actionIdx}, ${direction}) blocked: rule ${appId} has state.editAct=${stuckEditAct} set from a prior interrupted action edit. RM 5.1 silently no-ops move-arrow clicks until this clears. Recovery options: (a) wait ~60s for RM's stale-state timeout and retry; (b) open the rule in the Hubitat UI and finish or cancel the open action editor. Verified live on fw 2.5.1.135: cancelBtn/cancelAct clicks, updateRule, and an in-place hub_restore_backup do NOT clear a stuck editAct (restore-in-place rewrites settings, not app state) -- if (a) and (b) fail, delete the rule and hub_restore_backup(scope='source') a recent snapshot, which RECREATES it with fresh state.")
     }
     def beforePosition = beforeOrderRaw.indexOf(actionIdx)
     def isBoundary = (direction == "up" && beforePosition == 0) ||
@@ -8832,7 +8955,7 @@ private Map _rmSoftDeleteApp(Integer appId) {
 // and the schema-only classifier all read these (a Spock test asserts the enum ==
 // these, so the thin schema can't drift from what the handler accepts).
 def _setRuleCreateHonored() { ['addTrigger', 'addTriggers', 'addAction', 'addActions', 'addRequiredExpression'] }
-def _setRuleEditOnly() { ['replaceRequiredExpression', 'addLocalVariable', 'removeLocalVariable', 'patches', 'replaceActions', 'removeAction', 'clearActions', 'moveAction', 'removeTrigger', 'modifyTrigger', 'walkStep', 'settings', 'button'] }
+def _setRuleEditOnly() { ['replaceRequiredExpression', 'addLocalVariable', 'removeLocalVariable', 'patches', 'replaceActions', 'removeAction', 'clearActions', 'moveAction', 'removeTrigger', 'modifyTrigger', 'modifyAction', 'walkStep', 'settings', 'button'] }
 def _setRuleOperations() { (['create'] + _setRuleCreateHonored() + _setRuleEditOnly() + ['buttonRule', 'guide', 'discover']).unique() }
 
 // The thin flat-mode tool (description + inputSchema), substituted for hub_set_rule
@@ -9123,7 +9246,7 @@ def toolSetNativeApp(args) {
         def droppedOnCreate = ['addTrigger', 'addTriggers', 'addAction', 'addActions',
                                'addRequiredExpression', 'replaceRequiredExpression', 'addLocalVariable', 'removeLocalVariable', 'patches', 'replaceActions',
                                'removeAction', 'clearActions', 'moveAction', 'removeTrigger',
-                               'modifyTrigger', 'walkStep', 'settings', 'button'].findAll {
+                               'modifyTrigger', 'modifyAction', 'walkStep', 'settings', 'button'].findAll {
             args instanceof Map && args.containsKey(it)
         }
         if (droppedOnCreate) {
@@ -9165,7 +9288,7 @@ def _createButtonRuleViaController(args) {
     def bundledExtras = ['appId', 'appType', 'name', 'settings', 'button', 'pageName', 'stateAttribute',
                          'walkStep', 'addTrigger', 'addTriggers', 'addAction', 'addActions',
                          'addRequiredExpression', 'replaceRequiredExpression', 'addLocalVariable', 'removeLocalVariable', 'patches', 'replaceActions',
-                         'removeAction', 'clearActions', 'moveAction', 'removeTrigger', 'modifyTrigger'].findAll {
+                         'removeAction', 'clearActions', 'moveAction', 'removeTrigger', 'modifyTrigger', 'modifyAction'].findAll {
         args instanceof Map && args.containsKey(it)
     }
     if (bundledExtras) {
@@ -12830,9 +12953,10 @@ def _applyNativeAppEdit(args) {
     def walkStepSpec = args?.walkStep instanceof Map ? args.walkStep : null
     def removeTriggerSpec = args?.removeTrigger instanceof Map ? args.removeTrigger : null
     def modifyTriggerSpec = args?.modifyTrigger instanceof Map ? args.modifyTrigger : null
+    def modifyActionSpec = args?.modifyAction instanceof Map ? args.modifyAction : null
     if (!settingsMap && !button && !addTriggerSpec && !addActionSpec && !addActionsList && !addTriggersList
-            && !addRequiredExpressionSpec && !replaceRequiredExpressionSpec && !addLocalVariableSpec && !removeLocalVariableSpec && !patchesList && !removeActionSpec && !clearActionsFlag && replaceActionsList == null && !moveActionSpec && !walkStepSpec && !removeTriggerSpec && !modifyTriggerSpec) {
-        throw new IllegalArgumentException("Editing an app requires one of: 'settings' (Map) or 'button' (String) for any classic app; or, for Rule Machine rules via hub_set_rule, a structured shortcut -- 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), 'addActions' (List), 'addRequiredExpression' (Map), 'replaceRequiredExpression' (Map), 'addLocalVariable' (Map), 'removeLocalVariable' ({name}), 'patches' (List of sub-specs), 'removeAction' ({index:N}), 'clearActions' (true), 'replaceActions' (List), 'moveAction' ({index:N, direction:up|down}), 'removeTrigger' ({index:N}), 'modifyTrigger' ({index:N, mods:{state:...}}), or 'walkStep' ({page, operation, write?, click?, navigate?, validateEnum?}) -- none provided.")
+            && !addRequiredExpressionSpec && !replaceRequiredExpressionSpec && !addLocalVariableSpec && !removeLocalVariableSpec && !patchesList && !removeActionSpec && !clearActionsFlag && replaceActionsList == null && !moveActionSpec && !walkStepSpec && !removeTriggerSpec && !modifyTriggerSpec && !modifyActionSpec) {
+        throw new IllegalArgumentException("Editing an app requires one of: 'settings' (Map) or 'button' (String) for any classic app; or, for Rule Machine rules via hub_set_rule, a structured shortcut -- 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), 'addActions' (List), 'addRequiredExpression' (Map), 'replaceRequiredExpression' (Map), 'addLocalVariable' (Map), 'removeLocalVariable' ({name}), 'patches' (List of sub-specs), 'removeAction' ({index:N}), 'clearActions' (true), 'replaceActions' (List), 'moveAction' ({index:N, direction:up|down}), 'removeTrigger' ({index:N}), 'modifyTrigger' ({index:N, mods:{state:...}}), 'modifyAction' ({index:N, mods:{ruleIds:[...]}}), or 'walkStep' ({page, operation, write?, click?, navigate?, validateEnum?}) -- none provided.")
     }
 
     // Pre-flight reject, before any snapshot: an addAction whose expression carries an unwalkable
@@ -12868,7 +12992,8 @@ def _applyNativeAppEdit(args) {
         (moveActionSpec ? "pre-moveAction" :
         (removeTriggerSpec ? "pre-removeTrigger" :
         (modifyTriggerSpec ? "pre-modifyTrigger" :
-        (walkStepSpec ? "pre-walkStep" : "pre-update")))))))))))))))
+        (modifyActionSpec ? "pre-modifyAction" :
+        (walkStepSpec ? "pre-walkStep" : "pre-update"))))))))))))))))
     def backup = _rmBackupRuleSnapshot(appId, backupReason)
 
     // walkStep — schema-aware single-step wizard walker. Lets a caller
@@ -12939,6 +13064,56 @@ def _applyNativeAppEdit(args) {
     // All re-fire updateRule at the end so the rule re-subscribes from a
     // fully-loaded state (actions self-bake via doActPage->selectActions
     // per-item).
+    if (modifyActionSpec) {
+        if (modifyActionSpec.index == null) throw new IllegalArgumentException("modifyAction.index is required")
+        if (!(modifyActionSpec.mods instanceof Map)) throw new IllegalArgumentException("modifyAction.mods is required and must be a Map (e.g. {ruleIds: [123]})")
+        def maResult
+        try {
+            maResult = _rmModifyAction(appId, modifyActionSpec.index as Integer, modifyActionSpec.mods as Map)
+        } catch (Exception e) {
+            mcpLogError("rm-native", "modifyAction failed for app ${appId}", e)
+            return _rmBuildUpdateErrorResponse(appId, e.message, backup)
+        }
+        // Trailing updateRule so the rebuilt action's wiring re-initializes; same
+        // failure-propagation slots as the sibling mutation branches.
+        def updateRuleFailed = false
+        def updateRuleError = null
+        if (maResult?.success != false) {
+            try { _rmClickAppButton(appId, "updateRule") }
+            catch (Exception updateExc) {
+                updateRuleFailed = true
+                updateRuleError = updateExc.message
+                mcpLog("warn", "rm-native", "modifyAction: trailing updateRule click failed for app ${appId}: ${updateExc.message}")
+            }
+        }
+        def maRepairHints = []
+        if (updateRuleFailed) {
+            maRepairHints << "updateRule click was rejected after the rebuilt action committed. Retry hub_set_rule(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+        }
+        def maHealth = null
+        try { maHealth = toolCheckRuleHealth([appId: appId]) } catch (Exception ignore) { }
+        return [
+            success: (maResult?.success != false) && !updateRuleFailed,
+            partial: (maResult?.success != false) && updateRuleFailed,
+            appId: appId,
+            backup: backup,
+            modifiedIndex: maResult?.removedIndex,
+            newActionIndex: maResult?.newActionIndex,
+            movesUp: maResult?.movesUp,
+            spec: maResult?.spec,
+            removeResult: maResult?.removeResult,
+            addResult: maResult?.addResult,
+            moveResults: maResult?.moveResults,
+            error: maResult?.error,
+            updateRuleFailed: updateRuleFailed,
+            subscriptionsNotLive: updateRuleFailed,
+            updateRuleError: updateRuleError,
+            repairHints: maRepairHints,
+            health: maHealth,
+            note: (maResult?.success != false) ? "Action ${modifyActionSpec.index} rebuilt in place (remove + re-add + reposition); updateRule ${updateRuleFailed ? 'FAILED' : 'fired once'}. The action's settings index changed to ${maResult?.newActionIndex}; its position in the rule is unchanged." : null
+        ]
+    }
+
     if (removeActionSpec || clearActionsFlag || replaceActionsList != null || moveActionSpec) {
         // Hoisted out of the try block — Groovy `def` is block-scoped, so
         // declaring inside try would leave these undefined for the return
@@ -14519,9 +14694,9 @@ def _toolDisplayMeta_partNativeRM() {
     return [
         // Native Rule Machine + classic apps
         hub_list_rules: [title: "List Rule Machine Rules", summary: "List all Rule Machine rules."],
-        hub_call_rule: [title: "Trigger Rule Machine Rule", summary: "Trigger a Rule Machine rule, run its actions, or stop it."],
-        hub_set_rule_paused: [title: "Pause or Resume Rule", summary: "Pause or resume a Rule Machine rule."],
-        hub_set_rule_private_boolean: [title: "Set Rule Private Boolean", summary: "Set a Rule Machine rule's private boolean."],
+        hub_call_rule: [title: "Trigger Rule Machine Rule", summary: "Trigger one or more Rule Machine rules, run their actions, or stop them."],
+        hub_set_rule_paused: [title: "Pause or Resume Rule", summary: "Pause or resume one or more Rule Machine rules in one call."],
+        hub_set_rule_private_boolean: [title: "Set Rule Private Boolean", summary: "Set the private boolean of one or more Rule Machine rules."],
         hub_set_rule: [title: "Author Rule Machine Rule", summary: "Create or edit a Rule Machine rule."],
         hub_get_rule_health: [title: "Get Rule Health", summary: "Read-only health check on any installed app."],
         hub_list_rule_local_variables: [title: "List Rule Local Variables", summary: "Read-only list of a Rule Machine rule's local variables."],
