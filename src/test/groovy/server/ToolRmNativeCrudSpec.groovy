@@ -3360,24 +3360,35 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         thrownEx.message.contains("REACHED_EDITCOND_POST")
     }
 
-    // ---------- modifyAction (issue #376) ----------
+    // ---------- modifyAction ----------
 
     def "modifyAction rejects an index that has no committed action"() {
-        given: "a rule whose settings carry only action 1"
+        given: "a rule whose settings carry only action 1; POSTs are collected to prove no mutation fires"
+        def maPosts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            maPosts << path
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]]) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "actType.1", value: "rulesActs"]]) }
 
         when:
         script._rmModifyAction(100, 3, [ruleIds: [200]])
 
-        then:
+        then: "the refusal fires before ANY mutation POST -- 'RM is not touched' is literally true"
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("modifyAction.index 3 not found")
         ex.message.contains("RM is not touched")
+        maPosts.isEmpty()
     }
 
     def "modifyAction rejects a non-rule-targeting action steering to removeAction + addAction"() {
-        given: "action 1 is a switch action"
+        given: "action 1 is a switch action; POSTs are collected to prove no mutation fires"
+        def maPosts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            maPosts << path
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, ["actType.1": "switchActs", "actSubType.1": "getSwitchOn"]) }
 
         when:
@@ -3388,10 +3399,16 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.contains("rule-targeting actions")
         ex.message.contains("removeAction + addAction")
         ex.message.contains("RM is not touched")
+        maPosts.isEmpty()
     }
 
     def "modifyAction rejects mods keys outside the action family's channel"() {
-        given: "action 1 is runRule (only ruleIds is modifiable)"
+        given: "action 1 is runRule (only ruleIds is modifiable); POSTs are collected to prove no mutation fires"
+        def maPosts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            maPosts << path
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]]) }
 
         when:
@@ -3402,10 +3419,16 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.contains("supports mods: ruleIds")
         ex.message.contains("state")
         ex.message.contains("RM is not touched")
+        maPosts.isEmpty()
     }
 
     def "modifyAction rejects empty mods"() {
-        given:
+        given: "POSTs are collected to prove no mutation fires"
+        def maPosts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            maPosts << path
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]]) }
 
         when:
@@ -3414,6 +3437,198 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("at least one of")
+        maPosts.isEmpty()
+    }
+
+    def "modifyAction happy path: movesUp arithmetic, newIdx re-resolution from the move's rich return, readback-gated success"() {
+        given: "a 3-action rule; the MIDDLE action (settings index 2, position 1 of [1,2,3]) is retargeted"
+        // One configure/json fixture serves both reads: the entry guard (actSubType.2/ruleAct.2)
+        // and the post-rebuild verification (ruleAct.9 -- the RE-RESOLVED index, proving the
+        // loop trusts the move's indicesAfter over the stale pre-move value).
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null,
+            ["actType.2": "rulesActs", "actSubType.2": "getRuleActions", "ruleAct.2": ["200"], "ruleAct.9": ["300"]]) }
+        script.metaClass._rmCollectActionIndices = { Integer appId -> [1, 2, 3] }
+        script.metaClass._rmDeleteAction = { Integer appId, Integer idx -> [success: true, removedIndex: idx, beforeIndices: [1, 2, 3], afterIndices: [1, 3]] }
+        def capturedSpec = null
+        script.metaClass._rmAddAction = { Integer appId, Map spec -> capturedSpec = spec
+            [success: true, partial: false, actionIndex: 4, settingsApplied: ["ruleAct.4"], settingsSkipped: []] }
+        def moves = []
+        script.metaClass._rmMoveAction = { Integer appId, Integer idx, String dir -> moves << [idx: idx, dir: dir]
+            [success: true, beforePosition: 2, afterPosition: 1, indicesAfter: [1, 9, 3]] }
+
+        when:
+        def result = script._rmModifyAction(100, 2, [ruleIds: [300]])
+
+        then: "one move-up (position 1 of 3 -> one action after it), against the add's index"
+        moves == [[idx: 4, dir: "up"]]
+        capturedSpec.capability == "runRule"
+
+        and: "newActionIndex re-resolves to the move's indicesAfter[afterPosition], and readback against THAT index gates success"
+        result.newActionIndex == 9
+        result.movesUp == 1
+        result.movesDone == 1
+        result.verifiedTargets == ["300"]
+        result.success == true
+        result.partial == false
+    }
+
+    def "modifyAction reposition soft-failure STOPS the move loop and flips success false with the verifyHint"() {
+        given: "the retargeted action needs two moves; the FIRST move returns the asyncCommitLikely soft shape"
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null,
+            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"], "ruleAct.4": ["300"]]) }
+        script.metaClass._rmCollectActionIndices = { Integer appId -> [1, 2, 3] }
+        script.metaClass._rmDeleteAction = { Integer appId, Integer idx -> [success: true, removedIndex: idx, beforeIndices: [1, 2, 3], afterIndices: [2, 3]] }
+        script.metaClass._rmAddAction = { Integer appId, Map spec -> [success: true, partial: false, actionIndex: 4, settingsApplied: ["ruleAct.4"], settingsSkipped: []] }
+        def moves = []
+        script.metaClass._rmMoveAction = { Integer appId, Integer idx, String dir -> moves << idx
+            [success: false, asyncCommitLikely: true, partial: true, verifyHint: "Do not blind-retry: verify the position first."] }
+
+        when: "modifying settings index 1 at position 0 of 3 (movesUp == 2)"
+        def result = script._rmModifyAction(100, 1, [ruleIds: [300]])
+
+        then: "the loop stopped after the first soft failure instead of walking the action further"
+        moves.size() == 1
+        result.movesUp == 2
+        result.movesDone == 1
+        result.moveSoftFail == true
+        result.verifyHint.contains("verify the position")
+        result.success == false
+        result.partial == true
+    }
+
+    def "modifyAction readback mismatch (target field silently skipped) flips success false even when the add reported success"() {
+        given: "the add returns success:true + partial:true with ruleAct skipped; the readback finds no committed target"
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null,
+            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]]) }
+        script.metaClass._rmCollectActionIndices = { Integer appId -> [1] }
+        script.metaClass._rmDeleteAction = { Integer appId, Integer idx -> [success: true, removedIndex: idx, beforeIndices: [1], afterIndices: []] }
+        script.metaClass._rmAddAction = { Integer appId, Map spec ->
+            [success: true, partial: true, actionIndex: 2, settingsApplied: ["actType.2", "actSubType.2"], settingsSkipped: [[key: "ruleAct.2", reason: "silent_rejection"]]] }
+
+        when:
+        def result = script._rmModifyAction(100, 1, [ruleIds: [300]])
+
+        then: "the readback is the gate: no committed ruleAct.2 -> the retarget did NOT land"
+        result.success == false
+        result.partial == true
+        result.error.contains("did not land")
+        result.settingsSkipped.size() == 1
+    }
+
+    def "modifyAction budget pause returns finish-up guidance and never claims success"() {
+        given: "two moves needed but the response budget is already exhausted"
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null,
+            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]]) }
+        script.metaClass._rmCollectActionIndices = { Integer appId -> [1, 2, 3] }
+        script.metaClass._rmDeleteAction = { Integer appId, Integer idx -> [success: true, removedIndex: idx, beforeIndices: [1, 2, 3], afterIndices: [2, 3]] }
+        script.metaClass._rmAddAction = { Integer appId, Map spec -> [success: true, partial: false, actionIndex: 4, settingsApplied: ["ruleAct.4"], settingsSkipped: []] }
+        script.metaClass._timeBudgetExceeded = { Long t0 -> true }
+        def moves = []
+        script.metaClass._rmMoveAction = { Integer appId, Integer idx, String dir -> moves << idx; [success: true] }
+
+        when:
+        def result = script._rmModifyAction(100, 1, [ruleIds: [300]], 12345L)
+
+        then: "no move fired, the pause is explicit, and the error forbids re-issuing modifyAction"
+        moves.isEmpty()
+        result.budgetPaused == true
+        result.movesRemaining == 2
+        result.success == false
+        result.partial == true
+        result.error.contains("Do NOT re-issue modifyAction")
+        result.error.contains("moveAction")
+    }
+
+    def "modifyAction pauseRule family: preserved fields decode the inverted pR boolean; mods.action overrides"() {
+        given: "a committed PAUSE action (pR.1 'false' = Pause) targeting rule 200"
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null,
+            ["actType.1": "rulesActs", "actSubType.1": "getPauseResumeRules", "pauseRule.1": ["200"], "pR.1": "false", "pauseRule.2": ["200"]]) }
+        script.metaClass._rmCollectActionIndices = { Integer appId -> [1] }
+        script.metaClass._rmDeleteAction = { Integer appId, Integer idx -> [success: true, removedIndex: idx, beforeIndices: [1], afterIndices: []] }
+        def specs = []
+        script.metaClass._rmAddAction = { Integer appId, Map spec -> specs << spec
+            [success: true, partial: false, actionIndex: 2, settingsApplied: ["pauseRule.2"], settingsSkipped: []] }
+
+        when: "retargeting only (action omitted) preserves the committed pause verb"
+        def preserved = script._rmModifyAction(100, 1, [ruleIds: [200]])
+
+        then:
+        specs[0].capability == "pauseRule"
+        specs[0].action == "pause"
+        preserved.success == true
+
+        when: "mods.action='resume' overrides it"
+        script._rmModifyAction(100, 1, [ruleIds: [200], action: "resume"])
+
+        then:
+        specs[1].action == "resume"
+    }
+
+    def "modifyAction privateBoolean family: preserved value decodes the inverted pvTF boolean; mods.value overrides"() {
+        given: "a committed set-private-boolean-FALSE action (pvTF.1 'true' = FALSE) targeting rule 200"
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null,
+            ["actType.1": "rulesActs", "actSubType.1": "getSetPrivateBoolean", "privateT.1": ["200"], "pvTF.1": "true", "privateT.2": ["200"]]) }
+        script.metaClass._rmCollectActionIndices = { Integer appId -> [1] }
+        script.metaClass._rmDeleteAction = { Integer appId, Integer idx -> [success: true, removedIndex: idx, beforeIndices: [1], afterIndices: []] }
+        def specs = []
+        script.metaClass._rmAddAction = { Integer appId, Map spec -> specs << spec
+            [success: true, partial: false, actionIndex: 2, settingsApplied: ["privateT.2"], settingsSkipped: []] }
+
+        when: "retargeting only preserves the committed value (pvTF 'true' means FALSE)"
+        script._rmModifyAction(100, 1, [ruleIds: [200]])
+
+        then:
+        specs[0].capability == "privateBoolean"
+        specs[0].value == false
+
+        when: "mods.value=true overrides"
+        script._rmModifyAction(100, 1, [ruleIds: [200], value: true])
+
+        then:
+        specs[1].value == true
+    }
+
+    def "modifyAction empty or null ruleIds is refused BEFORE the delete (the dangling-target destructive path)"() {
+        given:
+        def maPosts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            maPosts << path
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        def deletes = []
+        script.metaClass._rmDeleteAction = { Integer appId, Integer idx -> deletes << idx; [success: true] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null,
+            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]]) }
+
+        when:
+        script._rmModifyAction(100, 1, [ruleIds: mods])
+
+        then: "refused with the not-touched sentinel; the delete leg never ran"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("non-empty ruleIds")
+        ex.message.contains("RM is not touched")
+        deletes.isEmpty()
+        maPosts.isEmpty()
+
+        where:
+        mods << [[], null]
+    }
+
+    def "modifyAction refuses a nonexistent target rule BEFORE the delete when the rule list is verifiable"() {
+        given: "a readable rule-id set that does not contain the requested target"
+        script.metaClass._rmValidRuleIds = { -> [200, 300] as Set }
+        def deletes = []
+        script.metaClass._rmDeleteAction = { Integer appId, Integer idx -> deletes << idx; [success: true] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null,
+            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]]) }
+
+        when:
+        script._rmModifyAction(100, 1, [ruleIds: [999]])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("999")
+        deletes.isEmpty()
     }
 
     def "modifyAction passes validation on a committed runRule action and reaches the mutation leg (sentinel)"() {
@@ -9006,8 +9221,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         navPost != null
     }
 
-    def "hub_clone_native_app stageDisabled disables the new app AND its children after the clone"() {
-        given: "the full clone harness, a child under the new clone (Button-Controller shape), and the disable endpoints"
+    def "hub_clone_native_app stageDisabled disables the new app AND every descendant after the clone"() {
+        given: "the full clone harness, a child AND grandchild under the new clone, and the disable endpoints"
         enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Source Rule", [], 21) }
         hubGet.register('/apps/api/4242/app/100') { params -> '<html>source-context page</html>' }
@@ -9019,9 +9234,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 ? parentConfigJson(21, [[id: 100, label: "Source Rule"]])
                 : parentConfigJson(21, [[id: 100, label: "Source Rule"], [id: 250, label: "Source Rule clone"]])
         }
-        hubGet.register('/installedapp/configure/json/250') { params -> parentConfigJson(250, [[id: 251, label: "child button rule"]]) }
+        hubGet.register('/installedapp/configure/json/250') { params -> parentConfigJson(250, [[id: 251, label: "child controller"]]) }
+        hubGet.register('/installedapp/configure/json/251') { params -> parentConfigJson(251, [[id: 252, label: "grandchild button rule"]]) }
+        hubGet.register('/installedapp/configure/json/252') { params -> parentConfigJson(252, []) }
         hubGet.register('/installedapp/json/250') { params -> '{"id":250,"disabled":true}' }
         hubGet.register('/installedapp/json/251') { params -> '{"id":251,"disabled":true}' }
+        hubGet.register('/installedapp/json/252') { params -> '{"id":252,"disabled":true}' }
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
             [status: 302, location: "/apps/api/4242/app/100", data: ""]
         }
@@ -9043,13 +9261,17 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         when:
         def result = script.toolCloneNativeApp([sourceAppId: 100, stageDisabled: true, confirm: true])
 
-        then: "the clone succeeds and BOTH the new app and its child were disabled + read-back verified"
+        then: "the clone succeeds and the app, its child, AND its grandchild were disabled + read-back verified"
         result.success == true
         result.newAppId == 250
-        result.stagedDisabled == [250, 251]
+        result.stagedDisabled == [250, 251, 252]
         result.stageFailures == null
         result.note.contains("Staged inactive")
-        disablePosts.count { it.path == "/installedapp/disable" } == 2
+
+        and: "each /installedapp/disable request names a distinct expected id (not the same app twice)"
+        def disabledIds = disablePosts.findAll { it.path == "/installedapp/disable" }
+            .collect { new groovy.json.JsonSlurper().parseText(it.body).id }
+        disabledIds == [250, 251, 252]
     }
 
     def "hub_clone_native_app surfaces isError + error when child discovery returns null (soft-failure shape)"() {
@@ -9307,6 +9529,151 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         importRulePosts.any { it.body?.containsKey("settings[newName42]") }
         importRulePosts.every { it.body?.getAt("settings[newName42]") == "" }
         !importRulePosts.any { it.body?.containsKey("settings[newName100]") }
+    }
+
+    def "hub_import_native_app stageDisabled disables the imported app + descendants (same contract as clone)"() {
+        given: "the import harness plus a child under the new app and the disable endpoints"
+        enableWrite()
+        def importJson = '{"deviceReplacements":{},"appReplacements":{"42":{"appLabel":"Source Rule","appTypeName":"Rule-5.1"}}}'
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "ExistingRule", [], 21) }
+        hubGet.register('/apps/api/4242/app/100') { params -> '<html>source-context</html>' }
+        hubGet.register('/installedapp/configure/json/4242/main') { params -> clonerPageStateWithIdx("importRule", 55) }
+        int parentCalls = 0
+        hubGet.register('/installedapp/configure/json/21') { params ->
+            parentCalls++
+            parentCalls <= 1
+                ? parentConfigJson(21, [[id: 100, label: "ExistingRule"]])
+                : parentConfigJson(21, [[id: 100, label: "ExistingRule"], [id: 700, label: "Source Rule import"]])
+        }
+        hubGet.register('/installedapp/configure/json/700') { params -> parentConfigJson(700, [[id: 701, label: "imported child"]]) }
+        hubGet.register('/installedapp/configure/json/701') { params -> parentConfigJson(701, []) }
+        hubGet.register('/installedapp/json/700') { params -> '{"id":700,"disabled":true}' }
+        hubGet.register('/installedapp/json/701') { params -> '{"id":701,"disabled":true}' }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/apps/api/4242/app/100", data: ""]
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
+        def disablePosts = []
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            disablePosts << [path: path, body: body]
+            '{"status":"success"}'
+        }
+
+        when:
+        def result = script.toolImportNativeApp([jsonContent: importJson, parentHintAppId: 100, stageDisabled: true, confirm: true])
+
+        then:
+        result.success == true
+        result.newAppId == 700
+        result.stagedDisabled == [700, 701]
+        result.stageFailures == null
+        def disabledIds = disablePosts.findAll { it.path == "/installedapp/disable" }
+            .collect { new groovy.json.JsonSlurper().parseText(it.body).id }
+        disabledIds == [700, 701]
+    }
+
+    def "hub_clone_native_app stageDisabled FAILURE flips success false with the anti-re-clone error"() {
+        given: "the clone harness; the child's disable read-back reports still-enabled"
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Source Rule", [], 21) }
+        hubGet.register('/apps/api/4242/app/100') { params -> '<html>source-context page</html>' }
+        hubGet.register('/installedapp/configure/json/4242/main') { params -> clonerPageStateWithIdx("importRule", 0) }
+        int parentCalls = 0
+        hubGet.register('/installedapp/configure/json/21') { params ->
+            parentCalls++
+            parentCalls <= 1
+                ? parentConfigJson(21, [[id: 100, label: "Source Rule"]])
+                : parentConfigJson(21, [[id: 100, label: "Source Rule"], [id: 250, label: "Source Rule clone"]])
+        }
+        hubGet.register('/installedapp/configure/json/250') { params -> parentConfigJson(250, [[id: 251, label: "child"]]) }
+        hubGet.register('/installedapp/configure/json/251') { params -> parentConfigJson(251, []) }
+        hubGet.register('/installedapp/json/250') { params -> '{"id":250,"disabled":true}' }
+        hubGet.register('/installedapp/json/251') { params -> '{"id":251,"disabled":false}' }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/apps/api/4242/app/100", data: ""]
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
+        script.metaClass.hubInternalPostJson = { String path, String body -> '{"status":"success"}' }
+
+        when:
+        def result = script.toolCloneNativeApp([sourceAppId: 100, stageDisabled: true, confirm: true])
+
+        then: "the requested safety property did not hold -> success:false + isError, but the error forbids re-cloning"
+        result.success == false
+        result.isError == true
+        result.newAppId == 250
+        result.stagedDisabled == [250]
+        result.stageFailures.size() == 1
+        result.stageFailures[0].appId == 251
+        result.error.contains("do NOT re-issue")
+        result.error.contains("250")
+    }
+
+    def "hub_clone_native_app stageDisabled child-enumeration failure is scoped to descendants and still fails the staging"() {
+        given: "the clone harness; the new app's own config read throws so its subtree is unknowable"
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Source Rule", [], 21) }
+        hubGet.register('/apps/api/4242/app/100') { params -> '<html>source-context page</html>' }
+        hubGet.register('/installedapp/configure/json/4242/main') { params -> clonerPageStateWithIdx("importRule", 0) }
+        int parentCalls = 0
+        hubGet.register('/installedapp/configure/json/21') { params ->
+            parentCalls++
+            parentCalls <= 1
+                ? parentConfigJson(21, [[id: 100, label: "Source Rule"]])
+                : parentConfigJson(21, [[id: 100, label: "Source Rule"], [id: 250, label: "Source Rule clone"]])
+        }
+        hubGet.register('/installedapp/configure/json/250') { params -> throw new IllegalStateException("config read failed") }
+        hubGet.register('/installedapp/json/250') { params -> '{"id":250,"disabled":true}' }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/apps/api/4242/app/100", data: ""]
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
+        script.metaClass.hubInternalPostJson = { String path, String body -> '{"status":"success"}' }
+
+        when:
+        def result = script.toolCloneNativeApp([sourceAppId: 100, stageDisabled: true, confirm: true])
+
+        then: "the app itself IS disabled, the enumeration failure is a distinct kind, and staging still reports failure"
+        result.success == false
+        result.stagedDisabled == [250]
+        result.stageFailures.size() == 1
+        result.stageFailures[0].kind == "childEnumeration"
+        result.stageFailures[0].error.contains("DESCENDANTS")
+    }
+
+    def "hub_clone_native_app stageDisabled via gateway dispatch returns the staged envelope"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Source Rule", [], 21) }
+        hubGet.register('/apps/api/4242/app/100') { params -> '<html>source-context page</html>' }
+        hubGet.register('/installedapp/configure/json/4242/main') { params -> clonerPageStateWithIdx("importRule", 0) }
+        int parentCalls = 0
+        hubGet.register('/installedapp/configure/json/21') { params ->
+            parentCalls++
+            parentCalls <= 1
+                ? parentConfigJson(21, [[id: 100, label: "Source Rule"]])
+                : parentConfigJson(21, [[id: 100, label: "Source Rule"], [id: 250, label: "Source Rule clone"]])
+        }
+        hubGet.register('/installedapp/configure/json/250') { params -> parentConfigJson(250, []) }
+        hubGet.register('/installedapp/json/250') { params -> '{"id":250,"disabled":true}' }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/apps/api/4242/app/100", data: ""]
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
+        script.metaClass.hubInternalPostJson = { String path, String body -> '{"status":"success"}' }
+
+        when:
+        def result = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_clone_native_app',
+            [sourceAppId: 100, stageDisabled: true, confirm: true])
+
+        then:
+        result.success == true
+        result.stagedDisabled == [250]
+        result.note.contains("Staged inactive")
     }
 
     def "hub_import_native_app surfaces isError + error when child discovery returns null (soft-failure shape)"() {

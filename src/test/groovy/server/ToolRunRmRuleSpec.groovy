@@ -469,6 +469,11 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         given:
         hubGet.register('/installedapp/statusJson/107') { params -> minimalStatusJson(107, false) }
         hubGet.register('/installedapp/statusJson/108') { params -> minimalStatusJson(108, true) }
+        // Rule 107 is running, so its stop really clicks the stopRule button -- stub the POST
+        // explicitly rather than riding whatever ambient behavior the harness provides.
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
 
         when: 'stop 107 (running -> clicks) and 108 (already stopped -> no-op)'
         def result = script.toolRunRmRule([ruleId: [107, 108], action: 'stop'])
@@ -489,5 +494,56 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.toLowerCase().contains('must not be empty')
+    }
+
+    def "single-element ARRAY with action=stop echoes ruleIds (array-form contract)"() {
+        given:
+        hubGet.register('/installedapp/statusJson/111') { params -> minimalStatusJson(111, true) }
+
+        when: 'stop an already-stopped rule via a one-element array (no-op path)'
+        def result = script.toolRunRmRule([ruleId: [111], action: 'stop'])
+
+        then:
+        result.success == true
+        result.ruleId == 111
+        result.ruleIds == [111]
+    }
+
+    def "multi-rule stop aggregate names the failed ids and marks partial when others succeeded"() {
+        given: "112 is stoppable; 113's state read throws, so its toggle fails structurally"
+        hubGet.register('/installedapp/statusJson/112') { params -> minimalStatusJson(112, false) }
+        hubGet.register('/installedapp/statusJson/113') { params -> throw new IllegalStateException("statusJson read failed") }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolRunRmRule([ruleId: [112, 113], action: 'stop'])
+
+        then: "the aggregate names the failure instead of a bare success:false"
+        result.success == false
+        result.partial == true
+        result.failedRuleIds == [113]
+        result.error.contains("113")
+        result.error.contains("WERE actioned")
+        result.results.size() == 2
+        result.results[0].success == true
+        result.results[1].success == false
+    }
+
+    def "multi-rule stop pauses at the response-budget checkpoint and hands back the remainder"() {
+        given: "the budget reads exhausted after the first toggle"
+        hubGet.register('/installedapp/statusJson/114') { params -> minimalStatusJson(114, true) }
+        script.metaClass._timeBudgetExceeded = { Long t0 -> true }
+
+        when: '114 no-ops (already stopped); 115 is never reached'
+        def result = script.toolRunRmRule([ruleId: [114, 115], action: 'stop', __reqT0: 1L])
+
+        then:
+        result.success == false
+        result.partial == true
+        result.remainingRuleIds == [115]
+        result.results.size() == 1
+        result.note.contains("ruleId=[115]")
     }
 }

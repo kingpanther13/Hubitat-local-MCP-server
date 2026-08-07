@@ -619,7 +619,7 @@ Write/delete require the Write master + confirm + a recent backup.
 | `hub_set_rule` | Create or edit a Rule Machine rule (RM 5.1) — the full authoring surface (omit `appId` to create). Structured shortcuts: addTrigger / addAction / addRequiredExpression / replaceRequiredExpression / walkStep / patches and more. Auto-snapshots before every write. |
 | `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x) via official `hubitat.helper.RMUtils` API (also in `hub_read_rules`) |
 | `hub_call_rule` | Trigger an RM rule (`action`: "rule"/"actions"/"stop") |
-| `hub_set_rule_paused` | Pause or resume an RM rule (`value=true` pauses, `value=false` resumes; reversible) |
+| `hub_set_rule_paused` | Pause or resume one or more RM rules (`paused=true` pauses, `paused=false` resumes; `ruleId` takes an id or an array; reversible) |
 | `hub_set_rule_private_boolean` | Set an RM rule's private boolean variable |
 | `hub_get_rule_health` | Read-only health check on any installed app — surfaces broken markers, multiple-flag poison, configPage errors. (also in `hub_read_rules`) |
 | `hub_list_rule_local_variables` | List a Rule Machine rule's local variables (name/type/value) from `state.allLocalVars`; distinct from `hub_list_variables` (hub globals). (also in `hub_read_rules`) |
@@ -639,14 +639,14 @@ Reads (`hub_list_rules`, `hub_get_rule_health`, `hub_get_visual_rule`) are gated
 |------|-------------|
 | `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x) via official `hubitat.helper.RMUtils` API (also in `hub_read_rules`) |
 | `hub_call_rule` | Trigger an RM rule (`action`: "rule"/"actions"/"stop") |
-| `hub_set_rule_paused` | Pause or resume an RM rule (`value=true` pauses, `value=false` resumes; reversible) |
+| `hub_set_rule_paused` | Pause or resume one or more RM rules (`paused=true` pauses, `paused=false` resumes; `ruleId` takes an id or an array; reversible) |
 | `hub_set_rule_private_boolean` | Set an RM rule's private boolean variable |
 | `hub_set_native_app` | Create or edit any classic native app (omit `appId` to create; `appType` enum covers Button Controllers / Notifier / Groups+Scenes / Basic Rules; default `rule_machine`). Visual Rules are edit/delete-only by `appId` — create them with `hub_set_visual_rule`. Create a Button Rule under its controller via `buttonRule`. Returns `appId`. Generic upsert; `walkStep` (generic classic-page walker) also works here. |
 | `hub_set_rule` | Author a Rule Machine rule by appId (omit `appId` to create) — triggers, actions, required expressions, settings, structured shortcuts. Auto-snapshots before every write. `clearActions` / `replaceActions` commit the delete synchronously via a full selectActions page-form submit (runs RM's trashActs handler in-band), so the actions are gone when the call returns. A thin defensive verify-retry remains: on the rare residual it returns `partial:true, asyncCommitLikely:true` with `stage` + `safeRecovery` -- verify via `hub_get_app_config` rather than rolling back. |
 | `hub_delete_native_app` | Delete a classic native app (auto-snapshot to File Manager before deleting). |
-| `hub_clone_native_app` | Clone an existing classic SmartApp via Hubitat's `appCloner` endpoint. Returns the new `appId`. |
+| `hub_clone_native_app` | Clone an existing classic SmartApp via Hubitat's `appCloner` endpoint (deep: child apps + pause state copy; `stageDisabled` lands it disabled). Returns the new `appId`. |
 | `hub_export_native_app` | Export a classic SmartApp to JSON and persist it to File Manager (round-trippable with `hub_import_native_app`). |
-| `hub_import_native_app` | Import previously-exported app JSON into a new instance. Returns the new `appId`. |
+| `hub_import_native_app` | Import previously-exported app JSON into a new instance (lands ACTIVE; `stageDisabled` lands it disabled). Returns the new `appId`. |
 | `hub_get_rule_health` | Read-only health check on any installed app — surfaces broken markers, multiple-flag poison, configPage errors. (also in `hub_read_rules`) |
 
 Reads are gated by the Read master; create/update/delete by the Write master (with `confirm=true` + a recent backup). Both masters are ON by default.

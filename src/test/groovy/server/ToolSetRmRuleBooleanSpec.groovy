@@ -331,6 +331,15 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         rmUtils.calls.any { it.method == 'sendAction' && it.action == 'setRuleBooleanTrue' }
     }
 
+    def "empty ruleId array throws IllegalArgumentException"() {
+        when:
+        script.toolSetRmRuleBoolean([ruleId: [], value: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('must not be empty')
+    }
+
     def "array ruleId sets the private boolean for the whole set in ONE sendAction dispatch"() {
         when:
         def result = script.toolSetRmRuleBoolean([ruleId: [900, 901], value: false])

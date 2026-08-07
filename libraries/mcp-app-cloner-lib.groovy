@@ -625,39 +625,58 @@ def toolImportNativeApp(args) {
 }
 
 // Stage a freshly cloned/imported app inactive: disable the new app and every
-// child under it via the admin red-X (works on any app type -- RMUtils pause
-// reaches only RM 5.x rules, and a Button Controller clone's child Button
-// Rules subscribe to live button events, so children must be covered too).
-// Verified live on fw 2.5.1.135: a clone of an ACTIVE rule lands ACTIVE and a
-// clone/import is live until this (or a follow-up call) disables it.
-// Children are enumerated BEFORE any disable so a parent flag can't hide them.
+// DESCENDANT under it via the admin red-X (works on any app type -- RMUtils
+// pause reaches only Rule Machine rules, not Button Controllers / Room
+// Lighting / other classic apps, and a Button Controller clone's child Button
+// Rules subscribe to live button events, so the whole subtree must be
+// covered). Verified live on fw 2.5.1.135: a clone of an ACTIVE rule lands
+// ACTIVE and a clone/import is live until this (or a follow-up call) disables
+// it. The tree is enumerated breadth-first with a visited set (cycle-proof)
+// BEFORE any disable, so a parent's flag can't hide deeper levels.
+//
+// Failure contract: staging was explicitly requested as the safety property,
+// so ANY staging failure flips the envelope to success:false + isError -- but
+// the error text must prevent the reflex retry, because the clone/import
+// itself DID commit and a fresh call would create a duplicate app.
 private void _appClonerApplyStageDisabled(Map result, Integer newAppId) {
     def staged = []
     def failures = []
-    List targets = [newAppId]
-    try {
-        def newCfg = _rmFetchConfigJson(newAppId)
-        ((newCfg?.childApps ?: []) as List).each { c ->
-            def cid = c?.id?.toString()
-            if (cid?.isInteger()) targets << cid.toInteger()
+    List targets = []
+    Set visited = [] as Set
+    List queue = [newAppId]
+    while (queue) {
+        Integer tid = queue.remove(0)
+        if (visited.contains(tid)) continue
+        visited << tid
+        targets << tid
+        try {
+            def cfg = _rmFetchConfigJson(tid)
+            ((cfg?.childApps ?: []) as List).each { c ->
+                def cid = c?.id?.toString()
+                if (cid?.isInteger()) queue << cid.toInteger()
+            }
+        } catch (Exception childErr) {
+            failures << [appId: tid, kind: "childEnumeration", error: "child enumeration failed for app ${tid}: ${childErr.message} -- its DESCENDANTS (if any) were not discovered and were NOT disabled; app ${tid} itself is still attempted below"]
         }
-    } catch (Exception childErr) {
-        failures << [appId: newAppId, error: "child enumeration failed: ${childErr.message} -- children (if any) were NOT disabled"]
     }
     targets.each { tid ->
         def dres
         try { dres = toolSetAppDisabled([appId: tid, disabled: true]) }
         catch (Exception dErr) { dres = [success: false, error: dErr.message ?: dErr.toString()] }
         if (dres?.success) staged << tid
-        else failures << [appId: tid, error: dres?.error ?: "disable read-back mismatch"]
+        else failures << [appId: tid, kind: "disable", error: dres?.error ?: "disable read-back mismatch"]
     }
     result.stagedDisabled = staged
     if (failures) {
         result.stageFailures = failures
         result.partial = true
-        result.note = "${result.note} STAGING PARTIAL: some apps could not be disabled -- see stageFailures; disable them via hub_set_app_disabled before relying on stage-inactive."
+        result.success = false
+        result.isError = true
+        def newAppItselfFailed = failures.any { it.kind == "disable" && it.appId == newAppId }
+        result.error = "stageDisabled did NOT fully land: ${failures.size()} failure(s) -- see stageFailures. ${newAppItselfFailed ? "The NEW APP ITSELF (${newAppId}) is still ENABLED and live. " : ""}The clone/import DID commit (newAppId=${newAppId}) -- do NOT re-issue this call (that would create a duplicate app); disable the listed apps via hub_set_app_disabled(appId=<id>, disabled=true) instead."
+        result.note = "${result.note} STAGING FAILED -- see error/stageFailures."
     } else {
-        result.note = "${result.note} Staged inactive: ${staged.size()} app(s) disabled (the new app${staged.size() > 1 ? ' + children' : ''}); re-enable with hub_set_app_disabled(disabled=false)."
+        result.note = "${result.note} Staged inactive: ${staged.size()} app(s) disabled (the new app${staged.size() > 1 ? ' + descendants' : ''}); re-enable with hub_set_app_disabled(disabled=false)."
     }
 }
 

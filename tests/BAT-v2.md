@@ -2533,7 +2533,7 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 ```json
 {
   "setup_prompt": "Create three test rules called 'BAT NL Cutover A', 'BAT NL Cutover B', and 'BAT NL Cutover C', each with a time trigger at 23:58 and a log action. Mark them as test rules.",
-  "test_prompt": "I'm about to switch over some automations and don't want the old set firing mid-change. Stop 'BAT NL Cutover A', 'BAT NL Cutover B', and 'BAT NL Cutover C' from running — all together, as one step if you can — then confirm none of them is active. When that checks out, bring all three back at once and confirm they're running again.",
+  "test_prompt": "I'm about to switch over some automations and don't want the old set firing mid-change. Put 'BAT NL Cutover A', 'BAT NL Cutover B', and 'BAT NL Cutover C' on hold — all together, as one step if you can — then confirm none of them is active. When that checks out, bring all three back at once and confirm they're running again.",
   "teardown_prompt": "Delete the rules 'BAT NL Cutover A', 'BAT NL Cutover B', and 'BAT NL Cutover C'."
 }
 ```
@@ -2551,6 +2551,18 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 ```
 
 **Expected**: `hub_set_rule` with `modifyAction={index, mods:{ruleIds:[<new-target-id>]}}` (one op), then `hub_get_app_config` readback showing the Run Actions reference on the new target. removeAction+addAction via `patches` is a soft pass; FAIL if the caller is rebuilt from scratch or the old target is modified/deleted.
+
+#### T304 — Duplicate an automation without letting the copy go live
+
+```json
+{
+  "setup_prompt": "Create a test rule called 'BAT NL Stage Source' with a time trigger at 23:57 and a log action, and leave it running. Mark as test rule.",
+  "test_prompt": "I want a working copy of 'BAT NL Stage Source' to experiment on, but under no circumstances may the copy actually run — it must come into existence already switched off, and 'BAT NL Stage Source' itself must keep running untouched. Make the copy, then show me proof that the copy is off and the original is still active.",
+  "teardown_prompt": "Delete the copy of 'BAT NL Stage Source', then delete 'BAT NL Stage Source'."
+}
+```
+
+**Expected**: `hub_clone_native_app` with `stageDisabled=true` (one call — the clone lands disabled), then `hub_list_rules` showing the copy `status: "disabled"` and the source `active`. Clone-then-separately-disable is a soft pass ONLY if the AI acknowledges the copy was briefly live; FAIL if the copy is left enabled or the source is paused/disabled.
 
 ---
 
@@ -4144,7 +4156,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: the call is rejected with an `IllegalArgumentException` (JSON-RPC -32602) whose message names `replaceActions`, says it is an `edit-only` operation requiring an existing rule, and points the caller to create-then-edit. NO rule is created. This is the create-arm completeness contract: every shortcut the create arm is handed is HONORED or LOUDLY REJECTED, never silently dropped to a `success=true` empty shell. The same rejection holds for `addLocalVariable`, `patches`, `removeAction`, `clearActions`, `moveAction`, `removeTrigger`, `modifyTrigger`, and `walkStep`.
+**Expected**: the call is rejected with an `IllegalArgumentException` (JSON-RPC -32602) whose message names `replaceActions`, says it is an `edit-only` operation requiring an existing rule, and points the caller to create-then-edit. NO rule is created. This is the create-arm completeness contract: every shortcut the create arm is handed is HONORED or LOUDLY REJECTED, never silently dropped to a `success=true` empty shell. The same rejection holds for `addLocalVariable`, `patches`, `removeAction`, `clearActions`, `moveAction`, `removeTrigger`, `modifyTrigger`, `modifyAction`, and `walkStep`.
 
 **Failure modes**: a `success=true` envelope with an empty rule (the edit-only op was silently dropped -- the exact pre-fix bug, regressed). A raw internal error with no actionable guidance, or a rule created despite the rejection, also fails this scenario.
 

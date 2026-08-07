@@ -222,6 +222,43 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
         ex.message.toLowerCase().contains('must not be empty')
     }
 
+    def "a null element inside the ruleId array is rejected as a validation error, not an NPE"() {
+        when:
+        script.toolSetRulePaused([ruleId: [400, null], paused: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('integer')
+        rmUtils.calls.isEmpty()
+    }
+
+    def "a multi-id batch existence-checks every id and refuses unknown ids BEFORE dispatch"() {
+        given: "a verifiable rule-id set that lacks 999"
+        script.metaClass._rmValidRuleIds = { -> [400, 401] as Set }
+
+        when:
+        script.toolSetRulePaused([ruleId: [400, 999], paused: true])
+
+        then: "the batch is refused naming the unknown id, and nothing reached RMUtils"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('999')
+        ex.message.contains('hub_list_rules')
+        rmUtils.calls.isEmpty()
+    }
+
+    def "a multi-id batch whose ids all exist passes the existence check and dispatches once"() {
+        given:
+        script.metaClass._rmValidRuleIds = { -> [400, 401] as Set }
+
+        when:
+        def result = script.toolSetRulePaused([ruleId: [400, 401], paused: true])
+
+        then:
+        result.success == true
+        result.ruleIds == [400, 401]
+        rmUtils.calls.findAll { it.method == 'sendAction' }.size() == 1
+    }
+
     @spock.lang.Unroll
     def "hub_set_rule_paused via dispatch pauses an array of ruleIds in one call (useGateways=#useGateways)"() {
         given:
