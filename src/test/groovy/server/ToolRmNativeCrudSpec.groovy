@@ -3454,7 +3454,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // would. Returns a control map -- order (display-ordered settings indices), clicks (every
     // button click the composite fired), moveShifts (set false to model a move-arrow click that
     // never commits).
-    private Map wireModifyActionTransport(int ruleId, List order, Map committedSettings) {
+    // `postHook` (optional) sees every POST before the interceptor applies it, so a spec can
+    // fail ONE specific click (the trailing updateRule) without re-implementing the order
+    // machine. committedSettings is read at request time, so a spec may mutate it between
+    // two `when:` blocks to model what the rebuild writes at the new index.
+    private Map wireModifyActionTransport(int ruleId, List order, Map committedSettings, Closure postHook = null) {
         Map ctl = [order: new ArrayList(order), clicks: [], moveShifts: true]
         def statusFor = { List live ->
             JsonOutput.toJson([
@@ -3475,6 +3479,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
         hubGet.register("/installedapp/statusJson/${ruleId}".toString()) { params -> statusFor(ctl.order as List) }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (postHook != null) postHook.call(path, body)
             if (path == "/installedapp/btn") {
                 String name = body?.name?.toString()
                 String attr = body?.stateAttribute?.toString()
@@ -3501,9 +3506,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     private void wireModifyAddLeg(Map ctl, List specs, Integer newIndex, Map overrides = [:]) {
         script.metaClass._rmAddAction = { Integer appId, Map spec ->
             specs << spec
-            ctl.order = (ctl.order as List) + newIndex
-            [success: true, partial: false, actionIndex: newIndex,
-             settingsApplied: [], settingsSkipped: []] + overrides
+            def out = [success: true, partial: false, actionIndex: newIndex,
+                       settingsApplied: [], settingsSkipped: []] + overrides
+            // An add that FAILED committed nothing, so the display order must not gain the
+            // row -- otherwise the post-failure health probe reads a phantom action.
+            if (out.success != false) ctl.order = (ctl.order as List) + newIndex
+            out
         }
     }
 
@@ -3605,8 +3613,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "modifyAction pauseRule family: preserved fields decode the inverted pR boolean; mods.action overrides"() {
         given: "a committed PAUSE action (pR.1 'false' = Pause) targeting rule 200"
-        def ma = wireModifyActionTransport(100, [1],
-            ["actType.1": "rulesActs", "actSubType.1": "getPauseResumeRules", "pauseRule.1": ["200"], "pR.1": "false", "pauseRule.2": ["200"]])
+        // The rebuilt row's pR.<newIdx> is part of the readback gate now, so the fixture
+        // carries the value the rebuild is expected to write -- 'false' (Pause) for the
+        // preserve leg, flipped to 'true' (Resume) before the override leg below.
+        def committed = ["actType.1": "rulesActs", "actSubType.1": "getPauseResumeRules",
+                         "pauseRule.1": ["200"], "pR.1": "false", "pauseRule.2": ["200"], "pR.2": "false"]
+        def ma = wireModifyActionTransport(100, [1], committed)
         def specs = []
         wireModifyAddLeg(ma, specs, 2)
 
@@ -3620,32 +3632,40 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         when: "mods.action='resume' overrides it, against a rule back in its pre-modify shape"
         ma.order = [1]
-        script._rmModifyAction(100, 1, [ruleIds: [200], action: "resume"])
+        committed["pR.2"] = "true"
+        def overridden = script._rmModifyAction(100, 1, [ruleIds: [200], action: "resume"])
 
-        then:
+        then: "the override rides through to the spec AND is verified at the new index"
         specs[1].action == "resume"
+        overridden.success == true
     }
 
     def "modifyAction privateBoolean family: preserved value decodes the inverted pvTF boolean; mods.value overrides"() {
         given: "a committed set-private-boolean-FALSE action (pvTF.1 'true' = FALSE) targeting rule 200"
-        def ma = wireModifyActionTransport(100, [1],
-            ["actType.1": "rulesActs", "actSubType.1": "getSetPrivateBoolean", "privateT.1": ["200"], "pvTF.1": "true", "privateT.2": ["200"]])
+        // pvTF.<newIdx> is inverted the same way and is readback-gated too: value=false
+        // must persist as 'true', value=true as 'false'.
+        def committed = ["actType.1": "rulesActs", "actSubType.1": "getSetPrivateBoolean",
+                         "privateT.1": ["200"], "pvTF.1": "true", "privateT.2": ["200"], "pvTF.2": "true"]
+        def ma = wireModifyActionTransport(100, [1], committed)
         def specs = []
         wireModifyAddLeg(ma, specs, 2)
 
         when: "retargeting only preserves the committed value (pvTF 'true' means FALSE)"
-        script._rmModifyAction(100, 1, [ruleIds: [200]])
+        def preserved = script._rmModifyAction(100, 1, [ruleIds: [200]])
 
         then:
         specs[0].capability == "privateBoolean"
         specs[0].value == false
+        preserved.success == true
 
         when: "mods.value=true overrides, against a rule back in its pre-modify shape"
         ma.order = [1]
-        script._rmModifyAction(100, 1, [ruleIds: [200], value: true])
+        committed["pvTF.2"] = "false"
+        def overridden = script._rmModifyAction(100, 1, [ruleIds: [200], value: true])
 
         then:
         specs[1].value == true
+        overridden.success == true
     }
 
     def "modifyAction empty or null ruleIds is refused BEFORE the delete (the dangling-target destructive path)"() {
@@ -3727,6 +3747,302 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == false
         result.error.contains("rule-targeting actions")
         result.error.contains("RM is not touched")
+    }
+
+    // ---------- modifyAction pre-delete refusals: every one must leave RM untouched ----------
+
+    def "modifyAction refuses a committed RuleType selector the rebuild cannot reproduce"() {
+        given: "action 1's runRuleType says Room Lighting, but the rebuild only ever writes 'Rule Machine'"
+        def maPosts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            maPosts << path
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null,
+            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"],
+             "runRuleType.1": "Room Lighting"]) }
+
+        when:
+        script._rmModifyAction(100, 1, [ruleIds: [300]])
+
+        then: "refused pre-delete instead of silently retyping the action to Rule Machine"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("runRuleType")
+        ex.message.contains("Room Lighting")
+        ex.message.contains("removeAction + addAction")
+        ex.message.contains("RM is not touched")
+        maPosts.isEmpty()
+    }
+
+    def "modifyAction refuses to guess the pause verb when pR is unreadable and mods.action was omitted"() {
+        given: "a committed pauseRule action whose pR.1 never persisted"
+        def maPosts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            maPosts << path
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null,
+            ["actType.1": "rulesActs", "actSubType.1": "getPauseResumeRules", "pauseRule.1": ["200"]]) }
+
+        when: "the caller asks to retarget only, so the verb must be PRESERVED from a field that is not there"
+        script._rmModifyAction(100, 1, [ruleIds: [201]])
+
+        then: "refused pre-delete -- the old silent default would have flipped a Resume action to Pause"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("pR.1 is unreadable")
+        ex.message.contains("mods.action")
+        ex.message.contains("RM is not touched")
+        maPosts.isEmpty()
+    }
+
+    def "modifyAction refuses to guess the private-boolean value when pvTF is unreadable and mods.value was omitted"() {
+        given: "a committed privateBoolean action whose pvTF.1 never persisted"
+        def maPosts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            maPosts << path
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null,
+            ["actType.1": "rulesActs", "actSubType.1": "getSetPrivateBoolean", "privateT.1": ["200"]]) }
+
+        when:
+        script._rmModifyAction(100, 1, [ruleIds: [201]])
+
+        then: "same no-silent-default contract as the pause/resume verb"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("pvTF.1 is unreadable")
+        ex.message.contains("mods.value")
+        ex.message.contains("RM is not touched")
+        maPosts.isEmpty()
+    }
+
+    def "modifyAction refuses when the settings index is absent from the display order (pos less than zero)"() {
+        given: "settings carry action 5 but the rendered display order is [1, 2] -- the two sources disagree"
+        def ma = wireModifyActionTransport(100, [1, 2],
+            ["actType.5": "rulesActs", "actSubType.5": "getRuleActions", "ruleAct.5": ["200"]])
+
+        when:
+        script._rmModifyAction(100, 5, [ruleIds: [300]])
+
+        then: "refused pre-delete -- a rebuild would land the row at an arbitrary position"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("display order")
+        ex.message.contains("removeAction + addAction")
+        ex.message.contains("RM is not touched")
+
+        and: "no click of any kind went out (the delAct that would commit the delete is the one to watch)"
+        (ma.clicks as List).isEmpty()
+    }
+
+    def "modifyAction tolerates a committed target persisted as a bare scalar instead of a list"() {
+        given: "privateT.1 is the bare String '200' -- RM persists a single target that way"
+        def ma = wireModifyActionTransport(100, [1],
+            ["actType.1": "rulesActs", "actSubType.1": "getSetPrivateBoolean", "privateT.1": "200", "pvTF.1": "true",
+             "privateT.2": ["200"], "pvTF.2": "false"])
+        def specs = []
+        wireModifyAddLeg(ma, specs, 2)
+
+        when: "only the boolean value is modified, so the target must be PRESERVED off that scalar"
+        def result = script._rmModifyAction(100, 1, [value: true])
+
+        then: "the scalar was wrapped into a one-element list rather than rejected as an empty target"
+        specs[0].ruleIds == ["200"]
+        specs[0].value == true
+        result.success == true
+        result.verifiedTargets == ["200"]
+    }
+
+    def "modifyAction cancelTimers family rebuilds through the stopAct target field"() {
+        given: "a committed cancelTimers action (stopAct.1) targeting rule 200"
+        def ma = wireModifyActionTransport(100, [1],
+            ["actType.1": "rulesActs", "actSubType.1": "getStopActions", "stopAct.1": ["200"], "stopAct.2": ["300"]])
+        def specs = []
+        wireModifyAddLeg(ma, specs, 2)
+
+        when:
+        def result = script._rmModifyAction(100, 1, [ruleIds: [300]])
+
+        then: "the family's own list field is what gets rebuilt and read back"
+        specs[0].capability == "cancelTimers"
+        specs[0].ruleIds == [300]
+        result.success == true
+        result.verifiedTargets == ["300"]
+    }
+
+    def "modifyAction post-rebuild readback FETCH failure is partial, never a silent success"() {
+        given: "the second configure/json read -- the readback -- throws; the first (entry guard) succeeds"
+        def committed = ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"], "ruleAct.2": ["300"]]
+        def ma = wireModifyActionTransport(100, [1], committed)
+        def specs = []
+        wireModifyAddLeg(ma, specs, 2)
+        // Exactly two BARE configure/json reads happen: the entry guard and the readback.
+        // (The delete leg's version fetch goes to the /selectActions sub-page, which
+        // wireModifyActionTransport registers separately, so it never moves this counter.)
+        int cfgReads = 0
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            cfgReads++
+            if (cfgReads >= 2) throw new IllegalStateException("configure/json read failed")
+            ruleConfigJson(100, "r", [], null, committed)
+        }
+
+        when: "a single-action rule, so no reposition moves sit between the add and the readback"
+        def result = script._rmModifyAction(100, 1, [ruleIds: [300]])
+
+        then: "the readback really was the throwing read -- precondition"
+        cfgReads == 2
+
+        and: "unverified is reported as unverified: the retarget may or may not have landed"
+        result.verificationFetchFailed == true
+        result.partial == true
+        result.success == false
+        result.error.contains("readback failed")
+        result.error.contains("hub_get_app_config")
+    }
+
+    def "modifyAction verb readback mismatch fails the rebuild even when the TARGET list landed"() {
+        given: "a committed PAUSE action; the rebuilt row persists pR.2='true' (Resume) instead"
+        def ma = wireModifyActionTransport(100, [1],
+            ["actType.1": "rulesActs", "actSubType.1": "getPauseResumeRules", "pauseRule.1": ["200"], "pR.1": "false",
+             "pauseRule.2": ["200"], "pR.2": "true"])
+        def specs = []
+        wireModifyAddLeg(ma, specs, 2)
+
+        when: "retarget-only, so the pause verb must be preserved"
+        def result = script._rmModifyAction(100, 1, [ruleIds: [200]])
+
+        then: "the target list matched, so only the verb check can be what failed this"
+        result.verifiedTargets == ["200"]
+        result.success == false
+        result.error.contains("target list landed")
+        result.error.contains("pR.2")
+        result.error.contains("wanted false")
+    }
+
+    // ---------- modifyAction post-delete failure paths through the public dispatcher ----------
+
+    def "_rmModifyPostDeleteMsg neutralizes a nested not-touched sentinel and names the leg and restore path"() {
+        when: "the re-add leg throws a helper error whose own message carries the pre-flight sentinel"
+        def msg = script._rmModifyPostDeleteMsg(2, "re-add", new IllegalArgumentException("addAction refused the spec. RM is not touched."))
+
+        then: "the sentinel is rewritten -- leaving it would route a half-mutated rule to the nothing-to-restore hint"
+        !msg.contains("RM is not touched")
+        msg.contains("the original action WAS already removed")
+        msg.contains("action 2 was already removed when the re-add leg failed")
+        msg.contains("hub_restore_backup")
+
+        and: "with no rebuilt index there is nothing to say about where the new row sits"
+        !msg.contains("The rebuilt action IS in the rule")
+
+        when: "the reposition leg throws AFTER the rebuild landed at a known index"
+        def rebuilt = script._rmModifyPostDeleteMsg(2, "reposition", new IllegalStateException("move click failed"), 7)
+
+        then: "the message points the caller at the row it can actually find"
+        rebuilt.contains("action 2 was already removed when the reposition leg failed")
+        rebuilt.contains("settings index 7")
+        rebuilt.contains("position NOT restored")
+    }
+
+    def "modifyAction re-add THROW surfaces without the sentinel and prompts a real roll-back"() {
+        given: "the add leg throws an error carrying the pre-flight sentinel -- a lie once the delete committed"
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        wireModifyActionTransport(100, [1],
+            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]])
+        script.metaClass._rmAddAction = { Integer appId, Map spec ->
+            throw new IllegalArgumentException("addAction refused the merged spec. RM is not touched.")
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, modifyAction: [index: 1, mods: [ruleIds: [300]]], confirm: true])
+
+        then: "the wrapped message reached the envelope with the sentinel neutralized"
+        result.success == false
+        !result.error.contains("RM is not touched")
+        result.error.contains("the original action WAS already removed")
+        result.error.contains("re-add leg failed")
+
+        and: "restoreHint is the roll-back form, NOT the pre-flight not-touched form"
+        result.restoreHint.contains("Backup saved before write")
+        !result.restoreHint.contains("Pre-flight refusal")
+    }
+
+    def "modifyAction re-add FAILURE returns the half-mutated envelope with subscriptionsNotLive"() {
+        given: "the add leg reports success:false -- the delete committed, the rebuild did not"
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def ma = wireModifyActionTransport(100, [1],
+            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]])
+        def specs = []
+        wireModifyAddLeg(ma, specs, 2, [success: false, error: "the wizard rejected the merged spec"])
+
+        when:
+        def result = script.toolSetRule([appId: 100, modifyAction: [index: 1, mods: [ruleIds: [300]]], confirm: true])
+
+        then: "half-mutated is never shape-identical to a guard refusal that touched nothing"
+        result.success == false
+        result.partial == true
+        result.error.contains("re-add failed")
+        result.restoreHint.contains("Backup saved before write")
+
+        and: "the trailing updateRule was SKIPPED, so the rule mutated without a re-init"
+        result.subscriptionsNotLive == true
+    }
+
+    def "modifyAction via toolSetRule SUCCESS: pre-modifyAction backup, position note, health, and no null-valued keys"() {
+        given: "the MIDDLE-position action of a two-action rule is retargeted, so one move-up is needed"
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def ma = wireModifyActionTransport(100, [1, 2],
+            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"],
+             "actType.2": "rulesActs", "ruleAct.3": ["300"]])
+        def specs = []
+        wireModifyAddLeg(ma, specs, 3)
+
+        when:
+        def result = script.toolSetRule([appId: 100, modifyAction: [index: 1, mods: [ruleIds: [300]]], confirm: true])
+
+        then: "the dispatcher's own success shape: its backup reason, its note, its health block"
+        result.success == true
+        result.backup.reason == "pre-modifyAction"
+        result.note.contains("position in the rule is unchanged")
+        result.newActionIndex == 3
+        result.health != null
+
+        and: "a SUCCESS envelope omits every null-valued key outright (the issue-342 rejection class)"
+        // Not `== null` assertions: with publishOutputSchemas on, a null against a
+        // non-nullable declaration is what a spec-validating client rejects, so the
+        // contract is key ABSENCE.
+        !result.containsKey("error")
+        !result.containsKey("restoreHint")
+        !result.containsKey("verifyHint")
+        !result.containsKey("updateRuleError")
+        !result.containsKey("movesRemaining")
+    }
+
+    def "modifyAction via toolSetRule: a rejected trailing updateRule yields a real error and subscriptionsNotLive"() {
+        given: "the rebuild itself verifies cleanly; only the trailing updateRule click is refused"
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def ma = wireModifyActionTransport(100, [1],
+            ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"], "ruleAct.2": ["300"]],
+            { String path, Map body ->
+                if (path == "/installedapp/btn" && body?.name == "updateRule") {
+                    throw new RuntimeException("firmware refused the updateRule click")
+                }
+            })
+        def specs = []
+        wireModifyAddLeg(ma, specs, 2)
+
+        when:
+        def result = script.toolSetRule([appId: 100, modifyAction: [index: 1, mods: [ruleIds: [300]]], confirm: true])
+
+        then: "_rmModifyAction returned no error of its own, so this error can only be the dispatcher's synthesis"
+        result.updateRuleFailed == true
+        result.subscriptionsNotLive == true
+        result.success == false
+        result.error.contains("updateRule")
+        result.error.contains("firmware refused the updateRule click")
+        result.repairHints.any { it.toString().contains("updateRule click was rejected") }
     }
 
     def "modifyTrigger with a normal enum state is not rejected by the state-change guard"() {
@@ -9738,6 +10054,203 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == true
         result.stagedDisabled == [250]
         result.note.contains("Staged inactive")
+    }
+
+    // ---------- stageDisabled enumeration: the /hub2/appsList tree is the PRIMARY source ----------
+    //
+    // The per-node configure/json BFS renders one configPage per app, which for a cloned
+    // Button Controller with N children turned one read into N+1 expensive renders on the
+    // same per-app load counters the sticky limiter watches. The appsList read carries the
+    // whole nested tree in one GET; the BFS is now only the fallback (its own coverage is
+    // the two child-enumeration specs above, which leave /hub2/appsList unstubbed).
+
+    // Nested app tree in /hub2/appsList's real shape: {apps:[{data:{id,...}, children:[...]}]}.
+    // `subtree` is grafted under the RM parent alongside the clone source so the tree is a
+    // realistic whole-hub listing rather than a bare fragment.
+    private String stagingAppsList(List subtree) {
+        JsonOutput.toJson([apps: [
+            [data: [id: 21, name: "Rule Machine", type: "Rule Machine", disabled: false], children: [
+                [data: [id: 100, name: "Source Rule", type: "Rule-5.1", disabled: false], children: []]
+            ] + subtree]
+        ]])
+    }
+
+    // The clone harness shared by the appsList-enumeration specs below: source 100 under RM
+    // parent 21, the wizard POSTs stubbed, and the post-commit parent re-read exposing 250.
+    // Returns the recorded /installedapp/disable payload ids.
+    private List wireStagedCloneHarness(List disabledIds) {
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Source Rule", [], 21) }
+        hubGet.register('/apps/api/4242/app/100') { params -> '<html>source-context page</html>' }
+        hubGet.register('/installedapp/configure/json/4242/main') { params -> clonerPageStateWithIdx("importRule", 0) }
+        int parentCalls = 0
+        hubGet.register('/installedapp/configure/json/21') { params ->
+            parentCalls++
+            parentCalls <= 1
+                ? parentConfigJson(21, [[id: 100, label: "Source Rule"]])
+                : parentConfigJson(21, [[id: 100, label: "Source Rule"], [id: 250, label: "Source Rule clone"]])
+        }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/apps/api/4242/app/100", data: ""]
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            if (path == "/installedapp/disable") {
+                disabledIds << new groovy.json.JsonSlurper().parseText(body).id
+            }
+            '{"status":"success"}'
+        }
+        return disabledIds
+    }
+
+    def "stageDisabled enumerates the whole subtree from ONE appsList read, with no per-node configPage render"() {
+        given: "a clone with a child AND a grandchild, all present in the appsList tree"
+        def disabledIds = wireStagedCloneHarness([])
+        hubGet.register('/hub2/appsList') { params -> stagingAppsList([
+            [data: [id: 250, name: "Source Rule clone", disabled: false], children: [
+                [data: [id: 251, name: "child controller", disabled: false], children: [
+                    [data: [id: 252, name: "grandchild button rule", disabled: false], children: []]
+                ]]
+            ]]
+        ]) }
+        hubGet.register('/installedapp/json/250') { params -> '{"id":250,"disabled":true}' }
+        hubGet.register('/installedapp/json/251') { params -> '{"id":251,"disabled":true}' }
+        hubGet.register('/installedapp/json/252') { params -> '{"id":252,"disabled":true}' }
+
+        when:
+        def result = script.toolCloneNativeApp([sourceAppId: 100, stageDisabled: true, confirm: true])
+
+        then: "depth-first from the clone root: the new app, its child, then the grandchild"
+        result.success == true
+        result.stagedDisabled == [250, 251, 252]
+        result.stageFailures == null
+        disabledIds == [250, 251, 252]
+
+        and: "NOT ONE configure/json render for any staged app -- the whole point of the appsList read"
+        // The BFS fallback would render /installedapp/configure/json/{250,251,252}; none of
+        // those paths is even registered here, so a regression back to the BFS surfaces as a
+        // childEnumeration failure rather than a silently slower success.
+        def stagingRenders = hubGet.calls.findAll {
+            it.path in ['/installedapp/configure/json/250', '/installedapp/configure/json/251',
+                        '/installedapp/configure/json/252']
+        }
+        stagingRenders.isEmpty()
+
+        and: "exactly one tree read served the whole enumeration"
+        hubGet.calls.count { it.path == '/hub2/appsList' } == 1
+    }
+
+    def "stageDisabled subtree walk terminates on a cyclic appsList tree without duplicating a target"() {
+        given: "the grandchild node points back at the clone root -- a cycle the recursion must not follow"
+        def disabledIds = wireStagedCloneHarness([])
+        hubGet.register('/hub2/appsList') { params -> stagingAppsList([
+            [data: [id: 250, name: "Source Rule clone", disabled: false], children: [
+                [data: [id: 251, name: "child controller", disabled: false], children: [
+                    [data: [id: 250, name: "cycle back to the root", disabled: false], children: []]
+                ]]
+            ]]
+        ]) }
+        hubGet.register('/installedapp/json/250') { params -> '{"id":250,"disabled":true}' }
+        hubGet.register('/installedapp/json/251') { params -> '{"id":251,"disabled":true}' }
+
+        when:
+        def result = script.toolCloneNativeApp([sourceAppId: 100, stageDisabled: true, confirm: true])
+
+        then: "the visited set stopped the walk, and 250 was disabled ONCE"
+        result.success == true
+        result.stagedDisabled == [250, 251]
+        disabledIds == [250, 251]
+    }
+
+    def "stageDisabled reports the GRANDCHILD id when a deep descendant fails to disable"() {
+        given: "the grandchild's read-back still reports enabled"
+        def disabledIds = wireStagedCloneHarness([])
+        hubGet.register('/hub2/appsList') { params -> stagingAppsList([
+            [data: [id: 250, name: "Source Rule clone", disabled: false], children: [
+                [data: [id: 251, name: "child controller", disabled: false], children: [
+                    [data: [id: 252, name: "grandchild button rule", disabled: false], children: []]
+                ]]
+            ]]
+        ]) }
+        hubGet.register('/installedapp/json/250') { params -> '{"id":250,"disabled":true}' }
+        hubGet.register('/installedapp/json/251') { params -> '{"id":251,"disabled":true}' }
+        hubGet.register('/installedapp/json/252') { params -> '{"id":252,"disabled":false}' }
+
+        when:
+        def result = script.toolCloneNativeApp([sourceAppId: 100, stageDisabled: true, confirm: true])
+
+        then: "the failure names 252 -- not the root, and not the child that DID land"
+        result.success == false
+        result.isError == true
+        result.stagedDisabled == [250, 251]
+        result.stageFailures.size() == 1
+        result.stageFailures[0].appId == 252
+        result.stageFailures[0].kind == "disable"
+
+        and: "the anti-re-clone steer stands, and the root is NOT reported as still live"
+        result.error.contains("do NOT re-issue")
+        !result.error.contains("The NEW APP ITSELF")
+    }
+
+    def "stageDisabled requested on a DISCOVERY MISS says so instead of silently not running"() {
+        given: "the cloner fires but the parent never acquires the new child, so newAppId stays null"
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Source Rule", [], 21) }
+        hubGet.register('/apps/api/4242/app/100') { params -> '<html>source-context page</html>' }
+        hubGet.register('/installedapp/configure/json/4242/main') { params -> clonerPageStateWithIdx("importRule", 0) }
+        hubGet.register('/installedapp/configure/json/21') { params ->
+            parentConfigJson(21, [[id: 100, label: "Source Rule"]])
+        }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            [status: 302, location: "/apps/api/4242/app/100", data: ""]
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
+        script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
+
+        when:
+        def result = script.toolCloneNativeApp([sourceAppId: 100, stageDisabled: true, confirm: true])
+
+        then: "the clone may well EXIST and be LIVE -- the caller asked for staged-inactive and must hear it never ran"
+        result.success == false
+        result.newAppId == null
+        result.stagedDisabled == []
+        result.error.contains("no new child appeared")
+        result.error.contains("stageDisabled was requested but could NOT run")
+        result.error.contains("hub_set_app_disabled")
+    }
+
+    def "stageDisabled pauses at the response-budget checkpoint and hands back the un-attempted ids"() {
+        given: "a three-app subtree and an already-spent budget clock"
+        // Real _timeBudgetExceeded: a 1ms LAN budget against a t0 of 1 is past due at the
+        // harness's fixed now(). The loop deliberately skips the check on the FIRST target,
+        // so the new app itself is always attempted before any pause.
+        settingsMap.lanBudgetMs = 1
+        def disabledIds = wireStagedCloneHarness([])
+        hubGet.register('/hub2/appsList') { params -> stagingAppsList([
+            [data: [id: 250, name: "Source Rule clone", disabled: false], children: [
+                [data: [id: 251, name: "child controller", disabled: false], children: [
+                    [data: [id: 252, name: "grandchild button rule", disabled: false], children: []]
+                ]]
+            ]]
+        ]) }
+        hubGet.register('/installedapp/json/250') { params -> '{"id":250,"disabled":true}' }
+
+        when:
+        def result = script.toolCloneNativeApp([sourceAppId: 100, stageDisabled: true, confirm: true, __reqT0: 1L])
+
+        then: "the root landed; the remainder is NAMED rather than lost with the whole response"
+        result.stagedDisabled == [250]
+        result.stageRemaining == [251, 252]
+        disabledIds == [250]
+        result.success == false
+        result.partial == true
+
+        and: "the error distinguishes not-yet-attempted from failed, and still forbids a re-clone"
+        result.error.contains("not yet attempted")
+        result.error.contains("251, 252")
+        result.error.contains("do NOT re-issue")
+        result.note.contains("STAGING INCOMPLETE")
     }
 
     def "hub_import_native_app surfaces isError + error when child discovery returns null (soft-failure shape)"() {
@@ -38039,9 +38552,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // the lint covers structurally:
     //
     //   replaceActions / clearActions / moveAction / removeAction (one branch
-    //   in the action-mutation dispatcher) plus removeTrigger / modifyTrigger
-    //   (the trigger-mutation dispatcher). 6 entry points -> 6 failure +
-    //   6 SUCCESS-negative-pin paired assertions, run parametrically.
+    //   in the action-mutation dispatcher), modifyAction (its own branch --
+    //   the delete + re-add + reposition composite), plus removeTrigger /
+    //   modifyTrigger (the trigger-mutation dispatcher). 7 entry points ->
+    //   7 failure + 7 SUCCESS-negative-pin paired assertions, run parametrically.
     //
     // A regression that fixes `subscriptionsNotLive = false` always, returns
     // wrong `updateRuleError` text, or rewrites the recovery hint line would
@@ -38165,6 +38679,23 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             [status: 200, location: null, data: '']
         }
+        // modifyAction is a COMPOSITE (delete + re-add + reposition) where the shared
+        // per-shape toggles above cannot help: each toggle models ONE mutation and this
+        // branch runs three against an evolving display order. Re-register the two paths
+        // and the POST interceptor for THIS ROW ONLY, reusing the composite transport the
+        // modifyAction specs already drive; the other six rows keep the fixture unchanged.
+        if (shape == "modifyAction") {
+            def maCtl = wireModifyActionTransport(100, [1, 2],
+                ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"],
+                 "actType.2": "rulesActs", "ruleAct.3": ["300"]],
+                { String path, Map body ->
+                    if (path == "/installedapp/btn" && body["settings[updateRule]"] == "clicked") {
+                        updateRuleAttempted = true
+                        throw new RuntimeException("simulated ${shape} updateRule rejection (firmware refused the click)")
+                    }
+                })
+            wireModifyAddLeg(maCtl, [], 3)
+        }
 
         when:
         def result = script.toolSetRule(args + [appId: 100, confirm: true])
@@ -38196,6 +38727,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "clearActions"    | [clearActions: true]
         "moveAction"      | [moveAction: [index: 1, direction: "down"]]
         "replaceActions"  | [replaceActions: [[capability: "switch", action: "on", deviceIds: [8]]]]
+        "modifyAction"    | [modifyAction: [index: 1, mods: [ruleIds: [300]]]]
         "removeTrigger"   | [removeTrigger: [index: 1]]
         "modifyTrigger"   | [modifyTrigger: [index: 1, mods: [state: "off"]]]
     }
@@ -38286,6 +38818,19 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             [status: 200, location: null, data: '']
         }
+        // Same row-scoped composite transport as the failure spec (see its rationale);
+        // the only delta is that the trailing click records instead of throwing.
+        if (shape == "modifyAction") {
+            def maCtl = wireModifyActionTransport(100, [1, 2],
+                ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"],
+                 "actType.2": "rulesActs", "ruleAct.3": ["300"]],
+                { String path, Map body ->
+                    if (path == "/installedapp/btn" && body["settings[updateRule]"] == "clicked") {
+                        updateRuleClicked = true
+                    }
+                })
+            wireModifyAddLeg(maCtl, [], 3)
+        }
 
         when:
         def result = script.toolSetRule(args + [appId: 100, confirm: true])
@@ -38330,7 +38875,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // tstate1 via settingsLanded so settingsSkipped is empty, but the
         // partial assertion is intentionally omitted here to keep this pin
         // scoped to the action-mutation contract.
-        if (shape in ["removeAction", "clearActions", "moveAction"]) {
+        //
+        // modifyAction IS in this list: its row drives a stubbed re-add that reports
+        // partial:false and a reposition that really shifts, so nothing feeds the inner
+        // OR-clause and partial must stay falsy on the happy path.
+        if (shape in ["removeAction", "clearActions", "moveAction", "modifyAction"]) {
             assert result.partial != true
         }
 
@@ -38340,6 +38889,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "clearActions"    | [clearActions: true]
         "moveAction"      | [moveAction: [index: 1, direction: "down"]]
         "replaceActions"  | [replaceActions: [[capability: "switch", action: "on", deviceIds: [8]]]]
+        "modifyAction"    | [modifyAction: [index: 1, mods: [ruleIds: [300]]]]
         "removeTrigger"   | [removeTrigger: [index: 1]]
         "modifyTrigger"   | [modifyTrigger: [index: 1, mods: [state: "off"]]]
     }
@@ -40554,6 +41104,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "moveAction"       | [index: 0, direction: "down"]
         "removeTrigger"    | [index: 0]
         "modifyTrigger"    | [index: 0]
+        "modifyAction"     | [index: 0, mods: [ruleIds: [1]]]
         "walkStep"         | [page: "mainPage"]
         "settings"         | [foo: "bar"]
         "button"           | "save"

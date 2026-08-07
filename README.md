@@ -618,9 +618,9 @@ Write/delete require the Write master + confirm + a recent backup.
 |------|-------------|
 | `hub_set_rule` | Create or edit a Rule Machine rule (RM 5.1) — the full authoring surface (omit `appId` to create). Structured shortcuts: addTrigger / addAction / addRequiredExpression / replaceRequiredExpression / walkStep / patches and more. Auto-snapshots before every write. |
 | `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x) via official `hubitat.helper.RMUtils` API (also in `hub_read_rules`) |
-| `hub_call_rule` | Trigger an RM rule (`action`: "rule"/"actions"/"stop") |
+| `hub_call_rule` | Trigger one or more RM rules (`ruleId` takes an id or an array; `action`: "rule"/"actions"/"stop"/"start") |
 | `hub_set_rule_paused` | Pause or resume one or more RM rules (`paused=true` pauses, `paused=false` resumes; `ruleId` takes an id or an array; reversible) |
-| `hub_set_rule_private_boolean` | Set an RM rule's private boolean variable |
+| `hub_set_rule_private_boolean` | Set the private boolean of one or more RM rules (`ruleId` takes an id or an array) |
 | `hub_get_rule_health` | Read-only health check on any installed app — surfaces broken markers, multiple-flag poison, configPage errors. (also in `hub_read_rules`) |
 | `hub_list_rule_local_variables` | List a Rule Machine rule's local variables (name/type/value) from `state.allLocalVars`; distinct from `hub_list_variables` (hub globals). (also in `hub_read_rules`) |
 | `hub_delete_native_app` | Delete any classic native app incl. RM rules (auto-snapshot first; `force=true` for hard delete; also in `hub_manage_native_rules_and_apps`) |
@@ -638,9 +638,9 @@ Reads (`hub_list_rules`, `hub_get_rule_health`, `hub_get_visual_rule`) are gated
 | Tool | Description |
 |------|-------------|
 | `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x) via official `hubitat.helper.RMUtils` API (also in `hub_read_rules`) |
-| `hub_call_rule` | Trigger an RM rule (`action`: "rule"/"actions"/"stop") |
+| `hub_call_rule` | Trigger one or more RM rules (`ruleId` takes an id or an array; `action`: "rule"/"actions"/"stop"/"start") |
 | `hub_set_rule_paused` | Pause or resume one or more RM rules (`paused=true` pauses, `paused=false` resumes; `ruleId` takes an id or an array; reversible) |
-| `hub_set_rule_private_boolean` | Set an RM rule's private boolean variable |
+| `hub_set_rule_private_boolean` | Set the private boolean of one or more RM rules (`ruleId` takes an id or an array) |
 | `hub_set_native_app` | Create or edit any classic native app (omit `appId` to create; `appType` enum covers Button Controllers / Notifier / Groups+Scenes / Basic Rules; default `rule_machine`). Visual Rules are edit/delete-only by `appId` — create them with `hub_set_visual_rule`. Create a Button Rule under its controller via `buttonRule`. Returns `appId`. Generic upsert; `walkStep` (generic classic-page walker) also works here. |
 | `hub_set_rule` | Author a Rule Machine rule by appId (omit `appId` to create) — triggers, actions, required expressions, settings, structured shortcuts. Auto-snapshots before every write. `clearActions` / `replaceActions` commit the delete synchronously via a full selectActions page-form submit (runs RM's trashActs handler in-band), so the actions are gone when the call returns. A thin defensive verify-retry remains: on the rare residual it returns `partial:true, asyncCommitLikely:true` with `stage` + `safeRecovery` -- verify via `hub_get_app_config` rather than rolling back. |
 | `hub_delete_native_app` | Delete a classic native app (auto-snapshot to File Manager before deleting). |

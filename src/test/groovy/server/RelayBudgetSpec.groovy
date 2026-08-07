@@ -542,6 +542,65 @@ class RelayBudgetSpec extends ToolSpecBase {
         captured.edit.patches.size() == 2
     }
 
+    // The three leaves added to _budgetAwareTools alongside hub_set_rule. Each owns a
+    // partial-commit loop that consumes the clock (hub_call_rule's per-rule stop/start
+    // toggle; the cloner's stageDisabled disable loop), and each is reached through the
+    // SAME two-hop injection as the pin above -- a leaf missing from the allowlist never
+    // sees the key, so its loop silently runs unbounded. The loop behaviour itself is
+    // pinned in the tools' own specs; these pin only DELIVERY.
+
+    def "the budget clock reaches hub_call_rule through dispatch and the gateway"() {
+        given:
+        settingsMap.useGateways = true
+        settingsMap.enableWrite = true
+        def captured = [:]
+        script.metaClass.toolRunRmRule = { Map a -> captured.args = a; [success: true] }
+
+        when:
+        def response = mcpDriver.callTool('hub_manage_native_rules_and_apps',
+            [tool: 'hub_call_rule', args: [ruleId: [1, 2], action: 'stop']])
+
+        then:
+        response.error == null
+        captured.args.__reqT0 instanceof Long
+        captured.args.ruleId == [1, 2]
+    }
+
+    def "the budget clock reaches hub_clone_native_app through dispatch and the gateway"() {
+        given:
+        settingsMap.useGateways = true
+        settingsMap.enableWrite = true
+        def captured = [:]
+        script.metaClass.toolCloneNativeApp = { Map a -> captured.args = a; [success: true] }
+
+        when:
+        def response = mcpDriver.callTool('hub_manage_native_rules_and_apps',
+            [tool: 'hub_clone_native_app', args: [sourceAppId: 1, stageDisabled: true, confirm: true]])
+
+        then:
+        response.error == null
+        captured.args.__reqT0 instanceof Long
+        captured.args.stageDisabled == true
+    }
+
+    def "the budget clock reaches hub_import_native_app through dispatch and the gateway"() {
+        given:
+        settingsMap.useGateways = true
+        settingsMap.enableWrite = true
+        def captured = [:]
+        script.metaClass.toolImportNativeApp = { Map a -> captured.args = a; [success: true] }
+
+        when:
+        def response = mcpDriver.callTool('hub_manage_native_rules_and_apps',
+            [tool: 'hub_import_native_app',
+             args: [jsonContent: '{}', parentHintAppId: 1, stageDisabled: true, confirm: true]])
+
+        then:
+        response.error == null
+        captured.args.__reqT0 instanceof Long
+        captured.args.stageDisabled == true
+    }
+
     // ---------------- health-probe shedding + unreadable tolerance (issue #351) ----------------
     // The trailing health probe is advisory freight on an already-committed op: it
     // must shed once the budget is spent (returning under the transport ceiling

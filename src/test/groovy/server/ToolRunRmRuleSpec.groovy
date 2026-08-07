@@ -174,6 +174,9 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         result.ruleId == 103
         posts.any { it.path == '/installedapp/btn' && it.body.name == 'stopRule' }
         !rmUtils.calls.any { it.method == 'sendAction' && it.action == 'stopRuleAct' }
+
+        and: "a SCALAR call echoes ruleIds too, so callers read one key on every stop/start shape"
+        result.ruleIds == [103]
     }
 
     @spock.lang.Unroll
@@ -503,10 +506,53 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         when: 'stop an already-stopped rule via a one-element array (no-op path)'
         def result = script.toolRunRmRule([ruleId: [111], action: 'stop'])
 
-        then:
+        then: 'the single-id shape (ruleId) and the universal echo (ruleIds) both present'
         result.success == true
         result.ruleId == 111
         result.ruleIds == [111]
+
+        and: 'a one-element batch is still a single id, so it makes no verification claim'
+        !result.containsKey('idsVerified')
+    }
+
+    def "array ruleId with action=start toggles each rule and aggregates per-rule results"() {
+        given:
+        hubGet.register('/installedapp/statusJson/118') { params -> minimalStatusJson(118, true) }
+        hubGet.register('/installedapp/statusJson/119') { params -> minimalStatusJson(119, false) }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when: 'start 118 (stopped -> clicks) and 119 (already running -> no-op)'
+        def result = script.toolRunRmRule([ruleId: [118, 119], action: 'start'])
+
+        then: 'the start verb aggregates the same way stop does'
+        result.success == true
+        result.ruleIds == [118, 119]
+        result.rmAction == 'stopRule toggle x2'
+        result.results.size() == 2
+        result.results[0].ruleId == 118
+        result.results[1].rmAction == 'noop'
+    }
+
+    def "multi-rule stop where EVERY rule fails says so instead of naming survivors that do not exist"() {
+        given: "both rules' state reads throw, so neither toggle can run"
+        hubGet.register('/installedapp/statusJson/116') { params -> throw new IllegalStateException("statusJson read failed") }
+        hubGet.register('/installedapp/statusJson/117') { params -> throw new IllegalStateException("statusJson read failed") }
+
+        when:
+        def result = script.toolRunRmRule([ruleId: [116, 117], action: 'stop'])
+
+        then: "the all-failed wording -- the partial-success text would claim 0 rules WERE actioned"
+        result.success == false
+        result.failedRuleIds == [116, 117]
+        result.error.contains("failed for EVERY rule in the batch")
+        !result.error.contains("WERE actioned")
+
+        and: "nothing succeeded, so this is a total failure, not a partial one"
+        result.partial == false
+        result.results.size() == 2
+        result.results.every { it.success == false }
     }
 
     def "multi-rule stop aggregate names the failed ids and marks partial when others succeeded"() {
@@ -529,6 +575,31 @@ class ToolRunRmRuleSpec extends ToolSpecBase {
         result.results.size() == 2
         result.results[0].success == true
         result.results[1].success == false
+    }
+
+    @spock.lang.Unroll
+    def "hub_call_rule via dispatch runs an ARRAY of ruleIds in one call (useGateways=#useGateways)"() {
+        given: 'the union-typed ruleId argument has to survive JSON-RPC round-tripping, not just a direct call'
+        settingsMap.useGateways = useGateways
+
+        when:
+        def response = mcpDriver.callTool('hub_call_rule', [ruleId: [300, 301], action: 'rule'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.ruleIds == [300, 301]
+
+        and: 'one dispatch for the whole set, and the skipped-check flag rode the envelope out'
+        // No RMUtils rule-list stub here, so the existence check cannot run -- the false
+        // is the contract (a silent omission would read as "verified" to a caller).
+        inner.idsVerified == false
+        rmUtils.calls.findAll { it.method == 'sendAction' && it.action == 'runRule' }.size() == 1
+
+        where:
+        useGateways << [true, false]
     }
 
     def "multi-rule stop pauses at the response-budget checkpoint and hands back the remainder"() {

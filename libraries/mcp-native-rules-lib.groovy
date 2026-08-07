@@ -55,7 +55,7 @@ def _getAllToolDefinitions_partNativeRM() {
                 properties: [
                     success: [type: "boolean", description: "Whether the action succeeded (multi-rule: all succeeded)"],
                     ruleId: [type: "integer", description: "Rule app ID acted on (present when exactly one)"],
-                    ruleIds: [type: "array", items: [type: "integer"], description: "All rule app IDs acted on (always present on array-form calls)"],
+                    ruleIds: [type: "array", items: [type: "integer"], description: "All rule app IDs REQUESTED (on a budget-paused batch, remainingRuleIds were not yet acted on). Present on every stop/start call and on all array-form calls."],
                     rmAction: [type: "string", description: "RM action performed (runRule, runRuleAct, stopRule toggle, stopRule toggle x<N> for a multi-rule batch, noop)"],
                     results: [type: "array", items: [type: "object"], description: "Per-rule results (multi-rule stop/start only)"],
                     partial: [type: "boolean", description: "Multi-rule stop/start: some rules actioned, some failed or not yet reached"],
@@ -86,6 +86,7 @@ def _getAllToolDefinitions_partNativeRM() {
                     ruleId: [type: "integer", description: "Rule app ID (present when exactly one)"],
                     ruleIds: [type: "array", items: [type: "integer"], description: "All rule app IDs acted on"],
                     paused: [type: "boolean", description: "Applied pause state (true=paused, false=resumed)"],
+                    idsVerified: [type: "boolean", description: "multi-id batches: true = ids existence-checked pre-dispatch; false = check SKIPPED (rule list unverifiable). Absent on single-id calls."],
                     rmAction: [type: "string", description: "pauseRule or resumeRule"],
                     fallback: [type: "string", description: "Present on old-firmware 3-arg fallback"],
                     error: [type: "string", description: "Present on failure"],
@@ -112,6 +113,7 @@ def _getAllToolDefinitions_partNativeRM() {
                     ruleId: [type: "integer", description: "Rule app ID (present when exactly one)"],
                     ruleIds: [type: "array", items: [type: "integer"], description: "All rule app IDs acted on"],
                     rmAction: [type: "string", description: "setRuleBooleanTrue or setRuleBooleanFalse"],
+                    idsVerified: [type: "boolean", description: "multi-id batches: true = ids existence-checked pre-dispatch; false = check SKIPPED (rule list unverifiable). Absent on single-id calls."],
                     fallback: [type: "string", description: "Present on old-firmware 3-arg fallback"],
                     error: [type: "string", description: "Present on failure"],
                     note: [type: "string", description: "Present on failure"]
@@ -261,7 +263,7 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
                     ],
                     modifyAction: [
                         type: "object",
-                        description: "Retarget a rule-targeting action in one op: {index:<N>, mods:{ruleIds:[...]}} — e.g. point a Run Rule Actions caller at a replacement rule during a staged migration. Supported on runRule/cancelTimers/pauseRule (mods also: action 'pause'|'resume') and privateBoolean (mods also: value bool) actions; other action shapes are rejected toward removeAction + addAction. Implemented as an identity-preserving rebuild (remove + re-add + reposition), so the action's settings index changes while its position is kept."
+                        description: "Retarget a rule-targeting action in one op: {index:<N>, mods:{ruleIds:[...]}} — e.g. point a Run Rule Actions caller at a replacement rule during a staged migration. Supported on runRule/cancelTimers/pauseRule (mods also: action 'pause'|'resume') and privateBoolean (mods also: value bool) actions; other action shapes are rejected toward removeAction + addAction. Implemented as a position-preserving rebuild (remove + re-add + reposition), so the action's settings index changes while its position is kept."
                     ],
                     walkStep: [
                         type: "object",
@@ -288,7 +290,7 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
                     controllerId: [type: "integer", description: "buttonRule: parent Button Controller appId"],
                     backup: [type: "object", description: "Pre-update backup metadata (backupKey, type, fileName, ...)"],
                     settingsApplied: [type: "array", description: "Settings applied (settings mode)", items: [type: "string"]],
-                    settingsSkipped: [type: "array", description: "Settings skipped", items: [type: "string"]],
+                    settingsSkipped: [type: "array", description: "Settings skipped ({key, reason} objects; reason codes in hub_get_tool_guide)", items: [type: "object"]],
                     unknownSettingsWarning: [type: "string", description: "Present when unknown settings supplied"],
                     subPageNote: [type: "string", description: "Sub-page note"],
                     buttonClicked: [type: "string", description: "Button clicked (button mode)"],
@@ -319,15 +321,18 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
                     addedActions: [type: "array", description: "replace/clear-all: actions added", items: [type: "object"]],
                     modifiedIndex: [type: "integer", description: "modifyTrigger/modifyAction: modified index"],
                     verifiedState: [description: "modifyTrigger: post-edit verified state"],
-                    verificationFetchFailed: [type: "boolean", description: "modifyTrigger: verification fetch failed"],
+                    verificationFetchFailed: [type: "boolean", description: "modifyTrigger/modifyAction: post-edit verification fetch failed"],
                     newActionIndex: [type: "integer", description: "modifyAction: the rebuilt action's new settings index"],
                     movesUp: [type: "integer", description: "modifyAction: move-up clicks needed to restore the original position"],
                     movesDone: [type: "integer", description: "modifyAction: move-up clicks actually applied"],
                     budgetPaused: [type: "boolean", description: "modifyAction: response budget ran out mid-reposition -- finish with moveAction per the error text, do NOT re-issue modifyAction"],
-                    movesRemaining: [type: ["integer", "null"], description: "modifyAction: moves still needed when budgetPaused"],
-                    positionUnknown: [type: "boolean", description: "modifyAction: the original position could not be determined; order not restored automatically"],
+                    movesRemaining: [type: "integer", description: "modifyAction: moves still needed (present only when budgetPaused)"],
                     moveSoftFail: [type: "boolean", description: "modifyAction: a reposition move could not be confirmed (asyncCommitLikely) -- verify order before retrying"],
                     verifiedTargets: [type: ["array", "null"], items: [type: "string"], description: "modifyAction: post-rebuild readback of the target field"],
+                    idsVerified: [type: "boolean", description: "multi-id batches: true = every id existence-checked pre-dispatch; false = check SKIPPED (rule list unverifiable). Absent on single-id calls."],
+                    removeResult: [type: "object", description: "modifyAction: the delete leg's rich return ({removedIndex, beforeIndices, afterIndices, reclicked})"],
+                    addResult: [type: "object", description: "modifyAction: the re-add leg's full envelope (drill in for settingsSkipped/repairHints on a partial)"],
+                    moveResults: [type: "array", items: [type: "object"], description: "modifyAction: per-move rich returns (inner asyncCommitLikely rides here)"],
                     spec: [type: "object", description: "modifyAction: the merged addAction spec that was re-added"],
                     triggerIndex: [type: "integer", description: "addTrigger: new trigger index"],
                     configPageError: [description: "Config-page read error, when present"],
@@ -355,7 +360,7 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
                     actionsRequestedForRemoval: [type: "integer", description: "clearActions: actions requested for removal"],
                     actionsStillPresent: [type: "integer", description: "clearActions: actions still present after"],
                     possibleStateEditAct: [description: "clearActions: possible state-edit action"],
-                    verifyHint: [type: "string", description: "clearActions/replaceActions/moveAction: human-readable verify-before-retry guidance for an unconfirmed async commit"],
+                    verifyHint: [type: "string", description: "clearActions/replaceActions/moveAction/modifyAction: human-readable verify-before-retry guidance for an unconfirmed async commit"],
                     safeRecovery: [type: "object", description: "clearActions: safe-recovery guidance"],
                     partialTriggers: [type: "array", description: "create: indices of bundled triggers that failed to fully bake", items: [type: "integer"]],
                     partialActions: [type: "array", description: "create: indices of bundled actions that failed to fully bake", items: [type: "integer"]],
@@ -843,25 +848,40 @@ private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps
 // reports nothing per-rule) is the exact failure the batch exists to prevent.
 // Single-id calls keep their long-standing no-validation behavior. The check
 // skips when the rule list is unverifiable (_rmValidRuleIds returns null).
-private List<Integer> _rmRuleIdListArg(Object raw) {
+private Map _rmRuleIdListArg(Object raw) {
     if (raw == null) throw new IllegalArgumentException("ruleId is required")
     def rawList = (raw instanceof List) ? raw : [raw]
     if (rawList.isEmpty()) throw new IllegalArgumentException("ruleId array must not be empty")
     List<Integer> ids = []
     rawList.each { id ->
-        def n = normalizeRuleId(id)
+        // _rmCoerceRuleId, not normalizeRuleId: a JSON-number 400.7 would silently
+        // TRUNCATE to rule 400 via toInteger() -- and then PASS the existence
+        // check below, pausing the wrong rule with full confidence.
+        def n = _rmCoerceRuleId(id)
+        if (n == null) {
+            throw new IllegalArgumentException("ruleId '${id}' is not an integer-valued rule id. Use hub_list_rules to find valid ids.")
+        }
         if (!ids.contains(n)) ids << n
     }
+    Boolean verified = null
     if (ids.size() > 1) {
         def valid = _rmValidRuleIds()
         if (valid != null) {
+            verified = true
             def unknown = ids.findAll { !valid.contains(it) }
             if (unknown) {
                 throw new IllegalArgumentException("ruleId array contains id(s) that are not existing RM rules: ${unknown.join(', ')}. Nothing was dispatched. Verify ids via hub_list_rules and re-issue the batch.")
             }
+        } else {
+            // Cannot verify (RMUtils error / app tree unreadable): the batch still
+            // dispatches, but the caller is TOLD -- the tool description promises
+            // an up-front existence check, and a silent skip would let a typo'd id
+            // report success on a fire-and-forget dispatch.
+            verified = false
+            mcpLog("warn", "rm-interop", "_rmRuleIdListArg: multi-id existence check SKIPPED (rule list unverifiable) for ids ${ids.join(', ')}")
         }
     }
-    return ids
+    return [ids: ids, idsVerified: verified]
 }
 
 // Trigger a Rule Machine rule via RMUtils.sendAction() or the lifecycle
@@ -872,7 +892,8 @@ private List<Integer> _rmRuleIdListArg(Object raw) {
 // Not destructive — invokes existing user-configured automation.
 def toolRunRmRule(args) {
     if (args?.ruleId == null) throw new IllegalArgumentException("ruleId is required")
-    def ruleIds = _rmRuleIdListArg(args.ruleId)
+    def idArg = _rmRuleIdListArg(args.ruleId)
+    List<Integer> ruleIds = idArg.ids
     def action = args?.action ?: "rule"
 
     // start/stop route through the stopRule button click (a toggle on
@@ -885,9 +906,9 @@ def toolRunRmRule(args) {
     if (action == "stop" || action == "start") {
         if (ruleIds.size() == 1) {
             def single = _rmToggleStopped(ruleIds[0], action)
-            // An array-form call always echoes ruleIds, even for one element --
-            // same contract as the sendRmAction paths.
-            if (args.ruleId instanceof List && single instanceof Map) single.ruleIds = ruleIds
+            // Every call echoes ruleIds -- scalar and array alike -- matching the
+            // sendRmAction paths, so callers can read one key on every shape.
+            if (single instanceof Map) single.ruleIds = ruleIds
             return single
         }
         // Per-rule toggle loop with a relay-budget checkpoint: each toggle is a
@@ -914,15 +935,22 @@ def toolRunRmRule(args) {
             rmAction: "stopRule toggle x${results.size()}",
             results: results
         ]
+        if (idArg.idsVerified != null) out.idsVerified = idArg.idsVerified
         if (failed) {
             out.failedRuleIds = failed
-            out.error = "stopRule toggle failed for rule(s) ${failed.join(', ')} -- the other ${results.size() - failed.size()} rule(s) in the batch WERE actioned; per-rule detail in results[]."
+            def actionedCount = results.size() - failed.size()
+            out.error = (actionedCount == 0)
+                ? "stopRule toggle failed for EVERY rule in the batch (${failed.join(', ')}); per-rule detail in results[]."
+                : "stopRule toggle failed for rule(s) ${failed.join(', ')} -- the other ${actionedCount} rule(s) in the batch WERE actioned; per-rule detail in results[]."
             out.note = "Re-issue for the failed ids only. A repeat of a succeeded id is safe: the toggle no-ops rules already in the target state."
         }
         if (budgetPaused) {
             out.remainingRuleIds = remaining
             if (!out.error) out.error = "Response-budget checkpoint: rule(s) ${remaining.join(', ')} were not yet actioned."
-            out.note = "Budget checkpoint -- re-issue with ruleId=[${remaining.join(', ')}] to finish; already-actioned rules no-op safely."
+            // Failed ids and un-reached ids are DIFFERENT sets -- the re-issue
+            // guidance must carry both or a caller following it strands the failures.
+            def reissueIds = (failed + remaining).unique()
+            out.note = "Budget checkpoint -- re-issue with ruleId=[${reissueIds.join(', ')}] to finish${failed ? " (includes the ${failed.size()} failed id(s), not just the un-reached ones)" : ""}; already-actioned rules no-op safely."
         }
         return out
     }
@@ -934,7 +962,9 @@ def toolRunRmRule(args) {
         default: throw new IllegalArgumentException("Invalid action '${action}'. Must be 'rule', 'actions', 'stop', or 'start'.")
     }
 
-    return sendRmAction(ruleIds, rmAction, "hub_call_rule action=${action}")
+    def result = sendRmAction(ruleIds, rmAction, "hub_call_rule action=${action}")
+    if (result instanceof Map && idArg.idsVerified != null) result.idsVerified = idArg.idsVerified
+    return result
 }
 
 // Drive the RM 5.1 stopRule button — the same toggle the hub UI exposes
@@ -994,7 +1024,10 @@ private Boolean _readAppStateBoolean(Map status, String name, Boolean fallback) 
 // {@code _rmMoveAction} so callers get a descriptive error immediately
 // rather than retrying for 10s before hitting the generic timeout.
 //
-// <p>RM clears {@code state.editAct} automatically after ~60s. The value
+// <p>RM is BELIEVED to clear a genuinely in-flight {@code state.editAct}
+// after ~60s, but this is UNVERIFIED for a stale marker: one artificially set
+// via a raw stateAttribute click was observed live (fw 2.5.1.135) NOT to clear
+// after 5+ minutes. Treat the timeout as best-effort, not guaranteed. The value
 // is typically an Integer (the action index) but may be serialized as a
 // String by some firmware versions -- returned as-is without coercion.
 private Object _rmGetStateEditAct(Integer appId) {
@@ -1014,9 +1047,14 @@ def toolSetRulePaused(args) {
     else if (args.paused == "true") paused = true
     else if (args.paused == "false") paused = false
     else throw new IllegalArgumentException("paused must be boolean true/false (got: ${args.paused})")
-    def ruleIds = _rmRuleIdListArg(args.ruleId)
+    def idArg = _rmRuleIdListArg(args.ruleId)
+    List<Integer> ruleIds = idArg.ids
     def result = paused ? sendRmAction(ruleIds, "pauseRule", "hub_set_rule_paused")
                         : sendRmAction(ruleIds, "resumeRule", "hub_set_rule_paused")
+    // idsVerified: true = every id existence-checked before dispatch; false = the
+    // check was SKIPPED (rule list unverifiable) and this fire-and-forget batch
+    // may include ids that do not exist. Absent on single-id calls.
+    if (result instanceof Map && idArg.idsVerified != null) result.idsVerified = idArg.idsVerified
     // Echo the applied pause state so callers can confirm the outcome without a
     // follow-up read. RMUtils pause/resume is fire-and-forget, so this is the
     // requested/applied value, not a hub read-back.
@@ -1050,7 +1088,10 @@ def toolSetRmRuleBoolean(args) {
         throw new IllegalArgumentException("value must be boolean true/false (or the string 'true'/'false'), got: ${args.value}")
     }
     def rmAction = resolved ? "setRuleBooleanTrue" : "setRuleBooleanFalse"
-    return sendRmAction(_rmRuleIdListArg(args.ruleId), rmAction, "hub_set_rule_private_boolean value=${resolved}")
+    def idArg = _rmRuleIdListArg(args.ruleId)
+    def result = sendRmAction(idArg.ids as List, rmAction, "hub_set_rule_private_boolean value=${resolved}")
+    if (result instanceof Map && idArg.idsVerified != null) result.idsVerified = idArg.idsVerified
+    return result
 }
 
 // Shared sendAction wrapper. Returns a consistent success/error result map.
@@ -1102,6 +1143,11 @@ private String _rmExcessiveLoadMarker() { "excessive hub load" }
 // Substring is scoped tightly to RMUtils' load-message text so unrelated failures keep the plain note.
 private String _rmSendActionErrorNote(String rmAction, List<Integer> ruleIds, String message) {
     def base = "Verify the ruleId is valid (use hub_list_rules) and Rule Machine is installed."
+    if (ruleIds.size() > 1) {
+        // A LIST dispatch that threw may have actioned part of the set before
+        // failing -- a reflex retry double-fires runRule/runRuleAct actions.
+        base = "${base} NOTE: this was a LIST dispatch (${ruleIds.join(', ')}) -- part of the set may already have been actioned; verify per-rule state via hub_list_rules before retrying (a blind retry re-fires already-actioned rules)."
+    }
     if (message && message.toLowerCase().contains(_rmExcessiveLoadMarker())) {
         if (rmAction == "pauseRule" || rmAction == "resumeRule") {
             def verb = (rmAction == "resumeRule") ? "resume" : "pause"
@@ -4388,7 +4434,7 @@ private Map _rmModifyTrigger(Integer appId, Integer triggerIdx, Map mods) {
     ]
 }
 
-// Modify a single committed action via identity-preserving rebuild: remove the
+// Modify a single committed action via position-preserving rebuild: remove the
 // action at `index`, re-add the merged spec (committed values overlaid with
 // mods), then walk the new row back to the original position with move-up
 // clicks. RM 5.1 has no workable headless in-place action editor -- the
@@ -4398,24 +4444,27 @@ private Map _rmModifyTrigger(Integer appId, Integer triggerIdx, Map mods) {
 //
 // Scope: rule-targeting actions only (actType rulesActs), the family whose
 // committed VALUE fields round-trip to an addAction spec:
-//   getRuleActions       (runRule)         ruleAct.<N>
-//   getStopActions       (cancelTimers)    stopAct.<N>
-//   getPauseResumeRules  (pauseRule)       pauseRule.<N> + pR.<N> (true=RESUME)
-//   getSetPrivateBoolean (privateBoolean)  privateT.<N> + pvTF.<N> (true=FALSE)
-// The <family>RuleType.<N> selector is NOT read back -- the rebuild re-synthesizes
-// it as "Rule Machine", the only value with any in-repo or hub2-source evidence
-// of existing. Other action shapes refuse toward removeAction + addAction.
+//   getRuleActions       (runRule)         ruleAct.<N>  + runRuleType.<N>
+//   getStopActions       (cancelTimers)    stopAct.<N>  + stopRuleType.<N>
+//   getPauseResumeRules  (pauseRule)       pauseRule.<N> + pR.<N> (true=RESUME) + pauseRuleType.<N>
+//   getSetPrivateBoolean (privateBoolean)  privateT.<N> + pvTF.<N> (true=FALSE) + pvRuleType.<N>
+// The RuleType selector is verified pre-delete: the rebuild writes "Rule
+// Machine" unconditionally, so a committed selector with any OTHER value
+// refuses loudly instead of being silently converted. Other action shapes
+// refuse toward removeAction + addAction.
 private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long reqT0 = null) {
     def reverse = [
-        getRuleActions:       [capability: "runRule",        listField: "ruleAct"],
-        getStopActions:       [capability: "cancelTimers",   listField: "stopAct"],
-        getPauseResumeRules:  [capability: "pauseRule",      listField: "pauseRule"],
-        getSetPrivateBoolean: [capability: "privateBoolean", listField: "privateT"]
+        getRuleActions:       [capability: "runRule",        listField: "ruleAct",   typeField: "runRuleType"],
+        getStopActions:       [capability: "cancelTimers",   listField: "stopAct",   typeField: "stopRuleType"],
+        getPauseResumeRules:  [capability: "pauseRule",      listField: "pauseRule", typeField: "pauseRuleType"],
+        getSetPrivateBoolean: [capability: "privateBoolean", listField: "privateT",  typeField: "pvRuleType"]
     ]
     def cfg = _rmFetchConfigJson(appId)
     def committedSettings = (cfg?.settings instanceof Map) ? (cfg.settings as Map) : [:]
-    // String-coerced keys throughout: parsed-JSON maps carry String keys, and a
-    // GString subscript lookup misses them (different hashCode).
+    // Guard reads use String-coerced subscript keys (parsed-JSON maps carry
+    // String keys; a GString subscript misses them). The post-rebuild readback
+    // uses GString PROPERTY access instead, which coerces the name itself --
+    // both are safe; converting the readback to a GString subscript is not.
     def actSubType = committedSettings["actSubType.${actionIdx}".toString()]?.toString()
     if (!actSubType) {
         def indices = _rmCollectActionIndices(appId)
@@ -4436,17 +4485,44 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
     if (mods.isEmpty()) {
         throw new IllegalArgumentException("modifyAction.mods must set at least one of: ${allowedMods.join(', ')}. RM is not touched.")
     }
+    // The rebuild writes the RuleType selector as "Rule Machine" unconditionally
+    // (the only value with in-repo or hub2-source evidence) -- refuse pre-delete
+    // if the committed selector says otherwise, instead of silently retyping it.
+    def committedType = committedSettings["${entry.typeField}.${actionIdx}".toString()]?.toString()
+    if (committedType != null && committedType != "Rule Machine") {
+        throw new IllegalArgumentException("modifyAction cannot preserve action ${actionIdx}'s ${entry.typeField} selector: it reads '${committedType}', and the rebuild only writes 'Rule Machine'. Rebuild this action with removeAction + addAction (or the wizard) instead. RM is not touched.")
+    }
+    // Committed single targets may persist as a bare scalar -- tolerate it here
+    // exactly like the post-rebuild readback does.
+    def committedTargetsRaw = committedSettings["${entry.listField}.${actionIdx}".toString()]
+    def committedTargets = (committedTargetsRaw instanceof List) ? committedTargetsRaw
+                            : (committedTargetsRaw != null ? [committedTargetsRaw] : null)
     def spec = [capability: entry.capability,
-                ruleIds: mods.containsKey("ruleIds") ? mods.ruleIds : committedSettings["${entry.listField}.${actionIdx}".toString()]]
+                ruleIds: mods.containsKey("ruleIds") ? mods.ruleIds : committedTargets]
     if (actSubType == "getPauseResumeRules") {
         // pR.<N>: true=RESUME, false=Pause (inverted; see the addAction builder).
-        def committedAction = (committedSettings["pR.${actionIdx}".toString()]?.toString() == "true") ? "resume" : "pause"
-        spec.action = mods.containsKey("action") ? mods.action : committedAction
+        // No silent default: an unreadable committed verb on a preserve-request
+        // would flip a Resume action to Pause -- refuse pre-delete instead.
+        def committedPr = committedSettings["pR.${actionIdx}".toString()]
+        if (mods.containsKey("action")) {
+            spec.action = mods.action
+        } else if (committedPr == null) {
+            throw new IllegalArgumentException("modifyAction cannot preserve action ${actionIdx}'s pause/resume verb: pR.${actionIdx} is unreadable. Pass mods.action ('pause'|'resume') explicitly. RM is not touched.")
+        } else {
+            spec.action = (committedPr.toString() == "true") ? "resume" : "pause"
+        }
     }
     if (actSubType == "getSetPrivateBoolean") {
-        // pvTF.<N>: true=FALSE (inverted; see the addAction builder).
-        def committedValue = !(committedSettings["pvTF.${actionIdx}".toString()]?.toString() == "true")
-        spec.value = mods.containsKey("value") ? mods.value : committedValue
+        // pvTF.<N>: true=FALSE (inverted; see the addAction builder). Same
+        // no-silent-default contract as the pause/resume verb above.
+        def committedPvTF = committedSettings["pvTF.${actionIdx}".toString()]
+        if (mods.containsKey("value")) {
+            spec.value = mods.value
+        } else if (committedPvTF == null) {
+            throw new IllegalArgumentException("modifyAction cannot preserve action ${actionIdx}'s boolean value: pvTF.${actionIdx} is unreadable. Pass mods.value (true|false) explicitly. RM is not touched.")
+        } else {
+            spec.value = !(committedPvTF.toString() == "true")
+        }
     }
     // A rule-targeting action with no target is a broken row; and an empty/null
     // ruleIds slips both the empty-mods guard and the existence check (which
@@ -4458,12 +4534,16 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
     _rmValidateRuleTargetExists(entry.capability, spec.ruleIds, null)
     // Position bookkeeping before mutating: the re-added action lands at the
     // last position and is walked up past every action after the original slot.
-    // pos == -1 (index list source disagreeing with the settings read) means the
-    // original position is UNKNOWN -- surfaced, never silently claimed preserved.
+    // pos < 0 means the settings read and the display order DISAGREE about this
+    // action -- rebuilding would land it at an arbitrary position, so refuse
+    // pre-delete rather than reorder the rule (the delete leg would throw
+    // not-found anyway, but with a misleading roll-back hint).
     def beforeIndices = _rmCollectActionIndices(appId)
     def pos = beforeIndices.indexOf(actionIdx)
-    boolean positionUnknown = (pos < 0)
-    int movesUp = positionUnknown ? 0 : (beforeIndices.size() - 1 - pos)
+    if (pos < 0) {
+        throw new IllegalArgumentException("modifyAction.index ${actionIdx} exists in the rule's settings but not in its display order (${beforeIndices.join(', ')}) -- the index sources disagree, so a rebuild cannot preserve position. Inspect the rule via hub_get_app_config and repair via removeAction + addAction. RM is not touched.")
+    }
+    int movesUp = beforeIndices.size() - 1 - pos
     def removeResult = _rmDeleteAction(appId, actionIdx)
     // From here the original action is GONE. Any throw below must NOT surface a
     // message carrying the "RM is not touched" sentinel -- the error-response
@@ -4516,36 +4596,55 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
     }
     // Ground-truth readback: the retarget IS the operation, and _rmAddAction can
     // report success:true + partial:true with the target field silently skipped.
-    // Compare the persisted list field against the requested target. Skipped on
-    // a budget pause (the caller is told to verify + finish instead).
+    // Compare the persisted list field -- AND the rebuilt verb/value fields, so
+    // a silently-skipped pR/pvTF write can't ride under a verified target.
+    // Skipped on a budget pause (the caller is told to verify + finish instead).
     def verifiedTargets = null
+    def fieldMismatches = []
     boolean verificationFetchFailed = false
     if (!budgetPaused) {
         try {
             def verifyCfg = _rmFetchConfigJson(appId)
             def raw = verifyCfg?.settings?."${entry.listField}.${newIdx}"
             verifiedTargets = (raw instanceof List) ? raw.collect { it?.toString() } : (raw != null ? [raw.toString()] : null)
+            if (actSubType == "getPauseResumeRules") {
+                def prNow = verifyCfg?.settings?."pR.${newIdx}"?.toString()
+                def prWant = (spec.action == "resume") ? "true" : "false"
+                if (prNow != prWant) fieldMismatches << "pR.${newIdx} reads ${prNow?.inspect() ?: 'absent'}, wanted ${prWant} (${spec.action})"
+            }
+            if (actSubType == "getSetPrivateBoolean") {
+                def pvNow = verifyCfg?.settings?."pvTF.${newIdx}"?.toString()
+                def pvWant = (spec.value as Boolean) ? "false" : "true"
+                if (pvNow != pvWant) fieldMismatches << "pvTF.${newIdx} reads ${pvNow?.inspect() ?: 'absent'}, wanted ${pvWant} (value=${spec.value})"
+            }
         } catch (Exception verifyExc) {
             verificationFetchFailed = true
             mcpLog("warn", "rm-native", "_rmModifyAction: post-rebuild readback failed for app ${appId} (${verifyExc.message}) -- cannot verify the new target landed")
         }
     }
     def expectedTargets = _rmNormalizeRuleIdsForWrite(spec.ruleIds).collect { it?.toString() }.sort(false)
-    boolean targetsVerified = !budgetPaused && !verificationFetchFailed && verifiedTargets != null && verifiedTargets.sort(false) == expectedTargets
+    boolean targetsVerified = !budgetPaused && !verificationFetchFailed && verifiedTargets != null &&
+        verifiedTargets.sort(false) == expectedTargets && fieldMismatches.isEmpty()
     int movesRemaining = movesUp - movesDone
-    return [success: targetsVerified && !moveSoftFail && !budgetPaused,
-            partial: (addResult?.partial == true) || moveSoftFail || verificationFetchFailed || positionUnknown || budgetPaused,
+    def out = [success: targetsVerified && !moveSoftFail && !budgetPaused,
+            partial: (addResult?.partial == true) || moveSoftFail || verificationFetchFailed || budgetPaused,
             removedIndex: actionIdx, newActionIndex: newIdx, movesUp: movesUp, movesDone: movesDone,
             budgetPaused: budgetPaused, movesRemaining: budgetPaused ? movesRemaining : null,
-            positionUnknown: positionUnknown, moveSoftFail: moveSoftFail, verifyHint: moveVerifyHint,
+            moveSoftFail: moveSoftFail, verifyHint: moveVerifyHint,
             verifiedTargets: verifiedTargets, verificationFetchFailed: verificationFetchFailed,
             settingsSkipped: addResult?.settingsSkipped,
             removeResult: removeResult, addResult: addResult, moveResults: moveResults, spec: spec,
             error: targetsVerified ? null : (budgetPaused
-                ? "modifyAction: the rebuild committed but the response budget ran out with ${movesRemaining} reposition move(s) unapplied and the readback unverified. Finish with ${movesRemaining} x hub_set_rule(appId=${appId}, moveAction={index:${newIdx}, direction:'up'}) and verify ${entry.listField}.${newIdx} via hub_get_app_config(appId=${appId}). Do NOT re-issue modifyAction -- it would delete the rebuilt action again."
+                ? "modifyAction: the rebuild committed but the response budget ran out with ${movesRemaining} reposition move(s) unapplied and the readback unverified. Finish with ${movesRemaining} x hub_set_rule(appId=${appId}, moveAction={index:${newIdx}, direction:'up'}), then hub_set_rule(appId=${appId}, button='updateRule') to re-initialize, and verify ${entry.listField}.${newIdx} via hub_get_app_config(appId=${appId}). Do NOT re-issue modifyAction -- it would delete the rebuilt action again."
                 : (verificationFetchFailed
                     ? "modifyAction: the rebuild committed but the post-rebuild readback failed -- verify ${entry.listField}.${newIdx} via hub_get_app_config(appId=${appId}) before trusting the retarget."
-                    : "modifyAction: the rebuilt action's ${entry.listField}.${newIdx} reads ${verifiedTargets?.inspect() ?: 'absent'} instead of ${expectedTargets.inspect()} -- the target did not land. Restore the pre-write snapshot (backup on the outer envelope) or re-issue addAction with the echoed spec."))]
+                    : (!fieldMismatches.isEmpty() && verifiedTargets != null && verifiedTargets.sort(false) == expectedTargets
+                        ? "modifyAction: the target list landed but the rebuilt action's field(s) did not: ${fieldMismatches.join('; ')}. Restore the pre-write snapshot (backup on the outer envelope) or repair via removeAction + addAction."
+                        : "modifyAction: the rebuilt action's ${entry.listField}.${newIdx} reads ${verifiedTargets?.inspect() ?: 'absent'} instead of ${expectedTargets.inspect()}${fieldMismatches ? ' (also: ' + fieldMismatches.join('; ') + ')' : ''} -- the target did not land. Restore the pre-write snapshot (backup on the outer envelope) or re-issue addAction with the echoed spec.")))]
+    // A success shape carries no error/verifyHint/movesRemaining keys at all --
+    // null values against non-nullable outputSchema declarations are the
+    // issue-#342 rejection class when publishOutputSchemas is on.
+    return out.findAll { k, v -> v != null }
 }
 
 // Message for a throw AFTER modifyAction's delete leg committed. Neutralizes
@@ -4642,7 +4741,7 @@ private List _rmClearActions(Integer appId) {
     // follows the same precedent of encoding a recoverable-shape hint in the
     // exception message. Single source of truth: getAsyncCommitMarker() --
     // throw and strip sites must agree.
-    throw new IllegalStateException("clearActions: trashActs submit returned 200 but actions ${stillThere.sort()} still present on rule ${appId} after 10s of retries. Likely either state.editAct is set (use hub_set_rule(button='cancelAct', pageName='doActPage', confirm=true) to clear) or a rare RM commit lag. Verify via hub_get_app_config(appId=${appId}) before retrying -- the deletion may commit post-response. Roll back via hub_restore_backup if the ${stillThereWord} really did get clobbered. Note: do NOT use hub_set_rule(button='cancelTrash') as a recovery -- in trash-confirmation mode that button may commit pending deletes rather than abort, potentially wiping additional actions.${getAsyncCommitMarker()}")
+    throw new IllegalStateException("clearActions: trashActs submit returned 200 but actions ${stillThere.sort()} still present on rule ${appId} after 10s of retries. Likely either state.editAct is set (a cancelAct click was verified live on fw 2.5.1.135 NOT to clear a stale marker -- if set, finish/cancel the open editor in the Hubitat UI, or delete + hub_restore_backup(scope='source') to recreate with fresh state) or a rare RM commit lag. Verify via hub_get_app_config(appId=${appId}) before retrying -- the deletion may commit post-response. Roll back via hub_restore_backup if the ${stillThereWord} really did get clobbered. Note: do NOT use hub_set_rule(button='cancelTrash') as a recovery -- in trash-confirmation mode that button may commit pending deletes rather than abort, potentially wiping additional actions.${getAsyncCommitMarker()}")
 }
 
 // Move an action one slot in the given direction. Verified live
@@ -13209,7 +13308,7 @@ def _applyNativeAppEdit(args) {
     // All re-fire updateRule at the end so the rule re-subscribes from a
     // fully-loaded state (actions self-bake via doActPage->selectActions
     // per-item).
-    // Action mutation path five: identity-preserving single-action rebuild
+    // Action mutation path five: position-preserving single-action rebuild
     // (modifyAction) -- delete + re-add + reposition with readback verification.
     if (modifyActionSpec) {
         if (modifyActionSpec.index == null) throw new IllegalArgumentException("modifyAction.index is required")
@@ -13223,9 +13322,10 @@ def _applyNativeAppEdit(args) {
         }
         // Trailing updateRule so the rebuilt action's wiring re-initializes; same
         // failure-propagation slots as the sibling mutation branches. Skipped when
-        // the rebuild itself already failed (nothing worth re-initializing) and on
-        // a budget pause (the response is already past the ceiling -- the error
-        // text hands the caller the finish-up steps instead).
+        // the re-add failed (the caller is being told to restore, not re-init) and
+        // on a budget pause (already past the ceiling; the error text's finish-up
+        // steps include the updateRule click). In BOTH skip cases the delete
+        // already committed without a re-init, so subscriptionsNotLive is TRUE.
         def updateRuleFailed = false
         def updateRuleError = null
         boolean updateRuleAttempted = (maResult?.addResult?.success != false) && (maResult?.budgetPaused != true)
@@ -13264,7 +13364,25 @@ def _applyNativeAppEdit(args) {
         }
         boolean maOk = (maResult?.success == true) && !updateRuleFailed && _rmHealthGatePass(maHealth)
         boolean maPartial = (maResult?.partial == true) || updateRuleFailed
-        return [
+        // Every failure cause gets a REAL error string -- three causes live
+        // outside _rmModifyAction's own error slot (a rejected trailing
+        // updateRule, a failed health gate, a soft-failed reposition on an
+        // otherwise-verified rebuild) and must not return success:false with
+        // an empty error.
+        def maError = maResult?.error
+        if (!maOk && maError == null) {
+            if (updateRuleFailed) {
+                maError = "modifyAction: the rebuild committed and verified, but the trailing updateRule click was rejected (${updateRuleError}) -- the rule never re-initialized. Retry hub_set_rule(appId=${appId}, button='updateRule', confirm=true)."
+            } else if (!_rmHealthGatePass(maHealth)) {
+                maError = "modifyAction: the rebuild committed and verified, but the post-rebuild health check reports the rule broken -- inspect health.issues/brokenMarkers and restore via backup if the damage is real."
+                maRepairHints << "Health gate failed after the rebuild. Inspect the health block; hub_restore_backup with this response's backupKey rolls the rule back."
+            } else if (maResult?.moveSoftFail) {
+                maError = "modifyAction: the retarget verified but the reposition could not be confirmed (see verifyHint) -- the action may sit below its original slot. Verify order via hub_get_app_config before any retry."
+            } else {
+                maError = "modifyAction did not complete cleanly -- inspect this envelope's flags."
+            }
+        }
+        def maOut = [
             success: maOk,
             partial: maPartial,
             appId: appId,
@@ -13275,7 +13393,6 @@ def _applyNativeAppEdit(args) {
             movesDone: maResult?.movesDone,
             budgetPaused: maResult?.budgetPaused,
             movesRemaining: maResult?.movesRemaining,
-            positionUnknown: maResult?.positionUnknown,
             moveSoftFail: maResult?.moveSoftFail,
             verifyHint: maResult?.verifyHint,
             verifiedTargets: maResult?.verifiedTargets,
@@ -13285,17 +13402,24 @@ def _applyNativeAppEdit(args) {
             removeResult: maResult?.removeResult,
             addResult: maResult?.addResult,
             moveResults: maResult?.moveResults,
-            error: maResult?.error,
+            error: maError,
             restoreHint: maOk ? null : "Backup saved before write. Call hub_restore_backup with backupKey='${backup?.backupKey}' to roll back.",
             updateRuleFailed: updateRuleFailed,
-            subscriptionsNotLive: updateRuleFailed,
+            // TRUE whenever the rule mutated without a successful re-init: a
+            // rejected click, or a skipped click after the delete committed
+            // (re-add failure / budget pause).
+            subscriptionsNotLive: updateRuleFailed || !updateRuleAttempted,
             updateRuleError: updateRuleError,
             repairHints: maRepairHints,
             health: maHealth,
             note: maOk
-                ? "Action ${modifyActionSpec.index} rebuilt in place (remove + re-add + reposition); updateRule ${updateRuleFailed ? 'FAILED' : 'fired once'}; new target verified by readback. The action's settings index changed to ${maResult?.newActionIndex}; ${maResult?.positionUnknown ? 'its original position could not be determined (positionUnknown) -- verify order via hub_get_app_config' : 'its position in the rule is unchanged'}."
+                ? "Action ${modifyActionSpec.index} rebuilt (remove + re-add + reposition); updateRule fired once; new target verified by readback. The action's settings index changed to ${maResult?.newActionIndex}; its position in the rule is unchanged."
                 : "modifyAction did NOT complete cleanly -- see error/repairHints. The original action ${modifyActionSpec.index} was removed; the rebuilt action is index ${maResult?.newActionIndex}."
         ]
+        // Null-valued keys are omitted, not shipped: with publishOutputSchemas on,
+        // a null against a non-nullable declaration is the issue-#342 rejection
+        // class (error/restoreHint/verifyHint/updateRuleError on the success shape).
+        return maOut.findAll { k, v -> v != null }
     }
 
     if (removeActionSpec || clearActionsFlag || replaceActionsList != null || moveActionSpec) {
@@ -13486,7 +13610,7 @@ def _applyNativeAppEdit(args) {
                         recommended: 'verify-then-decide',
                         verifyVia: "hub_get_app_config(appId: ${appId})",
                         ifActionsAbsent: 'treat as success -- clearActions committed post-response',
-                        ifActionsPresent: "wait 15s, then call hub_get_app_config to re-check. If actions still present, retry clearActions, or clear state.editAct via hub_set_rule(button='cancelAct', pageName='doActPage', confirm=true) first.",
+                        ifActionsPresent: "wait 15s, then call hub_get_app_config to re-check. If actions still present, retry clearActions. If state.editAct is set it will block delete-class clicks -- a cancelAct click was verified NOT to clear a stale marker; finish/cancel the open editor in the Hubitat UI, or delete + hub_restore_backup(scope='source') to recreate the rule with fresh state.",
                         avoid: ['cancelTrash']
                     ]
                 ]
