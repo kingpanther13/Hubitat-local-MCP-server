@@ -3827,26 +3827,24 @@ class TestRunner:
         try:
             target_b = self._create_native_rule("MaTargetB")
             caller_id = self._create_native_rule("MaCaller")
-            run_act = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
-                "args": {"appId": caller_id, "addAction": {"capability": "runRule", "ruleIds": [target_a]},
-                         "confirm": True}})
-            assert run_act.get("success") is True, \
-                f"runRule action targeting {target_a} should commit on the caller rule, got: {run_act}"
+            # Every heavy edit goes through _set_rule: the modifyAction composite (delete +
+            # re-add + reposition + readback + health + updateRule in ONE call) and the add
+            # wizard both sit AT the relay ceiling on a loaded hub, and _set_rule's auto
+            # opToken recovers a severed response by token-only replay of the buffered real
+            # envelope -- the run that added this test 504'd twice on exactly these ops.
+            run_act = self._set_rule(caller_id,
+                {"addAction": {"capability": "runRule", "ruleIds": [target_a]}}, strict=True)
             ma_idx = run_act.get("actionIndex")
             assert ma_idx is not None, f"runRule accept response carried no actionIndex: {run_act}"
             # The sentinel is appended AFTER the runRule row so the retargeted action is NOT
             # last: the rebuild must then walk the re-added row back up (movesUp=1), which is
             # the reposition leg the position-preservation claim rests on.
             sentinel_msg = "E2E order sentinel post-action"
-            sentinel = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
-                "args": {"appId": caller_id, "addAction": {"capability": "log", "message": sentinel_msg},
-                         "confirm": True}})
-            assert sentinel.get("success") is True, f"order-sentinel log action failed to commit: {sentinel}"
+            self._set_rule(caller_id,
+                {"addAction": {"capability": "log", "message": sentinel_msg}}, strict=True)
 
-            ma = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
-                "args": {"appId": caller_id,
-                         "modifyAction": {"index": ma_idx, "mods": {"ruleIds": [target_b]}},
-                         "confirm": True}})
+            ma = self._set_rule(caller_id,
+                {"modifyAction": {"index": ma_idx, "mods": {"ruleIds": [target_b]}}}, strict=True)
             assert ma.get("success") is True and ma.get("newActionIndex") is not None, \
                 f"modifyAction retarget should succeed with a newActionIndex, got: {ma}"
             assert ma.get("movesUp") == 1 and ma.get("movesDone") == 1 and not ma.get("moveSoftFail"), \
@@ -3855,7 +3853,19 @@ class TestRunner:
             ma_cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
                 "args": {"appId": caller_id, "includeSettings": True}})
             committed = (ma_cfg.get("settings") or {}).get(f"ruleAct.{ma.get('newActionIndex')}")
-            assert committed is not None and [str(x) for x in committed] == [str(target_b)], \
+            # Normalize the hub's id shapes before comparing: a list of ids, a bare scalar
+            # (the single-target form production explicitly tolerates), or a CSV string --
+            # iterating a bare string would compare CHARACTERS and turn a shape change into
+            # a misleading failure instead of a verdict.
+            if isinstance(committed, str) and "," in committed:
+                committed_ids = [s.strip() for s in committed.split(",")]
+            elif isinstance(committed, (list, tuple)):
+                committed_ids = [str(x) for x in committed]
+            elif committed is not None:
+                committed_ids = [str(committed)]
+            else:
+                committed_ids = None
+            assert committed_ids == [str(target_b)], \
                 f"retargeted runRule action should commit ruleAct.{ma.get('newActionIndex')}=[{target_b}], got: {committed!r}"
 
             # Ground-truth ORDER readback: the rendered page lists actions in display order,
@@ -3930,17 +3940,31 @@ class TestRunner:
         src_id = self._create_native_rule("StageSrc")
         staged_id = None
         try:
-            staged_clone = self.client.call_tool("hub_manage_native_rules_and_apps",
-                {"tool": "hub_clone_native_app",
-                 "args": {"appId": src_id, "newName": f"{PREFIX}StagedClone",
-                          "stageDisabled": True, "confirm": True}})
+            # The appCloner wizard routinely runs 10s+, i.e. AT the relay ceiling -- carry an
+            # opToken and recover a severed response by token-only replay (the hub finishes
+            # and buffers the result; a test RE-RUN would clone AGAIN and orphan the first
+            # copy, which is exactly what happened on the run that added this test).
+            clone_token = self._next_op_token()
+            clone_args = {"appId": src_id, "newName": f"{PREFIX}StagedClone",
+                          "stageDisabled": True, "confirm": True, "opToken": clone_token}
+            try:
+                staged_clone = self.client.call_tool("hub_manage_native_rules_and_apps",
+                    {"tool": "hub_clone_native_app", "args": clone_args})
+            except (McpError, McpToolError, requests.HTTPError) as exc:
+                if "504" not in str(exc):
+                    raise
+                staged_clone = self._poll_op_result(clone_token, tool="hub_clone_native_app")
+                assert isinstance(staged_clone, dict), \
+                    f"stageDisabled clone response lost to relay 504 and the opToken replay came up empty: {exc}"
+                print("    [RECOVER-504] hub_clone_native_app: response recovered via opToken "
+                      "replay (token-only write re-issue)")
             assert staged_clone.get("success") is True and staged_clone.get("newAppId"), \
                 f"stageDisabled clone should succeed, got: {staged_clone}"
             staged_id = staged_clone.get("newAppId")
             # Track it before asserting: the clone is a real installed app now, so a failure
             # below must not orphan it on the test hub.
             self.created_native_app_ids.append(str(staged_id))
-            assert staged_id in (staged_clone.get("stagedDisabled") or []), \
+            assert str(staged_id) in [str(x) for x in (staged_clone.get("stagedDisabled") or [])], \
                 f"stagedDisabled should list the new app, got: {staged_clone}"
             st = self._rm_rule_status_when(staged_id, lambda s: s.get("disabled") is True)
             assert st.get("disabled") is True and st.get("status") == "disabled", \
