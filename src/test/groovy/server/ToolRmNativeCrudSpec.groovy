@@ -4370,25 +4370,34 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // steer for resume makes the resume assertion red; dropping the sticky wording drops it from the
         // note; dropping the marker gate makes an unrelated error emit the load steer.
         expect: "a load-failed resume steers to the pausRule toggle and never resRule, with sticky-limiter wording"
-        def resumeNote = script._rmSendActionErrorNote("resumeRule", 100, "App 100 generates excessive hub load")
+        def resumeNote = script._rmSendActionErrorNote("resumeRule", [100], "App 100 generates excessive hub load")
         resumeNote.contains("pausRule")
+        resumeNote.contains("appId=100")
         !resumeNote.contains("resRule")
         resumeNote.contains("sticky")
 
         and: "a load-failed pause steers to the same pausRule toggle and never resRule"
-        def pauseNote = script._rmSendActionErrorNote("pauseRule", 100, "App 100 generates excessive hub load")
+        def pauseNote = script._rmSendActionErrorNote("pauseRule", [100], "App 100 generates excessive hub load")
         pauseNote.contains("pausRule")
         !pauseNote.contains("resRule")
         pauseNote.contains("sticky")
 
+        and: "a load-failed MULTI-id pause steers to a per-rule pausRule drive naming every id"
+        def multiNote = script._rmSendActionErrorNote("pauseRule", [100, 101], "App 100 generates excessive hub load")
+        multiNote.contains("pausRule")
+        multiNote.contains("per rule")
+        multiNote.contains("100, 101")
+        !multiNote.contains("resRule")
+        multiNote.contains("sticky")
+
         and: "a non-pause/resume load failure gets the sticky-limiter note with no page button"
-        def genNote = script._rmSendActionErrorNote("runRuleAct", 100, "App 100 generates excessive hub load")
+        def genNote = script._rmSendActionErrorNote("runRuleAct", [100], "App 100 generates excessive hub load")
         genNote.contains("sticky")
         !genNote.contains("resRule")
         !genNote.contains("pausRule")
 
         and: "an unrelated (non-load) failure keeps the plain note -- the marker gate is closed"
-        def plain = script._rmSendActionErrorNote("resumeRule", 100, "some other error")
+        def plain = script._rmSendActionErrorNote("resumeRule", [100], "some other error")
         !plain.contains("pausRule")
         !plain.contains("resRule")
         !plain.contains("sticky")
