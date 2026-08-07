@@ -3367,9 +3367,13 @@ class TestRunner:
                 "ops": [
                     {"op": "cloneApp", "alias": "new",
                      "args": {"sourceAppId": old_id, "newName": f"{PREFIX}DeployNew", "stageDisabled": True}},
+                    # RM's wizard silently no-ops edit clicks on a DISABLED app (verified
+                    # live), so the manifest interleaves enable -> edit -> re-disable.
+                    {"op": "setDisabled", "args": {"appId": {"alias": "new"}, "disabled": False}},
                     {"op": "addActions",
                      "args": {"appId": {"alias": "new"},
                               "actions": [{"capability": "log", "message": "deploy-new"}]}},
+                    {"op": "setDisabled", "args": {"appId": {"alias": "new"}, "disabled": True}},
                 ],
                 "commitOps": [
                     {"op": "pause", "args": {"ruleId": old_id}},
@@ -3409,7 +3413,7 @@ class TestRunner:
             assert new_id, f"clone alias unresolved: {status}"
             self.created_native_app_ids.append(str(new_id))
             ops = {o.get("index"): o for o in (status.get("ops") or [])}
-            assert ops.get(1, {}).get("status") == "done", \
+            assert ops.get(2, {}).get("status") == "done", \
                 f"on-hub worker did not finish the aliased addActions op: {status.get('ops')}"
             self._assert_rule_healthy(new_id)
             committed = self.client.call_tool("hub_manage_native_rules_and_apps", {

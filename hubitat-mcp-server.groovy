@@ -8118,6 +8118,8 @@ A deployment job runs a staged multi-app migration ON-HUB with a durable checkpo
 
 A create-type op (cloneApp/importApp/buttonRule) may declare alias:"name"; later ops write {"alias":"name"} wherever an appId/ruleId/controllerId is taken and it resolves to the created app's id at execution time.
 
+CONSTRAINT (verified live): RM's classic wizard silently ignores delete-class button clicks (delAct/trashAll -- the remove leg of modifyAction, removeAction, replaceActions) on a DISABLED app, and a disabled parent breaks a child rule's page render. To edit a staged-disabled clone, interleave setDisabled ops: {setDisabled false} -> edit op -> {setDisabled true}. Also note: Button Rules that show "(Not Installed)" reject those delete-class clicks even when enabled -- retarget plain RM caller rules, not not-installed Button Rule children.
+
 ### Phases + lifecycle
 
 draft > staging > ready_for_commit > committing > completed | failed | cancelled.
@@ -8133,14 +8135,16 @@ draft > staging > ready_for_commit > committing > completed | failed | cancelled
 ```json
 {"operation": "create", "name": "migrate-BC",
  "ops": [
-   {"op": "cloneApp", "alias": "newCtl", "args": {"sourceAppId": 100, "newName": "Ctl v2", "stageDisabled": true}},
-   {"op": "cloneApp", "alias": "newBC", "args": {"sourceAppId": 200, "newName": "BC v2", "stageDisabled": true}},
-   {"op": "modifyAction", "args": {"appId": {"alias": "newBC"}, "index": 0, "mods": {"runRule": {"alias": "newCtl"}}}}
+   {"op": "cloneApp", "alias": "newTarget", "args": {"sourceAppId": 100, "newName": "Target v2", "stageDisabled": true}},
+   {"op": "cloneApp", "alias": "newCaller", "args": {"sourceAppId": 200, "newName": "Caller v2", "stageDisabled": true}},
+   {"op": "setDisabled", "args": {"appId": {"alias": "newCaller"}, "disabled": false}},
+   {"op": "modifyAction", "args": {"appId": {"alias": "newCaller"}, "index": 1, "mods": {"ruleIds": [{"alias": "newTarget"}]}}},
+   {"op": "setDisabled", "args": {"appId": {"alias": "newCaller"}, "disabled": true}}
  ],
  "commitOps": [
    {"op": "pause", "args": {"ruleId": [100, 200]}},
-   {"op": "setDisabled", "args": {"appId": {"alias": "newCtl"}, "disabled": false}},
-   {"op": "setDisabled", "args": {"appId": {"alias": "newBC"}, "disabled": false}}
+   {"op": "setDisabled", "args": {"appId": {"alias": "newTarget"}, "disabled": false}},
+   {"op": "setDisabled", "args": {"appId": {"alias": "newCaller"}, "disabled": false}}
  ],
  "confirm": true}
 ```
