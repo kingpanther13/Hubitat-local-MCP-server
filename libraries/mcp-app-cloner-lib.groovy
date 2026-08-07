@@ -810,7 +810,7 @@ def _getAllToolDefinitions_partAppCloner() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    success: [type: "boolean", description: "True when a new child app was created"],
+                    success: [type: "boolean", description: "True when a new child app was created AND (if stageDisabled was requested) staging fully landed. success:false can still carry a committed newAppId when staging failed -- do NOT retry the call (that would duplicate the app); disable the apps named in stageFailures instead."],
                     sourceAppId: [type: "integer", description: "Source app ID"],
                     clonerAppId: [type: "integer", description: "Temporary cloner app ID (auto-deleted after the operation)"],
                     newAppId: [type: "integer", description: "New cloned app ID, or null on soft failure"],
@@ -878,7 +878,7 @@ def _getAllToolDefinitions_partAppCloner() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    success: [type: "boolean", description: "True when a new child app was created"],
+                    success: [type: "boolean", description: "True when a new child app was created AND (if stageDisabled was requested) staging fully landed. success:false can still carry a committed newAppId when staging failed -- do NOT retry the call (that would duplicate the app); disable the apps named in stageFailures instead."],
                     clonerAppId: [type: "integer", description: "Temporary cloner app ID (auto-deleted after the operation)"],
                     newAppId: [type: "integer", description: "New imported app ID, or null on soft failure"],
                     originalSourceId: [type: "integer", description: "Original source app ID from the export"],

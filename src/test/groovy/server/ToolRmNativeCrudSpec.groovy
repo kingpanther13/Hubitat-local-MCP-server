@@ -9631,6 +9631,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.newAppId == 700
         result.stagedDisabled == [700, 701]
         result.stageFailures == null
+        result.note.contains("Staged inactive")
         def disabledIds = disablePosts.findAll { it.path == "/installedapp/disable" }
             .collect { new groovy.json.JsonSlurper().parseText(it.body).id }
         disabledIds == [700, 701]
