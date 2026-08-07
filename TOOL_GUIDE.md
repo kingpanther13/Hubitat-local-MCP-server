@@ -4,7 +4,7 @@ Detailed reference for MCP Rule Server tools. Consult this when tool description
 
 ## Category Gateway Proxy (v0.8.0+)
 
-As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 36 items (13 core + 23 gateways) covering 117 total tools. Use `hub_search_tools` to find any tool by natural language query.
+As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 36 items (13 core + 23 gateways) covering 119 total tools. Use `hub_search_tools` to find any tool by natural language query.
 
 **How to use a gateway:**
 1. Call the gateway with no arguments to see full parameter schemas for all its tools
@@ -12,9 +12,9 @@ As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used 
 
 Gateway verbs encode mutation: **`hub_read_*`** gateways are pure-read (every sub-tool read-only), **`hub_manage_*`** gateways contain at least one write. A read tool may appear in BOTH a `hub_read_*` gateway and a mixed `hub_manage_*` gateway (multi-membership).
 
-**Read gateways (8):** `hub_read_apps_code` (11), `hub_read_dashboards` (2), `hub_read_devices` (5), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3)
+**Read gateways (8):** `hub_read_apps_code` (11), `hub_read_dashboards` (2), `hub_read_devices` (5), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (7), `hub_read_variables` (3)
 
-**Manage gateways (15):** `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (9), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
+**Manage gateways (15):** `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (9), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (13), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
 
 All safety gates are preserved: the Read/Write master gate runs centrally in `executeTool()` and re-applies per sub-tool when a gateway routes back through it, and the destructive `confirm`+backup checks run in the handlers of the destructive write tools.
 
@@ -595,9 +595,9 @@ HPM package state introspection. The tool is gated by the **Read master** and HP
   - Example call: `hub_read_apps_code(tool="hub_list_hpm_packages", args={includeDrift: true, packageFilter: "BOND"})` — checks drift for only packages whose name contains "BOND"
   - Design note: the base package inventory emits `_warning` inline on each component **because** consumers typically enumerate components per-package; the `includeDrift=true` output emits `dataQualityWarnings[]` as a separate aggregate **because** consumers need to distinguish actionable drift signals from data-quality issues without conflating them in a single `signals[]` count
 
-### hub_manage_native_rules_and_apps (11 tools)
+### hub_manage_native_rules_and_apps (13 tools)
 
-Two surfaces under one gateway: RMUtils-based runtime control for RM rules (RM-only because RMUtils is RM-only) plus admin-layer CRUD that works uniformly across any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.). The four RMUtils control tools below are ALSO surfaced (alongside `hub_get_rule_health`) in the `hub_manage_rule_machine` gateway; the read-only members (`hub_list_rules`, `hub_get_rule_health`) additionally appear in `hub_read_rules`.
+Two surfaces under one gateway: RMUtils-based runtime control for RM rules (RM-only because RMUtils is RM-only) plus admin-layer CRUD that works uniformly across any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.), plus the durable deployment-job pair (`hub_call_deployment` / `hub_get_deployment` — see the Deployment jobs section). The four RMUtils control tools below are ALSO surfaced (alongside `hub_get_rule_health`) in the `hub_manage_rule_machine` gateway; the read-only members (`hub_list_rules`, `hub_get_rule_health`, `hub_get_deployment`) additionally appear in `hub_read_rules`.
 
 **RMUtils control (4 tools, RM-only):**
 
@@ -1154,6 +1154,53 @@ To move EXISTING devices into an existing room, set each device's room via hub_u
 ### hub_update_room
 
 Renaming a room preserves device assignments, but may require updating automations/dashboards that reference the room by name.
+
+## Deployment jobs (hub_call_deployment / hub_get_deployment)
+
+Surfaced via `hub_get_tool_guide(section='deployment_jobs')`. A deployment job runs a staged multi-app migration ON-HUB with a durable checkpoint after every op: the job record (ops, per-op status, aliases, created apps, backup keys, validation results) lives in hub storage, and while a job is staging or committing the hub scheduler keeps advancing it in bounded slices with NO client attached. A client that dies mid-migration loses nothing — any fresh session polls `hub_get_deployment` and resumes.
+
+### Op reference (each op is {op, args, alias?})
+
+| op | args | notes |
+|---|---|---|
+| cloneApp | sourceAppId, newName?, stageDisabled? | Clone via appCloner; stageDisabled=true lands it disabled (recommended for staging) |
+| importApp | jsonContent OR fromFile, parentHintAppId, newName?, stageDisabled? | Import an exported JSON |
+| buttonRule | controllerId, buttonNumber, event | Create a Button Rule via its parent controller |
+| addActions | appId, actions (array of RM action specs) | hub_set_rule addActions |
+| modifyAction | appId, index, mods | hub_set_rule modifyAction (e.g. retarget runRule) |
+| pause / resume | ruleId (id or array) | RM pause/resume (whole-set in one op) |
+| setDisabled | appId, disabled | Enable/disable any app (reversible red-X) |
+
+A create-type op (cloneApp/importApp/buttonRule) may declare `alias:"name"`; later ops write `{"alias":"name"}` wherever an appId/ruleId/controllerId is taken and it resolves to the created app's id at execution time.
+
+### Phases + lifecycle
+
+draft > staging > ready_for_commit > committing > completed | failed | cancelled.
+
+- `operation=create`: validates the whole manifest up front (unknown ops, duplicate aliases, forward alias refs are rejected before anything runs), then stages. Each call slice is bounded by the response-time budget (and optional `maxOpsPerCall`); the on-hub worker continues the rest (`background=false` disables the worker: the job then advances only on `operation=resume`).
+- Staging validation gate: when the last staging op completes, every created app is health-checked (`hub_get_rule_health`, which reads live config — an existence readback). Only an all-healthy job becomes ready_for_commit; otherwise it fails with per-app results in `validation`.
+- `operation=commit`: runs the declared commitOps (typically pause the old set + enable the new set). Refused unless phase is ready_for_commit.
+- `operation=cancel`: deletes ONLY the apps recorded in `createdAppIds` (newest first) and marks the job cancelled. A completed job cannot be cancelled (reverse the cutover manually).
+- `operation=resume`: continues after a failure (retries the failed op), a disconnect/hub restart (picks up from the checkpoint), or starts a draft. An op interrupted MID-write is reconciled where that is safe: an interrupted create-type op adopts the app if the create actually committed (matched against a pre-op child snapshot); pause/resume/setDisabled/modifyAction re-run (convergent); an interrupted addActions requires `retryInFlight=true` because a blind re-run can duplicate actions — verify via `hub_get_app_config` first.
+
+### Worked example (migrate a Button Controller topology)
+
+```json
+{"operation": "create", "name": "migrate-BC",
+ "ops": [
+   {"op": "cloneApp", "alias": "newCtl", "args": {"sourceAppId": 100, "newName": "Ctl v2", "stageDisabled": true}},
+   {"op": "cloneApp", "alias": "newBC", "args": {"sourceAppId": 200, "newName": "BC v2", "stageDisabled": true}},
+   {"op": "modifyAction", "args": {"appId": {"alias": "newBC"}, "index": 0, "mods": {"runRule": {"alias": "newCtl"}}}}
+ ],
+ "commitOps": [
+   {"op": "pause", "args": {"ruleId": [100, 200]}},
+   {"op": "setDisabled", "args": {"appId": {"alias": "newCtl"}, "disabled": false}},
+   {"op": "setDisabled", "args": {"appId": {"alias": "newBC"}, "disabled": false}}
+ ],
+ "confirm": true}
+```
+
+Then poll `hub_get_deployment(jobId)` until ready_for_commit, review `validation`, and commit. Rollback handles on the job: `backupKeys` (`hub_restore_backup`) for edited apps + `createdAppIds` (cancel) for created ones.
 
 ## Slow ops (opToken recovery + in_progress resume)
 

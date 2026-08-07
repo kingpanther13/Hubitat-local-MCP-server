@@ -189,6 +189,7 @@ class IncludeResolverSpec extends Specification {
         'McpDiscoveryLib'       | 'toolSearchTools'         | 'Discovery'
         'McpNativeRulesLib'     | 'toolSetRule'             | 'NativeRM'
         'McpDashboardsLib'      | 'toolListDashboards'      | 'Dashboards'
+        'McpDeployJobsLib'      | 'toolCallDeployment'      | 'DeployJobs'
     }
 
     def "indexLibraries matches name/namespace even when a description ) appears BEFORE the keys"() {

@@ -1,6 +1,6 @@
 ---
 name: hubitat-mcp-server
-description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 117 tools (36 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, Easy and legacy Hubitat® Dashboard CRUD, HPM package state introspection, and Developer Mode self-administration.
+description: Guide for developing and maintaining the Hubitat MCP Rule Server — a Groovy-based MCP server running natively on Hubitat Elevation hubs, exposing 119 tools (36 on tools/list via category gateway proxy) for device control, virtual device management, room management, rule automation, hub admin, file management, app/driver/library management, installed-app visibility, Rule Machine interoperability, native rule CRUD, Easy and legacy Hubitat® Dashboard CRUD, HPM package state introspection, and Developer Mode self-administration.
 license: MIT
 ---
 
@@ -93,12 +93,12 @@ New code should be placed in the appropriate section. New sections should follow
 
 ### Category Gateway Proxy (v0.8.0+)
 
-The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 117 items to 36. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways. Gateways come in two flavors: `hub_read_<noun>` gateways whose every sub-tool is read-only, and `hub_manage_<noun>` gateways that contain at least one write (mixed read+write or write-only). A tool MAY appear in more than one gateway (multi-membership) — reads are listed in BOTH their mixed `manage_` gateway AND a pure-read `read_` gateway.
+The server uses a **category gateway proxy** pattern to reduce the MCP `tools/list` from 119 items to 36. This keeps frequently-used tools immediately accessible while organizing lesser-used tools behind domain-named gateways. Gateways come in two flavors: `hub_read_<noun>` gateways whose every sub-tool is read-only, and `hub_manage_<noun>` gateways that contain at least one write (mixed read+write or write-only). A tool MAY appear in more than one gateway (multi-membership) — reads are listed in BOTH their mixed `manage_` gateway AND a pure-read `read_` gateway.
 
 **Architecture:**
 - `getGatewayConfig()` — defines 23 gateways, each with a description, tools list, and summaries map
 - `getToolDefinitions()` — returns 13 core tools + 23 gateway tool definitions (client-visible)
-- `getAllToolDefinitions()` — returns all 117 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
+- `getAllToolDefinitions()` — returns all 119 tool definitions (used internally by gateway catalog and `executeTool()` dispatch)
 - `handleGateway(gatewayName, toolName, toolArgs)` — catalog mode (no args → full schemas) or execute mode (tool + args → dispatch)
 
 **Gateway calling convention:**
@@ -115,7 +115,7 @@ Read gateways (`hub_read_*`, every sub-tool read-only):
 | `hub_read_diagnostics` | 9 | Logs, performance stats, hub jobs, debug logs, metrics, memory history, device health, radio details (zwave/zigbee), captured states (read-only) |
 | `hub_read_files` | 2 | File Manager list + read (read-only) |
 | `hub_read_rooms` | 2 | Room list + get (read-only) |
-| `hub_read_rules` | 6 | Custom-engine rule get/test, native rule list, rule health, rule local variables, Visual Rules Builder rule list/read (read-only) |
+| `hub_read_rules` | 7 | Custom-engine rule get/test, native rule list, rule health, rule local variables, Visual Rules Builder rule list/read, deployment-job status (read-only) |
 | `hub_read_variables` | 3 | Hub connector and rule engine variable list/get + change history (read-only) |
 | `hub_read_dashboards` | 2 | Dashboard list + get config by id, covering both Easy and legacy Hubitat® Dashboards (read-only) |
 
@@ -133,7 +133,7 @@ Manage gateways (`hub_manage_*`, contain at least one write):
 | `hub_manage_diagnostics` | 7 | Diagnostics, state capture/delete, radio details (zwave/zigbee), memory history, metrics, GC |
 | `hub_manage_files` | 4 | File Manager CRUD |
 | `hub_manage_radio` | 6 | Z-Wave/Zigbee/Matter radio admin — radio details, configure (`hub_set_zwave`/`hub_set_zigbee`), and radio ops incl. Z-Wave network repair (`hub_call_zwave`/`hub_call_zigbee`/`hub_call_matter`); destructive radio ops are in `hub_manage_destructive_ops` |
-| `hub_manage_native_rules_and_apps` | 11 | Rule Machine RMUtils interop (list/run/set-paused/boolean) + generic admin-layer CRUD on any classic SmartApp (`hub_set_native_app` create/edit, `hub_set_app_disabled`, delete, clone, export, import + `hub_get_rule_health` — Room Lighting, Button Controllers, Basic Rules, Notifier, etc.). RM rule authoring (`hub_set_rule`) lives in `hub_manage_rule_machine`. |
+| `hub_manage_native_rules_and_apps` | 13 | Rule Machine RMUtils interop (list/run/set-paused/boolean) + generic admin-layer CRUD on any classic SmartApp (`hub_set_native_app` create/edit, `hub_set_app_disabled`, delete, clone, export, import + `hub_get_rule_health` — Room Lighting, Button Controllers, Basic Rules, Notifier, etc.) + durable deployment jobs (`hub_call_deployment` / `hub_get_deployment`). RM rule authoring (`hub_set_rule`) lives in `hub_manage_rule_machine`. |
 | `hub_manage_rule_machine` | 11 | Rule Machine authoring (`hub_set_rule` create/edit) + RMUtils interop (list/run/set-paused/boolean) + rule health + local-variable list (`hub_list_rule_local_variables`) + delete (`hub_delete_native_app`) + Visual Rules Builder CRUD (`hub_get_visual_rule` / `hub_set_visual_rule` / `hub_delete_visual_rule`) |
 | `hub_manage_mcp` | 1 | Developer Mode self-administration — update MCP rule app's own settings, including the device-access scope `selectedDevices` (allowlist-gated; requires `enableDeveloperMode`) |
 | `hub_manage_dashboards` | 6 | Dashboard CRUD for both Easy and legacy Hubitat® Dashboards — list/get + create/update/delete/clone touch-friendly device dashboards; Easy update replaces the config wholesale, legacy update edits the nested layout wholesale or via granular tile ops (write) |

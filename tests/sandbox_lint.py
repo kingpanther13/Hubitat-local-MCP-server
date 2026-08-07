@@ -1770,6 +1770,7 @@ def check_tool_guide_pointers(src_override: str | None = None,
         "dashboards": "Dashboards",
         "bundles": "Bundles",
         "rooms": "Rooms",
+        "deployment_jobs": "Deployment jobs (hub_call_deployment",
         "slow_ops": "Slow ops (opToken recovery",
     }
     for key in section_keys:

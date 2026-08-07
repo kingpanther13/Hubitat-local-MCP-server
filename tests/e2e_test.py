@@ -3348,6 +3348,111 @@ class TestRunner:
         finally:
             self._delete_native(app_id)
 
+    @test("native_apps")
+    def test_deployment_job_lifecycle(self) -> None:
+        """Issue #376 deployment engine. Creates a job that clones a scratch rule
+        staged-disabled then edits the clone via an alias ref, with maxOpsPerCall=1 so
+        the ON-HUB worker must run the second op with no client write attached (the
+        durability claim); polls to ready_for_commit; verifies the validation gate ran;
+        commits the cutover (pause old + enable new); then a second job proves cancel
+        deletes ONLY the job-created clone."""
+        old_id = self._create_native_rule("DeployOld", {
+            "addActions": [{"capability": "log", "message": "deploy-old"}]})
+        new_id = None
+        cancel_clone_id = None
+        try:
+            job_args = {
+                "operation": "create", "name": f"{PREFIX}DeployJob", "confirm": True,
+                "maxOpsPerCall": 1,
+                "ops": [
+                    {"op": "cloneApp", "alias": "new",
+                     "args": {"sourceAppId": old_id, "newName": f"{PREFIX}DeployNew", "stageDisabled": True}},
+                    {"op": "addActions",
+                     "args": {"appId": {"alias": "new"},
+                              "actions": [{"capability": "log", "message": "deploy-new"}]}},
+                ],
+                "commitOps": [
+                    {"op": "pause", "args": {"ruleId": old_id}},
+                    {"op": "setDisabled", "args": {"appId": {"alias": "new"}, "disabled": False}},
+                ]}
+            job_id = None
+            try:
+                created = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                    "tool": "hub_call_deployment", "args": job_args})
+                job_id = created.get("jobId")
+            except (McpError, McpToolError, requests.HTTPError) as exc:
+                if "504" not in str(exc):
+                    raise
+                # The create's inline slice ran the clone past the relay ceiling; the job
+                # exists on-hub regardless -- recover its id from the job list.
+                time.sleep(3.0)
+                listed = self.client.call_tool("hub_read_rules", {
+                    "tool": "hub_get_deployment", "args": {}})
+                for j in (listed.get("jobs") or []):
+                    if j.get("name") == f"{PREFIX}DeployJob":
+                        job_id = j.get("jobId")
+                        break
+            assert job_id, "deployment create returned no jobId and none found by name"
+            status = {}
+            phase = None
+            for _ in range(40):
+                status = self.client.call_tool("hub_read_rules", {
+                    "tool": "hub_get_deployment", "args": {"jobId": job_id}})
+                phase = status.get("phase")
+                if phase in ("ready_for_commit", "failed", "completed"):
+                    break
+                time.sleep(3.0)
+            assert phase == "ready_for_commit", f"job did not reach ready_for_commit: {status}"
+            assert (status.get("validation") or {}).get("ok") is True, \
+                f"validation gate did not pass: {status.get('validation')}"
+            new_id = (status.get("aliases") or {}).get("new")
+            assert new_id, f"clone alias unresolved: {status}"
+            self.created_native_app_ids.append(str(new_id))
+            ops = {o.get("index"): o for o in (status.get("ops") or [])}
+            assert ops.get(1, {}).get("status") == "done", \
+                f"on-hub worker did not finish the aliased addActions op: {status.get('ops')}"
+            self._assert_rule_healthy(new_id)
+            committed = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_call_deployment",
+                "args": {"operation": "commit", "jobId": job_id, "confirm": True}})
+            assert committed.get("phase") == "completed", f"commit did not complete: {committed}"
+
+            # Cancel leg: a second job clones the old rule; cancel must delete ONLY the clone.
+            j2 = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_call_deployment", "args": {
+                    "operation": "create", "name": f"{PREFIX}DeployCancel", "confirm": True,
+                    "ops": [{"op": "cloneApp", "alias": "c",
+                             "args": {"sourceAppId": old_id, "newName": f"{PREFIX}DeployCxl",
+                                      "stageDisabled": True}}]}})
+            j2_id = j2.get("jobId")
+            for _ in range(40):
+                if j2.get("phase") in ("ready_for_commit", "failed"):
+                    break
+                time.sleep(3.0)
+                j2 = self.client.call_tool("hub_read_rules", {
+                    "tool": "hub_get_deployment", "args": {"jobId": j2_id}})
+            assert j2.get("phase") == "ready_for_commit", f"cancel-leg job did not stage: {j2}"
+            cancel_clone_id = (j2.get("aliases") or {}).get("c")
+            assert cancel_clone_id, f"cancel-leg clone alias unresolved: {j2}"
+            self.created_native_app_ids.append(str(cancel_clone_id))
+            cancelled = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_call_deployment",
+                "args": {"operation": "cancel", "jobId": j2_id, "confirm": True}})
+            assert cancelled.get("phase") == "cancelled", f"cancel did not cancel: {cancelled}"
+            time.sleep(2.0)
+            assert not self._app_still_present(cancel_clone_id), \
+                f"cancel left the job-created clone {cancel_clone_id} installed"
+            self._untrack_native_app(cancel_clone_id)
+            cancel_clone_id = None
+            assert self._app_still_present(old_id), \
+                "cancel deleted the ORIGINAL rule -- it must only delete job-created apps"
+        finally:
+            if cancel_clone_id is not None:
+                self._delete_native(cancel_clone_id)
+            if new_id is not None:
+                self._delete_native(new_id)
+            self._delete_native(old_id)
+
     def _untrack_native_app(self, app_id) -> None:
         if str(app_id) in self.created_native_app_ids:
             self.created_native_app_ids.remove(str(app_id))

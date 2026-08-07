@@ -120,6 +120,10 @@ definition(
 // primitives stay in this file (used by other libraries).
 #include mcp.McpNativeRulesLib
 
+// Deployment jobs (issue #376): durable staged-migration jobs over the native-app
+// tools -- checkpointed ops, on-hub worker continuation, validation gate, cancel.
+#include mcp.McpDeployJobsLib
+
 preferences {
     page(name: "mainPage")
     page(name: "confirmDeletePage")
@@ -1887,7 +1891,7 @@ def _lanBudgetMs() {
 // the injection allowlist for handleToolsCall/handleGateway: tools outside it never
 // see the key (several validate their args strictly and reject unknown keys).
 def _budgetAwareTools() {
-    return ["hub_set_rule", "hub_set_native_app"] as Set
+    return ["hub_set_rule", "hub_set_native_app", "hub_call_deployment"] as Set
 }
 
 // True when a partial-commit loop should pause and hand back a resumable
@@ -2512,8 +2516,9 @@ def getGatewayConfig() {
         ],
         hub_read_rules: [
             description: "Read-only inspection of automation rules: list/inspect MCP custom rules (legacy engine), list native Rule Machine rules + check rule health, and list/read Visual Rules Builder rules. All operations are read-only; rule writes live in hub_manage_custom_rules, hub_manage_rule_machine, and hub_manage_native_rules_and_apps.",
-            tools: ["hub_get_custom_rule", "hub_test_custom_rule", "hub_list_rules", "hub_get_rule_health", "hub_list_rule_local_variables", "hub_get_visual_rule"],
+            tools: ["hub_get_custom_rule", "hub_test_custom_rule", "hub_list_rules", "hub_get_rule_health", "hub_list_rule_local_variables", "hub_get_visual_rule", "hub_get_deployment"],
             summaries: [
+                hub_get_deployment: "Read a deployment job's phase, per-op checkpoints, and rollback handles, or list all jobs. Args: jobId?, includeOps?",
                 hub_get_custom_rule: "List MCP custom rules (omit ruleId) or get one rule's detail; detailed=true (with ruleId) adds diagnostics. Args: ruleId?, detailed?, cursor?",
                 hub_test_custom_rule: "Dry-run an MCP custom rule without executing actions. Args: ruleId",
                 hub_list_rules: "List all native Rule Machine rules (RM 4.x + 5.x) with IDs and labels",
@@ -2527,12 +2532,13 @@ def getGatewayConfig() {
                 hub_list_rules: "rule machine rules native builtin automation list enumerate",
                 hub_get_rule_health: "broken validate inspect rule health diagnostic broken trigger broken action multiple flag corruption visual rules builder button controller basic rule classic app validationErrors",
                 hub_list_rule_local_variables: "rule local variables list allLocalVars per-rule variable name type value rule machine RM setLocalVariable",
-                hub_get_visual_rule: "visual rules builder VRB read list show inspect automation json definition when then else nodes graph"
+                hub_get_visual_rule: "visual rules builder VRB read list show inspect automation json definition when then else nodes graph",
+                hub_get_deployment: "deployment job status staged migration progress checkpoint poll resume rollback"
             ]
         ],
         hub_manage_native_rules_and_apps: [
             description: "Native classic-app CRUD + Rule Machine runtime control. Use for: create/edit any non-RM classic SmartApp (Room Lighting, Button Controller, Notifier, Groups+Scenes) via hub_set_native_app (Visual Rules use hub_set_visual_rule); delete/clone/export/import any classic app by appId; and RMUtils runtime control of RM rules (list/run, pause/resume, set private boolean, health). To author a Rule Machine rule's triggers/actions/conditions — 'create a rule machine rule', 'make a Hubitat rule' — use the dedicated hub_manage_rule_machine gateway (hub_set_rule) instead; that is the default rule-authoring path. Not the legacy custom_* sandbox engine. Writes snapshot first (restore via hub_list_backups + hub_restore_backup); destructive ops need confirm=true + a recent backup. RM 5.1 writes are async — on success:false / partial:true, verify via hub_get_app_config(appId) before retrying.",
-            tools: ["hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_native_app", "hub_set_app_disabled", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"],
+            tools: ["hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_native_app", "hub_set_app_disabled", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health", "hub_call_deployment", "hub_get_deployment"],
             summaries: [
                 hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
                 hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId (id or array of ids), action (rule/actions/stop/start, default rule). rule/actions use RMUtils; stop/start toggle the stopRule button (start also resets private boolean).",
@@ -2544,7 +2550,9 @@ def getGatewayConfig() {
                 hub_clone_native_app: "Clone an existing rule/app via Hubitat's first-party appCloner (deep: child apps and pause state copy too, so a clone of an ACTIVE app lands ACTIVE). Cheaper than rebuilding from scratch via the wizard. Args: appId (alias sourceAppId), newName (opt), stageDisabled (opt: disable clone + children immediately), confirm. Returns newAppId.",
                 hub_export_native_app: "Export a rule/app to its canonical JSON shape via Hubitat's first-party appCloner. Args: appId (alias sourceAppId), saveAs (opt File Manager filename). Returns the JSON content (and writes to File Manager if saveAs given).",
                 hub_import_native_app: "Create a new rule/app from a previously-exported JSON via Hubitat's first-party appCloner (the import lands ACTIVE). Args: jsonContent | fromFile, parentHintAppId (existing rule under the target parent — used to seed the cloner), newName (opt), stageDisabled (opt: disable import + children immediately), confirm. Returns newAppId.",
-                hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, label *BROKEN*, **Broken Trigger** markers, configPage errors, multiple-flag corruption. Args: appId, source. Returns {ok, broken, source, ruleFormat, issues, ...}. Auto-attached to hub_set_rule and hub_set_visual_rule responses too."
+                hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, label *BROKEN*, **Broken Trigger** markers, configPage errors, multiple-flag corruption. Args: appId, source. Returns {ok, broken, source, ruleFormat, issues, ...}. Auto-attached to hub_set_rule and hub_set_visual_rule responses too.",
+                hub_call_deployment: "Run a durable staged-migration job (clone/import/edit ops with on-hub checkpoints, validation gate, commit cutover, cancel rollback). Args: operation (create/resume/commit/cancel), jobId?, ops?, commitOps?, confirm=true",
+                hub_get_deployment: "Read a deployment job's phase, per-op checkpoints, and rollback handles, or list all jobs. Args: jobId?, includeOps?"
             ],
             searchHints: [
                 hub_list_rules: "rule machine rules native builtin automation list enumerate",
@@ -2557,7 +2565,9 @@ def getGatewayConfig() {
                 hub_clone_native_app: "copy duplicate clone existing rule app appCloner template surgical edit",
                 hub_export_native_app: "export serialize download rule app json appCloner backup transfer canonical shape",
                 hub_import_native_app: "import restore upload create rule app from json appCloner backup transfer round trip",
-                hub_get_rule_health: "broken validate inspect rule health diagnostic broken trigger broken action multiple flag corruption visual rules builder button controller basic rule classic app validationErrors"
+                hub_get_rule_health: "broken validate inspect rule health diagnostic broken trigger broken action multiple flag corruption visual rules builder button controller basic rule classic app validationErrors",
+                hub_call_deployment: "deployment job staged migration durable resumable checkpoint batch clone import cutover pause enable rollback orchestrate multi app",
+                hub_get_deployment: "deployment job status staged migration progress checkpoint poll resume rollback"
             ]
         ],
         hub_manage_mcp: [
@@ -2816,6 +2826,7 @@ def getReadOnlyToolNames() {
     return ([
     ]
         + _readOnlyToolNames_partNativeRM()
+        + _readOnlyToolNames_partDeployJobs()
         + _readOnlyToolNames_partRooms()
         + _readOnlyToolNames_partBundles()
         + _readOnlyToolNames_partVisualRules()
@@ -2922,6 +2933,7 @@ def getToolDisplayMeta() {
     // and lives in getGatewayConfig).
     def meta = [:]
     [_toolDisplayMeta_partNativeRM(),
+     _toolDisplayMeta_partDeployJobs(),
      _toolDisplayMeta_partRooms(),
      _toolDisplayMeta_partBundles(),
      _toolDisplayMeta_partVisualRules(),
@@ -3404,7 +3416,7 @@ def getAllToolDefinitions() {
     // McpBundlesLib / McpVisualRulesLib #include libraries (issue #209 modularization -- a
     // domain's tool DEFINITIONS live with its impl in the library; only the gateway membership
     // + dispatch case stay in this file).
-    return _getAllToolDefinitions_partNativeRM() + _getAllToolDefinitions_partRooms() + _getAllToolDefinitions_partBundles() + _getAllToolDefinitions_partVisualRules() + _getAllToolDefinitions_partDiscovery() + _getAllToolDefinitions_partAppCloner() + _getAllToolDefinitions_partSelfAdmin() + _getAllToolDefinitions_partHpm() + _getAllToolDefinitions_partCodeManagement() + _getAllToolDefinitions_partCustomRules() + _getAllToolDefinitions_partVariables() + _getAllToolDefinitions_partVirtualDevices() + _getAllToolDefinitions_partDevices() + _getAllToolDefinitions_partSystem() + _getAllToolDefinitions_partDiagnostics() + _getAllToolDefinitions_partDebugLogging() + _getAllToolDefinitions_partItemBackups() + _getAllToolDefinitions_partFiles() + _getAllToolDefinitions_partDashboards()
+    return _getAllToolDefinitions_partNativeRM() + _getAllToolDefinitions_partDeployJobs() + _getAllToolDefinitions_partRooms() + _getAllToolDefinitions_partBundles() + _getAllToolDefinitions_partVisualRules() + _getAllToolDefinitions_partDiscovery() + _getAllToolDefinitions_partAppCloner() + _getAllToolDefinitions_partSelfAdmin() + _getAllToolDefinitions_partHpm() + _getAllToolDefinitions_partCodeManagement() + _getAllToolDefinitions_partCustomRules() + _getAllToolDefinitions_partVariables() + _getAllToolDefinitions_partVirtualDevices() + _getAllToolDefinitions_partDevices() + _getAllToolDefinitions_partSystem() + _getAllToolDefinitions_partDiagnostics() + _getAllToolDefinitions_partDebugLogging() + _getAllToolDefinitions_partItemBackups() + _getAllToolDefinitions_partFiles() + _getAllToolDefinitions_partDashboards()
 }
 
 // Content fingerprint of the catalog's name -> required-params shape, used as
@@ -3741,6 +3753,10 @@ def executeTool(toolName, args) {
         case "hub_import_native_app": return toolImportNativeApp(args)
         case "hub_get_rule_health": return toolCheckRuleHealth(args)
         case "hub_list_rule_local_variables": return toolListRuleLocalVariables(args)
+
+        // Deployment jobs (issue #376; impl in McpDeployJobsLib)
+        case "hub_call_deployment": return toolCallDeployment(args)
+        case "hub_get_deployment": return toolGetDeployment(args)
 
         // Visual Rules Builder (Vue-JSON apps; impl in McpVisualRulesLib)
         case "hub_get_visual_rule": return toolGetVisualRule(args)
@@ -6624,6 +6640,7 @@ def hubBpsGuideKey() { 'bps-ack-299' }
 def _guideSectionForTool(toolName) {
     def t = (toolName ?: '').toString()
     if (t == 'hub_set_rule') return 'set_rule_reference'
+    if (t == 'hub_call_deployment') return 'deployment_jobs'
     if (t == 'hub_set_visual_rule' || t == 'hub_delete_visual_rule') return 'visual_rule_reference'
     if (t.endsWith('_custom_rule')) return 'rules'
     if (t in ['hub_set_native_app', 'hub_delete_native_app', 'hub_clone_native_app',
@@ -8083,6 +8100,53 @@ To move EXISTING devices into an existing room, set each device's room via hub_u
 Renaming a room preserves device assignments, but may require updating automations/dashboards that reference the room by name.
 ''',
 
+        deployment_jobs: '''## Deployment jobs (hub_call_deployment / hub_get_deployment)
+
+A deployment job runs a staged multi-app migration ON-HUB with a durable checkpoint after every op: the job record (ops, per-op status, aliases, created apps, backup keys, validation results) lives in hub storage, and while a job is staging or committing the hub scheduler keeps advancing it in bounded slices with NO client attached. A client that dies mid-migration loses nothing -- any fresh session polls hub_get_deployment and resumes.
+
+### Op reference (each op is {op, args, alias?})
+
+| op | args | notes |
+|---|---|---|
+| cloneApp | sourceAppId, newName?, stageDisabled? | Clone via appCloner; stageDisabled=true lands it disabled (recommended for staging) |
+| importApp | jsonContent OR fromFile, parentHintAppId, newName?, stageDisabled? | Import an exported JSON |
+| buttonRule | controllerId, buttonNumber, event | Create a Button Rule via its parent controller |
+| addActions | appId, actions (array of RM action specs) | hub_set_rule addActions |
+| modifyAction | appId, index, mods | hub_set_rule modifyAction (e.g. retarget runRule) |
+| pause / resume | ruleId (id or array) | RM pause/resume (whole-set in one op) |
+| setDisabled | appId, disabled | Enable/disable any app (reversible red-X) |
+
+A create-type op (cloneApp/importApp/buttonRule) may declare alias:"name"; later ops write {"alias":"name"} wherever an appId/ruleId/controllerId is taken and it resolves to the created app's id at execution time.
+
+### Phases + lifecycle
+
+draft > staging > ready_for_commit > committing > completed | failed | cancelled.
+
+- operation=create: validates the whole manifest up front (unknown ops, duplicate aliases, forward alias refs are rejected before anything runs), then stages. Each call slice is bounded by the response-time budget (and optional maxOpsPerCall); the on-hub worker continues the rest (background=false disables the worker: the job then advances only on operation=resume).
+- Staging validation gate: when the last staging op completes, every created app is health-checked (hub_get_rule_health, which reads live config -- an existence readback). Only an all-healthy job becomes ready_for_commit; otherwise it fails with per-app results in `validation`.
+- operation=commit: runs the declared commitOps (typically pause the old set + enable the new set). Refused unless phase is ready_for_commit.
+- operation=cancel: deletes ONLY the apps recorded in createdAppIds (newest first) and marks the job cancelled. A completed job cannot be cancelled (reverse the cutover manually).
+- operation=resume: continues after a failure (retries the failed op), a disconnect/hub restart (picks up from the checkpoint), or starts a draft. An op interrupted MID-write is reconciled where that is safe: an interrupted create-type op adopts the app if the create actually committed (matched against a pre-op child snapshot); pause/resume/setDisabled/modifyAction re-run (convergent); an interrupted addActions requires retryInFlight=true because a blind re-run can duplicate actions -- verify via hub_get_app_config first.
+
+### Worked example (migrate a Button Controller topology)
+
+```json
+{"operation": "create", "name": "migrate-BC",
+ "ops": [
+   {"op": "cloneApp", "alias": "newCtl", "args": {"sourceAppId": 100, "newName": "Ctl v2", "stageDisabled": true}},
+   {"op": "cloneApp", "alias": "newBC", "args": {"sourceAppId": 200, "newName": "BC v2", "stageDisabled": true}},
+   {"op": "modifyAction", "args": {"appId": {"alias": "newBC"}, "index": 0, "mods": {"runRule": {"alias": "newCtl"}}}}
+ ],
+ "commitOps": [
+   {"op": "pause", "args": {"ruleId": [100, 200]}},
+   {"op": "setDisabled", "args": {"appId": {"alias": "newCtl"}, "disabled": false}},
+   {"op": "setDisabled", "args": {"appId": {"alias": "newBC"}, "disabled": false}}
+ ],
+ "confirm": true}
+```
+
+Then poll hub_get_deployment(jobId) until ready_for_commit, review `validation`, and commit. Rollback handles on the job: backupKeys (hub_restore_backup) for edited apps + createdAppIds (cancel) for created ones.
+''',
         slow_ops: '''## Slow ops (opToken recovery + in_progress resume)
 
 A slow write can outlive its transport: the cloud relay severs calls at a fixed ceiling, and an MCP client's own request timeout can kill a long LAN call. Either way the hub still runs the operation to completion and commits it -- only the RESPONSE is lost, and your client surfaces an opaque transport error (a gateway/timeout error, often worded as "try again"). RE-RUNNING THE CALL IS THE WRONG RECOVERY: it double-commits the write. Recovery is always a POLL, and the write tool itself is the poll.

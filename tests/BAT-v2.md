@@ -1,6 +1,6 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 117 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 119 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -2552,6 +2552,18 @@ Multi-tool scenarios phrased as user stories, not numbered checklists. The LLM m
 
 **Expected**: `hub_set_rule` with `modifyAction={index, mods:{ruleIds:[<new-target-id>]}}` (one op), then `hub_get_app_config` readback showing the Run Actions reference on the new target. removeAction+addAction via `patches` is a soft pass; FAIL if the caller is rebuilt from scratch or the old target is modified/deleted.
 
+#### T304 — Resumable staged migration that survives losing the assistant
+
+```json
+{
+  "setup_prompt": "Create a test rule called 'BAT NL Deploy Old' with a time trigger at 23:57 and a log action. Mark it as a test rule.",
+  "test_prompt": "I want to replace 'BAT NL Deploy Old' with an upgraded copy, but carefully: build the replacement as a disabled copy named 'BAT NL Deploy New' with an extra log action, have the hub itself carry the work forward and verify the new copy is healthy before anything goes live, and make sure that if this chat dies partway through, a brand-new session can see exactly where the migration stands and finish it. Once it's verified, do the switchover: stop the old rule and turn the new one on. Tell me what I'd ask a fresh session in order to pick the migration up.",
+  "teardown_prompt": "If a migration job from this test is still open, cancel it. Delete the rules 'BAT NL Deploy New' and 'BAT NL Deploy Old'."
+}
+```
+
+**Expected**: `hub_call_deployment` operation=create with a cloneApp op (stageDisabled=true, alias) + an aliased edit op and commitOps (pause old / enable new), `hub_get_deployment` polling to `ready_for_commit` with `validation.ok`, then operation=commit; the pick-up answer names `hub_get_deployment`/resume by jobId. Soft pass: the same migration via individual clone/edit/pause calls WITH progress notes persisted on-hub (File Manager) — but only if the resume-from-a-fresh-session answer actually works from on-hub state. FAIL if the migration state lives only in the conversation, or if the new copy goes live without any health verification.
+
 ---
 
 ## Excluded Tests (Destructive — Manual Only)
@@ -2632,17 +2644,17 @@ These operations are too destructive for automated testing. Test manually with e
 | Flat core tools on `tools/list` | 13 |
 | Gateways on `tools/list` | 23 |
 | Total visible on `tools/list` | 36 |
-| Total distinct tools in codebase | 117 |
+| Total distinct tools in codebase | 119 |
 
-**8 read gateways**: `hub_read_apps_code` (11), `hub_read_devices` (5), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3), `hub_read_dashboards` (2)
+**8 read gateways**: `hub_read_apps_code` (11), `hub_read_devices` (5), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (7), `hub_read_variables` (3), `hub_read_dashboards` (2)
 
-**15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (9), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
+**15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (9), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (13), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
 
 **13 flat core tools**: `hub_manage_virtual_device`, `hub_get_tool_guide`, `hub_report_issue`, `hub_search_tools`, `hub_get_info`, `hub_list_modes`, `hub_manage_mode`, `hub_set_mode_manager`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_set_system_settings`, `hub_update_firmware`, `hub_create_backup`
 
 ### Tool Coverage (non-destructive tools only)
 
-All 117 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 119 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 each target a specific tool — named in the test's title and **Expected** criteria while the `test_prompt` stays goal-first (see Prompt style above). Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
@@ -2729,7 +2741,7 @@ Tools in this section have mixed gate requirements. `hub_list_apps` (scope=insta
 }
 ```
 
-**Expected**: AI calls `hub_manage_native_rules_and_apps` with no args, sees 11 tools. AI describes them (list/run/pause/set_boolean + create/update/delete/clone/export/hub_import_native_app + hub_get_rule_health).
+**Expected**: AI calls `hub_manage_native_rules_and_apps` with no args, sees 13 tools. AI describes them (list/run/pause/set_boolean + create/update/delete/clone/export/hub_import_native_app + hub_get_rule_health + hub_call_deployment/hub_get_deployment).
 
 ### T207 — AI uses native RM rule creation via hub_manage_native_rules_and_apps
 
