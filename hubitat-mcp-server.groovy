@@ -1636,8 +1636,8 @@ def handleToolsCall(msg) {
                     isError: true
                 ])
             }
-            boolean isWriteLeaf = reactiveToolName && !(reactiveToolName in getReadOnlyToolNames())
-                    && !getGatewayConfig().containsKey(reactiveToolName.toString())
+            boolean isWriteLeaf = (reactiveToolName && !(reactiveToolName in getReadOnlyToolNames())
+                    && !getGatewayConfig().containsKey(reactiveToolName.toString()))
             if (opTokenAuto && isWriteLeaf) {
                 def duplicate = _findIdenticalRunningOp(reactiveToolName, opFingerprintHash, opFingerprintLen)
                 if (duplicate != null) {
