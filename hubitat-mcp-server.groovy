@@ -432,6 +432,9 @@ def advancedOverridesPage() {
         }
         section("Slow-write time budgets") {
             paragraph "The cloud relay severs a slow /mcp call at a fixed ceiling while the hub keeps running the operation to completion. When a slow multi-step write reaches its budget, the server pauses BETWEEN committed sub-steps and returns a resumable in_progress envelope so no step is lost. The relay budget defaults ON (under the relay ceiling); the LAN budget defaults OFF -- LAN has no transport ceiling, so enable it only when your MCP client's own request timeout kills slow writes (set it just under that timeout). Set 0 to disable either."
+            input "maxConcurrentWrites", "number", title: "Maximum concurrent writes (0 = unlimited)",
+                  description: "Refuse new writes while this many recent write records are still running (default: 2; 1 = fully serial; 0 disables the cap).",
+                  defaultValue: 2, range: "0..100", required: false
             input "relayBudgetMs", "number", title: "Cloud-relay time budget (ms, 0 = off)",
                   description: "Pause a slow multi-step write over the cloud relay once this many ms have elapsed (default: 8000, under the ~10s relay ceiling).",
                   defaultValue: 8000, range: "0..30000", required: false
@@ -1518,6 +1521,8 @@ def handleToolsCall(msg) {
     String opToken = null
     boolean opTokenActive = false
     boolean opTokenAuto = false
+    Integer opFingerprintHash = null
+    Integer opFingerprintLen = null
     // Buffer the terminal result under the token on every exit path (finally), so
     // a dropped transport response is recoverable by re-issuing the tokened call
     // (the dedup gate replays it) and no token is left eternally "running". Each
@@ -1565,7 +1570,7 @@ def handleToolsCall(msg) {
                 _validateOpToken(opToken)
                 opTokenActive = true
             }
-            // Auto-record untokened WRITES (issue #376 follow-up): a client that
+            // Auto-record untokened WRITES: a client that
             // never passed a token still gets a server-assigned one, so the op is
             // recorded and its result buffered exactly like a tokened call. The
             // token rides back on the response, and hub_get_info(includeRecentOps=
@@ -1580,6 +1585,9 @@ def handleToolsCall(msg) {
                 opToken = "auto-" + Long.toString(now(), 16) + "-" + Integer.toString(new Random().nextInt(0xFFFF), 16).padLeft(4, '0')
                 opTokenActive = true
                 opTokenAuto = true
+                String canonicalArgsJson = groovy.json.JsonOutput.toJson(_canonicalOpArgs(args))
+                opFingerprintHash = canonicalArgsJson.hashCode()
+                opFingerprintLen = canonicalArgsJson.length()
             }
         }
         if (opTokenActive) {
@@ -1628,7 +1636,40 @@ def handleToolsCall(msg) {
                     isError: true
                 ])
             }
-            _opTokenMark(opToken, reactiveToolName)
+            boolean isWriteLeaf = reactiveToolName && !(reactiveToolName in getReadOnlyToolNames())
+                    && !getGatewayConfig().containsKey(reactiveToolName.toString())
+            if (opTokenAuto && isWriteLeaf) {
+                def duplicate = _findIdenticalRunningOp(reactiveToolName, opFingerprintHash, opFingerprintLen)
+                if (duplicate != null) {
+                    long ageSeconds = Math.max(0L, ((now() - (duplicate.startedAt as Long)) / 1000L) as Long)
+                    def refusal = [
+                        success: false, isError: true, status: "duplicate_in_flight",
+                        inFlightOpToken: duplicate.opToken, tool: reactiveToolName,
+                        startedAt: duplicate.startedAt,
+                        note: "An identical operation is already in progress (started ${ageSeconds}s ago). Do not re-run it: poll by re-issuing token-only with opToken '${duplicate.opToken}' to get its result when it finishes. See hub_get_tool_guide(section='slow_ops')."
+                    ]
+                    return jsonRpcResult(msg.id, [
+                        content: [[type: "text", text: groovy.json.JsonOutput.toJson(refusal)]],
+                        isError: true
+                    ])
+                }
+            }
+            if (isWriteLeaf) {
+                int maxWrites = _maxConcurrentWrites()
+                def inFlightWrites = _recentRunningWriteOps()
+                if (maxWrites > 0 && inFlightWrites.size() >= maxWrites) {
+                    def refusal = [
+                        success: false, isError: true, status: "too_many_writes_in_flight",
+                        inFlight: inFlightWrites,
+                        note: "${inFlightWrites.size()} write operation(s) already in flight (cap ${maxWrites}, the maxConcurrentWrites setting). Wait for one to finish or poll its token, then re-issue this call."
+                    ]
+                    return jsonRpcResult(msg.id, [
+                        content: [[type: "text", text: groovy.json.JsonOutput.toJson(refusal)]],
+                        isError: true
+                    ])
+                }
+            }
+            _opTokenMark(opToken, reactiveToolName, opFingerprintHash, opFingerprintLen)
         }
         // Thread the budget clock into the dispatched args -- ONLY for the leaves
         // whose loops consume it. Several tools validate their args strictly and
@@ -1914,6 +1955,10 @@ def _lanBudgetMs() {
     return settings.lanBudgetMs != null ? (settings.lanBudgetMs as Long) : 0L
 }
 
+def _maxConcurrentWrites() {
+    return settings.maxConcurrentWrites != null ? (settings.maxConcurrentWrites as Integer) : 2
+}
+
 // The leaves whose partial-commit loops consume the __reqT0 budget clock. This is
 // the injection allowlist for handleToolsCall/handleGateway: tools outside it never
 // see the key (several validate their args strictly and reject unknown keys).
@@ -2081,9 +2126,57 @@ def _opTokenPrune() {
 }
 
 // Mark a token running just before dispatch (per-entry write), then prune.
-def _opTokenMark(String opToken, toolName) {
-    _opTokenPut(opToken, [state: "running", tool: toolName?.toString(), startedAt: now()])
+def _opTokenMark(String opToken, toolName, Integer fpHash = null, Integer fpLen = null) {
+    def rec = [state: "running", tool: toolName?.toString(), startedAt: now()]
+    if (fpHash != null) rec.fpHash = fpHash
+    if (fpLen != null) rec.fpLen = fpLen
+    _opTokenPut(opToken, rec)
     _opTokenPrune()
+}
+
+def _canonicalOpArgs(value) {
+    if (value instanceof Map) {
+        def canonical = [:]
+        value.entrySet().toList().sort { a, b -> a.key.toString() <=> b.key.toString() }.each { entry ->
+            String key = entry.key.toString()
+            if (!(key in ["opToken", "bestPracticeKey", "__reqT0"])) {
+                canonical[key] = _canonicalOpArgs(entry.value)
+            }
+        }
+        return canonical
+    }
+    if (value instanceof List) return value.collect { _canonicalOpArgs(it) }
+    return value
+}
+
+def _findIdenticalRunningOp(toolName, Integer fpHash, Integer fpLen) {
+    def tokens = atomicState.opTokens
+    if (!(tokens instanceof Map) || fpHash == null || fpLen == null) return null
+    long cutoff = now() - 600000L
+    for (entry in tokens.entrySet()) {
+        def rec = entry.value
+        if (rec instanceof Map && rec.state == "running" && rec.tool?.toString() == toolName?.toString()
+                && rec.fpHash == fpHash && rec.fpLen == fpLen && rec.startedAt != null
+                && (rec.startedAt as Long) >= cutoff) {
+            return [opToken: entry.key.toString(), tool: rec.tool, startedAt: rec.startedAt]
+        }
+    }
+    return null
+}
+
+def _recentRunningWriteOps() {
+    def tokens = atomicState.opTokens
+    if (!(tokens instanceof Map)) return []
+    def readOnlyNames = getReadOnlyToolNames()
+    long cutoff = now() - 600000L
+    def running = []
+    tokens.each { token, rec ->
+        if (rec instanceof Map && rec.state == "running" && rec.tool != null && rec.startedAt != null
+                && (rec.startedAt as Long) >= cutoff && !readOnlyNames.contains(rec.tool.toString())) {
+            running << [opToken: token.toString(), tool: rec.tool, startedAt: rec.startedAt]
+        }
+    }
+    return running
 }
 
 // Release a token after a validation error (the leaf executed nothing, so the token must
@@ -8169,15 +8262,17 @@ Then poll `deployment={op:"status", jobId:"..."}` until ready_for_commit, review
 
 A slow write can outlive its transport: the cloud relay severs calls at a fixed ceiling, and an MCP client's own request timeout can kill a long LAN call. Either way the hub still runs the operation to completion and commits it -- only the RESPONSE is lost, and your client surfaces an opaque transport error (a gateway/timeout error, often worded as "try again"). RE-RUNNING THE CALL IS THE WRONG RECOVERY: it double-commits the write. Recovery is always a POLL, and the write tool itself is the poll.
 
-### Idempotency token (opToken): pass one, and re-issue with the SAME one
+### Idempotency token (opToken): auto-record first, optional client token for verbatim retries
 
-The token is YOURS -- the assistant's -- to invent, record in your own context, and reuse; it is never something to ask the user for (users never see tokens). EVERY tool -- reads included -- accepts an optional `opToken` you invent: 8-128 characters of A-Za-z0-9._- (the schemas of the known-slow class advertise it explicitly: hub_set_rule, hub_set_native_app, the code save/update tools, hub_install_bundle, hub_update_package, hub_create_backup, hub_restore_backup, hub_delete_variable). The server records the token before running the call and buffers the terminal result under it when it finishes.
+Every untokened WRITE is auto-recorded before it runs. The server assigns an `auto-...` token, buffers the terminal result, returns the token in the response, and exposes recent records through hub_get_info(includeRecentOps=true). If a response is lost, find the record by tool + startedAt and poll by re-issuing token-only with that opToken; do not blind-retry the write. Records sweep about 24 hours after start. When more than 100 are stored, the oldest terminal records batch-evict until 50 remain.
 
-SAFETY NET -- untokened writes are auto-recorded: a WRITE call that carries no opToken gets a server-assigned `auto-...` token; the op is recorded and its result buffered exactly like a tokened call, and the assigned token is returned on the response (`opToken` key). If a write's response was lost AND you never passed a token, do NOT blind-retry: call hub_get_info(includeRecentOps=true), find the record (tool + startedAt identify it), and re-issue token-only with its opToken to replay the buffered result. Passing your own token up front is still the stronger contract (it also gives pre-flight dedup); the auto-record is the floor under clients that didn't. A read cannot double-commit, but an expensive read that outlives its transport still completes and buffers, so the tokened re-issue serves the buffered result instead of re-running the work. Tokens are per-call nonces: records are written per-entry, so concurrent calls with DIFFERENT tokens do not interfere with each other.
+A client-invented `opToken` is an optional extra, never something to ask the user for: 8-128 characters of A-Za-z0-9._-. Its one unique advantage is verbatim-retry dedup: a transport re-send of the same bytes carries the same token and is refused while running or replayed after completion. An untokened re-send gets a new auto token, but while the first call is running the server fingerprints the stripped arguments and refuses the match as `duplicate_in_flight`. EVERY tool -- reads included -- accepts a client token; a tokened expensive read also replays instead of re-running. Tokens are per-call nonces, and records are written per-entry so different tokens do not interfere.
 
 If the response is lost, DO NOT re-run the operation and DO NOT invent a fresh token. Re-issue the SAME tool call with the SAME `opToken` -- the token alone is enough: a flat tool takes `{opToken: "<yours>"}` with no other arguments (e.g. hub_update_package), a gateway member takes `{tool: "<leaf>", opToken: "<yours>"}` (e.g. `{tool: "hub_set_rule", opToken: "<yours>"}` via hub_manage_rule_machine). The server answers from the token record without running anything twice:
 
 - `status: "running"` -- still executing on the hub. Poll again in a few seconds by re-issuing the same tokened call. The operation completes and commits even though your response dropped.
+- `status: "duplicate_in_flight"` -- an identical untokened write is already running. Do not re-run it; poll the named `inFlightOpToken` until its result replays.
+- `status: "too_many_writes_in_flight"` -- the recent running-write count reached `maxConcurrentWrites` (default 2; 1 serializes, 0 disables). Wait for one named `inFlight` token to finish or poll it, then re-issue this call.
 - `replayed: true` -- it finished; this IS the original buffered result (including `isError` if that attempt failed).
 - `status: "unknown"` (returned only to a token-only poll) -- no RECORD of this token exists: the original call never arrived, OR the record aged out (records sweep ~24h after start, and past 100 stored records the oldest terminal records batch-evict down to 50). Poll promptly after a drop and it reliably means never-arrived: re-issue the ORIGINAL call (full arguments) with this same token. Do not trust day-old tokens.
 - `status: "indeterminate"` -- the operation completed here but its buffered result cannot be read (buffering failed, or the result file is gone while the record survives). Do NOT re-issue blindly; verify current state via reads first.
@@ -8201,7 +8296,7 @@ hub_set_rule and hub_set_native_app run multi-step wizard edits. Once the time b
 - A paused `walkStep(operation='drive')` returns `pausedAtStep`, `stepsRemaining` (the unrun step specs), and `page`. Re-issue the drive with `steps = stepsRemaining` and `page` set to the returned page to continue.
 - A paused bulk `addTriggers`/`addActions` edit returns `triggersCommitted`/`actionsCommitted`, the per-item `triggers`/`actions` arrays, and `addTriggersRemaining`/`addActionsRemaining` (the unprocessed specs). Re-issue the hub_set_rule / hub_set_native_app edit with `addTriggers`/`addActions` set to those remaining lists. Unlike the walkStep pause (which only pauses when everything so far is clean), this pause -- like the patch pause -- can stop right after a failed/degraded item to protect the response from a transport drop, so check the top-level `success`/`partial` and the per-item arrays -- a committed item that failed is surfaced there, not masked.
 - A paused patch edit returns `patchResults` so far and `patchesRemaining`. Re-issue the hub_set_rule / hub_set_native_app edit with `patches = patchesRemaining`. A patch op carrying a large inner `addTriggers`/`addActions` list can pause MID-op: `patchesRemaining` then leads with that op rewritten to only its unprocessed inner items. The rule finalize (updateRule) runs when the remaining patches complete, not on the paused call.
-- Attach the same `opToken` on a resume ONLY if the original call carried none; otherwise use a fresh token for the resume.
+- Resume the remaining work with a fresh client token, or omit it and let the server assign a new auto token. Never reuse the spent token from the paused call; that only replays the original `in_progress` envelope.
 Once the budget is spent, a walkStep op also SHEDS its trailing health probe (the result's health carries skipped: true) so the committed op returns under the transport ceiling -- verify via hub_get_rule_health when you see it; an UNREADABLE probe (transient fetch failure) never fails committed work, only positive evidence of breakage does.
 
 The budget is per-transport: the advanced `relayBudgetMs` setting for cloud-relay requests (default 8000 ms, 0 disables) and `lanBudgetMs` for LAN requests (default 0 = off; set it just under your MCP client's request timeout to make long LAN edits pause instead of dying). With the LAN knob unset, LAN behaviour is unchanged.

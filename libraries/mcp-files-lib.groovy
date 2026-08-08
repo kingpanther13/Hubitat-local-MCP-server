@@ -384,6 +384,7 @@ def _getAllToolDefinitions_partFiles() {
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the write succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     fileName: [type: "string", description: "File written"],
@@ -409,6 +410,7 @@ def _getAllToolDefinitions_partFiles() {
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the deletion succeeded"],
                     message: [type: "string", description: "Human-readable result, including backup status"],
                     fileName: [type: "string", description: "Name of the file that was deleted"],

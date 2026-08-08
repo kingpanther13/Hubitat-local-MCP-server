@@ -5686,6 +5686,38 @@ class TestRunner:
             f"replayed read should be the buffered original: {replay}"
 
     @test("op_replay")
+    def test_op_replay_untokened_write_auto_recorded(self) -> None:
+        # An untokened write gets a server-assigned token in its response, appears in
+        # hub_get_info's recent-op journal, and replays token-only without re-running.
+        var_name = f"{PREFIX}OpAuto_{int(time.time())}"
+        self.created_variable_names.append(var_name)
+        try:
+            first = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_set_variable",
+                "args": {"name": var_name, "value": "auto-record"},
+            })
+            token = first.get("opToken")
+            assert isinstance(token, str) and token.startswith("auto-"), \
+                f"untokened write did not return a server-assigned auto token: {first}"
+
+            info = self.client.call_tool("hub_get_info", {
+                "includeRecentOps": True, "recentOpsLimit": 100,
+            })
+            records = info.get("recentOps") or []
+            assert any(row.get("opToken") == token
+                       and row.get("tool") == "hub_set_variable"
+                       and row.get("auto") is True for row in records), \
+                f"auto-tokened write was absent from the recent-op journal: token={token} rows={records}"
+
+            replay = self._poll_op_result(token, deadline_s=10.0, tool="hub_set_variable")
+            assert isinstance(replay, dict) and replay.get("replayed") is True, \
+                f"token-only poll did not replay the auto-recorded write: {replay}"
+            assert replay.get("name") == var_name and replay.get("value") == "auto-record", \
+                f"auto-token replay did not preserve the original result: {replay}"
+        finally:
+            self._delete_variable_safe(var_name)
+
+    @test("op_replay")
     def test_op_replay_unknown_token(self) -> None:
         # A token-only write poll for a token that never started reports status 'unknown'
         # (issue #351: the write IS the poll) -- telling the caller the original call never

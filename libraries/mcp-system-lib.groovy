@@ -1027,6 +1027,7 @@ def _getAllToolDefinitions_partSystem() {
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the action succeeded"],
                     action: [type: "string", description: "The action performed"],
                     modes: [type: "array", description: "Resulting mode list (create/rename/delete)", items: [type: "object"]],
@@ -1052,6 +1053,7 @@ def _getAllToolDefinitions_partSystem() {
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the change succeeded"],
                     manager: [type: "string", description: "The manager that was selected"],
                     conditionsUpdated: [type: "boolean", description: "True if conditions were applied"],
@@ -1093,6 +1095,7 @@ def _getAllToolDefinitions_partSystem() {
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the HSM arm event was sent"],
                     previousStatus: [type: "string", description: "HSM status before the change"],
                     newMode: [type: "string", description: "Requested HSM mode"]
@@ -1130,6 +1133,7 @@ def _getAllToolDefinitions_partSystem() {
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the settings were applied"],
                     applied: [type: "array", description: "The fields that were changed; may include darkMode and the network legs (network.staticIp / network.dhcp / network.ethernetAutoneg / network.wifi)", items: [type: "string"]],
                     error: [type: "string", description: "Failure reason (success=false)"],
@@ -1153,6 +1157,7 @@ PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the reboot was initiated"],
                     message: [type: "string", description: "Human-readable result"],
                     lastBackup: [type: "string", description: "Formatted timestamp of last backup"],
@@ -1177,6 +1182,7 @@ PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user it won't restart automaticall
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the shutdown was initiated"],
                     message: [type: "string", description: "Human-readable result"],
                     lastBackup: [type: "string", description: "Formatted timestamp of last backup"],
@@ -1201,6 +1207,7 @@ PRE-FLIGHT (apply): 1) Ensure backup <24h old 2) Confirm an update is actually p
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the install was initiated (or the status poll ran)"],
                     statusOnly: [type: "boolean", description: "True when this was a status poll (no install)"],
                     status: [description: "The /hub/cloud/checkUpdateStatus payload; present for statusOnly. Usually a parsed object (e.g. {status:'IDLE'}) but can be a plain string if the hub returns a non-JSON body (e.g. during the reboot)."],

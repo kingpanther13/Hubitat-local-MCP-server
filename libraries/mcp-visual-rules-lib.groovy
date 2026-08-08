@@ -693,6 +693,7 @@ def _getAllToolDefinitions_partVisualRules() {
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean"],
                     appId: [type: "integer", description: "The created or edited rule's app id"],
                     format: [type: "string", description: "'classic' or 'graph' -- the serialization this rule speaks"],
@@ -725,6 +726,7 @@ def _getAllToolDefinitions_partVisualRules() {
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean"],
                     appId: [type: "integer"],
                     name: [type: "string"],

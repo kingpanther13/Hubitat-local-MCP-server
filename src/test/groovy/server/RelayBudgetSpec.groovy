@@ -36,6 +36,13 @@ class RelayBudgetSpec extends ToolSpecBase {
 
     private static final long FIXED_NOW = 1234567890000L
 
+    private void installOpTokenFileStore() {
+        Map<String, byte[]> store = [:]
+        script.metaClass.uploadHubFile = { String name, byte[] content -> store[name] = content }
+        script.metaClass.downloadHubFile = { String name -> store[name] }
+        script.metaClass.deleteHubFile = { String name -> store.remove(name) }
+    }
+
     // ---------------- generic budget helpers (main file) ----------------
 
     def "_relayBudgetMs defaults to 8000 when the setting is unset"() {
@@ -69,6 +76,117 @@ class RelayBudgetSpec extends ToolSpecBase {
 
         expect:
         script._lanBudgetMs() == 45000L
+    }
+
+    // ---------------- write admission + auto-token dispatch ----------------
+
+    def "an untokened write response carries a server-assigned auto token"() {
+        given:
+        settingsMap.enableWrite = true
+        installOpTokenFileStore()
+        def ran = 0
+        script.metaClass.toolCreateRoom = { Map args ->
+            ran++
+            [success: true, roomId: 7, name: args.name]
+        }
+
+        when:
+        def response = mcpDriver.callTool('hub_create_room', [name: 'Den', confirm: true])
+
+        then:
+        response.error == null
+        ran == 1
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.opToken instanceof String
+        inner.opToken.startsWith('auto-')
+        atomicStateMap.opTokens[inner.opToken]?.state == 'complete'
+    }
+
+    def "a second identical untokened write is refused while the first auto-token record is running"() {
+        given:
+        settingsMap.enableWrite = true
+        def callArgs = [name: 'Den', confirm: true]
+        String canonicalArgsJson = JsonOutput.toJson(script._canonicalOpArgs(callArgs))
+        atomicStateMap.opTokens = [
+            'auto-first-write': [
+                state: 'running', tool: 'hub_create_room', startedAt: FIXED_NOW - 2000L,
+                fpHash: canonicalArgsJson.hashCode(), fpLen: canonicalArgsJson.length()
+            ]
+        ]
+        def ran = 0
+        script.metaClass.toolCreateRoom = { Map args -> ran++; [success: true, roomId: 8] }
+
+        when:
+        def response = mcpDriver.callTool('hub_create_room', callArgs)
+
+        then:
+        ran == 0
+        response.error == null
+        response.result.isError == true
+        def inner = mcpDriver.parseInner(response)
+        inner.status == 'duplicate_in_flight'
+        inner.inFlightOpToken == 'auto-first-write'
+        inner.tool == 'hub_create_room'
+        inner.startedAt == FIXED_NOW - 2000L
+        atomicStateMap.opTokens.size() == 1
+    }
+
+    def "maxConcurrentWrites refuses a different write when the cap is full"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.maxConcurrentWrites = 1
+        atomicStateMap.opTokens = [
+            'auto-room-create': [
+                state: 'running', tool: 'hub_create_room', startedAt: FIXED_NOW - 1000L
+            ]
+        ]
+        def ran = 0
+        script.metaClass.toolRenameRoom = { Map args -> ran++; [success: true] }
+
+        when:
+        def response = mcpDriver.callTool('hub_update_room', [
+            room: 'Den', newName: 'Study', confirm: true
+        ])
+
+        then:
+        ran == 0
+        response.error == null
+        response.result.isError == true
+        def inner = mcpDriver.parseInner(response)
+        inner.status == 'too_many_writes_in_flight'
+        inner.inFlight == [[
+            opToken: 'auto-room-create', tool: 'hub_create_room', startedAt: FIXED_NOW - 1000L
+        ]]
+        inner.note.contains('cap 1')
+        atomicStateMap.opTokens.size() == 1
+    }
+
+    def "a client-tokened write is exempt from identical-in-flight fingerprint refusal"() {
+        given:
+        settingsMap.enableWrite = true
+        installOpTokenFileStore()
+        def callArgs = [name: 'Den', confirm: true]
+        String canonicalArgsJson = JsonOutput.toJson(script._canonicalOpArgs(callArgs))
+        atomicStateMap.opTokens = [
+            'auto-first-write': [
+                state: 'running', tool: 'hub_create_room', startedAt: FIXED_NOW - 2000L,
+                fpHash: canonicalArgsJson.hashCode(), fpLen: canonicalArgsJson.length()
+            ]
+        ]
+        def ran = 0
+        script.metaClass.toolCreateRoom = { Map args -> ran++; [success: true, roomId: 9] }
+
+        when:
+        def response = mcpDriver.callTool('hub_create_room', callArgs + [opToken: 'client-retry-1'])
+
+        then:
+        response.error == null
+        response.result.isError != true
+        ran == 1
+        mcpDriver.parseInner(response).success == true
+        atomicStateMap.opTokens['auto-first-write']?.state == 'running'
+        atomicStateMap.opTokens['client-retry-1']?.state == 'complete'
     }
 
     @Unroll

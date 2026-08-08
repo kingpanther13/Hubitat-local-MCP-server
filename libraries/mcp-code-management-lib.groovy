@@ -2768,6 +2768,7 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the install/instantiation succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     appId: [description: "New app code ID (code-install mode)"],
@@ -2825,6 +2826,7 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the install (or all bulk installs) succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     driverId: [description: "New driver code ID (single-driver mode)"],
@@ -2880,6 +2882,7 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the update succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     appId: [description: "App ID updated"],
@@ -2944,6 +2947,7 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the update (or all bulk updates) succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     driverId: [description: "Driver ID updated (single-driver mode)"],
@@ -2991,6 +2995,7 @@ Tell the user the item name/ID, warn it's permanent, get confirmation. Requires 
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the deletion succeeded"],
                     message: [type: "string", description: "Human-readable result, including backup status"],
                     appId: [description: "Deleted app ID (type='app')"],
@@ -3030,6 +3035,7 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the library installed"],
                     message: [type: "string", description: "Human-readable result"],
                     libraryId: [description: "New library ID"],
@@ -3071,6 +3077,7 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the update succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     libraryId: [description: "Library ID updated"],

@@ -840,6 +840,7 @@ Verify rule after creation.""",
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the rule was created"],
                     ruleId: [type: "string", description: "ID of the new rule"],
                     message: [type: "string", description: "Human-readable result"],
@@ -873,6 +874,7 @@ Verify rule after creation.""",
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the update succeeded"],
                     ruleId: [type: "string", description: "ID of the updated rule"],
                     message: [type: "string", description: "Human-readable result"]
@@ -895,6 +897,7 @@ Verify rule after creation.""",
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the rule was deleted"],
                     message: [type: "string", description: "Human-readable result"],
                     backupFile: [type: "string", description: "File Manager backup filename (present when a backup was written)"]
@@ -941,6 +944,7 @@ Verify rule after creation.""",
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
                     exportVersion: [type: "string", description: "Export format version"],
                     exportedAt: [type: "string", description: "Export timestamp"],
                     serverVersion: [type: "string", description: "MCP server version at export"],
@@ -980,6 +984,7 @@ Verify rule after creation.""",
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the rule was imported"],
                     ruleId: [type: "string", description: "ID of the newly created rule"],
                     message: [type: "string", description: "Human-readable result"],
@@ -1009,6 +1014,7 @@ Verify rule after creation.""",
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the clone was created"],
                     ruleId: [type: "string", description: "ID of the new cloned rule"],
                     message: [type: "string", description: "Human-readable result"],
