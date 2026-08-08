@@ -3813,9 +3813,8 @@ class TestRunner:
         finally:
             self._delete_native(app_id)
 
-    @test("native_apps")
     @staticmethod
-    def _normalize_ruleact_ids(value: Any) -> "list[str] | None":
+    def _normalize_ruleact_ids(value: Any) -> list[str] | None:
         """Normalize a hub-persisted ruleAct.<N> value (list/tuple, bare scalar, or CSV
         string) to a list of id strings. Shared by EVERY ruleAct.<N> lookup in the
         modifyAction coverage so a shape fix in one site can never drift from another."""
@@ -3833,6 +3832,7 @@ class TestRunner:
         reposition has NOT landed. Shared by the recovered504 and moveSoftFail probes."""
         return 0 <= page_json_text.find(sentinel_msg) < page_json_text.find("Run Actions:")
 
+    @test("native_apps")
     def test_set_rule_modifyaction_retarget(self) -> None:
         # modifyAction retargets a rule-targeting action in ONE op -- the staged-migration
         # caller-retarget shape -- via a position-preserving rebuild (remove + re-add + walk
