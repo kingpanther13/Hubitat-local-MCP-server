@@ -330,4 +330,60 @@ class ToolSetRmRuleBooleanSpec extends ToolSpecBase {
         result.success == true
         rmUtils.calls.any { it.method == 'sendAction' && it.action == 'setRuleBooleanTrue' }
     }
+
+    def "empty ruleId array throws IllegalArgumentException"() {
+        when:
+        script.toolSetRmRuleBoolean([ruleId: [], value: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('must not be empty')
+    }
+
+    def "array ruleId sets the private boolean for the whole set in ONE sendAction dispatch"() {
+        when:
+        def result = script.toolSetRmRuleBoolean([ruleId: [900, 901], value: false])
+
+        then:
+        result.success == true
+        result.ruleIds == [900, 901]
+        result.ruleId == null
+        def sends = rmUtils.calls.findAll { it.method == 'sendAction' && it.action == 'setRuleBooleanFalse' }
+        sends.size() == 1
+        sends[0].ruleIds == [900, 901]
+    }
+
+    @spock.lang.Unroll
+    def "hub_set_rule_private_boolean via dispatch sets an ARRAY of ruleIds in one call (useGateways=#useGateways)"() {
+        given: 'the union-typed ruleId argument has to survive JSON-RPC round-tripping, not just a direct call'
+        settingsMap.useGateways = useGateways
+
+        when:
+        def response = mcpDriver.callTool('hub_set_rule_private_boolean', [ruleId: [900, 901], value: false])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.ruleIds == [900, 901]
+
+        and: 'one dispatch for the whole set, and the skipped-check flag rode the envelope out'
+        // No RMUtils rule-list stub here, so the pre-dispatch existence check cannot run --
+        // idsVerified:false is the contract (omitting it would read as "verified").
+        inner.idsVerified == false
+        rmUtils.calls.findAll { it.method == 'sendAction' && it.action == 'setRuleBooleanFalse' }.size() == 1
+
+        where:
+        useGateways << [true, false]
+    }
+
+    def "a single-id call carries NO idsVerified key at all"() {
+        when:
+        def result = script.toolSetRmRuleBoolean([ruleId: 800, value: true])
+
+        then: 'the existence check is a multi-id-batch contract; a single id never claims verification'
+        result.success == true
+        !result.containsKey('idsVerified')
+    }
 }

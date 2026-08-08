@@ -94,6 +94,30 @@ class SendRmActionFallbackSpec extends ToolSpecBase {
         !sendCalls[0].containsKey('version')
     }
 
+    def "4-arg throws MissingMethodException on a MULTI-id batch: the 3-arg fallback carries the whole list and suppresses the single-id echo"() {
+        given:
+        hubitat.helper.RMUtils.metaClass.static.sendAction = {
+            List ids, String action, String appLabel, String version ->
+                throw new MissingMethodException('sendAction', hubitat.helper.RMUtils,
+                    [ids, action, appLabel, version] as Object[])
+        }
+
+        when:
+        def result = script.toolRunRmRule([ruleId: [2, 3], action: 'rule'])
+
+        then:
+        result.success == true
+        result.fallback == '3-arg'
+        result.ruleIds == [2, 3]
+        result.ruleId == null
+
+        and: 'the 3-arg form received the full list'
+        def sendCalls = rmUtils.calls.findAll { it.method == 'sendAction' }
+        sendCalls.size() == 1
+        sendCalls[0].ruleIds == [2, 3]
+        !sendCalls[0].containsKey('version')
+    }
+
     def "4-arg throws NoSuchMethodError: 3-arg fallback is attempted and succeeds"() {
         given: 'replace 4-arg overload to throw NoSuchMethodError'
         hubitat.helper.RMUtils.metaClass.static.sendAction = {

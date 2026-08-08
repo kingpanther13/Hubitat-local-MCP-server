@@ -2,6 +2,7 @@ package server
 
 import support.RMUtilsMock
 import support.ToolSpecBase
+import groovy.json.JsonOutput
 
 /**
  * Spec for toolSetRulePaused with paused=true (the pause half of the merged
@@ -176,5 +177,174 @@ class ToolPauseRmRuleSpec extends ToolSpecBase {
         then:
         result.success == true
         rmUtils.calls.any { it.method == 'sendAction' && it.action == 'pauseRule' }
+    }
+
+    def "array ruleId pauses the whole set in ONE sendAction dispatch"() {
+        when:
+        def result = script.toolSetRulePaused([ruleId: [400, 401, 402], paused: true])
+
+        then:
+        result.success == true
+        result.ruleIds == [400, 401, 402]
+        result.ruleId == null
+        result.paused == true
+        def sends = rmUtils.calls.findAll { it.method == 'sendAction' && it.action == 'pauseRule' }
+        sends.size() == 1
+        sends[0].ruleIds == [400, 401, 402]
+    }
+
+    def "array ruleId coerces String ids and dedupes preserving order"() {
+        when:
+        def result = script.toolSetRulePaused([ruleId: ['402', 400, '400'], paused: false])
+
+        then:
+        result.success == true
+        result.ruleIds == [402, 400]
+        result.paused == false
+        rmUtils.calls.find { it.method == 'sendAction' }.ruleIds == [402, 400]
+    }
+
+    def "single-element array keeps the single-id response shape (ruleId present)"() {
+        when:
+        def result = script.toolSetRulePaused([ruleId: [400], paused: true])
+
+        then:
+        result.success == true
+        result.ruleId == 400
+        result.ruleIds == [400]
+    }
+
+    def "empty ruleId array throws IllegalArgumentException"() {
+        when:
+        script.toolSetRulePaused([ruleId: [], paused: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('must not be empty')
+    }
+
+    def "a null element inside the ruleId array is rejected as a validation error, not an NPE"() {
+        when:
+        script.toolSetRulePaused([ruleId: [400, null], paused: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.toLowerCase().contains('integer')
+        rmUtils.calls.isEmpty()
+    }
+
+    @spock.lang.Unroll
+    def "a NON-INTEGER-VALUED id in the array is rejected instead of truncating to a different rule (#kind)"() {
+        // The list arg coerces through _rmCoerceRuleId, not normalizeRuleId: a JSON number
+        // 400.7 would silently truncate to rule 400 via toInteger() -- and then PASS the
+        // existence check, pausing the wrong rule with full confidence.
+        when:
+        script.toolSetRulePaused([ruleId: [badId], paused: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("is not an integer-valued rule id")
+        ex.message.contains("hub_list_rules")
+
+        and: "nothing was dispatched -- the coercion refusal is pre-write"
+        !rmUtils.calls.any { it.method == 'sendAction' }
+
+        where:
+        kind                   | badId
+        "JSON number 400.7"    | 400.7
+        "decimal string 400.7" | "400.7"
+    }
+
+    def "a single-id call carries NO idsVerified key at all"() {
+        when:
+        def result = script.toolSetRulePaused([ruleId: 400, paused: true])
+
+        then: "the existence check is a multi-id-batch contract; a single id never claims verification"
+        result.success == true
+        !result.containsKey('idsVerified')
+    }
+
+    def "a multi-id batch whose rule list is UNVERIFIABLE still dispatches, flagged idsVerified false"() {
+        when: "no seedValidRuleIds -- /hub2/appsList is unstubbed, so the app-tree cross-check cannot run"
+        def result = script.toolSetRulePaused([ruleId: [400, 401], paused: true])
+
+        then: "fire-and-forget dispatch still happens, but the caller is TOLD the check was skipped"
+        result.success == true
+        result.ruleIds == [400, 401]
+        result.idsVerified == false
+        rmUtils.calls.findAll { it.method == 'sendAction' }.size() == 1
+    }
+
+    // Live app-id tree for the batch existence-check specs. _rmValidRuleIds intersects the
+    // RMUtils rule list with this tree, so a rule must appear in BOTH to count as existing.
+    private String appsListWithRules(List ruleIds) {
+        JsonOutput.toJson([apps: [
+            [data: [id: 21, name: "Rule Machine", type: "Rule Machine"],
+             children: ruleIds.collect { [data: [id: it, name: "Rule ${it}".toString(), type: "Rule-5.1"], children: []] }]
+        ]])
+    }
+
+    // Make _rmValidRuleIds resolve to exactly ruleIds. Driven through its own transport --
+    // RMUtils plus /hub2/appsList -- because the helper is private and an intra-script call
+    // to a private method resolves invokespecial, which a per-instance metaClass stub on the
+    // script does not intercept.
+    private void seedValidRuleIds(List ruleIds) {
+        rmUtils.stubRuleList5 = ruleIds.collect { [(it): "Rule ${it}".toString()] }
+        hubGet.register('/hub2/appsList') { params -> appsListWithRules(ruleIds) }
+    }
+
+    def "a multi-id batch existence-checks every id and refuses unknown ids BEFORE dispatch"() {
+        given: "a verifiable rule-id set that lacks 999"
+        seedValidRuleIds([400, 401])
+
+        when:
+        script.toolSetRulePaused([ruleId: [400, 999], paused: true])
+
+        then: "the batch is refused naming the unknown id, and no dispatch reached RMUtils"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('999')
+        ex.message.contains('hub_list_rules')
+        !rmUtils.calls.any { it.method == 'sendAction' }
+        rmUtils.calls.any { it.method == 'getRuleList' }
+    }
+
+    def "a multi-id batch whose ids all exist passes the existence check and dispatches once"() {
+        given:
+        seedValidRuleIds([400, 401])
+
+        when:
+        def result = script.toolSetRulePaused([ruleId: [400, 401], paused: true])
+
+        then:
+        result.success == true
+        result.ruleIds == [400, 401]
+        result.idsVerified == true
+        rmUtils.calls.findAll { it.method == 'sendAction' }.size() == 1
+
+        and: "the check ran against a VERIFIABLE set, so the pass is not the cannot-verify skip"
+        // idsVerified above is the caller-visible half of the same claim; this is the
+        // transport-level proof that it was earned rather than defaulted.
+        hubGet.calls.any { it.path == '/hub2/appsList' }
+        script._rmValidRuleIds() == ([400, 401] as Set)
+    }
+
+    @spock.lang.Unroll
+    def "hub_set_rule_paused via dispatch pauses an array of ruleIds in one call (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+
+        when:
+        def response = mcpDriver.callTool('hub_set_rule_paused', [ruleId: [400, 401], paused: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.ruleIds == [400, 401]
+        rmUtils.calls.findAll { it.method == 'sendAction' && it.action == 'pauseRule' }.size() == 1
+
+        where:
+        useGateways << [true, false]
     }
 }

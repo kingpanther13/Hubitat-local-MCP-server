@@ -349,6 +349,14 @@ def toolCloneNativeApp(args) {
             result.isError = true
             result.error = note
         }
+        if (args?.stageDisabled == true && newAppId != null) {
+            _appClonerApplyStageDisabled(result, newAppId, args?.__reqT0 as Long)
+        } else if (args?.stageDisabled == true) {
+            // Discovery-miss: the clone may well EXIST and be live -- the caller
+            // asked for stage-inactive and must hear that it never ran.
+            result.stagedDisabled = []
+            result.error = "${result.error ?: ''} stageDisabled was requested but could NOT run: no newAppId was discovered. If the clone did land, it is ENABLED and live -- find it via hub_list_apps (scope='instances') and disable it with hub_set_app_disabled.".toString().trim()
+        }
         return result
     } finally {
         // Reap the transient cloner on every path. The cloned rule is already a
@@ -609,12 +617,119 @@ def toolImportNativeApp(args) {
             result.isError = true
             result.error = note
         }
+        if (args?.stageDisabled == true && newAppId != null) {
+            _appClonerApplyStageDisabled(result, newAppId, args?.__reqT0 as Long)
+        } else if (args?.stageDisabled == true) {
+            result.stagedDisabled = []
+            result.error = "${result.error ?: ''} stageDisabled was requested but could NOT run: no newAppId was discovered. If the import did land, it is ENABLED and live -- find it via hub_list_apps (scope='instances') and disable it with hub_set_app_disabled.".toString().trim()
+        }
         return result
     } finally {
         // Reap the transient cloner on every path. The imported rule is already a
         // child of the target parent (discovered above), not of the cloner.
         // Prevents accumulating hidden 'Export/Import/Clone' apps (BUG-8).
         _appClonerCleanup(clonerAppId)
+    }
+}
+
+// Stage a freshly cloned/imported app inactive: disable the new app and every
+// DESCENDANT under it via the admin red-X (works on any app type -- RMUtils
+// pause reaches only Rule Machine rules, not Button Controllers / Room
+// Lighting / other classic apps, and a Button Controller clone's child Button
+// Rules subscribe to live button events, so the whole subtree must be
+// covered). Verified live on fw 2.5.1.135: a clone of an ACTIVE rule lands
+// ACTIVE and a clone/import is live until this (or a follow-up call) disables
+// it. The tree is enumerated breadth-first with a visited set (cycle-proof)
+// BEFORE any disable, so a parent's flag can't hide deeper levels.
+//
+// Failure contract: staging was explicitly requested as the safety property,
+// so ANY staging failure flips the envelope to success:false + isError -- but
+// the error text must prevent the reflex retry, because the clone/import
+// itself DID commit and a fresh call would create a duplicate app.
+private void _appClonerApplyStageDisabled(Map result, Integer newAppId, Long reqT0 = null) {
+    def staged = []
+    def failures = []
+    List targets = []
+    // Primary enumeration: ONE /hub2/appsList read carries the complete nested
+    // app tree -- no per-node configPage render (which for a cloned Button
+    // Controller with N children turned one read into N+1 expensive renders on
+    // the same per-app load counters the sticky limiter watches).
+    try {
+        def responseText = hubInternalGet("/hub2/appsList")
+        def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+        Map root = null
+        def findNode
+        findNode = { List nodes ->
+            for (def n : (nodes ?: [])) {
+                if (n?.data?.id?.toString() == newAppId.toString()) { root = n; return }
+                findNode(n?.children as List)
+                if (root != null) return
+            }
+        }
+        findNode(parsed?.apps as List)
+        if (root == null) throw new IllegalStateException("app ${newAppId} not present in /hub2/appsList")
+        Set visited = [] as Set
+        def collect
+        collect = { Map node ->
+            def nid = node?.data?.id?.toString()
+            if (!nid?.isInteger() || visited.contains(nid)) return
+            visited << nid
+            targets << nid.toInteger()
+            (node?.children as List ?: []).each { c -> if (c instanceof Map) collect(c) }
+        }
+        collect(root)
+    } catch (Exception treeErr) {
+        // Fallback: per-node configure/json BFS (the pre-appsList mechanism).
+        mcpLog("warn", "rm-native", "stageDisabled: /hub2/appsList enumeration failed (${treeErr.message}) -- falling back to per-node configure/json BFS")
+        targets = []
+        Set visited = [] as Set
+        List queue = [newAppId]
+        while (queue) {
+            Integer tid = queue.remove(0)
+            if (visited.contains(tid)) continue
+            visited << tid
+            targets << tid
+            try {
+                def cfg = _rmFetchConfigJson(tid)
+                ((cfg?.childApps ?: []) as List).each { c ->
+                    def cid = c?.id?.toString()
+                    if (cid?.isInteger()) queue << cid.toInteger()
+                }
+            } catch (Exception childErr) {
+                failures << [appId: tid, kind: "childEnumeration", error: "child enumeration failed for app ${tid}: ${childErr.message} -- its DESCENDANTS (if any) were not discovered and were NOT disabled; app ${tid} itself is still attempted below"]
+            }
+        }
+    }
+    // Disable loop with a relay-budget checkpoint: each disable is a POST + a
+    // read-back, so a deep subtree can outlive the response budget. Remaining
+    // ids are handed back rather than losing the whole response (and with it
+    // newAppId -- the exact duplicate-app hazard the anti-re-clone text guards).
+    List stageRemaining = []
+    for (int i = 0; i < targets.size(); i++) {
+        if (i > 0 && _timeBudgetExceeded(reqT0)) {
+            stageRemaining = targets.subList(i, targets.size()).collect { it }
+            break
+        }
+        def tid = targets[i]
+        def dres
+        try { dres = toolSetAppDisabled([appId: tid, disabled: true]) }
+        catch (Exception dErr) { dres = [success: false, error: dErr.message ?: dErr.toString()] }
+        if (dres?.success) staged << tid
+        else failures << [appId: tid, kind: "disable", error: dres?.error ?: "disable read-back mismatch"]
+    }
+    result.stagedDisabled = staged
+    if (failures || stageRemaining) {
+        if (failures) result.stageFailures = failures
+        if (stageRemaining) result.stageRemaining = stageRemaining
+        result.partial = true
+        result.success = false
+        result.isError = true
+        def newAppItselfFailed = failures.any { it.kind == "disable" && it.appId == newAppId }
+        def remainderText = stageRemaining ? "Response budget ran out before ${stageRemaining.size()} app(s) were disabled (${stageRemaining.join(', ')}). " : ""
+        result.error = "stageDisabled did NOT fully land: ${failures.size()} failure(s)${stageRemaining ? " + ${stageRemaining.size()} not yet attempted" : ""} -- see stageFailures/stageRemaining. ${newAppItselfFailed ? "The NEW APP ITSELF (${newAppId}) is still ENABLED and live. " : ""}${remainderText}The clone/import DID commit (newAppId=${newAppId}) -- do NOT re-issue this call (that would create a duplicate app); disable the listed apps via hub_set_app_disabled(appId=<id>, disabled=true) instead."
+        result.note = "${result.note} STAGING ${stageRemaining ? 'INCOMPLETE' : 'FAILED'} -- see error/stageFailures."
+    } else {
+        result.note = "${result.note} Staged inactive: ${staged.size()} app(s) disabled (the new app${staged.size() > 1 ? ' + descendants' : ''}); re-enable with hub_set_app_disabled(disabled=false)."
     }
 }
 
@@ -737,6 +852,8 @@ def _getAllToolDefinitions_partAppCloner() {
                     sourceAppId: [type: "integer", description: "Installed-app ID of the rule/app to clone. (alias: appId) Either sourceAppId or appId is required."],
                     appId: [type: "integer", description: "Alias for sourceAppId."],
                     newName: [type: "string", description: "Label for the new cloned app.[[FLAT_TRIM]] If omitted, the cloner default ('<source-label> clone') is kept.[[/FLAT_TRIM]]"],
+                    stageDisabled: [type: "boolean", description: "true = disable the new app AND every DESCENDANT under it right after the clone (staged-migration safety: a clone of an ACTIVE rule lands ACTIVE, and a cloned Button Controller's child Button Rules react to live button events). Re-enable via hub_set_app_disabled(disabled=false)."],
+                    opToken: [type: "string", description: "STRONGLY RECOMMENDED on every call: idempotency token you invent (8-128 chars, A-Za-z0-9._-). If the transport drops the response, re-issue this call with the SAME token to poll/replay the committed result — a token-less re-run clones a DUPLICATE app."],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
                 // "sourceAppId OR appId" can't be a schema-level anyOf (Anthropic's
@@ -747,10 +864,14 @@ def _getAllToolDefinitions_partAppCloner() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    success: [type: "boolean", description: "True when a new child app was created"],
+                    success: [type: "boolean", description: "True when a new child app was created AND (if stageDisabled was requested) staging fully landed. success:false can still carry a committed newAppId when staging failed -- do NOT retry the call (that would duplicate the app); disable the apps named in stageFailures instead."],
                     sourceAppId: [type: "integer", description: "Source app ID"],
                     clonerAppId: [type: "integer", description: "Temporary cloner app ID (auto-deleted after the operation)"],
                     newAppId: [type: "integer", description: "New cloned app ID, or null on soft failure"],
+                    stagedDisabled: [type: "array", description: "stageDisabled: app ids disabled (the new app + every descendant reached)", items: [type: "integer"]],
+                    stageFailures: [type: "array", description: "stageDisabled: per-app failures ({appId, kind: childEnumeration|disable, error}) -- kind distinguishes an undiscoverable subtree from a failed disable", items: [type: "object"]],
+                    stageRemaining: [type: "array", description: "stageDisabled: app ids NOT yet attempted when the response budget ran out -- disable them via hub_set_app_disabled", items: [type: "integer"]],
+                    partial: [type: "boolean", description: "Present (true) when staging was requested but incomplete"],
                     isError: [type: "boolean", description: "Present (true) on soft failure"],
                     error: [type: "string", description: "Present on soft failure"],
                     note: [type: "string", description: "Human-readable result"]
@@ -796,6 +917,8 @@ def _getAllToolDefinitions_partAppCloner() {
                     fromFile: [type: "string", description: "File Manager filename to read the JSON from."],
                     parentHintAppId: [type: "integer", description: "Any existing rule's id under the target parent app.[[FLAT_TRIM]] Used purely to seed the cloner instance — has no semantic effect on the imported rule beyond placing it under the same parent.[[/FLAT_TRIM]]"],
                     newName: [type: "string", description: "Label for the imported app.[[FLAT_TRIM]] If omitted, the cloner default ('<original-label> import') is kept.[[/FLAT_TRIM]]"],
+                    stageDisabled: [type: "boolean", description: "true = disable the new app AND every DESCENDANT under it right after the import (staged-migration safety: an import lands ACTIVE). Re-enable via hub_set_app_disabled(disabled=false)."],
+                    opToken: [type: "string", description: "STRONGLY RECOMMENDED on every call: idempotency token you invent (8-128 chars, A-Za-z0-9._-). If the transport drops the response, re-issue this call with the SAME token to poll/replay the committed result — a token-less re-run imports a DUPLICATE app."],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
                 // "jsonContent OR fromFile" is enforced at runtime in
@@ -811,12 +934,16 @@ def _getAllToolDefinitions_partAppCloner() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    success: [type: "boolean", description: "True when a new child app was created"],
+                    success: [type: "boolean", description: "True when a new child app was created AND (if stageDisabled was requested) staging fully landed. success:false can still carry a committed newAppId when staging failed -- do NOT retry the call (that would duplicate the app); disable the apps named in stageFailures instead."],
                     clonerAppId: [type: "integer", description: "Temporary cloner app ID (auto-deleted after the operation)"],
                     newAppId: [type: "integer", description: "New imported app ID, or null on soft failure"],
                     originalSourceId: [type: "integer", description: "Original source app ID from the export"],
                     originalLabel: [type: "string", description: "Original app label, or null"],
                     contentLength: [type: "integer", description: "Imported JSON length"],
+                    stagedDisabled: [type: "array", description: "stageDisabled: app ids disabled (the new app + every descendant reached)", items: [type: "integer"]],
+                    stageFailures: [type: "array", description: "stageDisabled: per-app failures ({appId, kind: childEnumeration|disable, error}) -- kind distinguishes an undiscoverable subtree from a failed disable", items: [type: "object"]],
+                    stageRemaining: [type: "array", description: "stageDisabled: app ids NOT yet attempted when the response budget ran out -- disable them via hub_set_app_disabled", items: [type: "integer"]],
+                    partial: [type: "boolean", description: "Present (true) when staging was requested but incomplete"],
                     isError: [type: "boolean", description: "Present (true) on soft failure"],
                     error: [type: "string", description: "Present on soft failure"],
                     note: [type: "string", description: "Human-readable result"]

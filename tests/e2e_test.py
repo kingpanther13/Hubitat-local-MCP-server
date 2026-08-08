@@ -3395,6 +3395,34 @@ class TestRunner:
         except (McpToolError, McpError):
             return False  # the read errors because the app is gone => deleted
 
+    def _rm_rule_status(self, target_id: Any) -> dict:
+        """One rule's live status row from hub_list_rules (status/paused/disabled)."""
+        listed = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
+        entries = listed if isinstance(listed, list) else (listed.get("rules") or [])
+        match = next((r for r in entries if str(r.get("id")) == str(target_id)), None)
+        assert match is not None, f"rule {target_id} not found in hub_list_rules: {listed}"
+        return match
+
+    def _rm_rule_status_when(self, target_id: Any, predicate, attempts: int = 8, gap: float = 2.0) -> dict:
+        """Read a rule's status until `predicate` holds, then return it (last read on timeout).
+
+        RM decorates its appsList entry ("(Paused)") asynchronously after the write commits,
+        so a fixed sleep plus one read is a timing bet. Short retried reads instead, each well
+        inside the relay budget -- the same shape as the rule-lifecycle test's own poller,
+        shared here because several rules-status tests need it against DIFFERENT rules."""
+        status: dict = {}
+        started = time.monotonic()
+        for _ in range(attempts):
+            status = self._rm_rule_status(target_id)
+            if predicate(status):
+                return status
+            time.sleep(gap)
+        # Say so on the timeout path: "never converged over the full budget" and "read the
+        # wrong value once, immediately" otherwise reach the caller looking identical.
+        print(f"    [STATUS] rule {target_id} never satisfied the predicate: {attempts} reads "
+              f"over {time.monotonic() - started:.1f}s, last status {status}")
+        return status
+
     @test("native_apps")
     def test_set_rule_native_lifecycle(self) -> None:
         # CREATE a native RM rule in ONE call: hub_set_rule with no appId, bundling
@@ -3529,6 +3557,36 @@ class TestRunner:
         resumed = _rule_status_when(app_id, lambda s: s.get("status") == "active" and s.get("paused") is False)
         assert resumed.get("status") == "active" and resumed.get("paused") is False, \
             f"resumed rule should read status active again, got: {resumed}"
+
+        # ARRAY form: ruleId also accepts an array -- one RMUtils dispatch covers a
+        # whole set (the staged-migration cutover shape). Exercised with a one-element array
+        # against the SAME rule to keep the RM e2e rule budget flat. The TRUE multi-element
+        # array (>1 id in one JSON array, the one thing this form cannot prove) is covered by
+        # the two-id batch in test_set_rule_modifyaction_retarget, which already owns two live
+        # rules. The wire concerns here are the union-typed ruleId argument surviving the relay
+        # and the ruleIds response key.
+        arr_pause = _status_write("hub_set_rule_paused", {"ruleId": [app_id], "paused": True},
+                                  "hub_set_rule_paused(paused=True, array form)")
+        # _status_write returns THREE shapes: the tool envelope (normal path -- carries
+        # rmAction), the converged status map from the limiter-recovery poll (carries
+        # status/paused, no rmAction), or the hub_set_rule envelope from the load-immune
+        # pausRule button drive (also no rmAction). Only the FIRST can carry ruleIds, so the
+        # echo is asserted unconditionally there and reported-not-asserted on the other two --
+        # a regression that drops the key fails instead of skipping.
+        if isinstance(arr_pause, dict) and "rmAction" in arr_pause:
+            assert "ruleIds" in arr_pause, \
+                f"array-form pause envelope is missing the ruleIds key: {arr_pause}"
+            assert [str(x) for x in arr_pause["ruleIds"]] == [str(app_id)], \
+                f"array-form pause should echo ruleIds=[{app_id}], got: {arr_pause}"
+        else:
+            print(f"    [LIMITER] array-form pause answered via the converged-status path; "
+                  f"ruleIds echo not assertable on this shape: {arr_pause}")
+        arr_paused = _rule_status_when(app_id, lambda s: s.get("status") == "paused" and s.get("paused") is True)
+        assert arr_paused.get("paused") is True, f"array-form pause did not land: {arr_paused}"
+        _status_write("hub_set_rule_paused", {"ruleId": [app_id], "paused": False},
+                      "hub_set_rule_paused(paused=False, array form)")
+        arr_resumed = _rule_status_when(app_id, lambda s: s.get("status") == "active" and s.get("paused") is False)
+        assert arr_resumed.get("paused") is False, f"array-form resume did not land: {arr_resumed}"
 
         # DISABLED (issue #359): the red-X disabled flag is the other status axis. Disable the
         # SAME rule via hub_set_app_disabled and confirm hub_list_rules reports status "disabled"
@@ -3754,6 +3812,257 @@ class TestRunner:
                 f"addTrigger.condition Lock codes reject should carry a not-touched restoreHint, got: {trig_lock.get('restoreHint')!r}"
         finally:
             self._delete_native(app_id)
+
+    @staticmethod
+    def _normalize_ruleact_ids(value: Any) -> list[str] | None:
+        """Normalize a hub-persisted ruleAct.<N> value (list/tuple, bare scalar, or CSV
+        string) to a list of id strings. Shared by EVERY ruleAct.<N> lookup in the
+        modifyAction coverage so a shape fix in one site can never drift from another."""
+        if value is None:
+            return None
+        if isinstance(value, str) and "," in value:
+            return [s.strip() for s in value.split(",")]
+        if isinstance(value, (list, tuple)):
+            return [str(x) for x in value]
+        return [str(value)]
+
+    @staticmethod
+    def _sentinel_precedes_run_actions(page_json_text: str, sentinel_msg: str) -> bool:
+        """True when the order sentinel renders BEFORE the Run-Rule row -- i.e. the
+        reposition has NOT landed. Shared by the recovered504 and moveSoftFail probes."""
+        return 0 <= page_json_text.find(sentinel_msg) < page_json_text.find("Run Actions:")
+
+    def _finish_move_up(self, app_id: int, idx: int, sentinel_msg: str) -> None:
+        """Reposition action `idx` one row up, following the moveAction envelope's own
+        verifyHint protocol: probe the rendered order FIRST (a soft-failed arrow click
+        usually COMMITTED LATE), move only when the row provably still sits below the
+        sentinel, and tolerate a moveSoftFail envelope on the move itself by re-probing
+        instead of raising -- a raw strict _set_rule would hard-fail on the soft
+        contract's success:false, which is exactly the envelope's "verify before
+        retrying" instruction telling us NOT to. Bounded at one verified retry."""
+        for _ in range(2):
+            cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
+                "args": {"appId": app_id}})
+            if not self._sentinel_precedes_run_actions(json.dumps(cfg.get("page", {})), sentinel_msg):
+                print("    [MOVE-VERIFY] order readback shows the row already above the "
+                      "sentinel -- committed (possibly late), no move issued")
+                return
+            print("    [MOVE-VERIFY] row still below the sentinel -- issuing verified move-up")
+            env = self._rm_call_soft(
+                {"appId": app_id, "moveAction": {"index": idx, "direction": "up"}, "confirm": True},
+                strict=True)
+            if env.get("success") is not False:
+                return
+            assert env.get("verifyHint") or env.get("asyncCommitLikely"), \
+                f"moveAction(up) hard-failed with a non-soft envelope: {env}"
+            # soft-fail: loop back to the probe -- if this click committed late the
+            # next readback sees the shift and returns without a blind second move
+        cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
+            "args": {"appId": app_id}})
+        assert not self._sentinel_precedes_run_actions(json.dumps(cfg.get("page", {})), sentinel_msg), \
+            "moveAction(up) never landed: the row still renders below the sentinel after verified retries"
+
+    @test("native_apps")
+    def test_set_rule_modifyaction_retarget(self) -> None:
+        # modifyAction retargets a rule-targeting action in ONE op -- the staged-migration
+        # caller-retarget shape -- via a position-preserving rebuild (remove + re-add + walk
+        # the row back up). Its own tiny rules per AGENTS.md: the classic wizard re-sends the
+        # whole rule page on every submitOnChange POST, so per-edit cost grows with rule size,
+        # and this test runs several edits plus a two-id pause batch. Targets A and B are empty
+        # shells -- a runRule target only has to EXIST, and a pause target only has to be a rule.
+        target_a = self._create_native_rule("MaTargetA")
+        target_b = None
+        caller_id = None
+        try:
+            target_b = self._create_native_rule("MaTargetB")
+            caller_id = self._create_native_rule("MaCaller")
+            # Every heavy edit goes through _set_rule: the modifyAction composite (delete +
+            # re-add + reposition + readback + health + updateRule in ONE call) and the add
+            # wizard both sit AT the relay ceiling on a loaded hub, and _set_rule's auto
+            # opToken recovers a severed response by token-only replay of the buffered real
+            # envelope -- the run that added this test 504'd twice on exactly these ops.
+            run_act = self._set_rule(caller_id,
+                {"addAction": {"capability": "runRule", "ruleIds": [target_a]}}, strict=True)
+            ma_idx = run_act.get("actionIndex")
+            assert ma_idx is not None, f"runRule accept response carried no actionIndex: {run_act}"
+            # The sentinel is appended AFTER the runRule row so the retargeted action is NOT
+            # last: the rebuild must then walk the re-added row back up (movesUp=1), which is
+            # the reposition leg the position-preservation claim rests on.
+            sentinel_msg = "E2E order sentinel post-action"
+            self._set_rule(caller_id,
+                {"addAction": {"capability": "log", "message": sentinel_msg}}, strict=True)
+
+            ma = self._rm_call_soft(
+                {"appId": caller_id, "modifyAction": {"index": ma_idx, "mods": {"ruleIds": [target_b]}},
+                 "confirm": True}, strict=True, recover_504=True)
+            if ma.get("recovered504"):
+                # Replay came up empty and the helper fell back to config-verify: the
+                # composite committed hub-side but its envelope is gone. Recover the rebuilt
+                # action's index from the committed settings (the ruleAct key now holding
+                # target_b), finish one move-up only if the order readback proves the row
+                # sits below the sentinel, and re-initialize. The order assertions below
+                # then judge the final state exactly like every other branch.
+                cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
+                    "args": {"appId": caller_id, "includeSettings": True}})
+                new_idx = next((k.split(".")[1] for k, v in (cfg.get("settings") or {}).items()
+                                if k.startswith("ruleAct.")
+                                and self._normalize_ruleact_ids(v) == [str(target_b)]),
+                               None)
+                assert new_idx is not None, \
+                    f"recovered504: no committed ruleAct.<N> holds [{target_b}] -- the retarget did not land: {cfg.get('settings')}"
+                ma = dict(ma)
+                ma["newActionIndex"] = int(new_idx)
+                self._finish_move_up(caller_id, int(new_idx), sentinel_msg)
+                self._set_rule(caller_id, {"button": "updateRule"}, strict=True)
+            assert ma.get("newActionIndex") is not None, \
+                f"modifyAction retarget should carry a newActionIndex on every outcome, got: {ma}"
+            if ma.get("budgetPaused"):
+                # The composite's documented slow-hub contract: delete+add consumed the
+                # response budget, so the reposition was deliberately NOT started and the
+                # envelope hands back finish-up steps. Follow them exactly as a real client
+                # would -- this branch IS the recovery path the contract exists for, and the
+                # order readback below then proves the finished result either way.
+                print(f"    [BUDGET-PAUSED] modifyAction paused with {ma.get('movesRemaining')} "
+                      "move(s) remaining -- finishing per the envelope's own guidance")
+                assert ma.get("success") is False and ma.get("partial") is True, \
+                    f"budgetPaused must never ride under success:true, got: {ma}"
+                assert ma.get("subscriptionsNotLive") is True, \
+                    f"a paused composite skipped updateRule, so subscriptionsNotLive must be true, got: {ma}"
+                for _ in range(int(ma.get("movesRemaining") or 0)):
+                    self._finish_move_up(caller_id, ma["newActionIndex"], sentinel_msg)
+                self._set_rule(caller_id, {"button": "updateRule"}, strict=True)
+            elif ma.get("moveSoftFail"):
+                # The arrow click's shift couldn't be confirmed in the verify window
+                # (asyncCommitLikely) -- live-verified on fw 2.5.1.135 that this usually
+                # means the click COMMITTED LATE. Follow the envelope's own verifyHint:
+                # verify order first, retry the single move ONLY if it genuinely dropped.
+                assert ma.get("success") is False and ma.get("verifyHint"), \
+                    f"moveSoftFail must ride success:false with a verifyHint, got: {ma}"
+                self._finish_move_up(caller_id, ma["newActionIndex"], sentinel_msg)
+            elif not ma.get("recovered504"):
+                # Full envelope, no pause, no soft-fail: the composite finished in-budget.
+                assert ma.get("success") is True, \
+                    f"modifyAction retarget should succeed with a newActionIndex, got: {ma}"
+                assert ma.get("movesUp") == 1 and ma.get("movesDone") == 1, \
+                    f"retarget of a non-last action should reposition with exactly one confirmed move-up, got: {ma}"
+
+            ma_cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
+                "args": {"appId": caller_id, "includeSettings": True}})
+            committed = (ma_cfg.get("settings") or {}).get(f"ruleAct.{ma.get('newActionIndex')}")
+            # Shared shape normalization (list / scalar / CSV) -- iterating a bare string
+            # would compare CHARACTERS and turn a shape change into a misleading failure.
+            committed_ids = self._normalize_ruleact_ids(committed)
+            assert committed_ids == [str(target_b)], \
+                f"retargeted runRule action should commit ruleAct.{ma.get('newActionIndex')}=[{target_b}], got: {committed!r}"
+
+            # Ground-truth ORDER readback: the rendered page lists actions in display order,
+            # so the retargeted Run-Rule row must render BEFORE the sentinel log. Serialize
+            # ONLY the page -- the settings blob carries ruleAct.<N> keys whose text would
+            # shift both offsets and make the comparison meaningless. Each marker gets its own
+            # assert first, because find() returns -1 when absent and -1 < anything, so a
+            # renamed RM label would otherwise turn "not rendered at all" into a green compare.
+            page_text = json.dumps(ma_cfg.get("page", {}))
+            run_pos = page_text.find("Run Actions:")
+            sentinel_pos = page_text.find(sentinel_msg)
+            assert run_pos != -1, \
+                f"the retargeted Run-Rule row did not render on the page at all: {page_text[:400]}"
+            assert sentinel_pos != -1, \
+                f"the order sentinel did not render on the page at all: {page_text[:400]}"
+            assert run_pos < sentinel_pos, \
+                f"position not preserved: Run Actions at {run_pos}, sentinel at {sentinel_pos}"
+
+            # TRUE multi-element array form: both targets exist right now, so pause and resume
+            # them as ONE two-id batch -- proving a >1-element JSON array survives the relay and
+            # the hub's JSON parser, the one thing the one-element form in the rule-lifecycle
+            # test cannot show. NOT routed through _status_write: that helper's limiter recovery
+            # drives a single rule's pausRule toggle and would hit the WRONG rule for a batch.
+            def _batch_pause(paused: bool) -> None:
+                batch_ids = [target_a, target_b]
+                limited = None
+                try:
+                    env = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule_paused",
+                        "args": {"ruleId": batch_ids, "paused": paused}})
+                    if (isinstance(env, dict) and env.get("success") is False
+                            and "excessive hub load" in str(env.get("error", ""))):
+                        # hub_set_rule_paused surfaces the platform limiter as a RETURNED
+                        # envelope rather than a raise -- the only non-tool-result shape a
+                        # non-throwing call can produce.
+                        limited = str(env.get("error"))
+                    else:
+                        # Everything else IS the tool envelope, so both keys are wire contract
+                        # and are asserted unconditionally -- a shape-gated check would let a
+                        # regression that drops them skip instead of fail.
+                        assert "rmAction" in env, f"two-id batch envelope is missing rmAction: {env}"
+                        assert sorted(str(x) for x in env.get("ruleIds", [])) == sorted(str(x) for x in batch_ids), \
+                            f"two-id batch should echo both ruleIds, got: {env}"
+                except McpToolError as exc:
+                    if "excessive hub load" not in str(exc):
+                        raise
+                    limited = str(exc)
+                if limited:
+                    print(f"    [LIMITER] two-id batch pause({paused}) answered with the limiter "
+                          f"({limited}) -- relying on the per-rule convergence poll below.")
+                # Batch-safe verification either way: a limiter-dropped reply to a write that
+                # already COMMITTED still converges on the read side.
+                for tid in batch_ids:
+                    st = self._rm_rule_status_when(tid, lambda s: s.get("paused") is paused)
+                    assert st.get("paused") is paused, \
+                        f"batched pause({paused}) did not land on {tid}: {st}"
+
+            _batch_pause(True)
+            _batch_pause(False)
+        finally:
+            if caller_id:
+                self._delete_native(caller_id)
+            if target_b:
+                self._delete_native(target_b)
+            self._delete_native(target_a)
+
+    @test("native_apps")
+    def test_clone_stage_disabled(self) -> None:
+        # stageDisabled closes the staging window a clone otherwise opens: the cloner copies
+        # pause state, so a clone of an ACTIVE rule lands ACTIVE and starts reacting to live
+        # events the moment it exists. One tiny source rule -- the clone copies whatever the
+        # source holds, so a big source would double the wizard cost of this test.
+        src_id = self._create_native_rule("StageSrc")
+        staged_id = None
+        try:
+            # The appCloner wizard routinely runs 10s+, i.e. AT the relay ceiling -- carry an
+            # opToken and recover a severed response by token-only replay (the hub finishes
+            # and buffers the result; a test RE-RUN would clone AGAIN and orphan the first
+            # copy, which is exactly what happened on the run that added this test).
+            clone_token = self._next_op_token()
+            clone_args = {"appId": src_id, "newName": f"{PREFIX}StagedClone",
+                          "stageDisabled": True, "confirm": True, "opToken": clone_token}
+            try:
+                staged_clone = self.client.call_tool("hub_manage_native_rules_and_apps",
+                    {"tool": "hub_clone_native_app", "args": clone_args})
+            except (McpError, McpToolError, requests.HTTPError) as exc:
+                if "504" not in str(exc):
+                    raise
+                staged_clone = self._poll_op_result(clone_token, tool="hub_clone_native_app")
+                assert isinstance(staged_clone, dict), \
+                    f"stageDisabled clone response lost to relay 504 and the opToken replay came up empty: {exc}"
+                print("    [RECOVER-504] hub_clone_native_app: response recovered via opToken "
+                      "replay (token-only write re-issue)")
+            assert staged_clone.get("success") is True and staged_clone.get("newAppId"), \
+                f"stageDisabled clone should succeed, got: {staged_clone}"
+            staged_id = staged_clone.get("newAppId")
+            # Track it before asserting: the clone is a real installed app now, so a failure
+            # below must not orphan it on the test hub.
+            self.created_native_app_ids.append(str(staged_id))
+            assert str(staged_id) in [str(x) for x in (staged_clone.get("stagedDisabled") or [])], \
+                f"stagedDisabled should list the new app, got: {staged_clone}"
+            st = self._rm_rule_status_when(staged_id, lambda s: s.get("disabled") is True)
+            assert st.get("disabled") is True and st.get("status") == "disabled", \
+                f"staged clone should read disabled in hub_list_rules, got: {st}"
+            src = self._rm_rule_status(src_id)
+            assert src.get("disabled") is False, \
+                f"stageDisabled must not touch the SOURCE rule, got: {src}"
+        finally:
+            if staged_id:
+                self._delete_native(staged_id)
+            self._delete_native(src_id)
 
     @test("native_apps")
     def test_set_rule_action_expression_reject_is_pre_write(self) -> None:
