@@ -3832,6 +3832,36 @@ class TestRunner:
         reposition has NOT landed. Shared by the recovered504 and moveSoftFail probes."""
         return 0 <= page_json_text.find(sentinel_msg) < page_json_text.find("Run Actions:")
 
+    def _finish_move_up(self, app_id: int, idx: int, sentinel_msg: str) -> None:
+        """Reposition action `idx` one row up, following the moveAction envelope's own
+        verifyHint protocol: probe the rendered order FIRST (a soft-failed arrow click
+        usually COMMITTED LATE), move only when the row provably still sits below the
+        sentinel, and tolerate a moveSoftFail envelope on the move itself by re-probing
+        instead of raising -- a raw strict _set_rule would hard-fail on the soft
+        contract's success:false, which is exactly the envelope's "verify before
+        retrying" instruction telling us NOT to. Bounded at one verified retry."""
+        for _ in range(2):
+            cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
+                "args": {"appId": app_id}})
+            if not self._sentinel_precedes_run_actions(json.dumps(cfg.get("page", {})), sentinel_msg):
+                print("    [MOVE-VERIFY] order readback shows the row already above the "
+                      "sentinel -- committed (possibly late), no move issued")
+                return
+            print("    [MOVE-VERIFY] row still below the sentinel -- issuing verified move-up")
+            env = self._rm_call_soft(
+                {"appId": app_id, "moveAction": {"index": idx, "direction": "up"}, "confirm": True},
+                strict=True)
+            if env.get("success") is not False:
+                return
+            assert env.get("verifyHint") or env.get("asyncCommitLikely"), \
+                f"moveAction(up) hard-failed with a non-soft envelope: {env}"
+            # soft-fail: loop back to the probe -- if this click committed late the
+            # next readback sees the shift and returns without a blind second move
+        cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
+            "args": {"appId": app_id}})
+        assert not self._sentinel_precedes_run_actions(json.dumps(cfg.get("page", {})), sentinel_msg), \
+            "moveAction(up) never landed: the row still renders below the sentinel after verified retries"
+
     @test("native_apps")
     def test_set_rule_modifyaction_retarget(self) -> None:
         # modifyAction retargets a rule-targeting action in ONE op -- the staged-migration
@@ -3882,10 +3912,7 @@ class TestRunner:
                     f"recovered504: no committed ruleAct.<N> holds [{target_b}] -- the retarget did not land: {cfg.get('settings')}"
                 ma = dict(ma)
                 ma["newActionIndex"] = int(new_idx)
-                page_probe = json.dumps(cfg.get("page", {}))
-                if self._sentinel_precedes_run_actions(page_probe, sentinel_msg):
-                    self._set_rule(caller_id,
-                        {"moveAction": {"index": int(new_idx), "direction": "up"}}, strict=True)
+                self._finish_move_up(caller_id, int(new_idx), sentinel_msg)
                 self._set_rule(caller_id, {"button": "updateRule"}, strict=True)
             assert ma.get("newActionIndex") is not None, \
                 f"modifyAction retarget should carry a newActionIndex on every outcome, got: {ma}"
@@ -3902,8 +3929,7 @@ class TestRunner:
                 assert ma.get("subscriptionsNotLive") is True, \
                     f"a paused composite skipped updateRule, so subscriptionsNotLive must be true, got: {ma}"
                 for _ in range(int(ma.get("movesRemaining") or 0)):
-                    self._set_rule(caller_id,
-                        {"moveAction": {"index": ma["newActionIndex"], "direction": "up"}}, strict=True)
+                    self._finish_move_up(caller_id, ma["newActionIndex"], sentinel_msg)
                 self._set_rule(caller_id, {"button": "updateRule"}, strict=True)
             elif ma.get("moveSoftFail"):
                 # The arrow click's shift couldn't be confirmed in the verify window
@@ -3912,17 +3938,7 @@ class TestRunner:
                 # verify order first, retry the single move ONLY if it genuinely dropped.
                 assert ma.get("success") is False and ma.get("verifyHint"), \
                     f"moveSoftFail must ride success:false with a verifyHint, got: {ma}"
-                probe = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
-                    "args": {"appId": caller_id}})
-                probe_text = json.dumps(probe.get("page", {}))
-                if self._sentinel_precedes_run_actions(probe_text, sentinel_msg):
-                    print("    [SOFT-FAIL] move click genuinely dropped (order unchanged) -- "
-                          "single verified retry per the verifyHint")
-                    self._set_rule(caller_id,
-                        {"moveAction": {"index": ma["newActionIndex"], "direction": "up"}}, strict=True)
-                else:
-                    print("    [SOFT-FAIL] move committed late (order already shifted) -- "
-                          "no retry, exactly as the verifyHint prescribes")
+                self._finish_move_up(caller_id, ma["newActionIndex"], sentinel_msg)
             elif not ma.get("recovered504"):
                 # Full envelope, no pause, no soft-fail: the composite finished in-budget.
                 assert ma.get("success") is True, \
