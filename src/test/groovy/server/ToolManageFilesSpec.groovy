@@ -54,6 +54,24 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.files[0].directDownload.contains('/local/a.txt')
     }
 
+    def "hub_list_files filters file names by case-insensitive substring"() {
+        given:
+        hubGet.register('/hub/fileManager/json') { params ->
+            JsonOutput.toJson([
+                [name: 'alpha.txt', size: 10],
+                [name: 'ALPINE.csv', size: 20],
+                [name: 'beta.txt', size: 30]
+            ])
+        }
+
+        when:
+        def result = script.toolListFiles([filter: 'AlP'])
+
+        then:
+        result.total == 2
+        result.files*.name == ['ALPINE.csv', 'alpha.txt']
+    }
+
     @spock.lang.Unroll
     def "hub_list_files via dispatch returns sorted file list (useGateways=#useGateways)"() {
         given:

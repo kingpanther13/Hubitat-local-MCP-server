@@ -22923,6 +22923,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         inner.label == "Healthy Rule"
         inner.brokenMarkers == [] || inner.brokenMarkers?.isEmpty()
         inner.multipleFlagPoison == [] || inner.multipleFlagPoison?.isEmpty()
+        inner.eventSubscriptionCount == 1
+        inner.scheduledJobCount == 0
 
         where:
         useGateways << [true, false]
@@ -36591,6 +36593,61 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // branch; a typo regression on this branch would still satisfy the success/
         // failure flag checks above but ship a mis-labelled note to the consumer.
         result.note?.contains("fired (subscriptions populated)")
+    }
+
+    def "hub_set_rule EDIT rejects mixed operation families before any wizard POST"() {
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "log", message: "should not land"],
+            addLocalVariable: [name: "shouldNotExist", type: "String", value: "x"],
+            settings: [comments: "should not land"],
+            confirm: true
+        ])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("addAction")
+        ex.message.contains("addLocalVariable")
+        ex.message.contains("settings")
+        ex.message.contains("patches")
+
+        and: "the validation throw precedes every backup or wizard write"
+        posts.isEmpty()
+    }
+
+    def "hub_set_rule EDIT allows addTriggers plus addActions and processes both bulk lists"() {
+        given:
+        enableWrite()
+        def clicks = []
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason -> [backupKey: "snap"] }
+        script.metaClass._rmClickAppButton = { Integer id, String name, String stateAttr = null,
+                                               String pageName = null, Map cache = null -> clicks << name }
+        script.metaClass._rmCheckRuleHealth = { Integer id -> [ok: true] }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addTriggers: ["trigger-sentinel"],
+            addActions: ["action-sentinel"],
+            confirm: true
+        ])
+
+        then: "both lists reached their own bulk loop instead of the multi-op guard"
+        result.triggers.size() == 1
+        result.triggers[0].error.contains("addTriggers[0]")
+        result.actions.size() == 1
+        result.actions[0].error.contains("addActions[0]")
+        clicks == ["updateRule"]
+        result.note.contains("Bulk update committed")
     }
 
     // ---------- bulk addTriggers/addActions trailing-updateRule failure surfaces dedicated slots ----------

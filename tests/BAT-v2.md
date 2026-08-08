@@ -27,6 +27,8 @@ Each test is a JSON scenario with optional `setup_prompt`, required `test_prompt
 }
 ```
 
+**Runner contract:** The COMPLETE message to the agent under test is exactly `On my Hubitat, using the mcp connector: <test_prompt>` — no additional framing, no MCP server or tool names, no tool-loading hints, no report-format instructions. `setup_prompt`/`teardown_prompt` are orchestrator-only; **Expected** blocks are grading reference only and are never shown to the agent.
+
 ### Prompt style — goal-first
 
 BAT tests are run by an orchestrating/grading agent: it reads the entry, sets it up, feeds the `test_prompt` to a **sub-agent under test**, then grades whether that sub-agent found and used the right tool. The whole point is *discovery*, so:
@@ -4622,7 +4624,7 @@ never the tool.
 }
 ```
 
-**Expected**: On a `status:in_progress` result the AI re-issues with the returned `patchesRemaining` (or `stepsRemaining`, inheriting the reported page) to continue, per the `resume` note — attaching a fresh token, not the paused op's token. All committed steps persist; the finalize/updateRule runs when the remainder completes. **Fail** if the AI treats the `in_progress` pause as an error, or replays the paused op's token and stalls on its buffered partial.
+**Expected**: On a `status:in_progress` result the AI re-issues with the returned `patchesRemaining` (or `stepsRemaining`, inheriting the reported page) to continue, per the `resume` note — attaching a fresh token, not the paused op's token. All committed steps persist; the finalize/updateRule runs when the remainder completes. A mixed bare-argument batch (`addAction` + `addLocalVariable` + `settings` in one call) now REFUSES fail-loud and steers to `patches`; that refusal is a pass path, and `patches` is the intended one-call batch. **Fail** if the AI treats the `in_progress` pause as an error, replays the paused op's token and stalls on its buffered partial, or expects a mixed bare-argument batch to partially apply.
 
 ### T662 — A never-issued operation reports unknown
 

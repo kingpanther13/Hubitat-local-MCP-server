@@ -3484,6 +3484,12 @@ class TestRunner:
         assert active.get("paused") is False and active.get("disabled") is False, \
             f"new rule should be neither paused nor disabled, got: {active}"
 
+        health = self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_get_rule_health", "args": {"appId": app_id}})
+        for count_key in ("eventSubscriptionCount", "scheduledJobCount"):
+            assert isinstance(health.get(count_key), int) and health[count_key] >= 0, \
+                f"hub_get_rule_health should expose a live non-negative {count_key}, got: {health}"
+
         # Every status write goes through _status_write so an "excessive hub load" limiter trip
         # bounces the app and retries once -- the same contract the mode-lifecycle and
         # system-settings tests use. The limiter is sticky: retrying alone cannot clear it (it
@@ -3557,6 +3563,23 @@ class TestRunner:
         resumed = _rule_status_when(app_id, lambda s: s.get("status") == "active" and s.get("paused") is False)
         assert resumed.get("status") == "active" and resumed.get("paused") is False, \
             f"resumed rule should read status active again, got: {resumed}"
+
+        stopped_call = self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_call_rule", "args": {"ruleId": app_id, "action": "stop"}})
+        assert stopped_call.get("success") is not False, \
+            f"hub_call_rule(action=stop) reported failure: {stopped_call}"
+        stopped = _rule_status_when(app_id, lambda s: s.get("status") == "stopped")
+        assert stopped.get("status") == "stopped", f"stopped rule should read status stopped, got: {stopped}"
+        assert not str(stopped.get("label", "")).endswith(" (Stopped)") \
+            and not str(stopped.get("name", "")).endswith(" (Stopped)"), \
+            f"runtime (Stopped) decoration should be stripped from label/name, got: {stopped}"
+
+        started_call = self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_call_rule", "args": {"ruleId": app_id, "action": "start"}})
+        assert started_call.get("success") is not False, \
+            f"hub_call_rule(action=start) reported failure: {started_call}"
+        started = _rule_status_when(app_id, lambda s: s.get("status") == "active")
+        assert started.get("status") == "active", f"started rule should return to active, got: {started}"
 
         # ARRAY form: ruleId also accepts an array -- one RMUtils dispatch covers a
         # whole set (the staged-migration cutover shape). Exercised with a one-element array
@@ -3695,6 +3718,22 @@ class TestRunner:
             assert "not touched" in str(action_state.get("restoreHint", "")).lower() \
                 and "backup saved before write" not in str(action_state.get("restoreHint", "")).lower(), \
                 f"switch state: pre-flight refusal should carry a not-touched restoreHint, got: {action_state.get('restoreHint')!r}"
+            # Mixed EDIT shortcuts used to apply only the first branch while reporting success.
+            # The guard must reject the full call before the backup snapshot or any wizard write.
+            try:
+                self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+                    "appId": app_id,
+                    "addAction": {"capability": "log", "message": "must not land"},
+                    "addLocalVariable": {"name": "mustNotExist", "type": "String", "value": "x"},
+                    "settings": {"comments": "must not land"},
+                    "confirm": True,
+                }})
+                raise AssertionError("mixed EDIT operation families should be rejected as -32602")
+            except McpError as exc:
+                mixed_error = str(exc)
+                for needle in ("addAction", "addLocalVariable", "settings", "patches"):
+                    assert needle in mixed_error, \
+                        f"mixed EDIT refusal should name {needle!r}, got: {mixed_error}"
             # Fail-loud parity on a rule-targeting action: privateBoolean / runRule / cancelTimers /
             # pauseRule store their target rule id verbatim into the RM action field, so a target that
             # is not an existing rule would bake a dangling reference that never fires and renders

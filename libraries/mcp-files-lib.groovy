@@ -3,6 +3,8 @@ library(name: "McpFilesLib", namespace: "mcp", author: "kingpanther13", descript
 def toolListFiles(args = null) {
     mcpLog("debug", "file-manager", "Listing files in File Manager")
     def cursor = args?.cursor
+    def filterText = args?.filter?.toString()?.trim()
+    def filterLower = filterText?.toLowerCase()
 
     // Try known File Manager API endpoints (varies by firmware version)
     def endpoints = ["/hub/fileManager/json", "/hub/fileManager"]
@@ -74,7 +76,10 @@ def toolListFiles(args = null) {
             mcpLog("warn", "file-manager", "hub_list_files: parsed response yielded zero files (${shapeHint}) -- shape may not be recognized", null, [details: [endpoint: endpointUsed, shape: shapeHint]])
         }
 
-        mcpLog("info", "file-manager", "Listed ${fileList.size()} files in File Manager (via ${endpointUsed})")
+        if (filterLower) {
+            fileList = fileList.findAll { it?.name?.toString()?.toLowerCase()?.contains(filterLower) }
+        }
+        mcpLog("info", "file-manager", "Listed ${fileList.size()} matching files in File Manager (via ${endpointUsed})")
         def pagedFM = _paginateList(fileList, cursor, 100, "hub_list_files")
         def res = [
             files: pagedFM.page,
@@ -103,7 +108,10 @@ def toolListFiles(args = null) {
 
         if (fileList) {
             fileList = fileList.sort { a, b -> (a.name <=> b.name) }
-            mcpLog("info", "file-manager", "Listed ${fileList.size()} files from File Manager HTML page")
+            if (filterLower) {
+                fileList = fileList.findAll { it?.name?.toString()?.toLowerCase()?.contains(filterLower) }
+            }
+            mcpLog("info", "file-manager", "Listed ${fileList.size()} matching files from File Manager HTML page")
             def pagedHtml = _paginateList(fileList, cursor, 100, "hub_list_files")
             def res = [
                 files: pagedHtml.page,
@@ -315,10 +323,11 @@ def _getAllToolDefinitions_partFiles() {
         // File Manager Tools
         [
             name: "hub_list_files",
-            description: "List files stored in the hub's File Manager[[FLAT_TRIM]] (the local web-accessible file store)[[/FLAT_TRIM]], returning each file's name, size, last-modified date, and direct download URL.[[FLAT_TRIM]] Use this to discover available files before reading one with hub_read_file, or to confirm a write/backup landed.[[/FLAT_TRIM]] Read-only.",
+            description: "List files stored in the hub's File Manager[[FLAT_TRIM]] (the local web-accessible file store)[[/FLAT_TRIM]], returning each file's name, size, last-modified date, and direct download URL. Optionally filter by a case-insensitive substring of the file name.[[FLAT_TRIM]] Use this to discover available files before reading one with hub_read_file, or to confirm a write/backup landed.[[/FLAT_TRIM]] Read-only.",
             inputSchema: [
                 type: "object",
                 properties: [
+                    filter: [type: "string", description: "Optional case-insensitive substring to match against file names."],
                     cursor: [type: "string", description: "Opt-in pagination cursor.[[FLAT_TRIM]] Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
                 ]
             ],

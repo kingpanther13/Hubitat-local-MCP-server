@@ -103,6 +103,36 @@ class RelayBudgetSpec extends ToolSpecBase {
         atomicStateMap.opTokens[inner.opToken]?.state == 'complete'
     }
 
+    def "_opTokenComplete re-writes a terminal record reverted by a concurrent whole-map write"() {
+        given:
+        installOpTokenFileStore()
+        String token = 'completion-race-token'
+        atomicStateMap.opTokens = [
+            (token): [state: 'running', tool: 'hub_create_room', startedAt: FIXED_NOW - 1000L]
+        ]
+        int putCalls = 0
+        script.metaClass._opTokenPut = { String writtenToken, Map rec ->
+            putCalls++
+            atomicStateMap.opTokens[writtenToken] = new LinkedHashMap(rec)
+            if (putCalls == 1) {
+                // Simulate _opTokenPrune's stale whole-map snapshot winning immediately
+                // after the first per-entry completion write.
+                atomicStateMap.opTokens[writtenToken] = [
+                    state: 'running', tool: 'hub_create_room', startedAt: FIXED_NOW - 1000L
+                ]
+            }
+        }
+
+        when:
+        script._opTokenComplete(token, '{"success":true}', false)
+
+        then:
+        putCalls == 2
+        atomicStateMap.opTokens[token].state == 'complete'
+        atomicStateMap.opTokens[token].finishedAt == FIXED_NOW
+        atomicStateMap.opTokens[token].file == script._opTokenResultFile(token)
+    }
+
     def "a second identical untokened write is refused while the first auto-token record is running"() {
         given:
         settingsMap.enableWrite = true

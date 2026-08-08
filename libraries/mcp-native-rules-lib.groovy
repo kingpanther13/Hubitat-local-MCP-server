@@ -5,7 +5,7 @@ def _getAllToolDefinitions_partNativeRM() {
         // Rule Machine Integration (read + trigger + pause/resume only — platform blocks CRUD)
         [
             name: "hub_list_rules",
-            description: "List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id). Each rule carries its id, label, and live `status`: `active`, `paused`, or `disabled` (red-X) — `unknown` when the hub's app list is momentarily unreadable. Requires the Read master. For the enabled/disabled state of NON-RM classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use `hub_list_apps` (scope='instances'). Call `hub_get_tool_guide(section='builtin_app_tools')` for the status-detection semantics and platform limitations on RM rule internals.",
+            description: "List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id). Each rule carries its id, label, and live `status`: `active`, `paused`, `stopped`, or `disabled` (red-X) — `unknown` when the hub's app list is momentarily unreadable. Requires the Read master. For the enabled/disabled state of NON-RM classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use `hub_list_apps` (scope='instances'). Call `hub_get_tool_guide(section='builtin_app_tools')` for the status-detection semantics and platform limitations on RM rule internals.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -21,7 +21,7 @@ def _getAllToolDefinitions_partNativeRM() {
                         name: [type: "string", description: "Rule name"],
                         type: [type: "string", description: "Rule type, or null"],
                         rmVersion: [type: "string", description: "RM version, 4.x or 5.x"],
-                        status: [type: "string", enum: ["active", "paused", "disabled", "unknown"], description: "Live status; 'unknown' when the app list was unreadable"],
+                        status: [type: "string", enum: ["active", "paused", "stopped", "disabled", "unknown"], description: "Live status; 'unknown' when the app list was unreadable"],
                         disabled: [type: "boolean", description: "Rule is disabled (red-X); omitted when status is 'unknown'"],
                         paused: [type: "boolean", description: "Rule is paused; omitted when status is 'unknown'"],
                         requiredExpressionFalse: [type: "boolean", description: "Present (true) only when the rule's required expression is currently false, so it won't trigger"]
@@ -208,7 +208,7 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click (e.g. trigger/action index for RM editCond/editAct)."],
                     addTrigger: [
                         type: "object",
-                        description: """Add an RM TRIGGER (structured). DISCRIMINATOR: use `capability` NOT `type` (`{type:'switch'}` is rejected); returns triggerIndex. Capability families (use these display names): Device-state — Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source; Numeric — Temperature / Humidity / Battery / Illuminance / Power / Energy / CO2 / Dimmer / Thermostat setpoints; Button; Custom Attribute; Certain Time / Sunrise / Sunset; Mode; Periodic Schedule. Modifiers: andStays, allOfThese. Optional per spec: conditional (sets the conditional-trigger gate — pair with `condition` to bind it in one call), condition {capability, deviceIds?, state? | comparator?+value?, attribute?, not?, rawSettings?} (a NARROWER set than addRequiredExpression), rawSettings {field:value} with @N = the auto-assigned index (e.g. {'xVar@N':'myVar'}). addTriggers[] = bulk, updateRule once at the end. Per-field specs, the periodic shape, and extended condition shapes: pass {discover: true}, guide:true, or hub_get_tool_guide(section='set_rule_reference')."""
+                        description: """Add an RM TRIGGER (structured). DISCRIMINATOR: use `capability` NOT `type` (`{type:'switch'}` is rejected); returns triggerIndex. Capability families (use these display names): Device-state — Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source; Numeric — Temperature / Humidity / Battery / Illuminance / Power / Energy / CO2 / Dimmer / Thermostat setpoints; Button; Custom Attribute; Certain Time (and optional date) / Sunrise / Sunset (the picker value is the full 'Certain Time (and optional date)' string); Mode; Periodic Schedule. Modifiers: andStays, allOfThese. Optional per spec: conditional (sets the conditional-trigger gate — pair with `condition` to bind it in one call), condition {capability, deviceIds?, state? | comparator?+value?, attribute?, not?, rawSettings?} (a NARROWER set than addRequiredExpression), rawSettings {field:value} with @N = the auto-assigned index (e.g. {'xVar@N':'myVar'}). addTriggers[] = bulk, updateRule once at the end. Per-field specs, the periodic shape, and extended condition shapes: pass {discover: true}, guide:true, or hub_get_tool_guide(section='set_rule_reference')."""
                     ],
                     addTriggers: [
                         type: "array",
@@ -384,7 +384,7 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
         ],
         [
             name: "hub_get_rule_health",
-            description: """Inspect a rule's current state and return a structured health report.[[FLAT_TRIM]] Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule).[[/FLAT_TRIM]] Run after every mutation; hub_set_rule attaches it as `health` on every response. ok=false with unreadable=false means at least one issue was found (the issues list explains what); ok=false with unreadable=true means NEITHER source could be read (a transient fetch failure, or the app does not exist) -- a couldn't-check verdict, not evidence of breakage.""",
+            description: """Inspect a rule's current state and return a structured health report.[[FLAT_TRIM]] Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule).[[/FLAT_TRIM]] Includes live eventSubscriptionCount/scheduledJobCount from the rule's runtime status. Run after every mutation; hub_set_rule attaches it as `health` on every response. ok=false with unreadable=false means at least one issue was found (the issues list explains what); ok=false with unreadable=true means NEITHER source could be read (a transient fetch failure, or the app does not exist) -- a couldn't-check verdict, not evidence of breakage.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -410,6 +410,8 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
                     structuralIssues: [type: "array", description: "Structural issues; always present, empty when none", items: [type: "string"]],
                     validationErrors: [type: "array", description: "Graph Visual Rule validation errors; always present, empty when none", items: [type: "string"]],
                     predicate: [type: "object", description: "Compiled required-expression summary from ruleBuilderJson: {hasPredicate, predCapabs}. Present only when the compiled RM state carried the predicate fields (hasPredicate may be false)."],
+                    eventSubscriptionCount: [type: ["integer", "null"], description: "Live event subscription count from statusJson; null when the runtime status could not be read."],
+                    scheduledJobCount: [type: ["integer", "null"], description: "Live scheduled job count from statusJson; null when the runtime status could not be read."],
                     issues: [type: "array", description: "All issues; ok is false iff non-empty", items: [type: "string"]]
                 ],
                 required: ["ok"]
@@ -666,7 +668,7 @@ def toolListRmRules(args) {
     def treeReadable = collected.treeReadable
     def liveApps = collected.liveApps
 
-    // Enrich each rule with its live enabled/paused/disabled status from the
+    // Enrich each rule with its live enabled/paused/stopped/disabled status from the
     // /hub2/appsList tree (issue #359). When the tree was unreadable the rules are
     // returned unfiltered and carry no node data, so status is "unknown".
     combined.values().each { entry -> _rmAnnotateRuleStatus(entry, treeReadable, liveApps) }
@@ -690,7 +692,7 @@ def toolListRmRules(args) {
         result.ghostNote = "RMUtils reported ${ghostIds.size()} rule id(s) that no longer exist in /hub2/appsList — these are post-delete RMUtils-cache ghosts (rule is already gone, the cache just hasn't caught up). Filtered out of the rules list."
     }
     if (!treeReadable && !rules.isEmpty()) {
-        result.statusNote = "/hub2/appsList was unreadable, so each rule's status is \"unknown\" (enabled/paused/disabled could not be determined). Retry; if it persists the hub's internal API may need Hub Security credentials."
+        result.statusNote = "/hub2/appsList was unreadable, so each rule's status is \"unknown\" (enabled/paused/stopped/disabled could not be determined). Retry; if it persists the hub's internal API may need Hub Security credentials."
     }
     // Classify the failures. A "missing class" error (RM not installed) is quiet whether
     // the other version succeeded OR both versions failed the same way (both-absent path).
@@ -810,12 +812,23 @@ private void registerRmRule(Map combined, def r, String version) {
 // only by the "(Paused)" suffix its appsList name carries but its RMUtils label doesn't
 // (live-verified; diffing the stripped strings also protects a rule literally NAMED
 // "... (Paused)" — its label carries the same suffix, so the remainder is empty).
-// status is a precedence SUMMARY (disabled > paused > active); the booleans stay
+// A stopped rule is decorated in the RMUtils label itself; strip that runtime suffix
+// from label/name before returning it. status is a precedence SUMMARY
+// (disabled > stopped > paused > active); the booleans stay
 // independent — a rule paused first then disabled keeps its decoration, so
 // {disabled:true, paused:true, status:"disabled"} is truthful. "unknown" (booleans then
 // omitted, never asserted false) covers both a null liveApps (whole tree unreadable) and
 // this one rule's node lacking data.disabled / name / RMUtils label.
 private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps) {
+    def rawCleanLabel = stripAppConfigHtml(entry.label)
+    def rawCleanName = stripAppConfigHtml(entry.name)
+    boolean stopped = rawCleanLabel?.endsWith(" (Stopped)") == true
+    if (stopped) {
+        entry.label = rawCleanLabel.substring(0, rawCleanLabel.length() - " (Stopped)".length())
+        if (rawCleanName?.endsWith(" (Stopped)")) {
+            entry.name = rawCleanName.substring(0, rawCleanName.length() - " (Stopped)".length())
+        }
+    }
     def idInt
     try { idInt = (entry.id instanceof Number) ? entry.id.intValue() : entry.id?.toString()?.toInteger() }
     catch (Exception ignored) { idInt = null }
@@ -841,11 +854,19 @@ private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps
     if (cleanApps != cleanRm && cleanApps.startsWith(cleanRm)) {
         def remainder = cleanApps.substring(cleanRm.length())
         if (remainder.contains("(Paused)")) paused = true
+        if (remainder.contains("(Stopped)")) stopped = true
         if (remainder.contains("(Required Expression false)")) entry.requiredExpressionFalse = true
+    }
+    if (stopped) {
+        if (cleanRm?.endsWith(" (Stopped)")) cleanRm = cleanRm.substring(0, cleanRm.length() - " (Stopped)".length())
+        entry.label = cleanRm
+        def cleanName = stripAppConfigHtml(entry.name)
+        if (cleanName?.endsWith(" (Stopped)")) cleanName = cleanName.substring(0, cleanName.length() - " (Stopped)".length())
+        entry.name = cleanName
     }
     entry.disabled = disabled
     entry.paused = paused
-    entry.status = disabled ? "disabled" : (paused ? "paused" : "active")
+    entry.status = disabled ? "disabled" : (stopped ? "stopped" : (paused ? "paused" : "active"))
 }
 
 // Normalize a ruleId argument that may be a single id or a list of ids into a
@@ -7732,6 +7753,8 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     // caller checks success for "did anything happen" then partial for "is more
     // work needed" -- avoiding the false success=false when the row exists but
     // is incomplete.
+    def uniqueApplied = []
+    applied.each { key -> if (!uniqueApplied.contains(key)) uniqueApplied << key }
     return [
         success: !err && !applied.isEmpty(),
         partial: partial,
@@ -7741,7 +7764,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         action: action,
         actType: actType,
         actSubType: actSubType,
-        settingsApplied: applied,
+        settingsApplied: uniqueApplied,
         settingsSkipped: skipped,
         configPageError: err,
         repairHints: repairHints,
@@ -9044,6 +9067,9 @@ Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
         def vrbFallback = null
         try { vrbFallback = _vrbDetect(ruleId) } catch (Exception ignored) { }
         if (vrbFallback == null) {
+            if (e.message?.contains("404")) {
+                throw new IllegalArgumentException("No rule/app with id ${ruleId} exists on this hub (configure/json returned 404). Nothing was changed. Use hub_list_rules for valid ids. See hub_get_tool_guide(section='set_rule_reference').")
+            }
             throw new IllegalArgumentException("Cannot back up rule ${ruleId}: configure/json failed -- ${e.message}")
         }
         config = null
@@ -13184,14 +13210,6 @@ def _applyNativeAppEdit(args) {
     // keys for known device-list field-name patterns and validate any
     // List values against the hub. Same RM 5.1 `{<bogusId>: null}` silent-
     // storage bug applies here as in the structured paths.
-    if (settingsMap) {
-        def devKeyPattern = ~/^([tr]Dev[_-]?\d+|switch[A-Z]\w*|onOffSwitch\.\d+|lockLockUnlock\.\d+|shadeOpenClose\.\d+|fanRL\.\d+|tDev-\d+|deviceList|dimmerLevel\.\d+|ButtontDev_?\d+|pushButton\d+)$/
-        settingsMap.each { k, v ->
-            if (v instanceof List && k?.toString()?.matches(devKeyPattern)) {
-                _rmValidateDeviceIdsExist("settings.${k}", v)
-            }
-        }
-    }
     def button = args?.button?.toString()?.trim() ?: null
     def addTriggerSpec = args?.addTrigger instanceof Map ? args.addTrigger : null
     def addActionSpec = args?.addAction instanceof Map ? args.addAction : null
@@ -13219,6 +13237,56 @@ def _applyNativeAppEdit(args) {
     def removeTriggerSpec = args?.removeTrigger instanceof Map ? args.removeTrigger : null
     def modifyTriggerSpec = args?.modifyTrigger instanceof Map ? args.modifyTrigger : null
     def modifyActionSpec = args?.modifyAction instanceof Map ? args.modifyAction : null
+
+    // EDIT dispatch is intentionally one-operation-at-a-time except for the documented
+    // plural addTriggers+addActions bulk pair. The dispatcher returns from the first
+    // matching branch, so reject any other cross-family combination BEFORE the backup
+    // snapshot or wizard write rather than silently dropping trailing operations.
+    def triggerOpNames = []
+    if (addTriggerSpec) triggerOpNames << "addTrigger"
+    if (addTriggersList) triggerOpNames << "addTriggers"
+    def actionOpNames = []
+    if (addActionSpec) actionOpNames << "addAction"
+    if (addActionsList) actionOpNames << "addActions"
+    def rawOpNames = []
+    if (settingsMap) rawOpNames << "settings"
+    if (button) rawOpNames << "button"
+    if (rawOpNames) {
+        if (args?.pageName != null) rawOpNames << "pageName"
+        if (args?.stateAttribute != null) rawOpNames << "stateAttribute"
+    }
+    def editOpGroups = [
+        triggerOpNames,
+        actionOpNames,
+        addRequiredExpressionSpec ? ["addRequiredExpression"] : [],
+        replaceRequiredExpressionSpec ? ["replaceRequiredExpression"] : [],
+        removeActionSpec ? ["removeAction"] : [],
+        clearActionsFlag ? ["clearActions"] : [],
+        moveActionSpec ? ["moveAction"] : [],
+        removeTriggerSpec ? ["removeTrigger"] : [],
+        modifyTriggerSpec ? ["modifyTrigger"] : [],
+        modifyActionSpec ? ["modifyAction"] : [],
+        addLocalVariableSpec ? ["addLocalVariable"] : [],
+        removeLocalVariableSpec ? ["removeLocalVariable"] : [],
+        patchesList ? ["patches"] : [],
+        walkStepSpec ? ["walkStep"] : [],
+        rawOpNames
+    ].findAll { !it.isEmpty() }
+    boolean allowedBulkPair = (editOpGroups.size() == 2 &&
+        triggerOpNames == ["addTriggers"] && actionOpNames == ["addActions"])
+    if (editOpGroups.size() >= 2 && !allowedBulkPair) {
+        def opNames = editOpGroups.collectMany { it }
+        throw new IllegalArgumentException("hub_set_rule received multiple operations in one call (${opNames.join(', ')}) — only the first would run and the rest would be silently dropped. Use patches:[...] for an atomic multi-op edit, or issue one call per operation. See hub_get_tool_guide(section='set_rule_reference').")
+    }
+
+    if (settingsMap) {
+        def devKeyPattern = ~/^([tr]Dev[_-]?\d+|switch[A-Z]\w*|onOffSwitch\.\d+|lockLockUnlock\.\d+|shadeOpenClose\.\d+|fanRL\.\d+|tDev-\d+|deviceList|dimmerLevel\.\d+|ButtontDev_?\d+|pushButton\d+)$/
+        settingsMap.each { k, v ->
+            if (v instanceof List && k?.toString()?.matches(devKeyPattern)) {
+                _rmValidateDeviceIdsExist("settings.${k}", v)
+            }
+        }
+    }
     if (!settingsMap && !button && !addTriggerSpec && !addActionSpec && !addActionsList && !addTriggersList
             && !addRequiredExpressionSpec && !replaceRequiredExpressionSpec && !addLocalVariableSpec && !removeLocalVariableSpec && !patchesList && !removeActionSpec && !clearActionsFlag && replaceActionsList == null && !moveActionSpec && !walkStepSpec && !removeTriggerSpec && !modifyTriggerSpec && !modifyActionSpec) {
         throw new IllegalArgumentException("Editing an app requires one of: 'settings' (Map) or 'button' (String) for any classic app; or, for Rule Machine rules via hub_set_rule, a structured shortcut -- 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), 'addActions' (List), 'addRequiredExpression' (Map), 'replaceRequiredExpression' (Map), 'addLocalVariable' (Map), 'removeLocalVariable' ({name}), 'patches' (List of sub-specs), 'removeAction' ({index:N}), 'clearActions' (true), 'replaceActions' (List), 'moveAction' ({index:N, direction:up|down}), 'removeTrigger' ({index:N}), 'modifyTrigger' ({index:N, mods:{state:...}}), 'modifyAction' ({index:N, mods:{ruleIds:[...]}}), or 'walkStep' ({page, operation, write?, click?, navigate?, validateEnum?}) -- none provided.")
@@ -14966,7 +15034,16 @@ def toolCheckRuleHealth(args) {
     if (!(source in ["auto", "ruleBuilderJson", "configPage"])) {
         throw new IllegalArgumentException("source must be one of: auto (default), ruleBuilderJson, configPage")
     }
-    return _rmCheckRuleHealth(appId, source)
+    def result = _rmCheckRuleHealth(appId, source)
+    try {
+        def status = _rmFetchStatusJson(appId)
+        result.eventSubscriptionCount = (status?.eventSubscriptions instanceof List) ? status.eventSubscriptions.size() : null
+        result.scheduledJobCount = (status?.scheduledJobs instanceof List) ? status.scheduledJobs.size() : null
+    } catch (Exception ignored) {
+        result.eventSubscriptionCount = null
+        result.scheduledJobCount = null
+    }
+    return result
 }
 
 // hub_list_rule_local_variables -- read a rule's local-variable namespace

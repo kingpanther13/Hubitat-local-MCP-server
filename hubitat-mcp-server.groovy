@@ -2192,8 +2192,15 @@ def _recentRunningWriteOps() {
 def _opTokenRelease(String opToken) {
     def stored = atomicState.opTokens
     def prev = (stored instanceof Map && stored[opToken] instanceof Map) ? stored[opToken] : [:]
-    _opTokenPut(opToken, [state: "released", tool: prev.tool,
-                          startedAt: (prev.startedAt != null ? prev.startedAt : now())])
+    def rec = [state: "released", tool: prev.tool,
+               startedAt: (prev.startedAt != null ? prev.startedAt : now())]
+    _opTokenPut(opToken, rec)
+    def after = atomicState.opTokens
+    def persisted = (after instanceof Map && after[opToken] instanceof Map) ? after[opToken] : null
+    if (persisted?.state != rec.state) {
+        mcpLog("warn", "op-token", "Release record for ${opToken} was overwritten after its per-entry write; re-writing terminal state '${rec.state}' once.")
+        _opTokenPut(opToken, rec)
+    }
 }
 
 // Buffer a token's terminal result (called once, on the request's terminal path).
@@ -2230,6 +2237,12 @@ def _opTokenComplete(String opToken, String jsonText, boolean isErrorBool) {
         rec.note = "Operation committed but its result could not be buffered (upload failed, payload too large to inline). Re-read current state to confirm."
     }
     _opTokenPut(opToken, rec)
+    def after = atomicState.opTokens
+    def persisted = (after instanceof Map && after[opToken] instanceof Map) ? after[opToken] : null
+    if (persisted?.state != rec.state) {
+        mcpLog("warn", "op-token", "Completion record for ${opToken} was overwritten after its per-entry write; re-writing terminal state '${rec.state}' once.")
+        _opTokenPut(opToken, rec)
+    }
 }
 
 // Dedup gate consulted before dispatch. Returns null to proceed, or a
@@ -7542,10 +7555,11 @@ Tools in the hub_read_apps_code and hub_manage_native_rules_and_apps gateways ar
 **hub_manage_native_rules_and_apps (11 tools) — read, trigger, AND full CRUD on native RM rules:**
 
 RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/private-boolean = Write master):
-- **hub_list_rules** — enumerate Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id). Each rule carries a live **status** — "active" | "paused" | "disabled" | "unknown" — plus **disabled** / **paused** booleans (omitted on the "unknown" path) and, only when detected, **requiredExpressionFalse: true**.
+- **hub_list_rules** — enumerate Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id). Each rule carries a live **status** — "active" | "paused" | "stopped" | "disabled" | "unknown" — plus **disabled** / **paused** booleans (omitted on the "unknown" path) and, only when detected, **requiredExpressionFalse: true**.
   - **disabled** is the app's red-X enable/disable flag, read straight from /hub2/appsList (data.disabled).
   - **paused** is decoration-detected. Rule Machine surfaces a paused rule ONLY as a "(Paused)" suffix appended to the app's /hub2/appsList name; the RMUtils label for the same rule stays clean (live-verified). So the appsList name and the RMUtils label are BOTH HTML-stripped (tags removed, entities decoded, trimmed — the appsList name comes decoded, the RMUtils label comes entity-escaped like "Heat On &lt;67" and can carry trailing spaces) and diffed: equal → no decoration; appsList == label + remainder → the remainder is the decoration ("(Paused)" ⇒ paused, "(Required Expression false)" ⇒ requiredExpressionFalse). A rule the user literally NAMED "... (Paused)" is NOT false-flagged: the RMUtils label carries the same suffix, so the remainder is empty.
-  - **precedence** governs only the **status** summary (disabled > paused > active). The disabled/paused booleans are independent facts: a rule paused first and red-X disabled afterward keeps its "(Paused)" decoration, so it truthfully reads disabled:true AND paused:true with status:"disabled".
+  - **stopped** is the runtime "(Stopped)" decoration returned in the RMUtils label after hub_call_rule(action="stop"). The suffix is stripped from the returned label/name; hub_call_rule(action="start") removes it.
+  - **precedence** governs only the **status** summary (disabled > stopped > paused > active). The disabled/paused booleans are independent facts: a rule paused first and red-X disabled afterward keeps its "(Paused)" decoration, so it truthfully reads disabled:true AND paused:true with status:"disabled".
   - **status "unknown"** is per-rule, not just per-list. Tree-level: /hub2/appsList was momentarily unreadable, so NO rule has data — the whole list is returned unfiltered (post-delete ghosts may linger) with a result-level **statusNote**. Per-entry: the tree read fine but ONE rule's node is under-populated (data.disabled absent, node name null, or the RMUtils label null), so just THAT rule is "unknown" while the rest keep real statuses. Either way the disabled/paused booleans are omitted (a value the data can't support is never asserted).
   - This status detection covers Rule Machine rules. For the enabled/disabled state of other classic automation apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use hub_list_apps (scope='instances'), whose entries carry a disabled flag.
 - **hub_call_rule** — trigger one or more RM rules (ruleId takes an id or an array; rule/actions dispatch the whole set in one RMUtils call, stop/start toggle per rule with per-rule results + failedRuleIds/remainingRuleIds on partial batches)
@@ -7810,7 +7824,7 @@ For the live machine-readable per-field schema (action enums, required and optio
 - **Rule-local Variable** (`capability='setLocalVariable'`): identical shape and source modes to `setVariable` (`variable` target + exactly one of `value`/`sourceVariable`/`fromDevice`/`math`), EXCEPT the `variable` target is validated against the rule's LOCAL variables (`state.allLocalVars`) instead of hub globals. Use this -- not `setVariable` -- when a local and a hub variable share a name and you mean the local; it cannot silently target the global. `sourceVariable`/`math` operands may be either local or hub (RM's source picker spans both; validated against the live revealed enum). Create a local first via `addLocalVariable`; list current locals via `hub_list_rule_local_variables` (in `hub_read_rules`). The picker section headers ` --LOCAL VARIABLES--` / ` --HUB VARIABLES--` are rejected as targets.
 - **Logging / Messaging**: `capability='log' + message`. `capability='notification' + deviceIds + message`. `capability='httpGet' + url`. `capability='httpPost' + url + body + optional contentType`. `capability='ping' + ip`.
 - **Music/Sound** (`capability='volume'`/`'mute'`/`'chime'`/`'siren'`): `volume + deviceIds + level`. `mute + action='mute'/'unmute' + deviceIds`. `chime + deviceIds + optional playStop/soundNumber`. `siren + deviceIds + optional sirenAction`.
-- **Rules** (`capability='privateBoolean'`/`'runRule'`/`'cancelTimers'`/`'pauseRule'`): `privateBoolean + ruleIds + value (Boolean)`. `runRule + ruleIds` (runs actions). `cancelTimers + ruleIds`. `pauseRule + action='pause'/'resume' + ruleIds`. For all four, each `ruleIds` target must resolve to an existing Rule Machine rule -- checked against the live RM rule list before any write -- and a target id that is not an existing rule is rejected fail-loud ("RM is not touched"), steering to `hub_list_rules`, rather than baking a dangling rule reference that renders broken and never fires. On a hub whose rule list can't be resolved (RM not installed or the app-tree read failed) the check is skipped and the write proceeds. A hub with zero rules is NOT a can't-resolve case: every rule target is then rejected fail-loud.
+- **Rules** (`capability='privateBoolean'`/`'runRule'`/`'cancelTimers'`/`'pauseRule'`): `privateBoolean + ruleIds + value (Boolean)`. `runRule + ruleIds` (runs actions). `cancelTimers + ruleIds`. `pauseRule + action='pause'/'resume' + ruleIds`. Raw `pvTF.<N>` and `pR.<N>` store the inverse of the rendered True/False (`pR`: `false`=pause, `true`=resume); the rendered paragraph is ground truth, so do not "fix" readbacks against the raw field. For all four, each `ruleIds` target must resolve to an existing Rule Machine rule -- checked against the live RM rule list before any write -- and a target id that is not an existing rule is rejected fail-loud ("RM is not touched"), steering to `hub_list_rules`, rather than baking a dangling rule reference that renders broken and never fires. On a hub whose rule list can't be resolved (RM not installed or the app-tree read failed) the check is skipped and the write proceeds. A hub with zero rules is NOT a can't-resolve case: every rule target is then rejected fail-loud.
 - **Activate a Scene / Room Lighting group**: RM 5.1 has no dedicated activate-scene action subtype. Each Scene / Room Lighting instance spawns an activator device with the switch capability -- activate it via the Switch action: `capability='switch' + action='on' + deviceIds=[<activatorDeviceId>]` (use `action='off'` to send an off/deactivate command, whose effect is configuration-dependent). The `activate_scene` action lives ONLY on the legacy custom rule engine (the `hub_*_custom_rule` tools / `hub_get_tool_guide(section='rules')`), not on this native addAction surface.
 - **Device control**: `capability='capture' + deviceIds`. `capability='restore'` (no fields). `capability='refresh' + deviceIds`. `capability='poll' + deviceIds`. `capability='disableDevice' + action='disable'/'enable' + deviceIds`.
 - **Flow control** (delay/wait/repeat/exit/comment/conditional):
