@@ -3843,12 +3843,73 @@ class TestRunner:
             self._set_rule(caller_id,
                 {"addAction": {"capability": "log", "message": sentinel_msg}}, strict=True)
 
-            ma = self._set_rule(caller_id,
-                {"modifyAction": {"index": ma_idx, "mods": {"ruleIds": [target_b]}}}, strict=True)
-            assert ma.get("success") is True and ma.get("newActionIndex") is not None, \
-                f"modifyAction retarget should succeed with a newActionIndex, got: {ma}"
-            assert ma.get("movesUp") == 1 and ma.get("movesDone") == 1 and not ma.get("moveSoftFail"), \
-                f"retarget of a non-last action should reposition with exactly one confirmed move-up, got: {ma}"
+            ma = self._rm_call_soft(
+                {"appId": caller_id, "modifyAction": {"index": ma_idx, "mods": {"ruleIds": [target_b]}},
+                 "confirm": True}, strict=True, recover_504=True)
+            if ma.get("recovered504"):
+                # Replay came up empty and the helper fell back to config-verify: the
+                # composite committed hub-side but its envelope is gone. Recover the rebuilt
+                # action's index from the committed settings (the ruleAct key now holding
+                # target_b), finish one move-up only if the order readback proves the row
+                # sits below the sentinel, and re-initialize. The order assertions below
+                # then judge the final state exactly like every other branch.
+                cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
+                    "args": {"appId": caller_id, "includeSettings": True}})
+                new_idx = next((k.split(".")[1] for k, v in (cfg.get("settings") or {}).items()
+                                if k.startswith("ruleAct.")
+                                and [str(x) for x in (v if isinstance(v, (list, tuple)) else [v])] == [str(target_b)]),
+                               None)
+                assert new_idx is not None, \
+                    f"recovered504: no committed ruleAct.<N> holds [{target_b}] -- the retarget did not land: {cfg.get('settings')}"
+                ma = dict(ma)
+                ma["newActionIndex"] = int(new_idx)
+                page_probe = json.dumps(cfg.get("page", {}))
+                if 0 <= page_probe.find(sentinel_msg) < page_probe.find("Run Actions:"):
+                    self._set_rule(caller_id,
+                        {"moveAction": {"index": int(new_idx), "direction": "up"}}, strict=True)
+                self._set_rule(caller_id, {"button": "updateRule"}, strict=True)
+            assert ma.get("newActionIndex") is not None, \
+                f"modifyAction retarget should carry a newActionIndex on every outcome, got: {ma}"
+            if ma.get("budgetPaused"):
+                # The composite's documented slow-hub contract: delete+add consumed the
+                # response budget, so the reposition was deliberately NOT started and the
+                # envelope hands back finish-up steps. Follow them exactly as a real client
+                # would -- this branch IS the recovery path the contract exists for, and the
+                # order readback below then proves the finished result either way.
+                print(f"    [BUDGET-PAUSED] modifyAction paused with {ma.get('movesRemaining')} "
+                      "move(s) remaining -- finishing per the envelope's own guidance")
+                assert ma.get("success") is False and ma.get("partial") is True, \
+                    f"budgetPaused must never ride under success:true, got: {ma}"
+                assert ma.get("subscriptionsNotLive") is True, \
+                    f"a paused composite skipped updateRule, so subscriptionsNotLive must be true, got: {ma}"
+                for _ in range(int(ma.get("movesRemaining") or 0)):
+                    self._set_rule(caller_id,
+                        {"moveAction": {"index": ma["newActionIndex"], "direction": "up"}}, strict=True)
+                self._set_rule(caller_id, {"button": "updateRule"}, strict=True)
+            elif ma.get("moveSoftFail"):
+                # The arrow click's shift couldn't be confirmed in the verify window
+                # (asyncCommitLikely) -- live-verified on fw 2.5.1.135 that this usually
+                # means the click COMMITTED LATE. Follow the envelope's own verifyHint:
+                # verify order first, retry the single move ONLY if it genuinely dropped.
+                assert ma.get("success") is False and ma.get("verifyHint"), \
+                    f"moveSoftFail must ride success:false with a verifyHint, got: {ma}"
+                probe = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
+                    "args": {"appId": caller_id}})
+                probe_text = json.dumps(probe.get("page", {}))
+                if 0 <= probe_text.find(sentinel_msg) < probe_text.find("Run Actions:"):
+                    print("    [SOFT-FAIL] move click genuinely dropped (order unchanged) -- "
+                          "single verified retry per the verifyHint")
+                    self._set_rule(caller_id,
+                        {"moveAction": {"index": ma["newActionIndex"], "direction": "up"}}, strict=True)
+                else:
+                    print("    [SOFT-FAIL] move committed late (order already shifted) -- "
+                          "no retry, exactly as the verifyHint prescribes")
+            elif not ma.get("recovered504"):
+                # Full envelope, no pause, no soft-fail: the composite finished in-budget.
+                assert ma.get("success") is True, \
+                    f"modifyAction retarget should succeed with a newActionIndex, got: {ma}"
+                assert ma.get("movesUp") == 1 and ma.get("movesDone") == 1, \
+                    f"retarget of a non-last action should reposition with exactly one confirmed move-up, got: {ma}"
 
             ma_cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
                 "args": {"appId": caller_id, "includeSettings": True}})
