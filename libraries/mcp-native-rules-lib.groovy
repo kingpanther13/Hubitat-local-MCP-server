@@ -146,6 +146,7 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click."],
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
                     walkStep: [type: "object", description: "LAST-RESORT multi-page classic-app walker — EDIT-only (requires appId; rejected on create). One call per wizard step is the expensive path: for RM rules use hub_set_rule's structured shortcuts instead; here, use it only when settings/button cannot represent the change.[[FLAT_TRIM]] Generic classic-dynamicPage walker for stateful apps: introspect/write/click/navigate/done one step per call, or operation='drive' with steps=[...] to run the whole sequence in one call. Same shape as hub_set_rule's walkStep.[[/FLAT_TRIM]]"],
+                    deployment: [type: "object", description: "Durable multi-app deployment job (staged migration that survives disconnects): {op: 'create'|'resume'|'commit'|'cancel'|'status', ...}. Self-contained call — cannot combine with other arguments. op='status' is a pure read (jobId optional; omit to list jobs). op='create' takes ops:[{op, args, alias?}] and checkpoints to hub storage after EVERY op, advancing on-hub with no client attached.[[FLAT_TRIM]] Ops: cloneApp/importApp/buttonRule/addActions/modifyAction/pause/resume/setDisabled; commitOps run only on op='commit' after staging auto-validates. cancel deletes ONLY the apps the job created. Same argument on hub_set_rule and hub_set_native_app (one shared engine).[[/FLAT_TRIM]] Full op reference + worked example: hub_get_tool_guide(section='deployment_jobs')."],
                     opToken: [type: "string", description: "STRONGLY RECOMMENDED on every call: idempotency token you invent (8-128 chars, A-Za-z0-9._-). If the transport drops the response (~10s cloud-relay ceiling), re-issue this call with the SAME token to poll/replay the committed result instead of re-running the edit. Without a token, a dropped response cannot be recovered."],
                     confirm: [type: "boolean", description: "Must be true. Safety gate for Write master operations."]
                 ],
@@ -275,6 +276,7 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
                         description: """Add an RM ACTION (structured). DISCRIMINATOR: use `capability` NOT `type` (`{type:'log'}` is rejected); returns actionIndex (no trailing updateRule — doActPage self-bakes). Capability names: switch, dimmer, color, colorTemp, button, runCommand, lock, thermostat, hsm, shade, fan, mode, setVariable/setLocalVariable, log, notification, httpGet, httpPost, ping, volume, mute, chime, siren, privateBoolean, runRule, cancelTimers, pauseRule, capture, restore, refresh, poll, disableDevice, fileWrite/fileAppend/fileDelete, zwavePoll; flow control — delay, delayPerMode, cancelDelay, repeat, stopRepeat, repeatWhile, waitExpression, waitEvents, ifThen, elseIf, else, endIf, exitRule, comment. Expression-based ones (ifThen/elseIf/repeatWhile/waitExpression) take expression={conditions:[...], operator|operators}. LIMIT: only ONE waitEvents per rule. Rule-targeting caps (runRule/cancelTimers/pauseRule/privateBoolean) validate each ruleIds entry against the live RM rule list before any write; a rule id that is not an existing rule is rejected -- use hub_list_rules for valid ids. (On a hub whose rule list can't be resolved -- RM not installed or app-tree unreadable -- the check is skipped; a hub with zero rules instead rejects every rule target.) Per-condition shape: {capability, deviceIds:[N], state?, comparator?, value?, attribute?, not?, rawSettings?} (deviceIds MUST be an array — a bare integer silently stores {N:null}); nested subExpression not supported here (use addRequiredExpression). Optional: delay {hours, minutes, seconds, cancelable}; rawSettings {field:value} with @N = the auto action index (e.g. {'flashRate.@N':750}). Per-field specs + extended shapes (Mode, Between two times, Variable, compareToDevice, variable-sourced values): pass {discover: true} for the live schema, hub_get_tool_guide(section='set_rule_reference'), or docs/rm_action_subtype_schemas.md."""
                     ],
                     guide: [type: "boolean", description: "Set true to return the full hub_set_rule capability reference inline (same content as hub_get_tool_guide(section='set_rule_reference')), without a separate call. Makes NO change to any rule."],
+                    deployment: [type: "object", description: "Durable multi-app deployment job (staged migration that survives disconnects): {op: 'create'|'resume'|'commit'|'cancel'|'status', ...}. Self-contained call — cannot combine with other arguments. op='status' is a pure read (jobId optional; omit to list jobs). op='create' takes ops:[{op, args, alias?}] and checkpoints to hub storage after EVERY op, advancing on-hub with no client attached.[[FLAT_TRIM]] Ops: cloneApp/importApp/buttonRule/addActions/modifyAction/pause/resume/setDisabled; commitOps run only on op='commit' after staging auto-validates. cancel deletes ONLY the apps the job created. Same argument on hub_set_rule and hub_set_native_app (one shared engine).[[/FLAT_TRIM]] Full op reference + worked example: hub_get_tool_guide(section='deployment_jobs')."],
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller: {controllerId, buttonNumber, event}. Returns buttonRuleId with the Button trigger auto-seeded — then author actions via addAction on that appId. The controller must already have a button device.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
                     opToken: [type: "string", description: "STRONGLY RECOMMENDED on every call: idempotency token you invent (8-128 chars, A-Za-z0-9._-). If the transport drops the response (~10s cloud-relay ceiling), re-issue this call with the SAME token to poll/replay the committed result instead of re-running the edit. Without a token, a dropped response cannot be recovered."],
                     confirm: [type: "boolean", description: "Must be true."]
@@ -9387,6 +9389,12 @@ Map _setRuleOperationSchema(String op) {
 }
 
 def toolSetRule(args) {
+    // Deployment jobs ride this tool as a self-contained routing mode (no
+    // dedicated tools): args.deployment routes to the shared job engine and is
+    // rejected when combined with an edit/create in the same call.
+    if (args instanceof Map && args.deployment != null) {
+        return _deployRouteFromTool(args)
+    }
     // Flat self-gateway envelope {operation,...}: re-key to the canonical shape so
     // the rest of this handler and gateway mode stay one code path. A probe (op +
     // empty args) returns that op's schema with NO mutation and returns early.
@@ -9465,6 +9473,11 @@ def toolSetRule(args) {
 }
 
 def toolSetNativeApp(args) {
+    // Deployment jobs ride this tool too (same shared engine as hub_set_rule) --
+    // args.deployment is a self-contained routing mode.
+    if (args instanceof Map && args.deployment != null) {
+        return _deployRouteFromTool(args)
+    }
     // Button Rules are grandchildren of a Button Controller and only get their
     // button/event context via the controller's add-button flow -- a bare
     // createchild yields an un-renderable orphan. buttonRule routes through the

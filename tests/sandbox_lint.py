@@ -1771,6 +1771,7 @@ def check_tool_guide_pointers(src_override: str | None = None,
         "bundles": "Bundles",
         "rooms": "Rooms",
         "slow_ops": "Slow ops (opToken recovery",
+        "deployment_jobs": "Deployment jobs",
     }
     for key in section_keys:
         hint = key_to_heading_hint.get(key)

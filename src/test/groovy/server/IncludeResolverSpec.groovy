@@ -188,6 +188,7 @@ class IncludeResolverSpec extends Specification {
         'McpAppClonerLib'       | 'toolCloneNativeApp'      | 'AppCloner'
         'McpDiscoveryLib'       | 'toolSearchTools'         | 'Discovery'
         'McpNativeRulesLib'     | 'toolSetRule'             | 'NativeRM'
+        'McpDeployJobsLib'      | 'deployJobWorker'         | 'DeployJobs'
         'McpDashboardsLib'      | 'toolListDashboards'      | 'Dashboards'
     }
 

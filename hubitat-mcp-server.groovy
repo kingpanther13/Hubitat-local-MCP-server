@@ -119,6 +119,10 @@ definition(
 // surface (hub_set_rule) + native-app CRUD. The shared classic-dynamicPage wizard
 // primitives stay in this file (used by other libraries).
 #include mcp.McpNativeRulesLib
+// Deployment jobs (issue #376): durable staged-migration jobs ridden by the
+// deployment ARGUMENT on hub_set_rule / hub_set_native_app -- checkpointed ops,
+// on-hub worker continuation, validation gate, cancel. No dedicated tools.
+#include mcp.McpDeployJobsLib
 
 preferences {
     page(name: "mainPage")
@@ -1513,6 +1517,7 @@ def handleToolsCall(msg) {
     // to -32602 via the IllegalArgumentException catch (not the generic -32603).
     String opToken = null
     boolean opTokenActive = false
+    boolean opTokenAuto = false
     // Buffer the terminal result under the token on every exit path (finally), so
     // a dropped transport response is recoverable by re-issuing the tokened call
     // (the dedup gate replays it) and no token is left eternally "running". Each
@@ -1560,6 +1565,22 @@ def handleToolsCall(msg) {
                 _validateOpToken(opToken)
                 opTokenActive = true
             }
+            // Auto-record untokened WRITES (issue #376 follow-up): a client that
+            // never passed a token still gets a server-assigned one, so the op is
+            // recorded and its result buffered exactly like a tokened call. The
+            // token rides back on the response, and hub_get_info(includeRecentOps=
+            // true) lists recent records -- a client that LOST the response can
+            // discover what actually ran and poll the token for the buffered
+            // result instead of blind-retrying (the double-commit hole for
+            // token-less calls). Reads and gateway CATALOG calls are excluded:
+            // a read cannot double-commit, and recording them would churn the
+            // record cap for zero recovery value.
+            if (!opTokenActive && reactiveToolName && !(reactiveToolName in getReadOnlyToolNames())
+                    && !getGatewayConfig().containsKey(reactiveToolName.toString())) {
+                opToken = "auto-" + Long.toString(now(), 16) + "-" + Integer.toString(new Random().nextInt(0xFFFF), 16).padLeft(4, '0')
+                opTokenActive = true
+                opTokenAuto = true
+            }
         }
         if (opTokenActive) {
             def dedup = _opTokenDedup(opToken, reactiveToolName)
@@ -1588,7 +1609,10 @@ def handleToolsCall(msg) {
             // "unknown" instead of marking the token and burning it on the leaf's
             // missing-arg validation error. Running/complete tokens were answered above.
             boolean isGatewayCall = getGatewayConfig().containsKey(toolName) && args.tool instanceof String && args.tool
-            if (_isOpTokenPollShape(args, isGatewayCall, reactiveToolName)) {
+            // An AUTO token can never be a poll: the client sent a normal untokened
+            // call, so a bare-args mistake must surface the leaf's own validation
+            // error, not the token-recovery "unknown" contract.
+            if (!opTokenAuto && _isOpTokenPollShape(args, isGatewayCall, reactiveToolName)) {
                 // A tokened CATALOG call (bare gateway name -- reactiveToolName falls back to
                 // the gateway) never reaches the catalog and its token is never marked, so
                 // "re-issue the original call with this token" would loop forever: the right
@@ -1647,6 +1671,13 @@ def handleToolsCall(msg) {
             } catch (Exception bpErr) {
                 mcpLog("warn", "server", "Reactive BPS hint failed for ${reactiveToolName}: ${bpErr.message}", null, [details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null]])
             }
+        }
+        // Surface the server-assigned token on the response so a client that DID
+        // get the response can reuse it, and the buffered record self-identifies.
+        // Client-supplied tokens are the client's own bookkeeping -- not echoed.
+        if (opTokenAuto && result instanceof Map && !result.containsKey("opToken")) {
+            try { result.opToken = opToken }
+            catch (Exception ignored) { }
         }
         def jsonText
         try {
@@ -2922,6 +2953,7 @@ def getToolDisplayMeta() {
     // and lives in getGatewayConfig).
     def meta = [:]
     [_toolDisplayMeta_partNativeRM(),
+     _toolDisplayMeta_partDeployJobs(),
      _toolDisplayMeta_partRooms(),
      _toolDisplayMeta_partBundles(),
      _toolDisplayMeta_partVisualRules(),
@@ -3404,7 +3436,7 @@ def getAllToolDefinitions() {
     // McpBundlesLib / McpVisualRulesLib #include libraries (issue #209 modularization -- a
     // domain's tool DEFINITIONS live with its impl in the library; only the gateway membership
     // + dispatch case stay in this file).
-    return _getAllToolDefinitions_partNativeRM() + _getAllToolDefinitions_partRooms() + _getAllToolDefinitions_partBundles() + _getAllToolDefinitions_partVisualRules() + _getAllToolDefinitions_partDiscovery() + _getAllToolDefinitions_partAppCloner() + _getAllToolDefinitions_partSelfAdmin() + _getAllToolDefinitions_partHpm() + _getAllToolDefinitions_partCodeManagement() + _getAllToolDefinitions_partCustomRules() + _getAllToolDefinitions_partVariables() + _getAllToolDefinitions_partVirtualDevices() + _getAllToolDefinitions_partDevices() + _getAllToolDefinitions_partSystem() + _getAllToolDefinitions_partDiagnostics() + _getAllToolDefinitions_partDebugLogging() + _getAllToolDefinitions_partItemBackups() + _getAllToolDefinitions_partFiles() + _getAllToolDefinitions_partDashboards()
+    return _getAllToolDefinitions_partNativeRM() + _getAllToolDefinitions_partDeployJobs() + _getAllToolDefinitions_partRooms() + _getAllToolDefinitions_partBundles() + _getAllToolDefinitions_partVisualRules() + _getAllToolDefinitions_partDiscovery() + _getAllToolDefinitions_partAppCloner() + _getAllToolDefinitions_partSelfAdmin() + _getAllToolDefinitions_partHpm() + _getAllToolDefinitions_partCodeManagement() + _getAllToolDefinitions_partCustomRules() + _getAllToolDefinitions_partVariables() + _getAllToolDefinitions_partVirtualDevices() + _getAllToolDefinitions_partDevices() + _getAllToolDefinitions_partSystem() + _getAllToolDefinitions_partDiagnostics() + _getAllToolDefinitions_partDebugLogging() + _getAllToolDefinitions_partItemBackups() + _getAllToolDefinitions_partFiles() + _getAllToolDefinitions_partDashboards()
 }
 
 // Content fingerprint of the catalog's name -> required-params shape, used as
@@ -8084,13 +8116,64 @@ To move EXISTING devices into an existing room, set each device's room via hub_u
 Renaming a room preserves device assignments, but may require updating automations/dashboards that reference the room by name.
 ''',
 
+        deployment_jobs: '''## Deployment jobs (the `deployment` argument on hub_set_rule / hub_set_native_app)
+
+A deployment job runs a staged multi-app migration ON-HUB with a durable checkpoint after every op: the job record (ops, per-op status, aliases, created apps, backup keys, validation results) lives in hub storage, and while a job is staging or committing the hub scheduler keeps advancing it in bounded slices with NO client attached. A client that dies mid-migration loses nothing -- any fresh session reads `deployment={op:"status"}` and resumes. The SAME argument works on both tools (one shared engine); every call is self-contained (`deployment` cannot be combined with an edit/create in the same call). Write ops (create/resume/commit/cancel) require confirm=true; op="status" is a pure read.
+
+### Op reference (each entry in ops/commitOps is {op, args, alias?})
+
+| op | args | notes |
+|---|---|---|
+| cloneApp | sourceAppId, newName?, stageDisabled? | Clone via appCloner; stageDisabled=true lands it disabled (recommended for staging) |
+| importApp | jsonContent OR fromFile, parentHintAppId, newName?, stageDisabled? | Import an exported JSON |
+| buttonRule | controllerId, buttonNumber, event | Create a Button Rule via its parent controller |
+| addActions | appId, actions (array of RM action specs) | hub_set_rule addActions |
+| modifyAction | appId, index, mods | hub_set_rule modifyAction (e.g. retarget runRule) |
+| pause / resume | ruleId (id or array) | RM pause/resume (whole-set in one op) |
+| setDisabled | appId, disabled | Enable/disable any app (reversible red-X) |
+
+A create-type op (cloneApp/importApp/buttonRule) may declare alias:"name"; later ops write {"alias":"name"} wherever an appId/ruleId/controllerId is taken and it resolves to the created app's id at execution time.
+
+CONSTRAINT (verified live): RM's classic wizard silently ignores delete-class button clicks (delAct/trashAll -- the remove leg of modifyAction, removeAction, replaceActions) on a DISABLED app, and a disabled parent breaks a child rule's page render. To edit a staged-disabled clone, interleave setDisabled ops: {setDisabled false} -> edit op -> {setDisabled true}. Also note: Button Rules that show "(Not Installed)" reject those delete-class clicks even when enabled -- retarget plain RM caller rules, not not-installed Button Rule children.
+
+### Phases + lifecycle
+
+draft > staging > ready_for_commit > committing > completed | failed | cancelled.
+
+- op="create": validates the whole manifest up front (unknown ops, duplicate aliases, forward alias refs are rejected before anything runs), then stages. Each call slice is bounded by the response-time budget (and optional maxOpsPerCall); the on-hub worker continues the rest (background=false disables the worker: the job then advances only on op="resume").
+- Staging validation gate: when the last staging op completes, every created app is health-checked (hub_get_rule_health, which reads live config -- an existence readback). Only an all-healthy job becomes ready_for_commit; otherwise it fails with per-app results in `validation`.
+- op="commit": runs the declared commitOps (typically pause the old set + enable the new set). Refused unless phase is ready_for_commit.
+- op="cancel": deletes ONLY the apps recorded in createdAppIds (newest first) and marks the job cancelled. A completed job cannot be cancelled (reverse the cutover manually).
+- op="resume": continues after a failure (retries the failed op), a disconnect/hub restart (picks up from the checkpoint), or starts a draft. An op interrupted MID-write is reconciled where that is safe: an interrupted create-type op adopts the app if the create actually committed (matched against a pre-op child snapshot); pause/resume/setDisabled/modifyAction re-run (convergent); an interrupted addActions requires retryInFlight=true because a blind re-run can duplicate actions -- verify via hub_get_app_config first.
+
+### Worked example (migrate a Button Controller topology)
+
+```json
+{"deployment": {"op": "create", "name": "migrate-BC",
+ "ops": [
+   {"op": "cloneApp", "alias": "newTarget", "args": {"sourceAppId": 100, "newName": "Target v2", "stageDisabled": true}},
+   {"op": "cloneApp", "alias": "newCaller", "args": {"sourceAppId": 200, "newName": "Caller v2", "stageDisabled": true}},
+   {"op": "setDisabled", "args": {"appId": {"alias": "newCaller"}, "disabled": false}},
+   {"op": "modifyAction", "args": {"appId": {"alias": "newCaller"}, "index": 1, "mods": {"ruleIds": [{"alias": "newTarget"}]}}},
+   {"op": "setDisabled", "args": {"appId": {"alias": "newCaller"}, "disabled": true}}],
+ "commitOps": [
+   {"op": "pause", "args": {"ruleId": [100, 200]}},
+   {"op": "setDisabled", "args": {"appId": {"alias": "newTarget"}, "disabled": false}},
+   {"op": "setDisabled", "args": {"appId": {"alias": "newCaller"}, "disabled": false}}]},
+ "confirm": true}
+```
+
+Then poll `deployment={op:"status", jobId:"..."}` until ready_for_commit, review `validation`, and `{op:"commit"}`. Rollback handles on the job: backupKeys (hub_restore_backup) for edited apps + createdAppIds (cancel) for created ones.
+''',
         slow_ops: '''## Slow ops (opToken recovery + in_progress resume)
 
 A slow write can outlive its transport: the cloud relay severs calls at a fixed ceiling, and an MCP client's own request timeout can kill a long LAN call. Either way the hub still runs the operation to completion and commits it -- only the RESPONSE is lost, and your client surfaces an opaque transport error (a gateway/timeout error, often worded as "try again"). RE-RUNNING THE CALL IS THE WRONG RECOVERY: it double-commits the write. Recovery is always a POLL, and the write tool itself is the poll.
 
 ### Idempotency token (opToken): pass one, and re-issue with the SAME one
 
-EVERY tool -- reads included -- accepts an optional `opToken` you invent: 8-128 characters of A-Za-z0-9._- (the schemas of the known-slow class advertise it explicitly: hub_set_rule, hub_set_native_app, the code save/update tools, hub_install_bundle, hub_update_package, hub_create_backup, hub_restore_backup, hub_delete_variable). The server records the token before running the call and buffers the terminal result under it when it finishes. A read cannot double-commit, but an expensive read that outlives its transport still completes and buffers, so the tokened re-issue serves the buffered result instead of re-running the work. Tokens are per-call nonces: records are written per-entry, so concurrent calls with DIFFERENT tokens do not interfere with each other.
+The token is YOURS -- the assistant's -- to invent, record in your own context, and reuse; it is never something to ask the user for (users never see tokens). EVERY tool -- reads included -- accepts an optional `opToken` you invent: 8-128 characters of A-Za-z0-9._- (the schemas of the known-slow class advertise it explicitly: hub_set_rule, hub_set_native_app, the code save/update tools, hub_install_bundle, hub_update_package, hub_create_backup, hub_restore_backup, hub_delete_variable). The server records the token before running the call and buffers the terminal result under it when it finishes.
+
+SAFETY NET -- untokened writes are auto-recorded: a WRITE call that carries no opToken gets a server-assigned `auto-...` token; the op is recorded and its result buffered exactly like a tokened call, and the assigned token is returned on the response (`opToken` key). If a write's response was lost AND you never passed a token, do NOT blind-retry: call hub_get_info(includeRecentOps=true), find the record (tool + startedAt identify it), and re-issue token-only with its opToken to replay the buffered result. Passing your own token up front is still the stronger contract (it also gives pre-flight dedup); the auto-record is the floor under clients that didn't. A read cannot double-commit, but an expensive read that outlives its transport still completes and buffers, so the tokened re-issue serves the buffered result instead of re-running the work. Tokens are per-call nonces: records are written per-entry, so concurrent calls with DIFFERENT tokens do not interfere with each other.
 
 If the response is lost, DO NOT re-run the operation and DO NOT invent a fresh token. Re-issue the SAME tool call with the SAME `opToken` -- the token alone is enough: a flat tool takes `{opToken: "<yours>"}` with no other arguments (e.g. hub_update_package), a gateway member takes `{tool: "<leaf>", opToken: "<yours>"}` (e.g. `{tool: "hub_set_rule", opToken: "<yours>"}` via hub_manage_rule_machine). The server answers from the token record without running anything twice:
 

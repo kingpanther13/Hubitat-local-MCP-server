@@ -1155,6 +1155,38 @@ To move EXISTING devices into an existing room, set each device's room via hub_u
 
 Renaming a room preserves device assignments, but may require updating automations/dashboards that reference the room by name.
 
+## Deployment jobs (the `deployment` argument on hub_set_rule / hub_set_native_app)
+
+Surfaced via `hub_get_tool_guide(section='deployment_jobs')`. A deployment job runs a staged multi-app migration ON-HUB with a durable checkpoint after every op: the job record (ops, per-op status, aliases, created apps, backup keys, validation results) lives in hub storage, and while a job is staging or committing the hub scheduler keeps advancing it in bounded slices with NO client attached. A client that dies mid-migration loses nothing — any fresh session reads `deployment={op:"status"}` and resumes. The SAME argument works on both tools (one shared engine); every call is self-contained (`deployment` cannot be combined with an edit/create in the same call). Write ops (create/resume/commit/cancel) require `confirm=true`; `op="status"` is a pure read.
+
+### Op reference (each entry in ops/commitOps is {op, args, alias?})
+
+| op | args | notes |
+|---|---|---|
+| cloneApp | sourceAppId, newName?, stageDisabled? | Clone via appCloner; stageDisabled=true lands it disabled (recommended for staging) |
+| importApp | jsonContent OR fromFile, parentHintAppId, newName?, stageDisabled? | Import an exported JSON |
+| buttonRule | controllerId, buttonNumber, event | Create a Button Rule via its parent controller |
+| addActions | appId, actions (array of RM action specs) | hub_set_rule addActions |
+| modifyAction | appId, index, mods | hub_set_rule modifyAction (e.g. retarget runRule) |
+| pause / resume | ruleId (id or array) | RM pause/resume (whole-set in one op) |
+| setDisabled | appId, disabled | Enable/disable any app (reversible red-X) |
+
+A create-type op (cloneApp/importApp/buttonRule) may declare `alias:"name"`; later ops write `{"alias":"name"}` wherever an appId/ruleId/controllerId is taken and it resolves to the created app's id at execution time.
+
+CONSTRAINT (verified live): RM's classic wizard silently ignores delete-class button clicks (delAct/trashAll — the remove leg of modifyAction, removeAction, replaceActions) on a DISABLED app, and a disabled parent breaks a child rule's page render. To edit a staged-disabled clone, interleave setDisabled ops: `{setDisabled false}` → edit op → `{setDisabled true}`. Also note: Button Rules that show "(Not Installed)" reject those delete-class clicks even when enabled — retarget plain RM caller rules, not not-installed Button Rule children.
+
+### Phases + lifecycle
+
+draft > staging > ready_for_commit > committing > completed | failed | cancelled.
+
+- `op="create"`: validates the whole manifest up front (unknown ops, duplicate aliases, forward alias refs are rejected before anything runs), then stages. Each call slice is bounded by the response-time budget (and optional `maxOpsPerCall`); the on-hub worker continues the rest (`background=false` disables the worker: the job then advances only on `op="resume"`).
+- Staging validation gate: when the last staging op completes, every created app is health-checked (`hub_get_rule_health`, which reads live config — an existence readback). Only an all-healthy job becomes ready_for_commit; otherwise it fails with per-app results in `validation`.
+- `op="commit"`: runs the declared commitOps (typically pause the old set + enable the new set). Refused unless phase is ready_for_commit.
+- `op="cancel"`: deletes ONLY the apps recorded in `createdAppIds` (newest first) and marks the job cancelled. A completed job cannot be cancelled (reverse the cutover manually).
+- `op="resume"`: continues after a failure (retries the failed op), a disconnect/hub restart (picks up from the checkpoint), or starts a draft. An op interrupted MID-write is reconciled where that is safe: an interrupted create-type op adopts the app if the create actually committed (matched against a pre-op child snapshot); pause/resume/setDisabled/modifyAction re-run (convergent); an interrupted addActions requires `retryInFlight=true` because a blind re-run can duplicate actions — verify via `hub_get_app_config` first.
+
+Rollback handles on the job: `backupKeys` (hub_restore_backup) for edited apps + `createdAppIds` (cancel) for created ones. A worked example lives in the served guide section.
+
 ## Slow ops (opToken recovery + in_progress resume)
 
 Surfaced via `hub_get_tool_guide(section='slow_ops')`. A slow write can outlive its transport — the cloud relay severs calls at a fixed ceiling, and an MCP client's own request timeout can kill a long LAN call. Either way the hub still runs the operation to completion and commits it, but the RESPONSE is lost and the client sees an opaque transport error (a gateway/timeout error). RE-RUNNING THE CALL IS THE WRONG RECOVERY: it double-commits the write. Recovery is always a POLL, and the write tool itself is the poll.

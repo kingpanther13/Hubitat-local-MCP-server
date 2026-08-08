@@ -209,6 +209,26 @@ def toolGetHubInfo(args = null) {
         def ha = _healthAlertsFromHub2(hub2)
         if (ha != null) info.healthAlerts = ha
     }
+    if (args?.includeRecentOps == true) {
+        // The op-record journal: every tokened call PLUS every auto-recorded
+        // untokened write (dispatch assigns an auto- token). This is the
+        // did-my-last-command-land surface for a client whose response was lost
+        // and who never invented a token -- find the record here, then poll its
+        // token (token-only re-issue) to replay the buffered result.
+        def recs = (atomicState.opTokens instanceof Map) ? atomicState.opTokens : [:]
+        def rows = recs.collect { k, v ->
+            (v instanceof Map) ? [
+                opToken: k, tool: v.tool, state: v.state,
+                startedAt: v.startedAt, startedAtText: (v.startedAt != null ? formatTimestamp(v.startedAt) : null),
+                finishedAt: v.finishedAt, isError: v.isError,
+                auto: k.toString().startsWith("auto-")
+            ] : null
+        }.findAll { it != null }.sort { -((it.startedAt ?: 0) as Long) }
+        Integer cap = 25
+        try { if (args.recentOpsLimit != null) cap = Math.max(1, args.recentOpsLimit.toString() as Integer) } catch (Exception ignored) { }
+        info.recentOps = rows.take(cap)
+        info.recentOpsTotal = rows.size()
+    }
 
     // Opt-in MCP Rule Server APP version check on GitHub (distinct from platformUpdate, the hub's
     // own firmware). Off by default: it is asynchronous (the first call may return latestVersion
@@ -910,6 +930,8 @@ def _getAllToolDefinitions_partSystem() {
                 properties: [
                     identifyHub: [type: "boolean", description: "Blink the hub LED to identify it.", default: false],
                     includeHealthAlerts: [type: "boolean", description: "Include the full health-alerts block.", default: false],
+                    includeRecentOps: [type: "boolean", description: "Include the recent-operations journal: every tokened call plus every auto-recorded untokened WRITE (the server assigns an auto- opToken to each). If a write's response was lost, find its record here and re-issue token-only with its opToken to replay the buffered result instead of re-running the write.", default: false],
+                    recentOpsLimit: [type: "integer", description: "Max recentOps rows (default 25)."],
                     includeAppUpdate: [type: "boolean", description: "Also check GitHub for a newer MCP Rule Server APP version, returned under appUpdate.", default: false]
                 ]
             ],
@@ -959,7 +981,9 @@ def _getAllToolDefinitions_partSystem() {
                     platformUpdate: [type: "object", description: "Pending HUB FIRMWARE/platform update from /hub2/hubData: {available (bool or null), currentVersion, availableVersion (when available), note (only when available=null)}. Distinct from the appUpdate MCP-server-app check; available=null means /hub2/hubData was unreadable/unrecognized and the note explains why. Install a pending update with hub_update_firmware."],
                     appUpdate: [type: "object", description: "MCP Rule Server APP version check; present only when includeAppUpdate=true. {installedVersion, latestVersion ('unknown (check in progress)' while the async GitHub check is pending), updateAvailable, lastChecked}. Separate from platformUpdate (the hub's own firmware)."],
                     safeMode: [type: "boolean", description: "Whether the hub is running in Safe Mode (from /hub2/hubData). Absent if /hub2/hubData was unreadable."],
-                    healthAlerts: [type: "object", description: "Present only when includeHealthAlerts=true: the hub's health alerts from /hub2/hubData -- {safeMode, active (list of currently-firing alert flags), details (full alert map + message strings)}."]
+                    healthAlerts: [type: "object", description: "Present only when includeHealthAlerts=true: the hub's health alerts from /hub2/hubData -- {safeMode, active (list of currently-firing alert flags), details (full alert map + message strings)}."],
+                    recentOps: [type: "array", description: "Present only when includeRecentOps=true: recent op records, newest first -- {opToken, tool, state, startedAt, startedAtText, finishedAt, isError, auto}.", items: [type: "object"]],
+                    recentOpsTotal: [type: "integer", description: "Present only when includeRecentOps=true: total records held (recentOps is capped by recentOpsLimit)."]
                 ]
             ]
         ],
