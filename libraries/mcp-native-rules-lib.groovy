@@ -5,7 +5,7 @@ def _getAllToolDefinitions_partNativeRM() {
         // Rule Machine Integration (read + trigger + pause/resume only — platform blocks CRUD)
         [
             name: "hub_list_rules",
-            description: "List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id). Each rule carries its id, label, and live `status`: `active`, `paused`, `stopped`, or `disabled` (red-X) — `unknown` when the hub's app list is momentarily unreadable. Requires the Read master. For the enabled/disabled state of NON-RM classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use `hub_list_apps` (scope='instances'). Call `hub_get_tool_guide(section='builtin_app_tools')` for the status-detection semantics and platform limitations on RM rule internals.",
+            description: "List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id). Each rule carries its id, label, and live `status`: `active`, `paused`, `stopped`, or `disabled` (red-X) — `unknown` when the hub's app list is momentarily unreadable. CAVEAT: the runtime-STOPPED state is only visible here when the hub's list source decorates the label (many firmwares don't) — the authoritative stopped check is hub_get_rule_health's `stopped` field. Requires the Read master. For the enabled/disabled state of NON-RM classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use `hub_list_apps` (scope='instances'). Call `hub_get_tool_guide(section='builtin_app_tools')` for the status-detection semantics and platform limitations on RM rule internals.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -410,7 +410,8 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
                     structuralIssues: [type: "array", description: "Structural issues; always present, empty when none", items: [type: "string"]],
                     validationErrors: [type: "array", description: "Graph Visual Rule validation errors; always present, empty when none", items: [type: "string"]],
                     predicate: [type: "object", description: "Compiled required-expression summary from ruleBuilderJson: {hasPredicate, predCapabs}. Present only when the compiled RM state carried the predicate fields (hasPredicate may be false)."],
-                    eventSubscriptionCount: [type: ["integer", "null"], description: "Live event subscription count from statusJson; null when the runtime status could not be read."],
+                    stopped: [type: ["boolean", "null"], description: "True when the rule is runtime-STOPPED (hub_call_rule action='stop'). The AUTHORITATIVE stopped check -- hub_list_rules' cheap sources cannot see this state. Null when the label could not be read."],
+                    eventSubscriptionCount: [type: ["integer", "null"], description: "Live event subscription count from statusJson; null when the runtime status could not be read (a STOPPED rule's statusJson omits the list entirely, so stopped rules read null, not 0)."],
                     scheduledJobCount: [type: ["integer", "null"], description: "Live scheduled job count from statusJson; null when the runtime status could not be read."],
                     issues: [type: "array", description: "All issues; ok is false iff non-empty", items: [type: "string"]]
                 ],
@@ -15042,6 +15043,18 @@ def toolCheckRuleHealth(args) {
     } catch (Exception ignored) {
         result.eventSubscriptionCount = null
         result.scheduledJobCount = null
+    }
+    // The stopped runtime state only surfaces on per-app pages (a decorated label);
+    // the cheap RMUtils/appsList sources hub_list_rules reads never carry it, so
+    // THIS is the authoritative stopped check. Strip the decoration (and its HTML
+    // wrapper) so the returned label stays clean -- the boolean carries the fact.
+    def rawLabel = result.label?.toString()
+    if (rawLabel != null) {
+        def cleanLabel = rawLabel.replaceAll(/<[^>]+>/, "").trim()
+        result.stopped = cleanLabel.endsWith("(Stopped)")
+        result.label = cleanLabel.replaceAll(/\s*\((Stopped|Paused)\)\s*$/, "").trim()
+    } else {
+        result.stopped = null
     }
     return result
 }

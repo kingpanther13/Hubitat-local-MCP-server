@@ -228,7 +228,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a scratch rule via hub_set_rule with name='BAT-RM-Stop Start' and at least one trivial trigger (e.g., a virtual switch trigger on 'BAT-RM Switch 1'). Remember the rule id.",
-  "test_prompt": "Stop the rule (stopRuleAct). Verify through the rule health read that eventSubscriptionCount drops to 0. Then Start the rule again and verify eventSubscriptionCount is greater than 0 afterwards (Start also resets Private Boolean to true).",
+  "test_prompt": "Stop the rule (stopRuleAct). Verify through the rule health read that it now reports stopped=true (its eventSubscriptionCount also stops reading as a number while stopped). Then Start the rule again and verify stopped=false and eventSubscriptionCount greater than 0 afterwards (Start also resets Private Boolean to true).",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
