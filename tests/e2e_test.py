@@ -3814,6 +3814,25 @@ class TestRunner:
             self._delete_native(app_id)
 
     @test("native_apps")
+    @staticmethod
+    def _normalize_ruleact_ids(value: Any) -> "list[str] | None":
+        """Normalize a hub-persisted ruleAct.<N> value (list/tuple, bare scalar, or CSV
+        string) to a list of id strings. Shared by EVERY ruleAct.<N> lookup in the
+        modifyAction coverage so a shape fix in one site can never drift from another."""
+        if value is None:
+            return None
+        if isinstance(value, str) and "," in value:
+            return [s.strip() for s in value.split(",")]
+        if isinstance(value, (list, tuple)):
+            return [str(x) for x in value]
+        return [str(value)]
+
+    @staticmethod
+    def _sentinel_precedes_run_actions(page_json_text: str, sentinel_msg: str) -> bool:
+        """True when the order sentinel renders BEFORE the Run-Rule row -- i.e. the
+        reposition has NOT landed. Shared by the recovered504 and moveSoftFail probes."""
+        return 0 <= page_json_text.find(sentinel_msg) < page_json_text.find("Run Actions:")
+
     def test_set_rule_modifyaction_retarget(self) -> None:
         # modifyAction retargets a rule-targeting action in ONE op -- the staged-migration
         # caller-retarget shape -- via a position-preserving rebuild (remove + re-add + walk
@@ -3857,14 +3876,14 @@ class TestRunner:
                     "args": {"appId": caller_id, "includeSettings": True}})
                 new_idx = next((k.split(".")[1] for k, v in (cfg.get("settings") or {}).items()
                                 if k.startswith("ruleAct.")
-                                and [str(x) for x in (v if isinstance(v, (list, tuple)) else [v])] == [str(target_b)]),
+                                and self._normalize_ruleact_ids(v) == [str(target_b)]),
                                None)
                 assert new_idx is not None, \
                     f"recovered504: no committed ruleAct.<N> holds [{target_b}] -- the retarget did not land: {cfg.get('settings')}"
                 ma = dict(ma)
                 ma["newActionIndex"] = int(new_idx)
                 page_probe = json.dumps(cfg.get("page", {}))
-                if 0 <= page_probe.find(sentinel_msg) < page_probe.find("Run Actions:"):
+                if self._sentinel_precedes_run_actions(page_probe, sentinel_msg):
                     self._set_rule(caller_id,
                         {"moveAction": {"index": int(new_idx), "direction": "up"}}, strict=True)
                 self._set_rule(caller_id, {"button": "updateRule"}, strict=True)
@@ -3896,7 +3915,7 @@ class TestRunner:
                 probe = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
                     "args": {"appId": caller_id}})
                 probe_text = json.dumps(probe.get("page", {}))
-                if 0 <= probe_text.find(sentinel_msg) < probe_text.find("Run Actions:"):
+                if self._sentinel_precedes_run_actions(probe_text, sentinel_msg):
                     print("    [SOFT-FAIL] move click genuinely dropped (order unchanged) -- "
                           "single verified retry per the verifyHint")
                     self._set_rule(caller_id,
@@ -3914,18 +3933,9 @@ class TestRunner:
             ma_cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
                 "args": {"appId": caller_id, "includeSettings": True}})
             committed = (ma_cfg.get("settings") or {}).get(f"ruleAct.{ma.get('newActionIndex')}")
-            # Normalize the hub's id shapes before comparing: a list of ids, a bare scalar
-            # (the single-target form production explicitly tolerates), or a CSV string --
-            # iterating a bare string would compare CHARACTERS and turn a shape change into
-            # a misleading failure instead of a verdict.
-            if isinstance(committed, str) and "," in committed:
-                committed_ids = [s.strip() for s in committed.split(",")]
-            elif isinstance(committed, (list, tuple)):
-                committed_ids = [str(x) for x in committed]
-            elif committed is not None:
-                committed_ids = [str(committed)]
-            else:
-                committed_ids = None
+            # Shared shape normalization (list / scalar / CSV) -- iterating a bare string
+            # would compare CHARACTERS and turn a shape change into a misleading failure.
+            committed_ids = self._normalize_ruleact_ids(committed)
             assert committed_ids == [str(target_b)], \
                 f"retargeted runRule action should commit ruleAct.{ma.get('newActionIndex')}=[{target_b}], got: {committed!r}"
 
