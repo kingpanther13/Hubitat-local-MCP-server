@@ -845,12 +845,76 @@ class OpTokenReplaySpec extends ToolSpecBase {
             orphaned1234: [state: 'running', tool: 'hub_create_room', startedAt: FIXED_NOW - DAY_MS - 1L]
         ]
 
-        when:
+        when: 'the prune evicts it, then the scheduled sweep runs'
         script._opTokenMark('newmark45678', 'hub_create_room')
 
-        then:
+        then: 'the prune QUEUES the deterministic name -- no HTTP delete inside the request'
         !atomicStateMap.opTokens.containsKey('orphaned1234')
+        deleted.isEmpty()
+        atomicStateMap.opTokenSweepFiles.contains(FILE_PREFIX + 'orphaned1234.json')
+
+        when:
+        script.opTokenFileSweep()
+
+        then: 'the sweep deletes it by that name'
         deleted.contains(FILE_PREFIX + 'orphaned1234.json')
+        !atomicStateMap.opTokenSweepFiles
+    }
+
+    def "the batch eviction queues its file deletions instead of running them in the request"() {
+        // The eviction removes ~50 records at once. Deleting each file inline made the
+        // unlucky write that triggered it take 7-10s -- past the relay ceiling, turning
+        // ordinary writes into 504s (measured on the e2e hub).
+        given:
+        def deleted = []
+        script.metaClass.deleteHubFile = { String name -> deleted << name }
+        def many = [:]
+        (1..101).each { i ->
+            many["evictme${String.format('%05d', i)}".toString()] =
+                [state: 'complete', tool: 'hub_create_room', startedAt: FIXED_NOW - (200000L - i)]
+        }
+        atomicStateMap.opTokens = many
+
+        when: 'the mark trips the >100 batch eviction'
+        script._opTokenMark('capmark12345', 'hub_create_room')
+
+        then: 'the map is evicted to 50 with ZERO deletes in this request'
+        atomicStateMap.opTokens.size() == 50
+        deleted.isEmpty()
+        atomicStateMap.opTokenSweepFiles.size() == 52
+
+        when: 'the scheduled sweep runs its first pass'
+        script.opTokenFileSweep()
+
+        then: 'it is bounded -- 20 per pass, the remainder left queued for the re-arm'
+        deleted.size() == 20
+        atomicStateMap.opTokenSweepFiles.size() == 32
+
+        when: 'the remaining passes run'
+        script.opTokenFileSweep()
+        script.opTokenFileSweep()
+
+        then: 'every queued file is deleted and the queue drains'
+        deleted.size() == 52
+        !atomicStateMap.opTokenSweepFiles
+    }
+
+    def "the sweep queue is bounded so a delete backlog cannot grow atomicState without limit"() {
+        given:
+        script.metaClass.deleteHubFile = { String name -> }
+        atomicStateMap.opTokenSweepFiles = (1..500).collect { "mcp-op-result-backlog${it}.json".toString() }
+        atomicStateMap.opTokens = [
+            stale123456: [state: 'complete', tool: 'hub_create_room',
+                          startedAt: FIXED_NOW - DAY_MS - 1L]
+        ]
+
+        when:
+        script._opTokenMark('newmark999', 'hub_create_room')
+
+        then: 'the queue holds at the cap, keeping the NEWEST names'
+        atomicStateMap.opTokenSweepFiles.size() == 500
+        atomicStateMap.opTokenSweepFiles.last() == FILE_PREFIX + 'stale123456.json'
+        !atomicStateMap.opTokenSweepFiles.contains('mcp-op-result-backlog1.json')
     }
 
     def "a malformed JSON-string inner args leaves the token unextracted and falls through to the gateway's own parse error"() {
@@ -892,8 +956,9 @@ class OpTokenReplaySpec extends ToolSpecBase {
 
         when:
         script._opTokenMark('newmark123', 'hub_create_room')
+        script.opTokenFileSweep()
 
-        then: 'the >24h entry is gone, its file deleted; the fresh entry and the new marker survive'
+        then: 'the >24h entry is gone, its file deleted by the sweep; the fresh entry and the new marker survive'
         !atomicStateMap.opTokens.containsKey('stale123456')
         deleted.contains(FILE_PREFIX + 'stale123456.json')
         atomicStateMap.opTokens.containsKey('fresh123456')

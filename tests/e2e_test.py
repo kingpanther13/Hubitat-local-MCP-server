@@ -449,11 +449,14 @@ class HubitatMcpClient:
             if '"too_many_writes_in_flight"' not in _cap_text:
                 break
             if _cap_deadline is None:
-                _cap_deadline = time.monotonic() + 660.0
+                # Just past the server's 90s running-record window: a record that will
+                # never complete stops counting at 90s, so anything still refusing past
+                # that is a genuinely busy hub, not a wedge.
+                _cap_deadline = time.monotonic() + 120.0
             if time.monotonic() >= _cap_deadline:
                 break   # let the normal isError raise below surface the standing refusal
-            print(f"  [BACKPRESSURE] {op_key}: write cap full -- waiting 10s for an in-flight write to finish")
-            time.sleep(10.0)
+            print(f"  [BACKPRESSURE] {op_key}: write cap full -- waiting 5s for an in-flight write to finish")
+            time.sleep(5.0)
 
         # Check for tool-level error
         if result.get("isError"):

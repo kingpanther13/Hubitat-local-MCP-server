@@ -1504,7 +1504,12 @@ def handleToolsCall(msg) {
     // the handled path -- fall back to the gateway name and let the try block report it cleanly.
     // The truthiness check keeps an empty-string tool (catalog mode) attributed to the
     // gateway name -- the catalog IS the gateway's own surface.
-    def reactiveToolName = (getGatewayConfig().containsKey(toolName) && args instanceof Map && args.tool instanceof String && args.tool) ? args.tool : toolName
+    // Hoisted once: both are AGGREGATORS that rebuild their whole structure per call
+    // (a large gateway map literal; a concat of ~20 library name chunks), and the
+    // token/gate logic below consults them nine times per request.
+    def gatewayConfigCache = getGatewayConfig()
+    def readOnlyNamesCache = getReadOnlyToolNames()
+    def reactiveToolName = (gatewayConfigCache.containsKey(toolName) && args instanceof Map && args.tool instanceof String && args.tool) ? args.tool : toolName
 
     if (!toolName) {
         return jsonRpcError(msg.id, -32602, "Invalid params: tool name required")
@@ -1589,12 +1594,12 @@ def handleToolsCall(msg) {
             // excluded by the SAME classifier the Write master uses -- without it
             // every status poll would mint a running write record, count toward
             // maxConcurrentWrites, and churn the journal it exists to serve.
-            def _tokenLeafArgs = (getGatewayConfig().containsKey(toolName) && args.args instanceof Map) ? args.args : args
+            def _tokenLeafArgs = (gatewayConfigCache.containsKey(toolName) && args.args instanceof Map) ? args.args : args
             reactiveSchemaOnly = (reactiveToolName?.toString() == 'hub_set_rule' && _isSetRuleSchemaOnlyCall(_tokenLeafArgs)) ||
                 (reactiveToolName?.toString() == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(_tokenLeafArgs))
-            if (!opTokenActive && reactiveToolName && !(reactiveToolName in getReadOnlyToolNames())
+            if (!opTokenActive && reactiveToolName && !(reactiveToolName in readOnlyNamesCache)
                     && !reactiveSchemaOnly
-                    && !getGatewayConfig().containsKey(reactiveToolName.toString())) {
+                    && !gatewayConfigCache.containsKey(reactiveToolName.toString())) {
                 opToken = "auto-" + Long.toString(now(), 16) + "-" + Integer.toString(new Random().nextInt(0xFFFF), 16).padLeft(4, '0')
                 opTokenActive = true
                 opTokenAuto = true
@@ -1609,7 +1614,7 @@ def handleToolsCall(msg) {
                 // This short-circuit serves a result WITHOUT reaching executeTool, so the
                 // masters must be enforced here too -- otherwise a client with the Write
                 // master off could replay a write's buffered result through its token.
-                boolean isReadTool = reactiveToolName in getReadOnlyToolNames()
+                boolean isReadTool = reactiveToolName in readOnlyNamesCache
                 if (!isReadTool && settings.enableWrite == false) {
                     return jsonRpcResult(msg.id, [
                         content: [[type: "text", text: groovy.json.JsonOutput.toJson([
@@ -1651,7 +1656,7 @@ def handleToolsCall(msg) {
             // (write or read) called that way can never be a real execution -- so answer
             // "unknown" instead of marking the token and burning it on the leaf's
             // missing-arg validation error. Running/complete tokens were answered above.
-            boolean isGatewayCall = getGatewayConfig().containsKey(toolName) && args.tool instanceof String && args.tool
+            boolean isGatewayCall = gatewayConfigCache.containsKey(toolName) && args.tool instanceof String && args.tool
             // An AUTO token can never be a poll: the client sent a normal untokened
             // call, so a bare-args mistake must surface the leaf's own validation
             // error, not the token-recovery "unknown" contract.
@@ -1660,7 +1665,7 @@ def handleToolsCall(msg) {
                 // the gateway) never reaches the catalog and its token is never marked, so
                 // "re-issue the original call with this token" would loop forever: the right
                 // exit is dropping the token from the catalog call.
-                String unknownNote = getGatewayConfig().containsKey(reactiveToolName?.toString())
+                String unknownNote = gatewayConfigCache.containsKey(reactiveToolName?.toString())
                     ? "No operation with this token has started on this hub. This token rode a gateway CATALOG call (no tool selected) -- tokens are never spent on catalog listings, so polling it always answers unknown. Re-issue the catalog call WITHOUT an opToken; put tokens on the {tool, args} call itself. See hub_get_tool_guide(section='slow_ops')."
                     : "No operation with this token has started on this hub -- the original call never arrived, so this poll ran nothing. Re-issue the ORIGINAL call (full arguments) with this same opToken. See hub_get_tool_guide(section='slow_ops')."
                 return jsonRpcResult(msg.id, [
@@ -1671,9 +1676,9 @@ def handleToolsCall(msg) {
                     isError: true
                 ])
             }
-            boolean isWriteLeaf = (reactiveToolName && !(reactiveToolName in getReadOnlyToolNames())
+            boolean isWriteLeaf = (reactiveToolName && !(reactiveToolName in readOnlyNamesCache)
                     && !reactiveSchemaOnly
-                    && !getGatewayConfig().containsKey(reactiveToolName.toString()))
+                    && !gatewayConfigCache.containsKey(reactiveToolName.toString()))
             if (opTokenAuto && isWriteLeaf) {
                 def duplicate = _findIdenticalRunningOp(reactiveToolName, opFingerprintHash, opFingerprintLen)
                 if (duplicate != null) {
@@ -2147,21 +2152,47 @@ def _opTokenPrune() {
     }
     if (removedKeys.isEmpty()) return
     atomicState.opTokens = tokens
-    // Delete by the token's DETERMINISTIC filename, not the record's .file pointer:
-    // a record reverted by the prune-vs-complete race loses its .file while the
-    // uploaded result file exists -- keying on the token closes that orphan leak
-    // (deleting a never-uploaded name is a harmless best-effort no-op).
-    removedKeys.each { k ->
-        try { deleteHubFile(_opTokenResultFile(k.toString())) }
+    // Queue the file deletions for a SCHEDULED sweep instead of running them here.
+    // Deleting by the token's DETERMINISTIC filename (not the record's .file pointer)
+    // closes the orphan leak a prune-vs-complete race would otherwise open, but each
+    // delete is an HTTP round trip: the batch eviction removes ~50 keys at once, and
+    // doing that inline made the unlucky write that triggered it take 7-10s -- past
+    // the relay ceiling, turning ordinary writes into 504s (measured on the e2e hub).
+    def queued = []
+    if (atomicState.opTokenSweepFiles instanceof List) queued.addAll(atomicState.opTokenSweepFiles)
+    removedKeys.each { k -> queued << _opTokenResultFile(k.toString()) }
+    // Bound the queue: a runaway backlog must never grow atomicState without limit.
+    // Dropping the oldest names leaks those small JSON files, which the 24h-TTL
+    // pass re-queues on its next eviction only if their records still exist -- so
+    // the bound is a hard stop, logged, not a silent loss.
+    if (queued.size() > 500) {
+        mcpLog("warn", "op-token", "op-result sweep backlog exceeded 500 files; dropping the oldest ${queued.size() - 500} (they remain in File Manager until removed by hand).")
+        queued = queued.drop(queued.size() - 500)
+    }
+    atomicState.opTokenSweepFiles = queued
+    runIn(5, "opTokenFileSweep")
+}
+
+// Scheduled companion to _opTokenPrune: deletes the evicted result files OUTSIDE any
+// request, so no client ever waits on the batch. Bounded per pass and self-re-arming.
+def opTokenFileSweep() {
+    def queued = (atomicState.opTokenSweepFiles instanceof List) ? atomicState.opTokenSweepFiles : []
+    if (queued.isEmpty()) return
+    def batch = queued.take(20)
+    def remaining = queued.drop(20)
+    atomicState.opTokenSweepFiles = remaining
+    batch.each { fileName ->
+        try { deleteHubFile(fileName.toString()) }
         catch (Exception e) {
-            // Best-effort: the key just left the map, so nothing can re-derive this
-            // filename later -- a failed delete leaks one small JSON file until it is
-            // removed from File Manager by hand. Logged so the manual-cleanup case is
-            // discoverable (a real failure is otherwise indistinguishable from the
-            // expected never-uploaded no-op).
-            mcpLog("debug", "op-token", "prune could not delete result file ${_opTokenResultFile(k.toString())}: ${e.message}")
+            // Best-effort: the record is already gone from the map, so nothing can
+            // re-derive this name later -- a failed delete leaks one small JSON file
+            // until it is removed from File Manager by hand. Logged so the
+            // manual-cleanup case is discoverable (a real failure is otherwise
+            // indistinguishable from the expected never-uploaded no-op).
+            mcpLog("debug", "op-token", "sweep could not delete result file ${fileName}: ${e.message}")
         }
     }
+    if (remaining) runIn(5, "opTokenFileSweep")
 }
 
 // Mark a token running just before dispatch (per-entry write), then prune.
@@ -2211,7 +2242,14 @@ def _recentRunningWriteOps() {
     def tokens = atomicState.opTokens
     if (!(tokens instanceof Map)) return []
     def readOnlyNames = getReadOnlyToolNames()
-    long cutoff = now() - 600000L
+    // 90s, NOT the 10-minute fingerprint window: a record only leaves "running" when
+    // its request reaches the terminal path, so a write whose hub-side thread died
+    // with the severed connection stays "running" forever. Counting those toward the
+    // cap let two dead records block every write for ten minutes (measured on the
+    // e2e hub: 82 refusals, ~14 minutes of client waiting). The cap exists to stop a
+    // client firing writes in PARALLEL -- those arrive seconds apart, so a short
+    // window serves it fully while bounding what a dead record can wedge.
+    long cutoff = now() - 90000L
     def running = []
     tokens.each { token, rec ->
         if (rec instanceof Map && rec.state == "running" && rec.tool != null && rec.startedAt != null
