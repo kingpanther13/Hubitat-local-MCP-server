@@ -8,9 +8,6 @@ The very first review comment you post on any PR must begin with this exact sent
 
 This is a hard requirement. Authors should know up front that pushback is welcome and respected.
 
-## Dependabot exemption
-
-PRs authored by `dependabot[bot]` are automatic dependency bumps. They use a `build:` title prefix, do not use this repo's PR template, and do not have a `## Release Notes` section by design. **Skip the three custom checks below** for those PRs. Continue to apply your standard code-quality review.
 
 ## Repository conventions to refer to
 
