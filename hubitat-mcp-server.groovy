@@ -630,9 +630,14 @@ def initialize() {
     try { unschedule() }
     catch (Exception e) { mcpLog("warn", "server", "unschedule() before re-schedule failed: ${e.message} -- duplicate schedules may persist") }
     schedule("0 0 3 ? * *", "checkForUpdate")
-    // A settings save unschedule()s everything, so a checkpointed deployment job loses its worker.
+    // A settings save unschedule()s everything, so anything mid-flight loses its timer:
+    // a checkpointed deployment job loses its worker, and queued op-result files lose the
+    // sweep that deletes them (they would otherwise sit until some later eviction re-armed it).
     if (_deployJobs().any { k, v -> (v instanceof Map) && (v.phase?.toString() in _deployActivePhases()) && v.background != false }) {
         runIn(15, "deployJobWorker")
+    }
+    if (atomicState.opTokenSweepFiles instanceof List && atomicState.opTokenSweepFiles) {
+        runIn(20, "opTokenFileSweep")
     }
     // Only egress to GitHub immediately on first install. state.updateCheck is
     // null until the first check completes; once set, routine settings saves
@@ -1600,7 +1605,11 @@ def handleToolsCall(msg) {
             if (!opTokenActive && reactiveToolName && !(reactiveToolName in readOnlyNamesCache)
                     && !reactiveSchemaOnly
                     && !gatewayConfigCache.containsKey(reactiveToolName.toString())) {
-                opToken = "auto-" + Long.toString(now(), 16) + "-" + Integer.toString(new Random().nextInt(0xFFFF), 16).padLeft(4, '0')
+                // UUID, not a 16-bit random group: auto-tokens are minted on EVERY untokened
+                // write, so same-millisecond mints are routine, and a collision would hand the
+                // second caller the FIRST one's buffered result. (The old nextInt(0xFFFF) was
+                // also exclusive of its bound, so it drew from 65535 values, not 65536.)
+                opToken = "auto-" + Long.toString(now(), 16) + "-" + java.util.UUID.randomUUID().toString()
                 opTokenActive = true
                 opTokenAuto = true
                 String canonicalArgsJson = groovy.json.JsonOutput.toJson(_canonicalOpArgs(args))
@@ -1697,7 +1706,7 @@ def handleToolsCall(msg) {
             }
             if (isWriteLeaf) {
                 int maxWrites = _maxConcurrentWrites()
-                def inFlightWrites = _recentRunningWriteOps()
+                def inFlightWrites = _recentRunningWriteOps(readOnlyNamesCache)
                 if (maxWrites > 0 && inFlightWrites.size() >= maxWrites) {
                     def refusal = [
                         success: false, isError: true, status: "too_many_writes_in_flight",
@@ -1968,8 +1977,8 @@ def _advertisesOutputSchema(toolName) {
 // DIFFERENT tokens are written per-entry (atomicState.updateMapValue), so a client
 // running successive or parallel tokened calls cannot lose a record to a whole-map
 // last-writer-win; the amortized prune is the only whole-map writer left on the
-// normal (updateMapValue) path, and its size-cap hysteresis (engage past 100
-// records, evict to 50) keeps steady-state marks from rewriting the map (its
+// normal (updateMapValue) path, and its size-cap hysteresis (engage past the record
+// cap, evict to the keep count) keeps steady-state marks from rewriting the map (its
 // narrow window self-heals via the TTL sweep). The token targets the
 // sequential-retry pattern (response lost, client retries seconds later), where
 // the persisted mark refuses/replays the retry race-free. The buffered result
@@ -2073,6 +2082,13 @@ def _isOpTokenPollShape(args, boolean isGatewayCall, leafName) {
 }
 
 def _opTokenResultFilePrefix() { "mcp-op-result-" }
+// Results at or under this ride inside the token record instead of a hub file.
+def _opTokenInlineMax() { 1024 }
+// Record-cap hysteresis. Deliberately small: with auto-tokens every write adds a
+// record, the map is read several times per request, and small results are stored
+// inline -- so a big map would be per-write cost. 40 recent ops is the journal.
+def _opTokenMaxRecords() { 40 }
+def _opTokenKeepRecords() { 20 }
 // .toString() matters: a GString here would be stored in atomicState by the sweep
 // queue, and a GString never equals the String it renders as -- List.contains and
 // every other value comparison against it silently answers false.
@@ -2122,8 +2138,8 @@ def _opTokenPutWholeMap(String opToken, Map rec) {
     atomicState.opTokens = tokens
 }
 
-// Amortized prune: drop entries past the 24h TTL, and past 100 stored records
-// batch-evict the oldest terminal entries down to 50. Runs AFTER the marker is
+// Amortized prune: drop entries past the 24h TTL, and past the record cap
+// batch-evict the oldest terminal entries down to the keep count. Runs AFTER the marker is
 // written and only rewrites the map when something actually needs removing, so
 // the common path never does a whole-map write; result-file deletions happen
 // after the map write so no file I/O sits inside the read->write window. This is
@@ -2132,29 +2148,49 @@ def _opTokenPutWholeMap(String opToken, Map rec) {
 // self-heals (the record's file TTL-expires; a live token is never the eviction
 // target: the size cap evicts TERMINAL records only, and stuck "running" records
 // are the TTL sweep's job, so the cap cannot wedge on them for long).
+// Queue a delete unless the record PROVABLY has no file: an inlined result never
+// touched the File Manager, so deleting its name would be a pure no-op hub call --
+// and with auto-tokens those no-ops are most of the eviction. Anything else is
+// queued, including a `running` record, because the prune-vs-complete race can
+// strip a completed record's .file pointer while its uploaded file still exists.
+private boolean _opTokenMayHaveFile(Object rec) {
+    return !(rec instanceof Map) || rec.inline == null
+}
+
 def _opTokenPrune() {
     def stored = atomicState.opTokens
     if (!(stored instanceof Map)) return
+    long cutoff = now() - 86400000L
+    // Decide BEFORE copying: this runs on every tokened call, and with auto-tokens the
+    // map holds up to 100 records, so an unconditional whole-map copy is per-write cost
+    // on the common path where nothing needs pruning at all.
+    def expiredKeys = stored.findAll { k, v -> (v instanceof Map) && (((v.startedAt as Long) ?: 0L) < cutoff) }.keySet().toList()
+    if (expiredKeys.isEmpty() && stored.size() <= _opTokenMaxRecords()) return
     def tokens = [:]
     tokens.putAll(stored)
     def removedKeys = []
-    long cutoff = now() - 86400000L
-    def expiredKeys = tokens.findAll { k, v -> (v instanceof Map) && (((v.startedAt as Long) ?: 0L) < cutoff) }.keySet().toList()
-    expiredKeys.each { k -> tokens.remove(k); removedKeys << k }
+    expiredKeys.each { k ->
+        if (_opTokenMayHaveFile(tokens[k])) removedKeys << k
+        tokens.remove(k)
+    }
     // Hysteresis dead band: a hard at-50 cap would turn EVERY tokened call past the
     // 50th-within-24h into a whole-map rewrite -- permanent re-exposure of the
     // lost-record race the per-entry writes exist to close. Engaging only past 100
     // and evicting to 50 in one batch keeps steady state (50-100 records) free of
     // cap-driven rewrites: one batch eviction per ~50 new tokens under sustained load.
-    if (tokens.size() > 100) {
+    if (tokens.size() > _opTokenMaxRecords()) {
         def ordered = tokens.entrySet().toList()
             .findAll { e -> !((e.value instanceof Map) && e.value.state == "running") }
             .sort { e -> (e.value instanceof Map) ? ((e.value.startedAt as Long) ?: 0L) : 0L }
-        int over = tokens.size() - 50
-        ordered.take(over).each { e -> tokens.remove(e.key); removedKeys << e.key }
+        int over = tokens.size() - _opTokenKeepRecords()
+        ordered.take(over).each { e ->
+            if (_opTokenMayHaveFile(e.value)) removedKeys << e.key
+            tokens.remove(e.key)
+        }
     }
-    if (removedKeys.isEmpty()) return
+    if (tokens.size() == stored.size() && removedKeys.isEmpty()) return
     atomicState.opTokens = tokens
+    if (removedKeys.isEmpty()) return
     // Queue the file deletions for a SCHEDULED sweep instead of running them here.
     // Deleting by the token's DETERMINISTIC filename (not the record's .file pointer)
     // closes the orphan leak a prune-vs-complete race would otherwise open, but each
@@ -2173,7 +2209,7 @@ def _opTokenPrune() {
         queued = queued.drop(queued.size() - 500)
     }
     atomicState.opTokenSweepFiles = queued
-    runIn(5, "opTokenFileSweep")
+    runIn(60, "opTokenFileSweep")
 }
 
 // Scheduled companion to _opTokenPrune: deletes the evicted result files OUTSIDE any
@@ -2181,8 +2217,8 @@ def _opTokenPrune() {
 def opTokenFileSweep() {
     def queued = (atomicState.opTokenSweepFiles instanceof List) ? atomicState.opTokenSweepFiles : []
     if (queued.isEmpty()) return
-    def batch = queued.take(20)
-    def remaining = queued.drop(20)
+    def batch = queued.take(10)
+    def remaining = queued.drop(10)
     atomicState.opTokenSweepFiles = remaining
     batch.each { fileName ->
         try { deleteHubFile(fileName.toString()) }
@@ -2195,7 +2231,7 @@ def opTokenFileSweep() {
             mcpLog("debug", "op-token", "sweep could not delete result file ${fileName}: ${e.message}")
         }
     }
-    if (remaining) runIn(5, "opTokenFileSweep")
+    if (remaining) runIn(60, "opTokenFileSweep")
 }
 
 // Mark a token running just before dispatch (per-entry write), then prune.
@@ -2226,7 +2262,12 @@ def _findIdenticalRunningOp(toolName, Integer fpHash, Integer fpLen) {
     // hash AND length, never hash alone: String.hashCode is a 32-bit non-cryptographic
     // digest that collides trivially, and a false match here would refuse a DIFFERENT
     // write as a duplicate. Requiring the length to agree too means an accidental
-    // collision has to land on both, which stray argument JSON does not do.
+    // collision has to land on both, which stray argument JSON does not do. Storing the
+    // pair rather than the canonical JSON keeps the record bounded in atomicState.
+    // The 10-minute window here is deliberately LONGER than the cap's 90s window
+    // (_recentRunningWriteOps): an exact-args match is strong evidence of a real
+    // duplicate worth refusing for as long as the original might still be running,
+    // while the cap counts unrelated writes and must not be wedged by a dead record.
     def tokens = atomicState.opTokens
     if (!(tokens instanceof Map) || fpHash == null || fpLen == null) return null
     long cutoff = now() - 600000L
@@ -2241,10 +2282,10 @@ def _findIdenticalRunningOp(toolName, Integer fpHash, Integer fpLen) {
     return null
 }
 
-def _recentRunningWriteOps() {
+def _recentRunningWriteOps(readOnlyNamesArg = null) {
     def tokens = atomicState.opTokens
     if (!(tokens instanceof Map)) return []
-    def readOnlyNames = getReadOnlyToolNames()
+    def readOnlyNames = (readOnlyNamesArg != null) ? readOnlyNamesArg : getReadOnlyToolNames()
     // 90s, NOT the 10-minute fingerprint window: a record only leaves "running" when
     // its request reaches the terminal path, so a write whose hub-side thread died
     // with the severed connection stays "running" forever. Counting those toward the
@@ -2273,25 +2314,33 @@ def _recentRunningWriteOps() {
 // exist here (only _opTokenComplete uploads, and completion never ran; a prior record would
 // have short-circuited at the dedup gate before dispatch) -- at most a prune-orphaned file
 // from an earlier, already-pruned completion remains, which a later completion overwrites.
+// Write a terminal token record and verify it PERSISTED: the whole-map prune can
+// clobber a per-entry write that landed a moment earlier. One retry, then report --
+// a third write would just lose the same race, and a record stuck at "running"
+// self-heals anyway (it stops counting toward the write cap after 90s and the TTL
+// sweep reaps it).
+private void _opTokenPutTerminal(String opToken, Map rec, String label) {
+    _opTokenPut(opToken, rec)
+    if (_opTokenStateOf(opToken) == rec.state) return
+    mcpLog("warn", "op-token", "${label} record for ${opToken} was overwritten after its per-entry write; re-writing terminal state '${rec.state}' once.")
+    _opTokenPut(opToken, rec)
+    if (_opTokenStateOf(opToken) != rec.state) {
+        mcpLog("warn", "op-token", "${label} record for ${opToken} did NOT persist after the retry; the record may read as running until its TTL expires, so a poll of this token can answer 'running' until then.")
+    }
+}
+
+private String _opTokenStateOf(String opToken) {
+    def m = atomicState.opTokens
+    def rec = (m instanceof Map && m[opToken] instanceof Map) ? m[opToken] : null
+    return rec?.state?.toString()
+}
+
 def _opTokenRelease(String opToken) {
     def stored = atomicState.opTokens
     def prev = (stored instanceof Map && stored[opToken] instanceof Map) ? stored[opToken] : [:]
     def rec = [state: "released", tool: prev.tool,
                startedAt: (prev.startedAt != null ? prev.startedAt : now())]
-    _opTokenPut(opToken, rec)
-    def after = atomicState.opTokens
-    def persisted = (after instanceof Map && after[opToken] instanceof Map) ? after[opToken] : null
-    if (persisted?.state != rec.state) {
-        mcpLog("warn", "op-token", "Release record for ${opToken} was overwritten after its per-entry write; re-writing terminal state '${rec.state}' once.")
-        _opTokenPut(opToken, rec)
-        // One retry, then report. A third write would just lose the same race again, and a
-        // record stuck at "running" self-heals: it stops counting after the 10-minute
-        // in-flight window and the TTL sweep reaps it.
-        def afterRetry = atomicState.opTokens
-        if (((afterRetry instanceof Map && afterRetry[opToken] instanceof Map) ? afterRetry[opToken] : null)?.state != rec.state) {
-            mcpLog("warn", "op-token", "Release record for ${opToken} did NOT persist after the retry; the record may read as running until its TTL expires. A poll of this token can answer 'running' until then.")
-        }
-    }
+    _opTokenPutTerminal(opToken, rec, "Release")
 }
 
 // Buffer a token's terminal result (called once, on the request's terminal path).
@@ -2302,12 +2351,21 @@ def _opTokenRelease(String opToken) {
 def _opTokenComplete(String opToken, String jsonText, boolean isErrorBool) {
     def fileName = _opTokenResultFile(opToken)
     byte[] resultBytes = jsonText?.getBytes("UTF-8")
+    // Auto-tokens buffer EVERY untokened write, so a File Manager round trip here is a
+    // hub operation on every write -- enough added load to trip the platform's per-app
+    // limiter and slow the whole write path. Most results are a few hundred bytes, so
+    // they ride inside the record (the replay path already prefers rec.inline) and only
+    // genuinely large payloads pay for a file. The record cap is kept low to match, so
+    // the map these inline copies live in stays cheap to read on the hot path.
+    boolean inlined = (resultBytes != null && resultBytes.length <= _opTokenInlineMax())
     boolean uploaded = false
-    try {
-        uploadHubFile(fileName, resultBytes)
-        uploaded = true
-    } catch (Exception e) {
-        mcpLog("warn", "op-token", "Buffering op-result for ${opToken} to the File Manager failed: ${e.message}")
+    if (!inlined) {
+        try {
+            uploadHubFile(fileName, resultBytes)
+            uploaded = true
+        } catch (Exception e) {
+            mcpLog("warn", "op-token", "Buffering op-result for ${opToken} to the File Manager failed: ${e.message}")
+        }
     }
     def stored = atomicState.opTokens
     def prev = (stored instanceof Map && stored[opToken] instanceof Map) ? stored[opToken] : [:]
@@ -2319,7 +2377,9 @@ def _opTokenComplete(String opToken, String jsonText, boolean isErrorBool) {
     def rec = [state: "complete", tool: prev.tool,
                startedAt: (prev.startedAt != null ? prev.startedAt : now()),
                finishedAt: now(), isError: isErrorBool]
-    if (uploaded) {
+    if (inlined) {
+        rec.inline = jsonText
+    } else if (uploaded) {
         rec.file = fileName
     } else if (resultBytes != null && resultBytes.length <= 2048) {
         rec.inline = jsonText
@@ -2327,20 +2387,7 @@ def _opTokenComplete(String opToken, String jsonText, boolean isErrorBool) {
         rec.state = "failed_buffer"
         rec.note = "Operation committed but its result could not be buffered (upload failed, payload too large to inline). Re-read current state to confirm."
     }
-    _opTokenPut(opToken, rec)
-    def after = atomicState.opTokens
-    def persisted = (after instanceof Map && after[opToken] instanceof Map) ? after[opToken] : null
-    if (persisted?.state != rec.state) {
-        mcpLog("warn", "op-token", "Completion record for ${opToken} was overwritten after its per-entry write; re-writing terminal state '${rec.state}' once.")
-        _opTokenPut(opToken, rec)
-        // One retry, then report. A third write would just lose the same race again, and a
-        // record stuck at "running" self-heals: it stops counting after the 10-minute
-        // in-flight window and the TTL sweep reaps it.
-        def afterRetry = atomicState.opTokens
-        if (((afterRetry instanceof Map && afterRetry[opToken] instanceof Map) ? afterRetry[opToken] : null)?.state != rec.state) {
-            mcpLog("warn", "op-token", "Completion record for ${opToken} did NOT persist after the retry; the record may read as running until its TTL expires. The operation itself completed -- a poll can answer 'running' until then.")
-        }
-    }
+    _opTokenPutTerminal(opToken, rec, "Completion")
 }
 
 // Dedup gate consulted before dispatch. Returns null to proceed, or a
@@ -8385,13 +8432,13 @@ If the response is lost, DO NOT re-run the operation and DO NOT invent a fresh t
 
 - `status: "running"` -- still executing on the hub. Poll again in a few seconds by re-issuing the same tokened call. The operation completes and commits even though your response dropped.
 - `replayed: true` -- it finished; this IS the original buffered result (including `isError` if that attempt failed).
-- `status: "unknown"` (returned only to a token-only poll) -- no RECORD of this token exists: the original call never arrived, OR the record aged out (records sweep ~24h after start, and past 100 stored records the oldest terminal records batch-evict down to 50). Poll promptly after a drop and it reliably means never-arrived: re-issue the ORIGINAL call (full arguments) with this same token. Do not trust day-old tokens.
+- `status: "unknown"` (returned only to a token-only poll) -- no RECORD of this token exists: the original call never arrived, OR the record aged out (records sweep ~24h after start, and past 40 stored records the oldest terminal records batch-evict down to 20). Poll promptly after a drop and it reliably means never-arrived: re-issue the ORIGINAL call (full arguments) with this same token. Do not trust day-old tokens.
 - `status: "indeterminate"` -- the operation completed here but its buffered result cannot be read (buffering failed, or the result file is gone while the record survives). Do NOT re-issue blindly; verify current state via reads first.
 
 A NEW write may also be refused before it runs:
 
 - `status: "duplicate_in_flight"` -- an identical untokened write is already running. Do not re-run it; poll the named `inFlightOpToken` until its result replays.
-- `status: "too_many_writes_in_flight"` -- the recent running-write count reached `maxConcurrentWrites` (default 2; 1 serializes, 0 disables). Wait for one named `inFlight` token to finish or poll it, then re-issue this call.
+- `status: "too_many_writes_in_flight"` -- the running-write count reached `maxConcurrentWrites` (default 2; 1 serializes, 0 disables). Wait for one named `inFlight` token to finish or poll it, then re-issue this call. The wait is bounded: a record stops counting toward the cap 90s after it started, so a write whose hub-side thread died can never block you indefinitely.
 
 A token is SPENT once its operation completes -- runtime errors included. A replayed result carrying an error means that attempt failed; to retry with corrected arguments after a RUNTIME failure, invent a FRESH token. Never reuse a token for a DIFFERENT operation. Exception: a call rejected for invalid arguments (-32602) executed nothing and RELEASES its token -- fix the arguments and re-issue with the SAME token.
 

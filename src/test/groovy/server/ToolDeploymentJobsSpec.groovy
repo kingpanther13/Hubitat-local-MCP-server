@@ -529,6 +529,69 @@ class ToolDeploymentJobsSpec extends ToolSpecBase {
         result.phase == "ready_for_commit"
     }
 
+    def "maxOpsPerCall bounds the inline slice and the worker finishes the rest"() {
+        // The durability claim of this layer: a create returns after its bounded slice
+        // with the job still staging, and the on-hub worker carries the remainder with
+        // no client attached.
+        given:
+        enableWrite()
+        def disabledCalls = []
+        script.metaClass.toolSetAppDisabled = { Map a -> disabledCalls << a.appId; [success: true, disabled: a.disabled] }
+        script.metaClass.toolCheckRuleHealth = { Map a -> [ok: true, broken: false, issues: []] }
+
+        when: "three ops with a one-op-per-call bound"
+        def created = script.toolSetRule([deployment: [op: "create", name: "bounded-job", maxOpsPerCall: 1, ops: [
+            [op: "setDisabled", args: [appId: 11, disabled: true]],
+            [op: "setDisabled", args: [appId: 12, disabled: true]],
+            [op: "setDisabled", args: [appId: 13, disabled: true]]
+        ]], confirm: true])
+
+        then: "exactly one op ran; the job stays staging and hands off to the worker"
+        disabledCalls == [11]
+        created.phase == "staging"
+        created.workerScheduled == true
+        created.progress.stagingDone == 1
+        created.progress.stagingTotal == 3
+
+        when: "the worker runs the remaining slices"
+        script.deployJobWorker()
+        script.deployJobWorker()
+
+        then: "every op completed and the job reached the validation gate"
+        disabledCalls == [11, 12, 13]
+        def st = script.toolSetRule([deployment: [op: "status", jobId: created.jobId]])
+        st.phase == "ready_for_commit"
+        st.progress.stagingDone == 3
+    }
+
+    def "a cancelled job keeps its rollback residue on later status reads"() {
+        // The residual-cleanup list must outlive the cancel RESPONSE: without it the
+        // operator has no record of which created apps are still on the hub.
+        given:
+        enableWrite()
+        seedJob("dj-residue", "staging", [createdAppIds: [77, 78]])
+        script.metaClass.toolDeleteNativeApp = { Map a ->
+            a.appId == 77 ? [success: false, error: "delete refused"] : [success: true]
+        }
+
+        when:
+        def cancelled = script.toolSetRule([deployment: [op: "cancel", jobId: "dj-residue"], confirm: true])
+
+        then: "the cancel response reports the incomplete rollback"
+        cancelled.success == false
+        cancelled.cancel.failures*.appId == [77]
+
+        when: "a LATER status read, after that response is gone"
+        def later = script.toolSetRule([deployment: [op: "status", jobId: "dj-residue"]])
+
+        then: "the residue and the failure verdict are still there"
+        later.phase == "cancelled"
+        later.success == false
+        later.error.contains("Rollback incomplete")
+        later.cancel.failures*.appId == [77]
+        later.cancel.deleted.contains(78)
+    }
+
     def "a create op that COMMITTED but reported failure records the app and gates the resume"() {
         given: "the clone landed, then its stageDisabled leg failed"
         enableWrite()

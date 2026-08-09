@@ -4124,7 +4124,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addAction plus addActions in one call is rejected fail-loud"() {
-        // Action-family sibling of the trigger guard above.
         given:
         enableWrite()
         def posts = []

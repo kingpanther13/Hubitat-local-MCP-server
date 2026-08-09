@@ -720,6 +720,17 @@ private Map _deployJobStatus(Map job, boolean includeOps) {
         updatedAt: job.updatedAt
     ]
     if (job.validation != null) out.validation = job.validation
+    // Carry the rollback residue on EVERY status read, not just the cancel response:
+    // otherwise the list of apps that could not be deleted dies with that one response
+    // and the operator has nothing left to clean up from.
+    if (job.cancel instanceof Map) {
+        out.cancel = job.cancel
+        def cancelFailures = (job.cancel.failures ?: []) as List
+        if (cancelFailures) {
+            out.success = false
+            out.error = "Rollback incomplete: ${cancelFailures.size()} created app(s) could not be deleted -- remove them via hub_delete_native_app."
+        }
+    }
     // jobError stays for compatibility; error is the runtime-error contract's field.
     if (job.error) out.jobError = job.error
     if (phase == "failed" && job.error) out.error = job.error

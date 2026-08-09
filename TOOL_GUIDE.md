@@ -1208,7 +1208,7 @@ If the response is lost, do NOT re-run the operation and do NOT invent a fresh t
 A NEW write may also be refused before it runs:
 
 - `status: "duplicate_in_flight"` — an identical untokened write is already running. Do not re-run it; poll the named `inFlightOpToken` until its result replays.
-- `status: "too_many_writes_in_flight"` — the recent running-write count reached `maxConcurrentWrites` (default 2; 1 serializes, 0 disables). Wait for one named `inFlight` token to finish or poll it, then re-issue this call.
+- `status: "too_many_writes_in_flight"` — the running-write count reached `maxConcurrentWrites` (default 2; 1 serializes, 0 disables). Wait for one named `inFlight` token to finish or poll it, then re-issue this call. The wait is bounded: a record stops counting toward the cap 90s after it started, so a write whose hub-side thread died can never block you indefinitely.
 
 A token is SPENT once its operation completes — runtime errors included. A replayed result carrying an error means that attempt failed; to retry with corrected arguments after a RUNTIME failure, invent a FRESH token. Never reuse a token for a DIFFERENT operation. Exception: a call rejected for invalid arguments (-32602) executed nothing and RELEASES its token — fix the arguments and re-issue with the SAME token. A replayed result whose `status` is `in_progress` carries `replayNote`: it is the original paused envelope, not new progress — a spent token cannot drive a resume; re-issue the remaining work with a fresh token.
 

@@ -862,40 +862,48 @@ class OpTokenReplaySpec extends ToolSpecBase {
     }
 
     def "the batch eviction queues its file deletions instead of running them in the request"() {
-        // The eviction removes ~50 records at once. Deleting each file inline made the
-        // unlucky write that triggered it take 7-10s -- past the relay ceiling, turning
-        // ordinary writes into 504s (measured on the e2e hub).
+        // The eviction removes a batch of records at once. Deleting each file inline made
+        // the unlucky write that triggered it take 7-10s (measured on the e2e hub), so the
+        // deletes are queued for the scheduled sweep instead. Records seeded WITH a file
+        // so every eviction has something to delete.
         given:
         def deleted = []
         script.metaClass.deleteHubFile = { String name -> deleted << name }
         def many = [:]
-        (1..101).each { i ->
-            many["evictme${String.format('%05d', i)}".toString()] =
-                [state: 'complete', tool: 'hub_create_room', startedAt: FIXED_NOW - (200000L - i)]
+        (1..41).each { i ->
+            def k = "evictme${String.format('%05d', i)}".toString()
+            many[k] = [state: 'complete', tool: 'hub_create_room',
+                       startedAt: FIXED_NOW - (200000L - i), file: FILE_PREFIX + k + '.json']
         }
         atomicStateMap.opTokens = many
 
-        when: 'the mark trips the >100 batch eviction'
+        when: 'the mark trips the batch eviction'
         script._opTokenMark('capmark12345', 'hub_create_room')
 
-        then: 'the map is evicted to 50 with ZERO deletes in this request'
-        atomicStateMap.opTokens.size() == 50
+        then: 'the map is evicted to the keep count with ZERO deletes in this request'
+        atomicStateMap.opTokens.size() == 20
         deleted.isEmpty()
-        atomicStateMap.opTokenSweepFiles.size() == 52
+        atomicStateMap.opTokenSweepFiles.size() == 22
 
         when: 'the scheduled sweep runs its first pass'
         script.opTokenFileSweep()
 
-        then: 'it is bounded -- 20 per pass, the remainder left queued for the re-arm'
-        deleted.size() == 20
-        atomicStateMap.opTokenSweepFiles.size() == 32
+        then: 'it is bounded -- 10 per pass, the remainder left queued for the re-arm'
+        deleted.size() == 10
+        atomicStateMap.opTokenSweepFiles.size() == 12
 
-        when: 'the remaining passes run'
+        when: 'the second pass runs'
         script.opTokenFileSweep()
+
+        then: 'still exactly 10 -- the bound holds on every pass, not just the first'
+        deleted.size() == 20
+        atomicStateMap.opTokenSweepFiles.size() == 2
+
+        when: 'the final pass runs'
         script.opTokenFileSweep()
 
         then: 'every queued file is deleted and the queue drains'
-        deleted.size() == 52
+        deleted.size() == 22
         !atomicStateMap.opTokenSweepFiles
     }
 
@@ -965,30 +973,30 @@ class OpTokenReplaySpec extends ToolSpecBase {
         atomicStateMap.opTokens.containsKey('newmark123')
     }
 
-    def "the size cap engages past 100 stored records, batch-evicting the oldest down to 50"() {
-        given: '100 fresh entries, op_00 the oldest -- exactly at the hysteresis high-water mark'
+    def "the size cap engages past the record cap, batch-evicting the oldest down to the keep count"() {
+        given: '40 fresh entries, op_00 the oldest -- exactly at the hysteresis high-water mark'
         def seed = [:]
-        (0..99).each { i ->
+        (0..39).each { i ->
             def key = "op_${String.format('%02d', i)}".toString()
             seed[key] = [state: 'complete', tool: 'hub_create_room', startedAt: FIXED_NOW - (100L - i)]
         }
         atomicStateMap.opTokens = seed
 
-        when: 'the 101st record arrives'
+        when: 'the 41st record arrives'
         script._opTokenMark('capnew1234', 'hub_create_room')
 
-        then: 'one batch eviction takes the map to 50: the 51 oldest terminal records are gone'
-        atomicStateMap.opTokens.size() == 50
+        then: 'one batch eviction takes the map to the keep count: the oldest terminal records are gone'
+        atomicStateMap.opTokens.size() == 20
         !atomicStateMap.opTokens.containsKey('op_00')
-        !atomicStateMap.opTokens.containsKey('op_50')
-        atomicStateMap.opTokens.containsKey('op_51')
+        !atomicStateMap.opTokens.containsKey('op_20')
+        atomicStateMap.opTokens.containsKey('op_21')
         atomicStateMap.opTokens.containsKey('capnew1234')
     }
 
-    def "the size cap has a dead band: between 50 and 100 stored records the prune never rewrites the map"() {
-        given: '60 fresh terminal records -- over the old hard cap, inside the dead band'
+    def "the size cap has a dead band: between the keep count and the cap the prune never rewrites the map"() {
+        given: '29 fresh terminal records -- over the keep count, inside the dead band'
         def seed = [:]
-        (0..59).each { i ->
+        (0..28).each { i ->
             def key = "op_${String.format('%02d', i)}".toString()
             seed[key] = [state: 'complete', tool: 'hub_create_room', startedAt: FIXED_NOW - (60L - i)]
         }
@@ -996,19 +1004,19 @@ class OpTokenReplaySpec extends ToolSpecBase {
         script._opTokenPut('deadband1234', [state: 'running', tool: 'hub_create_room', startedAt: FIXED_NOW])
         def instanceAfterPut = atomicStateMap.opTokens
 
-        when: 'the prune runs at 61 stored records'
+        when: 'the prune runs at 30 stored records'
         script._opTokenPrune()
 
-        then: 'nothing evicted and the map instance is untouched -- steady state stays free of the whole-map write (the #351 race exposure a hard at-50 cap would make permanent)'
+        then: 'nothing evicted and the map instance is untouched -- steady state stays free of the whole-map write (the #351 race exposure a hard at-keep-count cap would make permanent)'
         atomicStateMap.opTokens.is(instanceAfterPut)
-        atomicStateMap.opTokens.size() == 61
+        atomicStateMap.opTokens.size() == 30
         atomicStateMap.opTokens.containsKey('op_00')
     }
 
     def "the size cap never evicts a running token -- the oldest TERMINAL records go instead"() {
-        given: '100 fresh entries; the oldest is still running, the rest are complete'
+        given: '40 fresh entries; the oldest is still running, the rest are complete'
         def seed = [:]
-        (0..99).each { i ->
+        (0..39).each { i ->
             def key = "op_${String.format('%02d', i)}".toString()
             seed[key] = [state: (i == 0 ? 'running' : 'complete'), tool: 'hub_create_room',
                          startedAt: FIXED_NOW - (100L - i)]
@@ -1019,7 +1027,7 @@ class OpTokenReplaySpec extends ToolSpecBase {
         script._opTokenMark('capnew1234', 'hub_create_room')
 
         then: 'the live op_00 survives the batch eviction; the oldest terminal records went instead'
-        atomicStateMap.opTokens.size() == 50
+        atomicStateMap.opTokens.size() == 20
         atomicStateMap.opTokens.containsKey('op_00')
         !atomicStateMap.opTokens.containsKey('op_01')
         atomicStateMap.opTokens.containsKey('capnew1234')
