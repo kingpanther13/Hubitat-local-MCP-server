@@ -4151,6 +4151,81 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         posts.isEmpty()
     }
 
+    def "an edit on a nonexistent app id throws the 404 steer before any write"() {
+        // The pre-write snapshot is the gate: a 404 there means the id does not exist, and
+        // the caller needs the id-lookup steer rather than a generic backup failure.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        hubGet.register('/installedapp/configure/json/704') { params -> throw new RuntimeException('404 from configure/json') }
+        hubGet.register('/app/ruleBuilder20Json/704') { params -> throw new RuntimeException('404') }
+        hubGet.register('/app/ruleBuilderJson/704') { params -> throw new RuntimeException('404') }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << path
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        script.toolSetRule([appId: 704, confirm: true, settings: [origLabel: 'Renamed']])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('No rule/app with id 704')
+        ex.message.contains('hub_list_rules')
+
+        and: 'nothing was written'
+        posts.isEmpty()
+    }
+
+    def "replaceActions plus addActions in one call is rejected fail-loud"() {
+        // replaceActions had no entry in the multi-op guard's group list, so this pair
+        // slipped through and the dispatcher ran the replace branch while addActions
+        // vanished without a word.
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "one edit call carries a replace AND an add"
+        Exception thrownEx = null
+        try {
+            script.toolSetRule([appId: 100, confirm: true,
+                                replaceActions: [[capability: "log", message: "replaced"]],
+                                addActions: [[capability: "log", message: "added"]]])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "rejected before any wizard write, naming both operations"
+        thrownEx instanceof IllegalArgumentException
+        thrownEx.message.contains("multiple operations")
+        thrownEx.message.contains("addActions")
+        thrownEx.message.contains("replaceActions")
+
+        and: "no wizard POST fired"
+        posts.isEmpty()
+    }
+
+    def "replaceActions:[] normalizes to clearActions and is not double-counted by the guard"() {
+        // The empty list is rewritten to the clearActions flag before the guard runs, so
+        // the guard must see ONE operation, not clearActions + replaceActions.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        when: "an empty replaceActions rides alone"
+        Exception thrownEx = null
+        try {
+            script.toolSetRule([appId: 100, confirm: true, replaceActions: []])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "whatever else happens downstream, it is NOT refused as a multi-op call"
+        !(thrownEx instanceof IllegalArgumentException && thrownEx.message.contains("multiple operations"))
+    }
+
     def "modifyTrigger pre-flight shape refusal on the edit path yields a not-touched restoreHint, not a restore prompt"() {
         // Sibling of the addTrigger spec above, on the trigger-mutation branch.
         // modifyTrigger's mods.state state-change-token guard throws before any
@@ -9342,6 +9417,100 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.label == "Healthy Rule"
         result.brokenMarkers == [] || result.brokenMarkers?.isEmpty()
         result.multipleFlagPoison == [] || result.multipleFlagPoison?.isEmpty()
+    }
+
+    def "hub_get_rule_health reads stopped from the config-page label decoration"() {
+        given: "the runtime decoration arrives as markup a user-typed name cannot contain"
+        enableReadOnly()
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, 'Porch Light <span style="color:green">(Stopped)</span>', [])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolCheckRuleHealth([appId: 100])
+
+        then:
+        result.stopped == true
+
+        and: "the decoration is stripped so the label stays the rule's real name"
+        result.label == "Porch Light"
+    }
+
+    def "hub_get_rule_health reports stopped=false on an undecorated label"() {
+        given:
+        enableReadOnly()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Porch Light", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolCheckRuleHealth([appId: 100])
+
+        then:
+        result.stopped == false
+        result.label == "Porch Light"
+    }
+
+    def "a rule literally NAMED ending in (Stopped) is not reported as stopped"() {
+        given: "a plain unmarked suffix with no runtime stopped flag behind it"
+        enableReadOnly()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Alert When Stopped (Stopped)", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolCheckRuleHealth([appId: 100])
+
+        then: "the name is left alone -- stripping it would rename the rule in every report"
+        result.stopped == false
+        result.label == "Alert When Stopped (Stopped)"
+    }
+
+    def "a plain (Stopped) suffix counts when the runtime status agrees"() {
+        given:
+        enableReadOnly()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Porch Light (Stopped)", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [],
+                               scheduledJobs: [], appState: [[name: "stopped", value: true]]])
+        }
+
+        when:
+        def result = script.toolCheckRuleHealth([appId: 100])
+
+        then:
+        result.stopped == true
+        result.label == "Porch Light"
+    }
+
+    def "hub_get_rule_health reports 0 live counts when statusJson has no subscriptions section"() {
+        given: "a schedule-only rule carries no eventSubscriptions list at all"
+        enableReadOnly()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Timer Rule", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], appState: [:]])
+        }
+
+        when:
+        def result = script.toolCheckRuleHealth([appId: 100])
+
+        then: "0, not null -- null is reserved for the fetch itself failing"
+        result.eventSubscriptionCount == 0
+        result.scheduledJobCount == 0
+        !result.checkErrors.any { it.toString().startsWith("statusJson:") }
+    }
+
+    def "an unreadable statusJson yields null counts AND a checkErrors entry"() {
+        given: "the config page reads fine but the runtime status does not"
+        enableReadOnly()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Porch Light", []) }
+
+        when:
+        def result = script.toolCheckRuleHealth([appId: 100])
+
+        then: "null counts alone would read as 'this rule has none' -- record the reason"
+        result.eventSubscriptionCount == null
+        result.scheduledJobCount == null
+        result.checkErrors.any { it.toString().startsWith("statusJson:") }
     }
 
     def "hub_get_rule_health flags BROKEN marker in label as ok=false"() {
@@ -14942,6 +15111,72 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "hard failure -- nothing landed in applied, so success=false"
         result.success == false
         (result.settingsApplied == null || (result.settingsApplied as List).isEmpty())
+    }
+
+    /** doActPage schema for the log action with an incrementing paragraph so every
+     *  write observes renderShifted=true and routes to applied (same trick as
+     *  doActPageCondSchemaJson below). */
+    private String doActPageLogSchemaJson(int ruleId, int seqNum) {
+        JsonOutput.toJson([
+            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
+            configPage: [name: "doActPage", title: "T", install: false, error: null,
+                         sections: [[title: "", input: [
+                             [name: "actType.1", type: "enum",
+                              options: ["notificationActs": "Notifications and Logging"]],
+                             [name: "actSubType.1", type: "enum",
+                              options: ["getLog": "Log a message"]],
+                             [name: "logMessage.1", type: "text"],
+                             [name: "actionDone", type: "button"]
+                         ], paragraphs: ["seq ${seqNum}".toString()]]]],
+            settings: [:], childApps: []
+        ])
+    }
+
+    def "settingsApplied lists a key once when the normal write and a rawSettings duplicate hit the same field"() {
+        // The T661-era cosmetic bug: message + a rawSettings alias of the same field
+        // recorded the key twice in settingsApplied. The uniqueApplied dedupe collapses it.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["notificationActs": "Notifications and Logging"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            fetchSeq++
+            doActPageLogSchemaJson(100, fetchSeq)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], paragraphs: ["Log: 'hello'"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "log", message: "hello", rawSettings: ["logMessage.@N": "hello"]],
+            confirm: true
+        ])
+
+        then: "the duplicated key appears exactly once"
+        result.success == true
+        def appliedList = (result.settingsApplied as List)
+        appliedList.count { it?.toString() == "logMessage.1" } == 1
+
+        and: "the whole list is duplicate-free"
+        appliedList == appliedList.unique(false)
     }
 
     // ---------- ifThen condition wizard (Custom Attribute comparator fix) ----------

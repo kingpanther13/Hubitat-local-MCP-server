@@ -54,6 +54,31 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.files[0].directDownload.contains('/local/a.txt')
     }
 
+    def "hub_list_files hides op-token result buffers unless includeOpResults is set"() {
+        given: 'a hub whose File Manager is mostly slow-op bookkeeping'
+        hubGet.register('/hub/fileManager/json') { params ->
+            JsonOutput.toJson([
+                [name: 'mcp-op-result-auto-abc.json', size: 10],
+                [name: 'mcp-op-result-auto-def.json', size: 20],
+                [name: 'dashboard-backup.json', size: 30]
+            ])
+        }
+
+        when:
+        def hidden = script.toolListFiles()
+
+        then: 'the buffers stay out of the way of the real listing'
+        hidden.total == 1
+        hidden.files*.name == ['dashboard-backup.json']
+
+        when:
+        def shown = script.toolListFiles([includeOpResults: true])
+
+        then:
+        shown.total == 3
+        shown.files*.name.containsAll(['mcp-op-result-auto-abc.json', 'mcp-op-result-auto-def.json'])
+    }
+
     def "hub_list_files filters file names by case-insensitive substring"() {
         given:
         hubGet.register('/hub/fileManager/json') { params ->

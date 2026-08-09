@@ -133,6 +133,52 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
         result.recentOpsTotal == 2
     }
 
+    def "recentOpsLimit caps the listed records while recentOpsTotal keeps the true count"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        settingsMap.enableRead = true
+        settingsMap.enableWrite = true
+        def recs = [:]
+        (1..30).each { recs["token${it.toString().padLeft(8, '0')}".toString()] = [state: 'complete', tool: 'hub_get_info', isError: false, startedAt: (1000L + it)] }
+        atomicStateMap.opTokens = recs
+
+        when: 'no limit -- the default cap applies'
+        def defaulted = script.toolGetHubInfo([includeRecentOps: true])
+
+        then:
+        defaulted.recentOps.size() == 25
+        defaulted.recentOpsTotal == 30
+
+        when: 'an explicit smaller limit'
+        def limited = script.toolGetHubInfo([includeRecentOps: true, recentOpsLimit: 3])
+
+        then:
+        limited.recentOps.size() == 3
+        limited.recentOpsTotal == 30
+    }
+
+    @spock.lang.Unroll
+    def "a non-integer recentOpsLimit (#badLimit) is refused instead of silently falling back"() {
+        // The old try/catch-ignore fell back to the default cap, so a typo'd limit read as
+        // "the hub only has 25 records" -- a wrong answer dressed as a right one.
+        given:
+        sharedLocation.hub = new TestHub()
+        settingsMap.enableRead = true
+        atomicStateMap.opTokens = [
+            readtoken123: [state: 'complete', tool: 'hub_get_info', isError: false, startedAt: 1000L]
+        ]
+
+        when:
+        script.toolGetHubInfo([includeRecentOps: true, recentOpsLimit: badLimit])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('recentOpsLimit')
+
+        where:
+        badLimit << ['abc', 0, -5, 2.5]
+    }
+
     def "getHubInfo includes both fields as false when toggles are off"() {
         given:
         settingsMap.enableCustomRuleEngine = false

@@ -228,7 +228,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a scratch rule via hub_set_rule with name='BAT-RM-Stop Start' and at least one trivial trigger (e.g., a virtual switch trigger on 'BAT-RM Switch 1'). Remember the rule id.",
-  "test_prompt": "Stop the rule (stopRuleAct). Verify through the rule health read that it now reports stopped=true with eventSubscriptionCount 0. Then Start the rule again and verify stopped=false and eventSubscriptionCount greater than 0 afterwards (Start also resets Private Boolean to true).",
+  "test_prompt": "Stop the rule and verify through the rule's health that it is stopped and holds no live event subscriptions. Then Start it again and verify it is no longer stopped and its subscriptions are live (Start also resets Private Boolean to true).",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
@@ -1966,7 +1966,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: The agent reaches the `deployment` argument on hub_set_rule / hub_set_native_app (tool description or `hub_get_tool_guide(section='deployment_jobs')`) — NOT a sequence of bare clone/pause calls, which would not be resumable. A single `deployment={op:'create', ops:[{op:'cloneApp', stageDisabled:true, alias:...}], commitOps:[{op:'pause'...}, {op:'setDisabled'...}]}` job checkpoints on-hub: status polls show `staging → ready_for_commit` (with `validation` results), `op='commit'` runs the cutover, and the final state verifies as copy enabled + original paused. `op='delete'` on the completed job returns `deleted:true` and the record leaves the `op='status'` list. PASS requires the staged copy to sit DISABLED before commit (no live double-firing window). SAFETY: only BAT-prefixed rules touched.
+**Expected**: The agent reaches the `deployment` argument on hub_set_rule / hub_set_native_app (tool description or `hub_get_tool_guide(section='deployment_jobs')`) — NOT a sequence of bare clone/pause calls, which would not be resumable. A single `deployment={op:'create', ops:[{op:'cloneApp', alias:'new', args:{sourceAppId:..., newName:'BAT-DepNew', stageDisabled:true}}], commitOps:[{op:'pause', args:{...}}, {op:'setDisabled', args:{...}}]}` job checkpoints on-hub: status polls show `staging → ready_for_commit` (with `validation` results), `op='commit'` runs the cutover, and the final state verifies as copy enabled + original paused. `op='delete'` on the completed job returns `deleted:true` and the record leaves the `op='status'` list. PASS requires the staged copy to sit DISABLED before commit (no live double-firing window). SAFETY: only BAT-prefixed rules touched.
 
 ### T466 — Abandoned migration rolls back cleanly (cancel deletes only created apps)
 

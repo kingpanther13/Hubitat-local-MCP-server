@@ -231,7 +231,15 @@ def toolGetHubInfo(args = null) {
         }
         rows = rows.sort { -((it.startedAt ?: 0) as Long) }
         Integer cap = 25
-        try { if (args.recentOpsLimit != null) cap = Math.max(1, args.recentOpsLimit.toString() as Integer) } catch (Exception ignored) { }
+        if (args.recentOpsLimit != null) {
+            Integer parsedLimit = null
+            try { parsedLimit = args.recentOpsLimit.toString().trim() as Integer }
+            catch (Exception ignored) { parsedLimit = null }
+            if (parsedLimit == null || parsedLimit < 1) {
+                throw new IllegalArgumentException("recentOpsLimit must be an integer >= 1 (got: '${args.recentOpsLimit}').")
+            }
+            cap = parsedLimit
+        }
         info.recentOps = rows.take(cap)
         info.recentOpsTotal = rows.size()
     }

@@ -4,6 +4,8 @@ def _deployOpTypes() { ["cloneApp", "importApp", "buttonRule", "addActions", "mo
 def _deployCreateOpTypes() { ["cloneApp", "importApp", "buttonRule"] }
 def _deployActivePhases() { ["staging", "committing"] }
 def _deployMaxJobs() { 8 }
+def _deployMaxManifestOps() { 50 }
+def _deployMaxManifestChars() { 64000 }
 def _deployLeaseMs() { 90000L }
 def _deployWorkerBudgetMs() { 45000L }
 def _deployMaxWorkerFailures() { 3 }
@@ -41,6 +43,7 @@ private void _deployValidateOps(List ops, Set knownAliases, String listName) {
         def t = op.op?.toString()
         if (!(t in _deployOpTypes())) throw new IllegalArgumentException("${listName}[${i}].op must be one of ${_deployOpTypes().join(', ')} (got: ${t}). See hub_get_tool_guide(section='deployment_jobs').")
         if (op.args != null && !(op.args instanceof Map)) throw new IllegalArgumentException("${listName}[${i}].args must be an object")
+        if (t == "setDisabled") _deployRequireDisabledFlag((op.args instanceof Map) ? op.args.disabled : null, "${listName}[${i}] (setDisabled)")
         if (op.alias != null) {
             if (!(t in _deployCreateOpTypes())) throw new IllegalArgumentException("${listName}[${i}].alias is only valid on ${_deployCreateOpTypes().join('/')} ops (it names the created app's id for later ops)")
             def a = op.alias.toString()
@@ -52,6 +55,16 @@ private void _deployValidateOps(List ops, Set knownAliases, String listName) {
         _deployCheckAliasRefs(op.args, knownAliases, "${listName}[${i}].args")
         if (op.alias != null) knownAliases << op.alias.toString()
     }
+}
+
+private boolean _deployRequireDisabledFlag(Object raw, String where) {
+    // No default: an absent flag used to mean "disable", so a caller who meant
+    // "enable" and mistyped the key silently disabled the app mid-cutover.
+    if (raw instanceof Boolean) return raw
+    def s = raw?.toString()
+    if (s == "true") return true
+    if (s == "false") return false
+    throw new IllegalArgumentException("${where} requires args.disabled as an explicit boolean -- true disables the app, false enables it (got: ${raw == null ? 'absent' : raw}). See hub_get_tool_guide(section='deployment_jobs').")
 }
 
 private void _deployCheckAliasRefs(Object node, Set knownAliases, String path) {
@@ -108,7 +121,7 @@ private Map _deployExecuteOp(Map job, Map op) {
             return [result: toolSetRulePaused([ruleId: (a.ruleIds != null ? a.ruleIds : a.ruleId), paused: false])]
         case "setDisabled":
             if (a.appId == null) throw new IllegalStateException("setDisabled op requires args.appId")
-            return [result: toolSetAppDisabled([appId: a.appId, disabled: (a.disabled != false)])]
+            return [result: toolSetAppDisabled([appId: a.appId, disabled: _deployRequireDisabledFlag(a.disabled, "setDisabled op")])]
     }
     throw new IllegalStateException("unknown op '${op.op}'")
 }
@@ -123,11 +136,15 @@ private boolean _deployOpSucceeded(Object res) {
 private Map _deployTrimResult(Object res) {
     if (!(res instanceof Map)) return [note: res?.toString()?.take(200)]
     def keep = [:]
-    ["success", "newAppId", "buttonRuleId", "paused", "disabled", "partial", "adopted"].each { k ->
+    ["success", "newAppId", "buttonRuleId", "paused", "disabled", "partial", "adopted",
+     "status", "settingsSkipped", "updateRuleFailed", "subscriptionsNotLive"].each { k ->
         if (res.containsKey(k)) keep[k] = res[k]
     }
     if (res.backup instanceof Map && res.backup.backupKey) keep.backupKey = res.backup.backupKey
     if (res.backupKey) keep.backupKey = res.backupKey
+    if (res.repairHints instanceof List) {
+        keep.repairHints = ((List) res.repairHints).take(5).collect { it?.toString()?.take(120) }
+    }
     if (res.error) keep.error = res.error.toString().take(300)
     if (res.note) keep.note = res.note.toString().take(200)
     return keep
@@ -176,11 +193,14 @@ private Integer _deployReconcileCreateOp(Map statusEntry) {
         def kids = (_rmFetchConfigJson(recon.parentAppId.toString() as Integer)?.childApps ?: []) as List
         def pre = ((recon.preChildIds ?: []) as List).collect { it?.toString() } as Set
         def cands = kids.findAll { it?.id != null && !pre.contains(it.id.toString()) }
+        // Label match is the ONLY adoption evidence. A lone unmatched new child is just as
+        // likely somebody else's concurrently-created app, and adopting it would put a
+        // stranger on createdAppIds for cancel to delete; returning null hands the op to
+        // the interrupted gate instead, which is refusable but never destructive.
         if (recon.expectLabel) {
             def byLabel = cands.findAll { it.label?.toString() == recon.expectLabel.toString() }
             if (byLabel.size() == 1) return byLabel[0].id.toString() as Integer
         }
-        if (cands.size() == 1) return cands[0].id.toString() as Integer
     } catch (Exception e) {
         mcpLog("warn", "deploy", "reconcile against parent ${recon.parentAppId} failed: ${e.message}")
     }
@@ -231,9 +251,14 @@ private void _deployRunValidation(Map job) {
         results << [appId: id, ok: ok, broken: (h instanceof Map ? h.broken : null), issues: issues, error: err]
     }
     job.validation = [ok: allOk, checkedAt: now(), results: results]
+    if (results.isEmpty()) {
+        // An empty createdAppIds means nothing was health-checked; ok:true here would read
+        // as a passed gate instead of a gate with nothing to check.
+        job.validation.note = "no created apps to health-check; per-op success gates were the only validation"
+    }
     if (allOk) {
         job.phase = "ready_for_commit"
-        _deployAppendHistory(job, "staging validated: ${results.size()} created app(s) healthy")
+        _deployAppendHistory(job, results.isEmpty() ? "staging complete: no created apps to health-check" : "staging validated: ${results.size()} created app(s) healthy")
     } else {
         job.phase = "failed"
         job.error = "validation failed: created app(s) ${results.findAll { !it.ok }.collect { it.appId }} are unhealthy. Inspect via hub_get_rule_health / hub_get_app_config, fix, then op='resume' (re-validates) or op='cancel'."
@@ -349,8 +374,22 @@ private Map _deployRunSlice(Map job, Long t0, Integer maxOps, Long fixedBudgetMs
             entry.status = "failed"
             entry.error = (execError ?: (res instanceof Map ? (res.error ?: res.note) : null) ?: "op returned failure").toString().take(300)
             entry.remove("recon")
+            // A create can COMMIT and still report failure -- a clone whose stageDisabled leg
+            // failed returns success:false WITH newAppId. Record the id anyway: unrecorded, cancel
+            // strands a live enabled app and resume blindly re-runs the create as a duplicate.
+            def committedId = null
+            if (execError == null && (opType in _deployCreateOpTypes()) && (res instanceof Map) && outcome?.newAppIdKey != null) {
+                committedId = ((Map) res)[outcome.newAppIdKey]
+            }
+            if (committedId != null) _deployRecordCreated(job, op, committedId)
+            if (res instanceof Map) entry.result = _deployTrimResult(res)
             job.phase = "failed"
-            job.error = "op ${idx} (${opType}) failed: ${entry.error}"
+            if (committedId != null) {
+                entry.interrupted = true
+                job.error = "op ${idx} (${opType}) failed AFTER the app was created: app ${committedId} EXISTS. op='cancel' now deletes it; op='resume' with retryInFlight=true re-runs the create and MAY DUPLICATE it -- verify via hub_get_app_config(${committedId}) first. Original failure: ${entry.error}"
+            } else {
+                job.error = "op ${idx} (${opType}) failed: ${entry.error}"
+            }
             job.sliceLeaseUntil = null
         }
         statusList[idx] = entry
@@ -369,6 +408,9 @@ def deployJobWorker() {
     ids.each { jid ->
         def job = _deployJobs()[jid]
         if (!(job instanceof Map) || !(job.phase?.toString() in _deployActivePhases())) return
+        // A worker armed by ANOTHER job must not advance a job whose caller opted out of
+        // on-hub continuation; background:false means op='resume' is the only driver.
+        if (job.background == false) return
         if (job.sliceLeaseUntil != null && now() < (job.sliceLeaseUntil as Long)) return
         job.sliceLeaseUntil = now() + _deployLeaseMs()
         _deploySaveJob(job)
@@ -382,6 +424,7 @@ def deployJobWorker() {
             // job goes terminal, which is what lets the re-arm condition end.
             int streak = ((job.workerFailStreak ?: 0) as Integer) + 1
             job.workerFailStreak = streak
+            _deployAppendHistory(job, "worker slice threw: ${(e.message ?: e.toString()).toString().take(120)} (streak ${streak})")
             if (streak >= _deployMaxWorkerFailures()) {
                 job.phase = "failed"
                 job.error = "worker slice threw repeatedly: ${(e.message ?: e.toString()).toString().take(200)}"
@@ -392,7 +435,7 @@ def deployJobWorker() {
             _deploySaveJob(job)
         }
     }
-    def stillActive = _deployJobs().any { k, v -> (v instanceof Map) && (v.phase?.toString() in _deployActivePhases()) }
+    def stillActive = _deployJobs().any { k, v -> (v instanceof Map) && (v.phase?.toString() in _deployActivePhases()) && v.background != false }
     if (stillActive) runIn(15, "deployJobWorker")
 }
 
@@ -421,16 +464,35 @@ private Map _deployOpCreate(Map args) {
     def knownAliases = [] as Set
     _deployValidateOps((List) args.ops, knownAliases, "ops")
     _deployValidateOps(commitOps, knownAliases, "commitOps")
+    // Bound the manifest BEFORE the prune below writes anything: the whole job record is
+    // rewritten to atomicState on every checkpoint, so an unbounded manifest makes each of
+    // those saves unbounded too.
+    int totalOps = ((List) args.ops).size() + commitOps.size()
+    if (totalOps > _deployMaxManifestOps()) {
+        throw new IllegalArgumentException("Deployment manifest declares ${totalOps} ops (ops + commitOps); the cap is ${_deployMaxManifestOps()}. Split the migration across smaller jobs.")
+    }
+    int manifestChars
+    try {
+        manifestChars = groovy.json.JsonOutput.toJson([ops: args.ops, commitOps: commitOps]).length()
+    } catch (Exception serErr) {
+        throw new IllegalArgumentException("ops/commitOps could not be serialized (${serErr.message}); every op must be plain JSON values.")
+    }
+    if (manifestChars > _deployMaxManifestChars()) {
+        throw new IllegalArgumentException("Deployment manifest serializes to ${manifestChars} characters; the cap is ${_deployMaxManifestChars()}. Split the migration across smaller jobs.")
+    }
     def jobs = _deployJobs()
     if (jobs.size() >= _deployMaxJobs()) {
-        def terminal = jobs.findAll { k, v -> !(v instanceof Map) || !(v.phase?.toString() in (_deployActivePhases() + ["draft", "ready_for_commit"])) }
-        if (jobs.size() - terminal.size() >= _deployMaxJobs()) {
-            throw new IllegalArgumentException("Too many active deployment jobs (${_deployMaxJobs()} max). Commit or cancel one first (deployment:{op:'status'} lists them).")
+        // A FAILED job is NOT evictable: its createdAppIds/backupKeys are the only rollback
+        // handles for whatever it half-built, and evicting the record loses them. Cancelling
+        // it deletes those apps and makes it evictable.
+        def evictable = jobs.findAll { k, v -> !(v instanceof Map) || (v.phase?.toString() in ["completed", "cancelled"]) }
+        if (jobs.size() - evictable.size() >= _deployMaxJobs()) {
+            throw new IllegalArgumentException("Too many active deployment jobs (${_deployMaxJobs()} max). Commit or cancel one first -- including any FAILED job, whose created apps and backup keys it holds until you cancel it (deployment:{op:'status'} lists them).")
         }
         def pruned = [:]
-        jobs.each { k, v -> if (!terminal.containsKey(k)) pruned[k] = v }
-        terminal.sort { a, b -> ((a.value?.updatedAt ?: 0) as Long) <=> ((b.value?.updatedAt ?: 0) as Long) }
-            .drop([(terminal.size() - (_deployMaxJobs() - pruned.size() - 1)), 0].max())
+        jobs.each { k, v -> if (!evictable.containsKey(k)) pruned[k] = v }
+        evictable.sort { a, b -> ((a.value?.updatedAt ?: 0) as Long) <=> ((b.value?.updatedAt ?: 0) as Long) }
+            .drop([(evictable.size() - (_deployMaxJobs() - pruned.size() - 1)), 0].max())
             .each { k, v -> pruned[k] = v }
         atomicState.deployJobs = pruned
     }
@@ -458,11 +520,15 @@ private Map _deployOpCreate(Map args) {
     _deployAppendHistory(job, "created (${((List) args.ops).size()} staging op(s), ${commitOps.size()} commit op(s))")
     _deploySaveJob(job)
     mcpLog("info", "deploy", "job ${jobId} created: ${job.name}")
+    boolean workerArmed = false
     if (job.phase == "staging") {
-        _deployScheduleWorker(job)
-        _deployInlineSlice(job, args.__reqT0, maxOps)
+        workerArmed = _deployScheduleWorker(job)
+        def slice = _deployInlineSlice(job, args.__reqT0, maxOps)
+        if (slice?.scheduled == true) workerArmed = true
     }
-    return _deployJobStatus(_deployLoadJob(jobId), true)
+    def created = _deployJobStatus(_deployLoadJob(jobId), true)
+    created.workerScheduled = workerArmed
+    return created
 }
 
 private Map _deployOpResume(Map args) {
@@ -526,9 +592,11 @@ private Map _deployOpResume(Map args) {
         _deployAppendHistory(job, "resumed (stalled slice)")
         _deploySaveJob(job)
     }
-    _deployScheduleWorker(job)
-    _deployInlineSlice(job, args.__reqT0, maxOps)
-    return _deployJobStatus(_deployLoadJob(job.jobId), true)
+    boolean workerArmed = _deployScheduleWorker(job)
+    def slice = _deployInlineSlice(job, args.__reqT0, maxOps)
+    def resumed = _deployJobStatus(_deployLoadJob(job.jobId), true)
+    resumed.workerScheduled = (workerArmed || slice?.scheduled == true)
+    return resumed
 }
 
 private Map _deployOpCommit(Map args) {
@@ -547,9 +615,11 @@ private Map _deployOpCommit(Map args) {
     job.phase = "committing"
     _deployAppendHistory(job, "commit started")
     _deploySaveJob(job)
-    _deployScheduleWorker(job)
-    _deployInlineSlice(job, args.__reqT0, maxOps)
-    return _deployJobStatus(_deployLoadJob(job.jobId), true)
+    boolean workerArmed = _deployScheduleWorker(job)
+    def slice = _deployInlineSlice(job, args.__reqT0, maxOps)
+    def committed = _deployJobStatus(_deployLoadJob(job.jobId), true)
+    committed.workerScheduled = (workerArmed || slice?.scheduled == true)
+    return committed
 }
 
 private Map _deployOpCancel(Map args) {
@@ -569,6 +639,10 @@ private Map _deployOpCancel(Map args) {
     }
     def cancelState = (job.cancel instanceof Map) ? job.cancel : [deleted: [], failures: []]
     def targets = ((job.createdAppIds ?: []) as List).reverse()
+    // Hold the lease across the whole delete loop: a worker firing between two deletes
+    // would otherwise take the job and re-save its own snapshot over this one.
+    job.sliceLeaseUntil = now() + _deployLeaseMs()
+    _deploySaveJob(job)
     targets.each { id ->
         def idStr = id.toString()
         if (cancelState.deleted.collect { it.toString() }.contains(idStr)) return
@@ -602,6 +676,8 @@ private Map _deployOpCancel(Map args) {
     def st = _deployJobStatus(job, true)
     st.cancel = cancelState
     if (cancelState.failures) {
+        st.success = false
+        st.error = "Rollback incomplete: ${cancelState.failures.size()} of ${targets.size()} created app(s) could not be deleted."
         st.note = "Cancelled, but ${cancelState.failures.size()} created app(s) could not be deleted -- remove them via hub_delete_native_app. Deleted: ${cancelState.deleted}."
     }
     return st
@@ -620,11 +696,13 @@ private Map _deployProgress(Map job) {
 
 private Map _deployJobStatus(Map job, boolean includeOps) {
     def phase = job.phase?.toString()
+    boolean background = (job.background != false)
     def out = [
-        success: true,
+        success: (phase != "failed"),
         jobId: job.jobId,
         name: job.name,
         phase: phase,
+        background: background,
         progress: _deployProgress(job),
         aliases: job.aliases ?: [:],
         createdAppIds: job.createdAppIds ?: [],
@@ -633,15 +711,25 @@ private Map _deployJobStatus(Map job, boolean includeOps) {
         updatedAt: job.updatedAt
     ]
     if (job.validation != null) out.validation = job.validation
+    // jobError stays for compatibility; error is the runtime-error contract's field.
     if (job.error) out.jobError = job.error
+    if (phase == "failed" && job.error) out.error = job.error
     if (includeOps) {
         out.ops = _deployZipOps((job.ops ?: []) as List, (job.opStatus ?: []) as List)
         out.commitOps = _deployZipOps((job.commitOps ?: []) as List, (job.commitStatus ?: []) as List)
     }
     switch (phase) {
         case "draft": out.note = "Draft -- op='resume' starts staging."; break
-        case "staging": out.note = "Staging in progress on-hub; poll deployment:{op:'status', jobId} -- the job advances without further calls (op='resume' also drives a slice)."; break
-        case "ready_for_commit": out.note = "Staging validated -- op='commit' runs the cutover ops."; break
+        case "staging":
+            out.note = background
+                ? "Staging in progress on-hub; poll deployment:{op:'status', jobId} -- the job advances without further calls (op='resume' also drives a slice)."
+                : "Staging advances only on op='resume' (background=false disabled the on-hub worker); poll deployment:{op:'status', jobId} between resumes."
+            break
+        case "ready_for_commit":
+            out.note = (job.validation?.results instanceof List && ((List) job.validation.results).isEmpty())
+                ? "Staging complete (no created apps to validate) -- op='commit' runs the cutover ops."
+                : "Staging validated -- op='commit' runs the cutover ops."
+            break
         case "committing": out.note = "Commit in progress on-hub; poll deployment:{op:'status', jobId}."; break
         case "completed": out.note = "Completed. Rollback handles: backupKeys (hub_restore_backup) + createdAppIds. op='delete' removes the finished record."; break
         case "failed": out.note = "Failed -- see jobError. op='resume' retries; op='cancel' rolls back created apps."; break

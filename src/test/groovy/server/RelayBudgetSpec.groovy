@@ -78,6 +78,19 @@ class RelayBudgetSpec extends ToolSpecBase {
         script._lanBudgetMs() == 45000L
     }
 
+    def "_maxConcurrentWrites defaults to 2 when the setting is unset"() {
+        expect:
+        script._maxConcurrentWrites() == 2
+    }
+
+    def "_maxConcurrentWrites honours settings.maxConcurrentWrites"() {
+        given:
+        settingsMap.maxConcurrentWrites = 1
+
+        expect:
+        script._maxConcurrentWrites() == 1
+    }
+
     // ---------------- write admission + auto-token dispatch ----------------
 
     def "an untokened write response carries a server-assigned auto token"() {

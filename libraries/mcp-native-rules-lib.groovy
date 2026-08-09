@@ -386,7 +386,7 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
         ],
         [
             name: "hub_get_rule_health",
-            description: """Inspect a rule's current state and return a structured health report.[[FLAT_TRIM]] Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule).[[/FLAT_TRIM]] Includes live eventSubscriptionCount/scheduledJobCount from the rule's runtime status. Run after every mutation; hub_set_rule attaches it as `health` on every response. ok=false with unreadable=false means at least one issue was found (the issues list explains what); ok=false with unreadable=true means NEITHER source could be read (a transient fetch failure, or the app does not exist) -- a couldn't-check verdict, not evidence of breakage.""",
+            description: """Inspect a rule's current state and return a structured health report.[[FLAT_TRIM]] Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule).[[/FLAT_TRIM]] This STANDALONE read is the only one that adds the live eventSubscriptionCount/scheduledJobCount and the runtime `stopped` flag; the `health` block hub_set_rule / hub_set_native_app attach to their own responses is the structural verdict ONLY and carries neither, so call this tool when you need them. Run after every mutation. ok=false with unreadable=false means at least one issue was found (the issues list explains what); ok=false with unreadable=true means NEITHER source could be read (a transient fetch failure, or the app does not exist) -- a couldn't-check verdict, not evidence of breakage.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -811,27 +811,22 @@ private void registerRmRule(Map combined, def r, String version) {
 
 // Annotate an RM rule entry (in place) with disabled/paused booleans, a status summary,
 // and requiredExpressionFalse. WHY decoration-detection (full algorithm in the
-// builtin_app_tools guide): RMUtils exposes no paused boolean, so a paused rule is found
-// only by the "(Paused)" suffix its appsList name carries but its RMUtils label doesn't
-// (live-verified; diffing the stripped strings also protects a rule literally NAMED
-// "... (Paused)" — its label carries the same suffix, so the remainder is empty).
-// A stopped rule is decorated in the RMUtils label itself; strip that runtime suffix
-// from label/name before returning it. status is a precedence SUMMARY
+// builtin_app_tools guide): RMUtils exposes no paused or stopped boolean, so both are found
+// only by diffing the app's /hub2/appsList name against its RMUtils label. A stopped rule
+// reaches this function through EITHER of two channels and both are read here: the
+// "(Stopped)" suffix can sit on the RMUtils LABEL while the appsList name stays clean, or it
+// can sit in the appsList-name REMAINDER the "(Paused)" diff already computes. The diff is
+// what proves a suffix is a runtime decoration rather than the rule's real name — a rule
+// literally NAMED "... (Paused)"/"... (Stopped)" carries the suffix in BOTH strings, so
+// neither channel fires. The suffix is stripped from the returned label/name in the SAME
+// encoding the undecorated path returns (RMUtils entity-escaping preserved), never swapped
+// for the HTML-stripped/decoded form the comparison uses. status is a precedence SUMMARY
 // (disabled > stopped > paused > active); the booleans stay
 // independent — a rule paused first then disabled keeps its decoration, so
 // {disabled:true, paused:true, status:"disabled"} is truthful. "unknown" (booleans then
 // omitted, never asserted false) covers both a null liveApps (whole tree unreadable) and
 // this one rule's node lacking data.disabled / name / RMUtils label.
 private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps) {
-    def rawCleanLabel = stripAppConfigHtml(entry.label)
-    def rawCleanName = stripAppConfigHtml(entry.name)
-    boolean stopped = rawCleanLabel?.endsWith(" (Stopped)") == true
-    if (stopped) {
-        entry.label = rawCleanLabel.substring(0, rawCleanLabel.length() - " (Stopped)".length())
-        if (rawCleanName?.endsWith(" (Stopped)")) {
-            entry.name = rawCleanName.substring(0, rawCleanName.length() - " (Stopped)".length())
-        }
-    }
     def idInt
     try { idInt = (entry.id instanceof Number) ? entry.id.intValue() : entry.id?.toString()?.toInteger() }
     catch (Exception ignored) { idInt = null }
@@ -854,6 +849,7 @@ private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps
     }
     def disabled = disabledRaw == true
     def paused = false
+    boolean stopped = (cleanRm.endsWith(" (Stopped)") && !cleanApps.endsWith(" (Stopped)"))
     if (cleanApps != cleanRm && cleanApps.startsWith(cleanRm)) {
         def remainder = cleanApps.substring(cleanRm.length())
         if (remainder.contains("(Paused)")) paused = true
@@ -861,15 +857,24 @@ private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps
         if (remainder.contains("(Required Expression false)")) entry.requiredExpressionFalse = true
     }
     if (stopped) {
-        if (cleanRm?.endsWith(" (Stopped)")) cleanRm = cleanRm.substring(0, cleanRm.length() - " (Stopped)".length())
-        entry.label = cleanRm
-        def cleanName = stripAppConfigHtml(entry.name)
-        if (cleanName?.endsWith(" (Stopped)")) cleanName = cleanName.substring(0, cleanName.length() - " (Stopped)".length())
-        entry.name = cleanName
+        entry.label = _rmStripTrailingDecoration(entry.label, "(Stopped)")
+        entry.name = _rmStripTrailingDecoration(entry.name, "(Stopped)")
     }
     entry.disabled = disabled
     entry.paused = paused
     entry.status = disabled ? "disabled" : (stopped ? "stopped" : (paused ? "paused" : "active"))
+}
+
+// Drop a trailing runtime decoration from a label WITHOUT re-encoding it: the caller's
+// string keeps whatever escaping its source used, so a decorated and an undecorated rule
+// come back in the same encoding. Returns the input unchanged when the suffix is absent.
+private String _rmStripTrailingDecoration(Object raw, String suffix) {
+    def s = raw?.toString()
+    if (s == null) return null
+    // RMUtils labels can carry trailing spaces, so match past them.
+    def trimmed = s.replaceAll(/\s+$/, "")
+    if (!trimmed.endsWith(suffix)) return s
+    return trimmed.substring(0, trimmed.length() - suffix.length()).replaceAll(/\s+$/, "")
 }
 
 // Normalize a ruleId argument that may be a single id or a list of ids into a
@@ -9249,13 +9254,12 @@ def _setRuleFlatTool() {
         inputSchema: [
             type: "object",
             properties: [
-                operation: [type: "string", enum: _setRuleOperations(), description: "What to do. Call WITHOUT confirm to get this operation's argument schema back (returned as argsSchema + usage; no mutation), then call again with args filled + confirm:true. 'create' = new rule (omit appId; name + bundle in args) — on a create, partial bakes are reported via partial/repairHints; full create+repair protocol: hub_get_tool_guide(section='set_rule_create_reference'). All others edit an existing rule (need appId) except guide/discover/buttonRule, which omit it. 'guide' returns the full capability reference; 'discover' returns the live per-capability field schema (args={kind:'trigger'|'action'})."],
+                operation: [type: "string", enum: _setRuleOperations(), description: "REQUIRED for every call except a deployment job (the `deployment` argument replaces it). What to do. Call WITHOUT confirm to get this operation's argument schema back (returned as argsSchema + usage; no mutation), then call again with args filled + confirm:true. 'create' = new rule (omit appId; name + bundle in args) — on a create, partial bakes are reported via partial/repairHints; full create+repair protocol: hub_get_tool_guide(section='set_rule_create_reference'). All others edit an existing rule (need appId) except guide/discover/buttonRule, which omit it. 'guide' returns the full capability reference; 'discover' returns the live per-capability field schema (args={kind:'trigger'|'action'})."],
                 appId: [type: "integer", description: "RM rule ID. OMIT for create/guide/discover/buttonRule; PROVIDE for every other (edit) operation (appId is the create-vs-edit switch)."],
                 args: [type: ["object", "array", "boolean"], description: "Arguments for the chosen operation — the exact shape comes from the schema probe (call without confirm first). Most ops take an object; the list ops (addTriggers/addActions/replaceActions/patches) take a bare array and clearActions takes true. For 'create' args holds name + optional addTriggers/addActions/addRequiredExpression. Pass the bare operation payload (e.g. {capability:'switch',...}), not wrapped under the operation name."],
                 confirm: [type: "boolean", description: "Set true to APPLY the operation (any write). Omit (or false) to get the schema back instead (a no-mutation probe). Writes also need the Write master + a recent backup."],
                 deployment: [type: "object", description: "Durable multi-app deployment job: {op: 'create'|'resume'|'commit'|'cancel'|'delete'|'status', ...}. Self-contained — cannot combine with operation/appId/args. op='status' is a pure read. Full reference: hub_get_tool_guide(section='deployment_jobs')."]
-            ],
-            required: ["operation"]
+            ]
         ]
     ]
 }
@@ -13252,9 +13256,11 @@ def _applyNativeAppEdit(args) {
     def modifyActionSpec = args?.modifyAction instanceof Map ? args.modifyAction : null
 
     // EDIT dispatch is intentionally one-operation-at-a-time except for the documented
-    // plural addTriggers+addActions bulk pair. The dispatcher returns from the first
-    // matching branch, so reject any other cross-family combination BEFORE the backup
-    // snapshot or wizard write rather than silently dropping trailing operations.
+    // plural addTriggers+addActions bulk pair. Reject any other cross-family combination
+    // BEFORE the backup snapshot or wizard write. Two distinct hazards, one refusal: for
+    // most pairs the dispatcher returns from the first matching branch and silently drops
+    // the rest, while removeAction/clearActions/replaceActions/moveAction share ONE branch
+    // and all execute -- in a fixed internal order the caller never chose.
     def triggerOpNames = []
     if (addTriggerSpec) triggerOpNames << "addTrigger"
     if (addTriggersList) triggerOpNames << "addTriggers"
@@ -13275,6 +13281,8 @@ def _applyNativeAppEdit(args) {
         replaceRequiredExpressionSpec ? ["replaceRequiredExpression"] : [],
         removeActionSpec ? ["removeAction"] : [],
         clearActionsFlag ? ["clearActions"] : [],
+        // replaceActions:[] normalized to clearActionsFlag above, so this never double-counts.
+        (replaceActionsList != null && !clearActionsFlag) ? ["replaceActions"] : [],
         moveActionSpec ? ["moveAction"] : [],
         removeTriggerSpec ? ["removeTrigger"] : [],
         modifyTriggerSpec ? ["modifyTrigger"] : [],
@@ -13291,7 +13299,7 @@ def _applyNativeAppEdit(args) {
     // group count alone would miss addTrigger+addTriggers (and addAction+addActions).
     if ((editOpGroups.size() >= 2 && !allowedBulkPair) || triggerOpNames.size() > 1 || actionOpNames.size() > 1) {
         def opNames = editOpGroups.collectMany { it }
-        throw new IllegalArgumentException("hub_set_rule received multiple operations in one call (${opNames.join(', ')}) — only the first would run and the rest would be silently dropped. Use patches:[...] for an atomic multi-op edit, or issue one call per operation. See hub_get_tool_guide(section='set_rule_reference').")
+        throw new IllegalArgumentException("hub_set_rule / hub_set_native_app received multiple operations in one call (${opNames.join(', ')}). Multi-op calls are refused: depending on the combination the extras would either be silently dropped or run in a fixed internal order you did not choose. Use patches:[...] for an ordered atomic edit, or issue one call per operation. See hub_get_tool_guide(section='set_rule_reference').")
     }
 
     if (settingsMap) {
@@ -15050,28 +15058,46 @@ def toolCheckRuleHealth(args) {
         throw new IllegalArgumentException("source must be one of: auto (default), ruleBuilderJson, configPage")
     }
     def result = _rmCheckRuleHealth(appId, source)
+    def status = null
     try {
-        def status = _rmFetchStatusJson(appId)
+        status = _rmFetchStatusJson(appId)
         // A readable statusJson with an ABSENT section means zero live entries -- a
         // schedule-only rule carries no eventSubscriptions list at all (and a stopped
         // rule drops both). null is reserved for the fetch itself failing.
         result.eventSubscriptionCount = (status?.eventSubscriptions instanceof List) ? status.eventSubscriptions.size() : 0
         result.scheduledJobCount = (status?.scheduledJobs instanceof List) ? status.scheduledJobs.size() : 0
-    } catch (Exception ignored) {
+    } catch (Exception statusErr) {
         result.eventSubscriptionCount = null
         result.scheduledJobCount = null
+        // Half-checked marker, same contract as the two source reads: null counts with no
+        // recorded reason read as "this rule has none", which is a different fact.
+        def checkErrors = (result.checkErrors instanceof List) ? result.checkErrors : []
+        checkErrors << "statusJson: ${statusErr.message ?: statusErr.toString()}".toString()
+        result.checkErrors = checkErrors
     }
-    // The stopped runtime state only surfaces on per-app pages (a decorated label);
-    // the cheap RMUtils/appsList sources hub_list_rules reads never carry it, so
-    // THIS is the authoritative stopped check. Strip the decoration (and its HTML
-    // wrapper) so the returned label stays clean -- the boolean carries the fact.
+    // stopped, by precedence: (1) a "(Stopped)" inside real markup is a hub-rendered
+    // runtime decoration beyond doubt (the hub entity-escapes a user-typed '<'), and a
+    // stopped rule's statusJson is often UNREADABLE, so markup decides first; (2) a
+    // readable statusJson answers from its own state.stopped -- the SAME field the
+    // hub_call_rule stop/start toggle reads for its no-op detection (absent means
+    // never-stopped, i.e. false); (3) neither available -> null, never a guess -- a
+    // plain unmarked suffix reads the same as a rule literally NAMED "... (Stopped)".
+    // The trailing "(Paused)" is stripped for label cleanliness only; pause state is
+    // read from hub_list_rules, which is why health has no paused field.
     def rawLabel = result.label?.toString()
-    if (rawLabel != null) {
-        def cleanLabel = rawLabel.replaceAll(/<[^>]+>/, "").trim()
-        result.stopped = cleanLabel.endsWith("(Stopped)")
-        result.label = cleanLabel.replaceAll(/\s*\((Stopped|Paused)\)\s*$/, "").trim()
+    boolean markedUp = rawLabel != null && (rawLabel =~ /<[^>]+>\s*\(Stopped\)\s*(?:<\/[^>]+>\s*)*$/).find()
+    Boolean stoppedVerdict
+    if (markedUp) {
+        stoppedVerdict = true
+    } else if (status != null) {
+        stoppedVerdict = _readAppStateBoolean(status, "stopped", false)
     } else {
-        result.stopped = null
+        stoppedVerdict = null
+    }
+    result.stopped = stoppedVerdict
+    if (rawLabel != null) {
+        def tidy = rawLabel.replaceAll(/<[^>]+>/, "").trim().replaceAll(/\s*\(Paused\)\s*$/, "").trim()
+        result.label = (stoppedVerdict == true) ? tidy.replaceAll(/\s*\(Stopped\)\s*$/, "").trim() : tidy
     }
     return result
 }

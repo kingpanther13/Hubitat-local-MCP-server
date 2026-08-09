@@ -45,6 +45,7 @@ FILE_GROUP_MAP = {
     "libraries/mcp-app-cloner-lib.groovy":      ["native_apps", "rule_crud"],
     "libraries/mcp-deploy-jobs-lib.groovy":     ["native_apps"],
     "libraries/mcp-dashboards-lib.groovy":      ["dashboards"],
+    "hubitat-mcp-server.groovy":                ["op_replay", "protocol"],
 }
 
 

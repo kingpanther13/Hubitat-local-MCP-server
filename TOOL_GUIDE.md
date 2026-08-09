@@ -601,7 +601,7 @@ Two surfaces under one gateway: RMUtils-based runtime control for RM rules (RM-o
 
 **RMUtils control (4 tools, RM-only):**
 
-- **`hub_list_rules`** — enumerate Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id). Each rule carries a live `status` (`active` | `paused` | `stopped` | `disabled` | `unknown`) plus `disabled`/`paused` booleans and, when detected, `requiredExpressionFalse: true`. `disabled` is the red-X flag; `paused` is decoration-detected from /hub2/appsList; `stopped` appears only when the hub's list source decorates the label (many firmwares don't) — the AUTHORITATIVE stopped check is `hub_get_rule_health`'s `stopped` field; any "(Stopped)" suffix is stripped from returned label/name. Precedence governs only the `status` summary (disabled > stopped > paused > active); the `disabled`/`paused` booleans remain independent facts. `unknown` is per-rule: tree-level (`/hub2/appsList` unreadable → whole list, with a result-level `statusNote`) or per-entry (one rule's node under-populated → just that rule, others stay determinate); either way the booleans are omitted, never asserted false. For non-RM classic apps use `hub_list_apps` (scope='instances'). Full semantics: `hub_get_tool_guide(section='builtin_app_tools')`.
+- **`hub_list_rules`** — enumerate Rule Machine rules (RM 4.x + 5.x combined, deduplicated by id). Each rule carries a live `status` (`active` | `paused` | `stopped` | `disabled` | `unknown`) plus `disabled`/`paused` booleans and, when detected, `requiredExpressionFalse: true`. `disabled` is the red-X flag; `paused` is decoration-detected from /hub2/appsList; `stopped` is decoration-detected by the same appsList-vs-label diff (so a rule literally NAMED "... (Stopped)" is not false-flagged) and appears only when the hub's list source decorates the label (many firmwares don't) — the AUTHORITATIVE stopped check is `hub_get_rule_health`'s `stopped` field; a detected "(Stopped)" suffix is stripped from returned label/name. Precedence governs only the `status` summary (disabled > stopped > paused > active); the `disabled`/`paused` booleans remain independent facts. `unknown` is per-rule: tree-level (`/hub2/appsList` unreadable → whole list, with a result-level `statusNote`) or per-entry (one rule's node under-populated → just that rule, others stay determinate); either way the booleans are omitted, never asserted false. For non-RM classic apps use `hub_list_apps` (scope='instances'). Full semantics: `hub_get_tool_guide(section='builtin_app_tools')`.
 - **`hub_call_rule`** — trigger an existing RM rule via `RMUtils.sendAction`
   - `action="rule"` (default, full evaluation): runs triggers + conditions + actions as if the rule fired
   - `action="actions"`: runs only the actions, bypassing conditions (useful for manual override)
@@ -1157,7 +1157,7 @@ Renaming a room preserves device assignments, but may require updating automatio
 
 ## Deployment jobs (the `deployment` argument on hub_set_rule / hub_set_native_app)
 
-Surfaced via `hub_get_tool_guide(section='deployment_jobs')`. A deployment job runs a staged multi-app migration ON-HUB with a durable checkpoint after every op: the job record (ops, per-op status, aliases, created apps, backup keys, validation results) lives in hub storage, and while a job is staging or committing the hub scheduler keeps advancing it in bounded slices with NO client attached. A client that dies mid-migration loses nothing — any fresh session reads `deployment={op:"status"}` and resumes. The SAME argument works on both tools (one shared engine); every call is self-contained (`deployment` cannot be combined with an edit/create in the same call). Write ops (create/resume/commit/cancel/delete) require `confirm=true`; `op="status"` is a pure read.
+Surfaced via `hub_get_tool_guide(section='deployment_jobs')`. A deployment job runs a staged multi-app migration ON-HUB with a durable checkpoint after every op: the job record (ops, per-op status, aliases, created apps, backup keys, validation results) lives in hub storage, and while a job is staging or committing the hub scheduler keeps advancing it in bounded slices with NO client attached. A client that dies mid-migration loses nothing — any fresh session reads `deployment={op:"status"}` and resumes. The SAME argument works on both tools (one shared engine); every call is self-contained (`deployment` cannot be combined with an edit/create in the same call). Write ops (create/resume/commit/cancel/delete) require `confirm=true` AND a hub backup taken within the last 24h (the standard destructive-write gate); `op="status"` is a pure read (`op="status"` takes `jobId?`, `includeOps` — default true — for the per-op detail).
 
 ### Op reference (each entry in ops/commitOps is {op, args, alias?})
 
@@ -1169,7 +1169,7 @@ Surfaced via `hub_get_tool_guide(section='deployment_jobs')`. A deployment job r
 | addActions | appId, actions (array of RM action specs) | hub_set_rule addActions |
 | modifyAction | appId, index, mods | hub_set_rule modifyAction (e.g. retarget runRule) |
 | pause / resume | ruleId (id or array) | RM pause/resume (whole-set in one op) |
-| setDisabled | appId, disabled | Enable/disable any app (reversible red-X) |
+| setDisabled | appId, disabled | Enable/disable any app (reversible red-X); `disabled` is REQUIRED and must be an explicit boolean |
 
 A create-type op (cloneApp/importApp/buttonRule) may declare `alias:"name"`; later ops write `{"alias":"name"}` wherever an appId/ruleId/controllerId is taken and it resolves to the created app's id at execution time.
 
@@ -1179,18 +1179,18 @@ CONSTRAINT (verified live): RM's classic wizard silently ignores delete-class bu
 
 draft > staging > ready_for_commit > committing > completed | failed | cancelled.
 
-- `op="create"`: validates the whole manifest up front (unknown ops, duplicate aliases, forward alias refs are rejected before anything runs), then stages. Each call slice is bounded by the response-time budget (and optional `maxOpsPerCall`); the on-hub worker continues the rest (`background=false` disables the worker: the job then advances only on `op="resume"`).
+- `op="create"`: validates the whole manifest up front (unknown ops, duplicate aliases, forward alias refs are rejected before anything runs), then stages. Each call slice is bounded by the response-time budget (and optional `maxOpsPerCall`); the on-hub worker continues the rest (`background=false` disables the worker: the job then advances only on `op="resume"`). `draft:true` creates the job without starting it — validation still runs up front; `op="resume"` starts staging. A manifest is capped at 50 ops (ops + commitOps) and 64000 serialized characters.
 - Staging validation gate: when the last staging op completes, every created app is health-checked (`hub_get_rule_health`, which reads live config — an existence readback). Only an all-healthy job becomes ready_for_commit; otherwise it fails with per-app results in `validation`.
 - `op="commit"`: runs the declared commitOps (typically pause the old set + enable the new set). Refused unless phase is ready_for_commit.
 - `op="cancel"`: deletes ONLY the apps recorded in `createdAppIds` (newest first) and marks the job cancelled. A completed job cannot be cancelled (reverse the cutover manually).
-- `op="delete"`: removes a FINISHED (completed/cancelled) job's record from hub storage — the apps and backups it references are untouched, and its `backupKeys` keep working with hub_restore_backup. Any other phase is refused (finish via commit/cancel first). Terminal records otherwise persist ~indefinitely (only evicted lazily when the 8-job cap is hit), so delete is the tidy-up.
+- `op="delete"`: removes a FINISHED (completed/cancelled) job's record from hub storage — the apps and backups it references are untouched, and its `backupKeys` keep working with hub_restore_backup. Any other phase is refused (finish via commit/cancel first). Terminal records otherwise persist ~indefinitely (only evicted lazily when the 8-job cap is hit, and a FAILED job is never evicted -- cancel it to free its slot and roll back its created apps), so delete is the tidy-up.
 - `op="resume"`: continues after a failure (retries the failed op), a disconnect/hub restart (picks up from the checkpoint), or starts a draft. An op interrupted MID-write is reconciled where that is safe: an interrupted create-type op adopts the app if the create actually committed (matched against a pre-op child snapshot); pause/resume/setDisabled/modifyAction re-run (convergent); an interrupted addActions requires `retryInFlight=true` because a blind re-run can duplicate actions — verify via `hub_get_app_config` first.
 
 Rollback handles on the job: `backupKeys` (hub_restore_backup) for edited apps + `createdAppIds` (cancel) for created ones. A worked example lives in the served guide section.
 
 ## Slow ops (opToken recovery + in_progress resume)
 
-A slow write can outlive its transport: the cloud relay severs calls at a fixed ceiling, and an MCP client's own request timeout can kill a long LAN call. Either way the hub still runs the operation to completion and commits it -- only the RESPONSE is lost, and your client surfaces an opaque transport error (a gateway/timeout error, often worded as "try again"). RE-RUNNING THE CALL IS THE WRONG RECOVERY: it double-commits the write. Recovery is always a POLL, and the write tool itself is the poll.
+Surfaced via `hub_get_tool_guide(section='slow_ops')`. A slow write can outlive its transport: the cloud relay severs calls at a fixed ceiling, and an MCP client's own request timeout can kill a long LAN call. Either way the hub still runs the operation to completion and commits it -- only the RESPONSE is lost, and your client surfaces an opaque transport error (a gateway/timeout error, often worded as "try again"). RE-RUNNING THE CALL IS THE WRONG RECOVERY: it double-commits the write. Recovery is always a POLL, and the write tool itself is the poll.
 
 ### Idempotency token (opToken): auto-record first, optional client token for verbatim retries
 
@@ -1201,11 +1201,14 @@ A client-invented `opToken` is an optional extra, never something to ask the use
 If the response is lost, do NOT re-run the operation and do NOT invent a fresh token. Re-issue the SAME tool call with the SAME `opToken` — the token alone is enough: a flat tool takes `{opToken: "<yours>"}` with no other arguments (e.g. hub_update_package), a gateway member takes `{tool: "<leaf>", opToken: "<yours>"}` (e.g. `{tool: "hub_set_rule", opToken: "<yours>"}` via hub_manage_rule_machine). The server answers from the token record without running anything twice:
 
 - `status: "running"` — still executing; poll again shortly by re-issuing the same tokened call (the operation completes and commits even though the response dropped).
-- `status: "duplicate_in_flight"` — an identical untokened write is already running. Do not re-run it; poll the named `inFlightOpToken` until its result replays.
-- `status: "too_many_writes_in_flight"` — the recent running-write count reached `maxConcurrentWrites` (default 2; 1 serializes, 0 disables). Wait for one named `inFlight` token to finish or poll it, then re-issue this call.
 - `replayed: true` — it finished; this IS the original buffered result (including `isError` if that attempt failed).
 - `status: "unknown"` (returned only to a token-only poll) — no RECORD of this token exists: the original call never arrived, OR the record aged out (records sweep ~24h after start, and past 100 stored records the oldest terminal records batch-evict down to 50). Poll promptly after a drop and it reliably means never-arrived: re-issue the ORIGINAL call (full arguments) with this same token. Do not trust day-old tokens.
 - `status: "indeterminate"` — the operation completed here but its buffered result cannot be read (buffering failed, or the result file is gone while the record survives). Do NOT re-issue blindly; verify current state via reads first.
+
+A NEW write may also be refused before it runs:
+
+- `status: "duplicate_in_flight"` — an identical untokened write is already running. Do not re-run it; poll the named `inFlightOpToken` until its result replays.
+- `status: "too_many_writes_in_flight"` — the recent running-write count reached `maxConcurrentWrites` (default 2; 1 serializes, 0 disables). Wait for one named `inFlight` token to finish or poll it, then re-issue this call.
 
 A token is SPENT once its operation completes — runtime errors included. A replayed result carrying an error means that attempt failed; to retry with corrected arguments after a RUNTIME failure, invent a FRESH token. Never reuse a token for a DIFFERENT operation. Exception: a call rejected for invalid arguments (-32602) executed nothing and RELEASES its token — fix the arguments and re-issue with the SAME token. A replayed result whose `status` is `in_progress` carries `replayNote`: it is the original paused envelope, not new progress — a spent token cannot drive a resume; re-issue the remaining work with a fresh token.
 
