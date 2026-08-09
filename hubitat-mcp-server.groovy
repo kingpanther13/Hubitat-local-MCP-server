@@ -1544,6 +1544,13 @@ def handleToolsCall(msg) {
     String opCompletionText = null
     boolean opCompletionIsError = false
     boolean reactiveSchemaOnly = false
+    // Debug-only per-write timing: proves where a write's wall-clock actually goes
+    // (token bookkeeping vs the tool itself vs buffering the result) instead of
+    // inferring it from e2e wall time. Costs a few now() calls; emitted once, at
+    // debug level, so a normal install never renders it.
+    long opTokenPreMs = 0L
+    long opTokenMarkMs = 0L
+    long opToolExecMs = 0L
     try {
         // ---- Idempotency token: resolve, validate, dedup, mark ----
         // All token bookkeeping happens ONCE here, never in executeTool -- a gateway
@@ -1723,7 +1730,10 @@ def handleToolsCall(msg) {
                     ])
                 }
             }
+            long _tokMarkT0 = now()
             _opTokenMark(opToken, reactiveToolName, opFingerprintHash, opFingerprintLen)
+            opTokenMarkMs = now() - _tokMarkT0
+            opTokenPreMs = now() - reqT0
         }
         // Thread the budget clock into the dispatched args -- ONLY for the leaves
         // whose loops consume it. Several tools validate their args strictly and
@@ -1732,7 +1742,9 @@ def handleToolsCall(msg) {
         // arguments falls through and simply forgoes the budget.)
         if (args instanceof Map && _budgetAwareTools().contains(reactiveToolName)) args.__reqT0 = reqT0
 
+        long _execT0 = now()
         def result = executeTool(toolName, args)
+        opToolExecMs = now() - _execT0
         // Null result is always an internal tool bug -- surface it as a structured
         // isError envelope instead of letting JsonOutput render the literal string
         // "null" into the wire payload (which looks like a normal tool result).
@@ -1934,6 +1946,7 @@ def handleToolsCall(msg) {
         // Buffer the terminal result under the token so a dropped transport response
         // is replayable by re-issuing the tokened call. Reached on every path that set
         // the text (success, oversize, validation error, runtime error, null/non-serializable).
+        long _cmpT0 = now()
         if (opTokenActive && opCompletionText != null) {
             try { _opTokenComplete(opToken, opCompletionText, opCompletionIsError) }
             catch (Exception ce) {
@@ -1950,6 +1963,13 @@ def handleToolsCall(msg) {
                                                   startedAt: now(), finishedAt: now(), isError: opCompletionIsError])
                 } catch (Exception ignored) { }
             }
+        }
+        if (opTokenActive && settings.debugLogging == true) {
+            long _cmpMs = now() - _cmpT0
+            long _totalMs = now() - reqT0
+            mcpLog("debug", "op-token", "write timing ${reactiveToolName}: total ${_totalMs}ms = pre ${opTokenPreMs}ms (mark ${opTokenMarkMs}ms) + tool ${opToolExecMs}ms + buffer ${_cmpMs}ms",
+                   null, [duration: _totalMs, details: [tool: reactiveToolName?.toString(), totalMs: _totalMs,
+                          preDispatchMs: opTokenPreMs, markMs: opTokenMarkMs, toolMs: opToolExecMs, bufferMs: _cmpMs]])
         }
     }
 }
