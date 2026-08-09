@@ -2073,7 +2073,10 @@ def _isOpTokenPollShape(args, boolean isGatewayCall, leafName) {
 }
 
 def _opTokenResultFilePrefix() { "mcp-op-result-" }
-def _opTokenResultFile(String opToken) { "${_opTokenResultFilePrefix()}${opToken}.json" }
+// .toString() matters: a GString here would be stored in atomicState by the sweep
+// queue, and a GString never equals the String it renders as -- List.contains and
+// every other value comparison against it silently answers false.
+def _opTokenResultFile(String opToken) { "${_opTokenResultFilePrefix()}${opToken}.json".toString() }
 
 // Parse the buffered result for a completed token: the inline copy (kept when an
 // upload failed for a small payload) wins, else the File Manager copy. Returns null when nothing readable remains (swept file, failed buffer)
