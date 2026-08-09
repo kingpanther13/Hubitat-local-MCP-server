@@ -233,7 +233,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: AI calls `hub_call_rule(ruleId=ruleId, action='stop')`, then `hub_get_rule_health(appId=ruleId)` and verifies `eventSubscriptionCount == 0`; it calls `hub_call_rule(ruleId=ruleId, action='start')`, reads health again, and verifies `eventSubscriptionCount > 0`.
+**Expected**: AI calls `hub_call_rule(ruleId=ruleId, action='stop')`, then `hub_get_rule_health(appId=ruleId)` and verifies `stopped == true` with `eventSubscriptionCount` no longer reading as a number (null while stopped — NOT `0`); it calls `hub_call_rule(ruleId=ruleId, action='start')`, reads health again, and verifies `stopped == false` and `eventSubscriptionCount > 0`.
 
 ### T312 — Update Rule button (re-initialize)
 

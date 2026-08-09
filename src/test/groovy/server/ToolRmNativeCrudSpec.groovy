@@ -4093,6 +4093,64 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { it.path == "/installedapp/update/json" }
     }
 
+    def "addTrigger plus addTriggers in one call is rejected fail-loud"() {
+        // A family's singular and plural collapse into ONE group, so the group count alone
+        // reads as a single operation: the dispatcher would run addTrigger and silently drop
+        // addTriggers. Per-family size is what catches it.
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "one edit call carries both the singular and the plural trigger form"
+        Exception thrownEx = null
+        try {
+            script.toolSetRule([appId: 100, confirm: true,
+                                addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
+                                addTriggers: [[capability: "Switch", deviceIds: [8], state: "off"]]])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "rejected before any wizard write, naming both operations"
+        thrownEx instanceof IllegalArgumentException
+        thrownEx.message.contains("multiple operations")
+        thrownEx.message.contains("addTrigger, addTriggers")
+
+        and: "no wizard POST fired"
+        posts.isEmpty()
+    }
+
+    def "addAction plus addActions in one call is rejected fail-loud"() {
+        // Action-family sibling of the trigger guard above.
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "one edit call carries both the singular and the plural action form"
+        Exception thrownEx = null
+        try {
+            script.toolSetRule([appId: 100, confirm: true,
+                                addAction: [capability: "log", message: "one"],
+                                addActions: [[capability: "log", message: "two"]]])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "rejected before any wizard write, naming both operations"
+        thrownEx instanceof IllegalArgumentException
+        thrownEx.message.contains("multiple operations")
+        thrownEx.message.contains("addAction, addActions")
+
+        and: "no wizard POST fired"
+        posts.isEmpty()
+    }
+
     def "modifyTrigger pre-flight shape refusal on the edit path yields a not-touched restoreHint, not a restore prompt"() {
         // Sibling of the addTrigger spec above, on the trigger-mutation branch.
         // modifyTrigger's mods.state state-change-token guard throws before any

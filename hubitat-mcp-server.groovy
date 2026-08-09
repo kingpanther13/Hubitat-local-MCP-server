@@ -1593,6 +1593,28 @@ def handleToolsCall(msg) {
         if (opTokenActive) {
             def dedup = _opTokenDedup(opToken, reactiveToolName)
             if (dedup != null) {
+                // This short-circuit serves a result WITHOUT reaching executeTool, so the
+                // masters must be enforced here too -- otherwise a client with the Write
+                // master off could replay a write's buffered result through its token.
+                boolean isReadTool = reactiveToolName in getReadOnlyToolNames()
+                if (!isReadTool && settings.enableWrite == false) {
+                    return jsonRpcResult(msg.id, [
+                        content: [[type: "text", text: groovy.json.JsonOutput.toJson([
+                            success: false, isError: true,
+                            error: "Write tools are disabled. Enable 'Write Tools' in MCP Rule Server app settings to use ${reactiveToolName}."
+                        ])]],
+                        isError: true
+                    ])
+                }
+                if (isReadTool && settings.enableRead == false) {
+                    return jsonRpcResult(msg.id, [
+                        content: [[type: "text", text: groovy.json.JsonOutput.toJson([
+                            success: false, isError: true,
+                            error: "Read tools are disabled. Enable 'Read Tools' in MCP Rule Server app settings to use ${reactiveToolName}."
+                        ])]],
+                        isError: true
+                    ])
+                }
                 // Already running (refuse the duplicate) or already complete (replay
                 // the buffered result). Short-circuit BEFORE dispatch so neither the
                 // write nor the completion buffer runs again (opCompletionText stays
@@ -2150,6 +2172,10 @@ def _canonicalOpArgs(value) {
 }
 
 def _findIdenticalRunningOp(toolName, Integer fpHash, Integer fpLen) {
+    // hash AND length, never hash alone: String.hashCode is a 32-bit non-cryptographic
+    // digest that collides trivially, and a false match here would refuse a DIFFERENT
+    // write as a duplicate. Requiring the length to agree too means an accidental
+    // collision has to land on both, which stray argument JSON does not do.
     def tokens = atomicState.opTokens
     if (!(tokens instanceof Map) || fpHash == null || fpLen == null) return null
     long cutoff = now() - 600000L

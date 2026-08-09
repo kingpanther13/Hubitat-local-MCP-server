@@ -1078,7 +1078,7 @@ def _getAllToolDefinitions_partDashboards() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean"], id: [type: "string"], type: [type: "string"],
                     name: [type: "string"], dashboard: [type: "object"], dashboards: [type: "array"],
                     message: [type: "string"], error: [type: "string"], note: [type: "string"],
@@ -1108,7 +1108,7 @@ def _getAllToolDefinitions_partDashboards() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean"], id: [type: "string"], type: [type: "string"],
                     name: [type: "string"], deviceIds: [type: "array"],
                     applied: [type: "array"], tileCount: [type: "integer"], layout: [type: "object"],
@@ -1132,7 +1132,7 @@ def _getAllToolDefinitions_partDashboards() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean"], id: [type: "string"], type: [type: "string"],
                     message: [type: "string"], error: [type: "string"], note: [type: "string"]
                 ],
@@ -1152,7 +1152,7 @@ def _getAllToolDefinitions_partDashboards() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean"], sourceId: [type: "string"], newId: [type: "string"],
                     type: [type: "string"], message: [type: "string"], error: [type: "string"], note: [type: "string"]
                 ],

@@ -396,7 +396,7 @@ def _getAllToolDefinitions_partBundles() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the bundle installed"],
                     message: [type: "string", description: "Human-readable result"],
                     endpoint: [type: "string", description: "Hub endpoint used (/bundle2/uploadZipFromUrl or /bundle/uploadZipFromUrl)"],
@@ -438,6 +438,7 @@ def _getAllToolDefinitions_partBundles() {
                 type: "object",
                 properties: [
                     bundleId: [type: "string", description: "The numeric bundle id from hub_list_bundles (e.g. \"4\")."],
+                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If omitted, the server auto-assigns and returns an auto-... token; hub_get_info(includeRecentOps=true) lists recent records. If the transport drops the response, re-issue this call with the SAME token to poll/replay the committed result instead of re-running the operation. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms a recent backup exists and the user approved deleting this bundle."]
                 ],
                 required: ["bundleId", "confirm"]
@@ -445,7 +446,7 @@ def _getAllToolDefinitions_partBundles() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the bundle was deleted"],
                     message: [type: "string", description: "Human-readable result"],
                     bundleId: [type: "string", description: "The targeted bundle id"],
@@ -465,14 +466,15 @@ def _getAllToolDefinitions_partBundles() {
                 type: "object",
                 properties: [
                     bundleId: [type: "string", description: "The numeric bundle id from hub_list_bundles (e.g. \"4\")."],
-                    saveAs: [type: "string", description: "OPTIONAL File Manager filename for the exported .zip. Defaults to the bundle's name.[[FLAT_TRIM]] '.zip' is appended if missing; non-filename characters are replaced with '_'.[[/FLAT_TRIM]]"]
+                    saveAs: [type: "string", description: "OPTIONAL File Manager filename for the exported .zip. Defaults to the bundle's name.[[FLAT_TRIM]] '.zip' is appended if missing; non-filename characters are replaced with '_'.[[/FLAT_TRIM]]"],
+                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If omitted, the server auto-assigns and returns an auto-... token; hub_get_info(includeRecentOps=true) lists recent records. If the transport drops the response, re-issue this call with the SAME token to poll/replay the committed result instead of re-running the operation. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["bundleId"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the bundle zip was saved"],
                     message: [type: "string", description: "Human-readable result"],
                     bundleId: [type: "string", description: "The exported bundle id"],

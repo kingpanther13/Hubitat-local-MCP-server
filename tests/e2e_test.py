@@ -3479,6 +3479,24 @@ class TestRunner:
                   f"over {time.monotonic() - started:.1f}s, last status {status}")
             return status
 
+        def _rule_health_when(target_id, predicate, attempts: int = 20, gap: float = 3.0):
+            """Read hub_get_rule_health until `predicate` holds (last read on timeout).
+            Health is the AUTHORITATIVE stop/start readback: hub_list_rules only reports a
+            rule as stopped when the hub decorates its label, which verified firmware does
+            not do -- polling the list for it can never converge on a landed stop."""
+            health = {}
+            t0 = time.monotonic()
+            for _ in range(attempts):
+                read = self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_get_rule_health", "args": {"appId": target_id}})
+                health = read if isinstance(read, dict) else {}
+                if predicate(health):
+                    return health
+                time.sleep(gap)
+            print(f"    [HEALTH] rule {target_id} never satisfied the predicate: {attempts} reads "
+                  f"over {time.monotonic() - t0:.1f}s, last health {health}")
+            return health
+
         active = _rule_status(app_id)
         assert active.get("status") == "active", f"new rule should read status active, got: {active}"
         assert active.get("paused") is False and active.get("disabled") is False, \
@@ -3552,6 +3570,43 @@ class TestRunner:
                 f"{label} reported failure: {res}"
             return res
 
+        def _lifecycle_write(action: str, want_stopped: bool, label: str) -> None:
+            """hub_call_rule stop/start under the same limiter contract _status_write uses.
+            Differs only in the converged-read axis: stop/start is authoritative in
+            hub_get_rule_health's `stopped`, not in the appsList status the paused/disabled
+            writes poll."""
+
+            def _attempt():
+                try:
+                    envelope = self.client.call_tool("hub_manage_rule_machine", {
+                        "tool": "hub_call_rule", "args": {"ruleId": app_id, "action": action}})
+                except McpToolError as exc:
+                    if "excessive hub load" not in str(exc):
+                        raise
+                    return None, str(exc)
+                if (isinstance(envelope, dict) and envelope.get("success") is False
+                        and "excessive hub load" in str(envelope.get("error", ""))):
+                    return envelope, str(envelope.get("error"))
+                return envelope, None
+
+            res, limited = _attempt()
+            if limited and self._clear_load_throttle(f"{label}: {limited}"):
+                res, limited = _attempt()
+            if limited:
+                # The limiter can abort the reply to a write that already committed, so a
+                # converged health read means the envelope is stale, not the write failed.
+                converged = _rule_health_when(app_id, lambda h: h.get("stopped") is want_stopped)
+                if converged.get("stopped") is want_stopped:
+                    print(f"    [LIMITER] {label} answered with the limiter envelope, but health "
+                          f"now reads stopped={want_stopped} -- the write landed; counting it as success.")
+                    return
+            assert not limited, (
+                f"{label} stayed blocked by the platform load limiter and the rule never reached the "
+                f"target state: {limited}"
+            )
+            assert not (isinstance(res, dict) and res.get("success") is False), \
+                f"{label} reported failure: {res}"
+
         _status_write("hub_set_rule_paused", {"ruleId": app_id, "paused": True},
                       "hub_set_rule_paused(paused=True)")
         paused = _rule_status_when(app_id, lambda s: s.get("status") == "paused" and s.get("paused") is True)
@@ -3564,20 +3619,28 @@ class TestRunner:
         assert resumed.get("status") == "active" and resumed.get("paused") is False, \
             f"resumed rule should read status active again, got: {resumed}"
 
-        stopped_call = self.client.call_tool("hub_manage_rule_machine", {
-            "tool": "hub_call_rule", "args": {"ruleId": app_id, "action": "stop"}})
-        assert stopped_call.get("success") is not False, \
-            f"hub_call_rule(action=stop) reported failure: {stopped_call}"
-        stopped = _rule_status_when(app_id, lambda s: s.get("status") == "stopped")
-        assert stopped.get("status") == "stopped", f"stopped rule should read status stopped, got: {stopped}"
-        assert not str(stopped.get("label", "")).endswith(" (Stopped)") \
-            and not str(stopped.get("name", "")).endswith(" (Stopped)"), \
-            f"runtime (Stopped) decoration should be stripped from label/name, got: {stopped}"
+        _lifecycle_write("stop", True, "hub_call_rule(action=stop)")
+        stopped_health = _rule_health_when(app_id, lambda h: h.get("stopped") is True)
+        assert stopped_health.get("stopped") is True, \
+            f"stopped rule should read stopped=true from hub_get_rule_health, got: {stopped_health}"
+        stopped_subs = stopped_health.get("eventSubscriptionCount")
+        assert not (isinstance(stopped_subs, int) and stopped_subs > 0), \
+            f"a stopped rule must not report a positive eventSubscriptionCount, got: {stopped_health}"
+        # The list source is best-effort here: it shows "stopped" only when the hub decorates
+        # the label, so the decoration-stripping assertions run only when it actually does.
+        stopped = _rule_status(app_id)
+        if stopped.get("status") == "stopped":
+            assert not str(stopped.get("label", "")).endswith(" (Stopped)") \
+                and not str(stopped.get("name", "")).endswith(" (Stopped)"), \
+                f"runtime (Stopped) decoration should be stripped from label/name, got: {stopped}"
 
-        started_call = self.client.call_tool("hub_manage_rule_machine", {
-            "tool": "hub_call_rule", "args": {"ruleId": app_id, "action": "start"}})
-        assert started_call.get("success") is not False, \
-            f"hub_call_rule(action=start) reported failure: {started_call}"
+        _lifecycle_write("start", False, "hub_call_rule(action=start)")
+        started_health = _rule_health_when(app_id, lambda h: h.get("stopped") is False)
+        assert started_health.get("stopped") is False, \
+            f"started rule should read stopped=false from hub_get_rule_health, got: {started_health}"
+        started_subs = started_health.get("eventSubscriptionCount")
+        assert isinstance(started_subs, int) and started_subs >= 1, \
+            f"a started rule should resubscribe (eventSubscriptionCount >= 1), got: {started_health}"
         started = _rule_status_when(app_id, lambda s: s.get("status") == "active")
         assert started.get("status") == "active", f"started rule should return to active, got: {started}"
 
@@ -4188,6 +4251,15 @@ class TestRunner:
             if clone_id:
                 self._delete_native(clone_id)
             self._delete_native(src_id)
+            # A mid-way failure leaves the job RECORD behind. Runs AFTER the app deletes so
+            # cancel cannot remove an app _delete_native is about to ask for; cancel treats
+            # an already-gone app as deleted, and both ops are no-ops on the happy path.
+            if job_id:
+                for record_op in ({"op": "cancel", "jobId": job_id}, {"op": "delete", "jobId": job_id}):
+                    try:
+                        _dep_call(record_op)
+                    except Exception:
+                        pass
 
     @test("native_apps")
     def test_set_rule_action_expression_reject_is_pre_write(self) -> None:

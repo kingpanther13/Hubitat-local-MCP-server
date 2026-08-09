@@ -3,22 +3,9 @@ package server
 import support.ToolSpecBase
 
 /**
- * Spec for the `deployment` argument surface in libraries/mcp-deploy-jobs-lib.groovy,
- * routed from toolSetRule / toolSetNativeApp (libraries/mcp-native-rules-lib.groovy).
- *
- * There are no dedicated deployment tools: hub_set_rule and hub_set_native_app both
- * route args.deployment to the one shared engine. Covered here:
- *   - routing contract: self-contained (rejects combination with other args), shared
- *     across both tools, op enum validated
- *   - op="status" is a pure read (no confirm required) listing job records
- *   - op="create" validates the whole manifest BEFORE persisting anything
- *     (fail-before-side-effect is what makes -32602 token release safe)
- *   - op="delete" removes only finished (completed/cancelled) job RECORDS and
- *     surfaces the rollback handles one last time
- *
- * Job records are seeded straight into atomicStateMap.deployJobs — the engine
- * reads/writes atomicState.deployJobs (whole-map) and per-entry via
- * atomicState.updateMapValue (TestAtomicState implements both).
+ * No dedicated tools: hub_set_rule and hub_set_native_app both route args.deployment
+ * to one shared engine. Job records seed straight into atomicStateMap.deployJobs
+ * (TestAtomicState implements both whole-map and updateMapValue writes).
  */
 class ToolDeploymentJobsSpec extends ToolSpecBase {
 
@@ -122,6 +109,43 @@ class ToolDeploymentJobsSpec extends ToolSpecBase {
         then:
         thrown(IllegalArgumentException)
         !(atomicStateMap.deployJobs instanceof Map) || atomicStateMap.deployJobs.isEmpty()
+    }
+
+    def "create rejects a self-referencing alias before persisting"() {
+        given:
+        enableWrite()
+
+        when: "a create-type op consumes the very alias it declares"
+        script.toolSetRule([deployment: [op: "create", ops: [
+            [op: "cloneApp", alias: "copy", args: [sourceAppId: [alias: "copy"]]]
+        ]], confirm: true])
+
+        then: "rejected at validation, naming the alias -- not left to fail mid-job"
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("'copy'")
+        !(atomicStateMap.deployJobs instanceof Map) || atomicStateMap.deployJobs.isEmpty()
+    }
+
+    def "status stays readable when the Write master is off"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.enableWrite = false
+        seedJob("dj-ro", "completed")
+
+        when: "op='status' through the executeTool master gate"
+        def result = script.executeTool("hub_set_rule", [deployment: [op: "status"]])
+
+        then: "the pure read is served"
+        result.success == true
+        result.jobs*.jobId == ["dj-ro"]
+
+        when: "a WRITE deployment op through the same gate"
+        script.executeTool("hub_set_rule", [deployment: [op: "delete", jobId: "dj-ro"], confirm: true])
+
+        then: "the Write master blocks it and the record survives"
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("Write tools are disabled")
+        atomicStateMap.deployJobs.containsKey("dj-ro")
     }
 
     def "delete refuses a job that is not finished"() {

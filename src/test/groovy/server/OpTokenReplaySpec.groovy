@@ -150,6 +150,35 @@ class OpTokenReplaySpec extends ToolSpecBase {
         replayInner.roomId == 11
     }
 
+    def "a completed WRITE token does not replay while the Write master is off"() {
+        // The dedup short-circuit answers BEFORE executeTool, so without its own class check
+        // a client with writes disabled could read a write's buffered result off its token.
+        given:
+        settingsMap.enableWrite = true
+        def store = installFileStore()
+        def ran = 0
+        script.metaClass.toolCreateRoom = { a -> ran++; [success: true, roomId: 12, name: 'Den'] }
+
+        when: 'the write commits and buffers under its token'
+        def first = mcpDriver.callTool('hub_create_room', [name: 'Den', confirm: true, opToken: 'wgatetoken1'])
+
+        then: 'there IS a buffered result available to replay'
+        ran == 1
+        mcpDriver.parseInner(first).roomId == 12
+
+        when: 'the Write master is turned off and the token is re-issued'
+        settingsMap.enableWrite = false
+        def second = mcpDriver.callTool('hub_create_room', [name: 'Den', confirm: true, opToken: 'wgatetoken1'])
+
+        then: 'the master gate answers instead of the buffered write result'
+        def inner = mcpDriver.parseInner(second)
+        inner.success == false
+        inner.isError == true
+        inner.error.contains('Write tools are disabled')
+        inner.roomId == null
+        ran == 1
+    }
+
     def "a completed token whose buffer file was swept returns status indeterminate, never the safe-to-retry unknown"() {
         given:
         settingsMap.enableWrite = true

@@ -95,6 +95,44 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
         !result.containsKey('lastSelfDeploy')
     }
 
+    def "includeRecentOps hides write records while the Write master is off"() {
+        // A write record's token replays that write's buffered result, so listing it with
+        // writes disabled would hand back the very thing the master is withholding.
+        given:
+        sharedLocation.hub = new TestHub()
+        settingsMap.enableRead = true
+        settingsMap.enableWrite = false
+        atomicStateMap.opTokens = [
+            readtoken123: [state: 'complete', tool: 'hub_get_info', isError: false, startedAt: 1000L],
+            writetoken12: [state: 'complete', tool: 'hub_create_room', isError: false, startedAt: 2000L]
+        ]
+
+        when:
+        def result = script.toolGetHubInfo([includeRecentOps: true])
+
+        then: "only the read record is listed, and the total reflects the filtered set"
+        result.recentOps*.opToken == ['readtoken123']
+        result.recentOpsTotal == 1
+    }
+
+    def "includeRecentOps lists write records when the Write master is on"() {
+        given:
+        sharedLocation.hub = new TestHub()
+        settingsMap.enableRead = true
+        settingsMap.enableWrite = true
+        atomicStateMap.opTokens = [
+            readtoken123: [state: 'complete', tool: 'hub_get_info', isError: false, startedAt: 1000L],
+            writetoken12: [state: 'complete', tool: 'hub_create_room', isError: false, startedAt: 2000L]
+        ]
+
+        when:
+        def result = script.toolGetHubInfo([includeRecentOps: true])
+
+        then: "both records are listed, newest first"
+        result.recentOps*.opToken == ['writetoken12', 'readtoken123']
+        result.recentOpsTotal == 2
+    }
+
     def "getHubInfo includes both fields as false when toggles are off"() {
         given:
         settingsMap.enableCustomRuleEngine = false

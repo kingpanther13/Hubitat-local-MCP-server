@@ -73,6 +73,77 @@ class ToolManageFilesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
+    def "hub_list_files filter survives the dispatch envelope in both gateway modes"() {
+        given:
+        settingsMap.useGateways = useGateways
+        hubGet.register('/hub/fileManager/json') { params ->
+            JsonOutput.toJson([
+                [name: 'alpha.txt', size: 10],
+                [name: 'ALPINE.csv', size: 20],
+                [name: 'beta.txt', size: 30]
+            ])
+        }
+
+        when:
+        def response = mcpDriver.callTool('hub_list_files', [filter: 'AlP'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.total == 2
+        inner.files*.name == ['ALPINE.csv', 'alpha.txt']
+
+        where:
+        useGateways << [true, false]
+    }
+
+    def "hub_list_files applies the filter on the HTML fallback too"() {
+        given: 'the endpoint answers with the File Manager HTML page, so JSON parsing throws'
+        hubGet.register('/hub/fileManager/json') { params ->
+            '<html><body>' +
+            '<a href="/local/alpha.txt">alpha.txt</a>' +
+            "<a href='/local/ALPINE.csv'>ALPINE.csv</a>" +
+            '<a href="/local/beta.txt">beta.txt</a>' +
+            '</body></html>'
+        }
+
+        when:
+        def result = script.toolListFiles([filter: 'AlP'])
+
+        then: 'the HTML branch served the listing and the filter still applied case-insensitively'
+        result.note.contains('HTML page')
+        result.total == 2
+        result.files*.name == ['ALPINE.csv', 'alpha.txt']
+    }
+
+    def "hub_list_files filters BEFORE paginating so every page holds only matches"() {
+        // Ordering proof: the cursor must index into the FILTERED list. If pagination ran
+        // first, total would count the non-matching files and they would surface on page 2.
+        given:
+        def names = (0..101).collect { [name: String.format('match-%03d.txt', it), size: 1] }
+        names << [name: 'other-a.txt', size: 1]
+        names << [name: 'other-b.txt', size: 1]
+        hubGet.register('/hub/fileManager/json') { params -> JsonOutput.toJson(names) }
+
+        when: 'first page of the filtered set'
+        def page1 = script.toolListFiles([filter: 'MATCH', cursor: '0'])
+
+        then: 'a full page of matches, with a cursor for the remainder'
+        page1.total == 102
+        page1.files.size() == 100
+        page1.nextCursor == '100'
+
+        when: 'the remainder'
+        def page2 = script.toolListFiles([filter: 'MATCH', cursor: page1.nextCursor])
+
+        then: 'the two pages together are exactly the 102 matches, no non-matching file anywhere'
+        page2.files.size() == 2
+        page2.nextCursor == null
+        (page1.files*.name + page2.files*.name) == (0..101).collect { String.format('match-%03d.txt', it) }
+    }
+
+    @spock.lang.Unroll
     def "hub_list_files via dispatch returns sorted file list (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways

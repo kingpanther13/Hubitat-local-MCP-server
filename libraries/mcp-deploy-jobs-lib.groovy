@@ -1,4 +1,4 @@
-library(name: "McpDeployJobsLib", namespace: "mcp", author: "kingpanther13", description: "Durable multi-app deployment jobs: staged clone/import/edit ops with on-hub checkpoints, a validation gate, commit cutover, and cancel rollback (issue #376)")
+library(name: "McpDeployJobsLib", namespace: "mcp", author: "kingpanther13", description: "Durable multi-app deployment jobs: staged clone/import/edit ops with on-hub checkpoints, a validation gate, commit cutover, and cancel rollback")
 
 def _deployOpTypes() { ["cloneApp", "importApp", "buttonRule", "addActions", "modifyAction", "pause", "resume", "setDisabled"] }
 def _deployCreateOpTypes() { ["cloneApp", "importApp", "buttonRule"] }
@@ -6,6 +6,7 @@ def _deployActivePhases() { ["staging", "committing"] }
 def _deployMaxJobs() { 8 }
 def _deployLeaseMs() { 90000L }
 def _deployWorkerBudgetMs() { 45000L }
+def _deployMaxWorkerFailures() { 3 }
 
 def _deployJobs() {
     return (atomicState.deployJobs instanceof Map) ? atomicState.deployJobs : [:]
@@ -44,9 +45,12 @@ private void _deployValidateOps(List ops, Set knownAliases, String listName) {
             if (!(t in _deployCreateOpTypes())) throw new IllegalArgumentException("${listName}[${i}].alias is only valid on ${_deployCreateOpTypes().join('/')} ops (it names the created app's id for later ops)")
             def a = op.alias.toString()
             if (knownAliases.contains(a)) throw new IllegalArgumentException("${listName}[${i}].alias '${a}' is declared more than once")
-            knownAliases << a
         }
+        // An op's own args are checked BEFORE its alias joins the known set, so a
+        // self-reference ({alias:'x'} inside the op declaring 'x') fails here rather
+        // than mid-job, where the alias has no recorded appId yet.
         _deployCheckAliasRefs(op.args, knownAliases, "${listName}[${i}].args")
+        if (op.alias != null) knownAliases << op.alias.toString()
     }
 }
 
@@ -270,9 +274,10 @@ private Map _deployRunSlice(Map job, Long t0, Integer maxOps, Long fixedBudgetMs
         String opType = op.op?.toString()
         if (entry.status == "in_flight") {
             // A previous slice died mid-op. Reconcile create-type ops (adopt the app
-            // if the create committed); re-run convergent ops; gate the one genuinely
-            // ambiguous op (addActions -- a re-run can duplicate actions) behind an
-            // explicit retryInFlight approval.
+            // if the create committed); re-run convergent ops; gate the ambiguous
+            // ones behind an explicit retryInFlight approval -- an unreconcilable
+            // create (a re-run can leave a duplicate app cancel never deletes) and
+            // addActions (a re-run can duplicate actions).
             if (opType in _deployCreateOpTypes()) {
                 def adopted = _deployReconcileCreateOp(entry)
                 if (adopted != null) {
@@ -282,16 +287,30 @@ private Map _deployRunSlice(Map job, Long t0, Integer maxOps, Long fixedBudgetMs
                     entry.remove("recon")
                     _deployRecordCreated(job, op, adopted)
                     statusList[idx] = entry
+                    if (staging) { job.opStatus = statusList } else { job.commitStatus = statusList }
                     _deployAppendHistory(job, "op ${idx} (${opType}) adopted app ${adopted} after interrupted slice")
                     _deploySaveJob(job)
                     processed++
                     continue
+                }
+                if (entry.retryApproved != true) {
+                    entry.status = "failed"
+                    entry.interrupted = true
+                    entry.error = "interrupted mid-create and the created app could not be identified; a re-run may create a duplicate"
+                    statusList[idx] = entry
+                    if (staging) { job.opStatus = statusList } else { job.commitStatus = statusList }
+                    job.phase = "failed"
+                    job.error = "op ${idx} (${opType}) was interrupted mid-create and could not be reconciled. Verify via hub_get_app_config / hub_list_rules whether the app was created (delete a stray copy manually), then op='resume' with retryInFlight=true to re-run it, or op='cancel'."
+                    job.sliceLeaseUntil = null
+                    _deploySaveJob(job)
+                    break
                 }
             } else if (opType == "addActions" && entry.retryApproved != true) {
                 entry.status = "failed"
                 entry.interrupted = true
                 entry.error = "interrupted mid-write; a re-run may duplicate actions"
                 statusList[idx] = entry
+                if (staging) { job.opStatus = statusList } else { job.commitStatus = statusList }
                 job.phase = "failed"
                 job.error = "op ${idx} (addActions) was interrupted mid-write. Verify via hub_get_app_config(appId) whether the actions landed, then op='resume' with retryInFlight=true to re-run it, or op='cancel'."
                 job.sliceLeaseUntil = null
@@ -355,8 +374,19 @@ def deployJobWorker() {
         _deploySaveJob(job)
         try {
             _deployRunSlice(job, now(), null, _deployWorkerBudgetMs())
+            job.workerFailStreak = 0
         } catch (Exception e) {
             mcpLogError("deploy", "worker slice for job ${jid} threw", e)
+            // A throw leaves the job ACTIVE, so the re-arm below would retry it every
+            // 15s forever. Bound the streak: after 3 consecutive throwing slices the
+            // job goes terminal, which is what lets the re-arm condition end.
+            int streak = ((job.workerFailStreak ?: 0) as Integer) + 1
+            job.workerFailStreak = streak
+            if (streak >= _deployMaxWorkerFailures()) {
+                job.phase = "failed"
+                job.error = "worker slice threw repeatedly: ${(e.message ?: e.toString()).toString().take(200)}"
+                _deployAppendHistory(job, "worker abandoned after ${streak} throwing slices")
+            }
         } finally {
             job.sliceLeaseUntil = null
             _deploySaveJob(job)
@@ -404,7 +434,9 @@ private Map _deployOpCreate(Map args) {
             .each { k, v -> pruned[k] = v }
         atomicState.deployJobs = pruned
     }
-    def jobId = "dj-${now()}".toString()
+    // Random suffix, not the bare clock: two creates landing in the same millisecond
+    // would otherwise share a jobId and the second would overwrite the first.
+    def jobId = "dj-" + Long.toString(now(), 16) + "-" + Integer.toString(new Random().nextInt(0xFFFF), 16).padLeft(4, '0')
     def job = [
         jobId: jobId,
         name: args.name?.toString() ?: jobId,
@@ -452,6 +484,10 @@ private Map _deployOpResume(Map args) {
     }
     if (phase == "failed") {
         boolean retryInFlight = (args.retryInFlight == true)
+        // Read BEFORE the reset loop rewrites failed/in_flight entries to pending:
+        // afterwards nothing distinguishes a job that died on its first commit op
+        // from one that never started committing.
+        boolean commitStarted = ((job.commitStatus ?: []) as List).any { it?.status != "pending" }
         ["opStatus", "commitStatus"].each { listName ->
             def statusList = (job[listName] ?: []) as List
             statusList.eachWithIndex { entry, i ->
@@ -469,7 +505,6 @@ private Map _deployOpResume(Map args) {
             job[listName] = statusList
         }
         boolean stagingComplete = ((job.opStatus ?: []) as List).every { it?.status == "done" }
-        boolean commitStarted = ((job.commitStatus ?: []) as List).any { it?.status != "pending" }
         job.phase = (stagingComplete && job.validation?.ok == true && commitStarted) ? "committing" : "staging"
         job.error = null
         _deployAppendHistory(job, "resumed after failure")
@@ -525,6 +560,12 @@ private Map _deployOpCancel(Map args) {
     }
     if (phase == "cancelled") {
         throw new IllegalArgumentException("Job '${job.jobId}' is already cancelled.")
+    }
+    // A live worker slice holds a snapshot of this job and saves it whole; letting
+    // cancel write the terminal state underneath it would be undone on the slice's
+    // next save, resurrecting a job whose apps were already deleted.
+    if (phase in _deployActivePhases() && job.sliceLeaseUntil != null && now() < (job.sliceLeaseUntil as Long)) {
+        throw new IllegalArgumentException("Job '${job.jobId}' has an on-hub worker slice active right now -- wait for the slice to finish (poll deployment:{op:'status', jobId:'${job.jobId}'}), then cancel.")
     }
     def cancelState = (job.cancel instanceof Map) ? job.cancel : [deleted: [], failures: []]
     def targets = ((job.createdAppIds ?: []) as List).reverse()
@@ -661,6 +702,11 @@ def _deployHandleArgument(Map deployment, Boolean confirm, Object reqT0) {
 private Map _deployOpDelete(Map args) {
     def job = _deployLoadJob(args?.jobId)
     def phase = job.phase?.toString()
+    // Belt-and-braces with the terminal-phase check below: a live worker slice
+    // re-saves its whole job snapshot, which would resurrect a record deleted here.
+    if (phase in _deployActivePhases() && job.sliceLeaseUntil != null && now() < (job.sliceLeaseUntil as Long)) {
+        throw new IllegalArgumentException("Job '${job.jobId}' has an on-hub worker slice active right now -- wait for the slice to finish (poll deployment:{op:'status', jobId:'${job.jobId}'}), then delete the finished record.")
+    }
     if (!(phase in ["completed", "cancelled"])) {
         def steer = (phase in _deployActivePhases()) ? "Wait for the running slice, then op='commit' or op='cancel' first." : "Finish it first: op='cancel' rolls back created apps (or op='commit' from ready_for_commit)."
         throw new IllegalArgumentException("Job '${job.jobId}' is in phase '${phase}' -- delete removes only finished job records (completed/cancelled). ${steer}")

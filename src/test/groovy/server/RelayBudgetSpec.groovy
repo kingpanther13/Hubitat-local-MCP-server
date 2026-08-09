@@ -192,6 +192,69 @@ class RelayBudgetSpec extends ToolSpecBase {
         atomicStateMap.opTokens.size() == 1
     }
 
+    def "a write refused by the concurrency cap succeeds once the running write completes"() {
+        // The cap must be a transient backpressure signal, not a latch: the refusal
+        // reads the LIVE running set, so a completed record frees the slot.
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.maxConcurrentWrites = 1
+        installOpTokenFileStore()
+        atomicStateMap.opTokens = [
+            'auto-room-create': [
+                state: 'running', tool: 'hub_create_room', startedAt: FIXED_NOW - 1000L
+            ]
+        ]
+        def ran = 0
+        script.metaClass.toolRenameRoom = { Map args -> ran++; [success: true] }
+
+        when: 'the cap is full'
+        def refused = mcpDriver.callTool('hub_update_room', [room: 'Den', newName: 'Study', confirm: true])
+
+        then: 'refused without running the write'
+        ran == 0
+        mcpDriver.parseInner(refused).status == 'too_many_writes_in_flight'
+
+        when: 'the in-flight write finishes and the caller re-issues'
+        def tokens = atomicStateMap.opTokens
+        tokens['auto-room-create'].state = 'complete'
+        atomicStateMap.opTokens = tokens
+        def accepted = mcpDriver.callTool('hub_update_room', [room: 'Den', newName: 'Study', confirm: true])
+
+        then: 'the slot is free and the write runs'
+        ran == 1
+        accepted.result.isError != true
+        mcpDriver.parseInner(accepted).success == true
+    }
+
+    def "the concurrency cap refuses a CLIENT-tokened write too, not just auto-tokened ones"() {
+        // The cap gates on isWriteLeaf alone -- unlike the identical-in-flight fingerprint
+        // refusal, which is auto-token-only. A client token buys no exemption from it.
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.maxConcurrentWrites = 1
+        installOpTokenFileStore()
+        atomicStateMap.opTokens = [
+            'auto-room-create': [
+                state: 'running', tool: 'hub_create_room', startedAt: FIXED_NOW - 1000L
+            ]
+        ]
+        def ran = 0
+        script.metaClass.toolRenameRoom = { Map args -> ran++; [success: true] }
+
+        when:
+        def response = mcpDriver.callTool('hub_update_room', [
+            room: 'Den', newName: 'Study', confirm: true, opToken: 'client-token-1'
+        ])
+
+        then: 'refused exactly like the untokened form, and the client token is not spent'
+        ran == 0
+        response.result.isError == true
+        def inner = mcpDriver.parseInner(response)
+        inner.status == 'too_many_writes_in_flight'
+        inner.note.contains('cap 1')
+        atomicStateMap.opTokens['client-token-1'] == null
+    }
+
     def "a client-tokened write is exempt from identical-in-flight fingerprint refusal"() {
         given:
         settingsMap.enableWrite = true

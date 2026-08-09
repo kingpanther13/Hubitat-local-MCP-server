@@ -386,6 +386,7 @@ def _getAllToolDefinitions_partFiles() {
                 properties: [
                     fileName: [type: "string", description: "The file name to write (e.g., 'my-config.json'). Only A-Za-z0-9, hyphens, underscores, and periods allowed."],
                     content: [type: "string", description: "The text content to write to the file"],
+                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If omitted, the server auto-assigns and returns an auto-... token; hub_get_info(includeRecentOps=true) lists recent records. If the transport drops the response, re-issue this call with the SAME token to poll/replay the committed result instead of re-running the operation. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved the write."]
                 ],
                 required: ["fileName", "content", "confirm"]
@@ -393,7 +394,7 @@ def _getAllToolDefinitions_partFiles() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the write succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     fileName: [type: "string", description: "File written"],
@@ -412,6 +413,7 @@ def _getAllToolDefinitions_partFiles() {
                 type: "object",
                 properties: [
                     fileName: [type: "string", description: "The exact file name to delete"],
+                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If omitted, the server auto-assigns and returns an auto-... token; hub_get_info(includeRecentOps=true) lists recent records. If the transport drops the response, re-issue this call with the SAME token to poll/replay the committed result instead of re-running the operation. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved the deletion."]
                 ],
                 required: ["fileName", "confirm"]
@@ -419,7 +421,7 @@ def _getAllToolDefinitions_partFiles() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the deletion succeeded"],
                     message: [type: "string", description: "Human-readable result, including backup status"],
                     fileName: [type: "string", description: "Name of the file that was deleted"],

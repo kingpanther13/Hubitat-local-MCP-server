@@ -856,7 +856,7 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the operation succeeded"],
                     confirmed: [type: "boolean", description: "Whether backup completion was confirmed via the hub's backup status or a new entry in its backup list (false = best-effort trigger)"],
                     mocked: [type: "boolean", description: "true when mock=true stamped the gate record without a real backup"],
@@ -879,6 +879,7 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
                     location: [type: "string", enum: ["local", "cloud"], description: "Which store to delete from."],
                     fileName: [type: "string", description: "location=local: backup name from hub_list_backups."],
                     path: [type: "string", description: "location=cloud: backup path from hub_list_backups."],
+                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If omitted, the server auto-assigns and returns an auto-... token; hub_get_info(includeRecentOps=true) lists recent records. If the transport drops the response, re-issue this call with the SAME token to poll/replay the committed result instead of re-running the operation. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED true. Confirms the delete."]
                 ],
                 required: ["location", "confirm"]
@@ -886,7 +887,7 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the delete succeeded"],
                     location: [type: "string", description: "local or cloud"],
                     message: [type: "string", description: "Human-readable result"],
@@ -1005,7 +1006,7 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the restore succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     type: [type: "string", description: "Item type restored (app/driver/rm-rule/visual-rule)"],

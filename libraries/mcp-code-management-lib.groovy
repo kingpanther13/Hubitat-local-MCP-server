@@ -2768,7 +2768,7 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the install/instantiation succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     appId: [description: "New app code ID (code-install mode)"],
@@ -2826,7 +2826,7 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the install (or all bulk installs) succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     driverId: [description: "New driver code ID (single-driver mode)"],
@@ -2882,7 +2882,7 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the update succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     appId: [description: "App ID updated"],
@@ -2947,7 +2947,7 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the update (or all bulk updates) succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     driverId: [description: "Driver ID updated (single-driver mode)"],
@@ -2988,6 +2988,7 @@ Tell the user the item name/ID, warn it's permanent, get confirmation. Requires 
                 properties: [
                     type: [type: "string", enum: ["app", "driver", "library"], description: "What to delete."],
                     item_id: [type: "string", description: "The app/driver/library ID to delete."],
+                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If omitted, the server auto-assigns and returns an auto-... token; hub_get_info(includeRecentOps=true) lists recent records. If the transport drops the response, re-issue this call with the SAME token to poll/replay the committed result instead of re-running the operation. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["type", "item_id", "confirm"]
@@ -2995,7 +2996,7 @@ Tell the user the item name/ID, warn it's permanent, get confirmation. Requires 
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the deletion succeeded"],
                     message: [type: "string", description: "Human-readable result, including backup status"],
                     appId: [description: "Deleted app ID (type='app')"],
@@ -3035,7 +3036,7 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the library installed"],
                     message: [type: "string", description: "Human-readable result"],
                     libraryId: [description: "New library ID"],
@@ -3077,7 +3078,7 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the update succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     libraryId: [description: "Library ID updated"],

@@ -211,7 +211,7 @@ def toolGetHubInfo(args = null) {
     }
     if (args?.includeRecentOps == true) {
         // The op-record journal: every tokened call PLUS every auto-recorded
-        // untokened write (dispatch assigns an auto- token). This is the
+        // untokened write (dispatch assigns an auto-token). This is the
         // did-my-last-command-land surface for a client whose response was lost
         // and who never invented a token -- find the record here, then poll its
         // token (token-only re-issue) to replay the buffered result.
@@ -223,7 +223,13 @@ def toolGetHubInfo(args = null) {
                 finishedAt: v.finishedAt, isError: v.isError,
                 auto: k.toString().startsWith("auto-")
             ] : null
-        }.findAll { it != null }.sort { -((it.startedAt ?: 0) as Long) }
+        }.findAll { it != null }
+        // A write token replays that write's buffered result, so write records stay
+        // hidden while the Write master is off.
+        if (settings.enableWrite == false) {
+            rows = rows.findAll { getReadOnlyToolNames().contains(it.tool) }
+        }
+        rows = rows.sort { -((it.startedAt ?: 0) as Long) }
         Integer cap = 25
         try { if (args.recentOpsLimit != null) cap = Math.max(1, args.recentOpsLimit.toString() as Integer) } catch (Exception ignored) { }
         info.recentOps = rows.take(cap)
@@ -930,7 +936,7 @@ def _getAllToolDefinitions_partSystem() {
                 properties: [
                     identifyHub: [type: "boolean", description: "Blink the hub LED to identify it.", default: false],
                     includeHealthAlerts: [type: "boolean", description: "Include the full health-alerts block.", default: false],
-                    includeRecentOps: [type: "boolean", description: "Include the recent-operations journal: every tokened call plus every auto-recorded untokened WRITE (the server assigns an auto- opToken to each). If a write's response was lost, find its record here and re-issue token-only with its opToken to replay the buffered result instead of re-running the write.", default: false],
+                    includeRecentOps: [type: "boolean", description: "Include the recent-operations journal: every tokened call plus every auto-recorded untokened WRITE (the server assigns an auto-opToken to each). If a write's response was lost, find its record here and re-issue token-only with its opToken to replay the buffered result instead of re-running the write.", default: false],
                     recentOpsLimit: [type: "integer", description: "Max recentOps rows (default 25)."],
                     includeAppUpdate: [type: "boolean", description: "Also check GitHub for a newer MCP Rule Server APP version, returned under appUpdate.", default: false]
                 ]
@@ -1027,7 +1033,7 @@ def _getAllToolDefinitions_partSystem() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the action succeeded"],
                     action: [type: "string", description: "The action performed"],
                     modes: [type: "array", description: "Resulting mode list (create/rename/delete)", items: [type: "object"]],
@@ -1053,7 +1059,7 @@ def _getAllToolDefinitions_partSystem() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the change succeeded"],
                     manager: [type: "string", description: "The manager that was selected"],
                     conditionsUpdated: [type: "boolean", description: "True if conditions were applied"],
@@ -1095,7 +1101,7 @@ def _getAllToolDefinitions_partSystem() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the HSM arm event was sent"],
                     previousStatus: [type: "string", description: "HSM status before the change"],
                     newMode: [type: "string", description: "Requested HSM mode"]
@@ -1133,7 +1139,7 @@ def _getAllToolDefinitions_partSystem() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the settings were applied"],
                     applied: [type: "array", description: "The fields that were changed; may include darkMode and the network legs (network.staticIp / network.dhcp / network.ethernetAutoneg / network.wifi)", items: [type: "string"]],
                     error: [type: "string", description: "Failure reason (success=false)"],
@@ -1157,7 +1163,7 @@ PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the reboot was initiated"],
                     message: [type: "string", description: "Human-readable result"],
                     lastBackup: [type: "string", description: "Formatted timestamp of last backup"],
@@ -1182,7 +1188,7 @@ PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user it won't restart automaticall
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the shutdown was initiated"],
                     message: [type: "string", description: "Human-readable result"],
                     lastBackup: [type: "string", description: "Formatted timestamp of last backup"],
@@ -1207,7 +1213,7 @@ PRE-FLIGHT (apply): 1) Ensure backup <24h old 2) Confirm an update is actually p
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the install was initiated (or the status poll ran)"],
                     statusOnly: [type: "boolean", description: "True when this was a status poll (no install)"],
                     status: [description: "The /hub/cloud/checkUpdateStatus payload; present for statusOnly. Usually a parsed object (e.g. {status:'IDLE'}) but can be a plain string if the hub returns a non-JSON body (e.g. during the reboot)."],

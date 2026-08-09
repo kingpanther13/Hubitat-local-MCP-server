@@ -515,7 +515,7 @@ def _getAllToolDefinitions_partDebugLogging() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the clear succeeded"],
                     clearedCount: [type: "integer", description: "Number of entries removed"]
                 ],
@@ -535,7 +535,7 @@ def _getAllToolDefinitions_partDebugLogging() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the level was set"],
                     previousLevel: [type: "string", description: "Log level before the change"],
                     newLevel: [type: "string", description: "Log level after the change"]

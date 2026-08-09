@@ -93,8 +93,10 @@ def toolUpdateMcpSettings(args) {
         }
         if (keyStr == "maxConcurrentWrites") {
             BigDecimal numeric = coerced as BigDecimal
-            if (numeric < 0 || numeric > Integer.MAX_VALUE || numeric.remainder(BigDecimal.ONE) != BigDecimal.ZERO) {
-                throw new IllegalArgumentException("Setting 'maxConcurrentWrites' must be an integer >= 0, got: ${coerced}")
+            // Mirrors the preferences input's range: 0..100 — a self-admin write that
+            // accepted more would be un-editable from the app UI afterwards.
+            if (numeric < 0 || numeric > 100 || numeric.remainder(BigDecimal.ONE) != BigDecimal.ZERO) {
+                throw new IllegalArgumentException("Setting 'maxConcurrentWrites' must be an integer between 0 and 100 (0 disables the cap), got: ${coerced}")
             }
             coerced = numeric.intValue()
         }
@@ -817,7 +819,7 @@ def _getAllToolDefinitions_partSelfAdmin() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the operation succeeded"],
                     updated: [type: "object", description: "Map of applied scalar setting key → coerced new value (excludes selectedDevices, reported under its own key). Present on success; absent when `success: false` (a device-scope runtime fetch failure)"],
                     selectedDevices: [
@@ -860,7 +862,7 @@ A deploy takes MINUTES and routinely outlives client timeouts while the hub keep
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto- token (present when the call carried no client opToken); poll token-only to replay this result."],
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "True when the deploy (or dry-run plan) completed; false on abort or app-update failure"],
                     ref: [type: "string", description: "The git ref deployed"],
                     dryRun: [type: "boolean", description: "True when this was a plan-only run (no writes)"],
