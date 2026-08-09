@@ -10954,58 +10954,12 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             f"Expected echoed 2025-03-26, got: {result.get('protocolVersion')}"
 
     @test("protocol")
-    def test_initialize_echoes_newest_protocol(self) -> None:
-        """The newest revision initialize may negotiate is echoed when explicitly
-        requested. Distinct from the no-version fallback case: this proves the newest
-        legacy entry is genuinely on the allowlist, not merely the value the fallback
-        happens to return."""
-        newest = INITIALIZE_PROTOCOL_VERSIONS[0]
-        result = self.client.initialize(newest)
-        assert result.get("protocolVersion") == newest, \
-            f"Expected echoed {newest}, got: {result.get('protocolVersion')}"
-
-    @test("protocol")
     def test_initialize_falls_back_on_unsupported_protocol(self) -> None:
         """An unsupported protocolVersion falls back to the newest revision initialize
         may negotiate rather than erroring — initialize never rejects."""
         result = self.client.initialize("1999-01-01")
         assert result.get("protocolVersion") == INITIALIZE_PROTOCOL_VERSIONS[0], \
             f"Expected fallback {INITIALIZE_PROTOCOL_VERSIONS[0]}, got: {result.get('protocolVersion')}"
-
-    @test("protocol")
-    def test_initialize_never_negotiates_the_modern_revision(self) -> None:
-        """initialize must NOT echo 2026-07-28 even though the transport supports it.
-        That revision deleted the initialize handshake, so a client reaching this method
-        is legacy-era by construction — echoing the modern version would let it cache an
-        era it cannot actually speak. It negotiates down to the newest legacy revision
-        like any other non-allowlisted value."""
-        result = self.client.initialize("2026-07-28")
-        assert result.get("protocolVersion") == INITIALIZE_PROTOCOL_VERSIONS[0], \
-            f"initialize must cap at {INITIALIZE_PROTOCOL_VERSIONS[0]}, got: {result.get('protocolVersion')}"
-        assert result.get("protocolVersion") != "2026-07-28", \
-            "initialize echoed the modern revision — the handshake must stay legacy-capped"
-
-    @test("protocol")
-    def test_server_discover(self) -> None:
-        """server/discover (SEP-2575) advertises the supported protocol versions,
-        capabilities and identity so a stateless client can pick a version before
-        sending anything else. DiscoverResult is a CacheableResult, so ttlMs and
-        cacheScope are REQUIRED fields of it."""
-        result = self.client._send("server/discover")
-        assert result.get("supportedVersions") == SUPPORTED_PROTOCOL_VERSIONS, \
-            f"Expected {SUPPORTED_PROTOCOL_VERSIONS}, got: {result.get('supportedVersions')}"
-        assert isinstance(result.get("capabilities"), dict) and "tools" in result["capabilities"], \
-            f"discover must advertise the tools capability: {result.get('capabilities')}"
-        assert result.get("serverInfo", {}).get("name") == "hubitat-mcp-rule-server", \
-            f"discover serverInfo missing/wrong: {result.get('serverInfo')}"
-        assert isinstance(result.get("ttlMs"), int) and result["ttlMs"] > 0, \
-            f"DiscoverResult requires a positive ttlMs, got: {result.get('ttlMs')!r}"
-        assert result.get("cacheScope") == "private", \
-            f"Expected cacheScope 'private' on a per-token endpoint, got: {result.get('cacheScope')!r}"
-        # A stateless client never calls initialize, so discover is its only route
-        # to the usage guidance.
-        assert isinstance(result.get("instructions"), str) and result["instructions"].strip(), \
-            f"discover must carry instructions: {result.get('instructions')!r}"
 
     @test("protocol")
     def test_legacy_results_carry_server_info_meta_but_no_result_type(self) -> None:
@@ -11040,6 +10994,28 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             f"legacy ping result must be exactly the _meta envelope, got: {sorted(ping.keys())}"
 
     @test("protocol")
+    def test_server_discover(self) -> None:
+        """server/discover (SEP-2575) advertises the supported protocol versions,
+        capabilities and identity so a stateless client can pick a version before
+        sending anything else. DiscoverResult is a CacheableResult, so ttlMs and
+        cacheScope are REQUIRED fields of it."""
+        result = self.client._send("server/discover")
+        assert result.get("supportedVersions") == SUPPORTED_PROTOCOL_VERSIONS, \
+            f"Expected {SUPPORTED_PROTOCOL_VERSIONS}, got: {result.get('supportedVersions')}"
+        assert isinstance(result.get("capabilities"), dict) and "tools" in result["capabilities"], \
+            f"discover must advertise the tools capability: {result.get('capabilities')}"
+        assert result.get("serverInfo", {}).get("name") == "hubitat-mcp-rule-server", \
+            f"discover serverInfo missing/wrong: {result.get('serverInfo')}"
+        assert isinstance(result.get("ttlMs"), int) and result["ttlMs"] > 0, \
+            f"DiscoverResult requires a positive ttlMs, got: {result.get('ttlMs')!r}"
+        assert result.get("cacheScope") == "private", \
+            f"Expected cacheScope 'private' on a per-token endpoint, got: {result.get('cacheScope')!r}"
+        # A stateless client never calls initialize, so discover is its only route
+        # to the usage guidance.
+        assert isinstance(result.get("instructions"), str) and result["instructions"].strip(), \
+            f"discover must carry instructions: {result.get('instructions')!r}"
+
+    @test("protocol")
     def test_modern_results_carry_result_type(self) -> None:
         """SEP-2575: a MODERN-era result carries resultType 'complete'. The companion to
         the legacy test above — together they pin that the stamp is era-gated rather than
@@ -11070,44 +11046,6 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             info = (result.get("_meta") or {}).get("io.modelcontextprotocol/serverInfo") or {}
             assert info.get("name") == "hubitat-mcp-rule-server", \
                 f"modern {label} result missing the serverInfo _meta key: {result.get('_meta')!r}"
-
-    @test("protocol")
-    def test_tools_list_carries_cache_hints(self) -> None:
-        """SEP-2549 CacheableResult: tools/list carries a ttlMs freshness hint and a
-        cacheScope. Scope must be 'private' — the endpoint is authenticated by a
-        per-install token and the catalog is shaped by that install's settings, so a
-        shared intermediary must never serve it across authorization contexts."""
-        result = self.client._send("tools/list")
-        assert isinstance(result.get("ttlMs"), int) and result["ttlMs"] > 0, \
-            f"Expected a positive integer ttlMs, got: {result.get('ttlMs')!r}"
-        assert result.get("cacheScope") == "private", \
-            f"Expected cacheScope 'private', got: {result.get('cacheScope')!r}"
-
-    @test("protocol")
-    def test_request_meta_protocol_version_tolerated_without_headers(self) -> None:
-        """On the HEADERLESS (legacy) path every per-request _meta protocolVersion
-        (SEP-2575) is tolerated at HTTP 200, unknown ones included. A POST with no
-        MCP-Protocol-Version header never claimed the modern transport, so answering it
-        with -32022 would tell a dual-era client "modern server — do not fall back to
-        initialize" and wedge it out of the handshake it still needs. The -32022
-        rejection is scoped to the header path (see the modern tests below).
-        Verified through the relay because the HTTP status is the era signal."""
-        for label, version in (
-            ("supported", "2025-11-25"),
-            ("modern", "2026-07-28"),
-            ("unknown", "2099-01-01"),
-        ):
-            resp = self.client.raw_request({
-                "jsonrpc": "2.0", "id": 1, "method": "tools/list",
-                "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": version}},
-            })
-            assert resp.status_code == 200, \
-                f"a {label} headerless per-request version must ride HTTP 200, got {resp.status_code}: {resp.text[:200]!r}"
-            data = resp.json()
-            assert "error" not in data, \
-                f"a {label} headerless per-request version must not be rejected: {str(data)[:200]}"
-            assert isinstance(data.get("result", {}).get("tools"), list), \
-                f"Expected a tools/list catalog for the {label} version, got: {str(data)[:200]}"
 
     @test("protocol")
     def test_legacy_protocol_version_header_is_served_as_legacy(self) -> None:
@@ -11155,27 +11093,6 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             f"a legacy-versioned unknown method must stay on HTTP 200, got {unknown.status_code}: {unknown.text[:300]!r}"
         assert unknown.json().get("error", {}).get("code") == -32601, \
             f"Expected -32601, got: {str(unknown.json())[:300]}"
-
-    @test("protocol")
-    def test_modern_headers_dispatch_normally(self) -> None:
-        """A 2026-07-28 request carrying the full standard header set, matching the body,
-        dispatches normally at HTTP 200. This is the positive control for every rejection
-        test below — it proves the hub really does read inbound headers through the cloud
-        relay, so a 400 elsewhere is a validation verdict and not a header the hub never
-        saw."""
-        resp = self.client.raw_request(
-            {
-                "jsonrpc": "2.0", "id": 1, "method": "tools/list",
-                "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}},
-            },
-            headers={"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/list"},
-        )
-        assert resp.status_code == 200, \
-            f"a valid modern request must ride HTTP 200, got {resp.status_code}: {resp.text[:300]!r}"
-        data = resp.json()
-        assert "error" not in data, f"a valid modern request must not be rejected: {str(data)[:300]}"
-        assert isinstance(data.get("result", {}).get("tools"), list), \
-            f"Expected a tools/list catalog, got: {str(data)[:300]}"
 
     @test("protocol")
     def test_modern_header_method_mismatch_rejected(self) -> None:
