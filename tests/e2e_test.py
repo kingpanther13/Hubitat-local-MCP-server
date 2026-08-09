@@ -3504,11 +3504,14 @@ class TestRunner:
                   f"over {time.monotonic() - started:.1f}s, last status {status}")
             return status
 
-        def _rule_health_when(target_id, predicate, attempts: int = 20, gap: float = 3.0):
+        def _rule_health_when(target_id, predicate, attempts: int = 8, gap: float = 1.5):
             """Read hub_get_rule_health until `predicate` holds (last read on timeout).
             Health is the AUTHORITATIVE stop/start readback: hub_list_rules only reports a
             rule as stopped when the hub decorates its label, which verified firmware does
-            not do -- polling the list for it can never converge on a landed stop."""
+            not do -- polling the list for it can never converge on a landed stop. The
+            budget is deliberately tight: stopRuleAct is synchronous on the hub, so the
+            flag is already true on the first read and a generous budget only buys
+            wall-clock on the failure path."""
             health = {}
             t0 = time.monotonic()
             for _ in range(attempts):
@@ -4234,10 +4237,10 @@ class TestRunner:
 
             # The single clone op usually finishes in the create call's inline slice; the
             # on-hub worker owns the tail either way, so poll the record, not the client.
-            deadline = time.time() + 120
+            deadline = time.time() + 60
             st = _dep_call({"op": "status", "jobId": job_id})
             while st.get("phase") not in ("ready_for_commit", "failed") and time.time() < deadline:
-                time.sleep(4.0)
+                time.sleep(2.0)
                 st = _dep_call({"op": "status", "jobId": job_id})
             assert st.get("phase") == "ready_for_commit", \
                 f"job should validate to ready_for_commit, got: {st}"
@@ -4260,9 +4263,9 @@ class TestRunner:
                 f"delete of a ready_for_commit job should refuse, got: {refused!r}"
 
             commit = _dep_call({"op": "commit", "jobId": job_id})
-            deadline = time.time() + 120
+            deadline = time.time() + 60
             while commit.get("phase") == "committing" and time.time() < deadline:
-                time.sleep(4.0)
+                time.sleep(2.0)
                 commit = _dep_call({"op": "status", "jobId": job_id})
             assert commit.get("phase") == "completed", \
                 f"commit should complete the job, got: {commit}"
