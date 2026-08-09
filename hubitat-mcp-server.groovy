@@ -1529,6 +1529,7 @@ def handleToolsCall(msg) {
     // terminal path sets opCompletionText.
     String opCompletionText = null
     boolean opCompletionIsError = false
+    boolean reactiveSchemaOnly = false
     try {
         // ---- Idempotency token: resolve, validate, dedup, mark ----
         // All token bookkeeping happens ONCE here, never in executeTool -- a gateway
@@ -1579,8 +1580,16 @@ def handleToolsCall(msg) {
             // result instead of blind-retrying (the double-commit hole for
             // token-less calls). Reads and gateway CATALOG calls are excluded:
             // a read cannot double-commit, and recording them would churn the
-            // record cap for zero recovery value.
+            // record cap for zero recovery value. Read-shaped calls on the two
+            // write tools (guide/discover probes, deployment op='status') are
+            // excluded by the SAME classifier the Write master uses -- without it
+            // every status poll would mint a running write record, count toward
+            // maxConcurrentWrites, and churn the journal it exists to serve.
+            def _tokenLeafArgs = (getGatewayConfig().containsKey(toolName) && args.args instanceof Map) ? args.args : args
+            reactiveSchemaOnly = (reactiveToolName?.toString() == 'hub_set_rule' && _isSetRuleSchemaOnlyCall(_tokenLeafArgs)) ||
+                (reactiveToolName?.toString() == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(_tokenLeafArgs))
             if (!opTokenActive && reactiveToolName && !(reactiveToolName in getReadOnlyToolNames())
+                    && !reactiveSchemaOnly
                     && !getGatewayConfig().containsKey(reactiveToolName.toString())) {
                 opToken = "auto-" + Long.toString(now(), 16) + "-" + Integer.toString(new Random().nextInt(0xFFFF), 16).padLeft(4, '0')
                 opTokenActive = true
@@ -1659,6 +1668,7 @@ def handleToolsCall(msg) {
                 ])
             }
             boolean isWriteLeaf = (reactiveToolName && !(reactiveToolName in getReadOnlyToolNames())
+                    && !reactiveSchemaOnly
                     && !getGatewayConfig().containsKey(reactiveToolName.toString()))
             if (opTokenAuto && isWriteLeaf) {
                 def duplicate = _findIdenticalRunningOp(reactiveToolName, opFingerprintHash, opFingerprintLen)
