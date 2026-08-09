@@ -1953,3 +1953,29 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```
 
 **Expected**: `hub_set_rule(appId, addAction={capability:'shade', action:'open', deviceIds:[<id>]})` returns `success:true` and **`partial:false`** — the `shadeOpenClose.<N>` device write commits even though the wizard reveals no further schema, so it must NOT be reported as a cosmetic partial. If a device-list write genuinely fails (IDs not committed), `partial:true` still fires. `hub_get_app_config` shows the open-shade action baked. Same class covers the sibling `onOffSwitch`/`lockLockUnlock`/`fanRL` device pickers. SAFETY: only BAT-prefixed devices/rules touched.
+
+## Section 7: Deployment jobs — the `deployment` argument (T465–T466)
+
+### T465 — Staged migration end-to-end (create → ready_for_commit → commit → record delete)
+
+```json
+{
+  "setup_prompt": "Create a Rule Machine rule named 'BAT-DepOld' via hub_set_rule with a Certain Time trigger at 11:55 PM and a log action saying 'dep old'. Remember its appId.",
+  "test_prompt": "Migrate the rule 'BAT-DepOld' to a new copy in a staged, resumable way that would survive a disconnect midway: first stage a DISABLED copy named 'BAT-DepNew' and have it validated, then cut over so the copy goes live and the original is paused. Report the migration's progress states as it advances. When the migration is finished, remove its finished job record and confirm the record is gone.",
+  "teardown_prompt": "Delete the rules 'BAT-DepOld' and 'BAT-DepNew' via hub_delete_native_app(force=true). List deployment jobs via hub_set_rule(deployment={op:'status'}) and delete any remaining BAT job records via deployment={op:'delete', jobId:...} (cancel unfinished ones first)."
+}
+```
+
+**Expected**: The agent reaches the `deployment` argument on hub_set_rule / hub_set_native_app (tool description or `hub_get_tool_guide(section='deployment_jobs')`) — NOT a sequence of bare clone/pause calls, which would not be resumable. A single `deployment={op:'create', ops:[{op:'cloneApp', stageDisabled:true, alias:...}], commitOps:[{op:'pause'...}, {op:'setDisabled'...}]}` job checkpoints on-hub: status polls show `staging → ready_for_commit` (with `validation` results), `op='commit'` runs the cutover, and the final state verifies as copy enabled + original paused. `op='delete'` on the completed job returns `deleted:true` and the record leaves the `op='status'` list. PASS requires the staged copy to sit DISABLED before commit (no live double-firing window). SAFETY: only BAT-prefixed rules touched.
+
+### T466 — Abandoned migration rolls back cleanly (cancel deletes only created apps)
+
+```json
+{
+  "setup_prompt": "Create a Rule Machine rule named 'BAT-DepKeep' via hub_set_rule with a Certain Time trigger at 11:56 PM and a log action saying 'dep keep'. Remember its appId.",
+  "test_prompt": "Start a staged, resumable migration of 'BAT-DepKeep' that stages a disabled copy named 'BAT-DepAbandon', but do NOT complete the cutover: abandon the migration instead, so that nothing new is left behind. Confirm the original rule is untouched and still enabled, confirm the staged copy no longer exists, and remove the abandoned migration's record.",
+  "teardown_prompt": "Delete the rule 'BAT-DepKeep' via hub_delete_native_app(force=true). List deployment jobs via hub_set_rule(deployment={op:'status'}) and delete any remaining BAT job records (cancel unfinished ones first)."
+}
+```
+
+**Expected**: `deployment={op:'cancel', jobId:...}` deletes ONLY the apps the job created (`cancel.deleted` lists the staged copy; 'BAT-DepKeep' survives untouched and enabled) and the job reads `phase: cancelled`. `op='delete'` then removes the cancelled record (`deleted:true`). A cancel attempt on an already-completed job would refuse — the agent must cancel BEFORE commit. SAFETY: only BAT-prefixed rules touched.

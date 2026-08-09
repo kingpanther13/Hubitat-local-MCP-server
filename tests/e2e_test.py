@@ -4104,6 +4104,92 @@ class TestRunner:
             self._delete_native(src_id)
 
     @test("native_apps")
+    def test_deployment_job_lifecycle(self) -> None:
+        # The deployment ARGUMENT on hub_set_rule (no dedicated tools): a durable job
+        # clones a scratch rule staged-disabled, the on-hub engine advances it through
+        # the validation gate to ready_for_commit, commit runs the cutover op, and
+        # op="delete" removes the finished record. One tiny source rule, one clone op --
+        # the per-concern shape AGENTS.md asks for. The job RECORD is the durable state,
+        # so a severed create response recovers by listing jobs and adopting by name.
+        job_name = f"{PREFIX}dep-lifecycle"
+        src_id = self._create_native_rule("DepJobSrc")
+        clone_id = None
+        job_id = None
+
+        def _dep_call(dep: dict) -> dict:
+            return self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"deployment": dep, "confirm": True}})
+
+        try:
+            try:
+                create = _dep_call({"op": "create", "name": job_name,
+                    "ops": [{"op": "cloneApp", "alias": "copy",
+                             "args": {"sourceAppId": src_id, "newName": f"{PREFIX}DepJobCopy",
+                                      "stageDisabled": True}}],
+                    "commitOps": [{"op": "setDisabled",
+                                   "args": {"appId": {"alias": "copy"}, "disabled": False}}]})
+                job_id = create.get("jobId")
+            except (McpError, McpToolError, requests.HTTPError) as exc:
+                if "504" not in str(exc):
+                    raise
+                # The record IS the recovery surface: adopt the job by its unique name.
+                print("    [RECOVER-504] deployment create response lost -- adopting the job by name")
+                time.sleep(3.0)
+                listed = _dep_call({"op": "status"})
+                job_id = next((j.get("jobId") for j in (listed.get("jobs") or [])
+                               if j.get("name") == job_name), None)
+            assert job_id, "deployment create landed no job record"
+
+            # The single clone op usually finishes in the create call's inline slice; the
+            # on-hub worker owns the tail either way, so poll the record, not the client.
+            deadline = time.time() + 120
+            st = _dep_call({"op": "status", "jobId": job_id})
+            while st.get("phase") not in ("ready_for_commit", "failed") and time.time() < deadline:
+                time.sleep(4.0)
+                st = _dep_call({"op": "status", "jobId": job_id})
+            assert st.get("phase") == "ready_for_commit", \
+                f"job should validate to ready_for_commit, got: {st}"
+            clone_id = (st.get("aliases") or {}).get("copy")
+            assert clone_id and [str(x) for x in (st.get("createdAppIds") or [])] == [str(clone_id)], \
+                f"alias 'copy' should resolve to the one created app, got: {st}"
+            # Track it before any assert below can fail -- it is a real installed app now.
+            self.created_native_app_ids.append(str(clone_id))
+            staged = self._rm_rule_status_when(clone_id, lambda s: s.get("disabled") is True)
+            assert staged.get("disabled") is True, \
+                f"staged clone should sit disabled until commit, got: {staged}"
+
+            # Phase gate on the wire: delete must refuse an unfinished job.
+            refused = None
+            try:
+                _dep_call({"op": "delete", "jobId": job_id})
+            except (McpError, McpToolError) as exc:
+                refused = str(exc)
+            assert refused and "finished job records" in refused, \
+                f"delete of a ready_for_commit job should refuse, got: {refused!r}"
+
+            commit = _dep_call({"op": "commit", "jobId": job_id})
+            deadline = time.time() + 120
+            while commit.get("phase") == "committing" and time.time() < deadline:
+                time.sleep(4.0)
+                commit = _dep_call({"op": "status", "jobId": job_id})
+            assert commit.get("phase") == "completed", \
+                f"commit should complete the job, got: {commit}"
+            live = self._rm_rule_status_when(clone_id, lambda s: s.get("disabled") is False)
+            assert live.get("disabled") is False, \
+                f"commit's setDisabled cutover should enable the clone, got: {live}"
+
+            deleted = _dep_call({"op": "delete", "jobId": job_id})
+            assert deleted.get("deleted") is True and deleted.get("success") is True, \
+                f"delete of the completed job should succeed, got: {deleted}"
+            listed = _dep_call({"op": "status"})
+            assert job_id not in [j.get("jobId") for j in (listed.get("jobs") or [])], \
+                f"deleted job record should leave the status list, got: {listed}"
+        finally:
+            if clone_id:
+                self._delete_native(clone_id)
+            self._delete_native(src_id)
+
+    @test("native_apps")
     def test_set_rule_action_expression_reject_is_pre_write(self) -> None:
         # An unwalkable condition capability inside an addAction IF-expression (ifThen / elseIf /
         # repeatWhile / waitExpression) is rejected PRE-WRITE by the top-of-function hoist: the reject is

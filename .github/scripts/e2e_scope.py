@@ -43,6 +43,7 @@ FILE_GROUP_MAP = {
     "libraries/mcp-rooms-lib.groovy":           ["infrastructure"],
     "libraries/mcp-discovery-lib.groovy":       ["infrastructure", "protocol"],
     "libraries/mcp-app-cloner-lib.groovy":      ["native_apps", "rule_crud"],
+    "libraries/mcp-deploy-jobs-lib.groovy":     ["native_apps"],
     "libraries/mcp-dashboards-lib.groovy":      ["dashboards"],
 }
 

@@ -12,10 +12,10 @@ def _deployJobs() {
 }
 
 private Map _deployLoadJob(Object jobIdRaw) {
-    if (jobIdRaw == null) throw new IllegalArgumentException("jobId is required for this operation. List jobs via hub_get_deployment.")
+    if (jobIdRaw == null) throw new IllegalArgumentException("jobId is required for this operation. List jobs via deployment:{op:'status'}.")
     def jobId = jobIdRaw.toString()
     def job = _deployJobs()[jobId]
-    if (!(job instanceof Map)) throw new IllegalArgumentException("Deployment job '${jobId}' not found. List jobs via hub_get_deployment.")
+    if (!(job instanceof Map)) throw new IllegalArgumentException("Deployment job '${jobId}' not found. List jobs via deployment:{op:'status'}.")
     return job
 }
 
@@ -232,7 +232,7 @@ private void _deployRunValidation(Map job) {
         _deployAppendHistory(job, "staging validated: ${results.size()} created app(s) healthy")
     } else {
         job.phase = "failed"
-        job.error = "validation failed: created app(s) ${results.findAll { !it.ok }.collect { it.appId }} are unhealthy. Inspect via hub_get_rule_health / hub_get_app_config, fix, then operation=resume (re-validates) or operation=cancel."
+        job.error = "validation failed: created app(s) ${results.findAll { !it.ok }.collect { it.appId }} are unhealthy. Inspect via hub_get_rule_health / hub_get_app_config, fix, then op='resume' (re-validates) or op='cancel'."
         _deployAppendHistory(job, "validation FAILED")
     }
     _deploySaveJob(job)
@@ -293,7 +293,7 @@ private Map _deployRunSlice(Map job, Long t0, Integer maxOps, Long fixedBudgetMs
                 entry.error = "interrupted mid-write; a re-run may duplicate actions"
                 statusList[idx] = entry
                 job.phase = "failed"
-                job.error = "op ${idx} (addActions) was interrupted mid-write. Verify via hub_get_app_config(appId) whether the actions landed, then operation=resume with retryInFlight=true to re-run it, or operation=cancel."
+                job.error = "op ${idx} (addActions) was interrupted mid-write. Verify via hub_get_app_config(appId) whether the actions landed, then op='resume' with retryInFlight=true to re-run it, or op='cancel'."
                 job.sliceLeaseUntil = null
                 _deploySaveJob(job)
                 break
@@ -380,7 +380,7 @@ private Map _deployInlineSlice(Map job, Object reqT0, Integer maxOps) {
 
 private Map _deployOpCreate(Map args) {
     if (!(args?.ops instanceof List) || ((List) args.ops).isEmpty()) {
-        throw new IllegalArgumentException("operation=create requires ops: a non-empty array of {op, args, alias?} objects. See hub_get_tool_guide(section='deployment_jobs').")
+        throw new IllegalArgumentException("op='create' requires ops: a non-empty array of {op, args, alias?} objects. See hub_get_tool_guide(section='deployment_jobs').")
     }
     def commitOps = (args.commitOps instanceof List) ? args.commitOps : []
     Integer maxOps = null
@@ -395,7 +395,7 @@ private Map _deployOpCreate(Map args) {
     if (jobs.size() >= _deployMaxJobs()) {
         def terminal = jobs.findAll { k, v -> !(v instanceof Map) || !(v.phase?.toString() in (_deployActivePhases() + ["draft", "ready_for_commit"])) }
         if (jobs.size() - terminal.size() >= _deployMaxJobs()) {
-            throw new IllegalArgumentException("Too many active deployment jobs (${_deployMaxJobs()} max). Commit or cancel one first (hub_get_deployment lists them).")
+            throw new IllegalArgumentException("Too many active deployment jobs (${_deployMaxJobs()} max). Commit or cancel one first (deployment:{op:'status'} lists them).")
         }
         def pruned = [:]
         jobs.each { k, v -> if (!terminal.containsKey(k)) pruned[k] = v }
@@ -442,12 +442,12 @@ private Map _deployOpResume(Map args) {
     Integer maxOps = (args.maxOpsPerCall != null) ? (args.maxOpsPerCall.toString() as Integer) : (job.maxOpsPerCall as Integer)
     if (phase == "ready_for_commit") {
         def st = _deployJobStatus(job, true)
-        st.note = "Job is validated and ready_for_commit -- call operation=commit to run the cutover ops."
+        st.note = "Job is validated and ready_for_commit -- call op='commit' to run the cutover ops."
         return st
     }
     if (phase in _deployActivePhases() && job.sliceLeaseUntil != null && now() < (job.sliceLeaseUntil as Long)) {
         def st = _deployJobStatus(job, true)
-        st.note = "An on-hub worker slice is currently active for this job; poll hub_get_deployment(jobId='${job.jobId}')."
+        st.note = "An on-hub worker slice is currently active for this job; poll deployment:{op:'status', jobId:'${job.jobId}'}."
         return st
     }
     if (phase == "failed") {
@@ -458,7 +458,7 @@ private Map _deployOpResume(Map args) {
                 if (!(entry instanceof Map)) return
                 if (entry.status == "failed" || entry.status == "in_flight") {
                     if (entry.interrupted == true && !retryInFlight) {
-                        throw new IllegalArgumentException("Job '${job.jobId}' op ${i} was interrupted mid-write (${((List) job[listName == 'opStatus' ? 'ops' : 'commitOps'])[i]?.op}). Verify its target via hub_get_app_config, then resume with retryInFlight=true to re-run it, or operation=cancel.")
+                        throw new IllegalArgumentException("Job '${job.jobId}' op ${i} was interrupted mid-write (${((List) job[listName == 'opStatus' ? 'ops' : 'commitOps'])[i]?.op}). Verify its target via hub_get_app_config, then resume with retryInFlight=true to re-run it, or op='cancel'.")
                     }
                     entry.status = "pending"
                     entry.remove("error")
@@ -500,7 +500,7 @@ private Map _deployOpCommit(Map args) {
     def job = _deployLoadJob(args?.jobId)
     def phase = job.phase?.toString()
     if (phase != "ready_for_commit") {
-        throw new IllegalArgumentException("Job '${job.jobId}' is in phase '${phase}' -- commit requires ready_for_commit (staging complete + validation passed). ${phase == 'failed' ? 'Fix and operation=resume first.' : (phase in _deployActivePhases() ? 'Staging is still running; poll hub_get_deployment.' : '')}")
+        throw new IllegalArgumentException("Job '${job.jobId}' is in phase '${phase}' -- commit requires ready_for_commit (staging complete + validation passed). ${phase == 'failed' ? "Fix and op='resume' first." : (phase in _deployActivePhases() ? "Staging is still running; poll op='status'." : '')}")
     }
     Integer maxOps = (args.maxOpsPerCall != null) ? (args.maxOpsPerCall.toString() as Integer) : (job.maxOpsPerCall as Integer)
     if (((job.commitOps ?: []) as List).isEmpty()) {
@@ -598,13 +598,13 @@ private Map _deployJobStatus(Map job, boolean includeOps) {
         out.commitOps = _deployZipOps((job.commitOps ?: []) as List, (job.commitStatus ?: []) as List)
     }
     switch (phase) {
-        case "draft": out.note = "Draft -- operation=resume starts staging."; break
-        case "staging": out.note = "Staging in progress on-hub; poll hub_get_deployment(jobId) -- the job advances without further calls (operation=resume also drives a slice)."; break
-        case "ready_for_commit": out.note = "Staging validated -- operation=commit runs the cutover ops."; break
-        case "committing": out.note = "Commit in progress on-hub; poll hub_get_deployment(jobId)."; break
-        case "completed": out.note = "Completed. Rollback handles: backupKeys (hub_restore_backup) + createdAppIds."; break
-        case "failed": out.note = "Failed -- see jobError. operation=resume retries; operation=cancel rolls back created apps."; break
-        case "cancelled": out.note = "Cancelled -- created apps deleted (see cancel.deleted)."; break
+        case "draft": out.note = "Draft -- op='resume' starts staging."; break
+        case "staging": out.note = "Staging in progress on-hub; poll deployment:{op:'status', jobId} -- the job advances without further calls (op='resume' also drives a slice)."; break
+        case "ready_for_commit": out.note = "Staging validated -- op='commit' runs the cutover ops."; break
+        case "committing": out.note = "Commit in progress on-hub; poll deployment:{op:'status', jobId}."; break
+        case "completed": out.note = "Completed. Rollback handles: backupKeys (hub_restore_backup) + createdAppIds. op='delete' removes the finished record."; break
+        case "failed": out.note = "Failed -- see jobError. op='resume' retries; op='cancel' rolls back created apps."; break
+        case "cancelled": out.note = "Cancelled -- created apps deleted (see cancel.deleted). op='delete' removes the finished record."; break
     }
     return out
 }
@@ -631,8 +631,8 @@ def _deployHandleArgument(Map deployment, Boolean confirm, Object reqT0) {
     // op="status" is the read mode (guide:true precedent -- makes NO change and
     // needs no confirm); create/resume/commit/cancel are the write ops.
     def op = deployment?.op?.toString()
-    if (!(op in ["create", "resume", "commit", "cancel", "status"])) {
-        throw new IllegalArgumentException("deployment.op must be one of: create, resume, commit, cancel, status (got: ${op}). See hub_get_tool_guide(section='deployment_jobs').")
+    if (!(op in ["create", "resume", "commit", "cancel", "delete", "status"])) {
+        throw new IllegalArgumentException("deployment.op must be one of: create, resume, commit, cancel, delete, status (got: ${op}). See hub_get_tool_guide(section='deployment_jobs').")
     }
     if (op == "status") {
         if (deployment.jobId != null) {
@@ -654,7 +654,24 @@ def _deployHandleArgument(Map deployment, Boolean confirm, Object reqT0) {
         case "resume": return _deployOpResume(opArgs)
         case "commit": return _deployOpCommit(opArgs)
         case "cancel": return _deployOpCancel(opArgs)
+        case "delete": return _deployOpDelete(opArgs)
     }
+}
+
+private Map _deployOpDelete(Map args) {
+    def job = _deployLoadJob(args?.jobId)
+    def phase = job.phase?.toString()
+    if (!(phase in ["completed", "cancelled"])) {
+        def steer = (phase in _deployActivePhases()) ? "Wait for the running slice, then op='commit' or op='cancel' first." : "Finish it first: op='cancel' rolls back created apps (or op='commit' from ready_for_commit)."
+        throw new IllegalArgumentException("Job '${job.jobId}' is in phase '${phase}' -- delete removes only finished job records (completed/cancelled). ${steer}")
+    }
+    def jobs = _deployJobs()
+    def pruned = [:]
+    jobs.each { k, v -> if (k.toString() != job.jobId.toString()) pruned[k] = v }
+    atomicState.deployJobs = pruned
+    return [success: true, jobId: job.jobId, name: job.name, deleted: true,
+            backupKeys: job.backupKeys ?: [], createdAppIds: job.createdAppIds ?: [],
+            note: "Job record removed. Its apps and backups are untouched -- backupKeys still work with hub_restore_backup."]
 }
 
 def _deployRouteFromTool(Map args) {
@@ -662,7 +679,7 @@ def _deployRouteFromTool(Map args) {
     // self-contained call -- combining it with an edit/create in the same call
     // is ambiguous (which runs first?) and is rejected fail-loud.
     if (!(args.deployment instanceof Map)) {
-        throw new IllegalArgumentException("deployment must be an object {op: create|resume|commit|cancel|status, ...}. See hub_get_tool_guide(section='deployment_jobs').")
+        throw new IllegalArgumentException("deployment must be an object {op: create|resume|commit|cancel|delete|status, ...}. See hub_get_tool_guide(section='deployment_jobs').")
     }
     def others = args.keySet().findAll { !(it in ["deployment", "confirm", "bestPracticeKey", "__reqT0"]) }
     if (others) {
