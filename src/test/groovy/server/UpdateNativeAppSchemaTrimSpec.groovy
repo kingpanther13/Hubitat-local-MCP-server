@@ -167,7 +167,7 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         def props = def_.inputSchema.properties
 
         then: 'flat hub_set_rule is the thin selector, NOT the fat 24-param schema'
-        props.keySet() == ['operation', 'appId', 'args', 'confirm'] as Set
+        props.keySet() == ['operation', 'appId', 'args', 'confirm', 'deployment'] as Set
         props.operation.enum.containsAll(['create', 'addTrigger', 'addAction', 'addRequiredExpression', 'guide', 'discover'])
 
         and: 'an agent is never blind: guide + discover are reachable operations, and the description points to both'

@@ -37,7 +37,7 @@ class SetRuleSelfGatewaySpec extends ToolSpecBase {
         def flat = script.getToolDefinitions().find { it.name == 'hub_set_rule' }
 
         then: 'thin {operation,appId,args,confirm} selector'
-        flat.inputSchema.properties.keySet() == ['operation', 'appId', 'args', 'confirm'] as Set
+        flat.inputSchema.properties.keySet() == ['operation', 'appId', 'args', 'confirm', 'deployment'] as Set
 
         when: 'gateway mode -- hub_set_rule is a sub-tool of hub_manage_rule_machine, disclosed fat'
         settingsMap.useGateways = true
