@@ -886,7 +886,7 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         def itemProps = def_.outputSchema.properties.rules.items.properties
 
         then: 'the per-rule status fields are declared, with a status enum covering all four states'
-        itemProps.status.enum == ['active', 'paused', 'disabled', 'unknown']
+        itemProps.status.enum == ['active', 'paused', 'stopped', 'disabled', 'unknown']
         itemProps.disabled.type == 'boolean'
         itemProps.paused.type == 'boolean'
         itemProps.containsKey('requiredExpressionFalse')
