@@ -66,15 +66,16 @@ class OpTokenReplaySpec extends ToolSpecBase {
         def inner = mcpDriver.parseInner(response)
         inner.roomId == 7
 
-        and: 'the marker is completed (not left running) and names its buffer file'
+        and: 'the marker is completed (not left running) and carries its buffered result'
         def marker = atomicStateMap.opTokens['abc12345']
         marker.state == 'complete'
         marker.tool == 'hub_create_room'
         marker.isError == false
-        marker.file == FILE_PREFIX + 'abc12345.json'
 
-        and: 'the result was buffered to the reserved-prefix file'
-        store.containsKey(FILE_PREFIX + 'abc12345.json')
+        and: 'a small result rides INSIDE the record -- no hub file write on the common path'
+        marker.file == null
+        marker.inline.contains('"roomId"')
+        store.isEmpty()
     }
 
     def "a token on a READ tool is honoured too: marker, buffer, and replay on re-issue"() {
@@ -261,7 +262,8 @@ class OpTokenReplaySpec extends ToolSpecBase {
         def marker = atomicStateMap.opTokens['gentoken12']
         marker.state == 'complete'
         marker.isError == true
-        store.containsKey(FILE_PREFIX + 'gentoken12.json')
+        marker.inline != null
+        store.isEmpty()
     }
 
     def "the marker is completed with isError when the write returns null (internal tool bug path)"() {
@@ -281,7 +283,8 @@ class OpTokenReplaySpec extends ToolSpecBase {
         def marker = atomicStateMap.opTokens['nulltoken1']
         marker.state == 'complete'
         marker.isError == true
-        store.containsKey(FILE_PREFIX + 'nulltoken1.json')
+        marker.inline != null
+        store.isEmpty()
     }
 
     // The non-serializable terminal path has no portable trigger: JsonOutput serializes
@@ -308,7 +311,7 @@ class OpTokenReplaySpec extends ToolSpecBase {
         and: 'the buffered result is that SAME envelope -- the raw oversize payload could never ride the dedup short-circuit (it would trip the outer 128KB cap as an opaque -32603 on every poll)'
         def marker = atomicStateMap.opTokens['bigtoken123']
         marker.state == 'complete'
-        !new String(store[FILE_PREFIX + 'bigtoken123.json'], 'UTF-8').contains(bigPayload)
+        !(marker.inline ?: new String((store[FILE_PREFIX + 'bigtoken123.json'] ?: new byte[0]), 'UTF-8')).contains(bigPayload)
 
         when: 'the token-only poll replays it'
         def second = mcpDriver.callTool('hub_create_room', [opToken: 'bigtoken123'])
@@ -1093,7 +1096,7 @@ class OpTokenReplaySpec extends ToolSpecBase {
         second.result.structuredContent.firmwareVersion == '9.9.9'
     }
 
-    def "_opTokenComplete buffers the result to the reserved file and flips the marker to complete"() {
+    def "_opTokenComplete keeps a small result in the record and flips the marker to complete"() {
         given:
         def store = [:]
         script.metaClass.uploadHubFile = { String name, byte[] content -> store[name] = new String(content, 'UTF-8') }
@@ -1102,8 +1105,9 @@ class OpTokenReplaySpec extends ToolSpecBase {
         when:
         script._opTokenComplete('ct123456', '{"success":true,"x":1}', false)
 
-        then: 'the exact bytes land in mcp-op-result-<token>.json'
-        store[FILE_PREFIX + 'ct123456.json'] == '{"success":true,"x":1}'
+        then: 'the exact bytes are kept, in the record rather than a hub file'
+        atomicStateMap.opTokens['ct123456'].inline == '{"success":true,"x":1}'
+        store.isEmpty()
 
         and: 'the marker is completed while preserving tool + startedAt'
         def marker = atomicStateMap.opTokens['ct123456']
@@ -1112,7 +1116,27 @@ class OpTokenReplaySpec extends ToolSpecBase {
         marker.tool == 'hub_create_room'
         marker.startedAt == FIXED_NOW - 500L
         marker.finishedAt == FIXED_NOW
-        marker.file == FILE_PREFIX + 'ct123456.json'
+        marker.file == null
+    }
+
+    def "a result too large to inline goes to the reserved File Manager file"() {
+        given: 'a payload past the inline ceiling'
+        def store = installFileStore()
+        def big = '{"success":true,"blob":"' + ('y' * 2000) + '"}'
+        atomicStateMap.opTokens = ['bigct123456': [state: 'running', tool: 'hub_create_room',
+                                                   startedAt: FIXED_NOW - 500L]]
+
+        when:
+        script._opTokenComplete('bigct123456', big, false)
+
+        then: 'the bytes land in mcp-op-result-<token>.json and the record points at it'
+        new String(store[FILE_PREFIX + 'bigct123456.json'], 'UTF-8') == big
+        def marker = atomicStateMap.opTokens['bigct123456']
+        marker.file == FILE_PREFIX + 'bigct123456.json'
+        marker.inline == null
+
+        and: 'the replay reads it back from the file'
+        script._opTokenReadResult(marker).success == true
     }
 
     def "_opTokenComplete falls back to inline storage when the upload fails and the result is small"() {

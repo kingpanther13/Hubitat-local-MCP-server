@@ -143,7 +143,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         putCalls == 2
         atomicStateMap.opTokens[token].state == 'complete'
         atomicStateMap.opTokens[token].finishedAt == FIXED_NOW
-        atomicStateMap.opTokens[token].file == script._opTokenResultFile(token)
+        atomicStateMap.opTokens[token].inline != null
     }
 
     def "a second identical untokened write is refused while the first auto-token record is running"() {
