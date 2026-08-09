@@ -436,7 +436,7 @@ private Map _deployOpCreate(Map args) {
     }
     // Random suffix, not the bare clock: two creates landing in the same millisecond
     // would otherwise share a jobId and the second would overwrite the first.
-    def jobId = "dj-" + Long.toString(now(), 16) + "-" + Integer.toString(new Random().nextInt(0xFFFF), 16).padLeft(4, '0')
+    def jobId = "dj-" + Long.toString(now(), 16) + "-" + java.util.UUID.randomUUID().toString()
     def job = [
         jobId: jobId,
         name: args.name?.toString() ?: jobId,
