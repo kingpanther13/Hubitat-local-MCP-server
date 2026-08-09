@@ -1730,9 +1730,18 @@ def handleToolsCall(msg) {
                     ])
                 }
             }
-            long _tokMarkT0 = now()
-            _opTokenMark(opToken, reactiveToolName, opFingerprintHash, opFingerprintLen)
-            opTokenMarkMs = now() - _tokMarkT0
+            // The pre-dispatch RUNNING marker exists to answer a poll that arrives while
+            // the tool is still executing. Measured on real firmware, it costs ~0.9s (one
+            // atomicState write), and a tool that finishes in well under the transport
+            // ceiling can never BE polled mid-flight -- its response was delivered. So it
+            // is written only for the tools that can genuinely outlive their transport;
+            // every other write still gets its terminal record at completion, so the
+            // journal and the replay contract are unchanged.
+            if (_needsRunningMarker(reactiveToolName)) {
+                long _tokMarkT0 = now()
+                _opTokenMark(opToken, reactiveToolName, opFingerprintHash, opFingerprintLen)
+                opTokenMarkMs = now() - _tokMarkT0
+            }
             opTokenPreMs = now() - reqT0
         }
         // Thread the budget clock into the dispatched args -- ONLY for the leaves
@@ -2038,6 +2047,20 @@ def _maxConcurrentWrites() {
 // The leaves whose partial-commit loops consume the __reqT0 budget clock. This is
 // the injection allowlist for handleToolsCall/handleGateway: tools outside it never
 // see the key (several validate their args strictly and reject unknown keys).
+// Tools whose hub-side work can plausibly still be running when a client gives up and
+// polls: the multi-step wizard writes, the app installers, and the package deploy. Only
+// these pay for a pre-dispatch running marker (see handleToolsCall).
+def _needsRunningMarker(toolName) {
+    if (toolName == null) return false
+    String n = toolName.toString()
+    return _budgetAwareTools().contains(n) || n in [
+        "hub_update_package", "hub_update_app", "hub_update_driver", "hub_update_library",
+        "hub_install_bundle", "hub_restore_backup", "hub_create_backup", "hub_delete_native_app",
+        "hub_reboot", "hub_shutdown", "hub_update_firmware", "hub_call_device_replace",
+        "hub_call_device_swap", "hub_import_custom_rule", "hub_clone_custom_rule"
+    ]
+}
+
 def _budgetAwareTools() {
     return ["hub_set_rule", "hub_set_native_app", "hub_call_rule", "hub_clone_native_app", "hub_import_native_app"] as Set
 }
