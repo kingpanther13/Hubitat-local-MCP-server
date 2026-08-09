@@ -4211,28 +4211,39 @@ class TestRunner:
         clone_id = None
         job_id = None
 
-        def _dep_call(dep: dict) -> dict:
+        def _dep_call(dep: dict, op_token: str | None = None) -> dict:
+            inner = {"deployment": dep, "confirm": True}
+            if op_token:
+                inner["opToken"] = op_token
             return self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
-                "args": {"deployment": dep, "confirm": True}})
+                "args": inner})
 
         try:
+            create_token = self._next_op_token()
             try:
                 create = _dep_call({"op": "create", "name": job_name,
                     "ops": [{"op": "cloneApp", "alias": "copy",
                              "args": {"sourceAppId": src_id, "newName": f"{PREFIX}DepJobCopy",
                                       "stageDisabled": True}}],
                     "commitOps": [{"op": "setDisabled",
-                                   "args": {"appId": {"alias": "copy"}, "disabled": False}}]})
+                                   "args": {"appId": {"alias": "copy"}, "disabled": False}}]},
+                    op_token=create_token)
                 job_id = create.get("jobId")
             except (McpError, McpToolError, requests.HTTPError) as exc:
                 if "504" not in str(exc):
                     raise
-                # The record IS the recovery surface: adopt the job by its unique name.
-                print("    [RECOVER-504] deployment create response lost -- adopting the job by name")
-                time.sleep(3.0)
-                listed = _dep_call({"op": "status"})
-                job_id = next((j.get("jobId") for j in (listed.get("jobs") or [])
-                               if j.get("name") == job_name), None)
+                # Token replay first -- it returns the ORIGINAL create envelope (jobId and
+                # all) rather than inferring identity from a list. The job record is still
+                # the backstop if the buffer is gone.
+                print("    [RECOVER-504] deployment create response lost -- polling its opToken")
+                replayed = self._poll_op_result(create_token, tool="hub_set_rule")
+                job_id = replayed.get("jobId") if isinstance(replayed, dict) else None
+                if not job_id:
+                    print("    [RECOVER-504] replay empty -- adopting the job by its unique name")
+                    time.sleep(3.0)
+                    listed = _dep_call({"op": "status"})
+                    job_id = next((j.get("jobId") for j in (listed.get("jobs") or [])
+                                   if j.get("name") == job_name), None)
             assert job_id, "deployment create landed no job record"
 
             # The single clone op usually finishes in the create call's inline slice; the

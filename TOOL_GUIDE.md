@@ -1202,7 +1202,7 @@ If the response is lost, do NOT re-run the operation and do NOT invent a fresh t
 
 - `status: "running"` — still executing; poll again shortly by re-issuing the same tokened call (the operation completes and commits even though the response dropped).
 - `replayed: true` — it finished; this IS the original buffered result (including `isError` if that attempt failed).
-- `status: "unknown"` (returned only to a token-only poll) — no RECORD of this token exists: the original call never arrived, OR the record aged out (records sweep ~24h after start, and past 100 stored records the oldest terminal records batch-evict down to 50). Poll promptly after a drop and it reliably means never-arrived: re-issue the ORIGINAL call (full arguments) with this same token. Do not trust day-old tokens.
+- `status: "unknown"` (returned only to a token-only poll) — no RECORD of this token exists: the original call never arrived, OR the record aged out (records sweep ~24h after start, and past 40 stored records the oldest terminal records batch-evict down to 20). Poll promptly after a drop and it reliably means never-arrived: re-issue the ORIGINAL call (full arguments) with this same token. Do not trust day-old tokens.
 - `status: "indeterminate"` — the operation completed here but its buffered result cannot be read (buffering failed, or the result file is gone while the record survives). Do NOT re-issue blindly; verify current state via reads first.
 
 A NEW write may also be refused before it runs:

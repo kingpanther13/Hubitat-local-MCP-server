@@ -2199,11 +2199,11 @@ def _opTokenPrune() {
         if (_opTokenMayHaveFile(tokens[k])) removedKeys << k
         tokens.remove(k)
     }
-    // Hysteresis dead band: a hard at-50 cap would turn EVERY tokened call past the
-    // 50th-within-24h into a whole-map rewrite -- permanent re-exposure of the
-    // lost-record race the per-entry writes exist to close. Engaging only past 100
-    // and evicting to 50 in one batch keeps steady state (50-100 records) free of
-    // cap-driven rewrites: one batch eviction per ~50 new tokens under sustained load.
+    // Hysteresis dead band: a hard at-keep-count cap would turn EVERY tokened call past
+    // the 20th-within-24h into a whole-map rewrite -- permanent re-exposure of the
+    // lost-record race the per-entry writes exist to close. Engaging only past the
+    // record cap (40) and evicting to the keep count (20) in one batch keeps steady
+    // state free of cap-driven rewrites: one batch eviction per ~20 new tokens.
     if (tokens.size() > _opTokenMaxRecords()) {
         def ordered = tokens.entrySet().toList()
             .findAll { e -> !((e.value instanceof Map) && e.value.state == "running") }
