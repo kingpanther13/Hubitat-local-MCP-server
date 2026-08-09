@@ -1688,8 +1688,12 @@ def handleToolsCall(msg) {
             boolean isWriteLeaf = (reactiveToolName && !(reactiveToolName in readOnlyNamesCache)
                     && !reactiveSchemaOnly
                     && !gatewayConfigCache.containsKey(reactiveToolName.toString()))
+            // ONE read of the record map for every pre-dispatch check below: each of these
+            // used to deserialize it again, and with auto-tokens that is per-write cost on
+            // every single write the server handles.
+            def tokensSnapshot = (opTokenAuto || isWriteLeaf) ? atomicState.opTokens : null
             if (opTokenAuto && isWriteLeaf) {
-                def duplicate = _findIdenticalRunningOp(reactiveToolName, opFingerprintHash, opFingerprintLen)
+                def duplicate = _findIdenticalRunningOp(reactiveToolName, opFingerprintHash, opFingerprintLen, tokensSnapshot)
                 if (duplicate != null) {
                     long ageSeconds = Math.max(0L, ((now() - (duplicate.startedAt as Long)) / 1000L) as Long)
                     def refusal = [
@@ -1706,7 +1710,7 @@ def handleToolsCall(msg) {
             }
             if (isWriteLeaf) {
                 int maxWrites = _maxConcurrentWrites()
-                def inFlightWrites = _recentRunningWriteOps(readOnlyNamesCache)
+                def inFlightWrites = _recentRunningWriteOps(readOnlyNamesCache, tokensSnapshot)
                 if (maxWrites > 0 && inFlightWrites.size() >= maxWrites) {
                     def refusal = [
                         success: false, isError: true, status: "too_many_writes_in_flight",
@@ -2158,6 +2162,8 @@ private boolean _opTokenMayHaveFile(Object rec) {
 }
 
 def _opTokenPrune() {
+    // Reads fresh, never a caller snapshot: it rewrites the whole map, so a snapshot
+    // taken before the running-marker write would erase that marker.
     def stored = atomicState.opTokens
     if (!(stored instanceof Map)) return
     long cutoff = now() - 86400000L
@@ -2258,7 +2264,7 @@ def _canonicalOpArgs(value) {
     return value
 }
 
-def _findIdenticalRunningOp(toolName, Integer fpHash, Integer fpLen) {
+def _findIdenticalRunningOp(toolName, Integer fpHash, Integer fpLen, tokensArg = null) {
     // hash AND length, never hash alone: String.hashCode is a 32-bit non-cryptographic
     // digest that collides trivially, and a false match here would refuse a DIFFERENT
     // write as a duplicate. Requiring the length to agree too means an accidental
@@ -2268,7 +2274,7 @@ def _findIdenticalRunningOp(toolName, Integer fpHash, Integer fpLen) {
     // (_recentRunningWriteOps): an exact-args match is strong evidence of a real
     // duplicate worth refusing for as long as the original might still be running,
     // while the cap counts unrelated writes and must not be wedged by a dead record.
-    def tokens = atomicState.opTokens
+    def tokens = (tokensArg != null) ? tokensArg : atomicState.opTokens
     if (!(tokens instanceof Map) || fpHash == null || fpLen == null) return null
     long cutoff = now() - 600000L
     for (entry in tokens.entrySet()) {
@@ -2282,8 +2288,8 @@ def _findIdenticalRunningOp(toolName, Integer fpHash, Integer fpLen) {
     return null
 }
 
-def _recentRunningWriteOps(readOnlyNamesArg = null) {
-    def tokens = atomicState.opTokens
+def _recentRunningWriteOps(readOnlyNamesArg = null, tokensArg = null) {
+    def tokens = (tokensArg != null) ? tokensArg : atomicState.opTokens
     if (!(tokens instanceof Map)) return []
     def readOnlyNames = (readOnlyNamesArg != null) ? readOnlyNamesArg : getReadOnlyToolNames()
     // 90s, NOT the 10-minute fingerprint window: a record only leaves "running" when

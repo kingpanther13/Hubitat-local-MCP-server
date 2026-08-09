@@ -1119,6 +1119,30 @@ class OpTokenReplaySpec extends ToolSpecBase {
         marker.file == null
     }
 
+    @spock.lang.Unroll
+    def "the inline ceiling is inclusive: #bytes bytes -> #where"() {
+        given: 'a payload whose UTF-8 length is exactly #bytes'
+        def store = installFileStore()
+        def payload = '{"v":"' + ('z' * (bytes - 8)) + '"}'
+        assert payload.getBytes('UTF-8').length == bytes
+        atomicStateMap.opTokens = ['boundtok123': [state: 'running', tool: 'hub_create_room',
+                                                   startedAt: FIXED_NOW - 100L]]
+
+        when:
+        script._opTokenComplete('boundtok123', payload, false)
+
+        then:
+        def marker = atomicStateMap.opTokens['boundtok123']
+        (marker.inline != null) == inlineExpected
+        (marker.file != null) == !inlineExpected
+        store.isEmpty() == inlineExpected
+
+        where:
+        bytes | inlineExpected | where
+        1024  | true           | 'inline'
+        1025  | false          | 'file'
+    }
+
     def "a result too large to inline goes to the reserved File Manager file"() {
         given: 'a payload past the inline ceiling'
         def store = installFileStore()
