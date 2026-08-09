@@ -7,6 +7,9 @@ def toolListFiles(args = null) {
     def filterLower = filterText?.toLowerCase()
     // Op-token result buffers are server bookkeeping, not user files, and a busy hub
     // accumulates enough of them to bury the real listing.
+    if (args instanceof Map && args.containsKey('includeOpResults') && !(args.includeOpResults instanceof Boolean)) {
+        throw new IllegalArgumentException("includeOpResults must be a boolean (got: ${args.includeOpResults})")
+    }
     boolean includeOpResults = (args?.includeOpResults == true)
 
     // Try known File Manager API endpoints (varies by firmware version)

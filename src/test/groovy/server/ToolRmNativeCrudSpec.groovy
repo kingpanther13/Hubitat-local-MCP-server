@@ -4156,7 +4156,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // the caller needs the id-lookup steer rather than a generic backup failure.
         given:
         enableWrite()
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def uploads = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
         hubGet.register('/installedapp/configure/json/704') { params -> throw new RuntimeException('404 from configure/json') }
         hubGet.register('/app/ruleBuilder20Json/704') { params -> throw new RuntimeException('404') }
         hubGet.register('/app/ruleBuilderJson/704') { params -> throw new RuntimeException('404') }
@@ -4174,8 +4175,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.contains('No rule/app with id 704')
         ex.message.contains('hub_list_rules')
 
-        and: 'nothing was written'
+        and: 'nothing was written -- no wizard POST and no backup upload'
         posts.isEmpty()
+        uploads.isEmpty()
     }
 
     def "replaceActions plus addActions in one call is rejected fail-loud"() {

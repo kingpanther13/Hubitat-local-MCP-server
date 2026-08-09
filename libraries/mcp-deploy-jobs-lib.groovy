@@ -27,7 +27,16 @@ private void _deploySaveJob(Map job) {
     // killed request/worker thread loses at most the op in flight, never the job.
     job.updatedAt = now()
     if (!(atomicState.deployJobs instanceof Map)) atomicState.deployJobs = [:]
-    atomicState.updateMapValue("deployJobs", job.jobId.toString(), job)
+    try {
+        atomicState.updateMapValue("deployJobs", job.jobId.toString(), job)
+    } catch (MissingMethodException e) {
+        // Whole-map fallback for older firmware / test harnesses without
+        // updateMapValue -- the same pattern _opTokenPut uses.
+        def jobs = [:]
+        if (atomicState.deployJobs instanceof Map) jobs.putAll(atomicState.deployJobs)
+        jobs[job.jobId.toString()] = job
+        atomicState.deployJobs = jobs
+    }
 }
 
 private void _deployAppendHistory(Map job, String msg) {
