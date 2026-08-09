@@ -879,7 +879,7 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
                     location: [type: "string", enum: ["local", "cloud"], description: "Which store to delete from."],
                     fileName: [type: "string", description: "location=local: backup name from hub_list_backups."],
                     path: [type: "string", description: "location=cloud: backup path from hub_list_backups."],
-                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If omitted, the server auto-assigns and returns an auto-... token; hub_get_info(includeRecentOps=true) lists recent records. If the transport drops the response, re-issue this call with the SAME token to poll/replay the committed result instead of re-running the operation. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
+                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] Invent one (8-128 chars, A-Za-z0-9._-) or omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED true. Confirms the delete."]
                 ],
                 required: ["location", "confirm"]

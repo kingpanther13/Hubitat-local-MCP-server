@@ -438,7 +438,7 @@ def _getAllToolDefinitions_partBundles() {
                 type: "object",
                 properties: [
                     bundleId: [type: "string", description: "The numeric bundle id from hub_list_bundles (e.g. \"4\")."],
-                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If omitted, the server auto-assigns and returns an auto-... token; hub_get_info(includeRecentOps=true) lists recent records. If the transport drops the response, re-issue this call with the SAME token to poll/replay the committed result instead of re-running the operation. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
+                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] Invent one (8-128 chars, A-Za-z0-9._-) or omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms a recent backup exists and the user approved deleting this bundle."]
                 ],
                 required: ["bundleId", "confirm"]
@@ -467,7 +467,7 @@ def _getAllToolDefinitions_partBundles() {
                 properties: [
                     bundleId: [type: "string", description: "The numeric bundle id from hub_list_bundles (e.g. \"4\")."],
                     saveAs: [type: "string", description: "OPTIONAL File Manager filename for the exported .zip. Defaults to the bundle's name.[[FLAT_TRIM]] '.zip' is appended if missing; non-filename characters are replaced with '_'.[[/FLAT_TRIM]]"],
-                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If omitted, the server auto-assigns and returns an auto-... token; hub_get_info(includeRecentOps=true) lists recent records. If the transport drops the response, re-issue this call with the SAME token to poll/replay the committed result instead of re-running the operation. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
+                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] Invent one (8-128 chars, A-Za-z0-9._-) or omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["bundleId"]
             ],

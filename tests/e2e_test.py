@@ -417,21 +417,43 @@ class HubitatMcpClient:
             if gateway:
                 wire_name, wire_args = gateway, {"tool": name, "args": args}
         op_key = _op_key(wire_name, wire_args)   # gateway sub-tool / flat name; hub_set_rule split create-vs-edit
-        _t0 = time.monotonic()
-        _op_ok = True
-        try:
-            result = self._send("tools/call", {"name": wire_name, "arguments": wire_args})
-        except BaseException:
-            _op_ok = False   # record the FAILED-op latency too -- a 504'd write is otherwise invisible
-            raise
-        finally:
-            _dur = time.monotonic() - _t0
-            self.op_timings.append((op_key, _dur, self._active_test, _op_ok))
-            self._last_op = (op_key, _dur, _op_ok)   # for the FULL-FAILURE line in _run_one
-            # Flag any call within ~75% of the measured ~10s relay ceiling -- these flake/504 on cloud.
-            if _dur >= 7.5:
-                print(f"  [SLOW] {_dur:4.1f}s  {op_key}  ({self._active_test or '?'})"
-                      f"{'' if _op_ok else '  [err/504]'}")
+        # too_many_writes_in_flight is DESIGNED backpressure, not an error: the cap counts
+        # hub-side writes still running after their responses were severed (a wizard POST can
+        # legitimately run minutes), so a strictly-serial runner can still be "the third
+        # writer". The documented client behavior is wait-and-re-issue; the cap's 10-minute
+        # running-record window bounds the wait, so the deadline sits just past it.
+        _cap_deadline = None
+        result = None
+        while True:
+            _t0 = time.monotonic()
+            _op_ok = True
+            try:
+                result = self._send("tools/call", {"name": wire_name, "arguments": wire_args})
+            except BaseException:
+                _op_ok = False   # record the FAILED-op latency too -- a 504'd write is otherwise invisible
+                raise
+            finally:
+                _dur = time.monotonic() - _t0
+                self.op_timings.append((op_key, _dur, self._active_test, _op_ok))
+                self._last_op = (op_key, _dur, _op_ok)   # for the FULL-FAILURE line in _run_one
+                # Flag any call within ~75% of the measured ~10s relay ceiling -- these flake/504 on cloud.
+                if _dur >= 7.5:
+                    print(f"  [SLOW] {_dur:4.1f}s  {op_key}  ({self._active_test or '?'})"
+                          f"{'' if _op_ok else '  [err/504]'}")
+            # The cap refusal rides an isError RESULT (not a transport error): retry it here.
+            _cap_text = ""
+            if result.get("isError"):
+                for c in result.get("content", []):
+                    if c.get("type") == "text":
+                        _cap_text = c["text"]
+            if '"too_many_writes_in_flight"' not in _cap_text:
+                break
+            if _cap_deadline is None:
+                _cap_deadline = time.monotonic() + 660.0
+            if time.monotonic() >= _cap_deadline:
+                break   # let the normal isError raise below surface the standing refusal
+            print(f"  [BACKPRESSURE] {op_key}: write cap full -- waiting 10s for an in-flight write to finish")
+            time.sleep(10.0)
 
         # Check for tool-level error
         if result.get("isError"):
@@ -3638,9 +3660,13 @@ class TestRunner:
         started_health = _rule_health_when(app_id, lambda h: h.get("stopped") is False)
         assert started_health.get("stopped") is False, \
             f"started rule should read stopped=false from hub_get_rule_health, got: {started_health}"
-        started_subs = started_health.get("eventSubscriptionCount")
-        assert isinstance(started_subs, int) and started_subs >= 1, \
-            f"a started rule should resubscribe (eventSubscriptionCount >= 1), got: {started_health}"
+        # This rule's only trigger is a Certain Time -- start re-arms its SCHEDULE, not an
+        # event subscription (a schedule-only rule legitimately reads eventSubscriptionCount 0).
+        started_sched = started_health.get("scheduledJobCount")
+        assert isinstance(started_sched, int) and started_sched >= 1, \
+            f"a started time-triggered rule should re-arm its schedule (scheduledJobCount >= 1), got: {started_health}"
+        assert isinstance(started_health.get("eventSubscriptionCount"), int), \
+            f"a running rule's eventSubscriptionCount should read as an integer, got: {started_health}"
         started = _rule_status_when(app_id, lambda s: s.get("status") == "active")
         assert started.get("status") == "active", f"started rule should return to active, got: {started}"
 

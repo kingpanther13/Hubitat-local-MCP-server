@@ -228,12 +228,12 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a scratch rule via hub_set_rule with name='BAT-RM-Stop Start' and at least one trivial trigger (e.g., a virtual switch trigger on 'BAT-RM Switch 1'). Remember the rule id.",
-  "test_prompt": "Stop the rule (stopRuleAct). Verify through the rule health read that it now reports stopped=true (its eventSubscriptionCount also stops reading as a number while stopped). Then Start the rule again and verify stopped=false and eventSubscriptionCount greater than 0 afterwards (Start also resets Private Boolean to true).",
+  "test_prompt": "Stop the rule (stopRuleAct). Verify through the rule health read that it now reports stopped=true with eventSubscriptionCount 0. Then Start the rule again and verify stopped=false and eventSubscriptionCount greater than 0 afterwards (Start also resets Private Boolean to true).",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
 
-**Expected**: AI calls `hub_call_rule(ruleId=ruleId, action='stop')`, then `hub_get_rule_health(appId=ruleId)` and verifies `stopped == true` with `eventSubscriptionCount` no longer reading as a number (null while stopped — NOT `0`); it calls `hub_call_rule(ruleId=ruleId, action='start')`, reads health again, and verifies `stopped == false` and `eventSubscriptionCount > 0`.
+**Expected**: AI calls `hub_call_rule(ruleId=ruleId, action='stop')`, then `hub_get_rule_health(appId=ruleId)` and verifies `stopped == true` with `eventSubscriptionCount == 0` (0 = read fine, nothing live; null appears only when the runtime status itself was unreadable); it calls `hub_call_rule(ruleId=ruleId, action='start')`, reads health again, and verifies `stopped == false` and `eventSubscriptionCount > 0` (the rule's trigger is device-event-based).
 
 ### T312 — Update Rule button (re-initialize)
 

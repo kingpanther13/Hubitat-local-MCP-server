@@ -47,7 +47,7 @@ def _getAllToolDefinitions_partNativeRM() {
                 properties: [
                     ruleId: [type: ["integer", "array"], items: [type: "integer"], description: "Rule ID from hub_list_rules, or an array of rule IDs to act on in one call"],
                     action: [type: "string", enum: ["rule", "actions", "stop", "start"], description: "Which RM action to invoke. Default: rule."],
-                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If omitted, the server auto-assigns and returns an auto-... token; hub_get_info(includeRecentOps=true) lists recent records. If the transport drops the response, re-issue this call with the SAME token to poll/replay the committed result instead of re-running the operation. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
+                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] Invent one (8-128 chars, A-Za-z0-9._-) or omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["ruleId"]
             ],
@@ -152,7 +152,7 @@ For a staged multi-app migration that must survive a disconnect, pass the self-c
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
                     walkStep: [type: "object", description: "LAST-RESORT multi-page classic-app walker — EDIT-only (requires appId; rejected on create). One call per wizard step is the expensive path: for RM rules use hub_set_rule's structured shortcuts instead; here, use it only when settings/button cannot represent the change.[[FLAT_TRIM]] Generic classic-dynamicPage walker for stateful apps: introspect/write/click/navigate/done one step per call, or operation='drive' with steps=[...] to run the whole sequence in one call. Same shape as hub_set_rule's walkStep.[[/FLAT_TRIM]]"],
                     deployment: [type: "object", description: "Durable multi-app deployment job (staged migration that survives disconnects): {op: 'create'|'resume'|'commit'|'cancel'|'delete'|'status', ...}. Self-contained call — cannot combine with other arguments. op='status' is a pure read (jobId optional; omit to list jobs). op='create' takes ops:[{op, args, alias?}] and checkpoints to hub storage after EVERY op, advancing on-hub with no client attached.[[FLAT_TRIM]] Ops: cloneApp/importApp/buttonRule/addActions/modifyAction/pause/resume/setDisabled; commitOps run only on op='commit' after staging auto-validates. cancel deletes ONLY the apps the job created; delete removes a finished (completed/cancelled) job's RECORD, apps and backups untouched. Same argument on hub_set_rule and hub_set_native_app (one shared engine).[[/FLAT_TRIM]] Full op reference + worked example: hub_get_tool_guide(section='deployment_jobs')."],
-                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If omitted, the server auto-assigns and returns an auto-... token; hub_get_info(includeRecentOps=true) lists recent records. If the transport drops the response, re-issue this call with the SAME token to poll/replay the committed result instead of re-running the operation. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
+                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] Invent one (8-128 chars, A-Za-z0-9._-) or omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "Must be true. Safety gate for Write master operations."]
                 ],
                 required: ["confirm"]
@@ -284,7 +284,7 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
                     guide: [type: "boolean", description: "Set true to return the full hub_set_rule capability reference inline (same content as hub_get_tool_guide(section='set_rule_reference')), without a separate call. Makes NO change to any rule."],
                     deployment: [type: "object", description: "Durable multi-app deployment job (staged migration that survives disconnects): {op: 'create'|'resume'|'commit'|'cancel'|'delete'|'status', ...}. Self-contained call — cannot combine with other arguments. op='status' is a pure read (jobId optional; omit to list jobs). op='create' takes ops:[{op, args, alias?}] and checkpoints to hub storage after EVERY op, advancing on-hub with no client attached.[[FLAT_TRIM]] Ops: cloneApp/importApp/buttonRule/addActions/modifyAction/pause/resume/setDisabled; commitOps run only on op='commit' after staging auto-validates. cancel deletes ONLY the apps the job created; delete removes a finished (completed/cancelled) job's RECORD, apps and backups untouched. Same argument on hub_set_rule and hub_set_native_app (one shared engine).[[/FLAT_TRIM]] Full op reference + worked example: hub_get_tool_guide(section='deployment_jobs')."],
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller: {controllerId, buttonNumber, event}. Returns buttonRuleId with the Button trigger auto-seeded — then author actions via addAction on that appId. The controller must already have a button device.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
-                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If omitted, the server auto-assigns and returns an auto-... token; hub_get_info(includeRecentOps=true) lists recent records. If the transport drops the response, re-issue this call with the SAME token to poll/replay the committed result instead of re-running the operation. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
+                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] Invent one (8-128 chars, A-Za-z0-9._-) or omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
                 required: ["confirm"]
@@ -413,8 +413,8 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
                     validationErrors: [type: "array", description: "Graph Visual Rule validation errors; always present, empty when none", items: [type: "string"]],
                     predicate: [type: "object", description: "Compiled required-expression summary from ruleBuilderJson: {hasPredicate, predCapabs}. Present only when the compiled RM state carried the predicate fields (hasPredicate may be false)."],
                     stopped: [type: ["boolean", "null"], description: "True when the rule is runtime-STOPPED (hub_call_rule action='stop'). The AUTHORITATIVE stopped check -- hub_list_rules' cheap sources cannot see this state. Null when the label could not be read."],
-                    eventSubscriptionCount: [type: ["integer", "null"], description: "Live event subscription count from statusJson; null when the runtime status could not be read (a STOPPED rule's statusJson omits the list entirely, so stopped rules read null, not 0)."],
-                    scheduledJobCount: [type: ["integer", "null"], description: "Live scheduled job count from statusJson; null when the runtime status could not be read."],
+                    eventSubscriptionCount: [type: ["integer", "null"], description: "Live event subscription count from statusJson; 0 when the rule has none live (schedule-only and STOPPED rules read 0), null only when the runtime status could not be read."],
+                    scheduledJobCount: [type: ["integer", "null"], description: "Live scheduled job count from statusJson; 0 when none live, null only when the runtime status could not be read."],
                     issues: [type: "array", description: "All issues; ok is false iff non-empty", items: [type: "string"]]
                 ],
                 required: ["ok"]
@@ -15052,8 +15052,11 @@ def toolCheckRuleHealth(args) {
     def result = _rmCheckRuleHealth(appId, source)
     try {
         def status = _rmFetchStatusJson(appId)
-        result.eventSubscriptionCount = (status?.eventSubscriptions instanceof List) ? status.eventSubscriptions.size() : null
-        result.scheduledJobCount = (status?.scheduledJobs instanceof List) ? status.scheduledJobs.size() : null
+        // A readable statusJson with an ABSENT section means zero live entries -- a
+        // schedule-only rule carries no eventSubscriptions list at all (and a stopped
+        // rule drops both). null is reserved for the fetch itself failing.
+        result.eventSubscriptionCount = (status?.eventSubscriptions instanceof List) ? status.eventSubscriptions.size() : 0
+        result.scheduledJobCount = (status?.scheduledJobs instanceof List) ? status.scheduledJobs.size() : 0
     } catch (Exception ignored) {
         result.eventSubscriptionCount = null
         result.scheduledJobCount = null

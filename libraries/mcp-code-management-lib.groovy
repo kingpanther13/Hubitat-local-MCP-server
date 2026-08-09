@@ -2988,7 +2988,7 @@ Tell the user the item name/ID, warn it's permanent, get confirmation. Requires 
                 properties: [
                     type: [type: "string", enum: ["app", "driver", "library"], description: "What to delete."],
                     item_id: [type: "string", description: "The app/driver/library ID to delete."],
-                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If omitted, the server auto-assigns and returns an auto-... token; hub_get_info(includeRecentOps=true) lists recent records. If the transport drops the response, re-issue this call with the SAME token to poll/replay the committed result instead of re-running the operation. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
+                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] Invent one (8-128 chars, A-Za-z0-9._-) or omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["type", "item_id", "confirm"]
