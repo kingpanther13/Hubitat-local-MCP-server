@@ -1334,6 +1334,18 @@ class OpTokenReplaySpec extends ToolSpecBase {
         runningDuringBackup[0].startsWith('auto-')
     }
 
+    def "initialize arms the op-token file sweep"() {
+        // Doubles as the positive control for the runIn recorder: every other spec that asserts
+        // "did it re-arm?" reads runInCalls, and a recorder that silently captured nothing would
+        // make those assertions unfalsifiable. This one pins a scheduling call we KNOW happens,
+        // so a broken recorder fails here loudly instead of hiding there quietly.
+        when:
+        script.initialize()
+
+        then:
+        runInCalls.any { it[1] == 'opTokenFileSweep' }
+    }
+
     def "the sweep comes back for an orphan it skipped only for being TOO YOUNG"() {
         given: 'the re-arm fired only when something was actually DELETED, so an orphan produced shortly before an app reload was looked at once (initialize arms a single one-shot sweep) and then never again -- it leaked until some unrelated sweep happened to run'
         def deleted = []
