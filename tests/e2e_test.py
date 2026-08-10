@@ -516,27 +516,33 @@ class HubitatMcpClient:
         includeRecentOps protocol. Claims the newest journal row for this tool whose token
         is unbanked -- ops that answered banked theirs, so an unbanked row is the lost one.
         None (no row, or unknown/indeterminate) means the caller surfaces the 504."""
-        rows = []
-        try:
-            info = self._send("tools/call", {"name": "hub_get_info",
-                                             "arguments": {"includeRecentOps": True, "recentOpsLimit": 25}})
-            for c in (info.get("content") or []):
-                if c.get("type") == "text":
-                    parsed = json.loads(c["text"])
-                    rows = parsed.get("recentOps") or []
-        except Exception:
-            return None   # journal unreadable -- let the original 504 stand
+        deadline = time.monotonic() + deadline_s
         token = None
-        for row in rows:                       # server sorts newest-first
-            if row.get("tool") != leaf_name:
-                continue
-            candidate = row.get("opToken")
-            if isinstance(candidate, str) and candidate not in self._seen_auto_tokens:
-                token = candidate
-                break
+        # Only the marker-tracked tools journal a row BEFORE they run; every other write is
+        # recorded when it finishes, so a still-running op has no row yet. Keep looking until
+        # the deadline rather than concluding on the first read that it never arrived.
+        while token is None and time.monotonic() < deadline:
+            rows = []
+            try:
+                info = self._send("tools/call", {"name": "hub_get_info",
+                                                 "arguments": {"includeRecentOps": True, "recentOpsLimit": 25}})
+                for c in (info.get("content") or []):
+                    if c.get("type") == "text":
+                        rows = (json.loads(c["text"]) or {}).get("recentOps") or []
+            except Exception:
+                rows = []                      # journal unreadable right now -- try again
+            for row in rows:                   # server sorts newest-first
+                if row.get("tool") != leaf_name:
+                    continue
+                candidate = row.get("opToken")
+                if isinstance(candidate, str) and candidate not in self._seen_auto_tokens:
+                    token = candidate
+                    break
+            if token is None:
+                time.sleep(2.0)
         if token is None:
             return None
-        deadline = time.monotonic() + deadline_s
+        deadline = time.monotonic() + deadline_s   # fresh budget: finding it is not replaying it
         while time.monotonic() < deadline:
             replay = None
             try:
