@@ -19,6 +19,17 @@ abstract class ToolSpecBase extends HarnessSpec {
      */
     protected List<List<Object>> getRunInCalls() { RUN_IN_CALLS }
 
+    def setup() {
+        // Belt AND braces, because the two CI lanes route runIn differently: under
+        // eighty20results (Groovy 3.0) it reaches the AppExecutor mock, where HarnessSpec's
+        // permanent stub records it; under joelwetzel (the Groovy 2.5 lane) that stub never
+        // fires and only a script-level override sees the call. Installed AFTER HarnessSpec's
+        // metaClass wipe so it survives the test, and appending to the same list means an
+        // assertion reads the same place whichever fork is running. The positive control in
+        // OpTokenReplaySpec is what proves the recorder is live rather than silently inert.
+        script.metaClass.runIn = { Object delay, String handler -> RUN_IN_CALLS << [delay, handler] }
+    }
+
     /**
      * Record every uploaded file name EXCEPT the op-token result buffers. Auto-tokened writes
      * upload one of those per call, so a spec asserting on "what did this tool write" has to
