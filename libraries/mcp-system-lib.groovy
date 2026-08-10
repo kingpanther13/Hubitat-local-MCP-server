@@ -56,6 +56,20 @@ def _healthAlertsFromHub2(hub2) {
 }
 
 def toolGetHubInfo(args = null) {
+    // Validate BEFORE anything with a side effect. identifyHub blinks the hub LED partway
+    // through this tool, so validating recentOpsLimit at its point of use meant a call with
+    // both arguments blinked the LED and THEN returned -32602 -- a rejected call that still
+    // did something to the hub, which the error contract forbids.
+    Integer recentOpsCap = 25
+    if (args?.recentOpsLimit != null) {
+        Integer parsedLimit = null
+        try { parsedLimit = args.recentOpsLimit.toString().trim() as Integer }
+        catch (Exception ignored) { parsedLimit = null }
+        if (parsedLimit == null || parsedLimit < 1) {
+            throw new IllegalArgumentException("recentOpsLimit must be an integer >= 1 (got: '${args.recentOpsLimit}').")
+        }
+        recentOpsCap = parsedLimit
+    }
     def hub = location.hub
     def info = [
         temperatureScale: location.temperatureScale
@@ -233,16 +247,7 @@ def toolGetHubInfo(args = null) {
             rows = rows.findAll { readOnlyNames.contains(it.tool) }
         }
         rows = rows.sort { -((it.startedAt ?: 0) as Long) }
-        Integer cap = 25
-        if (args.recentOpsLimit != null) {
-            Integer parsedLimit = null
-            try { parsedLimit = args.recentOpsLimit.toString().trim() as Integer }
-            catch (Exception ignored) { parsedLimit = null }
-            if (parsedLimit == null || parsedLimit < 1) {
-                throw new IllegalArgumentException("recentOpsLimit must be an integer >= 1 (got: '${args.recentOpsLimit}').")
-            }
-            cap = parsedLimit
-        }
+        Integer cap = recentOpsCap
         info.recentOps = rows.take(cap)
         info.recentOpsTotal = rows.size()
     }
@@ -1000,7 +1005,7 @@ def _getAllToolDefinitions_partSystem() {
                     safeMode: [type: "boolean", description: "Whether the hub is running in Safe Mode (from /hub2/hubData). Absent if /hub2/hubData was unreadable."],
                     healthAlerts: [type: "object", description: "Present only when includeHealthAlerts=true: the hub's health alerts from /hub2/hubData -- {safeMode, active (list of currently-firing alert flags), details (full alert map + message strings)}."],
                     recentOps: [type: "array", description: "Present only when includeRecentOps=true: recent op records, newest first -- {opToken, tool, state, startedAt, startedAtText, finishedAt, isError, auto}.", items: [type: "object"]],
-                    recentOpsTotal: [type: "integer", description: "Present only when includeRecentOps=true: total records held (recentOps is capped by recentOpsLimit)."]
+                    recentOpsTotal: [type: "integer", description: "Present only when includeRecentOps=true: how many records matched THIS call (write-master filtering applied), before recentOpsLimit caps the returned rows -- not the size of the whole stored journal."]
                 ]
             ]
         ],

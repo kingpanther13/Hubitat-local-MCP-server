@@ -424,8 +424,10 @@ class HubitatMcpClient:
         # too_many_writes_in_flight is DESIGNED backpressure, not an error: the cap counts
         # hub-side writes still running after their responses were severed (a wizard POST can
         # legitimately run minutes), so a strictly-serial runner can still be "the third
-        # writer". The documented client behavior is wait-and-re-issue; the cap's 10-minute
-        # running-record window bounds the wait, so the deadline sits just past it.
+        # writer". The documented client behavior is wait-and-re-issue, and the server ages a
+        # never-completing record out of the count after 180s, which bounds the wait.
+        # (The suite now pins maxConcurrentWrites=0, so this loop should never engage; it stays
+        # because the cap is on by default for every real client.)
         _cap_deadline = None
         result = None
         while True:
@@ -453,10 +455,10 @@ class HubitatMcpClient:
             if '"too_many_writes_in_flight"' not in _cap_text:
                 break
             if _cap_deadline is None:
-                # Just past the server's 90s running-record window: a record that will
-                # never complete stops counting at 90s, so anything still refusing past
+                # Just past the server's 180s running-record window: a record that will
+                # never complete stops counting at 180s, so anything still refusing past
                 # that is a genuinely busy hub, not a wedge.
-                _cap_deadline = time.monotonic() + 120.0
+                _cap_deadline = time.monotonic() + 200.0
             if time.monotonic() >= _cap_deadline:
                 break   # let the normal isError raise below surface the standing refusal
             print(f"  [BACKPRESSURE] {op_key}: write cap full -- waiting 5s for an in-flight write to finish")
@@ -11888,7 +11890,14 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         def _sweepable(nm: str) -> bool:
             return nm.startswith(PREFIX) or _is_litter(nm)
 
-        for backups_pass in (False, True):
+        # _backup_ pass FIRST: hub_delete_file backs up every non-_backup_ file it deletes, so
+        # a pass-1 delete of an original spawns a replacement and nets zero -- if the budget were
+        # spent there the hub's file count would not drop at all that run. Deleting a _backup_
+        # file spawns nothing, so giving that pass first claim makes every budgeted delete a net
+        # removal. Originals still go in the second pass with whatever budget remains, and the
+        # replacements they spawn are reaped by the CLOSING backup pass, so a run still drains
+        # fully rather than leaving this run's own litter for the next one.
+        for backups_pass in (True, False, True):
             try:
                 names, authoritative = self._list_all_file_names()
                 if not authoritative:

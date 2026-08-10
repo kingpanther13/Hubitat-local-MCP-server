@@ -1396,8 +1396,11 @@ class OpTokenReplaySpec extends ToolSpecBase {
         tracked.findAll { !guide.contains(it) } == []
 
         and: 'and the guide does not claim marker tracking for a write that has none'
+        // Word boundary, not "${name},": the LAST tool named in the guide sentence carries no
+        // trailing comma, so a comma match silently exempts it from the drift check -- the one
+        // position where a stale entry would go unnoticed.
         allWriteTools.findAll { name ->
-            !tracked.contains(name) && guide.contains("${name},")
+            !tracked.contains(name) && (guide =~ /(?<![A-Za-z0-9_])${java.util.regex.Pattern.quote(name)}(?![A-Za-z0-9_])/)
         } == []
     }
 
