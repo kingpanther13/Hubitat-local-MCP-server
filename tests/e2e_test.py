@@ -168,6 +168,11 @@ class HubitatMcpClient:
         self._active_test = ""            # set by the runner per test, for slow-op attribution
         self._transport_retries = 0       # silent read-side transport retries (504/network), verbose-gated
         self._last_op: tuple[str, float, bool] | None = None   # (op_key, seconds, ok) of the most recent call
+        # Auto-opTokens whose result we actually RECEIVED. A 504 recovery matches the newest
+        # journal record for the tool that is NOT in here: every earlier op for that tool
+        # answered us and banked its token, so an unbanked record can only be the lost one.
+        # This is what lets recovery work without the client inventing tokens up front.
+        self._seen_auto_tokens: set[str] = set()
         # Catalog-derived maps (issue #319), built lazily together from the live
         # gateway-mode catalog; None = not built yet. _gateway_members (gateway -> its
         # sub-tools) backs the membership guard; _gateway_route (leaf -> owning gateway)
@@ -239,7 +244,13 @@ class HubitatMcpClient:
         last_exc: Exception | None = None
         data: dict | None = None
         resp = None
-        for attempt in range(3):
+        # tools/list gets a longer read budget than any other call: the flat catalog is the
+        # largest single response the relay ever carries (~119KB, close to the hub's 124KB
+        # cap), so it sits nearest the relay's time ceiling and 504s in bursts. It is a pure
+        # read with no side effect, so extra attempts cost only time -- three was enough for
+        # every other read but let a whole-catalog fetch fail the run.
+        _attempts = 6 if method == "tools/list" else 3
+        for attempt in range(_attempts):
             resp = None
             try:
                 resp = self.session.post(
@@ -430,13 +441,24 @@ class HubitatMcpClient:
         # because the cap is on by default for every real client.)
         _cap_deadline = None
         result = None
+        _recovered = None
         while True:
             _t0 = time.monotonic()
             _op_ok = True
             try:
                 result = self._send("tools/call", {"name": wire_name, "arguments": wire_args})
-            except BaseException:
+            except (McpError, requests.HTTPError) as exc:
                 _op_ok = False   # record the FAILED-op latency too -- a 504'd write is otherwise invisible
+                if "504" not in str(exc):
+                    raise
+                # This is the whole point of the auto-opToken work: a severed response is
+                # recoverable WITHOUT the caller having pre-arranged anything. The server
+                # already assigned a token and journalled the op; find it and replay it.
+                _recovered = self._recover_lost_op(name)
+                if _recovered is None:
+                    raise
+            except BaseException:
+                _op_ok = False
                 raise
             finally:
                 _dur = time.monotonic() - _t0
@@ -446,6 +468,10 @@ class HubitatMcpClient:
                 if _dur >= 7.5:
                     print(f"  [SLOW] {_dur:4.1f}s  {op_key}  ({self._active_test or '?'})"
                           f"{'' if _op_ok else '  [err/504]'}")
+            # Recovered the severed response from the server's own journal: that replayed
+            # envelope IS this call's result, so hand it back as if the transport held.
+            if _recovered is not None:
+                return _recovered
             # The cap refusal rides an isError RESULT (not a transport error): retry it here.
             _cap_text = ""
             if result.get("isError"):
@@ -476,11 +502,78 @@ class HubitatMcpClient:
         for c in result.get("content", []):
             if c.get("type") == "text":
                 try:
-                    return json.loads(c["text"])
+                    parsed = json.loads(c["text"])
                 except (json.JSONDecodeError, TypeError):
                     return c["text"]
+                # Bank the server-assigned token of every op that ANSWERED us. _recover_lost_op
+                # claims the newest unbanked row, so this is what keeps it from ever claiming
+                # an earlier op's record as the lost one.
+                if isinstance(parsed, dict):
+                    tok = parsed.get("opToken")
+                    if isinstance(tok, str) and tok.startswith("auto-"):
+                        self._seen_auto_tokens.add(tok)
+                return parsed
 
         return result
+
+    def _recover_lost_op(self, leaf_name: str, deadline_s: float = 30.0) -> Any:
+        """Recover a call whose response the relay severed, using ONLY the server's own
+        auto-opToken machinery -- the client pre-arranges nothing.
+
+        Every untokened write gets a server-assigned auto-token and a recent-ops journal
+        row, so the token a lost response would have carried is still readable afterwards:
+        find the row, then re-issue token-only to replay the buffered result. That is the
+        documented protocol (hub_get_info's includeRecentOps text says exactly this), and
+        it is why a 504 does not have to fail a write.
+
+        Picking the row: newest-first, matching this tool, whose token we have NOT already
+        banked. Every earlier op for this tool answered us and banked its token as it
+        returned, so an unbanked row can only be the call we just lost -- no clock
+        comparison, and a stale row can never be mistaken for ours.
+
+        Returns the replayed result dict, or None when the op cannot be claimed (no row =
+        the request never reached the hub; unknown/indeterminate = nothing buffered to
+        replay). None means the caller should surface the original 504."""
+        rows = []
+        try:
+            info = self._send("tools/call", {"name": "hub_get_info",
+                                             "arguments": {"includeRecentOps": True, "recentOpsLimit": 25}})
+            for c in (info.get("content") or []):
+                if c.get("type") == "text":
+                    parsed = json.loads(c["text"])
+                    rows = parsed.get("recentOps") or []
+        except Exception:
+            return None   # journal unreadable -- let the original 504 stand
+        token = None
+        for row in rows:                       # server sorts newest-first
+            if row.get("tool") != leaf_name:
+                continue
+            candidate = row.get("opToken")
+            if isinstance(candidate, str) and candidate not in self._seen_auto_tokens:
+                token = candidate
+                break
+        if token is None:
+            return None
+        deadline = time.monotonic() + deadline_s
+        while time.monotonic() < deadline:
+            replay = None
+            try:
+                raw = self._send("tools/call", {"name": leaf_name, "arguments": {"opToken": token}})
+                for c in (raw.get("content") or []):
+                    if c.get("type") == "text":
+                        replay = json.loads(c["text"])
+            except Exception:
+                replay = None                  # transient -- keep polling until the deadline
+            if isinstance(replay, dict):
+                if replay.get("replayed") is True:
+                    self._seen_auto_tokens.add(token)
+                    print(f"    [RECOVER-504] {leaf_name}: severed response replayed from the "
+                          f"server's own auto-token {token} -- the write was NOT re-sent")
+                    return replay
+                if replay.get("status") in ("unknown", "indeterminate"):
+                    return None                # nothing buffered; re-running is the caller's call
+            time.sleep(2.0)
+        return None
 
     # -- Convenience: REST health endpoint -----------------------------------
 
