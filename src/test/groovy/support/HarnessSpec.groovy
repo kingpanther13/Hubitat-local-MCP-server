@@ -139,10 +139,13 @@ abstract class HarnessSpec extends Specification {
 
     @Shared protected AppExecutor appExecutor
     // Every runIn(delay, handler[, opts]) the script scheduled this test, newest last.
-    // @Shared instance field, not a static: Groovy 2.5 will not resolve an inherited
-    // protected static as a property from a subclass, qualified or not, so the 2.5 lane
-    // threw MissingPropertyException on every assertion that read it.
-    @Shared protected final List<List<Object>> runInCalls = java.util.Collections.synchronizedList([])
+    // Exposed through a GETTER, not as an inherited field: Groovy 2.5 resolves neither an
+    // inherited protected static nor a @Shared field two levels down the hierarchy as a
+    // property, so specs extending ToolSpecBase threw MissingPropertyException on every
+    // assertion that read it. Method inheritance is reliable on both forks.
+    @Shared private final List<List<Object>> runInCallsList = java.util.Collections.synchronizedList([])
+
+    protected List<List<Object>> getRunInCalls() { runInCallsList }
     @Shared protected script
     @Shared protected final Map stateMap = SHARED_STATE_MAP
     @Shared protected final Map atomicStateMap = SHARED_ATOMIC_STATE_MAP
@@ -248,7 +251,7 @@ abstract class HarnessSpec extends Specification {
         // carries). runIn is an AppExecutor method, so `script.metaClass.runIn = {...}` never
         // intercepts it either -- a spec written that way records nothing and its
         // "did it re-arm?" assertion can only ever read false.
-        mock.runIn(*_) >> { args -> runInCalls << (args as List) }
+        mock.runIn(*_) >> { args -> runInCallsList << (args as List) }
         return mock
     }
 
@@ -285,7 +288,7 @@ abstract class HarnessSpec extends Specification {
         // keep their identity (the AppExecutor mock's stubs captured
         // references in setupSpec), so clear-and-repopulate rather than
         // reassign.
-        runInCalls.clear()
+        runInCallsList.clear()
         stateMap.clear()
         atomicStateMap.clear()
         settingsMap.clear()
