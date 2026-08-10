@@ -262,7 +262,7 @@ class HubitatMcpClient:
                     if not replay_safe:
                         raise last_exc   # write: unknown-commit -- surface, never replay
                     self._transport_retries += 1
-                    self._log(f"<< HTTP {resp.status_code} (attempt {attempt + 1}/3) — retrying")
+                    self._log(f"<< HTTP {resp.status_code} (attempt {attempt + 1}/{_attempts}) — retrying")
                     # Exponential backoff with jitter to avoid thundering-herd if
                     # multiple consumers ever retry simultaneously.
                     time.sleep((2 ** attempt) + random.uniform(0, 1))  # ~1-2s, ~2-3s, ~4-5s
@@ -283,7 +283,7 @@ class HubitatMcpClient:
                     except Exception:
                         pass
                 self._transport_retries += 1
-                self._log(f"<< network/decode error (attempt {attempt + 1}/3): {exc}{snippet} -- retrying")
+                self._log(f"<< network/decode error (attempt {attempt + 1}/{_attempts}): {exc}{snippet} -- retrying")
                 time.sleep((2 ** attempt) + random.uniform(0, 1))
         else:
             # Exhausted retries — surface the last transient failure with method context.
@@ -449,7 +449,10 @@ class HubitatMcpClient:
                     raise
                 # The server already tokened and journalled this op, so the lost response
                 # is recoverable without the caller having pre-arranged anything.
-                _recovered = self._recover_lost_op(name)
+                # The LEAF name, not `name`: a caller may hand us a gateway envelope
+                # ({tool, args}) directly, and the journal records the leaf.
+                _leaf = wire_args["tool"] if isinstance(wire_args.get("tool"), str) else wire_name
+                _recovered = self._recover_lost_op(_leaf)
                 if _recovered is None:
                     raise
             except BaseException:
