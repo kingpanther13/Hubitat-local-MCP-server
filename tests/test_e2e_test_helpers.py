@@ -129,6 +129,12 @@ def test_op_key_gateway_other_subtool_uses_sub_tool():
     assert et._op_key("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}}) == "hub_list_rules"
 
 
+def test_op_key_tolerates_stringified_inner_args():
+    """Inner args can be a JSON string (the server parses that shape) -- the timing key must not blow up on it."""
+    assert et._op_key("hub_manage_rule_machine",
+                      {"tool": "hub_set_rule", "args": '{"deployment":{"op":"status"}}'}) == "hub_set_rule:create"
+
+
 def test_op_key_flat_tool_uses_name():
     """A flat (non-gateway) call resolves to the tool name; None args are tolerated."""
     assert et._op_key("hub_get_info", {}) == "hub_get_info"

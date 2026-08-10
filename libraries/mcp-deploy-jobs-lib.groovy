@@ -10,6 +10,19 @@ def _deployLeaseMs() { 90000L }
 def _deployWorkerBudgetMs() { 45000L }
 def _deployMaxWorkerFailures() { 3 }
 
+// True when this call's ONLY work is deployment op='status'. That call is exempt from the
+// Write master like the other schema-only exemptions, but unlike them it returns HUB DATA
+// -- job names, ids, aliases, created appIds, backup keys, the whole rollback surface --
+// rather than static reference content, so the READ master has to govern it. Without this
+// a hub with BOTH masters off still served the job records.
+def _isDeploymentStatusOnlyCall(toolName, args) {
+    String n = toolName?.toString()
+    if (n != 'hub_set_rule' && n != 'hub_set_native_app') return false
+    if (!(args instanceof Map)) return false
+    def dep = args.deployment
+    return (dep instanceof Map) && dep.op?.toString() == 'status'
+}
+
 def _deployJobs() {
     return (atomicState.deployJobs instanceof Map) ? atomicState.deployJobs : [:]
 }
@@ -39,6 +52,24 @@ private void _deploySaveJob(Map job) {
     }
 }
 
+// End-of-slice lease release. Clears the lease and persists this slice's snapshot ONLY
+// while the slice still owns the lease it last wrote. A slice that overruns
+// _deployLeaseMs can be superseded -- by the next worker pass, or by a cancel/resume
+// whose own lease guard saw the expired lease and took the job -- and clearing blindly
+// would both hand away the new owner's lease and write this slice's stale WHOLE-job
+// snapshot over the newer record, resurrecting a phase the new owner had moved past.
+void _deployReleaseLease(Map job) {
+    Long held = (job.sliceLeaseUntil != null) ? (job.sliceLeaseUntil as Long) : null
+    def fresh = _deployJobs()[job.jobId?.toString()]
+    Long current = (fresh instanceof Map && fresh.sliceLeaseUntil != null) ? (fresh.sliceLeaseUntil as Long) : null
+    if (current != held) {
+        mcpLog("warn", "deploy", "job ${job.jobId}: slice lease changed under this slice (held ${held}, stored ${current}) -- abandoning its final save so the new owner's record stands.")
+        return
+    }
+    job.sliceLeaseUntil = null
+    _deploySaveJob(job)
+}
+
 private void _deployAppendHistory(Map job, String msg) {
     def h = (job.history instanceof List) ? job.history : []
     h << [at: now(), msg: msg?.toString()?.take(160)]
@@ -52,7 +83,7 @@ private void _deployValidateOps(List ops, Set knownAliases, String listName) {
         def t = op.op?.toString()
         if (!(t in _deployOpTypes())) throw new IllegalArgumentException("${listName}[${i}].op must be one of ${_deployOpTypes().join(', ')} (got: ${t}). See hub_get_tool_guide(section='deployment_jobs').")
         if (op.args != null && !(op.args instanceof Map)) throw new IllegalArgumentException("${listName}[${i}].args must be an object")
-        if (t == "setDisabled") _deployRequireDisabledFlag((op.args instanceof Map) ? op.args.disabled : null, "${listName}[${i}] (setDisabled)")
+        _deployValidateOpArgs(t, (op.args instanceof Map) ? (Map) op.args : [:], "${listName}[${i}] (${t})")
         if (op.alias != null) {
             if (!(t in _deployCreateOpTypes())) throw new IllegalArgumentException("${listName}[${i}].alias is only valid on ${_deployCreateOpTypes().join('/')} ops (it names the created app's id for later ops)")
             def a = op.alias.toString()
@@ -64,6 +95,61 @@ private void _deployValidateOps(List ops, Set knownAliases, String listName) {
         _deployCheckAliasRefs(op.args, knownAliases, "${listName}[${i}].args")
         if (op.alias != null) knownAliases << op.alias.toString()
     }
+}
+
+// Presence check for each op type's required args, run at manifest-validation time.
+// Without it a manifest whose LAST op is missing an argument still stages every op
+// before it -- each committing real apps -- and then throws mid-job, which is the
+// expensive failure the up-front validation exists to prevent. Presence only: whether an
+// appId exists, or a controllerId really is a Button Controller, needs the hub and stays
+// with the tool. An {alias:"x"} placeholder is a non-null value, so it passes here and is
+// resolved (and range-checked) at execution.
+private void _deployValidateOpArgs(String opType, Map a, String where) {
+    switch (opType) {
+        case "cloneApp":
+            if (a.sourceAppId == null && a.appId == null) throw new IllegalArgumentException("${where} requires args.sourceAppId (the app to clone). See hub_get_tool_guide(section='deployment_jobs').")
+            break
+        case "importApp":
+            if (a.parentHintAppId == null) throw new IllegalArgumentException("${where} requires args.parentHintAppId (any existing rule id under the target parent -- it seeds the cloner). See hub_get_tool_guide(section='deployment_jobs').")
+            if (a.jsonContent == null && a.fromFile == null) throw new IllegalArgumentException("${where} requires args.jsonContent or args.fromFile (the exported app JSON). See hub_get_tool_guide(section='deployment_jobs').")
+            break
+        case "buttonRule":
+            if (a.controllerId == null) throw new IllegalArgumentException("${where} requires args.controllerId (the parent Button Controller-5.1 appId). See hub_get_tool_guide(section='deployment_jobs').")
+            if (a.buttonNumber == null) throw new IllegalArgumentException("${where} requires args.buttonNumber (the physical button number, >= 1). See hub_get_tool_guide(section='deployment_jobs').")
+            if (a.event == null) throw new IllegalArgumentException("${where} requires args.event (pushed/held/doubleTapped/released). See hub_get_tool_guide(section='deployment_jobs').")
+            break
+        case "addActions":
+            if (a.appId == null) throw new IllegalArgumentException("${where} requires args.appId. See hub_get_tool_guide(section='deployment_jobs').")
+            if (!(a.actions instanceof List)) throw new IllegalArgumentException("${where} requires args.actions as an array of RM action specs. See hub_get_tool_guide(section='deployment_jobs').")
+            break
+        case "modifyAction":
+            if (a.appId == null) throw new IllegalArgumentException("${where} requires args.appId. See hub_get_tool_guide(section='deployment_jobs').")
+            if (a.index == null) throw new IllegalArgumentException("${where} requires args.index (the action's position in the rule). See hub_get_tool_guide(section='deployment_jobs').")
+            if (!(a.mods instanceof Map)) throw new IllegalArgumentException("${where} requires args.mods as an object of the fields to change. See hub_get_tool_guide(section='deployment_jobs').")
+            break
+        case "pause":
+        case "resume":
+            if (a.ruleId == null && a.ruleIds == null) throw new IllegalArgumentException("${where} requires args.ruleId (an id or an array of ids). See hub_get_tool_guide(section='deployment_jobs').")
+            break
+        case "setDisabled":
+            if (a.appId == null) throw new IllegalArgumentException("${where} requires args.appId. See hub_get_tool_guide(section='deployment_jobs').")
+            _deployRequireDisabledFlag(a.disabled, where)
+            break
+    }
+}
+
+// Optional boolean flag, tolerant of the stringified form a JSON-ish client sends, and
+// LOUD on anything else. `flag == true` identity comparison silently reversed a
+// draft:"true" / background:"false" / includeOps:"false" into its opposite -- draft:"true"
+// started the migration immediately instead of parking it. Same treatment as
+// _deployRequireDisabledFlag, minus its requiredness.
+private boolean _deployBooleanFlag(Object raw, boolean whenAbsent, String where) {
+    if (raw == null) return whenAbsent
+    if (raw instanceof Boolean) return raw
+    def s = raw.toString()
+    if (s == "true") return true
+    if (s == "false") return false
+    throw new IllegalArgumentException("${where} must be a boolean true/false (got: ${raw}). See hub_get_tool_guide(section='deployment_jobs').")
 }
 
 private boolean _deployRequireDisabledFlag(Object raw, String where) {
@@ -138,8 +224,21 @@ private Map _deployExecuteOp(Map job, Map op) {
 private boolean _deployOpSucceeded(Object res) {
     if (!(res instanceof Map)) return false
     if (res.isError == true) return false
-    if (res.containsKey("success")) return res.success != false
-    return true
+    if (res.containsKey("success") && res.success == false) return false
+    // A migration cannot count "committed but not fully built" as done. The rule tools
+    // document success:true pairing with partial:true (a create whose triggers or actions
+    // only partly baked), and the not-live flags mean the hub holds the change while the
+    // running instance never re-subscribed. Passing either one lets the job reach the
+    // validation gate -- which is STRUCTURAL and sees nothing wrong -- so the operator
+    // commits, the old rules get paused, and the migrated automation never fires.
+    return _deployDegradedFlags(res).isEmpty()
+}
+
+// The degradation flags _deployTrimResult already carries into the op record, filtered to
+// the ones actually set, so a failure can name what tripped it.
+private List _deployDegradedFlags(Object res) {
+    if (!(res instanceof Map)) return []
+    return ["partial", "updateRuleFailed", "subscriptionsNotLive"].findAll { ((Map) res)[it] == true }
 }
 
 private Map _deployTrimResult(Object res) {
@@ -216,9 +315,21 @@ private Integer _deployReconcileCreateOp(Map statusEntry) {
     return null
 }
 
-private void _deployRecordCreated(Map job, Map op, Object newId) {
-    if (newId == null) return
-    Integer nid = newId.toString() as Integer
+// Returns false when newId is unusable. NEVER throws: this runs AFTER the app was
+// created, and a NumberFormatException here is an IllegalArgumentException, which the
+// dispatch layer maps to -32602 "Invalid params" -- a validation verdict for a call that
+// already committed, which then RELEASES the op token so the documented same-token
+// re-issue creates a second app. The AGENTS.md contract is that a validation throw fires
+// before any side effect, so this reports instead.
+private boolean _deployRecordCreated(Map job, Map op, Object newId) {
+    if (newId == null) return false
+    Integer nid
+    try {
+        nid = newId.toString() as Integer
+    } catch (Exception e) {
+        mcpLog("warn", "deploy", "job ${job.jobId}: created app id '${newId}' is not numeric (${e.message}) -- it cannot be tracked for rollback.")
+        return false
+    }
     def created = (job.createdAppIds instanceof List) ? job.createdAppIds : []
     if (!created.collect { it.toString() }.contains(nid.toString())) created << nid
     job.createdAppIds = created
@@ -227,6 +338,7 @@ private void _deployRecordCreated(Map job, Map op, Object newId) {
         aliases[op.alias.toString()] = nid
         job.aliases = aliases
     }
+    return true
 }
 
 private boolean _deployBudgetExceeded(Long t0, Long fixedBudgetMs) {
@@ -240,7 +352,11 @@ private boolean _deployScheduleWorker(Map job) {
     return true
 }
 
-private void _deployRunValidation(Map job) {
+// staging=false runs the SAME gate at the end of the commit list, because commitOps may
+// contain create-type ops too (_deployValidateOps accepts the full op set) and an app
+// created at cutover otherwise reached `completed` unchecked -- a phase op='cancel'
+// refuses, so a broken cutover app could be neither detected nor rolled back.
+private void _deployRunValidation(Map job, boolean staging = true) {
     // The mechanical gate between staging and commit: every app this job created
     // must read back healthy (hub_get_rule_health fetches live config, so this is
     // also the existence readback) before the job may become ready_for_commit.
@@ -252,6 +368,7 @@ private void _deployRunValidation(Map job) {
         try {
             h = toolCheckRuleHealth([appId: id])
         } catch (Exception e) {
+            mcpLogError("deploy", "job ${job.jobId}: health check of created app ${id} threw", e)
             err = e.message ?: "health check threw"
         }
         boolean ok = (err == null) && (h instanceof Map) && (h.broken != true) && (h.ok != false)
@@ -265,14 +382,38 @@ private void _deployRunValidation(Map job) {
         // as a passed gate instead of a gate with nothing to check.
         job.validation.note = "no created apps to health-check; per-op success gates were the only validation"
     }
+    String stage = staging ? "staging" : "commit"
     if (allOk) {
-        job.phase = "ready_for_commit"
-        _deployAppendHistory(job, results.isEmpty() ? "staging complete: no created apps to health-check" : "staging validated: ${results.size()} created app(s) healthy")
+        job.phase = staging ? "ready_for_commit" : "completed"
+        _deployAppendHistory(job, results.isEmpty() ? "${stage} complete: no created apps to health-check" : "${stage} validated: ${results.size()} created app(s) healthy")
     } else {
         job.phase = "failed"
-        job.error = "validation failed: created app(s) ${results.findAll { !it.ok }.collect { it.appId }} are unhealthy. Inspect via hub_get_rule_health / hub_get_app_config, fix, then op='resume' (re-validates) or op='cancel'."
-        _deployAppendHistory(job, "validation FAILED")
+        job.error = staging
+            ? "validation failed: created app(s) ${results.findAll { !it.ok }.collect { it.appId }} are unhealthy. Inspect via hub_get_rule_health / hub_get_app_config, fix, then op='resume' (re-validates) or op='cancel'."
+            : "commit validation failed: the cutover ran, but created app(s) ${results.findAll { !it.ok }.collect { it.appId }} are unhealthy. The job is NOT completed, so rollback is still available: inspect via hub_get_rule_health / hub_get_app_config, then op='resume' (re-validates) or op='cancel' (deletes every app this job created)."
+        _deployAppendHistory(job, "${stage} validation FAILED")
     }
+    _deploySaveJob(job)
+}
+
+// Commit-list completion. Only re-runs the health gate when the COMMIT list actually
+// created something -- a cutover of pause/setDisabled ops (the common shape) creates no
+// apps, and re-checking staging's apps would be hub round trips for nothing.
+private void _deployRunCommitCompletion(Map job) {
+    int createdBefore = 0
+    try { createdBefore = (job.createdBeforeCommit != null) ? (job.createdBeforeCommit.toString() as Integer) : ((job.createdAppIds ?: []) as List).size() }
+    catch (Exception ignored) { createdBefore = ((job.createdAppIds ?: []) as List).size() }
+    if (((job.createdAppIds ?: []) as List).size() > createdBefore) {
+        _deployRunValidation(job, false)
+        // A failed commit validation must keep its lease-clearing too, or cancel (the
+        // rollback the failure exists to preserve) is refused until the lease expires.
+        job.sliceLeaseUntil = null
+        _deploySaveJob(job)
+        return
+    }
+    job.phase = "completed"
+    job.sliceLeaseUntil = null
+    _deployAppendHistory(job, "commit complete")
     _deploySaveJob(job)
 }
 
@@ -292,10 +433,7 @@ private Map _deployRunSlice(Map job, Long t0, Integer maxOps, Long fixedBudgetMs
             if (staging) {
                 _deployRunValidation(job)
             } else {
-                job.phase = "completed"
-                job.sliceLeaseUntil = null
-                _deployAppendHistory(job, "commit complete")
-                _deploySaveJob(job)
+                _deployRunCommitCompletion(job)
             }
             continue
         }
@@ -364,6 +502,10 @@ private Map _deployRunSlice(Map job, Long t0, Integer maxOps, Long fixedBudgetMs
         try {
             outcome = _deployExecuteOp(job, op)
         } catch (Exception e) {
+            // Log the EXCEPTION OBJECT, not just its message: this is the engine's single
+            // most important failure path, and message-only left an NPE as the bare string
+            // "java.lang.NullPointerException" in entry.error with no stack trace anywhere.
+            mcpLogError("deploy", "job ${job.jobId} op ${idx} (${opType}) threw", e)
             execError = e.message ?: e.toString()
         }
         def res = outcome?.result
@@ -381,7 +523,18 @@ private Map _deployRunSlice(Map job, Long t0, Integer maxOps, Long fixedBudgetMs
             }
         } else {
             entry.status = "failed"
-            entry.error = (execError ?: (res instanceof Map ? (res.error ?: res.note) : null) ?: "op returned failure").toString().take(300)
+            // Name the actual reason. The old fallback string "op returned failure" was a
+            // reasonless verdict, and a degradation-flag failure had no message at all
+            // because the tool reported success.
+            def degraded = _deployDegradedFlags(res)
+            def reason = execError
+            if (reason == null && res instanceof Map) reason = (res.error ?: res.note)
+            if (reason == null && degraded) {
+                def hints = (res instanceof Map && res.repairHints instanceof List) ? ((List) res.repairHints).take(2).join(' | ') : null
+                reason = "op reported ${degraded.join('/')}=true -- the change is committed but not fully built or not live, so the migrated automation may never fire.${hints ? " Repair: ${hints}" : ''}"
+            }
+            if (reason == null) reason = "op returned failure; tool returned ${_deployTrimResult(res)}"
+            entry.error = reason.toString().take(300)
             entry.remove("recon")
             // A create can COMMIT and still report failure -- a clone whose stageDisabled leg
             // failed returns success:false WITH newAppId. Record the id anyway: unrecorded, cancel
@@ -413,39 +566,63 @@ def deployJobWorker() {
     // On-hub continuation: fires from the hub scheduler with NO client attached,
     // advances every active job in bounded slices, and re-arms itself while any
     // job remains active. This is what makes a job survive client death.
-    def ids = _deployJobs().keySet().collect { it.toString() }
-    ids.each { jid ->
-        def job = _deployJobs()[jid]
-        if (!(job instanceof Map) || !(job.phase?.toString() in _deployActivePhases())) return
-        // A worker armed by ANOTHER job must not advance a job whose caller opted out of
-        // on-hub continuation; background:false means op='resume' is the only driver.
-        if (job.background == false) return
-        if (job.sliceLeaseUntil != null && now() < (job.sliceLeaseUntil as Long)) return
-        job.sliceLeaseUntil = now() + _deployLeaseMs()
-        _deploySaveJob(job)
-        try {
-            _deployRunSlice(job, now(), null, _deployWorkerBudgetMs())
-            job.workerFailStreak = 0
-        } catch (Exception e) {
-            mcpLogError("deploy", "worker slice for job ${jid} threw", e)
-            // A throw leaves the job ACTIVE, so the re-arm below would retry it every
-            // 15s forever. Bound the streak: after 3 consecutive throwing slices the
-            // job goes terminal, which is what lets the re-arm condition end.
-            int streak = ((job.workerFailStreak ?: 0) as Integer) + 1
-            job.workerFailStreak = streak
-            _deployAppendHistory(job, "worker slice threw: ${(e.message ?: e.toString()).toString().take(120)} (streak ${streak})")
-            if (streak >= _deployMaxWorkerFailures()) {
-                job.phase = "failed"
-                job.error = "worker slice threw repeatedly: ${(e.message ?: e.toString()).toString().take(200)}"
-                _deployAppendHistory(job, "worker abandoned after ${streak} throwing slices")
+    try {
+        def ids = _deployJobs().keySet().collect { it.toString() }
+        ids.each { jid ->
+            def job = _deployJobs()[jid]
+            if (!(job instanceof Map) || !(job.phase?.toString() in _deployActivePhases())) return
+            // A worker armed by ANOTHER job must not advance a job whose caller opted out of
+            // on-hub continuation; background:false means op='resume' is the only driver.
+            if (job.background == false) return
+            if (job.sliceLeaseUntil != null && now() < (job.sliceLeaseUntil as Long)) return
+            try {
+                // The lease claim lives INSIDE the try: as a bare statement pair before it,
+                // a save failure escaped the whole worker before the re-arm, leaving the job
+                // stuck in an active phase with a stale lease refusing resume/cancel/delete
+                // and its fail streak never incrementing -- so the 3-strike terminal path
+                // could not fire either, and status kept claiming the job self-advances.
+                job.sliceLeaseUntil = now() + _deployLeaseMs()
+                _deploySaveJob(job)
+                _deployRunSlice(job, now(), null, _deployWorkerBudgetMs())
+                job.workerFailStreak = 0
+            } catch (Exception e) {
+                mcpLogError("deploy", "worker slice for job ${jid} threw", e)
+                // A throw leaves the job ACTIVE, so the re-arm below would retry it every
+                // 15s forever. Bound the streak: after 3 consecutive throwing slices the
+                // job goes terminal, which is what lets the re-arm condition end.
+                int streak = ((job.workerFailStreak ?: 0) as Integer) + 1
+                job.workerFailStreak = streak
+                _deployAppendHistory(job, "worker slice threw: ${(e.message ?: e.toString()).toString().take(120)} (streak ${streak})")
+                if (streak >= _deployMaxWorkerFailures()) {
+                    job.phase = "failed"
+                    job.error = "worker slice threw repeatedly: ${(e.message ?: e.toString()).toString().take(200)}"
+                    _deployAppendHistory(job, "worker abandoned after ${streak} throwing slices")
+                }
+                // Persist the streak itself: the lease release below legitimately declines
+                // to save when another writer took the job, and without this the strike
+                // would be forgotten and the job would retry forever.
+                try { _deploySaveJob(job) }
+                catch (Exception se) { mcpLogError("deploy", "saving the failed-slice state for job ${jid} failed", se) }
+            } finally {
+                try { _deployReleaseLease(job) }
+                catch (Exception re) { mcpLogError("deploy", "releasing the slice lease for job ${jid} failed", re) }
             }
-        } finally {
-            job.sliceLeaseUntil = null
-            _deploySaveJob(job)
+        }
+    } catch (Exception e) {
+        mcpLogError("deploy", "deployJobWorker threw outside any job slice", e)
+    } finally {
+        // UNCONDITIONAL. Any escape above used to skip the re-arm entirely, and an active
+        // job with nothing scheduled to advance it just stalls -- forever, silently.
+        try {
+            def stillActive = _deployJobs().any { k, v -> (v instanceof Map) && (v.phase?.toString() in _deployActivePhases()) && v.background != false }
+            if (stillActive) runIn(15, "deployJobWorker")
+        } catch (Exception e) {
+            // Cannot tell whether anything is still active -- re-arm anyway. One extra pass
+            // costs a scheduled no-op; skipping it strands every active job.
+            mcpLogError("deploy", "could not evaluate the deployment worker re-arm condition; re-arming anyway", e)
+            runIn(15, "deployJobWorker")
         }
     }
-    def stillActive = _deployJobs().any { k, v -> (v instanceof Map) && (v.phase?.toString() in _deployActivePhases()) && v.background != false }
-    if (stillActive) runIn(15, "deployJobWorker")
 }
 
 private Map _deployInlineSlice(Map job, Object reqT0, Integer maxOps) {
@@ -455,14 +632,20 @@ private Map _deployInlineSlice(Map job, Object reqT0, Integer maxOps) {
     try {
         return _deployRunSlice(job, t0, maxOps, null)
     } finally {
-        job.sliceLeaseUntil = null
-        _deploySaveJob(job)
+        _deployReleaseLease(job)
     }
 }
 
 private Map _deployOpCreate(Map args) {
     if (!(args?.ops instanceof List) || ((List) args.ops).isEmpty()) {
         throw new IllegalArgumentException("op='create' requires ops: a non-empty array of {op, args, alias?} objects. See hub_get_tool_guide(section='deployment_jobs').")
+    }
+    // Present-but-wrong-shape THROWS, exactly like ops above. Silently substituting []
+    // built a job with no cutover ops, and op='commit' then reported success:true / "no
+    // commitOps declared -- completed" while the old rules stayed live and the staged apps
+    // stayed disabled: a migration that reports success and did nothing. Absent is still [].
+    if (args.commitOps != null && !(args.commitOps instanceof List)) {
+        throw new IllegalArgumentException("commitOps must be an array of {op, args, alias?} objects (omit it entirely for a job with no cutover ops). See hub_get_tool_guide(section='deployment_jobs').")
     }
     def commitOps = (args.commitOps instanceof List) ? args.commitOps : []
     Integer maxOps = null
@@ -511,8 +694,8 @@ private Map _deployOpCreate(Map args) {
     def job = [
         jobId: jobId,
         name: args.name?.toString() ?: jobId,
-        phase: (args.draft == true) ? "draft" : "staging",
-        background: (args.background != false),
+        phase: _deployBooleanFlag(args.draft, false, "draft") ? "draft" : "staging",
+        background: _deployBooleanFlag(args.background, true, "background"),
         maxOpsPerCall: maxOps,
         createdAt: now(),
         ops: args.ops,
@@ -581,6 +764,9 @@ private Map _deployOpResume(Map args) {
         }
         boolean stagingComplete = ((job.opStatus ?: []) as List).every { it?.status == "done" }
         job.phase = (stagingComplete && job.validation?.ok == true && commitStarted) ? "committing" : "staging"
+        if (job.phase == "committing" && job.createdBeforeCommit == null) {
+            job.createdBeforeCommit = ((job.createdAppIds ?: []) as List).size()
+        }
         job.error = null
         _deployAppendHistory(job, "resumed after failure")
         _deploySaveJob(job)
@@ -614,6 +800,15 @@ private Map _deployOpCommit(Map args) {
     if (phase != "ready_for_commit") {
         throw new IllegalArgumentException("Job '${job.jobId}' is in phase '${phase}' -- commit requires ready_for_commit (staging complete + validation passed). ${phase == 'failed' ? "Fix and op='resume' first." : (phase in _deployActivePhases() ? "Staging is still running; poll op='status'." : '')}")
     }
+    // The same guard resume/cancel/delete carry. The validation that produced
+    // ready_for_commit runs INSIDE a worker slice, which still holds the lease until its
+    // final save -- so a commit landing in that window is undone by the slice's whole-job
+    // snapshot (phase reverts to ready_for_commit) leaving the job mid-cutover while
+    // cancel and delete are accepted against it. No phase test here: ready_for_commit is
+    // not an active phase, but the lease outlives the phase change that reached it.
+    if (job.sliceLeaseUntil != null && now() < (job.sliceLeaseUntil as Long)) {
+        throw new IllegalArgumentException("Job '${job.jobId}' has an on-hub worker slice active right now -- wait for the slice to finish (poll deployment:{op:'status', jobId:'${job.jobId}'}), then commit.")
+    }
     Integer maxOps = (args.maxOpsPerCall != null) ? (args.maxOpsPerCall.toString() as Integer) : (job.maxOpsPerCall as Integer)
     if (((job.commitOps ?: []) as List).isEmpty()) {
         job.phase = "completed"
@@ -622,6 +817,9 @@ private Map _deployOpCommit(Map args) {
         return _deployJobStatus(job, true)
     }
     job.phase = "committing"
+    // How many apps existed before the cutover, so the completion gate can tell whether
+    // the COMMIT list created any (and therefore whether it owes them a health check).
+    job.createdBeforeCommit = ((job.createdAppIds ?: []) as List).size()
     _deployAppendHistory(job, "commit started")
     _deploySaveJob(job)
     boolean workerArmed = _deployScheduleWorker(job)
@@ -652,44 +850,73 @@ private Map _deployOpCancel(Map args) {
     // would otherwise take the job and re-save its own snapshot over this one.
     job.sliceLeaseUntil = now() + _deployLeaseMs()
     _deploySaveJob(job)
+    cancelState.failures = []
     targets.each { id ->
         def idStr = id.toString()
         if (cancelState.deleted.collect { it.toString() }.contains(idStr)) return
+        def msg = null
         try {
             def res = toolDeleteNativeApp([appId: id, confirm: true])
             if (_deployOpSucceeded(res)) {
                 cancelState.deleted << id
-            } else {
-                def msg = (res instanceof Map ? (res.error ?: res.note) : "delete failed")?.toString()
-                if (msg?.toLowerCase()?.contains("not found")) {
-                    cancelState.deleted << id
-                } else {
-                    cancelState.failures << [appId: id, error: msg?.take(200)]
-                }
+                job.cancel = cancelState
+                _deploySaveJob(job)
+                return
             }
+            msg = (res instanceof Map ? (res.error ?: res.note) : "delete failed")?.toString()
         } catch (Exception e) {
-            def msg = e.message ?: e.toString()
-            if (msg?.toLowerCase()?.contains("not found")) {
-                cancelState.deleted << id
-            } else {
-                cancelState.failures << [appId: id, error: msg?.take(200)]
-            }
+            mcpLogError("deploy", "job ${job.jobId}: rollback delete of app ${id} threw", e)
+            msg = e.message ?: e.toString()
+        }
+        // A "not found" SUBSTRING is not proof the app is gone -- a backup read miss, a
+        // parent/child lookup or an auth error phrased that way would all record a live app
+        // as successfully rolled back. Confirm with a read instead; only an unreadable app
+        // counts as deleted.
+        if (msg?.toLowerCase()?.contains("not found") && !_deployAppStillExists(id)) {
+            cancelState.deleted << id
+        } else {
+            cancelState.failures << [appId: id, error: msg?.take(200)]
         }
         job.cancel = cancelState
         _deploySaveJob(job)
     }
-    job.phase = "cancelled"
     job.sliceLeaseUntil = null
+    if (cancelState.failures) {
+        // Do NOT go terminal on a failed rollback. `cancelled` is refused by a second
+        // op='cancel', so the documented rollback would be single-shot: an app the hub
+        // refuses to delete (one with children -- the Button Controller migration shape)
+        // left the operator deleting apps by hand with no way to retry the engine.
+        job.error = "Rollback incomplete: ${cancelState.failures.size()} of ${targets.size()} created app(s) could not be deleted. Clear the blocker (a parent with children must lose its children first) and re-issue op='cancel' -- the apps already deleted are remembered and not retried."
+        job.phase = "failed"
+        _deployAppendHistory(job, "cancel INCOMPLETE: deleted ${cancelState.deleted.size()}/${targets.size()}, ${cancelState.failures.size()} still live")
+        _deploySaveJob(job)
+        def partialSt = _deployJobStatus(job, true)
+        partialSt.cancel = cancelState
+        partialSt.success = false
+        partialSt.error = job.error
+        partialSt.note = "Still cancellable: re-issue deployment:{op:'cancel', jobId:'${job.jobId}'} after clearing the blocker, or delete the remaining app(s) via hub_delete_native_app. Deleted so far: ${cancelState.deleted}."
+        return partialSt
+    }
+    job.phase = "cancelled"
     _deployAppendHistory(job, "cancelled: deleted ${cancelState.deleted.size()}/${targets.size()} created app(s)")
     _deploySaveJob(job)
     def st = _deployJobStatus(job, true)
     st.cancel = cancelState
-    if (cancelState.failures) {
-        st.success = false
-        st.error = "Rollback incomplete: ${cancelState.failures.size()} of ${targets.size()} created app(s) could not be deleted."
-        st.note = "Cancelled, but ${cancelState.failures.size()} created app(s) could not be deleted -- remove them via hub_delete_native_app. Deleted: ${cancelState.deleted}."
-    }
     return st
+}
+
+// Existence readback used to confirm a rollback delete actually removed the app. Errs
+// toward "still exists" on any unreadable answer: recording a live app as deleted is the
+// damaging direction (it reports a clean rollback and drops the app from the retry set),
+// while a false "still exists" only asks the operator to retry.
+private boolean _deployAppStillExists(Object appId) {
+    try {
+        def cfg = _rmFetchConfigJson(normalizeRuleId(appId))
+        return (cfg?.app != null)
+    } catch (Exception e) {
+        mcpLog("debug", "deploy", "existence readback for app ${appId} was unreadable (${e.message}); treating it as still present.")
+        return true
+    }
 }
 
 private Map _deployProgress(Map job) {
@@ -785,7 +1012,7 @@ def _deployHandleArgument(Map deployment, Boolean confirm, Object reqT0) {
     }
     if (op == "status") {
         if (deployment.jobId != null) {
-            return _deployJobStatus(_deployLoadJob(deployment.jobId), deployment.includeOps != false)
+            return _deployJobStatus(_deployLoadJob(deployment.jobId), _deployBooleanFlag(deployment.includeOps, true, "includeOps"))
         }
         def jobs = _deployJobs()
         def summaries = jobs.collect { k, v ->

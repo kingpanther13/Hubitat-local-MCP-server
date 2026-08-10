@@ -96,7 +96,7 @@ section "hub_list_files (File Manager)" "$MCP_URL" "$(gw_rpc hub_read_files hub_
 # the full listing cannot: how many op-result buffers and per-item backups are on the hub.
 # `total` in each response is the count AFTER filtering, so it is the number even when the
 # page itself is truncated.
-section "hub_list_files filter=mcp-op-result (op-token result buffers)" "$MCP_URL" "$(gw_rpc hub_read_files hub_list_files '{"filter":"mcp-op-result"}')"
+section "hub_list_files filter=mcp-op-result (op-token result buffers)" "$MCP_URL" "$(gw_rpc hub_read_files hub_list_files '{"filter":"mcp-op-result","includeOpResults":true}')"
 section "hub_list_files filter=mcp-rm-backup (per-rule snapshots)" "$MCP_URL" "$(gw_rpc hub_read_files hub_list_files '{"filter":"mcp-rm-backup"}')"
 section "location events (lowMemory / systemStart / mode / HSM, last 24h)" "$MCP_URL" "$(tool_rpc hub_list_device_events '{"limit":50}')"
 

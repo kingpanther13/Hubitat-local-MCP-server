@@ -116,7 +116,11 @@ class RelayBudgetSpec extends ToolSpecBase {
         atomicStateMap.opTokens[inner.opToken]?.state == 'complete'
     }
 
-    def "_opTokenComplete re-writes a terminal record reverted by a concurrent whole-map write"() {
+    def "_opTokenComplete re-writes a terminal record reverted under the WHOLE-MAP writer"() {
+        // Scoped to the whole-map fallback (older firmware / no updateMapValue), which is the
+        // only path that still verifies. On the per-entry path the read-back cost a full
+        // atomicState round trip on every write, so it was dropped there and the prune's own
+        // late re-read closes that race instead. The stub returns FALSE to say "fell back".
         given:
         installOpTokenFileStore()
         String token = 'completion-race-token'
@@ -124,16 +128,20 @@ class RelayBudgetSpec extends ToolSpecBase {
             (token): [state: 'running', tool: 'hub_create_room', startedAt: FIXED_NOW - 1000L]
         ]
         int putCalls = 0
-        script.metaClass._opTokenPut = { String writtenToken, Map rec ->
+        // knownMap carries production's default: _opTokenPut has both a 2-arg and a 3-arg
+        // call site, and a stub that required all three would MissingMethodException the
+        // moment this test's path reached the 2-arg one.
+        script.metaClass._opTokenPut = { String writtenToken, Map rec, Object knownMap = null ->
             putCalls++
             atomicStateMap.opTokens[writtenToken] = new LinkedHashMap(rec)
             if (putCalls == 1) {
-                // Simulate _opTokenPrune's stale whole-map snapshot winning immediately
-                // after the first per-entry completion write.
+                // Simulate a stale whole-map snapshot winning immediately after the first
+                // completion write.
                 atomicStateMap.opTokens[writtenToken] = [
                     state: 'running', tool: 'hub_create_room', startedAt: FIXED_NOW - 1000L
                 ]
             }
+            return false
         }
 
         when:
@@ -147,8 +155,45 @@ class RelayBudgetSpec extends ToolSpecBase {
     }
 
     def "a second identical untokened write is refused while the first auto-token record is running"() {
+        // Seeded on hub_create_backup, NOT a short write like hub_create_room: the
+        // refusal matches `running` records, and only the tools that can outlive their
+        // transport write one (_needsRunningMarker). A hub_create_room fixture pinned a
+        // state the handler can no longer reach for that tool.
         given:
         settingsMap.enableWrite = true
+        def callArgs = [confirm: true]
+        String canonicalArgsJson = JsonOutput.toJson(script._canonicalOpArgs(callArgs))
+        atomicStateMap.opTokens = [
+            'auto-first-write': [
+                state: 'running', tool: 'hub_create_backup', startedAt: FIXED_NOW - 2000L,
+                fpHash: canonicalArgsJson.hashCode(), fpLen: canonicalArgsJson.length()
+            ]
+        ]
+        def ran = 0
+        script.metaClass.toolCreateHubBackup = { Map args -> ran++; [success: true] }
+
+        when:
+        def response = mcpDriver.callTool('hub_create_backup', callArgs)
+
+        then:
+        ran == 0
+        response.error == null
+        response.result.isError == true
+        def inner = mcpDriver.parseInner(response)
+        inner.status == 'duplicate_in_flight'
+        inner.inFlightOpToken == 'auto-first-write'
+        inner.tool == 'hub_create_backup'
+        inner.startedAt == FIXED_NOW - 2000L
+        atomicStateMap.opTokens.size() == 1
+    }
+
+    def "a markerless write is never refused as an identical duplicate, however identical"() {
+        // The honest contract after the marker was scoped to the long-running writes: a
+        // short write writes no `running` record, so nothing can ever fingerprint-match
+        // it. Pinned so the refusal's real scope is a stated contract, not a surprise.
+        given:
+        settingsMap.enableWrite = true
+        installOpTokenFileStore()
         def callArgs = [name: 'Den', confirm: true]
         String canonicalArgsJson = JsonOutput.toJson(script._canonicalOpArgs(callArgs))
         atomicStateMap.opTokens = [
@@ -163,34 +208,26 @@ class RelayBudgetSpec extends ToolSpecBase {
         when:
         def response = mcpDriver.callTool('hub_create_room', callArgs)
 
-        then:
-        ran == 0
-        response.error == null
-        response.result.isError == true
-        def inner = mcpDriver.parseInner(response)
-        inner.status == 'duplicate_in_flight'
-        inner.inFlightOpToken == 'auto-first-write'
-        inner.tool == 'hub_create_room'
-        inner.startedAt == FIXED_NOW - 2000L
-        atomicStateMap.opTokens.size() == 1
+        then: 'it runs -- the seeded record is a state hub_create_room can never produce'
+        ran == 1
+        response.result.isError != true
+        mcpDriver.parseInner(response).success == true
     }
 
-    def "maxConcurrentWrites refuses a different write when the cap is full"() {
+    def "maxConcurrentWrites refuses a marker-tracked write when the cap is full"() {
         given:
         settingsMap.enableWrite = true
         settingsMap.maxConcurrentWrites = 1
         atomicStateMap.opTokens = [
-            'auto-room-create': [
-                state: 'running', tool: 'hub_create_room', startedAt: FIXED_NOW - 1000L
+            'auto-backup-run': [
+                state: 'running', tool: 'hub_create_backup', startedAt: FIXED_NOW - 1000L
             ]
         ]
         def ran = 0
-        script.metaClass.toolRenameRoom = { Map args -> ran++; [success: true] }
+        script.metaClass.toolCreateHubBackup = { Map args -> ran++; [success: true] }
 
         when:
-        def response = mcpDriver.callTool('hub_update_room', [
-            room: 'Den', newName: 'Study', confirm: true
-        ])
+        def response = mcpDriver.callTool('hub_create_backup', [confirm: true])
 
         then:
         ran == 0
@@ -199,13 +236,39 @@ class RelayBudgetSpec extends ToolSpecBase {
         def inner = mcpDriver.parseInner(response)
         inner.status == 'too_many_writes_in_flight'
         inner.inFlight == [[
-            opToken: 'auto-room-create', tool: 'hub_create_room', startedAt: FIXED_NOW - 1000L
+            opToken: 'auto-backup-run', tool: 'hub_create_backup', startedAt: FIXED_NOW - 1000L
         ]]
         inner.note.contains('cap 1')
         atomicStateMap.opTokens.size() == 1
     }
 
-    def "a write refused by the concurrency cap succeeds once the running write completes"() {
+    def "an UNTOKENED markerless write skips the cap entirely -- and its whole-map read"() {
+        // The cap counts `running` records, which only the marker-tracked writes produce, so
+        // for an auto-tokened ordinary write the read could only ever answer "nothing of
+        // mine here" -- at the price of deserializing the record map, ~0.9s on real
+        // firmware, on every write the server handles. Pinned as a stated contract.
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.maxConcurrentWrites = 1
+        installOpTokenFileStore()
+        atomicStateMap.opTokens = [
+            'auto-backup-run': [
+                state: 'running', tool: 'hub_create_backup', startedAt: FIXED_NOW - 1000L
+            ]
+        ]
+        def ran = 0
+        script.metaClass.toolRenameRoom = { Map args -> ran++; [success: true] }
+
+        when:
+        def response = mcpDriver.callTool('hub_update_room', [room: 'Den', newName: 'Study', confirm: true])
+
+        then: 'it runs -- a short write is not gated by long-running writes it can never join'
+        ran == 1
+        response.result.isError != true
+        mcpDriver.parseInner(response).success == true
+    }
+
+    def "a marker-tracked write refused by the cap succeeds once the running write completes"() {
         // The cap must be a transient backpressure signal, not a latch: the refusal
         // reads the LIVE running set, so a completed record frees the slot.
         given:
@@ -213,15 +276,15 @@ class RelayBudgetSpec extends ToolSpecBase {
         settingsMap.maxConcurrentWrites = 1
         installOpTokenFileStore()
         atomicStateMap.opTokens = [
-            'auto-room-create': [
-                state: 'running', tool: 'hub_create_room', startedAt: FIXED_NOW - 1000L
+            'auto-backup-run': [
+                state: 'running', tool: 'hub_create_backup', startedAt: FIXED_NOW - 1000L
             ]
         ]
         def ran = 0
-        script.metaClass.toolRenameRoom = { Map args -> ran++; [success: true] }
+        script.metaClass.toolCreateHubBackup = { Map args -> ran++; [success: true] }
 
         when: 'the cap is full'
-        def refused = mcpDriver.callTool('hub_update_room', [room: 'Den', newName: 'Study', confirm: true])
+        def refused = mcpDriver.callTool('hub_create_backup', [confirm: true])
 
         then: 'refused without running the write'
         ran == 0
@@ -229,9 +292,9 @@ class RelayBudgetSpec extends ToolSpecBase {
 
         when: 'the in-flight write finishes and the caller re-issues'
         def tokens = atomicStateMap.opTokens
-        tokens['auto-room-create'].state = 'complete'
+        tokens['auto-backup-run'].state = 'complete'
         atomicStateMap.opTokens = tokens
-        def accepted = mcpDriver.callTool('hub_update_room', [room: 'Den', newName: 'Study', confirm: true])
+        def accepted = mcpDriver.callTool('hub_create_backup', [confirm: true])
 
         then: 'the slot is free and the write runs'
         ran == 1
@@ -247,8 +310,8 @@ class RelayBudgetSpec extends ToolSpecBase {
         settingsMap.maxConcurrentWrites = 1
         installOpTokenFileStore()
         atomicStateMap.opTokens = [
-            'auto-room-create': [
-                state: 'running', tool: 'hub_create_room', startedAt: FIXED_NOW - 1000L
+            'auto-backup-run': [
+                state: 'running', tool: 'hub_create_backup', startedAt: FIXED_NOW - 1000L
             ]
         ]
         def ran = 0
@@ -272,19 +335,19 @@ class RelayBudgetSpec extends ToolSpecBase {
         given:
         settingsMap.enableWrite = true
         installOpTokenFileStore()
-        def callArgs = [name: 'Den', confirm: true]
+        def callArgs = [confirm: true]
         String canonicalArgsJson = JsonOutput.toJson(script._canonicalOpArgs(callArgs))
         atomicStateMap.opTokens = [
             'auto-first-write': [
-                state: 'running', tool: 'hub_create_room', startedAt: FIXED_NOW - 2000L,
+                state: 'running', tool: 'hub_create_backup', startedAt: FIXED_NOW - 2000L,
                 fpHash: canonicalArgsJson.hashCode(), fpLen: canonicalArgsJson.length()
             ]
         ]
         def ran = 0
-        script.metaClass.toolCreateRoom = { Map args -> ran++; [success: true, roomId: 9] }
+        script.metaClass.toolCreateHubBackup = { Map args -> ran++; [success: true] }
 
         when:
-        def response = mcpDriver.callTool('hub_create_room', callArgs + [opToken: 'client-retry-1'])
+        def response = mcpDriver.callTool('hub_create_backup', callArgs + [opToken: 'client-retry-1'])
 
         then:
         response.error == null

@@ -849,7 +849,14 @@ private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps
     }
     def disabled = disabledRaw == true
     def paused = false
-    boolean stopped = (cleanRm.endsWith(" (Stopped)") && !cleanApps.endsWith(" (Stopped)"))
+    // The literal-name test is "appsList still starts with the WHOLE RMUtils label" -- the
+    // same evidence channel B uses to tell decoration from name. Testing only that appsList
+    // does not END with " (Stopped)" got case three wrong: a rule literally named
+    // "X (Stopped)" that is ALSO paused has appsList "X (Stopped) (Paused)", which ends
+    // with "(Paused)", so the suffix in its real name read as a runtime decoration. It was
+    // then reported status:"stopped" AND had "(Stopped)" stripped from both label and name,
+    // so a name-to-id lookup could no longer find the rule.
+    boolean stopped = (cleanRm.endsWith(" (Stopped)") && !cleanApps.startsWith(cleanRm))
     if (cleanApps != cleanRm && cleanApps.startsWith(cleanRm)) {
         def remainder = cleanApps.substring(cleanRm.length())
         if (remainder.contains("(Paused)")) paused = true
@@ -13281,8 +13288,13 @@ def _applyNativeAppEdit(args) {
         replaceRequiredExpressionSpec ? ["replaceRequiredExpression"] : [],
         removeActionSpec ? ["removeAction"] : [],
         clearActionsFlag ? ["clearActions"] : [],
-        // replaceActions:[] normalized to clearActionsFlag above, so this never double-counts.
-        (replaceActionsList != null && !clearActionsFlag) ? ["replaceActions"] : [],
+        // replaceActions:[] is normalized to clearActionsFlag above (and replaceActionsList
+        // to null), so the null test ALONE already prevents a double count. Also gating on
+        // !clearActionsFlag did nothing there and one harmful thing elsewhere: an explicit
+        // clearActions:true alongside a NON-empty replaceActions collapsed to a single
+        // group, so the multi-op guard stayed silent and both the clear and the replace's
+        // re-add ran -- a two-family call the contract says must be refused.
+        (replaceActionsList != null) ? ["replaceActions"] : [],
         moveActionSpec ? ["moveAction"] : [],
         removeTriggerSpec ? ["removeTrigger"] : [],
         modifyTriggerSpec ? ["modifyTrigger"] : [],

@@ -640,6 +640,12 @@ def initialize() {
     // result files, which is how a hub that inherited them from an earlier build
     // (or from a run whose scheduled sweep was replaced mid-flight) cleans itself up.
     runIn(20, "opTokenFileSweep")
+    // Daily TTL pass under its OWN handler name: runIn(.., "opTokenFileSweep") replaces any
+    // pending schedule for that handler, so a cron on the same name would be cancelled by
+    // the first burst-armed sweep. The write-driven arming only fires every keep-count
+    // records, which a quiet hub may not reach for weeks -- this is what expires its
+    // records (and their result files) on time.
+    schedule("0 20 3 ? * *", "opTokenDailySweep")
     // Only egress to GitHub immediately on first install. state.updateCheck is
     // null until the first check completes; once set, routine settings saves
     // skip the immediate call and rely on the daily schedule + the in-function
@@ -1538,6 +1544,13 @@ def handleToolsCall(msg) {
     boolean opTokenAuto = false
     Integer opFingerprintHash = null
     Integer opFingerprintLen = null
+    // True once a pre-dispatch running marker was actually WRITTEN. Only the tools that
+    // can outlive their transport write one, and everything the marker feeds -- the args
+    // fingerprint, the duplicate refusal, the release on a validation error -- is scoped
+    // to the same set. Without this flag the release path creates a "released" record for
+    // a write that never marked anything: two atomicState round trips for a token the
+    // client never received (the response is a JSON-RPC error, not a result).
+    boolean opTokenMarked = false
     // Buffer the terminal result under the token on every exit path (finally), so
     // a dropped transport response is recoverable by re-issuing the tokened call
     // (the dedup gate replays it) and no token is left eternally "running". Each
@@ -1607,9 +1620,30 @@ def handleToolsCall(msg) {
             // excluded by the SAME classifier the Write master uses -- without it
             // every status poll would mint a running write record, count toward
             // maxConcurrentWrites, and churn the journal it exists to serve.
-            def _tokenLeafArgs = (gatewayConfigCache.containsKey(toolName) && args.args instanceof Map) ? args.args : args
-            reactiveSchemaOnly = (reactiveToolName?.toString() == 'hub_set_rule' && _isSetRuleSchemaOnlyCall(_tokenLeafArgs)) ||
-                (reactiveToolName?.toString() == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(_tokenLeafArgs))
+            String classifiedTool = reactiveToolName?.toString()
+            if (classifiedTool == 'hub_set_rule' || classifiedTool == 'hub_set_native_app') {
+                def leafArgs = args
+                if (gatewayConfigCache.containsKey(toolName)) {
+                    if (args.args instanceof Map) {
+                        leafArgs = args.args
+                    } else if (args.args instanceof String) {
+                        // Inner gateway args may still be a JSON STRING here: the opToken
+                        // pre-parse above fires only when the string mentions a token. The
+                        // classifier reads LEAF keys, so leaving it a string classifies a
+                        // read-shaped call as a write -- a deployment:{op:'status'} poll sent
+                        // in that shape mints an auto token, writes a running marker, counts
+                        // toward the write cap, and two concurrent polls refuse each other as
+                        // duplicates. Parse-or-ignore; a malformed string falls through to
+                        // handleGateway's own -32602.
+                        try {
+                            def parsedLeaf = new groovy.json.JsonSlurper().parseText(args.args.toString())
+                            if (parsedLeaf instanceof Map) leafArgs = parsedLeaf
+                        } catch (Exception ignored) { }
+                    }
+                }
+                if (classifiedTool == 'hub_set_rule') reactiveSchemaOnly = _isSetRuleSchemaOnlyCall(leafArgs)
+                else reactiveSchemaOnly = _isNativeAppSchemaOnlyCall(leafArgs)
+            }
             if (!opTokenActive && reactiveToolName && !(reactiveToolName in readOnlyNamesCache)
                     && !reactiveSchemaOnly
                     && !gatewayConfigCache.containsKey(reactiveToolName.toString())) {
@@ -1620,13 +1654,42 @@ def handleToolsCall(msg) {
                 opToken = "auto-" + Long.toString(now(), 16) + "-" + java.util.UUID.randomUUID().toString()
                 opTokenActive = true
                 opTokenAuto = true
+            }
+        }
+        // Resolved once: it scopes the args fingerprint, the pre-dispatch marker and the
+        // release below, and both getters it consults rebuild their structures per call.
+        boolean opTokenNeedsMarker = opTokenActive && _needsRunningMarker(reactiveToolName)
+        if (opTokenActive) {
+            // The fingerprint is only ever STORED by the running marker, so computing it for
+            // a write that writes no marker is a second full serialization of the request
+            // arguments for nothing -- and _findIdenticalRunningOp could never match it.
+            if (opTokenAuto && opTokenNeedsMarker) {
                 String canonicalArgsJson = groovy.json.JsonOutput.toJson(_canonicalOpArgs(args))
                 opFingerprintHash = canonicalArgsJson.hashCode()
                 opFingerprintLen = canonicalArgsJson.length()
             }
-        }
-        if (opTokenActive) {
-            def dedup = _opTokenDedup(opToken, reactiveToolName)
+            boolean isWriteLeaf = (reactiveToolName && !(reactiveToolName in readOnlyNamesCache)
+                    && !reactiveSchemaOnly
+                    && !gatewayConfigCache.containsKey(reactiveToolName.toString()))
+            // ONE read of the record map for EVERY pre-dispatch consumer: the client-token
+            // dedup lookup below, the duplicate refusal, and the write cap. Each used to
+            // deserialize the whole map for itself, so a client-tokened write -- the shape
+            // every opToken-using client sends, and the shape the e2e harness sends on all
+            // ~230 of its hub_set_rule calls -- paid two full deserializations back to back.
+            // Measured on real firmware that is ~0.9s of pure latency each. One read is also
+            // strictly more correct for the checks: they now judge the same instant rather
+            // than two, so a record written between the two reads can no longer make the
+            // dedup and the cap disagree about what is running.
+            //
+            // Read only when something can actually answer from it. Both running-record
+            // checks need a marker to exist, and only the marker tools write one, so for an
+            // AUTO-tokened call to any other write the map is a guaranteed-empty answer.
+            boolean needsTokensSnapshot = isWriteLeaf && (!opTokenAuto || opTokenNeedsMarker)
+            def tokensSnapshot = (!opTokenAuto || needsTokensSnapshot) ? atomicState.opTokens : null
+            // An AUTO token was minted as a fresh UUID a few lines above, so the lookup can
+            // only miss. Client-supplied tokens are the ones that can actually hit a stored
+            // record, and they read it from the snapshot above rather than re-fetching.
+            def dedup = opTokenAuto ? null : _opTokenDedup(opToken, reactiveToolName, tokensSnapshot)
             if (dedup != null) {
                 // This short-circuit serves a result WITHOUT reaching executeTool, so the
                 // masters must be enforced here too -- otherwise a client with the Write
@@ -1682,9 +1745,19 @@ def handleToolsCall(msg) {
                 // the gateway) never reaches the catalog and its token is never marked, so
                 // "re-issue the original call with this token" would loop forever: the right
                 // exit is dropping the token from the catalog call.
-                String unknownNote = gatewayConfigCache.containsKey(reactiveToolName?.toString())
-                    ? "No operation with this token has started on this hub. This token rode a gateway CATALOG call (no tool selected) -- tokens are never spent on catalog listings, so polling it always answers unknown. Re-issue the catalog call WITHOUT an opToken; put tokens on the {tool, args} call itself. See hub_get_tool_guide(section='slow_ops')."
-                    : "No operation with this token has started on this hub -- the original call never arrived, so this poll ran nothing. Re-issue the ORIGINAL call (full arguments) with this same opToken. See hub_get_tool_guide(section='slow_ops')."
+                // "Never arrived" is only provable for a MARKER-TRACKED write: it records
+                // before it executes, so no record means no execution. Every other write
+                // records at completion, and an absent record there is equally consistent
+                // with a call still running -- telling that caller to re-issue is telling
+                // it to double-execute, the exact failure the token exists to prevent.
+                String unknownNote
+                if (gatewayConfigCache.containsKey(reactiveToolName?.toString())) {
+                    unknownNote = "No operation with this token has started on this hub. This token rode a gateway CATALOG call (no tool selected) -- tokens are never spent on catalog listings, so polling it always answers unknown. Re-issue the catalog call WITHOUT an opToken; put tokens on the {tool, args} call itself. See hub_get_tool_guide(section='slow_ops')."
+                } else if (_needsRunningMarker(reactiveToolName)) {
+                    unknownNote = "No operation with this token has started on this hub. ${reactiveToolName} records a running marker BEFORE it executes, so an absent record proves the original call never arrived and this poll ran nothing. Re-issue the ORIGINAL call (full arguments) with this same opToken. See hub_get_tool_guide(section='slow_ops')."
+                } else {
+                    unknownNote = "No record exists for this token. ${reactiveToolName} is recorded only when it FINISHES, so this answer cannot distinguish 'the original call never arrived' from 'it is still running'. Do NOT re-issue blindly -- that can execute the write twice. Verify current state with a read first; if the write did not land, re-issue the ORIGINAL call (full arguments) with this same opToken. See hub_get_tool_guide(section='slow_ops')."
+                }
                 return jsonRpcResult(msg.id, [
                     content: [[type: "text", text: groovy.json.JsonOutput.toJson([
                         success: false, isError: true, status: "unknown", opToken: opToken, tool: reactiveToolName,
@@ -1693,14 +1766,7 @@ def handleToolsCall(msg) {
                     isError: true
                 ])
             }
-            boolean isWriteLeaf = (reactiveToolName && !(reactiveToolName in readOnlyNamesCache)
-                    && !reactiveSchemaOnly
-                    && !gatewayConfigCache.containsKey(reactiveToolName.toString()))
-            // ONE read of the record map for every pre-dispatch check below: each of these
-            // used to deserialize it again, and with auto-tokens that is per-write cost on
-            // every single write the server handles.
-            def tokensSnapshot = (opTokenAuto || isWriteLeaf) ? atomicState.opTokens : null
-            if (opTokenAuto && isWriteLeaf) {
+            if (opTokenAuto && opTokenNeedsMarker && isWriteLeaf) {
                 def duplicate = _findIdenticalRunningOp(reactiveToolName, opFingerprintHash, opFingerprintLen, tokensSnapshot)
                 if (duplicate != null) {
                     long ageSeconds = Math.max(0L, ((now() - (duplicate.startedAt as Long)) / 1000L) as Long)
@@ -1716,7 +1782,7 @@ def handleToolsCall(msg) {
                     ])
                 }
             }
-            if (isWriteLeaf) {
+            if (needsTokensSnapshot) {
                 int maxWrites = _maxConcurrentWrites()
                 def inFlightWrites = _recentRunningWriteOps(readOnlyNamesCache, tokensSnapshot)
                 if (maxWrites > 0 && inFlightWrites.size() >= maxWrites) {
@@ -1738,9 +1804,10 @@ def handleToolsCall(msg) {
             // is written only for the tools that can genuinely outlive their transport;
             // every other write still gets its terminal record at completion, so the
             // journal and the replay contract are unchanged.
-            if (_needsRunningMarker(reactiveToolName)) {
+            if (opTokenNeedsMarker) {
                 long _tokMarkT0 = now()
                 _opTokenMark(opToken, reactiveToolName, opFingerprintHash, opFingerprintLen)
+                opTokenMarked = true
                 opTokenMarkMs = now() - _tokMarkT0
             }
             opTokenPreMs = now() - reqT0
@@ -1921,7 +1988,7 @@ def handleToolsCall(msg) {
                 mcpLog("warn", "server", "Reactive BPS hint failed for ${reactiveToolName}: ${bpErr.message}", null, [details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null]])
             }
         }
-        if (opTokenActive) {
+        if (opTokenMarked) {
             // A validation error means the leaf executed NOTHING (the error contract: an
             // IllegalArgumentException is thrown up front, before any side effect -- the
             // release below leans on that convention, so a tool must never throw IAE after
@@ -1933,6 +2000,10 @@ def handleToolsCall(msg) {
             // lost-response re-poll answers "unknown -> re-issue the original call", which
             // simply re-validates to the identical error. opCompletionText stays null, so
             // the finally does not buffer.
+            // Gated on a marker having been WRITTEN: with nothing to release, this only
+            // creates a junk record (a map read, a per-entry write and its verification
+            // read), and the recovery it enables is unreachable anyway -- the auto token
+            // rode no response, because a -32602 is a JSON-RPC error, not a result.
             try { _opTokenRelease(opToken) }
             catch (Exception re) { mcpLog("warn", "op-token", "Releasing token ${opToken} after a validation error failed: ${re.message}") }
         }
@@ -1958,7 +2029,13 @@ def handleToolsCall(msg) {
         // the text (success, oversize, validation error, runtime error, null/non-serializable).
         long _cmpT0 = now()
         if (opTokenActive && opCompletionText != null) {
-            try { _opTokenComplete(opToken, opCompletionText, opCompletionIsError, reactiveToolName) }
+            // An auto token that never wrote a marker provably has no record yet (it is a
+            // UUID minted this request), so completion can skip the read-merge entirely --
+            // that read was one of the ~0.9s atomicState round trips every ordinary write
+            // was paying. A client token can have a released record from an earlier
+            // rejection, so it keeps the merge.
+            boolean priorRecordPossible = (!opTokenAuto || opTokenMarked)
+            try { _opTokenComplete(opToken, opCompletionText, opCompletionIsError, reactiveToolName, priorRecordPossible) }
             catch (Exception ce) {
                 mcpLog("warn", "op-token", "Recording op-result completion for ${opToken} failed: ${ce.message}")
                 // Never leave the token wedged "running" until the 24h TTL while the
@@ -2053,13 +2130,31 @@ def _maxConcurrentWrites() {
 // these pay for a pre-dispatch running marker (see handleToolsCall).
 def _needsRunningMarker(toolName) {
     if (toolName == null) return false
-    String n = toolName.toString()
-    return _budgetAwareTools().contains(n) || n in [
+    return _markerTrackedWriteTools().contains(toolName.toString())
+}
+
+// The writes that can outlive their transport, and so are worth a pre-dispatch `running`
+// marker: a poll landing mid-flight is answered, and a token-only poll's "unknown" can be
+// trusted to mean never-arrived. Everything else records only at completion, because its
+// response is delivered long before a poll could be sent -- and the marker is one
+// atomicState write (~0.9s on real firmware) that every such write would otherwise pay.
+// This set IS the contract the slow_ops guide documents; OpTokenReplaySpec pins that the
+// two never drift. Adding a fast hot-path write here (device commands, room ops, file
+// writes, variable sets) re-creates the per-write cost the gate exists to remove.
+def _markerTrackedWriteTools() {
+    return _budgetAwareTools() + ([
         "hub_update_package", "hub_update_app", "hub_update_driver", "hub_update_library",
         "hub_install_bundle", "hub_restore_backup", "hub_create_backup", "hub_delete_native_app",
         "hub_reboot", "hub_shutdown", "hub_update_firmware", "hub_call_device_replace",
-        "hub_call_device_swap", "hub_import_custom_rule", "hub_clone_custom_rule"
-    ]
+        "hub_call_device_swap", "hub_import_custom_rule", "hub_clone_custom_rule",
+        // Compile-on-save: the hub parses and compiles the submitted source before the
+        // request returns, which is slow enough to be polled mid-flight. Without a marker
+        // a lost response polls back "unknown", and the documented recovery re-runs the
+        // create -- a duplicate app/driver/library.
+        "hub_create_app", "hub_create_driver", "hub_create_library",
+        // Deleting code forces a dependency sweep across installed instances.
+        "hub_delete_item"
+    ] as Set)
 }
 
 def _budgetAwareTools() {
@@ -2135,8 +2230,14 @@ def _opTokenInlineMax() { 1024 }
 // Record-cap hysteresis. Deliberately small: with auto-tokens every write adds a
 // record, the map is read several times per request, and small results are stored
 // inline -- so a big map would be per-write cost. 40 recent ops is the journal.
-def _opTokenMaxRecords() { 40 }
-def _opTokenKeepRecords() { 20 }
+// Deliberately small, and it is a LATENCY constant, not a storage one: the platform
+// deserializes the app's whole atomicState blob on every access, so each stored record is
+// paid again by every later atomicState read -- including on pure READS, which touch
+// atomicState for unrelated memos and got measurably slower purely from this map's bulk.
+// 20 recent ops still answers "did my last command land" (a lost response is polled within
+// seconds, not 20 writes later) at half the carried weight of the previous 40.
+def _opTokenMaxRecords() { 20 }
+def _opTokenKeepRecords() { 10 }
 // .toString() matters: a GString here would be stored in atomicState by the sweep
 // queue, and a GString never equals the String it renders as -- List.contains and
 // every other value comparison against it silently answers false.
@@ -2167,12 +2268,36 @@ def _opTokenReadResult(rec) {
 // marker would read back as the safe-to-retry "unknown", the exact double-commit
 // the token exists to prevent. Falls back to the whole-map write (the documented
 // small race) where the platform method is missing.
-def _opTokenPut(String opToken, Map rec) {
-    if (!(atomicState.opTokens instanceof Map)) atomicState.opTokens = [:]
+// Returns true when the per-entry write was used, false when it fell back to the
+// whole-map writer -- callers verify persistence only on the fallback (see
+// _opTokenPutTerminal). knownMap is the caller's already-deserialized snapshot of
+// atomicState.opTokens where it happens to have one; only its Map-ness is used.
+//
+// updateMapValue needs the map to EXIST, and probing atomicState for that was a whole-map
+// read on every single write. state is an execution-context cache (no round trip), so the
+// one-time creation is remembered there instead. It is only a hint: a stale/absent flag
+// costs one extra probe, never correctness, and a reinstall clears state and atomicState
+// together.
+def _opTokenPut(String opToken, Map rec, Object knownMap = null) {
+    if (!(knownMap instanceof Map) && state.opTokensCreated != true) {
+        if (!(atomicState.opTokens instanceof Map)) atomicState.opTokens = [:]
+        state.opTokensCreated = true
+    }
     try {
         atomicState.updateMapValue("opTokens", opToken, rec)
+        return true
     } catch (MissingMethodException e) {
         _opTokenPutWholeMap(opToken, rec)
+        return false
+    } catch (Exception e) {
+        // The per-entry write needs the map to already exist, and the state hint above is
+        // the only thing asserting that. If it is ever wrong (atomicState cleared out from
+        // under it), drop the hint so the next write re-probes, and fall back to the
+        // whole-map writer, which creates the map itself.
+        mcpLog("warn", "op-token", "Per-entry op-token write for ${opToken} failed (${e.message}); falling back to the whole-map writer.")
+        state.opTokensCreated = null
+        _opTokenPutWholeMap(opToken, rec)
+        return false
     }
 }
 
@@ -2187,8 +2312,11 @@ def _opTokenPutWholeMap(String opToken, Map rec) {
 }
 
 // Amortized prune: drop entries past the 24h TTL, and past the record cap
-// batch-evict the oldest terminal entries down to the keep count. Runs AFTER the marker is
-// written and only rewrites the map when something actually needs removing, so
+// batch-evict the oldest terminal entries down to the keep count. Two call sites: right
+// after a pre-dispatch marker is written (in-request, for the long-running write tools),
+// and the scheduled opTokenFileSweep, which is what bounds the map on ordinary write
+// traffic -- those writes record only at completion and would otherwise never be pruned.
+// It only rewrites the map when something actually needs removing, so
 // the common path never does a whole-map write; result-file deletions happen
 // after the map write so no file I/O sits inside the read->write window. This is
 // the only whole-map writer on the normal (updateMapValue) path -- a concurrent
@@ -2211,23 +2339,25 @@ def _opTokenPrune() {
     def stored = atomicState.opTokens
     if (!(stored instanceof Map)) return
     long cutoff = now() - 86400000L
-    // Decide BEFORE copying: this runs on every tokened call, and with auto-tokens the
-    // map holds up to 100 records, so an unconditional whole-map copy is per-write cost
-    // on the common path where nothing needs pruning at all.
+    // Decide BEFORE copying: on the marker path this still runs inside the request, so an
+    // unconditional whole-map copy would be per-write cost on the common path where
+    // nothing needs pruning at all.
     def expiredKeys = stored.findAll { k, v -> (v instanceof Map) && (((v.startedAt as Long) ?: 0L) < cutoff) }.keySet().toList()
     if (expiredKeys.isEmpty() && stored.size() <= _opTokenMaxRecords()) return
     def tokens = [:]
     tokens.putAll(stored)
     def removedKeys = []
+    def droppedKeys = [] as Set
     expiredKeys.each { k ->
         if (_opTokenMayHaveFile(tokens[k])) removedKeys << k
+        droppedKeys << k.toString()
         tokens.remove(k)
     }
     // Hysteresis dead band: a hard at-keep-count cap would turn EVERY tokened call past
-    // the 20th-within-24h into a whole-map rewrite -- permanent re-exposure of the
-    // lost-record race the per-entry writes exist to close. Engaging only past the
-    // record cap (40) and evicting to the keep count (20) in one batch keeps steady
-    // state free of cap-driven rewrites: one batch eviction per ~20 new tokens.
+    // the keep count into a whole-map rewrite -- permanent re-exposure of the lost-record
+    // race the per-entry writes exist to close. Engaging only past the record cap and
+    // evicting to the keep count in one batch keeps steady state free of cap-driven
+    // rewrites: one batch eviction per (cap - keep) new tokens.
     if (tokens.size() > _opTokenMaxRecords()) {
         def ordered = tokens.entrySet().toList()
             .findAll { e -> !((e.value instanceof Map) && e.value.state == "running") }
@@ -2235,10 +2365,26 @@ def _opTokenPrune() {
         int over = tokens.size() - _opTokenKeepRecords()
         ordered.take(over).each { e ->
             if (_opTokenMayHaveFile(e.value)) removedKeys << e.key
+            droppedKeys << e.key.toString()
             tokens.remove(e.key)
         }
     }
-    if (tokens.size() == stored.size() && removedKeys.isEmpty()) return
+    // Re-read as late as possible and fold in anything a request wrote since the snapshot
+    // above. This whole-map write is the one writer that can lose a per-entry write, and
+    // the request path no longer spends an atomicState round trip verifying its own write
+    // to catch it -- so the repair lives here, where it costs a scheduled pass instead of
+    // every client's response time. Keys this prune deliberately dropped are NOT restored.
+    def latest = atomicState.opTokens
+    if (latest instanceof Map) {
+        latest.each { k, v ->
+            if (droppedKeys.contains(k.toString())) return
+            if (tokens[k] != v) tokens[k] = v
+        }
+    }
+    // Keyed on what was actually dropped, not on a size comparison: the fold-in above can
+    // re-grow the map back to its original size, which would otherwise read as "nothing
+    // changed" and silently skip the eviction.
+    if (droppedKeys.isEmpty()) return
     atomicState.opTokens = tokens
     if (removedKeys.isEmpty()) return
     // Queue the file deletions for a SCHEDULED sweep instead of running them here.
@@ -2264,7 +2410,20 @@ def _opTokenPrune() {
 
 // Scheduled companion to _opTokenPrune: deletes the evicted result files OUTSIDE any
 // request, so no client ever waits on the batch. Bounded per pass and self-re-arming.
+// Daily cron entry point. Separate handler NAME on purpose (see initialize): runIn on
+// opTokenFileSweep would otherwise cancel this cron the first time a write burst armed it.
+def opTokenDailySweep() {
+    opTokenFileSweep()
+}
+
 def opTokenFileSweep() {
+    state.opTokenSweepArmedAt = null
+    // Prune HERE, out of any request: the pre-dispatch marker is the only other prune
+    // site and only the long-running write tools write one, so an ordinary write's
+    // terminal record had nothing trimming it. Running first also means any eviction it
+    // queues is drained by this same pass.
+    try { _opTokenPrune() }
+    catch (Exception e) { mcpLog("warn", "op-token", "scheduled prune failed: ${e.message}") }
     def queued = (atomicState.opTokenSweepFiles instanceof List) ? atomicState.opTokenSweepFiles : []
     if (queued.isEmpty()) {
         // Nothing queued is exactly when the orphan reap should run -- returning here
@@ -2326,26 +2485,51 @@ def _opTokenReapOrphanResults(int maxDeletes) {
     long ageCutoff = now() - 600000L
     int deleted = 0
     int skippedYoung = 0
+    int skippedUndated = 0
+    int skippedUnparseable = 0
     for (f in files) {
         if (deleted >= maxDeletes) break
         def name = (f instanceof Map) ? f.name?.toString() : f?.toString()
         if (name == null || !name.startsWith(_opTokenResultFilePrefix())) continue
         if (known.contains(name)) continue
+        // The listing's date field is epoch milliseconds carried as a STRING
+        // ("1780502413108" -- live-verified), which parses; a formatted date would not,
+        // and would silently age out NOTHING. Counting an unparseable date apart from an
+        // absent one (some entries genuinely carry no date) is what makes that firmware
+        // shape change visible instead of reading as "everything is too recent".
+        def rawDate = (f instanceof Map) ? ((f.date != null) ? f.date : f.lastModified) : null
         Long modified = null
-        if (f instanceof Map) {
-            def raw = (f.date != null) ? f.date : f.lastModified
-            try { if (raw != null) modified = raw.toString() as Long } catch (Exception ignored) { modified = null }
+        if (rawDate != null) {
+            try { modified = rawDate.toString() as Long } catch (Exception ignored) { modified = null }
         }
-        if (modified == null || modified > ageCutoff) { skippedYoung++; continue }
+        if (modified == null) {
+            if (rawDate == null) skippedUndated++ else skippedUnparseable++
+            continue
+        }
+        if (modified > ageCutoff) { skippedYoung++; continue }
         try { deleteHubFile(name); deleted++ }
         catch (Exception e) { mcpLog("debug", "op-token", "orphan reap could not delete ${name}: ${e.message}") }
     }
-    if (skippedYoung > 0) {
-        mcpLog("debug", "op-token", "orphan reap left ${skippedYoung} unclaimed file(s) alone: too recent (or undated) to rule out an in-flight write.")
+    if (skippedYoung > 0 || skippedUndated > 0) {
+        mcpLog("debug", "op-token", "orphan reap left ${skippedYoung + skippedUndated} unclaimed file(s) alone: ${skippedYoung} too recent to rule out an in-flight write, ${skippedUndated} carrying no date.")
+    }
+    if (skippedUnparseable > 0) {
+        mcpLog("warn", "op-token", "orphan reap could not read the age of ${skippedUnparseable} unclaimed op-result file(s): the File Manager listing's date field did not parse as epoch milliseconds. Those files can never be reaped until the new shape is handled -- remove them from File Manager by hand and report the listing shape.")
     }
     if (deleted > 0) {
         mcpLog("info", "op-token", "orphan reap deleted ${deleted} unclaimed op-result file(s) from File Manager.")
         runIn(60, "opTokenFileSweep")
+        return
+    }
+    if (skippedYoung > 0) {
+        // A file skipped ONLY for being young becomes reapable the moment the safety
+        // window passes -- but the re-arm above fires only when something was DELETED, so
+        // an orphan produced shortly before an app reload got looked at once and then
+        // never again (initialize arms a single one-shot sweep). Come back just after the
+        // window instead of leaking it until some unrelated sweep happens to run.
+        // Deliberately not armed for an UNDATED file: waiting changes nothing about one,
+        // so that would spin the sweep forever.
+        runIn(660, "opTokenFileSweep")
     }
 }
 
@@ -2420,7 +2604,9 @@ def _recentRunningWriteOps(readOnlyNamesArg = null, tokensArg = null) {
 }
 
 // Release a token after a validation error (the leaf executed nothing, so the token must
-// stay spendable by a corrected re-issue). Written as a per-entry "released" sentinel that
+// stay spendable by a corrected re-issue). Called ONLY when a pre-dispatch running marker
+// was actually written -- with no marker there is nothing to release, and a "released"
+// record would be pure cost. Written as a per-entry "released" sentinel that
 // the dedup gate treats as absent -- NOT a whole-map remove: atomicState has no per-key
 // remove, and a whole-map read-modify-write here could clobber a concurrent different-token
 // updateMapValue and silently lose a LIVE record's dedup protection (the prune stays the
@@ -2429,16 +2615,18 @@ def _recentRunningWriteOps(readOnlyNamesArg = null, tokensArg = null) {
 // exist here (only _opTokenComplete uploads, and completion never ran; a prior record would
 // have short-circuited at the dedup gate before dispatch) -- at most a prune-orphaned file
 // from an earlier, already-pruned completion remains, which a later completion overwrites.
-// Write a terminal token record and verify it PERSISTED: the whole-map prune can
-// clobber a per-entry write that landed a moment earlier. One retry, then report --
-// a third write would just lose the same race, and a record stuck at "running"
-// self-heals anyway (it stops counting toward the write cap after 90s and the TTL
-// sweep reaps it).
-private void _opTokenPutTerminal(String opToken, Map rec, String label) {
-    _opTokenPut(opToken, rec)
+// Write a terminal token record. The read-back verification runs ONLY on the whole-map
+// fallback, where a read-modify-write genuinely loses concurrent records. On the
+// per-entry path it cost a full atomicState round trip -- ~0.9s of client latency on real
+// firmware, on every write -- to catch one narrow race: the prune's whole-map rewrite
+// landing between this write and its own snapshot. The prune now closes that itself, by
+// re-reading late and folding in anything written since (see _opTokenPrune), which pays
+// for it in a scheduled pass instead of in every client's response time.
+private void _opTokenPutTerminal(String opToken, Map rec, String label, Object knownMap = null) {
+    if (_opTokenPut(opToken, rec, knownMap)) return
     if (_opTokenStateOf(opToken) == rec.state) return
-    mcpLog("warn", "op-token", "${label} record for ${opToken} was overwritten after its per-entry write; re-writing terminal state '${rec.state}' once.")
-    _opTokenPut(opToken, rec)
+    mcpLog("warn", "op-token", "${label} record for ${opToken} was overwritten after its whole-map write; re-writing terminal state '${rec.state}' once.")
+    _opTokenPut(opToken, rec, knownMap)
     if (_opTokenStateOf(opToken) != rec.state) {
         mcpLog("warn", "op-token", "${label} record for ${opToken} did NOT persist after the retry; the record may read as running until its TTL expires, so a poll of this token can answer 'running' until then.")
     }
@@ -2455,7 +2643,7 @@ def _opTokenRelease(String opToken) {
     def prev = (stored instanceof Map && stored[opToken] instanceof Map) ? stored[opToken] : [:]
     def rec = [state: "released", tool: prev.tool,
                startedAt: (prev.startedAt != null ? prev.startedAt : now())]
-    _opTokenPutTerminal(opToken, rec, "Release")
+    _opTokenPutTerminal(opToken, rec, "Release", stored)
 }
 
 // Buffer a token's terminal result (called once, on the request's terminal path).
@@ -2463,7 +2651,14 @@ def _opTokenRelease(String opToken) {
 // token record (no file I/O between the record read and write); on upload failure
 // keeps a small result inline, else marks it failed_buffer so a replay tells the
 // caller to verify state rather than trust a missing file.
-def _opTokenComplete(String opToken, String jsonText, boolean isErrorBool, toolNameArg = null) {
+// priorRecordPossible=false says the caller KNOWS no record exists for this token: an
+// auto token is a UUID minted this request, and with no pre-dispatch marker nothing has
+// written it. Reading the map to merge a `prev` that cannot exist was a whole-map
+// atomicState round trip on every ordinary write. Client tokens always pass true -- a
+// released record from an earlier rejection can legitimately be there, and its startedAt
+// still has to be preserved.
+def _opTokenComplete(String opToken, String jsonText, boolean isErrorBool, toolNameArg = null,
+                     boolean priorRecordPossible = true) {
     def fileName = _opTokenResultFile(opToken)
     byte[] resultBytes = jsonText?.getBytes("UTF-8")
     // Auto-tokens buffer EVERY untokened write, so a File Manager round trip here is a
@@ -2482,7 +2677,7 @@ def _opTokenComplete(String opToken, String jsonText, boolean isErrorBool, toolN
             mcpLog("warn", "op-token", "Buffering op-result for ${opToken} to the File Manager failed: ${e.message}")
         }
     }
-    def stored = atomicState.opTokens
+    def stored = priorRecordPossible ? atomicState.opTokens : null
     def prev = (stored instanceof Map && stored[opToken] instanceof Map) ? stored[opToken] : [:]
     // startedAt drives the prune TTL: if the running marker was lost (the disclosed
     // prune-vs-per-entry race / whole-map fallback race), prev is empty and a null
@@ -2504,19 +2699,55 @@ def _opTokenComplete(String opToken, String jsonText, boolean isErrorBool, toolN
         rec.state = "failed_buffer"
         rec.note = "Operation committed but its result could not be buffered (upload failed, payload too large to inline). Re-read current state to confirm."
     }
-    _opTokenPutTerminal(opToken, rec, "Completion")
+    _opTokenPutTerminal(opToken, rec, "Completion", stored)
+    _opTokenNoteTerminalRecord()
+}
+
+// Completion is the ONLY record an ordinary write writes -- the pre-dispatch marker (the
+// other prune site) is written just for the tools that can outlive their transport -- so
+// without an arming signal here the map grew unbounded, and every byte of it is
+// deserialized again on the next atomicState access. Counted in `state`, an
+// execution-context cache: no atomicState round trip, which is the whole point. Every
+// keep-count records, hand the work to the scheduled sweep, which prunes OUT of the
+// request. TTL expiry on a hub too quiet to reach the counter is the daily schedule's job.
+private void _opTokenNoteTerminalRecord() {
+    int n = ((state.opTokenTerminalWrites ?: 0) as Integer) + 1
+    if (n < _opTokenKeepRecords()) {
+        state.opTokenTerminalWrites = n
+        return
+    }
+    state.opTokenTerminalWrites = 0
+    _opTokenArmSweep()
+}
+
+// Arm the scheduled sweep, at most once per pending window. runIn REPLACES a pending
+// schedule for the same handler, so re-arming on every completion under sustained write
+// traffic would push the sweep's deadline out forever and starve the prune it now owns.
+// The window is deliberately just longer than the delay, so a burst gets swept repeatedly
+// rather than once; it also re-arms after a settings save / app update drops the schedule
+// (unschedule() there clears the timer but not this marker).
+private void _opTokenArmSweep() {
+    Long armedAt = (state.opTokenSweepArmedAt != null) ? (state.opTokenSweepArmedAt as Long) : null
+    if (armedAt != null && (now() - armedAt) < 45000L) return
+    state.opTokenSweepArmedAt = now()
+    runIn(30, "opTokenFileSweep")
 }
 
 // Dedup gate consulted before dispatch. Returns null to proceed, or a
 // [result, isError] pair to short-circuit: a "running" refusal (a duplicate write
 // in flight) or a replay of the already-buffered result (adds replayed:true). A
 // completed-but-unreadable buffer degrades to the "verify state" indeterminate shape.
-def _opTokenDedup(String opToken, origToolName) {
-    def toks = atomicState.opTokens
+// knownTokens is the caller's already-deserialized snapshot of atomicState.opTokens, so the
+// dedup lookup does not re-fetch a map the request has already paid to read (~0.9s on real
+// firmware). Passing null falls back to reading it here, which keeps this usable from any
+// future caller that has no snapshot to hand.
+def _opTokenDedup(String opToken, origToolName, Object knownTokens = null) {
+    def toks = (knownTokens instanceof Map) ? knownTokens : atomicState.opTokens
     def rec = (toks instanceof Map && toks[opToken] instanceof Map) ? toks[opToken] : null
     if (rec == null) return null
     // A released record means a validation error spent NOTHING: treat it as absent so the
-    // corrected re-issue dispatches fresh (it re-marks the token running on its way in).
+    // corrected re-issue dispatches fresh. Only a token that was MARKED running leaves this
+    // sentinel; a markerless write's rejection leaves no record at all, which reads the same.
     if (rec.state == "released") return null
     if (rec.state == "running") {
         def started = (rec.startedAt != null) ? (rec.startedAt as Long) : null
@@ -2577,6 +2808,8 @@ def _responseTooLargeSuggestion(String toolName) {
             return "For scope='instances': set includeHidden=false (the default), narrow via filter (builtin / user / disabled / parents / children), or pass cursor to page through the apps list."
         case "hub_get_app_config":
             return "Omit includeSettings -- Room Lighting / RM 5.1 apps can have 500-1000 settings keys. For multi-page apps, call hub_list_app_pages then hub_get_app_config with a specific pageName. If you only need identity, pass summary=true."
+        case "hub_list_files":
+            return "Pagination here is OPT-IN: with no cursor the tool returns the WHOLE listing, so a large File Manager has no natural page break. Re-issue with cursor='0' to page through it, or narrow with filter='<substring of the name>'. includeOpResults=false (the default) already hides the server's mcp-op-result- buffers, so those are not what is filling this response."
         case "hub_get_device_health":
             return "Set includeHealthy=false (the default), narrow staleHours, or pass cursor to page through staleDevices."
         case "hub_get_memory_history":
@@ -3861,7 +4094,17 @@ def executeTool(toolName, args) {
     // `== false` blocks (null/unset => allowed).
     def isGatewayName = getGatewayConfig().containsKey(toolName)
     if (!isGatewayName) {
-        if (getReadOnlyToolNames().contains(toolName)) {
+        // deployment op='status' rides a WRITE tool but is a pure read of the job records,
+        // and it is exempt from the Write master via the schema-only classifier. Every
+        // other schema-only exemption returns static reference content; this one returns
+        // hub data (job names, ids, created appIds, backup keys), so it answers to the READ
+        // master instead of to nothing at all.
+        boolean isDeploymentStatus = _isDeploymentStatusOnlyCall(toolName, args)
+        if (isDeploymentStatus) {
+            if (settings.enableRead == false) {
+                throw new IllegalArgumentException("Read tools are disabled. Enable 'Read Tools' in MCP Rule Server app settings to use ${toolName}'s deployment status read.")
+            }
+        } else if (getReadOnlyToolNames().contains(toolName)) {
             if (settings.enableRead == false) {
                 throw new IllegalArgumentException("Read tools are disabled. Enable 'Read Tools' in MCP Rule Server app settings to use ${toolName}.")
             }
@@ -8509,7 +8752,7 @@ CONSTRAINT (verified live): RM's classic wizard silently ignores delete-class bu
 
 draft > staging > ready_for_commit > committing > completed | failed | cancelled.
 
-- op="create": validates the whole manifest up front (unknown ops, duplicate aliases, forward alias refs are rejected before anything runs), then stages. Each call slice is bounded by the response-time budget (and optional maxOpsPerCall); the on-hub worker continues the rest (background=false disables the worker: the job then advances only on op="resume"). draft:true creates the job without starting it -- validation still runs up front; op="resume" starts staging. A manifest is capped at 50 ops (ops + commitOps) and 64000 serialized characters.
+- op="create": validates the whole manifest up front (unknown ops, each op type's required args, duplicate aliases, forward alias refs are rejected before anything runs -- commitOps included, so a cutover-op typo surfaces before staging creates a single app), then stages. Each call slice is bounded by the response-time budget (and optional maxOpsPerCall); the on-hub worker continues the rest (background=false disables the worker: the job then advances only on op="resume"). draft:true creates the job without starting it -- validation still runs up front; op="resume" starts staging. A manifest is capped at 50 ops (ops + commitOps) and 64000 serialized characters.
 - Staging validation gate: when the last staging op completes, every created app is health-checked (hub_get_rule_health, which reads live config -- an existence readback). Only an all-healthy job becomes ready_for_commit; otherwise it fails with per-app results in `validation`.
 - op="commit": runs the declared commitOps (typically pause the old set + enable the new set). Refused unless phase is ready_for_commit.
 - op="cancel": deletes ONLY the apps recorded in createdAppIds (newest first) and marks the job cancelled. A completed job cannot be cancelled (reverse the cutover manually).
@@ -8541,23 +8784,25 @@ A slow write can outlive its transport: the cloud relay severs calls at a fixed 
 
 ### Idempotency token (opToken): auto-record first, optional client token for verbatim retries
 
-Every untokened WRITE is auto-recorded before it runs. The server assigns an `auto-...` token, buffers the terminal result, returns the token in the response, and exposes recent records through hub_get_info(includeRecentOps=true). If a response is lost, find the record by tool + startedAt and poll by re-issuing token-only with that opToken; do not blind-retry the write. Records sweep about 24 hours after start. When more than 100 are stored, the oldest terminal records batch-evict until 50 remain.
+Every untokened WRITE is auto-recorded. The server assigns an `auto-...` token, buffers the terminal result, returns the token in the response, and exposes recent records through hub_get_info(includeRecentOps=true). If a response is lost, find the record by tool + startedAt and poll by re-issuing token-only with that opToken; do not blind-retry the write. Records sweep about 24 hours after start, and past 20 stored records the oldest terminal records batch-evict down to 10.
 
-A client-invented `opToken` is an optional extra, never something to ask the user for: 8-128 characters of A-Za-z0-9._-. Its one unique advantage is verbatim-retry dedup: a transport re-send of the same bytes carries the same token and is refused while running or replayed after completion. An untokened re-send gets a new auto token, but while the first call is running the server fingerprints the stripped arguments and refuses the match as `duplicate_in_flight`. EVERY tool -- reads included -- accepts a client token; a tokened expensive read also replays instead of re-running. Tokens are per-call nonces, and records are written per-entry so different tokens do not interfere.
+MARKER-TRACKED writes -- the ones slow enough to still be running when a poll arrives -- additionally record a `running` marker BEFORE they execute, so a mid-flight poll is answered and an "unknown" verdict can be trusted. That set is: hub_set_rule, hub_set_native_app, hub_call_rule, hub_clone_native_app, hub_import_native_app, hub_update_package, hub_update_app, hub_update_driver, hub_update_library, hub_create_app, hub_create_driver, hub_create_library, hub_delete_item, hub_install_bundle, hub_restore_backup, hub_create_backup, hub_delete_native_app, hub_reboot, hub_shutdown, hub_update_firmware, hub_call_device_replace, hub_call_device_swap, hub_import_custom_rule, hub_clone_custom_rule. Every OTHER write records only when it finishes -- its response is delivered long before a poll could be sent, so the marker would be pure latency.
+
+A client-invented `opToken` is an optional extra, never something to ask the user for: 8-128 characters of A-Za-z0-9._-. Its one unique advantage is verbatim-retry dedup: a transport re-send of the same bytes carries the same token and is refused while running or replayed after completion. An untokened re-send gets a new auto token; while a LONG-RUNNING write is in flight the server also fingerprints the stripped arguments and refuses the match as `duplicate_in_flight`. EVERY tool -- reads included -- accepts a client token; a tokened expensive read also replays instead of re-running. Tokens are per-call nonces, and records are written per-entry so different tokens do not interfere.
 
 If the response is lost, DO NOT re-run the operation and DO NOT invent a fresh token. Re-issue the SAME tool call with the SAME `opToken` -- the token alone is enough: a flat tool takes `{opToken: "<yours>"}` with no other arguments (e.g. hub_update_package), a gateway member takes `{tool: "<leaf>", opToken: "<yours>"}` (e.g. `{tool: "hub_set_rule", opToken: "<yours>"}` via hub_manage_rule_machine). The server answers from the token record without running anything twice:
 
 - `status: "running"` -- still executing on the hub. Poll again in a few seconds by re-issuing the same tokened call. The operation completes and commits even though your response dropped.
 - `replayed: true` -- it finished; this IS the original buffered result (including `isError` if that attempt failed).
-- `status: "unknown"` (returned only to a token-only poll) -- no RECORD of this token exists: the original call never arrived, OR the record aged out (records sweep ~24h after start, and past 40 stored records the oldest terminal records batch-evict down to 20). Poll promptly after a drop and it reliably means never-arrived: re-issue the ORIGINAL call (full arguments) with this same token. Do not trust day-old tokens.
+- `status: "unknown"` (returned only to a token-only poll) -- no RECORD of this token exists. What that means depends on the tool. For a MARKER-TRACKED write (list above) a record would already exist if the call had arrived, so a prompt poll reliably means never-arrived: re-issue the ORIGINAL call (full arguments) with this same token. For any OTHER write the record is only written at completion, so "unknown" cannot distinguish never-arrived from still-running, and re-issuing blindly can double-execute: verify current state with a read first, then re-issue if the write did not land. Either way the record can also have aged out (records sweep ~24h after start, and past 20 stored records the oldest terminal records batch-evict down to 10), so do not trust day-old tokens.
 - `status: "indeterminate"` -- the operation completed here but its buffered result cannot be read (buffering failed, or the result file is gone while the record survives). Do NOT re-issue blindly; verify current state via reads first.
 
 A NEW write may also be refused before it runs:
 
-- `status: "duplicate_in_flight"` -- an identical untokened write is already running. Do not re-run it; poll the named `inFlightOpToken` until its result replays.
-- `status: "too_many_writes_in_flight"` -- the running-write count reached `maxConcurrentWrites` (default 2; 1 serializes, 0 disables). Wait for one named `inFlight` token to finish or poll it, then re-issue this call. The wait is bounded: a record stops counting toward the cap 90s after it started, so a write whose hub-side thread died can never block you indefinitely.
+- `status: "duplicate_in_flight"` -- an identical untokened call to one of the long-running write tools is already running. Do not re-run it; poll the named `inFlightOpToken` until its result replays. This guards the writes that can outlive their transport, not every write: a short write answers before a duplicate could be sent.
+- `status: "too_many_writes_in_flight"` -- the in-flight count reached `maxConcurrentWrites` (default 2; 1 serializes, 0 disables). The cap gates EVERY write, but only the long-running write tools count toward it. Wait for one named `inFlight` token to finish or poll it, then re-issue this call. The wait is bounded: a record stops counting toward the cap 90s after it started, so a write whose hub-side thread died can never block you indefinitely.
 
-A token is SPENT once its operation completes -- runtime errors included. A replayed result carrying an error means that attempt failed; to retry with corrected arguments after a RUNTIME failure, invent a FRESH token. Never reuse a token for a DIFFERENT operation. Exception: a call rejected for invalid arguments (-32602) executed nothing and RELEASES its token -- fix the arguments and re-issue with the SAME token.
+A token is SPENT once its operation completes -- runtime errors included. A replayed result carrying an error means that attempt failed; to retry with corrected arguments after a RUNTIME failure, invent a FRESH token. Never reuse a token for a DIFFERENT operation. Exception: a call rejected for invalid arguments (-32602) executed nothing and does not spend its token -- fix the arguments and re-issue with the SAME token.
 
 A replayed result whose `status` is "in_progress" carries `replayNote`: it is the ORIGINAL paused envelope, not new progress -- a spent token cannot drive a resume; re-issue the remaining work with a fresh token.
 

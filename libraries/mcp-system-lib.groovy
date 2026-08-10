@@ -227,7 +227,10 @@ def toolGetHubInfo(args = null) {
         // A write token replays that write's buffered result, so write records stay
         // hidden while the Write master is off.
         if (settings.enableWrite == false) {
-            rows = rows.findAll { getReadOnlyToolNames().contains(it.tool) }
+            // Hoisted: the getter is an aggregator that concatenates ~20 library name
+            // chunks, and inside the closure it rebuilt that whole set once per row.
+            def readOnlyNames = getReadOnlyToolNames()
+            rows = rows.findAll { readOnlyNames.contains(it.tool) }
         }
         rows = rows.sort { -((it.startedAt ?: 0) as Long) }
         Integer cap = 25

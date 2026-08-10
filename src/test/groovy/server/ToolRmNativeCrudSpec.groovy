@@ -5,6 +5,7 @@ import support.TestLocation
 import support.ToolSpecBase
 import groovy.json.JsonOutput
 import spock.lang.Shared
+import spock.lang.Unroll
 
 /**
  * Spec for the native Rule Machine CRUD tools in libraries/mcp-native-rules-lib.groovy:
@@ -4148,6 +4149,73 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "no wizard POST fired"
         posts.isEmpty()
+    }
+
+    def "clearActions plus a non-empty replaceActions is rejected fail-loud"() {
+        // Both are action-family WRITES sharing one dispatcher branch, so before the fix
+        // they BOTH executed: the clear wiped the rule, then replaceActions re-added its
+        // own list -- in an order the caller never chose. The guard stayed silent because
+        // the replaceActions group was suppressed whenever clearActions was set, a
+        // condition whose only OTHER job (not double-counting replaceActions:[]) the
+        // null-normalization above it already does.
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        Exception thrownEx = null
+        try {
+            script.toolSetRule([appId: 100, confirm: true,
+                                clearActions: true,
+                                replaceActions: [[capability: "log", message: "replacement"]]])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "rejected before any wizard write, naming both operations"
+        thrownEx instanceof IllegalArgumentException
+        thrownEx.message.contains("multiple operations")
+        thrownEx.message.contains("clearActions")
+        thrownEx.message.contains("replaceActions")
+
+        and: "no wizard POST fired"
+        posts.isEmpty()
+    }
+
+    @Unroll
+    def "the bulk pair exemption is EXACT: #first plus #second still throws"() {
+        // allowedBulkPair compares the family lists to exact singletons. Pinned on the
+        // REFUSED side too, so a later "simplification" to a truthiness test goes red
+        // instead of quietly admitting a singular pair -- where the addTrigger branch
+        // returns its own envelope and the addAction would be dropped with success:true.
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        Exception thrownEx = null
+        try {
+            script.toolSetRule([appId: 100, confirm: true] + payload)
+        } catch (Exception e) { thrownEx = e }
+
+        then:
+        thrownEx instanceof IllegalArgumentException
+        thrownEx.message.contains("multiple operations")
+        posts.isEmpty()
+
+        where:
+        first          | second        | payload
+        "addTrigger"   | "addAction"   | [addTrigger: [capability: "Switch", deviceIds: [8], state: "on"], addAction: [capability: "log", message: "x"]]
+        "addTrigger"   | "addActions"  | [addTrigger: [capability: "Switch", deviceIds: [8], state: "on"], addActions: [[capability: "log", message: "x"]]]
+        "addTriggers"  | "addAction"   | [addTriggers: [[capability: "Switch", deviceIds: [8], state: "on"]], addAction: [capability: "log", message: "x"]]
     }
 
     def "an edit on a nonexistent app id throws the 404 steer before any write"() {

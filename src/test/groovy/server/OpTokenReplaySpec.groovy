@@ -21,7 +21,10 @@ import support.ToolSpecBase
  *            safe-to-retry unknown -- the op DID run here)
  *   - a started marker is written before the tool runs and completed on EVERY
  *     terminal path (success, thrown IAE, generic throw, null result, oversize)
- *   - _opTokenMark prunes >24h entries (deleting their result files) and caps at 50
+ *   - pruning (>24h TTL, plus a batch eviction past 40 records down to 20) runs from
+ *     _opTokenMark for the tools that write a pre-dispatch marker, and from the
+ *     scheduled opTokenFileSweep for everything else -- an ordinary write records only
+ *     at completion, so the sweep is the only thing bounding the map on that traffic
  *   - _opTokenComplete buffers the result to mcp-op-result-<token>.json (with an
  *     inline / failed_buffer fallback when the upload fails)
  *
@@ -203,22 +206,39 @@ class OpTokenReplaySpec extends ToolSpecBase {
         inner.note instanceof String && inner.note.toLowerCase().contains('verify')
     }
 
-    def "a validation error RELEASES the token instead of spending it (issue #361 review)"() {
-        given:
+    def "a validation error RELEASES a marked token instead of spending it (issue #361 review)"() {
+        given: 'a tool that writes a pre-dispatch running marker -- only those have anything to release'
         settingsMap.enableWrite = true
         def store = installFileStore()
-        script.metaClass.toolCreateRoom = { a -> throw new IllegalArgumentException('bad room name') }
+        script.metaClass.toolCreateHubBackup = { a -> throw new IllegalArgumentException('bad schedule') }
 
         when:
-        def response = mcpDriver.callTool('hub_create_room', [name: 'Den', confirm: true, opToken: 'iaetoken12'])
+        def response = mcpDriver.callTool('hub_create_backup', [confirm: true, opToken: 'iaetoken12'])
 
         then: 'the validation error still maps to -32602'
         response.error != null
         response.error.code == -32602
 
-        and: 'the leaf executed nothing, so the token is released (a per-entry sentinel the dedup gate treats as absent) -- not left running, not spent on the stale rejection'
+        and: 'the leaf executed nothing, so the marker is released (a per-entry sentinel the dedup gate treats as absent) -- not left running, not spent on the stale rejection'
         atomicStateMap.opTokens['iaetoken12'].state == 'released'
         !store.containsKey(FILE_PREFIX + 'iaetoken12.json')
+    }
+
+    def "a validation error on a MARKERLESS write leaves no record at all"() {
+        given: 'no running marker was written, so there is nothing to release -- and writing a "released" record would cost two atomicState round trips for a token the client never received (a -32602 carries no result)'
+        settingsMap.enableWrite = true
+        def store = installFileStore()
+        script.metaClass.toolCreateRoom = { a -> throw new IllegalArgumentException('bad room name') }
+
+        when: 'an UNTOKENED write -- the auto-token path, which is every ordinary write'
+        def response = mcpDriver.callTool('hub_create_room', [name: 'Den', confirm: true])
+
+        then:
+        response.error?.code == -32602
+
+        and: 'the map is untouched: absence reads exactly like "released" to the dedup gate'
+        !(atomicStateMap.opTokens ?: [:]).any { k, v -> k.toString().startsWith('auto-') }
+        store.isEmpty()
     }
 
     def "a corrected re-issue with the SAME token executes after a validation error"() {
@@ -591,10 +611,12 @@ class OpTokenReplaySpec extends ToolSpecBase {
         when: 'token + name but no confirm'
         def response = mcpDriver.callTool('hub_create_room', [opToken: 'partial12345', name: 'Den'])
 
-        then: 'the leaf validation error surfaced (-32602), and the token was released for a corrected re-issue'
+        then: 'the leaf validation error surfaced (-32602), and the token stays spendable by a corrected re-issue'
         response.error != null
         response.error.code == -32602
-        atomicStateMap.opTokens['partial12345'].state == 'released'
+
+        and: 'hub_create_room writes no running marker, so nothing was recorded -- absence and the "released" sentinel are the same answer to the dedup gate'
+        !(atomicStateMap.opTokens ?: [:]).containsKey('partial12345')
     }
 
     def "a token-only call naming a bare GATEWAY is a pure poll -- the token is never spent on a catalog listing"() {
@@ -819,7 +841,11 @@ class OpTokenReplaySpec extends ToolSpecBase {
         installFileStore()
         def ran = 0
         script.metaClass.toolCreateRoom = { a -> ran++; [success: true] }
-        script.metaClass._opTokenComplete = { String t, String j, boolean e, tn = null -> throw new RuntimeException('atomicState write failed') }
+        // Arity MUST track _opTokenComplete's real signature (5 params since the completion
+        // path started passing priorRecordPossible). A short stub still makes the test pass --
+        // on a MissingMethodException rather than the RuntimeException it means to inject --
+        // so the buffering-failure path it claims to cover would silently go unexercised.
+        script.metaClass._opTokenComplete = { String t, String j, boolean e, tn = null, boolean prior = true -> throw new RuntimeException('atomicState write failed') }
 
         when: 'the tokened write completes but completion-buffering blows up'
         def first = mcpDriver.callTool('hub_create_room', [name: 'Den', confirm: true, opToken: 'wedgeproof12'])
@@ -869,11 +895,16 @@ class OpTokenReplaySpec extends ToolSpecBase {
         // the unlucky write that triggered it take 7-10s (measured on the e2e hub), so the
         // deletes are queued for the scheduled sweep instead. Records seeded WITH a file
         // so every eviction has something to delete.
-        given:
+        given: 'seeded off the live constants so a future cap change re-derives instead of rotting'
+        int cap = script._opTokenMaxRecords()
+        int keep = script._opTokenKeepRecords()
+        int seeded = cap + keep + 1
+        int evicted = (seeded + 1) - keep
         def deleted = []
         script.metaClass.deleteHubFile = { String name -> deleted << name }
+        hubGet.register('/hub/fileManager/json') { params -> '[]' }
         def many = [:]
-        (1..41).each { i ->
+        (1..seeded).each { i ->
             def k = "evictme${String.format('%05d', i)}".toString()
             many[k] = [state: 'complete', tool: 'hub_create_room',
                        startedAt: FIXED_NOW - (200000L - i), file: FILE_PREFIX + k + '.json']
@@ -884,29 +915,29 @@ class OpTokenReplaySpec extends ToolSpecBase {
         script._opTokenMark('capmark12345', 'hub_create_room')
 
         then: 'the map is evicted to the keep count with ZERO deletes in this request'
-        atomicStateMap.opTokens.size() == 20
+        atomicStateMap.opTokens.size() == keep
         deleted.isEmpty()
-        atomicStateMap.opTokenSweepFiles.size() == 22
+        atomicStateMap.opTokenSweepFiles.size() == evicted
 
         when: 'the scheduled sweep runs its first pass'
         script.opTokenFileSweep()
 
         then: 'it is bounded -- 10 per pass, the remainder left queued for the re-arm'
         deleted.size() == 10
-        atomicStateMap.opTokenSweepFiles.size() == 12
+        atomicStateMap.opTokenSweepFiles.size() == evicted - 10
 
         when: 'the second pass runs'
         script.opTokenFileSweep()
 
         then: 'still exactly 10 -- the bound holds on every pass, not just the first'
         deleted.size() == 20
-        atomicStateMap.opTokenSweepFiles.size() == 2
+        atomicStateMap.opTokenSweepFiles.size() == evicted - 20
 
         when: 'the final pass runs'
         script.opTokenFileSweep()
 
         then: 'every queued file is deleted and the queue drains'
-        deleted.size() == 22
+        deleted.size() == evicted
         !atomicStateMap.opTokenSweepFiles
     }
 
@@ -962,10 +993,13 @@ class OpTokenReplaySpec extends ToolSpecBase {
         when:
         script.opTokenFileSweep()
 
-        then: 'only queued names are deleted this pass -- the listing is not even fetched'
+        then: 'only queued names are deleted this pass'
         deleted.size() == 10
         deleted.every { it.startsWith(FILE_PREFIX + 'queued') }
         atomicStateMap.opTokenSweepFiles.size() == 1
+
+        and: 'the listing is not even FETCHED -- asserted on the call log, because a reap that fetches every pass and merely filters correctly would leave the delete assertions above green while costing an HTTP round trip per pass'
+        hubGet.calls.every { it.path != '/hub/fileManager/json' }
     }
 
     def "the sweep queue is bounded so a delete backlog cannot grow atomicState without limit"() {
@@ -1247,5 +1281,170 @@ class OpTokenReplaySpec extends ToolSpecBase {
 
         then: 'an un-bufferable oversize result is flagged rather than inlined'
         atomicStateMap.opTokens['big123456'].state == 'failed_buffer'
+    }
+
+    // ---------------- marker scope + the prune that hangs off completion ----------------
+
+    def "only the long-running write tools write a pre-dispatch running marker"() {
+        given: 'the honest contract: the marker answers a poll that lands mid-flight, so a write whose response beats any poll does not pay for one'
+        settingsMap.enableWrite = true
+        installFileStore()
+        def runningDuringRoom = null
+        def runningDuringBackup = null
+        script.metaClass.toolCreateRoom = { a ->
+            runningDuringRoom = (atomicStateMap.opTokens ?: [:]).findAll { k, v -> v?.state == 'running' }.keySet().toList()
+            [success: true, roomId: 7]
+        }
+        script.metaClass.toolCreateHubBackup = { a ->
+            runningDuringBackup = (atomicStateMap.opTokens ?: [:]).findAll { k, v -> v?.state == 'running' }.keySet().toList()
+            [success: true]
+        }
+
+        when: 'a markerless write executes'
+        mcpDriver.callTool('hub_create_room', [name: 'Den', confirm: true])
+
+        then: 'nothing is running while it works -- duplicate_in_flight and the write cap can never see it'
+        runningDuringRoom == []
+
+        and: 'it still gets its terminal record, so the recentOps journal and the replay contract are intact'
+        def roomRecs = (atomicStateMap.opTokens ?: [:]).findAll { k, v -> v?.tool == 'hub_create_room' }
+        roomRecs.size() == 1
+        roomRecs.values()[0].state == 'complete'
+
+        when: 'an allowlisted long-running write executes'
+        atomicStateMap.opTokens = [:]
+        mcpDriver.callTool('hub_create_backup', [confirm: true])
+
+        then: 'it IS marked running before dispatch'
+        runningDuringBackup.size() == 1
+        runningDuringBackup[0].startsWith('auto-')
+    }
+
+    def "the sweep comes back for an orphan it skipped only for being TOO YOUNG"() {
+        given: 'the re-arm fired only when something was actually DELETED, so an orphan produced shortly before an app reload was looked at once (initialize arms a single one-shot sweep) and then never again -- it leaked until some unrelated sweep happened to run'
+        def deleted = []
+        def scheduled = []
+        script.metaClass.deleteHubFile = { String name -> deleted << name }
+        script.metaClass.runIn = { Object delay, String handler -> scheduled << [delay, handler] }
+        atomicStateMap.opTokens = [:]
+        atomicStateMap.opTokenSweepFiles = []
+        hubGet.register('/hub/fileManager/json') { params ->
+            groovy.json.JsonOutput.toJson([
+                [name: FILE_PREFIX + 'freshorphan1.json', size: 100, date: FIXED_NOW - 1000L]
+            ])
+        }
+
+        when:
+        script.opTokenFileSweep()
+
+        then: 'the young file survives this pass -- deleting it could destroy a live write buffer'
+        deleted.isEmpty()
+
+        and: 'and the sweep is re-armed for after the safety window rather than abandoning it'
+        scheduled.any { it[1] == 'opTokenFileSweep' && (it[0].toString() as Integer) > 600 }
+    }
+
+    def "an UNDATED orphan does not re-arm the sweep, which would spin it forever"() {
+        given: 'waiting changes nothing about a file whose age is unknowable'
+        def scheduled = []
+        script.metaClass.deleteHubFile = { String name -> }
+        script.metaClass.runIn = { Object delay, String handler -> scheduled << [delay, handler] }
+        atomicStateMap.opTokens = [:]
+        atomicStateMap.opTokenSweepFiles = []
+        hubGet.register('/hub/fileManager/json') { params ->
+            groovy.json.JsonOutput.toJson([[name: FILE_PREFIX + 'undated00001.json', size: 100]])
+        }
+
+        when:
+        script.opTokenFileSweep()
+
+        then:
+        scheduled.every { it[1] != 'opTokenFileSweep' }
+    }
+
+    def "the marker-tracked set and the slow_ops guide name exactly the same tools"() {
+        // The reconciliation IS the contract: the guide tells a client that an "unknown"
+        // poll proves never-arrived for these tools and cannot for any other, so a tool
+        // added to (or dropped from) the allowlist without updating the guide silently
+        // makes that instruction wrong -- which is how a client gets steered into a
+        // double-execute.
+        given:
+        def guide = script.getToolGuideSections().slow_ops
+        def tracked = script._markerTrackedWriteTools().collect { it.toString() }
+        def allWriteTools = script.getAllToolDefinitions()*.name.collect { it.toString() }
+            .findAll { !script.getReadOnlyToolNames().contains(it) }
+
+        expect: 'every marker-tracked tool is named in the guide'
+        tracked.findAll { !guide.contains(it) } == []
+
+        and: 'and the guide does not claim marker tracking for a write that has none'
+        allWriteTools.findAll { name ->
+            !tracked.contains(name) && guide.contains("${name},")
+        } == []
+    }
+
+    def "sustained MARKERLESS write traffic still leaves the record map bounded"() {
+        given: 'the regression this pins: pruning used to hang only off the pre-dispatch marker, so once the marker was scoped to the long-running tools nothing trimmed ordinary write traffic at all'
+        settingsMap.enableWrite = true
+        installFileStore()
+        hubGet.register('/hub/fileManager/json') { params -> '[]' }
+        script.metaClass.toolCreateRoom = { a -> [success: true, roomId: 7] }
+
+        when: 'more writes than the record cap, none of which writes a marker'
+        (1..45).each { i -> mcpDriver.callTool('hub_create_room', [name: "Room${i}".toString(), confirm: true]) }
+
+        then: 'every one was recorded, and crossing the cap armed the out-of-request sweep'
+        atomicStateMap.opTokens.size() == 45
+        atomicStateMap.opTokens.every { k, v -> v.state == 'complete' }
+        stateMap.opTokenSweepArmedAt != null
+
+        when: 'the scheduled sweep runs'
+        script.opTokenFileSweep()
+
+        then: 'the map is back at the keep count -- bounded without a whole-map rewrite on any request'
+        atomicStateMap.opTokens.size() == script._opTokenKeepRecords()
+        stateMap.opTokenSweepArmedAt == null
+    }
+
+    def "the DAILY sweep expires records past the TTL on a hub too quiet to arm one"() {
+        given: 'a light-traffic hub: two stale records and one fresh one, well under the size cap. The write path arms the sweep only every keep-count records, which such a hub may not reach for weeks -- the daily cron is what expires them, and it runs under its OWN handler name so a burst-armed runIn cannot cancel it'
+        settingsMap.enableWrite = true
+        installFileStore()
+        hubGet.register('/hub/fileManager/json') { params -> '[]' }
+        script.metaClass.toolCreateRoom = { a -> [success: true, roomId: 7] }
+        atomicStateMap.opTokens = [
+            stale1234567: [state: 'complete', tool: 'hub_create_room', startedAt: FIXED_NOW - DAY_MS - 1L, inline: '{"success":true}'],
+            stale7654321: [state: 'complete', tool: 'hub_create_room', startedAt: FIXED_NOW - DAY_MS - 1L, inline: '{"success":true}']
+        ]
+
+        when: 'a single markerless write lands -- far too few to trip the write-driven arming'
+        mcpDriver.callTool('hub_create_room', [name: 'Den', confirm: true])
+
+        then: 'no sweep was armed, and the expired records are still sitting there'
+        stateMap.opTokenSweepArmedAt == null
+        atomicStateMap.opTokens.size() == 3
+
+        when: 'the daily cron fires'
+        script.opTokenDailySweep()
+
+        then: 'only the fresh record survives'
+        atomicStateMap.opTokens.size() == 1
+        !atomicStateMap.opTokens.containsKey('stale1234567')
+        !atomicStateMap.opTokens.containsKey('stale7654321')
+    }
+
+    def "a deployment status poll with STRINGIFIED gateway args is classified as the read it is"() {
+        given: 'some clients serialize the inner gateway args as a JSON string; the schema-only classifier reads LEAF keys, so an unparsed string made a pure read look like a write'
+        settingsMap.useGateways = true
+        settingsMap.enableWrite = true
+        installFileStore()
+
+        when:
+        def response = mcpDriver.callTool('hub_manage_rule_machine',
+            [tool: 'hub_set_rule', args: '{"deployment":{"op":"status"}}'])
+
+        then: 'no auto token: no running marker, no write-cap slot, no journal churn, and two concurrent polls cannot refuse each other'
+        response.error == null
+        !(atomicStateMap.opTokens ?: [:]).any { k, v -> k.toString().startsWith('auto-') }
     }
 }

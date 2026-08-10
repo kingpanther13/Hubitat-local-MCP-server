@@ -90,7 +90,11 @@ def _op_key(name: str, arguments: dict | None) -> str:
     args = arguments or {}
     key = args.get("tool", name)
     if key == "hub_set_rule":
-        key += ":create" if not (args.get("args") or {}).get("appId") else ":edit"
+        # Inner args may arrive as a JSON STRING (a serialization some clients use, and one
+        # the server parses); treat anything that is not a dict as carrying no appId rather
+        # than blowing up the timing key on it.
+        inner = args.get("args")
+        key += ":create" if not (inner.get("appId") if isinstance(inner, dict) else None) else ":edit"
     return key
 
 
@@ -4110,36 +4114,54 @@ class TestRunner:
             # the hub's JSON parser, the one thing the one-element form in the rule-lifecycle
             # test cannot show. NOT routed through _status_write: that helper's limiter recovery
             # drives a single rule's pausRule toggle and would hit the WRONG rule for a batch.
+            # This carries its own recovery instead, applying the same escalation PER RULE.
             def _batch_pause(paused: bool) -> None:
                 batch_ids = [target_a, target_b]
-                limited = None
-                try:
-                    env = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule_paused",
-                        "args": {"ruleId": batch_ids, "paused": paused}})
+
+                def _attempt() -> str | None:
+                    """The limiter reaches us in two shapes -- a raise, or a returned
+                    {'success': False, 'error': '...excessive hub load'} envelope, which is the
+                    only non-tool-result shape a non-throwing call can produce. Both normalize
+                    to the message; anything else propagates."""
+                    try:
+                        env = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule_paused",
+                            "args": {"ruleId": batch_ids, "paused": paused}})
+                    except McpToolError as exc:
+                        if "excessive hub load" not in str(exc):
+                            raise
+                        return str(exc)
                     if (isinstance(env, dict) and env.get("success") is False
                             and "excessive hub load" in str(env.get("error", ""))):
-                        # hub_set_rule_paused surfaces the platform limiter as a RETURNED
-                        # envelope rather than a raise -- the only non-tool-result shape a
-                        # non-throwing call can produce.
-                        limited = str(env.get("error"))
-                    else:
-                        # Everything else IS the tool envelope, so both keys are wire contract
-                        # and are asserted unconditionally -- a shape-gated check would let a
-                        # regression that drops them skip instead of fail.
-                        assert "rmAction" in env, f"two-id batch envelope is missing rmAction: {env}"
-                        assert sorted(str(x) for x in env.get("ruleIds", [])) == sorted(str(x) for x in batch_ids), \
-                            f"two-id batch should echo both ruleIds, got: {env}"
-                except McpToolError as exc:
-                    if "excessive hub load" not in str(exc):
-                        raise
-                    limited = str(exc)
+                        return str(env.get("error"))
+                    # Everything else IS the tool envelope, so both keys are wire contract
+                    # and are asserted unconditionally -- a shape-gated check would let a
+                    # regression that drops them skip instead of fail.
+                    assert "rmAction" in env, f"two-id batch envelope is missing rmAction: {env}"
+                    assert sorted(str(x) for x in env.get("ruleIds", [])) == sorted(str(x) for x in batch_ids), \
+                        f"two-id batch should echo both ruleIds, got: {env}"
+                    return None
+
+                limited = _attempt()
+                if limited and self._clear_load_throttle(f"two-id batch pause({paused}): {limited}"):
+                    limited = _attempt()
                 if limited:
                     print(f"    [LIMITER] two-id batch pause({paused}) answered with the limiter "
-                          f"({limited}) -- relying on the per-rule convergence poll below.")
+                          f"({limited}) -- converging per rule, then driving the button for any that did not land.")
                 # Batch-safe verification either way: a limiter-dropped reply to a write that
-                # already COMMITTED still converges on the read side.
+                # already COMMITTED still converges on the read side. But the limiter can also
+                # abort RMUtils.sendAction BEFORE it dispatches ("RMUtils.sendAction failed:
+                # ...excessive hub load"), in which case nothing was written and no amount of
+                # polling will converge -- so each rule that is still unconverged gets the same
+                # load-immune pausRule button drive _status_write uses. Applied PER RULE and only
+                # after its own poll proves it has not landed: pausRule is a TOGGLE, so clicking
+                # a rule that already converged would undo the write.
                 for tid in batch_ids:
                     st = self._rm_rule_status_when(tid, lambda s: s.get("paused") is paused)
+                    if st.get("paused") is not paused and limited:
+                        print(f"    [LIMITER] rule {tid} never converged after a limiter-blocked batch -- "
+                              "driving its pausRule button (bypasses RMUtils entirely).")
+                        self._set_rule(tid, {"button": "pausRule"})
+                        st = self._rm_rule_status_when(tid, lambda s: s.get("paused") is paused)
                     assert st.get("paused") is paused, \
                         f"batched pause({paused}) did not land on {tid}: {st}"
 
@@ -4303,6 +4325,71 @@ class TestRunner:
                         _dep_call(record_op)
                     except Exception:
                         pass
+
+    @test("native_apps")
+    def test_deployment_manifest_validated_up_front(self) -> None:
+        # op="create" promises the WHOLE manifest is checked before anything runs -- each op
+        # type's required args included, and commitOps as well as ops. Without that a missing
+        # arg surfaced mid-job, after earlier ops had already committed real apps on the hub.
+        # Nothing here reaches the app layer: every call is refused at validation, so this
+        # test creates and deletes nothing.
+        def _dep_call(dep: dict) -> dict:
+            return self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"deployment": dep, "confirm": True}})
+
+        bad_ops_name = f"{PREFIX}dep-badargs"
+        bad_commit_name = f"{PREFIX}dep-badcommit"
+        refused = None
+        try:
+            _dep_call({"op": "create", "name": bad_ops_name,
+                "ops": [{"op": "pause", "args": {"ruleId": 1}},
+                        {"op": "cloneApp", "args": {"newName": f"{PREFIX}NoSource"}}]})
+        except (McpError, McpToolError) as exc:
+            refused = str(exc)
+        assert refused and "ops[1] (cloneApp)" in refused and "args.sourceAppId" in refused, \
+            f"an op missing a required arg must be refused at create, got: {refused!r}"
+
+        refused = None
+        try:
+            _dep_call({"op": "create", "name": bad_commit_name,
+                "ops": [{"op": "pause", "args": {"ruleId": 1}}],
+                "commitOps": [{"op": "modifyAction", "args": {"appId": 1, "index": 1}}]})
+        except (McpError, McpToolError) as exc:
+            refused = str(exc)
+        assert refused and "commitOps[0] (modifyAction)" in refused and "args.mods" in refused, \
+            f"a commitOps arg error must surface at create, not at cutover, got: {refused!r}"
+
+        # A present-but-wrong-shape commitOps used to be silently replaced with [], so the
+        # job had no cutover ops and op="commit" reported success while the old rules
+        # stayed live and the staged apps stayed disabled.
+        refused = None
+        try:
+            _dep_call({"op": "create", "name": f"{PREFIX}dep-badshape",
+                "ops": [{"op": "pause", "args": {"ruleId": 1}}],
+                "commitOps": {"op": "pause", "args": {"ruleId": 2}}})
+        except (McpError, McpToolError) as exc:
+            refused = str(exc)
+        assert refused and "commitOps must be an array" in refused, \
+            f"a non-array commitOps must be refused, not substituted with an empty list, got: {refused!r}"
+
+        listed = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+            "args": {"deployment": {"op": "status"}}})
+        names = [j.get("name") for j in (listed.get("jobs") or [])]
+        assert bad_ops_name not in names and bad_commit_name not in names \
+            and f"{PREFIX}dep-badshape" not in names, \
+            f"a refused create must leave no job record behind, got: {names}"
+
+    @test("op_replay")
+    def test_stringified_gateway_args_keep_a_read_a_read(self) -> None:
+        # Some clients serialize the inner gateway args as a JSON STRING. The schema-only
+        # classifier reads LEAF keys, so an unparsed string made a pure read -- a deployment
+        # status poll -- read as a write: it minted an auto opToken, wrote a running marker,
+        # counted toward maxConcurrentWrites, and churned the very record journal it serves.
+        poll = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+            "args": json.dumps({"deployment": {"op": "status"}})})
+        assert "jobs" in poll, f"the stringified-args status poll should still answer, got: {poll}"
+        assert "opToken" not in poll, \
+            f"a status poll in this shape must not mint an auto opToken, got: {poll}"
 
     @test("native_apps")
     def test_set_rule_action_expression_reject_is_pre_write(self) -> None:
@@ -11757,6 +11844,50 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         # spawns a fresh backup), then re-list and sweep the _backup_ files (deleting a
         # _backup_ file spawns no backup-of-backup). Paginated listing keeps this sweep
         # working no matter how crufty the hub already is.
+        #
+        # The harness's OWN artifact compounds the same way and was not covered: Layer 4
+        # rewrites e2e-deferred-native-rules.json every deferred run, and hub_write_file
+        # backs up the previous copy first, so each run strands one more
+        # e2e-deferred-native-rules_backup_<ts>.json forever. Measured on the test hub
+        # 2026-08-10: 459 of them going back to 2026-06-08, out of 767 files total -- the
+        # single largest population on the hub and the reason a no-cursor hub_list_files
+        # there returns response_too_large. Only the _backup_ siblings are swept; the live
+        # e2e-deferred-native-rules.json carries no "_backup_" and so never matches (the
+        # disarm sweep still needs to read it).
+        # Two harness-generated populations the PREFIX match never covered, both of which
+        # grow by design every run and are dead the moment the run ends:
+        #   e2e-*_backup_*         -- the harness rewrites its own control files every run
+        #     (e2e-deferred-native-rules.json from Layer 4, e2e-deadman.json from the
+        #     watchdog) and hub_write_file snapshots the previous copy first. Matching on the
+        #     "_backup_" marker rather than on named stems covers every such file including
+        #     ones added later, and can never match a LIVE e2e-*.json, which has no marker.
+        #   mcp-rm-backup-<ruleId>-*.json  -- hub_set_rule snapshots every rule before it
+        #     edits it. The suite edits BAT_E2E_ rules hundreds of times per run and deletes
+        #     the rules afterwards, so their snapshots reference ids that no longer exist.
+        # Measured on the test hub 2026-08-10, of 767 files: 398 deferred-rule backups, 58
+        # deadman backups, 184 rm snapshots. This matters for SPEED, not just tidiness --
+        # every one is carried by each File Manager listing, and hub_set_rule performs one
+        # upload per edit.
+        litter_stems = ("e2e-", "mcp-rm-backup-")
+        # Steady state is a few dozen per run, so this budget rarely binds; it exists so that
+        # inheriting a large backlog (or a stretch of runs that skipped the sweep) cannot
+        # silently turn cleanup into a many-minute serial delete. Over budget it drains across
+        # runs instead, and says how many it left.
+        litter_budget = 120
+        litter_seen = 0
+
+        def _is_litter(nm: str) -> bool:
+            # The e2e- stem matches ONLY _backup_ siblings: the live control files
+            # (e2e-deferred-native-rules.json, e2e-deadman.json) carry no marker and must
+            # survive -- the disarm sweep and the watchdog read them. The rm-backup stem
+            # matches outright: those files ARE the snapshots, and their own
+            # backup-of-backup (spawned when pass 1 deletes one, since that name carries no
+            # "_backup_" marker) starts with the same stem and so is reaped by pass 2.
+            return (nm.startswith(litter_stems[0]) and "_backup_" in nm) or nm.startswith(litter_stems[1])
+
+        def _sweepable(nm: str) -> bool:
+            return nm.startswith(PREFIX) or _is_litter(nm)
+
         for backups_pass in (False, True):
             try:
                 names, authoritative = self._list_all_file_names()
@@ -11764,8 +11895,15 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                     print("  [WARN] File sweep: listing not authoritative; skipping this pass")
                     continue
                 for nm in names:
-                    if not nm.startswith(PREFIX) or ("_backup_" in nm) != backups_pass:
+                    if not _sweepable(nm) or ("_backup_" in nm) != backups_pass:
                         continue
+                    # Budget applies ONLY to the harness-litter classes. This run's own
+                    # BAT_E2E_ litter is always swept in full -- deferring that would leave
+                    # fixtures behind for the next run to trip over.
+                    if _is_litter(nm):
+                        litter_seen += 1
+                        if litter_seen > litter_budget:
+                            continue
                     try:
                         print(f"  Sweep: deleting file '{nm}'")
                         self.client.call_tool("hub_manage_files", {
@@ -11774,6 +11912,12 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                         print(f"  [WARN] File sweep delete failed for '{nm}': {exc}")
             except Exception as exc:
                 print(f"  [WARN] File sweep pass failed: {exc}")
+        if litter_seen > litter_budget:
+            # Never let a truncated sweep read as a completed one: the whole failure mode
+            # being fixed here is litter accumulating unnoticed.
+            print(f"  [WARN] File sweep: {litter_seen - litter_budget} harness-litter file(s) "
+                  f"({' / '.join(litter_stems)}) left for the next run "
+                  f"(budget {litter_budget}/run).")
 
         print("--- Cleanup complete ---\n")
 
