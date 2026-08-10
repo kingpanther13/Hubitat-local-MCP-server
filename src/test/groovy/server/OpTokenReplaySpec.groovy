@@ -1248,7 +1248,9 @@ class OpTokenReplaySpec extends ToolSpecBase {
         store.isEmpty() == inlineExpected
 
         where:
-        bytes | inlineExpected | where
+        // Column named `location`, not `where`: a data column called `where` shadows the block
+        // label inside the where: block itself.
+        bytes | inlineExpected | location
         1024  | true           | 'inline'
         1025  | false          | 'file'
     }

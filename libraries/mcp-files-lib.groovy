@@ -1,5 +1,20 @@
 library(name: "McpFilesLib", namespace: "mcp", author: "kingpanther13", description: "File Manager tool implementations (hub_list_files/hub_read_file/hub_write_file/hub_delete_file) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
+// The op-result exclusion and the name filter, in ONE place. The JSON listing and the
+// HTML-page fallback both apply them, and a drift between the two would mean the same
+// `filter` argument returned different sets depending on which endpoint the firmware served.
+// Order matters: the exclusion runs first so `total` counts what the caller can actually see.
+private List _filesApplyListFilters(List fileList, boolean includeOpResults, String filterLower) {
+    def out = fileList
+    if (!includeOpResults) {
+        out = out.findAll { !(it?.name?.toString()?.startsWith(_opTokenResultFilePrefix())) }
+    }
+    if (filterLower) {
+        out = out.findAll { it?.name?.toString()?.toLowerCase()?.contains(filterLower) }
+    }
+    return out
+}
+
 def toolListFiles(args = null) {
     mcpLog("debug", "file-manager", "Listing files in File Manager")
     def cursor = args?.cursor
@@ -82,12 +97,7 @@ def toolListFiles(args = null) {
             mcpLog("warn", "file-manager", "hub_list_files: parsed response yielded zero files (${shapeHint}) -- shape may not be recognized", null, [details: [endpoint: endpointUsed, shape: shapeHint]])
         }
 
-        if (!includeOpResults) {
-            fileList = fileList.findAll { !(it?.name?.toString()?.startsWith(_opTokenResultFilePrefix())) }
-        }
-        if (filterLower) {
-            fileList = fileList.findAll { it?.name?.toString()?.toLowerCase()?.contains(filterLower) }
-        }
+        fileList = _filesApplyListFilters(fileList, includeOpResults, filterLower)
         mcpLog("info", "file-manager", "Listed ${fileList.size()}${filterLower ? ' matching' : ''} files in File Manager (via ${endpointUsed})")
         def pagedFM = _paginateList(fileList, cursor, 100, "hub_list_files")
         def res = [
@@ -117,12 +127,7 @@ def toolListFiles(args = null) {
 
         if (fileList) {
             fileList = fileList.sort { a, b -> (a.name <=> b.name) }
-            if (!includeOpResults) {
-                fileList = fileList.findAll { !(it?.name?.toString()?.startsWith(_opTokenResultFilePrefix())) }
-            }
-            if (filterLower) {
-                fileList = fileList.findAll { it?.name?.toString()?.toLowerCase()?.contains(filterLower) }
-            }
+            fileList = _filesApplyListFilters(fileList, includeOpResults, filterLower)
             mcpLog("info", "file-manager", "Listed ${fileList.size()}${filterLower ? ' matching' : ''} files from File Manager HTML page")
             def pagedHtml = _paginateList(fileList, cursor, 100, "hub_list_files")
             def res = [
@@ -339,7 +344,7 @@ def _getAllToolDefinitions_partFiles() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    filter: [type: "string", description: "Optional case-insensitive substring to match against file names."],
+                    filter: [type: "string", description: "Optional case-insensitive substring to match against file names, e.g. \"backup\" or \"mcp-rm-backup\"."],
                     includeOpResults: [type: "boolean", description: "Include the server's op-token result buffers (mcp-op-result-*.json). Default false — they are slow-op bookkeeping, not user files."],
                     cursor: [type: "string", description: "Opt-in pagination cursor.[[FLAT_TRIM]] Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
                 ]

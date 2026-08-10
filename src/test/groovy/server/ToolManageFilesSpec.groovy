@@ -98,7 +98,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_list_files filter survives the dispatch envelope in both gateway modes"() {
+    def "hub_list_files filter survives the dispatch envelope in both gateway modes (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         hubGet.register('/hub/fileManager/json') { params ->

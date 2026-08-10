@@ -1306,7 +1306,7 @@ class ToolDeploymentJobsSpec extends ToolSpecBase {
         def result = script.toolSetRule([deployment: [op: "cancel", jobId: "dj-cancel"], confirm: true])
 
         then: "newest-first, and a not-found delete counts as rolled back"
-        deleteCalls == [202, 101]
+        deleteCalls.collect { it.toString() } == ['202', '101']
         result.phase == "cancelled"
         result.cancel.deleted.collect { it.toString() }.toSet() == ["101", "202"].toSet()
         result.cancel.failures.isEmpty()

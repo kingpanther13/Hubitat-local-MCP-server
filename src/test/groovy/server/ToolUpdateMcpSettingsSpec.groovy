@@ -567,6 +567,27 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         badValue << [-1, 101, 2.5]
     }
 
+    @spock.lang.Unroll
+    def "accepts maxConcurrentWrites=#okValue at the range boundaries"() {
+        // The rejection cases pin -1/101/2.5. Without the ACCEPTED boundaries an off-by-one
+        // tightening (to 1..99) would keep this suite green while breaking both documented
+        // edges: 0 is the documented "disable the cap" value the e2e suite relies on, and 100
+        // is the preferences input's stated maximum.
+        given:
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        def result = script.toolUpdateMcpSettings([settings: [maxConcurrentWrites: okValue], confirm: true])
+
+        then:
+        notThrown(IllegalArgumentException)
+        result.success == true
+        sharedAppStub.settingsStore.maxConcurrentWrites == okValue
+
+        where:
+        okValue << [0, 100]
+    }
+
     def "coerces a string-encoded maxConcurrentWrites to a native Integer"() {
         given:
         enableDeveloperModeAndAdminWrite()
