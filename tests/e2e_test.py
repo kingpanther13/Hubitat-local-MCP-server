@@ -12437,10 +12437,23 @@ def main() -> None:
         assert "best_practice_reference" in _m, f"gate block should point at the guide section: {exc}"
         assert "bps-ack-299" not in _m, f"gate block must not leak the key: {exc}"
     print("Best-practice gate: default-ON behaviour verified on the live hub (keyless write blocked)")
+    # maxConcurrentWrites=0 disables the write cap for the suite. This runner is strictly
+    # SERIAL -- one tool call at a time, no threading anywhere -- so it can never legitimately
+    # be the second concurrent writer, and the cap should never fire. It fired 34 times on the
+    # 2026-08-09 full lane, each costing a 5s client sleep, because the cap counts `running`
+    # RECORDS rather than live calls: a write killed mid-flight (a relay 504, or one of that
+    # run's 7 watchdog bounces of app 38) never writes its terminal record, so its record keeps
+    # counting for the full staleness window. Against the default of 2, one or two such ghosts
+    # wedge a serial client. Real clients keep the default -- only the suite, whose serialness
+    # makes the cap pure downside, turns it off. Nothing loses coverage: the refusal contract
+    # lives in RelayBudgetSpec (which seeds the running records directly) and the setting's
+    # bounds and string coercion in ToolUpdateMcpSettingsSpec; no e2e test exercises the cap.
     client.call_tool("hub_manage_mcp", {
         "tool": "hub_update_mcp_settings",
-        "args": {"settings": {"enableMandatoryBPS": False}, "confirm": True}})
-    print("Best-practice gate: pinned OFF for the suite (best_practice_gating tests re-enable it)\n")
+        "args": {"settings": {"enableMandatoryBPS": False, "maxConcurrentWrites": 0},
+                 "confirm": True}})
+    print("Best-practice gate: pinned OFF for the suite (best_practice_gating tests re-enable it)")
+    print("Write cap: disabled for the suite (serial runner; the cap only ever counted ghost records)\n")
 
     # bypassDeviceAllowlist ON for the whole suite. The per-device tools then reach ANY hub device by
     # id via the hub's id-keyed admin endpoints, which is what lets the suite use PERMANENT fixture
