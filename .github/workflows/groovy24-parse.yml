@@ -17,6 +17,9 @@ name: Groovy 2.4 Parse Check
 # It is fully standalone: a separate build under ci/groovy24-parse/ that never touches the
 # root build.gradle or the existing 3.0 unit-test lane.
 on:
+  # Manual run on any ref, no PR needed -- opening a PR just to exercise a lane also
+  # books the single shared test hub for an hour of e2e. Path filters don't gate a dispatch.
+  workflow_dispatch:
   pull_request:
     branches: [main]
     paths:
