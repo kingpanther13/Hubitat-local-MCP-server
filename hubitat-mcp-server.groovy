@@ -1782,10 +1782,13 @@ def handleToolsCall(msg) {
                     ])
                 }
             }
-            if (needsTokensSnapshot) {
-                int maxWrites = _maxConcurrentWrites()
+            // maxWrites <= 0 disables the cap, so scanning the record map for in-flight
+            // writes would be work whose only consumer is the refusal that can no longer
+            // fire. Checked BEFORE the scan, not inside the refusal condition.
+            int maxWrites = needsTokensSnapshot ? _maxConcurrentWrites() : 0
+            if (maxWrites > 0) {
                 def inFlightWrites = _recentRunningWriteOps(readOnlyNamesCache, tokensSnapshot)
-                if (maxWrites > 0 && inFlightWrites.size() >= maxWrites) {
+                if (inFlightWrites.size() >= maxWrites) {
                     def refusal = [
                         success: false, isError: true, status: "too_many_writes_in_flight",
                         inFlight: inFlightWrites,
@@ -2563,7 +2566,7 @@ def _findIdenticalRunningOp(toolName, Integer fpHash, Integer fpLen, tokensArg =
     // write as a duplicate. Requiring the length to agree too means an accidental
     // collision has to land on both, which stray argument JSON does not do. Storing the
     // pair rather than the canonical JSON keeps the record bounded in atomicState.
-    // The 10-minute window here is deliberately LONGER than the cap's 90s window
+    // The 10-minute window here is deliberately LONGER than the cap's 180s window
     // (_recentRunningWriteOps): an exact-args match is strong evidence of a real
     // duplicate worth refusing for as long as the original might still be running,
     // while the cap counts unrelated writes and must not be wedged by a dead record.
@@ -2585,14 +2588,19 @@ def _recentRunningWriteOps(readOnlyNamesArg = null, tokensArg = null) {
     def tokens = (tokensArg != null) ? tokensArg : atomicState.opTokens
     if (!(tokens instanceof Map)) return []
     def readOnlyNames = (readOnlyNamesArg != null) ? readOnlyNamesArg : getReadOnlyToolNames()
-    // 90s, NOT the 10-minute fingerprint window: a record only leaves "running" when
-    // its request reaches the terminal path, so a write whose hub-side thread died
-    // with the severed connection stays "running" forever. Counting those toward the
-    // cap let two dead records block every write for ten minutes (measured on the
-    // e2e hub: 82 refusals, ~14 minutes of client waiting). The cap exists to stop a
-    // client firing writes in PARALLEL -- those arrive seconds apart, so a short
-    // window serves it fully while bounding what a dead record can wedge.
-    long cutoff = now() - 90000L
+    // This window is a ceiling on GHOSTS, not a hold time on healthy calls. A record
+    // leaves "running" the moment its request reaches the terminal path, so a 2s write
+    // stops counting after ~2s regardless of what this number is; only a write whose
+    // hub-side thread died with the severed connection stays "running" and needs to be
+    // aged out. Counting those forever let two dead records block every write for ten
+    // minutes (measured on the e2e hub: 82 refusals, ~14 minutes of client waiting).
+    // 180s, NOT the 10-minute fingerprint window: it has to outlast the slowest write
+    // that can legitimately still be running -- hub_update_package recompiles for well
+    // over 90s, and aging its record out early would let a second write past the cap
+    // while the first is genuinely mid-flight -- while still bounding the wedge a dead
+    // record can cause. The cap exists to stop a client firing writes in PARALLEL, and
+    // those arrive seconds apart, so this window serves it with room to spare.
+    long cutoff = now() - 180000L
     def running = []
     tokens.each { token, rec ->
         if (rec instanceof Map && rec.state == "running" && rec.tool != null && rec.startedAt != null
@@ -8800,7 +8808,7 @@ If the response is lost, DO NOT re-run the operation and DO NOT invent a fresh t
 A NEW write may also be refused before it runs:
 
 - `status: "duplicate_in_flight"` -- an identical untokened call to one of the long-running write tools is already running. Do not re-run it; poll the named `inFlightOpToken` until its result replays. This guards the writes that can outlive their transport, not every write: a short write answers before a duplicate could be sent.
-- `status: "too_many_writes_in_flight"` -- the in-flight count reached `maxConcurrentWrites` (default 2; 1 serializes, 0 disables). The cap gates EVERY write, but only the long-running write tools count toward it. Wait for one named `inFlight` token to finish or poll it, then re-issue this call. The wait is bounded: a record stops counting toward the cap 90s after it started, so a write whose hub-side thread died can never block you indefinitely.
+- `status: "too_many_writes_in_flight"` -- the in-flight count reached `maxConcurrentWrites` (default 2; 1 serializes, 0 disables). The cap gates EVERY write, but only the long-running write tools count toward it. Wait for one named `inFlight` token to finish or poll it, then re-issue this call. The wait is bounded, and it tracks the ACTUAL write: a record stops counting the moment its operation reaches a terminal state, so a fast write frees its slot in seconds. Only a write whose hub-side thread died stays counted, and that is aged out 180s after it started, so it can never block you indefinitely.
 
 A token is SPENT once its operation completes -- runtime errors included. A replayed result carrying an error means that attempt failed; to retry with corrected arguments after a RUNTIME failure, invent a FRESH token. Never reuse a token for a DIFFERENT operation. Exception: a call rejected for invalid arguments (-32602) executed nothing and does not spend its token -- fix the arguments and re-issue with the SAME token.
 
