@@ -1224,7 +1224,7 @@ class OpTokenReplaySpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "the inline ceiling is inclusive: #bytes bytes -> #where"() {
+    def "the inline ceiling is inclusive: #bytes bytes -> #location"() {
         given: 'a payload whose UTF-8 length is exactly #bytes'
         def store = installFileStore()
         def payload = '{"v":"' + ('z' * (bytes - 8)) + '"}'
