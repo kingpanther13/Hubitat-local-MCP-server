@@ -23,11 +23,21 @@ set -uo pipefail
 BY="${1:-}"
 
 clear_lease() {
-  if curl -sS --fail --max-time 30 -X POST "$MCP_URL" \
+  # bestPracticeKey + a CHECKED response, for the same reason as the claim in lease_acquire.sh:
+  # the #299 gate refuses every write with JSON-RPC -32602 on HTTP 200, so `curl --fail` alone
+  # printed "Lease released." while the lease stayed held -- which is how a lease strands and
+  # blocks every later run.
+  local resp err
+  if resp="$(curl -sS --fail --max-time 30 -X POST "$MCP_URL" \
       -H "Content-Type: application/json" \
-      -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"hub_manage_variables","arguments":{"tool":"hub_set_variable","args":{"name":"_TEST_HUB_LEASED_BY","value":""}}}}' \
-      >/dev/null; then
-    echo "Lease released."
+      -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"hub_manage_variables","arguments":{"tool":"hub_set_variable","args":{"name":"_TEST_HUB_LEASED_BY","value":"","bestPracticeKey":"bps-ack-299"}}}}' \
+      2>/dev/null)"; then
+    err="$(printf '%s' "$resp" | jq -r '.error.message // ""' 2>/dev/null || echo "")"
+    if [ -n "$err" ]; then
+      echo "::warning::Lease release REFUSED by the hub (${err}) — relying on 30-min TTL to clear it."
+    else
+      echo "Lease released."
+    fi
   else
     echo "::warning::Lease release failed — relying on 30-min TTL to clear it."
   fi
