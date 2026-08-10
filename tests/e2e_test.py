@@ -4279,19 +4279,31 @@ class TestRunner:
                 st = _dep_call({"op": "status", "jobId": job_id})
             assert st.get("phase") == "ready_for_commit", \
                 f"job should validate to ready_for_commit, got: {st}"
+            # Track from createdAppIds FIRST, before asserting anything about the alias: the
+            # apps exist on the hub the moment the job reports them, so if the alias were
+            # missing or renamed, an assert on it would abort before the ids were tracked and
+            # the finally block would leave real installed apps behind.
+            created_ids = [str(x) for x in (st.get("createdAppIds") or [])]
+            for _cid in created_ids:
+                if _cid not in self.created_native_app_ids:
+                    self.created_native_app_ids.append(_cid)
             clone_id = (st.get("aliases") or {}).get("copy")
-            assert clone_id and [str(x) for x in (st.get("createdAppIds") or [])] == [str(clone_id)], \
+            assert clone_id and created_ids == [str(clone_id)], \
                 f"alias 'copy' should resolve to the one created app, got: {st}"
-            # Track it before any assert below can fail -- it is a real installed app now.
-            self.created_native_app_ids.append(str(clone_id))
             staged = self._rm_rule_status_when(clone_id, lambda s: s.get("disabled") is True)
             assert staged.get("disabled") is True, \
                 f"staged clone should sit disabled until commit, got: {staged}"
 
             # Phase gate on the wire: delete must refuse an unfinished job.
+            # Accept BOTH refusal shapes: a validation throw (-32602, the documented contract)
+            # and a structured {success: false, error} envelope, which is what a runtime-side
+            # rejection returns. Capturing only the raise would let a shape change turn a real
+            # refusal into an assert that silently passes on None.
             refused = None
             try:
-                _dep_call({"op": "delete", "jobId": job_id})
+                _delete_res = _dep_call({"op": "delete", "jobId": job_id})
+                if isinstance(_delete_res, dict) and _delete_res.get("success") is False:
+                    refused = str(_delete_res.get("error") or _delete_res.get("note") or _delete_res)
             except (McpError, McpToolError) as exc:
                 refused = str(exc)
             assert refused and "finished job records" in refused, \
