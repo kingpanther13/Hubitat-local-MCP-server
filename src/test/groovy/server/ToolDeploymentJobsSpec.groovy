@@ -1024,7 +1024,7 @@ class ToolDeploymentJobsSpec extends ToolSpecBase {
     }
 
     def "commit is refused while a worker slice still holds the job's lease"() {
-        given: 'the window this closes: validation flips a job to ready_for_commit from INSIDE a worker slice, which keeps the lease until its final save -- a commit landing there is undone by that slice's whole-job snapshot, leaving cancel and delete accepted against a job already mid-cutover'
+        given: 'the window this closes: validation flips a job to ready_for_commit from INSIDE a worker slice, which keeps the lease until its final save -- a commit landing there is undone by the whole-job snapshot from that slice, leaving cancel and delete accepted against a job already mid-cutover'
         enableWrite()
         seedJob("dj-commit-lease", "ready_for_commit", [
             ops: [[op: "pause", args: [ruleId: 1]]],
@@ -1151,7 +1151,7 @@ class ToolDeploymentJobsSpec extends ToolSpecBase {
         when: 'the stale slice tries to clear the lease it no longer owns'
         script._deployReleaseLease(staleSnapshot)
 
-        then: 'the new owner's record stands, lease and all -- the stale whole-job snapshot is not written'
+        then: 'the record written by the new owner stands, lease and all -- the stale whole-job snapshot is not written'
         storedJob("dj-lease-steal").phase == "cancelled"
         storedJob("dj-lease-steal").sliceLeaseUntil == 1234567890000L + 12345L
     }
