@@ -393,6 +393,12 @@ private void _deployRunValidation(Map job, boolean staging = true) {
             : "commit validation failed: the cutover ran, but created app(s) ${results.findAll { !it.ok }.collect { it.appId }} are unhealthy. The job is NOT completed, so rollback is still available: inspect via hub_get_rule_health / hub_get_app_config, then op='resume' (re-validates) or op='cancel' (deletes every app this job created)."
         _deployAppendHistory(job, "${stage} validation FAILED")
     }
+    // Release the slice lease in the SAME save that publishes the terminal phase. The worker's
+    // finally clears it too, but that is a separate save -- so a client polling in between saw
+    // ready_for_commit carrying a live lease and its immediate commit was refused as "a worker
+    // slice is active right now", which is the normal sequence, not a race worth blocking. The
+    // guard on commit still protects the real case (a slice genuinely mid-run).
+    job.sliceLeaseUntil = null
     _deploySaveJob(job)
 }
 

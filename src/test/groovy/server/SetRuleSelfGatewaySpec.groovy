@@ -39,6 +39,17 @@ class SetRuleSelfGatewaySpec extends ToolSpecBase {
         then: 'thin {operation,appId,args,confirm} selector'
         flat.inputSchema.properties.keySet() == ['operation', 'appId', 'args', 'confirm', 'deployment'] as Set
 
+        when: 'the flat selector actually carries a deployment call'
+        // The assertion above only proves the property is ADVERTISED. Driving one through
+        // proves the thin selector and the self-contained deployment argument compose --
+        // _deployRouteFromTool rejects deployment combined with operation/appId/args, so a
+        // selector that quietly forwarded an empty operation would break this.
+        def deployed = script.toolSetRule([deployment: [op: 'status']])
+
+        then: 'it routes to the job engine, not the envelope path'
+        deployed.success == true
+        deployed.containsKey('jobs')
+
         when: 'gateway mode -- hub_set_rule is a sub-tool of hub_manage_rule_machine, disclosed fat'
         settingsMap.useGateways = true
         def disclosed = script.handleGateway('hub_manage_rule_machine', null, [:]).tools.find { it.name == 'hub_set_rule' }

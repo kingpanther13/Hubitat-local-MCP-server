@@ -179,6 +179,23 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
         badLimit << ['abc', 0, -5, 2.5]
     }
 
+    def "the recentOpsLimit refusal reaches the caller as a -32602 envelope"() {
+        // The feature above pins the direct-call throw; this pins the WIRE contract, which is
+        // what a client actually sees. Without it a change in how executeTool maps
+        // IllegalArgumentException could turn a refusal into a 200 with a default cap.
+        given:
+        sharedLocation.hub = new TestHub()
+        settingsMap.enableRead = true
+
+        when:
+        def response = mcpDriver.callTool('hub_get_info', [includeRecentOps: true, recentOpsLimit: 'abc'])
+
+        then:
+        response.error != null
+        response.error.code == -32602
+        response.error.message.contains('recentOpsLimit')
+    }
+
     def "getHubInfo includes both fields as false when toggles are off"() {
         given:
         settingsMap.enableCustomRuleEngine = false
