@@ -4338,7 +4338,18 @@ class TestRunner:
             assert refused and "finished job records" in refused, \
                 f"delete of a ready_for_commit job should refuse, got: {refused!r}"
 
-            commit = _dep_call({"op": "commit", "jobId": job_id})
+            commit_token = self._next_op_token()
+            try:
+                commit = _dep_call({"op": "commit", "jobId": job_id}, op_token=commit_token)
+            except (McpError, McpToolError, requests.HTTPError) as exc:
+                if "504" not in str(exc):
+                    raise
+                # Same replay the create above uses: a lost commit response otherwise costs a
+                # whole test re-run (fresh source rule and job) to learn what already committed.
+                print("    [RECOVER-504] deployment commit response lost -- polling its opToken")
+                replayed = self._poll_op_result(commit_token, tool="hub_set_rule")
+                commit = replayed if isinstance(replayed, dict) else _dep_call(
+                    {"op": "status", "jobId": job_id})
             deadline = time.time() + 60
             while commit.get("phase") == "committing" and time.time() < deadline:
                 time.sleep(2.0)
@@ -6002,6 +6013,11 @@ class TestRunner:
             assert refused.get("isError") is True, f"the cap refusal must ride isError: {refused}"
         finally:
             worker.join(timeout=90)
+            if worker.is_alive():
+                print(f"    [WARN] background write on {app_id} still running after the 90s join "
+                      f"-- deleting the rule now races it")
+            elif first.get("error"):
+                print(f"    [WARN] background write on {app_id} raised: {first['error']!r}")
             self.client.call_tool("hub_manage_mcp", {"tool": "hub_update_mcp_settings",
                 "args": {"settings": {"maxConcurrentWrites": 0}, "confirm": True}})
             self._delete_native(app_id)
