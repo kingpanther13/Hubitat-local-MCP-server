@@ -25,6 +25,7 @@ import os
 import random
 import re
 import sys
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -5964,6 +5965,46 @@ class TestRunner:
     #      deferred-updateRule suppression are covered deterministically by the Spock
     #      RelayBudgetSpec; here we prove the recovery LOOP works against the live wizard.
     #      Each test owns a small BAT_E2E_* rule (create -> assert -> delete in finally).
+
+    @test("op_replay")
+    def test_write_cap_refuses_a_concurrent_marker_tracked_write(self) -> None:
+        # The ONLY test that issues overlapping writes, and only because the thing under test IS
+        # the guard against them: the cap counts `running` records, so a second write has to
+        # arrive while the first is still executing. Raw _send on the second leg -- call_tool
+        # would sit in its BACKPRESSURE wait instead of surfacing the refusal.
+        self.client.call_tool("hub_manage_mcp", {"tool": "hub_update_mcp_settings",
+            "args": {"settings": {"maxConcurrentWrites": 1}, "confirm": True}})
+        app_id = self._create_native_rule("WriteCapProbe")
+        first: dict = {}
+
+        def slow_write():
+            try:
+                first["result"] = self._rm_call_soft(
+                    {"appId": app_id, "confirm": True,
+                     "addAction": {"capability": "log", "message": "cap probe first"}})
+            except BaseException as exc:
+                first["error"] = exc
+
+        worker = threading.Thread(target=slow_write, daemon=True)
+        try:
+            worker.start()
+            time.sleep(1.5)                          # let the first write register its marker
+            refused = self.client._send("tools/call", {
+                "name": "hub_manage_rule_machine",
+                "arguments": {"tool": "hub_set_rule", "args": {
+                    "appId": app_id, "confirm": True,
+                    "addAction": {"capability": "log", "message": "cap probe second"}}}})
+            body = ""
+            for c in (refused.get("content") or []):
+                if c.get("type") == "text":
+                    body = c["text"]
+            assert '"too_many_writes_in_flight"' in body,                 f"a write arriving while another is in flight must be refused by the cap, got: {body[:400]}"
+            assert refused.get("isError") is True, f"the cap refusal must ride isError: {refused}"
+        finally:
+            worker.join(timeout=90)
+            self.client.call_tool("hub_manage_mcp", {"tool": "hub_update_mcp_settings",
+                "args": {"settings": {"maxConcurrentWrites": 0}, "confirm": True}})
+            self._delete_native(app_id)
 
     @test("op_replay")
     def test_op_replay_multi_patch_completes_via_recovery(self) -> None:
@@ -12523,7 +12564,9 @@ def main() -> None:
     # wedge a serial client. Real clients keep the default -- only the suite, whose serialness
     # makes the cap pure downside, turns it off. Nothing loses coverage: the refusal contract
     # lives in RelayBudgetSpec (which seeds the running records directly) and the setting's
-    # bounds and string coercion in ToolUpdateMcpSettingsSpec; no e2e test exercises the cap.
+    # bounds and string coercion in ToolUpdateMcpSettingsSpec, and
+    # test_write_cap_refuses_a_concurrent_marker_tracked_write raises the cap for one isolated
+    # scenario (the only overlapping writes in the suite) and restores 0 in its finally.
     client.call_tool("hub_manage_mcp", {
         "tool": "hub_update_mcp_settings",
         "args": {"settings": {"enableMandatoryBPS": False, "maxConcurrentWrites": 0},
