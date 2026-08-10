@@ -10282,9 +10282,14 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             r = self.client.call_tool("hub_list_devices", {"scope": "all"})
             return r.get("devices") or []
         def _scope(mode: str, ids: list[str]) -> dict:
+            # Carries an opToken because this write is NOT idempotent on re-run: a dropped
+            # response whose write already committed, re-sent, reports "0 devices removed" for
+            # an id it just removed -- and the assertion below reads that second answer as the
+            # remove having failed. With a token the re-send replays the original result.
             return self.client.call_tool("hub_manage_mcp", {
                 "tool": "hub_update_mcp_settings",
-                "args": {"settings": {"selectedDevices": {"mode": mode, "ids": ids}}, "confirm": True},
+                "args": {"settings": {"selectedDevices": {"mode": mode, "ids": ids}},
+                         "confirm": True, "opToken": self._next_op_token()},
             })
 
         original = _authorized_ids()
