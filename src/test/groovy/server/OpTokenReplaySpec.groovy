@@ -910,6 +910,51 @@ class OpTokenReplaySpec extends ToolSpecBase {
         !atomicStateMap.opTokenSweepFiles
     }
 
+    def "the sweep reaps orphaned result files that no record claims"() {
+        // An app update can land a build whose scheduled sweep never runs, and the
+        // eviction that queued those names already dropped the records -- so nothing
+        // could re-derive the filenames and the files were immortal.
+        given:
+        def deleted = []
+        script.metaClass.deleteHubFile = { String name -> deleted << name }
+        atomicStateMap.opTokenSweepFiles = []
+        atomicStateMap.opTokens = [
+            livetoken123: [state: 'complete', tool: 'hub_create_room', startedAt: FIXED_NOW,
+                           file: FILE_PREFIX + 'livetoken123.json']
+        ]
+        hubGet.register('/hub/fileManager/json') { params ->
+            groovy.json.JsonOutput.toJson([
+                [name: FILE_PREFIX + 'livetoken123.json', size: 100],
+                [name: FILE_PREFIX + 'orphanaaa111.json', size: 100],
+                [name: FILE_PREFIX + 'orphanbbb222.json', size: 100],
+                [name: 'mcp-rm-backup-99-20260101-000000.json', size: 100]
+            ])
+        }
+
+        when:
+        script.opTokenFileSweep()
+
+        then: 'both unclaimed op-result files go; the claimed one and unrelated files stay'
+        deleted.sort() == [FILE_PREFIX + 'orphanaaa111.json', FILE_PREFIX + 'orphanbbb222.json'].sort()
+    }
+
+    def "the orphan reap never runs while queued deletes remain"() {
+        given:
+        def deleted = []
+        script.metaClass.deleteHubFile = { String name -> deleted << name }
+        atomicStateMap.opTokens = [:]
+        atomicStateMap.opTokenSweepFiles = [FILE_PREFIX + 'queued1.json']
+        hubGet.register('/hub/fileManager/json') { params ->
+            groovy.json.JsonOutput.toJson([[name: FILE_PREFIX + 'orphanccc333.json', size: 100]])
+        }
+
+        when:
+        script.opTokenFileSweep()
+
+        then: 'only the queued name is deleted this pass -- the listing is not even fetched'
+        deleted == [FILE_PREFIX + 'queued1.json']
+    }
+
     def "the sweep queue is bounded so a delete backlog cannot grow atomicState without limit"() {
         given:
         script.metaClass.deleteHubFile = { String name -> }

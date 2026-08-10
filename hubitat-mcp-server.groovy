@@ -636,9 +636,10 @@ def initialize() {
     if (_deployJobs().any { k, v -> (v instanceof Map) && (v.phase?.toString() in _deployActivePhases()) && v.background != false }) {
         runIn(15, "deployJobWorker")
     }
-    if (atomicState.opTokenSweepFiles instanceof List && atomicState.opTokenSweepFiles) {
-        runIn(20, "opTokenFileSweep")
-    }
+    // Always arm it, not just when a queue exists: the sweep also reaps orphaned
+    // result files, which is how a hub that inherited them from an earlier build
+    // (or from a run whose scheduled sweep was replaced mid-flight) cleans itself up.
+    runIn(20, "opTokenFileSweep")
     // Only egress to GitHub immediately on first install. state.updateCheck is
     // null until the first check completes; once set, routine settings saves
     // skip the immediate call and rely on the daily schedule + the in-function
@@ -2280,7 +2281,51 @@ def opTokenFileSweep() {
             mcpLog("debug", "op-token", "sweep could not delete result file ${fileName}: ${e.message}")
         }
     }
-    if (remaining) runIn(60, "opTokenFileSweep")
+    if (remaining) { runIn(60, "opTokenFileSweep"); return }
+    // Queue drained -- reap ORPHANS: result files whose token no longer has a record.
+    // They are otherwise immortal. An app update (the e2e watchdog restoring main after
+    // every run is the worst case) can land a build whose scheduled sweep never runs, and
+    // the eviction that queued those names has already dropped the records, so nothing
+    // else can re-derive the filenames. Left alone they accumulate in File Manager run
+    // after run and every upload/delete the hub does gets slower.
+    _opTokenReapOrphanResults(10)
+}
+
+// Delete up to maxDeletes reserved-prefix result files that no live record claims.
+// Bounded and scheduled (never in a request); silent no-op when the listing is
+// unreadable, since a failed reap must never break the sweep.
+def _opTokenReapOrphanResults(int maxDeletes) {
+    def known = [] as Set
+    def recs = atomicState.opTokens
+    if (recs instanceof Map) {
+        recs.each { k, v -> known << _opTokenResultFile(k.toString()) }
+    }
+    def listing
+    try {
+        listing = hubInternalGet("/hub/fileManager/json")
+        if (!listing) return
+    } catch (Exception e) {
+        mcpLog("debug", "op-token", "orphan reap: file listing unreadable (${e.message})")
+        return
+    }
+    def files
+    try {
+        def parsed = new groovy.json.JsonSlurper().parseText(listing.toString())
+        files = (parsed instanceof List) ? parsed : (parsed?.files ?: [])
+    } catch (Exception ignored) { return }
+    int deleted = 0
+    for (f in files) {
+        if (deleted >= maxDeletes) break
+        def name = (f instanceof Map) ? f.name?.toString() : f?.toString()
+        if (name == null || !name.startsWith(_opTokenResultFilePrefix())) continue
+        if (known.contains(name)) continue
+        try { deleteHubFile(name); deleted++ }
+        catch (Exception e) { mcpLog("debug", "op-token", "orphan reap could not delete ${name}: ${e.message}") }
+    }
+    if (deleted > 0) {
+        mcpLog("info", "op-token", "orphan reap deleted ${deleted} unclaimed op-result file(s) from File Manager.")
+        runIn(60, "opTokenFileSweep")
+    }
 }
 
 // Mark a token running just before dispatch (per-entry write), then prune.
