@@ -432,11 +432,16 @@ class ToolDeploymentJobsSpec extends ToolSpecBase {
         and: 'nothing is left active, so the worker does not schedule another pass'
         !runInCalls.any { it[1] == "deployJobWorker" }
 
-        when: 'a second job is still active alongside it'
-        seedJob("dj-active", "staging", [ops: [], opStatus: [], history: []])
+        when: 'a second job is still active alongside it -- its lease is held by another slice,'
+        // ...so THIS pass skips it and it is still staging when the re-arm is evaluated. A job
+        // with no ops would instead run to completion inside this very pass and leave nothing
+        // active, which is what made the first version of this assertion unreachable.
+        seedJob("dj-leased", "staging", [ops: [[op: "pause", args: [ruleId: 2]]], opStatus: [[status: "pending"]],
+                                         sliceLeaseUntil: 1234567890000L + 60000L, history: []])
         script.deployJobWorker()
 
         then: 'the chain is re-armed -- the re-arm keys on ANY active job, not on the last one inspected'
+        storedJob("dj-leased").phase == "staging"
         runInCalls.any { it[1] == "deployJobWorker" }
     }
 
