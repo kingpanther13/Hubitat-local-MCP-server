@@ -318,7 +318,7 @@ Note: raw `pvTF.<N>` stores the inverse of the rendered True/False (`true`=False
 
 ### pauseRule
 Actions: `pause`, `resume`
-Note: raw `pR.<N>` stores the inverse of the rendered True/False (`false`=pause, `true`=resume). The rendered paragraph is ground truth; do not "fix" readbacks against the raw field.
+Note: raw `pR.<N>` stores the inverse of the rendered pause/resume (`false`=pause, `true`=resume). The rendered paragraph is ground truth; do not "fix" readbacks against the raw field.
 
 | Field | Type | Notes |
 |---|---|---|

@@ -4230,6 +4230,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
             inputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     deviceId: [type: "string", description: "Device ID from hub_list_devices - must be confirmed by user if not an exact match"],
                     command: [type: "string", description: "Command name, e.g. \"setLevel\". Must be one of the device's supported commands (see hub_get_device)."],
                     parameters: [type: "array", description: "Ordered command arguments as an array of strings, in the order the command declares them, e.g. [\"75\"] for setLevel[[FLAT_TRIM]] or [\"#FF0000\"] for setColor[[/FLAT_TRIM]].", items: [type: "string"]],
@@ -4331,6 +4332,7 @@ Only modify devices user explicitly requested. Writes require Write master. Call
             inputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     deviceId: [type: "string", description: "The device ID to update (from hub_list_devices or hub_list_devices(filter='virtual'))"],
                     label: [type: "string", description: "New display label for the device"],
                     name: [type: "string", description: "New device name"],
@@ -4377,6 +4379,7 @@ Device + history lost, automations break. Requires Write master.""",
             inputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     deviceId: [type: "string", description: "The device ID to permanently delete"],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created, device was verified, and user explicitly approved the deletion."]
                 ],
@@ -4410,6 +4413,7 @@ Pre-flight (mandatory): 1) hub backup <24h (hub_create_backup); 2) preview the b
             inputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     from_device_id: [type: "string", description: "Device ID whose references will be replaced everywhere (from hub_list_devices)."],
                     to_device_id: [type: "string", description: "Replacement device ID. Must be capability-compatible — on mismatch the error lists the compatible candidates."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms a hub backup exists (<24h) and the user approved the swap."]
@@ -4451,6 +4455,7 @@ Pre-flight: backup <24h (hub_create_backup) + user OK.""",
             inputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     old_device_id: [type: "string", description: "Device to replace; its id is preserved."],
                     new_device_id: [type: "string", description: "Compatible replacement device."],
                     list_options: [type: "boolean", description: "Read-only: list compatible replacement candidates (no confirm)."],
@@ -4488,6 +4493,7 @@ Pre-flight: backup <24h (hub_create_backup) + user OK.""",
             inputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     deviceTypeId: [type: "string", description: "Driver-type id to instantiate (the 'id' from hub_list_drivers(include='all'))."],
                     label: [type: "string", description: "Optional display label for the new device."],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to create the device."]
