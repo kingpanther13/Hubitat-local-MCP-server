@@ -3769,7 +3769,7 @@ class TestRunner:
         })
         try:
             # Periodic Schedule needs periodic:{frequency,everyN}; a bare `minutes` is unrecognized.
-            periodic = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+            periodic = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
                 "args": {"appId": app_id, "addTrigger": {"capability": "Periodic Schedule", "minutes": 1},
                          "confirm": True}})
             assert periodic.get("success") is False and "periodic" in str(periodic.get("error", "")).lower(), \
@@ -3781,7 +3781,7 @@ class TestRunner:
                 and "backup saved before write" not in str(periodic.get("restoreHint", "")).lower(), \
                 f"periodic pre-flight refusal should carry a not-touched restoreHint, got: {periodic.get('restoreHint')!r}"
             # A state-change token belongs in comparator, not state.
-            state_changed = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+            state_changed = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
                 "args": {"appId": app_id, "addTrigger": {"capability": "Temperature", "state": "changed"},
                          "confirm": True}})
             assert state_changed.get("success") is False and "comparator" in str(state_changed.get("error", "")).lower(), \
@@ -3791,14 +3791,14 @@ class TestRunner:
                 f"state-change pre-flight refusal should carry a not-touched restoreHint, got: {state_changed.get('restoreHint')!r}"
             # Same mistake via the `value` alias (the field numeric capabilities most naturally
             # use) -- the guard checks the effective value, so this bypass is caught too.
-            value_alias = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+            value_alias = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
                 "args": {"appId": app_id, "addTrigger": {"capability": "Temperature", "value": "increased"},
                          "confirm": True}})
             assert value_alias.get("success") is False and "comparator" in str(value_alias.get("error", "")).lower(), \
                 f"Temperature value:'increased' should fail loud steering to comparator, got: {value_alias}"
             # An under-specified periodic shape (frequency present, mode field absent) would
             # commit a phantom '?' row -- reject it up front naming the missing field.
-            under_periodic = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+            under_periodic = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
                 "args": {"appId": app_id, "addTrigger": {"capability": "Periodic Schedule",
                          "periodic": {"frequency": "Hourly"}}, "confirm": True}})
             assert under_periodic.get("success") is False and "everyn" in str(under_periodic.get("error", "")).lower(), \
@@ -3811,7 +3811,7 @@ class TestRunner:
             # null and is rejected pre-write, steering to action: -- the same success:false +
             # not-touched contract as the trigger rejects above. Reuses this same throwaway rule
             # (a rejected spec mutates nothing, so nothing accumulates on it).
-            action_state = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+            action_state = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
                 "args": {"appId": app_id, "addAction": {"capability": "switch", "state": "on"},
                          "confirm": True}})
             assert action_state.get("success") is False and "action:" in str(action_state.get("error", "")).lower(), \
@@ -3822,7 +3822,7 @@ class TestRunner:
             # Mixed EDIT shortcuts used to apply only the first branch while reporting success.
             # The guard must reject the full call before the backup snapshot or any wizard write.
             try:
-                self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+                self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
                     "appId": app_id,
                     "addAction": {"capability": "log", "message": "must not land"},
                     "addLocalVariable": {"name": "mustNotExist", "type": "String", "value": "x"},
@@ -3842,7 +3842,7 @@ class TestRunner:
             # list before any wizard write -- rejects it up front, naming the missing id and steering
             # to hub_list_rules, with the same not-touched contract. A wildly out-of-range id is
             # guaranteed absent on any hub.
-            runrule_missing = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+            runrule_missing = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
                 "args": {"appId": app_id, "addAction": {"capability": "runRule", "ruleIds": [999999999]},
                          "confirm": True}})
             assert runrule_missing.get("success") is False \
@@ -3861,7 +3861,7 @@ class TestRunner:
                 "addActions": [{"capability": "log", "message": "E2E runRule accept target"}],
             })
             try:
-                runrule_ok = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                runrule_ok = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
                     "args": {"appId": app_id, "addAction": {"capability": "runRule", "ruleIds": [runrule_target_id]},
                              "confirm": True}})
                 assert runrule_ok.get("success") is True, \
@@ -3872,7 +3872,7 @@ class TestRunner:
             # condition capability is unmodelled on every structured condition surface, and a
             # state-change comparator has no meaning on a point-in-time condition. Both are rejected
             # with a clear steer rather than committing a broken condition.
-            date_cond = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+            date_cond = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
                 "args": {"appId": app_id, "addRequiredExpression": {"conditions": [{"capability": "Days of week"}]},
                          "confirm": True}})
             assert date_cond.get("success") is False \
@@ -3881,7 +3881,7 @@ class TestRunner:
             # Non-condition capability parity: Last Event Device is a valid STPage picker option but is
             # not usable as a condition (it references the device that fired the trigger, an action-side ref). As a Required Expression
             # condition it must fail loud (not a condition), NOT commit a broken condition.
-            last_event_cond = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+            last_event_cond = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
                 "args": {"appId": app_id, "addRequiredExpression": {"conditions": [{"capability": "Last Event Device"}]},
                          "confirm": True}})
             assert last_event_cond.get("success") is False \
@@ -3905,14 +3905,14 @@ class TestRunner:
             # needs a lock device plus a specific code name the tool's condition path cannot set -- it
             # would commit an incomplete, non-functional condition (health.ok stays true, so no broken
             # marker catches it). Must fail loud steering to the RM UI, NOT commit garbage.
-            lock_codes_cond = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+            lock_codes_cond = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
                 "args": {"appId": app_id, "addRequiredExpression": {"conditions": [{"capability": "Lock codes"}]},
                          "confirm": True}})
             assert lock_codes_cond.get("success") is False \
                 and "lock device" in str(lock_codes_cond.get("error", "")).lower() \
                 and "code name" in str(lock_codes_cond.get("error", "")).lower(), \
                 f"Lock codes condition should fail loud as an unconfigurable condition, got: {lock_codes_cond}"
-            change_cond = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+            change_cond = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
                 "args": {"appId": app_id, "addRequiredExpression": {"conditions": [
                          {"capability": "Switch", "deviceIds": [int(self.get_test_switch_id())],
                           "comparator": "*changed*"}]}, "confirm": True}})
@@ -3925,7 +3925,7 @@ class TestRunner:
             # pre-write reject as Switch, not a silent broken/lost-comparator commit. Water Sensor
             # is such a capability. No deviceIds needed: the pre-walker guard fires on the
             # capability + change comparator before any device write.
-            noncurated_change_cond = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+            noncurated_change_cond = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
                 "args": {"appId": app_id, "addRequiredExpression": {"conditions": [
                          {"capability": "Water Sensor", "comparator": "*changed*"}]}, "confirm": True}})
             assert noncurated_change_cond.get("success") is False \
@@ -3941,7 +3941,7 @@ class TestRunner:
 
             # Conditional-TRIGGER surface parity (static condition path): the same caps reject through the
             # real tool, leaving the rule untouched (the condition guard fires before any trigger/condition write).
-            trig_lock = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+            trig_lock = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
                 "args": {"appId": app_id, "addTrigger": {"capability": "Switch",
                          "deviceIds": [int(self.get_test_switch_id())], "state": "on",
                          "condition": {"capability": "Lock codes"}}, "confirm": True}})
@@ -5062,6 +5062,23 @@ class TestRunner:
                     return None
             time.sleep(2.0)
         return None
+
+    def _refusal_call(self, gateway: str, payload: dict) -> Any:
+        """call_tool for a write expected to be REFUSED pre-flight, with a 504 re-issue.
+
+        A pre-flight refusal mutates nothing -- these very tests assert the returned
+        restoreHint says RM was "not touched" -- so unlike a committing write, re-issuing
+        after a lost response cannot double-commit anything. Without this a relay 504 on a
+        call whose whole point is to be rejected fails the run, which is what happened to
+        test_set_rule_failloud_wrong_trigger_shape on the 2026-08-10 full lane."""
+        for attempt in (1, 2):
+            try:
+                return self.client.call_tool(gateway, payload)
+            except (McpError, McpToolError, requests.HTTPError) as exc:
+                if "504" not in str(exc) or attempt == 2:
+                    raise
+                print("    [RECOVER-504] pre-flight refusal re-issued -- the refused call "
+                      "committed nothing, so a re-send cannot double-apply")
 
     def _call_with_op_recovery(self, args: dict, token: str, max_iters: int = 8) -> Any:
         """Drive a slow tokened hub_set_rule edit to completion across cloud-relay
@@ -6277,16 +6294,14 @@ class TestRunner:
         sw = int(self.get_test_switch_id())
         app_id = self._create_native_rule("CustEnumChangedRE")
         try:
-            result = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_set_rule",
-                "args": {
-                    "appId": app_id,
-                    "addRequiredExpression": {"conditions": [
-                        {"capability": "Custom Attribute", "deviceIds": [sw],
-                         "attribute": "switch", "comparator": "*changed*"}]},
-                    "confirm": True,
-                },
-            })
+            # Through the recovery helper: this edit COMMITS part of the condition, so a relay
+            # 504 has to replay the token rather than re-issue the write.
+            result = self._call_with_op_recovery({
+                "appId": app_id,
+                "addRequiredExpression": {"conditions": [
+                    {"capability": "Custom Attribute", "deviceIds": [sw],
+                     "attribute": "switch", "comparator": "*changed*"}]},
+            }, self._next_op_token())
             # The add still commits the rest of the condition (success is not a hard failure) ...
             assert result.get("success") is not False, f"addRequiredExpression reported failure: {result}"
             # ... but the unrepresentable comparator must NOT be falsely claimed applied.
@@ -6328,15 +6343,15 @@ class TestRunner:
             assert add.get("conditionIndices"), \
                 f"initial addRequiredExpression produced no conditionIndices: {add}"
             # Replace it in place with a DIFFERENT condition: Switch is off.
-            result = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_set_rule",
-                "args": {
-                    "appId": app_id,
-                    "replaceRequiredExpression": {"conditions": [
-                        {"capability": "Switch", "deviceIds": [sw], "state": "off"}]},
-                    "confirm": True,
-                },
-            })
+            # Through the recovery helper: this edit COMMITS, so a relay 504 must be resolved
+            # by replaying the token rather than re-issuing the write (a re-run would apply the
+            # replace twice). hub_set_rule:edit sits at the relay ceiling, so this is the shape
+            # that actually drops responses.
+            result = self._call_with_op_recovery({
+                "appId": app_id,
+                "replaceRequiredExpression": {"conditions": [
+                    {"capability": "Switch", "deviceIds": [sw], "state": "off"}]},
+            }, self._next_op_token())
             # The replace committed a new live expression in place.
             assert result.get("success") is True, \
                 f"replaceRequiredExpression reported failure: {result}"
