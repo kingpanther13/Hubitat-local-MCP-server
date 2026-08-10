@@ -1,5 +1,8 @@
 name: PR Guard
 on:
+  # Manual run on any ref, no PR needed -- opening a PR just to exercise a lane also
+  # books the single shared test hub for an hour of e2e.
+  workflow_dispatch:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened]
@@ -11,16 +14,21 @@ permissions:
 jobs:
   guard:
     runs-on: ubuntu-latest
+    env:
+      # A dispatch has no PR to read a base off, so fall back to the default branch --
+      # the same diff the PR run would take. Kept out of `run:`/`with:` interpolation so
+      # a ref name can never be spliced into the shell.
+      BASE_BRANCH: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Fetch base branch
-        run: git fetch origin ${{ github.event.pull_request.base.ref }}
+        run: git fetch origin "$BASE_BRANCH"
       - uses: actions/setup-python@v7
         with:
           python-version: '3.x'
       - name: Run PR guard
         env:
-          BASE_REF: origin/${{ github.event.pull_request.base.ref }}
+          BASE_REF: origin/${{ env.BASE_BRANCH }}
         run: python .github/scripts/pr_guard.py

@@ -1,8 +1,7 @@
 name: Unit Tests
 on:
-  # Manual runs: lets the fast Spock lanes be driven on ANY branch with no PR open,
-  # so a spec change can be verified without opening a pull request -- which would
-  # also start the hub e2e lane and take the shared test hub for an hour.
+  # Manual run on any ref, no PR needed -- opening a PR just to exercise a lane also
+  # books the single shared test hub for an hour of e2e.
   workflow_dispatch:
   pull_request:
     branches: [main]
