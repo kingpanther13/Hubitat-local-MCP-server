@@ -413,23 +413,30 @@ class ToolDeploymentJobsSpec extends ToolSpecBase {
         stored.phase == "failed"
     }
 
-    def "the worker re-arms even when a job slice save blows up"() {
-        given: 'the lease claim used to sit OUTSIDE the per-job try, so a save failure escaped the whole worker before the re-arm -- the job then sat in staging forever, its fail streak never incremented (so the 3-strike terminal path could not fire) and a stale lease refusing resume/cancel/delete'
+    def "a failing op ends its job and does NOT re-arm, but a still-active job keeps the chain alive"() {
+        given: 'one job whose op fails (terminal) and one still staging'
         enableWrite()
-        seedJob("dj-savefail", "staging", [ops: [[op: "pause", args: [ruleId: 1]]], opStatus: [[status: "pending"]], history: []])
-
-        // Throw from the op's PUBLIC tool call, not from _deploySaveJob: that helper is
-        // private, so a metaClass stub on it never intercepts the library's internal call --
-        // the real save would succeed, the single-op job would run to completion, and the
-        // worker would correctly decline to re-arm a job that is no longer active. The test
-        // would then pass or fail for reasons unrelated to the invariant it names.
-        script.metaClass.toolSetRulePaused = { Map a -> throw new RuntimeException("atomicState write refused") }
+        seedJob("dj-fails", "staging", [ops: [[op: "pause", args: [ruleId: 1]]], opStatus: [[status: "pending"]], history: []])
+        // Throws from the op's PUBLIC tool call. _deployRunSlice catches it, records the op
+        // failed and drives the job to phase 'failed' -- a TERMINAL phase, so declining to
+        // re-arm for that job alone is correct, not the bug this pins.
+        script.metaClass.toolSetRulePaused = { Map a -> throw new RuntimeException("hub refused") }
 
         when:
         script.deployJobWorker()
 
-        then: 'the throw is contained and the continuation chain survives'
+        then: 'the throw is contained and the failed job is terminal'
         notThrown(Exception)
+        storedJob("dj-fails").phase == "failed"
+
+        and: 'nothing is left active, so the worker does not schedule another pass'
+        !runInCalls.any { it[1] == "deployJobWorker" }
+
+        when: 'a second job is still active alongside it'
+        seedJob("dj-active", "staging", [ops: [], opStatus: [], history: []])
+        script.deployJobWorker()
+
+        then: 'the chain is re-armed -- the re-arm keys on ANY active job, not on the last one inspected'
         runInCalls.any { it[1] == "deployJobWorker" }
     }
 
