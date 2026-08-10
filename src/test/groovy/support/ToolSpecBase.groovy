@@ -11,22 +11,13 @@ package support
 abstract class ToolSpecBase extends HarnessSpec {
 
     /**
-     * Every runIn(delay, handler[, opts]) the script schedules, newest last.
-     *
-     * runIn is an AppExecutor API method, so it is intercepted by the shared mock and a
-     * `script.metaClass.runIn = {...}` stub NEVER sees it -- a spec written that way records
-     * nothing and its "was it re-armed?" assertion silently reads as "no" whatever the code
-     * did. The interaction has to be layered on the mock instead.
+     * Every runIn(delay, handler[, opts]) the script schedules, newest last -- recorded by the
+     * permanent stub HarnessSpec attaches when it builds the AppExecutor mock, and cleared per
+     * test there. runIn is an AppExecutor method, so `script.metaClass.runIn = {...}` never
+     * intercepts it: a spec written that way records nothing and its "did it re-arm?"
+     * assertion can only ever read false.
      */
-    protected static final List<List<Object>> runInCalls = []
-
-    def setupSpec() {
-        appExecutor.runIn(*_) >> { args -> runInCalls << (args as List) }
-    }
-
-    def setup() {
-        runInCalls.clear()
-    }
+    protected List<List<Object>> getRunInCalls() { RUN_IN_CALLS }
 
     /**
      * Record every uploaded file name EXCEPT the op-token result buffers. Auto-tokened writes

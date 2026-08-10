@@ -3911,16 +3911,30 @@ def applyDescriptionTransform(List tools, boolean dropContent) {
         if (tool?.description instanceof String) {
             tool.description = stripFlatTrim(tool.description as String, dropContent)
         }
-        def props = tool?.inputSchema?.properties
-        if (props instanceof Map) {
-            (props as Map).each { _propName, propDef ->
-                if (propDef instanceof Map && propDef.description instanceof String) {
-                    propDef.description = stripFlatTrim(propDef.description as String, dropContent)
-                }
-            }
-        }
+        _stripFlatTrimDeep(tool?.inputSchema, dropContent)
     }
     return tools
+}
+
+// Walk EVERY description in a schema, not just the top-level properties. A marker inside a
+// nested object's properties, or inside an array's items, used to survive the transform and
+// ship raw in the catalog -- the flat wire an LLM reads. Depth is small and bounded by the
+// schema shape, so the recursion is cheap and runs once per catalog build.
+private void _stripFlatTrimDeep(Object node, boolean dropContent) {
+    if (node instanceof List) {
+        node.each { _stripFlatTrimDeep(it, dropContent) }
+        return
+    }
+    if (!(node instanceof Map)) return
+    def m = node as Map
+    if (m.description instanceof String) {
+        m.description = stripFlatTrim(m.description as String, dropContent)
+    }
+    m.each { k, v ->
+        if (k != 'description' && (v instanceof Map || v instanceof List)) {
+            _stripFlatTrimDeep(v, dropContent)
+        }
+    }
 }
 
 // Wire form of a published outputSchema (issue #342): strip `required` arrays recursively.
