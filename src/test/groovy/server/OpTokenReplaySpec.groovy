@@ -924,18 +924,27 @@ class OpTokenReplaySpec extends ToolSpecBase {
         ]
         hubGet.register('/hub/fileManager/json') { params ->
             groovy.json.JsonOutput.toJson([
-                [name: FILE_PREFIX + 'livetoken123.json', size: 100],
-                [name: FILE_PREFIX + 'orphanaaa111.json', size: 100],
-                [name: FILE_PREFIX + 'orphanbbb222.json', size: 100],
-                [name: 'mcp-rm-backup-99-20260101-000000.json', size: 100]
+                [name: FILE_PREFIX + 'livetoken123.json', size: 100, date: FIXED_NOW - DAY_MS],
+                [name: FILE_PREFIX + 'orphanaaa111.json', size: 100, date: FIXED_NOW - DAY_MS],
+                [name: FILE_PREFIX + 'orphanbbb222.json', size: 100, date: FIXED_NOW - DAY_MS],
+                // Young enough to belong to a write still mid-flight -- must survive.
+                [name: FILE_PREFIX + 'freshinflight.json', size: 100, date: FIXED_NOW - 1000L],
+                // No date at all -- unknowable age, so it is never reaped.
+                [name: FILE_PREFIX + 'undated00001.json', size: 100],
+                [name: 'mcp-rm-backup-99-20260101-000000.json', size: 100, date: FIXED_NOW - DAY_MS]
             ])
         }
 
         when:
         script.opTokenFileSweep()
 
-        then: 'both unclaimed op-result files go; the claimed one and unrelated files stay'
+        then: 'only the OLD unclaimed op-result files go'
         deleted.sort() == [FILE_PREFIX + 'orphanaaa111.json', FILE_PREFIX + 'orphanbbb222.json'].sort()
+
+        and: 'a claimed file, a freshly uploaded one, an undated one and unrelated files all survive'
+        !deleted.contains(FILE_PREFIX + 'livetoken123.json')
+        !deleted.contains(FILE_PREFIX + 'freshinflight.json')
+        !deleted.contains(FILE_PREFIX + 'undated00001.json')
     }
 
     def "the orphan reap never runs while queued deletes remain"() {

@@ -2318,14 +2318,30 @@ def _opTokenReapOrphanResults(int maxDeletes) {
         def parsed = new groovy.json.JsonSlurper().parseText(listing.toString())
         files = (parsed instanceof List) ? parsed : (parsed?.files ?: [])
     } catch (Exception ignored) { return }
+    // A file is uploaded BEFORE its record is written, and Hubitat runs scheduled
+    // methods concurrently with requests -- so a file younger than this window may
+    // belong to a write that is still mid-flight, and deleting it would destroy the
+    // replay buffer the whole feature exists for. Only files old enough that no
+    // request could still be writing them are reaped; unknown age is never reaped.
+    long ageCutoff = now() - 600000L
     int deleted = 0
+    int skippedYoung = 0
     for (f in files) {
         if (deleted >= maxDeletes) break
         def name = (f instanceof Map) ? f.name?.toString() : f?.toString()
         if (name == null || !name.startsWith(_opTokenResultFilePrefix())) continue
         if (known.contains(name)) continue
+        Long modified = null
+        if (f instanceof Map) {
+            def raw = (f.date != null) ? f.date : f.lastModified
+            try { if (raw != null) modified = raw.toString() as Long } catch (Exception ignored) { modified = null }
+        }
+        if (modified == null || modified > ageCutoff) { skippedYoung++; continue }
         try { deleteHubFile(name); deleted++ }
         catch (Exception e) { mcpLog("debug", "op-token", "orphan reap could not delete ${name}: ${e.message}") }
+    }
+    if (skippedYoung > 0) {
+        mcpLog("debug", "op-token", "orphan reap left ${skippedYoung} unclaimed file(s) alone: too recent (or undated) to rule out an in-flight write.")
     }
     if (deleted > 0) {
         mcpLog("info", "op-token", "orphan reap deleted ${deleted} unclaimed op-result file(s) from File Manager.")
