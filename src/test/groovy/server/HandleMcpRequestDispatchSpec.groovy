@@ -2241,6 +2241,13 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         then: 'the flat catalog fits under the cap'
         assert flatBytes < 124000 : "flat tools/list wire response is ${flatBytes} bytes, over the 124,000 cap"
 
+        and: 'and stays under the BUDGET tripwire, which leaves room to react before the cap'
+        // 122,000 was documented as the budget tripwire but asserted nowhere, so a change could
+        // eat the entire margin and still pass on the 124,000 cap alone -- which is exactly what
+        // adding one small property to 28 tools did (+2,800 B). The gap between the two numbers
+        // is the whole warning window; without this assertion there is no warning, only a cap.
+        assert flatBytes < 122000 : "flat tools/list wire response is ${flatBytes} bytes, over the 122,000 budget tripwire (hard cap 124,000). Reclaim flat bytes -- wrap gateway-only prose in [[FLAT_TRIM]] -- before adding more."
+
         and: 'the strip + [[FLAT_TRIM]] is load-bearing: the un-stripped defs are materially larger'
         fullBytes > flatBytes
     }

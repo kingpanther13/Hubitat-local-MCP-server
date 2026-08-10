@@ -136,7 +136,7 @@ def _getAllToolDefinitions_partNativeRM() {
 
 Requires the Write master + confirm=true + recent hub backup.
 
-Slow multi-step calls may return status:'in_progress' with resume instructions once the transport time budget is reached (cloud relay by default; LAN via the lanBudgetMs setting), or the transport may drop with a gateway error while the hub still commits — see hub_get_tool_guide(section='slow_ops') for the recovery protocol. ALWAYS pass an opToken: it is the only handle that can replay a dropped response.
+[[FLAT_TRIM]]Slow multi-step calls may return status:'in_progress' with resume instructions once the transport time budget is reached (cloud relay by default; LAN via the lanBudgetMs setting), or the transport may drop with a gateway error while the hub still commits — see hub_get_tool_guide(section='slow_ops') for the recovery protocol.[[/FLAT_TRIM]] ALWAYS pass an opToken: it is the only handle that can replay a dropped response.
 
 For a staged multi-app migration that must survive a disconnect, pass the self-contained `deployment` argument instead of a per-app edit — see hub_get_tool_guide(section='deployment_jobs').""",
             inputSchema: [
@@ -194,11 +194,11 @@ For a staged multi-app migration that must survive a disconnect, pass the self-c
 
 Shortcuts, each orchestrating the full RM 5.1 wizard in one call: addTrigger, addAction, addRequiredExpression/replaceRequiredExpression, bulk addTriggers/addActions/replaceActions, removeAction/clearActions/moveAction/removeTrigger/modifyTrigger/modifyAction, addLocalVariable/removeLocalVariable, patches (atomic multi-op). ALWAYS prefer these one-call shortcuts; walkStep (one wizard page per call) and raw settings+button are LAST RESORTS for capabilities no shortcut can represent.
 
-Partial-success (every shortcut): success:true can pair with partial:true — inspect partial/repairHints. A rejected trailing updateRule leaves the change written-but-not-live (subscriptionsNotLive / expressionNotLive / variableNotLive / patchesNotLive); retry hub_set_rule(button='updateRule', confirm=true). If wizardStuck:true, first hub_set_rule(button='cancelCapab', pageName=<page>, confirm=true) — restoreHint carries the exact command. On CREATE the new appId is returned even if a bundled item only partially bakes (partialTriggers/partialActions).
+[[FLAT_TRIM]]Partial-success (every shortcut): success:true can pair with partial:true — inspect partial/repairHints. A rejected trailing updateRule leaves the change written-but-not-live (subscriptionsNotLive / expressionNotLive / variableNotLive / patchesNotLive); retry hub_set_rule(button='updateRule', confirm=true). If wizardStuck:true, first hub_set_rule(button='cancelCapab', pageName=<page>, confirm=true) — restoreHint carries the exact command. On CREATE the new appId is returned even if a bundled item only partially bakes (partialTriggers/partialActions).[[/FLAT_TRIM]]
 
-Deep reference (per-capability field specs, extended condition shapes, periodic schedules, the raw settings/button flow, worked examples): pass guide:true to get it inline, or hub_get_tool_guide(section='set_rule_reference'); full create + repair protocol: hub_get_tool_guide(section='set_rule_create_reference'). Pass {discover:true} on addTrigger/addAction for the live machine-readable schema.
+[[FLAT_TRIM]]Deep reference (per-capability field specs, extended condition shapes, periodic schedules, the raw settings/button flow, worked examples): pass guide:true to get it inline, or hub_get_tool_guide(section='set_rule_reference'); full create + repair protocol: hub_get_tool_guide(section='set_rule_create_reference'). Pass {discover:true} on addTrigger/addAction for the live machine-readable schema.[[/FLAT_TRIM]]
 
-Slow multi-step calls may return status:'in_progress' with resume instructions once the transport time budget is reached (cloud relay by default; LAN via the lanBudgetMs setting), or the transport may drop with a gateway error while the hub still commits — see hub_get_tool_guide(section='slow_ops') for the recovery protocol. ALWAYS pass an opToken: it is the only handle that can replay a dropped response.""",
+[[FLAT_TRIM]]Slow multi-step calls may return status:'in_progress' with resume instructions once the transport time budget is reached (cloud relay by default; LAN via the lanBudgetMs setting), or the transport may drop with a gateway error while the hub still commits — see hub_get_tool_guide(section='slow_ops') for the recovery protocol.[[/FLAT_TRIM]] ALWAYS pass an opToken: it is the only handle that can replay a dropped response.""",
             inputSchema: [
                 type: "object",
                 properties: [
