@@ -1191,4 +1191,211 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         where:
         useGateways << [true, false]
     }
+
+    // ---- toolSendCommands (batch) -------------------------------------------
+
+    private def switchDevice(int id, String label) {
+        Spy(TestDevice) {
+            getId() >> id
+            getName() >> "Switch${id}"
+            getLabel() >> label
+            getSupportedCommands() >> [[name: 'on'], [name: 'off'], [name: 'setLevel']]
+            getCurrentStates() >> [[name: 'switch', value: 'off']]
+        }
+    }
+
+    def "toolSendCommands fires every entry and reports per-entry results in request order"() {
+        given:
+        def a = switchDevice(10, 'Lamp A')
+        def b = switchDevice(11, 'Lamp B')
+        childDevicesList << a << b
+
+        when:
+        def result = script.toolSendCommands([
+            [deviceId: '10', command: 'on'],
+            [deviceId: '11', command: 'off']
+        ])
+
+        then: 'each device saw exactly its own command'
+        1 * a.on()
+        1 * b.off()
+
+        and:
+        result.success == true
+        result.count == 2
+        result.sentCount == 2
+        !result.containsKey('failedCount')
+
+        and: 'results carry the per-entry deviceId, in request order'
+        result.results*.deviceId == ['10', '11']
+        result.results*.command == ['on', 'off']
+        result.results.every { it.success == true }
+
+        and: 'each entry keeps the single-tool response shape (label + state snapshot)'
+        result.results[0].device == 'Lamp A'
+        result.results[0].state.switch.value == 'off'
+    }
+
+    def "toolSendCommands passes parameters through to the device command"() {
+        given:
+        def device = switchDevice(10, 'Dimmer')
+        childDevicesList << device
+
+        when:
+        def result = script.toolSendCommands([[deviceId: '10', command: 'setLevel', parameters: ['75']]])
+
+        then: 'normalized to a number, as on the single-device path'
+        1 * device.setLevel(75)
+        result.results[0].parameters == [75]
+    }
+
+    def "toolSendCommands keeps sending after a failing entry and reports it individually"() {
+        given: 'the middle entry names a device that does not exist'
+        def a = switchDevice(10, 'Lamp A')
+        def c = switchDevice(12, 'Lamp C')
+        childDevicesList << a << c
+
+        when:
+        def result = script.toolSendCommands([
+            [deviceId: '10', command: 'on'],
+            [deviceId: '999', command: 'on'],
+            [deviceId: '12', command: 'on']
+        ])
+
+        then: 'the entry AFTER the failure still fired -- one bad device does not abandon the batch'
+        1 * a.on()
+        1 * c.on()
+
+        and:
+        result.success == false
+        result.count == 3
+        result.sentCount == 2
+        result.failedCount == 1
+
+        and: 'the failure is reported in its own slot, naming the device and the cause'
+        result.results[1].success == false
+        result.results[1].deviceId == '999'
+        result.results[1].command == 'on'
+        result.results[1].error.contains('Device not found: 999')
+
+        and: 'its neighbours are unaffected'
+        result.results[0].success == true
+        result.results[2].success == true
+    }
+
+    def "toolSendCommands reports an unsupported command per entry rather than failing the batch"() {
+        given:
+        def a = switchDevice(10, 'Lamp A')
+        childDevicesList << a
+
+        when:
+        def result = script.toolSendCommands([
+            [deviceId: '10', command: 'on'],
+            [deviceId: '10', command: 'lock']
+        ])
+
+        then:
+        1 * a.on()
+        result.sentCount == 1
+        result.failedCount == 1
+        result.results[1].error.contains('does not support command: lock')
+    }
+
+    @spock.lang.Unroll
+    def "toolSendCommands rejects a malformed batch BEFORE firing anything (#scenario)"() {
+        given: 'a valid first entry, so a fire-then-validate implementation would actuate it'
+        def device = switchDevice(10, 'Lamp A')
+        childDevicesList << device
+
+        when:
+        script.toolSendCommands(commands)
+
+        then: 'rejected on validation, with nothing sent'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains(expected)
+        0 * device.on()
+
+        where:
+        scenario                  | commands                                                                    || expected
+        'not a list'              | [deviceId: '10', command: 'on']                                             || 'non-empty array'
+        'empty list'              | []                                                                          || 'non-empty array'
+        'entry not an object'     | [[deviceId: '10', command: 'on'], 'off']                                    || 'must be an object'
+        'missing deviceId'        | [[deviceId: '10', command: 'on'], [command: 'on']]                          || 'deviceId is required'
+        'blank deviceId'          | [[deviceId: '10', command: 'on'], [deviceId: ' ', command: 'on']]           || 'deviceId is required'
+        'missing command'         | [[deviceId: '10', command: 'on'], [deviceId: '11']]                         || 'command is required'
+        'parameters not an array' | [[deviceId: '10', command: 'on'], [deviceId: '11', command: 'on', parameters: '75']] || 'must be an array'
+        'unknown key'             | [[deviceId: '10', command: 'on'], [deviceId: '11', command: 'on', waitFor: [:]]]      || 'unknown keys: waitFor'
+    }
+
+    def "toolSendCommands rejects more than 20 entries"() {
+        given:
+        def device = switchDevice(10, 'Lamp A')
+        childDevicesList << device
+
+        when:
+        script.toolSendCommands((1..21).collect { [deviceId: '10', command: 'on'] })
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('at most 20 entries (got 21)')
+        0 * device.on()
+    }
+
+    def "toolSendCommands accepts exactly 20 entries (the boundary is inclusive)"() {
+        given:
+        def device = switchDevice(10, 'Lamp A')
+        childDevicesList << device
+
+        when:
+        def result = script.toolSendCommands((1..20).collect { [deviceId: '10', command: 'on'] })
+
+        then:
+        20 * device.on()
+        result.success == true
+        result.sentCount == 20
+    }
+
+    @spock.lang.Unroll
+    def "via dispatch: hub_call_device_commands sends the batch and returns per-entry results (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        def a = switchDevice(10, 'Lamp A')
+        def b = switchDevice(11, 'Lamp B')
+        childDevicesList << a << b
+
+        when:
+        def response = mcpDriver.callTool('hub_call_device_commands', [commands: [
+            [deviceId: '10', command: 'on'],
+            [deviceId: '11', command: 'on']
+        ]])
+
+        then:
+        1 * a.on()
+        1 * b.on()
+
+        and:
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.sentCount == 2
+        inner.results*.deviceId == ['10', '11']
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "via dispatch: hub_call_device_commands returns -32602 on a malformed batch (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+
+        when:
+        def response = mcpDriver.callTool('hub_call_device_commands', [commands: [[command: 'on']]])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('deviceId is required')
+
+        where:
+        useGateways << [true, false]
+    }
 }

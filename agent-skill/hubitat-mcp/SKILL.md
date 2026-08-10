@@ -50,6 +50,8 @@ Use `hub_call_device_command` with the device ID and command name. Common comman
 
 Always check the device's `supportedCommands` (from `hub_get_device`) before sending commands.
 
+**More than one device? Use `hub_call_device_commands`.** Pass `commands: [{deviceId, command, parameters?}]` (max 20) and the whole group goes in ONE round trip. This matters more than it looks: the round trip, not the hub actuating the device, is what costs the time — six separate calls take ~4.5–5s, the same six batched take about as long as a single call. Entries are independent, so mixed devices and mixed commands belong in one batch, and one bad entry is reported in its own `results[]` slot without stopping the others. There is no `waitFor`; confirm with `hub_get_device_attribute`'s `deviceIds` form.
+
 The `state` snapshot returned by `hub_call_device_command` is read AS OF the command, so it shows the PRE-effect value. To confirm the resulting state in the same call, pass `waitFor` (block-polls the attribute until it converges or times out); to confirm separately — or to await a condition across several devices at once via `deviceIds` — use `hub_get_device_attribute` with an expected value. Both support comparators (`eq`/`ne`/`gt`/`gte`/`lt`/`lte`/`between`) and a `stableForMs` debounce; non-convergence comes back with a diagnostic flag telling you why. The full semantics live in the two tools' own descriptions. Polling BLOCKS the MCP request for up to `timeoutMs`; use sparingly, prefer event-driven flows, and avoid running it in parallel with other MCP calls.
 
 ### Virtual Devices

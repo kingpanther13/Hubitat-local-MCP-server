@@ -1524,6 +1524,8 @@ class TestRunner:
             f"hub_list_devices should route via hub_read_devices, got {route.get('hub_list_devices')}"
         assert route.get("hub_call_device_command") == "hub_manage_devices", \
             f"hub_call_device_command should route via hub_manage_devices, got {route.get('hub_call_device_command')}"
+        assert route.get("hub_call_device_commands") == "hub_manage_devices", \
+            f"hub_call_device_commands should route via hub_manage_devices, got {route.get('hub_call_device_commands')}"
         assert len(route) >= 60, f"suspiciously small reverse map ({len(route)} leaf tools): {sorted(route)}"
 
     @test("infrastructure")
@@ -2780,6 +2782,102 @@ class TestRunner:
         snap = (cmd.get("state") or {}).get("switch")
         assert isinstance(snap, dict) and snap.get("value") == target, \
             f"post-waitFor snapshot should reflect the converged value {target!r}: {cmd.get('state')}"
+
+    @test("virtual_device_lifecycle")
+    def test_batch_commands_multi_device(self) -> None:
+        # hub_call_device_commands is the whole point of the batch tool: N devices, ONE round trip.
+        # Fire a heterogeneous batch (two switches + a dimmer setLevel) and then confirm the pair
+        # with the multi-device poll -- the intended two-call flow for a confirmed group command.
+        #
+        # PERMANENT non-child fixtures, and the switch target is derived from the CURRENT value, so
+        # a fixture carrying state from an earlier run still drives a real transition.
+        sw_a = self._ensure_perm_fixture("switch_a")
+        sw_b = self._ensure_perm_fixture("switch_b")
+        dim = self._ensure_perm_fixture("dimmer")
+
+        cur = self.client.call_tool("hub_get_device_attribute", {"deviceId": sw_a, "attribute": "switch"})
+        start = cur.get("value") if isinstance(cur, dict) else None
+        target = "off" if start == "on" else "on"
+
+        # Baselines BEFORE the dispatch: these are permanent shared devices, so a limiter line from
+        # an earlier test or run still sits in the hub's error ring (see test_command_waitfor_converges).
+        bases = {d: self._limiter_lines(d, method=target) for d in (sw_a, sw_b)}
+
+        batch = self.client.call_tool("hub_call_device_commands", {"commands": [
+            {"deviceId": sw_a, "command": target},
+            {"deviceId": sw_b, "command": target},
+            {"deviceId": dim, "command": "setLevel", "parameters": ["40"]},
+        ]})
+        assert isinstance(batch, dict), f"unexpected response: {batch!r}"
+        assert batch.get("success") is True, f"batch reported a failure: {batch}"
+        assert batch.get("count") == 3 and batch.get("sentCount") == 3, f"wrong counts: {batch}"
+
+        results = batch.get("results")
+        assert isinstance(results, list) and len(results) == 3, f"missing per-entry results: {batch}"
+        assert [str(r.get("deviceId")) for r in results] == [str(sw_a), str(sw_b), str(dim)], \
+            f"results are not in request order with their deviceIds: {results}"
+        assert all(r.get("success") is True for r in results), f"an entry failed: {results}"
+        # Each successful entry keeps the single-tool response shape.
+        assert results[0].get("device"), f"entry is missing the device label: {results[0]}"
+
+        # Confirm the group with the multi-device poll -- one batch to fire, one poll to confirm.
+        poll = self.client.call_tool("hub_get_device_attribute", {
+            "deviceIds": [sw_a, sw_b],
+            "attribute": "switch",
+            "expectedValue": target,
+            "mode": "all",
+            "timeoutMs": 8000,
+        })
+        if poll.get("success") is not True and any(
+                self._limiter_logged(d, method=target, baseline=bases[d]) for d in (sw_a, sw_b)):
+            self._soft_passes.append(
+                "virtual_device_lifecycle/test_batch_commands_multi_device: limiter-proven "
+                "(batch dispatched; platform throttled event delivery so the confirm poll could not converge)")
+            return
+        assert poll.get("success") is True, f"batched commands did not take effect on the hub: {poll}"
+
+    @test("virtual_device_lifecycle")
+    def test_batch_commands_partial_failure_and_no_partial_send(self) -> None:
+        # Two guarantees a client depends on, both only observable end to end:
+        #   1. A BAD ENTRY does not abandon the batch -- the good entries still fire, and the bad one
+        #      is reported in its own results[] slot.
+        #   2. A MALFORMED BATCH actuates NOTHING -- validation runs before the first command fires,
+        #      so a client never has to wonder how far a rejected request got.
+        sw_a = self._ensure_perm_fixture("switch_a")
+
+        # Known starting point for both legs.
+        self.client.call_tool("hub_call_device_command", {"deviceId": sw_a, "command": "off"})
+
+        # --- 1. bad entry among good ones ---
+        batch = self.client.call_tool("hub_call_device_commands", {"commands": [
+            {"deviceId": sw_a, "command": "on"},
+            {"deviceId": "99999", "command": "on"},
+        ]})
+        assert isinstance(batch, dict), f"unexpected response: {batch!r}"
+        assert batch.get("success") is False, f"a batch with a bad entry must not report success: {batch}"
+        assert batch.get("sentCount") == 1 and batch.get("failedCount") == 1, f"wrong counts: {batch}"
+        results = batch.get("results") or []
+        assert results[0].get("success") is True, f"the good entry should still have fired: {results}"
+        assert results[1].get("success") is False and "99999" in str(results[1].get("error", "")), \
+            f"the bad entry should be reported in its own slot, naming the device: {results}"
+
+        # --- 2. malformed batch fires nothing ---
+        # The first entry is VALID and would flip the switch back off, so a fire-then-validate
+        # implementation would leave a visible trace on the hub.
+        try:
+            self.client.call_tool("hub_call_device_commands", {"commands": [
+                {"deviceId": sw_a, "command": "off"},
+                {"command": "on"},  # no deviceId
+            ]})
+            raise AssertionError("a batch entry with no deviceId should have been rejected")
+        except (McpToolError, McpError):
+            pass  # expected -- IllegalArgumentException maps to -32602
+
+        after = self.client.call_tool("hub_get_device_attribute", {
+            "deviceId": sw_a, "attribute": "switch", "expectedValue": "on", "timeoutMs": 3000,
+        })
+        assert after.get("success") is True, \
+            f"the rejected batch actuated its first entry -- validation must precede every send: {after}"
 
     @test("virtual_device_lifecycle")
     def test_poll_comparator_and_stable(self) -> None:

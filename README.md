@@ -1,6 +1,6 @@
 # Hubitat MCP Server
 
-A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 117 MCP tools (36 on `tools/list` via category gateways).
+A native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that runs directly on your Hubitat Elevation hub. Instead of running a separate Node.js server on another machine, this runs natively on the hub itself — with a built-in rule engine and 118 MCP tools (36 on `tools/list` via category gateways).
 
 > **BETA SOFTWARE**: This project is ~99% AI-generated ("vibe coded") using Claude. It's a work in progress — contributions and [bug reports](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues) are welcome!
 
@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 117 tools total — 13 core tools are always visible, while the rest are organized behind 23 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 118 tools total — 13 core tools are always visible, while the rest are organized behind 23 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
 
 ## Requirements
 
@@ -273,9 +273,9 @@ For free remote access without a Hubitat Cloud subscription:
 
 ## Features
 
-### MCP Tools (117 total — 36 on tools/list)
+### MCP Tools (118 total — 36 on tools/list)
 
-The server has 117 tools total. To keep the MCP `tools/list` manageable, **13 core tools** are always visible and the remaining tools are organized behind **23 domain-named gateways** (8 read-only `hub_read_*` gateways + 15 write-bearing `hub_manage_*` gateways). The AI sees 36 items on `tools/list` (13 + 23 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 118 tools total. To keep the MCP `tools/list` manageable, **13 core tools** are always visible and the remaining tools are organized behind **23 domain-named gateways** (8 read-only `hub_read_*` gateways + 15 write-bearing `hub_manage_*` gateways). The AI sees 36 items on `tools/list` (13 + 23 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
 #### Core Tools (13) — Always visible on tools/list
 
@@ -457,11 +457,12 @@ Monitoring tools are gated by the Read master (ON by default).
 </details>
 
 <details>
-<summary><b>hub_manage_devices</b> (9) — Control and query devices</summary>
+<summary><b>hub_manage_devices</b> (10) — Control and query devices</summary>
 
 | Tool | Description |
 |------|-------------|
 | `hub_call_device_command` | Send a command (on, off, setLevel, etc.); returns an immediate (PRE-effect) `state` snapshot ({attr: {value, timestamp}}); pass `waitFor` to block-poll for the CONFIRMED resulting state (`waitFor` supports `comparator` (eq/ne/gt/gte/lt/lte/between) + `stableForMs` debounce; a bad spec is rejected before the command fires) |
+| `hub_call_device_commands` | Send commands to SEVERAL devices (max 20) in ONE call — the per-call round trip dominates the cost, so a batch of six is roughly 5x faster than six separate calls. Entries are independent (mixed devices and commands); a bad entry is reported in its own `results[]` slot without abandoning the rest, while malformed input is rejected before anything is sent. No `waitFor` — confirm with `hub_get_device_attribute`'s `deviceIds` form |
 | `hub_call_device_swap` | Replace a device across ALL apps/rules that reference it (built-in Swap Device tool; compatible replacements only) |
 | `hub_call_device_replace` | Replace a dead/failing device's hardware while KEEPING its id + all app/rule references (re-points to `new_device_id`; `list_options=true` reads compatible candidates). Distinct from swap, which moves references to the new device |
 | `hub_update_device` | Update device properties (label, room, preferences, etc.) |

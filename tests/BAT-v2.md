@@ -1,6 +1,6 @@
 # Bot Acceptance Test (BAT) Suite — v2
 
-Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 117 total distinct tools).
+Updated for the installed-apps + Rule Machine interop + native CRUD + library management + HPM package state architecture, then the issue #105 PR1A hub_ rename + consolidation, then the PR1B read/write split, then the issue #259 item #9 Easy Dashboard CRUD (13 flat core + 23 gateways = 36 on tools/list, 118 total distinct tools).
 
 Comprehensive test scenarios for the Hubitat MCP Rule Server. Modeled after ha-mcp's BAT framework.
 
@@ -177,6 +177,30 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 ```
 
 **Expected**: Calls `hub_call_device_command` with `command=on` and a `waitFor={attribute:"switch", expectedValue:"on"}`. The response carries a `waitFor` block with `converged: true` and `finalValue: "on"` (a String, read from the device's live current-state list), and -- because the snapshot is taken AFTER the waitFor poll -- the `state` map's switch entry now reads `on` (the converged/resulting value, not the pre-effect one). On a clean run there is NO `partial` flag and NO `stateError`; a non-convergence would instead surface a diagnostic flag (`timedOut` / `interrupted` / `neverReported` / `error`), and a degraded confirmation step (failed snapshot or a poll-loop `error`) would add `partial: true`. The `waitFor` `timeoutMs` caps at 30000 (vs 60000 on the standalone `hub_get_device_attribute` poll) and `pollIntervalMs` defaults to 250. No separate `hub_get_device_attribute` read is needed to confirm.
+
+### T05c — hub_call_device_commands (batch, several devices in one call)
+
+```json
+{
+  "setup_prompt": "Create three virtual switches called 'BAT Batch A', 'BAT Batch B', and 'BAT Batch C'.",
+  "test_prompt": "Turn on all three BAT Batch switches, then confirm all three are on.",
+  "teardown_prompt": "Turn off all three BAT Batch switches, then delete the three virtual devices."
+}
+```
+
+**Expected**: Calls `hub_call_device_commands` ONCE with `commands=[{deviceId, command:"on"} x3]` — not three `hub_call_device_command` calls. The response is `success: true, count: 3, sentCount: 3` plus a `results` array in request order, each entry carrying its own `deviceId` and the same shape a single `hub_call_device_command` returns (label, command, PRE-effect `state` snapshot). There is no `waitFor` on this tool, so the confirmation is a separate `hub_get_device_attribute` using the multi-device `deviceIds` form with `mode:"all"` — two round trips for the whole group. Watch for the AI falling back to three separate command calls: that is the behaviour the tool exists to replace, and it costs roughly 5x the wall-clock time.
+
+### T05d — hub_call_device_commands partial failure (one bad entry)
+
+```json
+{
+  "setup_prompt": "Create a virtual switch called 'BAT Batch Partial'.",
+  "test_prompt": "Turn on 'BAT Batch Partial' and device 99999 in one call.",
+  "teardown_prompt": "Turn off 'BAT Batch Partial', then delete the virtual device."
+}
+```
+
+**Expected**: The batch still fires the valid entry — one bad device does not abandon the rest. The response is `success: false, sentCount: 1, failedCount: 1`, with `results[0].success: true` and `results[1]` carrying `success: false`, its `deviceId`, and an `error` naming the missing device. The AI reports the specific device that failed rather than reporting the whole command as failed. (Contrast with a MALFORMED batch — an entry missing `deviceId`, a non-array `parameters`, or more than 20 entries — which is rejected with `-32602` BEFORE anything is sent, so no device is actuated.)
 
 ### T06 — hub_call_device_command (setLevel)
 
@@ -2648,13 +2672,13 @@ These operations are too destructive for automated testing. Test manually with e
 
 **8 read gateways**: `hub_read_apps_code` (11), `hub_read_devices` (5), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3), `hub_read_dashboards` (2)
 
-**15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (9), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
+**15 manage gateways**: `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (10), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
 
 **13 flat core tools**: `hub_manage_virtual_device`, `hub_get_tool_guide`, `hub_report_issue`, `hub_search_tools`, `hub_get_info`, `hub_list_modes`, `hub_manage_mode`, `hub_set_mode_manager`, `hub_get_hsm_status`, `hub_set_hsm`, `hub_set_system_settings`, `hub_update_firmware`, `hub_create_backup`
 
 ### Tool Coverage (non-destructive tools only)
 
-All 117 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
+All 118 distinct tools are covered by at least one test, excluding the destructive operations listed in the Excluded Tests table. Safe tools have standalone test coverage; destructive tools are documented for manual-only testing.
 
 Sections 1-9 each target a specific tool — named in the test's title and **Expected** criteria while the `test_prompt` stays goal-first (see Prompt style above). Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 

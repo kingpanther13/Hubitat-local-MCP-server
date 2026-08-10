@@ -115,7 +115,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
 
         where:
         name << [
-            'hub_call_device_command', 'hub_call_device_swap', 'hub_call_device_replace',
+            'hub_call_device_command', 'hub_call_device_commands', 'hub_call_device_swap', 'hub_call_device_replace',
             'hub_create_custom_rule', 'hub_update_custom_rule', 'hub_delete_custom_rule',
             'hub_import_custom_rule', 'hub_clone_custom_rule', 'hub_export_custom_rule',
             'hub_manage_mode', 'hub_set_mode_manager',
@@ -341,7 +341,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         ] as Set
 
         def expectedNonIdempotent = [
-            'hub_call_device_command', 'hub_call_device_swap', 'hub_call_device_replace',
+            'hub_call_device_command', 'hub_call_device_commands', 'hub_call_device_swap', 'hub_call_device_replace',
             'hub_create_custom_rule', 'hub_import_custom_rule', 'hub_clone_custom_rule',
             'hub_export_custom_rule',
             'hub_create_variable',
@@ -512,7 +512,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         ] as Set
 
         def expectedWrites = [
-            'hub_call_device_command', 'hub_call_device_swap', 'hub_call_device_replace',
+            'hub_call_device_command', 'hub_call_device_commands', 'hub_call_device_swap', 'hub_call_device_replace',
             'hub_create_custom_rule', 'hub_update_custom_rule', 'hub_delete_custom_rule',
             'hub_import_custom_rule', 'hub_clone_custom_rule', 'hub_export_custom_rule',
             'hub_manage_mode', 'hub_set_mode_manager',
@@ -587,7 +587,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         names.size() == (names as Set).size()
 
         and: 'no chunk dropped — the full surface is present (bump on intentional add/remove)'
-        names.size() == 117
+        names.size() == 118
 
         and: 'sentinels from the first and last chunks survive the concatenation chain'
         names.contains('hub_list_devices')   // first chunk
