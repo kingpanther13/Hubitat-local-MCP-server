@@ -10,10 +10,11 @@ package support
  */
 abstract class ToolSpecBase extends HarnessSpec {
     /**
-     * Record every uploaded file name EXCEPT the op-token result buffers. Auto-tokened writes
-     * upload one of those per call, so a spec asserting on "what did this tool write" has to
-     * exclude them or its expectations shift with unrelated token machinery. Owning the prefix
-     * here means a rename lands in one place instead of every spec that filters on it.
+     * Record every uploaded file name EXCEPT the op-token result buffers. A tokened write
+     * externalizes its result only when it exceeds _opTokenInlineMax (smaller ones stay inline
+     * and upload nothing), so a spec asserting on "what did this tool write" has to exclude
+     * those or its expectations shift with the result's size. Owning the prefix here means a
+     * rename lands in one place instead of every spec that filters on it.
      */
     protected void ignoreOpResultUploads(List sink) {
         script.metaClass.uploadHubFile = { String name, byte[] content ->

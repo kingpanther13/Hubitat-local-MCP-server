@@ -4455,7 +4455,7 @@ Pre-flight: backup <24h (hub_create_backup) + user OK.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
+                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it on a write to get a server-assigned auto-... token back; list_options=true is a read and gets none. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     old_device_id: [type: "string", description: "Device to replace; its id is preserved."],
                     new_device_id: [type: "string", description: "Compatible replacement device."],
                     list_options: [type: "boolean", description: "Read-only: list compatible replacement candidates (no confirm)."],

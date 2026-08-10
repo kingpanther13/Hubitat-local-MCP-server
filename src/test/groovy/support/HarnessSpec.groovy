@@ -244,17 +244,10 @@ abstract class HarnessSpec extends Specification {
         }
         // Record unsubscribe() so lifecycle specs (e.g. initialize) can assert it.
         mock.unsubscribe() >> { UNSUBSCRIBE_CALL_COUNT.incrementAndGet() }
-        // Permanent recording stub, attached HERE with the others on purpose: a stub added to
-        // the mock from a later setupSpec does not reliably take (same note RuleHarnessSpec
-        // carries). runIn is an AppExecutor method, so `script.metaClass.runIn = {...}` never
-        // intercepts it either -- a spec written that way records nothing and its
-        // "did it re-arm?" assertion can only ever read false.
+        // Attached HERE with the other permanent stubs: one added from a later setupSpec does
+        // not reliably take, and runIn is an AppExecutor method, so a script.metaClass override
+        // never intercepts it.
         mock.runIn(*_) >> { args -> SHARED_RUN_IN_CALLS << (args as List) }
-        // Permanent recording stub, attached HERE with the others on purpose: a stub added to
-        // the mock from a later setupSpec does not reliably take (same note RuleHarnessSpec
-        // carries). runIn is an AppExecutor method, so `script.metaClass.runIn = {...}` never
-        // intercepts it either -- a spec written that way records nothing and its
-        // "did it re-arm?" assertion can only ever read false.
         return mock
     }
 

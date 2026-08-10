@@ -3861,9 +3861,14 @@ class TestRunner:
                 "addActions": [{"capability": "log", "message": "E2E runRule accept target"}],
             })
             try:
-                runrule_ok = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
-                    "args": {"appId": app_id, "addAction": {"capability": "runRule", "ruleIds": [runrule_target_id]},
-                             "confirm": True}})
+                # NOT _refusal_call: this one COMMITS. That helper blind-re-issues on a 504,
+                # which here would add a second runRule action to the rule the rest of the test
+                # keeps asserting on. _rm_call_soft(strict=True) carries an opToken, so a lost
+                # response is recovered by replaying it instead of re-sending the write.
+                runrule_ok = self._rm_call_soft(
+                    {"appId": app_id, "addAction": {"capability": "runRule", "ruleIds": [runrule_target_id]},
+                     "confirm": True},
+                    strict=True)
                 assert runrule_ok.get("success") is True, \
                     f"runRule targeting an existing rule id ({runrule_target_id}) should be accepted and commit, got: {runrule_ok}"
             finally:
@@ -5073,7 +5078,14 @@ class TestRunner:
         test_set_rule_failloud_wrong_trigger_shape on the 2026-08-10 full lane."""
         for attempt in (1, 2):
             try:
-                return self.client.call_tool(gateway, payload)
+                result = self.client.call_tool(gateway, payload)
+                # The blind re-issue above is only safe while nothing commits. Fail loudly rather
+                # than let a future caller point this at a write that succeeds -- a 504 on one of
+                # those would double-apply it. Use _rm_call_soft(strict=True) for those instead.
+                assert result.get("success") is not True, (
+                    "_refusal_call is only for calls expected to be REFUSED pre-flight, but this "
+                    f"one succeeded -- it commits, so its 504 re-issue could double-apply: {result}")
+                return result
             except (McpError, McpToolError, requests.HTTPError) as exc:
                 if "504" not in str(exc) or attempt == 2:
                     raise
