@@ -3991,7 +3991,12 @@ def getToolDefinitions() {
             // on demand -- see toolSetRule's envelope normalizer). Gateway mode keeps the
             // fat schema (already lazily disclosed by its gateway).
             if (base.name == 'hub_set_rule') {
-                def flatTool = _setRuleFlatTool()
+                // The selector REPLACES the schema that applyDescriptionTransform already
+                // walked, so it has to be stripped itself -- otherwise every [[FLAT_TRIM]]
+                // marker in the selector's own descriptions ships raw in the flat catalog
+                // (caught by the flat-mode no-leak specs, and it is the flat wire an LLM
+                // actually reads).
+                def flatTool = applyDescriptionTransform([_setRuleFlatTool()], true)[0]
                 base = base + [description: flatTool.description, inputSchema: flatTool.inputSchema]
             }
             base + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]

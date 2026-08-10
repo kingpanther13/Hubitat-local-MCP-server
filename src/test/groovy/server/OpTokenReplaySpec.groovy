@@ -481,8 +481,8 @@ class OpTokenReplaySpec extends ToolSpecBase {
         // hub_create_room records only at COMPLETION, so an absent record cannot
         // distinguish never-arrived from still-running. Claiming the former is what would
         // steer a client into executing the write twice -- the exact double-commit the
-        // token exists to prevent -- so the note must own the ambiguity.
-        !inner.note.contains('the original call never arrived')
+        // token exists to prevent -- so the note must own the ambiguity. (It NAMES that
+        // phrase inside the disclaimer, so this pins the disclaimer, not the phrase.)
         inner.note.toLowerCase().contains('cannot distinguish')
         // It must still give the recovery, just gated behind a verifying read.
         inner.note.toLowerCase().contains('re-issue the original call (full arguments)')
@@ -1337,9 +1337,7 @@ class OpTokenReplaySpec extends ToolSpecBase {
     def "the sweep comes back for an orphan it skipped only for being TOO YOUNG"() {
         given: 'the re-arm fired only when something was actually DELETED, so an orphan produced shortly before an app reload was looked at once (initialize arms a single one-shot sweep) and then never again -- it leaked until some unrelated sweep happened to run'
         def deleted = []
-        def scheduled = []
         script.metaClass.deleteHubFile = { String name -> deleted << name }
-        script.metaClass.runIn = { Object delay, String handler -> scheduled << [delay, handler] }
         atomicStateMap.opTokens = [:]
         atomicStateMap.opTokenSweepFiles = []
         hubGet.register('/hub/fileManager/json') { params ->
@@ -1355,14 +1353,12 @@ class OpTokenReplaySpec extends ToolSpecBase {
         deleted.isEmpty()
 
         and: 'and the sweep is re-armed for after the safety window rather than abandoning it'
-        scheduled.any { it[1] == 'opTokenFileSweep' && (it[0].toString() as Integer) > 600 }
+        runInCalls.any { it[1] == 'opTokenFileSweep' && (it[0].toString() as Integer) > 600 }
     }
 
     def "an UNDATED orphan does not re-arm the sweep, which would spin it forever"() {
         given: 'waiting changes nothing about a file whose age is unknowable'
-        def scheduled = []
         script.metaClass.deleteHubFile = { String name -> }
-        script.metaClass.runIn = { Object delay, String handler -> scheduled << [delay, handler] }
         atomicStateMap.opTokens = [:]
         atomicStateMap.opTokenSweepFiles = []
         hubGet.register('/hub/fileManager/json') { params ->
@@ -1373,7 +1369,7 @@ class OpTokenReplaySpec extends ToolSpecBase {
         script.opTokenFileSweep()
 
         then:
-        scheduled.every { it[1] != 'opTokenFileSweep' }
+        runInCalls.every { it[1] != 'opTokenFileSweep' }
     }
 
     def "the marker-tracked set and the slow_ops guide name exactly the same tools"() {

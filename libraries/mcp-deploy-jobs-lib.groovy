@@ -515,13 +515,24 @@ private Map _deployRunSlice(Map job, Long t0, Integer maxOps, Long fixedBudgetMs
             execError = e.message ?: e.toString()
         }
         def res = outcome?.result
+        // A create op whose returned id is unusable is NOT a success: the app exists on the
+        // hub but nothing can reference it -- no alias for later ops, no entry in
+        // createdAppIds, so cancel cannot roll it back. Recording it `done` hides an app the
+        // operator can now only find by hand, so the op is failed with the id named.
+        boolean createdIdUnusable = false
+        if (execError == null && _deployOpSucceeded(res) && outcome?.newAppIdKey != null) {
+            def rawNewId = ((Map) res)[outcome.newAppIdKey]
+            if (rawNewId != null && !_deployRecordCreated(job, op, rawNewId)) {
+                createdIdUnusable = true
+                execError = "the op created an app but returned an unusable id '${rawNewId}' -- it cannot be tracked for rollback or referenced by a later op. Find it via hub_list_rules and remove it by hand, then re-run this job."
+            }
+        }
         if (execError == null && _deployOpSucceeded(res)) {
             entry.status = "done"
             entry.result = _deployTrimResult(res)
             entry.finishedAt = now()
             entry.remove("recon")
             entry.remove("error")
-            if (outcome.newAppIdKey != null) _deployRecordCreated(job, op, ((Map) res)[outcome.newAppIdKey])
             if (entry.result?.backupKey) {
                 def keys = (job.backupKeys instanceof List) ? job.backupKeys : []
                 keys << entry.result.backupKey

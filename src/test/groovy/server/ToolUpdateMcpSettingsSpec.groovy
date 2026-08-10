@@ -582,7 +582,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         then:
         notThrown(IllegalArgumentException)
         result.success == true
-        sharedAppStub.settingsStore.maxConcurrentWrites == okValue
+        sharedAppStub.settingsStore['maxConcurrentWrites'] == [type: 'number', value: okValue]
 
         where:
         okValue << [0, 100]

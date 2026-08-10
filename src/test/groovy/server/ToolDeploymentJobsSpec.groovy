@@ -417,8 +417,7 @@ class ToolDeploymentJobsSpec extends ToolSpecBase {
         given: 'the lease claim used to sit OUTSIDE the per-job try, so a save failure escaped the whole worker before the re-arm -- the job then sat in staging forever, its fail streak never incremented (so the 3-strike terminal path could not fire) and a stale lease refusing resume/cancel/delete'
         enableWrite()
         seedJob("dj-savefail", "staging", [ops: [[op: "pause", args: [ruleId: 1]]], opStatus: [[status: "pending"]], history: []])
-        def scheduled = []
-        script.metaClass.runIn = { Object delay, String handler -> scheduled << handler }
+
         // Throw from the op's PUBLIC tool call, not from _deploySaveJob: that helper is
         // private, so a metaClass stub on it never intercepts the library's internal call --
         // the real save would succeed, the single-op job would run to completion, and the
@@ -431,7 +430,7 @@ class ToolDeploymentJobsSpec extends ToolSpecBase {
 
         then: 'the throw is contained and the continuation chain survives'
         notThrown(Exception)
-        scheduled.contains("deployJobWorker")
+        runInCalls.any { it[1] == "deployJobWorker" }
     }
 
     def "deployJobWorker skips a background:false job armed by another job's worker"() {
