@@ -714,7 +714,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String name ->
             name == 'notes.txt' ? 'saved content'.getBytes('UTF-8') : null
         }
-        script.metaClass.uploadHubFile = { String name, byte[] content -> if (!name.startsWith('mcp-op-result-')) uploads << name }
+        ignoreOpResultUploads(uploads)
         script.metaClass.deleteHubFile = { String name -> deleted << name }
 
         when:
@@ -759,7 +759,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         def uploads = []
         def deleted = []
         script.metaClass.downloadHubFile = { String name -> 'ignored'.getBytes('UTF-8') }
-        script.metaClass.uploadHubFile = { String name, byte[] content -> if (!name.startsWith('mcp-op-result-')) uploads << name }
+        ignoreOpResultUploads(uploads)
         script.metaClass.deleteHubFile = { String name -> deleted << name }
 
         when:

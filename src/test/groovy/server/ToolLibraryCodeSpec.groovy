@@ -1143,7 +1143,7 @@ def helperMethod() { return "ok" }
         enableWrite()
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
         def uploads = []
-        script.metaClass.uploadHubFile = { String name, byte[] content -> if (!name.startsWith('mcp-op-result-')) uploads << name }
+        ignoreOpResultUploads(uploads)
         def capturedBody = null
         script.metaClass.hubInternalPostJson = { String path, String body ->
             capturedBody = new groovy.json.JsonSlurper().parseText(body)
@@ -1230,7 +1230,7 @@ def helperMethod() { return "ok" }
         ]
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
         def uploads = []
-        script.metaClass.uploadHubFile = { String name, byte[] content -> if (!name.startsWith('mcp-op-result-')) uploads << name }
+        ignoreOpResultUploads(uploads)
         script.metaClass.hubInternalPostJson = { String path, String body ->
             [success: true, message: '', id: 42, version: 2]
         }
@@ -1617,7 +1617,7 @@ def helperMethod() { return "ok" }
         settingsMap.useGateways = useGateways
         enableWrite()
         def uploads = []
-        script.metaClass.uploadHubFile = { String name, byte[] content -> if (!name.startsWith('mcp-op-result-')) uploads << name }
+        ignoreOpResultUploads(uploads)
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
         hubGet.register('/library/edit/deleteJson/42') { params -> '{"success":true,"message":null}' }
 
@@ -1688,7 +1688,7 @@ def helperMethod() { return "ok" }
             ]
         ]
         def uploads = []
-        script.metaClass.uploadHubFile = { String name, byte[] content -> if (!name.startsWith('mcp-op-result-')) uploads << name }
+        ignoreOpResultUploads(uploads)
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
         hubGet.register('/library/edit/deleteJson/42') { params -> '{"success":true,"message":null}' }
 

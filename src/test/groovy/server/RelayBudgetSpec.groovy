@@ -36,13 +36,6 @@ class RelayBudgetSpec extends ToolSpecBase {
 
     private static final long FIXED_NOW = 1234567890000L
 
-    private void installOpTokenFileStore() {
-        Map<String, byte[]> store = [:]
-        script.metaClass.uploadHubFile = { String name, byte[] content -> store[name] = content }
-        script.metaClass.downloadHubFile = { String name -> store[name] }
-        script.metaClass.deleteHubFile = { String name -> store.remove(name) }
-    }
-
     // ---------------- generic budget helpers (main file) ----------------
 
     def "_relayBudgetMs defaults to 8000 when the setting is unset"() {

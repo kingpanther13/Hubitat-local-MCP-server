@@ -42,13 +42,7 @@ class OpTokenReplaySpec extends ToolSpecBase {
 
     // A byte-array store shared by the upload/download stubs so a buffered result
     // round-trips exactly the way it would through the hub File Manager.
-    private Map<String, byte[]> installFileStore() {
-        Map<String, byte[]> store = [:]
-        script.metaClass.uploadHubFile = { String name, byte[] content -> store[name] = content }
-        script.metaClass.downloadHubFile = { String name -> store[name] }
-        script.metaClass.deleteHubFile = { String name -> store.remove(name) }
-        return store
-    }
+    private Map<String, byte[]> installFileStore() { return installOpTokenFileStore() }
 
     // ---------------- full-path dedup / replay / marker completion ----------------
 
