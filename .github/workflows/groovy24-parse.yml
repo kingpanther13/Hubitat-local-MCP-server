@@ -43,6 +43,6 @@ jobs:
           java-version: |
             11
             17
-      - uses: gradle/actions/setup-gradle@v6.2.0
+      - uses: gradle/actions/setup-gradle@v6.3.0
       - name: Parse + sandbox-class-check production files under Groovy 2.4.21
         run: ./gradlew -p ci/groovy24-parse parse24 --console=plain
