@@ -70,6 +70,14 @@ class McpError(Exception):
     """JSON-RPC level error from the MCP endpoint."""
 
 
+class RelayLostResponseError(McpError):
+    """A write's response was lost while the hub may have committed it.
+
+    Raised ONLY for non-replay-safe calls, so catching this type (rather than sniffing
+    "504" out of arbitrary text) is what tells call_tool a journal recovery is warranted.
+    A read never produces it -- reads are retried in place."""
+
+
 class McpToolError(McpError):
     """MCP tool returned isError: true."""
 
@@ -171,6 +179,7 @@ class HubitatMcpClient:
         # Auto-opTokens whose result we actually received; _recover_lost_op claims the
         # newest UNBANKED journal row, which is how it identifies the lost call.
         self._seen_auto_tokens: set[str] = set()
+        self._token_baseline_primed = False
         # Catalog-derived maps (issue #319), built lazily together from the live
         # gateway-mode catalog; None = not built yet. _gateway_members (gateway -> its
         # sub-tools) backs the membership guard; _gateway_route (leaf -> owning gateway)
@@ -260,7 +269,10 @@ class HubitatMcpClient:
                     # queries (e.g. hub_get_performance_stats) sometimes 504.
                     last_exc = requests.HTTPError(f"{resp.status_code} {resp.reason} on {method}")
                     if not replay_safe:
-                        raise last_exc   # write: unknown-commit -- surface, never replay
+                        # Write: unknown-commit. Never replay the request; hand back the typed
+                        # error so the caller can recover the result from the op journal.
+                        raise RelayLostResponseError(
+                            f"{resp.status_code} {resp.reason} on {method} (504-class: response lost)")
                     self._transport_retries += 1
                     self._log(f"<< HTTP {resp.status_code} (attempt {attempt + 1}/{_attempts}) — retrying")
                     # Exponential backoff with jitter to avoid thundering-herd if
@@ -274,8 +286,12 @@ class HubitatMcpClient:
                     requests.exceptions.ChunkedEncodingError,
                     json.JSONDecodeError) as exc:
                 last_exc = exc
-                if not replay_safe and not isinstance(exc, json.JSONDecodeError):
-                    raise   # write: request may have reached the hub -- never replay
+                if not replay_safe:
+                    # Both cases mean the write may already have committed: a network error
+                    # after the request left, and an undecodable body (the relay answers HTML
+                    # on a timeout). Retrying either one double-commits the write.
+                    raise RelayLostResponseError(
+                        f"504-class: response lost on {method} ({type(exc).__name__})") from exc
                 snippet = ""
                 if isinstance(exc, json.JSONDecodeError) and resp is not None:
                     try:
@@ -302,7 +318,7 @@ class HubitatMcpClient:
         assert data is not None
         if chaos_fire:
             print(f"    [CHAOS] dropping the response of this {method} write (op committed hub-side)")
-            raise requests.HTTPError(f"relay 504 timeout injected on {method}")
+            raise RelayLostResponseError(f"relay 504 timeout injected on {method}")
         self._log(f"<< {json.dumps(data)[:500]}")
 
         if "error" in data:
@@ -427,6 +443,7 @@ class HubitatMcpClient:
             gateway = self._route_for(name)
             if gateway:
                 wire_name, wire_args = gateway, {"tool": name, "args": args}
+        self._prime_token_baseline()
         op_key = _op_key(wire_name, wire_args)   # gateway sub-tool / flat name; hub_set_rule split create-vs-edit
         # too_many_writes_in_flight is DESIGNED backpressure, not an error: the cap counts
         # hub-side writes still running after their responses were severed (a wizard POST can
@@ -443,10 +460,8 @@ class HubitatMcpClient:
             _op_ok = True
             try:
                 result = self._send("tools/call", {"name": wire_name, "arguments": wire_args})
-            except (McpError, requests.HTTPError) as exc:
+            except RelayLostResponseError:
                 _op_ok = False   # record the FAILED-op latency too -- a 504'd write is otherwise invisible
-                if "504" not in str(exc):
-                    raise
                 # The server already tokened and journalled this op, so the lost response
                 # is recoverable without the caller having pre-arranged anything.
                 # The LEAF name, not `name`: a caller may hand us a gateway envelope
@@ -495,6 +510,7 @@ class HubitatMcpClient:
             for c in result.get("content", []):
                 if c.get("type") == "text":
                     content_text = c["text"]
+            self._bank_auto_token(content_text)   # it answered: its row is not a lost one
             raise McpToolError(name, content_text)
 
         # Parse the text content
@@ -506,13 +522,45 @@ class HubitatMcpClient:
                     return c["text"]
                 # Bank the token of every op that answered, so recovery can never mistake
                 # an earlier op's row for the lost one.
-                if isinstance(parsed, dict):
-                    tok = parsed.get("opToken")
-                    if isinstance(tok, str) and tok.startswith("auto-"):
-                        self._seen_auto_tokens.add(tok)
+                self._bank_auto_token(parsed)
                 return parsed
 
         return result
+
+    def _prime_token_baseline(self) -> None:
+        """Bank every journal token that predates this run, once.
+
+        The journal outlives the run (records last ~24h), so without this every row from a
+        PREVIOUS run reads as an unclaimed candidate and recovery either picks a stale one or
+        (fail-closed) refuses. After priming, an unbanked row can only have been created after
+        we started."""
+        if self._token_baseline_primed:
+            return
+        self._token_baseline_primed = True        # set first: one attempt, never a retry loop
+        try:
+            info = self._send("tools/call", {"name": "hub_get_info",
+                                             "arguments": {"includeRecentOps": True, "recentOpsLimit": 100}})
+            for c in (info.get("content") or []):
+                if c.get("type") == "text":
+                    for row in ((json.loads(c["text"]) or {}).get("recentOps") or []):
+                        tok = row.get("opToken")
+                        if isinstance(tok, str):
+                            self._seen_auto_tokens.add(tok)
+        except Exception:
+            pass                                  # unreadable now: recovery still fails closed
+
+    def _bank_auto_token(self, payload: Any) -> None:
+        """Record the auto-token of an op that answered, in whatever form we have it."""
+        tok = None
+        if isinstance(payload, dict):
+            tok = payload.get("opToken")
+        elif isinstance(payload, str):
+            try:
+                tok = (json.loads(payload) or {}).get("opToken")
+            except (ValueError, TypeError):
+                tok = None
+        if isinstance(tok, str) and tok.startswith("auto-"):
+            self._seen_auto_tokens.add(tok)
 
     def _recover_lost_op(self, leaf_name: str, deadline_s: float = 30.0) -> Any:
         """Replay a severed response via the server's auto-opToken, per hub_get_info's
@@ -534,13 +582,20 @@ class HubitatMcpClient:
                         rows = (json.loads(c["text"]) or {}).get("recentOps") or []
             except Exception:
                 rows = []                      # journal unreadable right now -- try again
-            for row in rows:                   # server sorts newest-first
-                if row.get("tool") != leaf_name:
-                    continue
-                candidate = row.get("opToken")
-                if isinstance(candidate, str) and candidate not in self._seen_auto_tokens:
-                    token = candidate
-                    break
+            # auto-only: a row carrying a client-supplied token belongs to a caller that
+            # arranged its own recovery, never to this lost call.
+            unbanked = [r.get("opToken") for r in rows
+                        if r.get("tool") == leaf_name and r.get("auto") is True
+                        and isinstance(r.get("opToken"), str)
+                        and r.get("opToken") not in self._seen_auto_tokens]
+            if len(unbanked) > 1:
+                # More than one candidate means something else is writing this tool on this
+                # hub. Fail closed rather than replay a result that may not be ours.
+                print(f"    [RECOVER-504] {leaf_name}: {len(unbanked)} unclaimed journal rows -- "
+                      f"ambiguous, not replaying")
+                return None
+            if unbanked:
+                token = unbanked[0]
             if token is None:
                 time.sleep(2.0)
         if token is None:
@@ -559,7 +614,7 @@ class HubitatMcpClient:
                 if replay.get("replayed") is True:
                     self._seen_auto_tokens.add(token)
                     print(f"    [RECOVER-504] {leaf_name}: severed response replayed from the "
-                          f"server's own auto-token {token} -- the write was NOT re-sent")
+                          f"server's own auto-token {token[:13]}... -- the write was NOT re-sent")
                     return replay
                 if replay.get("status") in ("unknown", "indeterminate"):
                     return None                # nothing buffered; re-running is the caller's call
