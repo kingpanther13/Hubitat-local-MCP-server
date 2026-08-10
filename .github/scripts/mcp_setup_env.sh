@@ -75,14 +75,22 @@ cat "$PRE_STATE_FILE"
 # self-sufficient regardless of the gap. Prefer the MOCK backup (stamps only the 24h gate record, no
 # real backupDB write); fall back to a real backup on an older server that lacks mock support.
 echo "Stamping a backup to satisfy the destructive-confirm 24h gate before enabling toggles..."
-BACKUP_RESP="$(mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true,"mock":true}}}' 2>/dev/null || true)"
+# bestPracticeKey on both: hub_create_backup is a WRITE, and the #299 gate ships ON. The runner
+# pins it off, but only AFTER this step -- so a run that died between the test that re-enables the
+# gate and its restore leaves it on, and every backup here is refused. A refusal is -32602 on
+# HTTP 200, which surfaced as a bare `jq: null (null)` and read as "the hub can't back up".
+BACKUP_RESP="$(mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true,"mock":true,"bestPracticeKey":"bps-ack-299"}}}' 2>/dev/null || true)"
 if printf '%s' "$BACKUP_RESP" | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null 2>&1; then
   echo "  Backup gate stamped (MOCK -- no real backupDB write)."
 else
   echo "::notice::Mock backup unsupported/failed on the baseline app -- falling back to a real backup."
-  mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true}}}' \
-    | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null || {
-    echo "::error::Could not create a hub backup (mock AND real failed). hub_update_mcp_settings below needs one (destructive-confirm 24h gate). Check the test hub."; exit 1; }
+  REAL_BACKUP_RESP="$(mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true,"bestPracticeKey":"bps-ack-299"}}}' 2>/dev/null || true)"
+  if ! printf '%s' "$REAL_BACKUP_RESP" | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null 2>&1; then
+    RB_ERR="$(printf '%s' "$REAL_BACKUP_RESP" | jq -r '.error.message // ""' 2>/dev/null || echo "")"
+    [ -n "$RB_ERR" ] && echo "::error::Backup call refused by the hub: ${RB_ERR}"
+    echo "::error::Could not create a hub backup (mock AND real failed). hub_update_mcp_settings below needs one (destructive-confirm 24h gate). Check the test hub."
+    exit 1
+  fi
   echo "  Backup gate stamped (REAL backup)."
 fi
 
