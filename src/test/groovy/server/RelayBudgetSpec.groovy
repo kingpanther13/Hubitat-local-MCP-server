@@ -242,6 +242,29 @@ class RelayBudgetSpec extends ToolSpecBase {
         atomicStateMap.opTokens.size() == 1
     }
 
+    def "maxConcurrentWrites=0 disables the cap: a marker-tracked write runs with the cap full"() {
+        given: 'the e2e suite pins 0 because its runner is strictly serial, so a ghost record left by a killed write would otherwise wedge it -- nothing else pinned that 0 actually bypasses the refusal'
+        settingsMap.enableWrite = true
+        settingsMap.maxConcurrentWrites = 0
+        atomicStateMap.opTokens = [
+            'auto-backup-run': [
+                state: 'running', tool: 'hub_create_backup', startedAt: FIXED_NOW - 1000L
+            ]
+        ]
+        def ran = 0
+        script.metaClass.toolCreateHubBackup = { Map args -> ran++; [success: true] }
+
+        when: 'a second marker-tracked write arrives while one is already running'
+        def response = mcpDriver.callTool('hub_create_backup', [confirm: true])
+
+        then: 'it EXECUTES -- no refusal, at a running count that would refuse under any positive cap'
+        ran == 1
+        response.error == null
+        def inner = mcpDriver.parseInner(response)
+        inner.status != 'too_many_writes_in_flight'
+        inner.success == true
+    }
+
     def "an UNTOKENED markerless write skips the cap entirely -- and its whole-map read"() {
         // The cap counts `running` records, which only the marker-tracked writes produce, so
         // for an auto-tokened ordinary write the read could only ever answer "nothing of

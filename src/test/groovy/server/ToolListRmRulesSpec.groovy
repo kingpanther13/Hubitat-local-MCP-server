@@ -768,6 +768,26 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         r470.label == 'Porch timer'
     }
 
+    def "hub_list_rules over DISPATCH serializes the stopped status and the stripped name"() {
+        given: 'the same channel-A shape, driven through the wire path a client actually uses'
+        settingsMap.enableRead = true
+        rmUtils.stubRuleList5 = [[470: 'Porch timer (Stopped)']]
+        registerRmAppsList([ruleNode(470, 'Porch timer')])
+
+        when:
+        def response = mcpDriver.callTool('hub_list_rules', [:])
+        def inner = mcpDriver.parseInner(response)
+
+        then: 'status survives serialization, and BOTH name fields lose the decoration'
+        // Stripping only `label` would leave `name` carrying "(Stopped)", so a caller
+        // resolving a rule by name could no longer find it.
+        response.error == null
+        def r470 = inner.rules.find { it.id == 470 }
+        r470.status == 'stopped'
+        r470.label == 'Porch timer'
+        r470.name == 'Porch timer'
+    }
+
     def "does not false-flag a rule the user literally named ending in (Stopped)"() {
         given: 'both strings carry the literal suffix, so nothing distinguishes it as decoration'
         rmUtils.stubRuleList5 = [[471: 'Movie mode (Stopped)']]

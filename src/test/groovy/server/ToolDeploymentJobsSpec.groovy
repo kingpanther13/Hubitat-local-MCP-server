@@ -402,6 +402,15 @@ class ToolDeploymentJobsSpec extends ToolSpecBase {
         then: 'no throw escapes -- the job answers with a record the caller can act on'
         notThrown(IllegalArgumentException)
         result.jobId != null
+
+        and: 'and the op is RECORDED as failed, naming the id it could not use'
+        // Without this the test only pins "no throw": an implementation that swallowed the
+        // bad id and marked the op done would still pass, which is the silent-success shape
+        // the whole change exists to prevent.
+        def stored = storedJob(result.jobId.toString())
+        stored.opStatus[0].status == "failed"
+        stored.opStatus[0].error?.toString()?.contains("not-a-number")
+        stored.phase == "failed"
     }
 
     def "the worker re-arms even when a job slice save blows up"() {
@@ -1015,7 +1024,7 @@ class ToolDeploymentJobsSpec extends ToolSpecBase {
     }
 
     def "commit is refused while a worker slice still holds the job's lease"() {
-        given: 'the window this closes: validation flips a job to ready_for_commit from INSIDE a worker slice, which keeps the lease until its final save -- a commit landing there is undone by that slice s whole-job snapshot, leaving cancel and delete accepted against a job already mid-cutover'
+        given: 'the window this closes: validation flips a job to ready_for_commit from INSIDE a worker slice, which keeps the lease until its final save -- a commit landing there is undone by that slice's whole-job snapshot, leaving cancel and delete accepted against a job already mid-cutover'
         enableWrite()
         seedJob("dj-commit-lease", "ready_for_commit", [
             ops: [[op: "pause", args: [ruleId: 1]]],
@@ -1142,7 +1151,7 @@ class ToolDeploymentJobsSpec extends ToolSpecBase {
         when: 'the stale slice tries to clear the lease it no longer owns'
         script._deployReleaseLease(staleSnapshot)
 
-        then: 'the new owner s record stands, lease and all -- the stale whole-job snapshot is not written'
+        then: 'the new owner's record stands, lease and all -- the stale whole-job snapshot is not written'
         storedJob("dj-lease-steal").phase == "cancelled"
         storedJob("dj-lease-steal").sliceLeaseUntil == 1234567890000L + 12345L
     }
@@ -1188,7 +1197,7 @@ class ToolDeploymentJobsSpec extends ToolSpecBase {
     // ---------- cancel ----------
 
     def "a cancel whose deletes ALL failed stays cancellable instead of going terminal"() {
-        given: 'the delete loop recorded failures then went cancelled unconditionally, and a second op=cancel is refused with "already cancelled" -- so the documented rollback was single-shot. An app with children (this PR s headline Button Controller shape) is exactly what the hub refuses'
+        given: 'the delete loop recorded failures then went cancelled unconditionally, and a second op=cancel is refused with "already cancelled" -- so the documented rollback was single-shot. The hub refuses to delete an app that still has children'
         enableWrite()
         seedJob("dj-cancel-stuck", "failed", [createdAppIds: [101, 202]])
         script.metaClass.toolDeleteNativeApp = { Map a ->
