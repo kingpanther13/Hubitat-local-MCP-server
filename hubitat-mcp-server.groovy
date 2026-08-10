@@ -1958,7 +1958,7 @@ def handleToolsCall(msg) {
         // the text (success, oversize, validation error, runtime error, null/non-serializable).
         long _cmpT0 = now()
         if (opTokenActive && opCompletionText != null) {
-            try { _opTokenComplete(opToken, opCompletionText, opCompletionIsError) }
+            try { _opTokenComplete(opToken, opCompletionText, opCompletionIsError, reactiveToolName) }
             catch (Exception ce) {
                 mcpLog("warn", "op-token", "Recording op-result completion for ${opToken} failed: ${ce.message}")
                 // Never leave the token wedged "running" until the 24h TTL while the
@@ -2266,7 +2266,12 @@ def _opTokenPrune() {
 // request, so no client ever waits on the batch. Bounded per pass and self-re-arming.
 def opTokenFileSweep() {
     def queued = (atomicState.opTokenSweepFiles instanceof List) ? atomicState.opTokenSweepFiles : []
-    if (queued.isEmpty()) return
+    if (queued.isEmpty()) {
+        // Nothing queued is exactly when the orphan reap should run -- returning here
+        // made it unreachable on the only hub state that needs it.
+        _opTokenReapOrphanResults(10)
+        return
+    }
     def batch = queued.take(10)
     def remaining = queued.drop(10)
     atomicState.opTokenSweepFiles = remaining
@@ -2442,7 +2447,7 @@ def _opTokenRelease(String opToken) {
 // token record (no file I/O between the record read and write); on upload failure
 // keeps a small result inline, else marks it failed_buffer so a replay tells the
 // caller to verify state rather than trust a missing file.
-def _opTokenComplete(String opToken, String jsonText, boolean isErrorBool) {
+def _opTokenComplete(String opToken, String jsonText, boolean isErrorBool, toolNameArg = null) {
     def fileName = _opTokenResultFile(opToken)
     byte[] resultBytes = jsonText?.getBytes("UTF-8")
     // Auto-tokens buffer EVERY untokened write, so a File Manager round trip here is a
@@ -2468,7 +2473,9 @@ def _opTokenComplete(String opToken, String jsonText, boolean isErrorBool) {
     // startedAt would read as epoch-0-expired -- the very next prune would drop the
     // record AND its file, downgrading a COMPLETED op to the unsafe "unknown".
     // Stamp now() so an orphaned completion still lives its own full TTL.
-    def rec = [state: "complete", tool: prev.tool,
+    // tool from the marker when there is one, else from the caller: a write that skips
+    // the pre-dispatch marker still has to name itself in the recentOps journal.
+    def rec = [state: "complete", tool: (prev.tool != null ? prev.tool : toolNameArg?.toString()),
                startedAt: (prev.startedAt != null ? prev.startedAt : now()),
                finishedAt: now(), isError: isErrorBool]
     if (inlined) {

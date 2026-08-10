@@ -943,7 +943,9 @@ class OpTokenReplaySpec extends ToolSpecBase {
         def deleted = []
         script.metaClass.deleteHubFile = { String name -> deleted << name }
         atomicStateMap.opTokens = [:]
-        atomicStateMap.opTokenSweepFiles = [FILE_PREFIX + 'queued1.json']
+        // MORE than one pass worth: with a single queued name the queue drains in this
+        // same pass and the reap legitimately runs after it.
+        atomicStateMap.opTokenSweepFiles = (1..11).collect { FILE_PREFIX + "queued${it}.json".toString() }
         hubGet.register('/hub/fileManager/json') { params ->
             groovy.json.JsonOutput.toJson([[name: FILE_PREFIX + 'orphanccc333.json', size: 100]])
         }
@@ -951,8 +953,10 @@ class OpTokenReplaySpec extends ToolSpecBase {
         when:
         script.opTokenFileSweep()
 
-        then: 'only the queued name is deleted this pass -- the listing is not even fetched'
-        deleted == [FILE_PREFIX + 'queued1.json']
+        then: 'only queued names are deleted this pass -- the listing is not even fetched'
+        deleted.size() == 10
+        deleted.every { it.startsWith(FILE_PREFIX + 'queued') }
+        atomicStateMap.opTokenSweepFiles.size() == 1
     }
 
     def "the sweep queue is bounded so a delete backlog cannot grow atomicState without limit"() {
