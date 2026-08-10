@@ -615,6 +615,12 @@ def uninstalled() {
 }
 
 def initialize() {
+    // Stamp when THIS app instance came up. Any op record still marked "running" that
+    // started before this stamp was written by an instance that no longer exists: its
+    // executing thread died with the old instance, so its terminal record can never be
+    // written and it is provably a ghost, not a slow write. That makes the write cap's
+    // dead-record detection exact instead of a timeout guess -- see _recentRunningWriteOps.
+    atomicState.appInstanceStartedAt = now()
     if (!state.accessToken) {
         createAccessToken()
         log.info "Created access token"
@@ -2601,6 +2607,21 @@ def _recentRunningWriteOps(readOnlyNamesArg = null, tokensArg = null) {
     // record can cause. The cap exists to stop a client firing writes in PARALLEL, and
     // those arrive seconds apart, so this window serves it with room to spare.
     long cutoff = now() - 180000L
+    // Exact ghost test, ahead of the timeout: a record that started before THIS app
+    // instance did was written by an instance that no longer exists, so the thread that
+    // would have written its terminal record is gone. That is the case the 180s timeout
+    // is really guessing at -- an app bounce or hub reboot mid-write -- and here it is
+    // provable, so those records stop blocking immediately instead of after three minutes.
+    // (A plain relay 504 is NOT this case: the hub keeps executing and its finally still
+    // writes the terminal record, which is exactly why opToken replay recovers a 504.)
+    // Deliberate imprecision in one direction: updated() calls initialize() on a plain
+    // settings save, which does not necessarily kill in-flight work, so a save landing
+    // mid-write can un-count a write that IS still running. The cost is the cap allowing
+    // one extra concurrent write during a save; the cost of the opposite error is every
+    // write blocked for three minutes. Erring toward not-blocking is the right side.
+    // Null before the first initialize() of an upgraded install: fall back to the timeout.
+    Long instanceStart = (atomicState.appInstanceStartedAt != null) ? (atomicState.appInstanceStartedAt as Long) : null
+    if (instanceStart != null && instanceStart > cutoff) cutoff = instanceStart
     def running = []
     tokens.each { token, rec ->
         if (rec instanceof Map && rec.state == "running" && rec.tool != null && rec.startedAt != null
