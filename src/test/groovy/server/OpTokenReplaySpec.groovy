@@ -819,7 +819,7 @@ class OpTokenReplaySpec extends ToolSpecBase {
         installFileStore()
         def ran = 0
         script.metaClass.toolCreateRoom = { a -> ran++; [success: true] }
-        script.metaClass._opTokenComplete = { String t, String j, boolean e -> throw new RuntimeException('atomicState write failed') }
+        script.metaClass._opTokenComplete = { String t, String j, boolean e, tn = null -> throw new RuntimeException('atomicState write failed') }
 
         when: 'the tokened write completes but completion-buffering blows up'
         def first = mcpDriver.callTool('hub_create_room', [name: 'Den', confirm: true, opToken: 'wedgeproof12'])
