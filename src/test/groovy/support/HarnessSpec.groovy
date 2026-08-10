@@ -124,8 +124,7 @@ abstract class HarnessSpec extends Specification {
     // AppExecutor mock (see RuleHarnessSpec's note), so route the call through this
     // counter and assert on it; lifecycle specs reset it in given: with .set(0).
     protected static final java.util.concurrent.atomic.AtomicInteger UNSUBSCRIBE_CALL_COUNT = new java.util.concurrent.atomic.AtomicInteger(0)
-    // Every runIn(delay, handler[, opts]) the script scheduled this test, newest last.
-    protected static final List<List<Object>> RUN_IN_CALLS = java.util.Collections.synchronizedList([])
+
 
     // Overridable virtual clock for time-sensitive poll/debounce specs. The base
     // appExecutor.now() interaction reads this: null (default, reset every setup) yields
@@ -139,6 +138,11 @@ abstract class HarnessSpec extends Specification {
     protected static final java.util.concurrent.atomic.AtomicReference NOW_OVERRIDE = new java.util.concurrent.atomic.AtomicReference(null)
 
     @Shared protected AppExecutor appExecutor
+    // Every runIn(delay, handler[, opts]) the script scheduled this test, newest last.
+    // @Shared instance field, not a static: Groovy 2.5 will not resolve an inherited
+    // protected static as a property from a subclass, qualified or not, so the 2.5 lane
+    // threw MissingPropertyException on every assertion that read it.
+    @Shared protected final List<List<Object>> runInCalls = java.util.Collections.synchronizedList([])
     @Shared protected script
     @Shared protected final Map stateMap = SHARED_STATE_MAP
     @Shared protected final Map atomicStateMap = SHARED_ATOMIC_STATE_MAP
@@ -244,7 +248,7 @@ abstract class HarnessSpec extends Specification {
         // carries). runIn is an AppExecutor method, so `script.metaClass.runIn = {...}` never
         // intercepts it either -- a spec written that way records nothing and its
         // "did it re-arm?" assertion can only ever read false.
-        mock.runIn(*_) >> { args -> RUN_IN_CALLS << (args as List) }
+        mock.runIn(*_) >> { args -> runInCalls << (args as List) }
         return mock
     }
 
@@ -281,7 +285,7 @@ abstract class HarnessSpec extends Specification {
         // keep their identity (the AppExecutor mock's stubs captured
         // references in setupSpec), so clear-and-repopulate rather than
         // reassign.
-        RUN_IN_CALLS.clear()
+        runInCalls.clear()
         stateMap.clear()
         atomicStateMap.clear()
         settingsMap.clear()

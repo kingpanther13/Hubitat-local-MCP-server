@@ -10,15 +10,6 @@ package support
  */
 abstract class ToolSpecBase extends HarnessSpec {
 
-    /**
-     * Every runIn(delay, handler[, opts]) the script schedules, newest last -- recorded by the
-     * permanent stub HarnessSpec attaches when it builds the AppExecutor mock, and cleared per
-     * test there. runIn is an AppExecutor method, so `script.metaClass.runIn = {...}` never
-     * intercepts it: a spec written that way records nothing and its "did it re-arm?"
-     * assertion can only ever read false.
-     */
-    protected List<List<Object>> getRunInCalls() { HarnessSpec.RUN_IN_CALLS }
-
     def setup() {
         // Belt AND braces, because the two CI lanes route runIn differently: under
         // eighty20results (Groovy 3.0) it reaches the AppExecutor mock, where HarnessSpec's
@@ -27,7 +18,7 @@ abstract class ToolSpecBase extends HarnessSpec {
         // metaClass wipe so it survives the test, and appending to the same list means an
         // assertion reads the same place whichever fork is running. The positive control in
         // OpTokenReplaySpec is what proves the recorder is live rather than silently inert.
-        script.metaClass.runIn = { Object delay, String handler -> HarnessSpec.RUN_IN_CALLS << [delay, handler] }
+        script.metaClass.runIn = { Object delay, String handler -> runInCalls << [delay, handler] }
     }
 
     /**
