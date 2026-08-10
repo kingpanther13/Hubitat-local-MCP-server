@@ -176,10 +176,6 @@ class HubitatMcpClient:
         self._active_test = ""            # set by the runner per test, for slow-op attribution
         self._transport_retries = 0       # silent read-side transport retries (504/network), verbose-gated
         self._last_op: tuple[str, float, bool] | None = None   # (op_key, seconds, ok) of the most recent call
-        # Auto-opTokens whose result we actually received; _recover_lost_op claims the
-        # newest UNBANKED journal row, which is how it identifies the lost call.
-        self._seen_auto_tokens: set[str] = set()
-        self._token_baseline_primed = False
         # Catalog-derived maps (issue #319), built lazily together from the live
         # gateway-mode catalog; None = not built yet. _gateway_members (gateway -> its
         # sub-tools) backs the membership guard; _gateway_route (leaf -> owning gateway)
@@ -443,7 +439,6 @@ class HubitatMcpClient:
             gateway = self._route_for(name)
             if gateway:
                 wire_name, wire_args = gateway, {"tool": name, "args": args}
-        self._prime_token_baseline()
         op_key = _op_key(wire_name, wire_args)   # gateway sub-tool / flat name; hub_set_rule split create-vs-edit
         # too_many_writes_in_flight is DESIGNED backpressure, not an error: the cap counts
         # hub-side writes still running after their responses were severed (a wizard POST can
@@ -454,22 +449,11 @@ class HubitatMcpClient:
         # because the cap is on by default for every real client.)
         _cap_deadline = None
         result = None
-        _recovered = None
         while True:
             _t0 = time.monotonic()
             _op_ok = True
             try:
                 result = self._send("tools/call", {"name": wire_name, "arguments": wire_args})
-            except RelayLostResponseError:
-                _op_ok = False   # record the FAILED-op latency too -- a 504'd write is otherwise invisible
-                # The server already tokened and journalled this op, so the lost response
-                # is recoverable without the caller having pre-arranged anything.
-                # The LEAF name, not `name`: a caller may hand us a gateway envelope
-                # ({tool, args}) directly, and the journal records the leaf.
-                _leaf = wire_args["tool"] if isinstance(wire_args.get("tool"), str) else wire_name
-                _recovered = self._recover_lost_op(_leaf)
-                if _recovered is None:
-                    raise
             except BaseException:
                 _op_ok = False
                 raise
@@ -481,11 +465,7 @@ class HubitatMcpClient:
                 if _dur >= 7.5:
                     print(f"  [SLOW] {_dur:4.1f}s  {op_key}  ({self._active_test or '?'})"
                           f"{'' if _op_ok else '  [err/504]'}")
-            # The replayed envelope IS this call's result.
-            if _recovered is not None:
-                return _recovered
-            # Every other path out of the try either bound result or raised.
-            assert result is not None
+            assert result is not None   # every path out of the try bound it or raised
             # The cap refusal rides an isError RESULT (not a transport error): retry it here.
             _cap_text = ""
             if result.get("isError"):
@@ -510,7 +490,6 @@ class HubitatMcpClient:
             for c in result.get("content", []):
                 if c.get("type") == "text":
                     content_text = c["text"]
-            self._bank_auto_token(content_text)   # it answered: its row is not a lost one
             raise McpToolError(name, content_text)
 
         # Parse the text content
@@ -522,104 +501,9 @@ class HubitatMcpClient:
                     return c["text"]
                 # Bank the token of every op that answered, so recovery can never mistake
                 # an earlier op's row for the lost one.
-                self._bank_auto_token(parsed)
                 return parsed
 
         return result
-
-    def _prime_token_baseline(self) -> None:
-        """Bank every journal token that predates this run, once.
-
-        The journal outlives the run (records last ~24h), so without this every row from a
-        PREVIOUS run reads as an unclaimed candidate and recovery either picks a stale one or
-        (fail-closed) refuses. After priming, an unbanked row can only have been created after
-        we started."""
-        if self._token_baseline_primed:
-            return
-        self._token_baseline_primed = True        # set first: one attempt, never a retry loop
-        try:
-            info = self._send("tools/call", {"name": "hub_get_info",
-                                             "arguments": {"includeRecentOps": True, "recentOpsLimit": 100}})
-            for c in (info.get("content") or []):
-                if c.get("type") == "text":
-                    for row in ((json.loads(c["text"]) or {}).get("recentOps") or []):
-                        tok = row.get("opToken")
-                        if isinstance(tok, str):
-                            self._seen_auto_tokens.add(tok)
-        except Exception:
-            pass                                  # unreadable now: recovery still fails closed
-
-    def _bank_auto_token(self, payload: Any) -> None:
-        """Record the auto-token of an op that answered, in whatever form we have it."""
-        tok = None
-        if isinstance(payload, dict):
-            tok = payload.get("opToken")
-        elif isinstance(payload, str):
-            try:
-                tok = (json.loads(payload) or {}).get("opToken")
-            except (ValueError, TypeError):
-                tok = None
-        if isinstance(tok, str) and tok.startswith("auto-"):
-            self._seen_auto_tokens.add(tok)
-
-    def _recover_lost_op(self, leaf_name: str, deadline_s: float = 30.0) -> Any:
-        """Replay a severed response via the server's auto-opToken, per hub_get_info's
-        includeRecentOps protocol. Claims the newest journal row for this tool whose token
-        is unbanked -- ops that answered banked theirs, so an unbanked row is the lost one.
-        None (no row, or unknown/indeterminate) means the caller surfaces the 504."""
-        deadline = time.monotonic() + deadline_s
-        token = None
-        # Only the marker-tracked tools journal a row BEFORE they run; every other write is
-        # recorded when it finishes, so a still-running op has no row yet. Keep looking until
-        # the deadline rather than concluding on the first read that it never arrived.
-        while token is None and time.monotonic() < deadline:
-            rows = []
-            try:
-                info = self._send("tools/call", {"name": "hub_get_info",
-                                                 "arguments": {"includeRecentOps": True, "recentOpsLimit": 25}})
-                for c in (info.get("content") or []):
-                    if c.get("type") == "text":
-                        rows = (json.loads(c["text"]) or {}).get("recentOps") or []
-            except Exception:
-                rows = []                      # journal unreadable right now -- try again
-            # auto-only: a row carrying a client-supplied token belongs to a caller that
-            # arranged its own recovery, never to this lost call.
-            unbanked = [r.get("opToken") for r in rows
-                        if r.get("tool") == leaf_name and r.get("auto") is True
-                        and isinstance(r.get("opToken"), str)
-                        and r.get("opToken") not in self._seen_auto_tokens]
-            if len(unbanked) > 1:
-                # More than one candidate means something else is writing this tool on this
-                # hub. Fail closed rather than replay a result that may not be ours.
-                print(f"    [RECOVER-504] {leaf_name}: {len(unbanked)} unclaimed journal rows -- "
-                      f"ambiguous, not replaying")
-                return None
-            if unbanked:
-                token = unbanked[0]
-            if token is None:
-                time.sleep(2.0)
-        if token is None:
-            return None
-        deadline = time.monotonic() + deadline_s   # fresh budget: finding it is not replaying it
-        while time.monotonic() < deadline:
-            replay = None
-            try:
-                raw = self._send("tools/call", {"name": leaf_name, "arguments": {"opToken": token}})
-                for c in (raw.get("content") or []):
-                    if c.get("type") == "text":
-                        replay = json.loads(c["text"])
-            except Exception:
-                replay = None                  # transient -- keep polling until the deadline
-            if isinstance(replay, dict):
-                if replay.get("replayed") is True:
-                    self._seen_auto_tokens.add(token)
-                    print(f"    [RECOVER-504] {leaf_name}: severed response replayed from the "
-                          f"server's own auto-token {token[:13]}... -- the write was NOT re-sent")
-                    return replay
-                if replay.get("status") in ("unknown", "indeterminate"):
-                    return None                # nothing buffered; re-running is the caller's call
-            time.sleep(2.0)
-        return None
 
     # -- Convenience: REST health endpoint -----------------------------------
 
