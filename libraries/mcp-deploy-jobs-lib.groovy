@@ -910,11 +910,28 @@ private Map _deployOpCancel(Map args) {
 // damaging direction (it reports a clean rollback and drops the app from the retry set),
 // while a false "still exists" only asks the operator to retry.
 private boolean _deployAppStillExists(Object appId) {
+    // Deliberately NOT _rmFetchConfigJson: that helper THROWS for a missing app (empty
+    // response, or a parsed body with no app object), so routing this through it made
+    // "gone" and "unreadable" the same answer -- and since unreadable errs toward
+    // still-present, a genuinely deleted app could never be confirmed and cancel could
+    // never reach `cancelled`. Reading the endpoint directly is what lets absence be
+    // proven rather than inferred from an exception message (the same "not found
+    // substring" trap this readback exists to close).
+    String body
     try {
-        def cfg = _rmFetchConfigJson(normalizeRuleId(appId))
-        return (cfg?.app != null)
+        body = hubInternalGet("/installedapp/configure/json/${normalizeRuleId(appId)}")
     } catch (Exception e) {
         mcpLog("debug", "deploy", "existence readback for app ${appId} was unreadable (${e.message}); treating it as still present.")
+        return true
+    }
+    // An empty body is how the hub answers for an app that is gone.
+    if (!body?.trim()) return false
+    try {
+        def parsed = new groovy.json.JsonSlurper().parseText(body)
+        // Parsed but carrying no app object = gone. Anything with an app object is live.
+        return ((parsed instanceof Map) && parsed.app != null)
+    } catch (Exception pe) {
+        mcpLog("debug", "deploy", "existence readback for app ${appId} returned an unparseable body (${pe.message}); treating it as still present.")
         return true
     }
 }

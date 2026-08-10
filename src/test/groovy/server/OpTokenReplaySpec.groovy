@@ -478,12 +478,20 @@ class OpTokenReplaySpec extends ToolSpecBase {
         uploads == 0
         !atomicStateMap.opTokens?.containsKey('pollNever12')
 
-        and: 'the caller learns the original call never arrived and how to recover (the LEAF shape keeps the generic full-args re-issue note -- the catalog-shape clause is gateway-name only)'
+        and: 'the caller learns how to recover, and is NOT told the call provably never arrived'
         response.result.isError == true
         def inner = mcpDriver.parseInner(response)
         inner.status == 'unknown'
         inner.opToken == 'pollNever12'
-        inner.note instanceof String && inner.note.contains('Re-issue the ORIGINAL call (full arguments)')
+        inner.note instanceof String
+        // hub_create_room records only at COMPLETION, so an absent record cannot
+        // distinguish never-arrived from still-running. Claiming the former is what would
+        // steer a client into executing the write twice -- the exact double-commit the
+        // token exists to prevent -- so the note must own the ambiguity.
+        !inner.note.contains('the original call never arrived')
+        inner.note.toLowerCase().contains('cannot distinguish')
+        // It must still give the recovery, just gated behind a verifying read.
+        inner.note.toLowerCase().contains('re-issue the original call (full arguments)')
     }
 
     def "a token-only gateway envelope ({tool, opToken}) is the same pure poll"() {
@@ -1069,29 +1077,37 @@ class OpTokenReplaySpec extends ToolSpecBase {
     }
 
     def "the size cap engages past the record cap, batch-evicting the oldest down to the keep count"() {
-        given: '40 fresh entries, op_00 the oldest -- exactly at the hysteresis high-water mark'
+        given: 'a full map, op_00 the oldest -- exactly at the hysteresis high-water mark'
+        int cap = script._opTokenMaxRecords()
+        int keep = script._opTokenKeepRecords()
         def seed = [:]
-        (0..39).each { i ->
+        (0..(cap - 1)).each { i ->
             def key = "op_${String.format('%02d', i)}".toString()
             seed[key] = [state: 'complete', tool: 'hub_create_room', startedAt: FIXED_NOW - (100L - i)]
         }
         atomicStateMap.opTokens = seed
 
-        when: 'the 41st record arrives'
+        when: 'one more record arrives, taking it past the cap'
         script._opTokenMark('capnew1234', 'hub_create_room')
 
         then: 'one batch eviction takes the map to the keep count: the oldest terminal records are gone'
-        atomicStateMap.opTokens.size() == 20
+        // Derived from the constants, never hardcoded: these numbers are tuned for latency
+        // (every stored record is paid back on each atomicState read), so pinning literals
+        // here just means the specs go red for the retune rather than for a regression.
+        atomicStateMap.opTokens.size() == keep
         !atomicStateMap.opTokens.containsKey('op_00')
-        !atomicStateMap.opTokens.containsKey('op_20')
-        atomicStateMap.opTokens.containsKey('op_21')
+        !atomicStateMap.opTokens.containsKey("op_${String.format('%02d', cap - keep - 1)}".toString())
+        atomicStateMap.opTokens.containsKey("op_${String.format('%02d', cap - 1)}".toString())
         atomicStateMap.opTokens.containsKey('capnew1234')
     }
 
     def "the size cap has a dead band: between the keep count and the cap the prune never rewrites the map"() {
-        given: '29 fresh terminal records -- over the keep count, inside the dead band'
+        given: 'enough fresh terminal records to sit over the keep count but still inside the dead band'
+        int cap = script._opTokenMaxRecords()
         def seed = [:]
-        (0..28).each { i ->
+        // One short of the cap, so the put below lands exactly ON it: eviction engages only
+        // PAST the cap, so this is the last size that must not rewrite the map.
+        (0..(cap - 2)).each { i ->
             def key = "op_${String.format('%02d', i)}".toString()
             seed[key] = [state: 'complete', tool: 'hub_create_room', startedAt: FIXED_NOW - (60L - i)]
         }
@@ -1099,19 +1115,21 @@ class OpTokenReplaySpec extends ToolSpecBase {
         script._opTokenPut('deadband1234', [state: 'running', tool: 'hub_create_room', startedAt: FIXED_NOW])
         def instanceAfterPut = atomicStateMap.opTokens
 
-        when: 'the prune runs at 30 stored records'
+        when: 'the prune runs with the map exactly at the cap'
         script._opTokenPrune()
 
         then: 'nothing evicted and the map instance is untouched -- steady state stays free of the whole-map write (the #351 race exposure a hard at-keep-count cap would make permanent)'
         atomicStateMap.opTokens.is(instanceAfterPut)
-        atomicStateMap.opTokens.size() == 30
+        atomicStateMap.opTokens.size() == cap
         atomicStateMap.opTokens.containsKey('op_00')
     }
 
     def "the size cap never evicts a running token -- the oldest TERMINAL records go instead"() {
-        given: '40 fresh entries; the oldest is still running, the rest are complete'
+        given: 'a full map; the oldest is still running, the rest are complete'
+        int cap = script._opTokenMaxRecords()
+        int keep = script._opTokenKeepRecords()
         def seed = [:]
-        (0..39).each { i ->
+        (0..(cap - 1)).each { i ->
             def key = "op_${String.format('%02d', i)}".toString()
             seed[key] = [state: (i == 0 ? 'running' : 'complete'), tool: 'hub_create_room',
                          startedAt: FIXED_NOW - (100L - i)]
@@ -1122,7 +1140,7 @@ class OpTokenReplaySpec extends ToolSpecBase {
         script._opTokenMark('capnew1234', 'hub_create_room')
 
         then: 'the live op_00 survives the batch eviction; the oldest terminal records went instead'
-        atomicStateMap.opTokens.size() == 20
+        atomicStateMap.opTokens.size() == keep
         atomicStateMap.opTokens.containsKey('op_00')
         !atomicStateMap.opTokens.containsKey('op_01')
         atomicStateMap.opTokens.containsKey('capnew1234')

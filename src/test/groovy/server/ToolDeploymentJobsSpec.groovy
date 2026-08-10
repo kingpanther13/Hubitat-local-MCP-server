@@ -410,7 +410,12 @@ class ToolDeploymentJobsSpec extends ToolSpecBase {
         seedJob("dj-savefail", "staging", [ops: [[op: "pause", args: [ruleId: 1]]], opStatus: [[status: "pending"]], history: []])
         def scheduled = []
         script.metaClass.runIn = { Object delay, String handler -> scheduled << handler }
-        script.metaClass._deploySaveJob = { Map j -> throw new RuntimeException("atomicState write refused") }
+        // Throw from the op's PUBLIC tool call, not from _deploySaveJob: that helper is
+        // private, so a metaClass stub on it never intercepts the library's internal call --
+        // the real save would succeed, the single-op job would run to completion, and the
+        // worker would correctly decline to re-arm a job that is no longer active. The test
+        // would then pass or fail for reasons unrelated to the invariant it names.
+        script.metaClass.toolSetRulePaused = { Map a -> throw new RuntimeException("atomicState write refused") }
 
         when:
         script.deployJobWorker()
@@ -840,9 +845,14 @@ class ToolDeploymentJobsSpec extends ToolSpecBase {
         st.progress.stagingDone == 3
     }
 
-    def "a cancelled job keeps its rollback residue on later status reads"() {
+    def "an incomplete cancel keeps its rollback residue on later status reads AND stays retryable"() {
         // The residual-cleanup list must outlive the cancel RESPONSE: without it the
         // operator has no record of which created apps are still on the hub.
+        // Phase is `failed`, NOT `cancelled`: a cancel that could not delete everything must
+        // stay retryable, because `cancelled` is refused by a second op='cancel' and would
+        // make the documented rollback single-shot -- an app the hub refused to delete (a
+        // parent with children, the Button Controller migration shape) would leave the
+        // operator deleting apps by hand with no way to re-drive the engine.
         given:
         enableWrite()
         seedJob("dj-residue", "staging", [createdAppIds: [77, 78]])
@@ -860,8 +870,8 @@ class ToolDeploymentJobsSpec extends ToolSpecBase {
         when: "a LATER status read, after that response is gone"
         def later = script.toolSetRule([deployment: [op: "status", jobId: "dj-residue"]])
 
-        then: "the residue and the failure verdict are still there"
-        later.phase == "cancelled"
+        then: "the residue and the failure verdict are still there, and it is still cancellable"
+        later.phase == "failed"
         later.success == false
         later.error.contains("Rollback incomplete")
         later.cancel.failures*.appId == [77]
@@ -1239,8 +1249,10 @@ class ToolDeploymentJobsSpec extends ToolSpecBase {
         script.metaClass.toolDeleteNativeApp = { Map a ->
             [success: false, error: "backup snapshot not found for app ${a.appId}"]
         }
-        // The readback says the app is very much alive.
-        script.metaClass._rmFetchConfigJson = { Object id -> [app: [id: 303, label: "Still Here"]] }
+        // The readback says the app is very much alive. Driven through the hub GET the
+        // readback actually performs -- _rmFetchConfigJson is private, so a metaClass stub
+        // on it never intercepts the internal call and the test would pass on the catch.
+        hubGet.register('/installedapp/configure/json/303') { params -> '{"app":{"id":303,"label":"Still Here"}}' }
 
         when:
         def result = script.toolSetRule([deployment: [op: "cancel", jobId: "dj-cancel-readback"], confirm: true])
@@ -1256,7 +1268,8 @@ class ToolDeploymentJobsSpec extends ToolSpecBase {
         enableWrite()
         seedJob("dj-cancel-gone", "failed", [createdAppIds: [304]])
         script.metaClass.toolDeleteNativeApp = { Map a -> [success: false, error: "No rule/app with id 304 -- not found"] }
-        script.metaClass._rmFetchConfigJson = { Object id -> null }
+        // An empty body is how the hub answers for an app that is gone.
+        hubGet.register('/installedapp/configure/json/304') { params -> '' }
 
         when:
         def result = script.toolSetRule([deployment: [op: "cancel", jobId: "dj-cancel-gone"], confirm: true])
@@ -1278,7 +1291,7 @@ class ToolDeploymentJobsSpec extends ToolSpecBase {
         }
         // The "not found" verdict is now confirmed by an existence readback rather than
         // trusted from the message text; here the app really is gone.
-        script.metaClass._rmFetchConfigJson = { Object id -> null }
+        hubGet.register('/installedapp/configure/json/101') { params -> '' }
 
         when:
         def result = script.toolSetRule([deployment: [op: "cancel", jobId: "dj-cancel"], confirm: true])
