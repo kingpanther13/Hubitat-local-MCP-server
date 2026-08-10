@@ -168,10 +168,8 @@ class HubitatMcpClient:
         self._active_test = ""            # set by the runner per test, for slow-op attribution
         self._transport_retries = 0       # silent read-side transport retries (504/network), verbose-gated
         self._last_op: tuple[str, float, bool] | None = None   # (op_key, seconds, ok) of the most recent call
-        # Auto-opTokens whose result we actually RECEIVED. A 504 recovery matches the newest
-        # journal record for the tool that is NOT in here: every earlier op for that tool
-        # answered us and banked its token, so an unbanked record can only be the lost one.
-        # This is what lets recovery work without the client inventing tokens up front.
+        # Auto-opTokens whose result we actually received; _recover_lost_op claims the
+        # newest UNBANKED journal row, which is how it identifies the lost call.
         self._seen_auto_tokens: set[str] = set()
         # Catalog-derived maps (issue #319), built lazily together from the live
         # gateway-mode catalog; None = not built yet. _gateway_members (gateway -> its
@@ -244,11 +242,9 @@ class HubitatMcpClient:
         last_exc: Exception | None = None
         data: dict | None = None
         resp = None
-        # tools/list gets a longer read budget than any other call: the flat catalog is the
-        # largest single response the relay ever carries (~119KB, close to the hub's 124KB
-        # cap), so it sits nearest the relay's time ceiling and 504s in bursts. It is a pure
-        # read with no side effect, so extra attempts cost only time -- three was enough for
-        # every other read but let a whole-catalog fetch fail the run.
+        # The ~119KB flat catalog is the largest response the relay carries, so it sits
+        # nearest the time ceiling and 504'd through all three attempts. Pure read: extra
+        # attempts cost only time.
         _attempts = 6 if method == "tools/list" else 3
         for attempt in range(_attempts):
             resp = None
@@ -451,9 +447,8 @@ class HubitatMcpClient:
                 _op_ok = False   # record the FAILED-op latency too -- a 504'd write is otherwise invisible
                 if "504" not in str(exc):
                     raise
-                # This is the whole point of the auto-opToken work: a severed response is
-                # recoverable WITHOUT the caller having pre-arranged anything. The server
-                # already assigned a token and journalled the op; find it and replay it.
+                # The server already tokened and journalled this op, so the lost response
+                # is recoverable without the caller having pre-arranged anything.
                 _recovered = self._recover_lost_op(name)
                 if _recovered is None:
                     raise
@@ -468,10 +463,11 @@ class HubitatMcpClient:
                 if _dur >= 7.5:
                     print(f"  [SLOW] {_dur:4.1f}s  {op_key}  ({self._active_test or '?'})"
                           f"{'' if _op_ok else '  [err/504]'}")
-            # Recovered the severed response from the server's own journal: that replayed
-            # envelope IS this call's result, so hand it back as if the transport held.
+            # The replayed envelope IS this call's result.
             if _recovered is not None:
                 return _recovered
+            # Every other path out of the try either bound result or raised.
+            assert result is not None
             # The cap refusal rides an isError RESULT (not a transport error): retry it here.
             _cap_text = ""
             if result.get("isError"):
@@ -505,9 +501,8 @@ class HubitatMcpClient:
                     parsed = json.loads(c["text"])
                 except (json.JSONDecodeError, TypeError):
                     return c["text"]
-                # Bank the server-assigned token of every op that ANSWERED us. _recover_lost_op
-                # claims the newest unbanked row, so this is what keeps it from ever claiming
-                # an earlier op's record as the lost one.
+                # Bank the token of every op that answered, so recovery can never mistake
+                # an earlier op's row for the lost one.
                 if isinstance(parsed, dict):
                     tok = parsed.get("opToken")
                     if isinstance(tok, str) and tok.startswith("auto-"):
@@ -517,23 +512,10 @@ class HubitatMcpClient:
         return result
 
     def _recover_lost_op(self, leaf_name: str, deadline_s: float = 30.0) -> Any:
-        """Recover a call whose response the relay severed, using ONLY the server's own
-        auto-opToken machinery -- the client pre-arranges nothing.
-
-        Every untokened write gets a server-assigned auto-token and a recent-ops journal
-        row, so the token a lost response would have carried is still readable afterwards:
-        find the row, then re-issue token-only to replay the buffered result. That is the
-        documented protocol (hub_get_info's includeRecentOps text says exactly this), and
-        it is why a 504 does not have to fail a write.
-
-        Picking the row: newest-first, matching this tool, whose token we have NOT already
-        banked. Every earlier op for this tool answered us and banked its token as it
-        returned, so an unbanked row can only be the call we just lost -- no clock
-        comparison, and a stale row can never be mistaken for ours.
-
-        Returns the replayed result dict, or None when the op cannot be claimed (no row =
-        the request never reached the hub; unknown/indeterminate = nothing buffered to
-        replay). None means the caller should surface the original 504."""
+        """Replay a severed response via the server's auto-opToken, per hub_get_info's
+        includeRecentOps protocol. Claims the newest journal row for this tool whose token
+        is unbanked -- ops that answered banked theirs, so an unbanked row is the lost one.
+        None (no row, or unknown/indeterminate) means the caller surfaces the 504."""
         rows = []
         try:
             info = self._send("tools/call", {"name": "hub_get_info",
