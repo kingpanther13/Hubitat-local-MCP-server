@@ -29,7 +29,7 @@ so it is a strict superset of the parse concern.
 |---|---|---|---|---|
 | Unit Tests (`unit-tests.yml`) | 3.0 | eighty20results | full behaviour on 3.0 | **required** (`test`) |
 | Groovy 2.4 Parse (`groovy24-parse.yml`) | 2.4.21 | none (parse only) | load-time/syntax (#227) | required-adjacent |
-| **Groovy 2.5 Spock (`groovy2x-spock.yml`)** | 2.5 | joelwetzel | **runtime divergence (#230)** + parse | **allow-failure** |
+| **Groovy 2.5 Spock (`groovy2x-spock.yml`)** | 2.5 | joelwetzel | **runtime divergence (#230)** + parse | **required** (`groovy2x-spock`) |
 
 ## Why joelwetzel/hubitat_ci on Groovy 2.5
 
@@ -84,8 +84,11 @@ scaffold, and all existing workflows stay **byte-untouched**.
   `childAppResolver:` option that joelwetzel's `sandbox.run()` rejects (its self-test value — that
   sandbox-loaded `hubitat.helper.RMUtils` calls reach `RMUtilsMock` — is instead proven by the RM
   tool specs passing).
-- **Allow-failure** — `continue-on-error: true`; the lane is informational until the 2.5 corpus is
-  fully green and is **not** the ruleset's required `test` check, so it never blocks merge.
+- **Gating** — the lane is a required status check (`groovy2x-spock`) in the `main-required-checks`
+  ruleset, so a 2.5 failure blocks merge. It carries **no `paths:` filter**: a path-filtered workflow
+  does not trigger when nothing matches, so no check is created, and a required check that never
+  reports leaves the PR waiting on it forever. The sibling required lanes (`test`, `guard`) omit
+  their filters for the same reason.
 
 ## Running locally
 
@@ -105,7 +108,9 @@ only tracks the root build's eighty20results *tag* (joelwetzel cuts no tags), so
 lane, it is a real 2.x-vs-3.0 runtime divergence (or a hub-relevant fork-behaviour gap) — investigate
 before dismissing.
 
-The corpus already passes fully under Groovy 2.5 (locally and in the lane's first CI run); the lane is
-kept on `continue-on-error` deliberately, since Actions runners differ from a dev box and the fork's
-stability there is young. Once it has a track record, flip `continue-on-error` off to promote it to a
-gate.
+The lane shipped on `continue-on-error` while the fork's stability on Actions runners was still
+unproven. It has since built that track record, so the flag is gone and the lane is a gate — a red
+2.5 run now blocks merge instead of merely reporting. The job name is the ruleset's status-check
+context, so **renaming the job silently un-gates the lane**; rename the ruleset context in the same
+change, and land the workflow rename on `main` before adding the new context, or every open PR waits
+on a check name that does not exist yet.

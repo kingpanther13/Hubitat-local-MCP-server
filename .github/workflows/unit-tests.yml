@@ -1,5 +1,8 @@
 name: Unit Tests
 on:
+  # Manual run on any ref, no PR needed -- opening a PR just to exercise a lane also
+  # books the single shared test hub for an hour of e2e.
+  workflow_dispatch:
   pull_request:
     branches: [main]
   push:
@@ -45,7 +48,7 @@ jobs:
           # toolchain block in build.gradle, which Gradle locates from
           # the runner's pre-installed temurin-11.
           java-version: '17'
-      - uses: gradle/actions/setup-gradle@v6.2.0
+      - uses: gradle/actions/setup-gradle@v6.3.0
       - name: Run unit tests
         run: ./gradlew test --info --warning-mode all
           ${{ matrix.mode == 'strict' && '-PharnessStrictMetaClass=true' || '' }}

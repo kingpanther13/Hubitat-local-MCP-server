@@ -1,0 +1,75 @@
+# Code Review Style Guide — Hubitat MCP Server
+
+## How to start every PR review
+
+The very first review comment you post on any PR must begin with this exact sentence, verbatim:
+
+> I am an AI and make mistakes. If you feel that any of my review items are incorrect, please don't hesitate to push back.
+
+This is a hard requirement. Authors should know up front that pushback is welcome and respected.
+
+
+## Repository conventions to refer to
+
+When reviewing code, refer to (do not duplicate or quote) these existing repo docs for project conventions, conventions for tool design, testing patterns, and release automation:
+
+- [AGENTS.md](AGENTS.md) — conventions for AI coding agents working on this repo (sandbox rules, PR workflow, boundaries)
+- [CONTRIBUTING.md](CONTRIBUTING.md) — human-contributor guide (local dev setup, PR template walkthrough, prefix conventions, release-notes expectations)
+- [README.md](README.md) — project overview and feature catalog
+- [SKILL.md](SKILL.md) — tool reference and usage patterns
+- [TOOL_GUIDE.md](TOOL_GUIDE.md) — detailed per-tool documentation
+- [docs/testing.md](docs/testing.md) — Spock test harness conventions, including the rule that every new MCP tool must ship with unit tests
+- [docs/release-automation-design.md](docs/release-automation-design.md) — how the release bot consumes PR metadata
+
+Link to these docs from your review comments when relevant; do not paste their content.
+
+## Custom review checks
+
+The three checks below are **soft requests**, not blockers. Phrase them as suggestions in your review ("Consider adding…", "Could you clarify…"). Do not mark a PR as blocked, do not use a "Request changes" review state, and do not lower the overall review verdict solely because of one of these. The author may push back; if they do, defer to them.
+
+### 1. Release Notes section presence
+
+Every non-Dependabot PR description should contain a `## Release Notes` heading followed by at least one bulleted item (`-` or `*`). The matcher is lenient: the heading match is case-insensitive ("release notes", "Release Notes", "RELEASE NOTES" all valid), an optional trailing colon is fine, and any markdown heading level (h1–h6) counts.
+
+If the section is missing, empty, or contains only prose with no bullets, ask the author to add bulleted release notes. In your comment, explain why this matters: **these bullets are what HPM users see in the update prompt when they upgrade the rule app**. They should be written for end users, not developers — short, scannable, free of internal jargon. Sub-bullets are supported (nest with any leading whitespace) for grouping related details under one top-level point.
+
+### 2. Title prefix matches the "Type of change" checkbox
+
+Every non-Dependabot PR title should start with one of these prefixes (lowercase, trailing colon):
+
+- `feat:` — new feature
+- `fix:` — bug fix
+- `chore:` — maintenance / non-feature work
+- `refactor:` — code restructuring with no behavior change
+- `docs:` — documentation only
+- `test:` — tests only
+- `ci:` — CI / workflow changes only
+
+(`build:` is reserved for Dependabot — contributors are instructed not to use it.)
+
+The PR template has a "Type of change" checkbox section. The prefix the author chose for the PR title and the box they ticked must agree. If they disagree (for example, the title is `feat:` but the `fix` box is ticked), call it out as a suggestion and ask the author to correct one of them so the metadata is consistent.
+
+### 3. Prefix and checkbox match what the PR actually does
+
+Best-effort judgment: read the diff and decide whether the prefix and ticked checkbox accurately describe the change.
+
+- If the title says `feat:` but the diff is purely an internal refactor with no new user-visible capability, suggest a `refactor:` reclassification.
+- If the title says `fix:` but the diff adds a new tool or new behavior, suggest `feat:`.
+- If the title says `docs:` but the diff edits Groovy logic, suggest the appropriate code prefix.
+
+This check is judgmental and you may misread the diff. That is expected and acceptable. Raise it as a suggestion only ("This looks more like a refactor than a feature — would you consider relabeling?"), not as a hard finding. Author pushback ends the discussion.
+
+### 4. New MCP tools follow `AGENTS.md` Tool Design Rules
+
+When a PR adds or renames an MCP tool, best-effort judgement: does the tool follow the conventions in `AGENTS.md` § Tool design rules? Eight broad areas to look at:
+
+1. **Naming** — `hub_` prefix present; verb from the allowed vocabulary; `manage_` used only for gateways (or the documented flat-multi-action exception).
+2. **Parameter names** — unambiguous (e.g. `device_id` not `id`); semantic over wired.
+3. **Annotations** — all four hints (`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`) set explicitly.
+4. **Description quality** — concise first line; usage guidance; write-tool safety warnings present; semantic IDs over opaque UUIDs.
+5. **Consolidation candidates** — verb-pair tools (enable/disable, pause/resume, etc.) suggested for merge into a single `set_<noun>_<attribute>` tool; always-called-in-sequence tools flagged.
+6. **Schema design** — `enum` for fixed-set free-text params; `required` only when applicable; `outputSchema` present for structured returns.
+7. **Error contracts** — validation throws `IllegalArgumentException`; runtime returns `[success: false, error, note]`; `isError: true` for tool-execution errors; error text is recovery-oriented.
+8. **Pagination** — cursor support on any tool that can return a long list.
+
+Raise mismatches as suggestions only (e.g. "Consider `hub_get_room_health` instead of `check_room_health` — `check` folds into `get` in the verb vocabulary"). Don't mark as blocking, don't lower the verdict for naming nits. Author pushback ends the discussion.

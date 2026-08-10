@@ -17,6 +17,9 @@ name: Groovy 2.4 Parse Check
 # It is fully standalone: a separate build under ci/groovy24-parse/ that never touches the
 # root build.gradle or the existing 3.0 unit-test lane.
 on:
+  # Manual run on any ref, no PR needed -- opening a PR just to exercise a lane also
+  # books the single shared test hub for an hour of e2e. Path filters don't gate a dispatch.
+  workflow_dispatch:
   pull_request:
     branches: [main]
     paths:
@@ -43,6 +46,6 @@ jobs:
           java-version: |
             11
             17
-      - uses: gradle/actions/setup-gradle@v6.2.0
+      - uses: gradle/actions/setup-gradle@v6.3.0
       - name: Parse + sandbox-class-check production files under Groovy 2.4.21
         run: ./gradlew -p ci/groovy24-parse parse24 --console=plain

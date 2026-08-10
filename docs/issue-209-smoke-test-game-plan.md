@@ -131,7 +131,7 @@ library is registered in the `#include`→path map (dev tool) and in `LIBS` (bun
   Dev mode must be ON on the test hub (`mcp_setup_env.sh` checks). 30-min lease (`lease_acquire.sh`).
 - **CI lanes:** unit-tests (Spock 2×2 matrix normal/strict × gateway/flat, eighty20results hubitat_ci,
   JDK 11, ~2min — **rerun only the changed spec locally, let CI do the full matrix**), groovy24-parse,
-  groovy2x-spock (allow-failure), sandbox-lint (python), pr-guard (bot-only: version/`currentVersion()`/
+  groovy2x-spock (required), sandbox-lint (python), pr-guard (bot-only: version/`currentVersion()`/
   header version strings/`releaseNotes`/`dateReleased`/CHANGELOG/README `## Version History`).
 - **`#include` facts (from recon):** no lane resolves `#include` today (`HubitatAppSandbox` has no
   include hook). No `@Field static` in the file; closures are method-scoped (extract whole methods).
