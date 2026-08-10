@@ -59,6 +59,7 @@ abstract class HarnessSpec extends Specification {
     private static final List SHARED_CHILD_APPS_LIST = []
     private static final HubInternalGetMock SHARED_HUB_GET = new HubInternalGetMock()
     private static final McpRequestDriver SHARED_MCP_DRIVER = new McpRequestDriver()
+    private static final List SHARED_RUN_IN_CALLS = java.util.Collections.synchronizedList([])
 
     // The currently-running feature instance. The @Shared AppExecutor mock's
     // addChildApp stub (built once in setupSpec) reads mockChildAppForCreate
@@ -76,6 +77,12 @@ abstract class HarnessSpec extends Specification {
     protected static final java.util.concurrent.atomic.AtomicInteger UNSUBSCRIBE_CALL_COUNT = new java.util.concurrent.atomic.AtomicInteger(0)
 
     @Shared protected AppExecutor appExecutor
+    // Every runIn(delay, handler[, opts]) the script scheduled this test, newest last.
+    // Static-backed like the other fixtures so the stub closure built in setupSpec and the
+    // spec reading it always reach the same list. The ci/groovy2x-spock lane overrides this
+    // file with its own scaffold copy, so a recorder added to one is invisible to the other --
+    // keep the two in lockstep.
+    @Shared protected final List<List<Object>> runInCalls = SHARED_RUN_IN_CALLS
     @Shared protected script
     @Shared protected final Map stateMap = SHARED_STATE_MAP
     @Shared protected final Map atomicStateMap = SHARED_ATOMIC_STATE_MAP
@@ -135,6 +142,12 @@ abstract class HarnessSpec extends Specification {
                 "call and relax this stub. See ci/groovy2x-spock/scaffold/support/HarnessSpec.groovy.")
         }
         mock.unsubscribe() >> { UNSUBSCRIBE_CALL_COUNT.incrementAndGet() }
+        // Permanent recording stub, attached HERE with the others on purpose: a stub added to
+        // the mock from a later setupSpec does not reliably take (same note RuleHarnessSpec
+        // carries). runIn is an AppExecutor method, so `script.metaClass.runIn = {...}` never
+        // intercepts it either -- a spec written that way records nothing and its
+        // "did it re-arm?" assertion can only ever read false.
+        mock.runIn(*_) >> { args -> SHARED_RUN_IN_CALLS << (args as List) }
         // addChildApp routes via @Delegate to AppExecutor under joelwetzel. *_
         // covers the 3-arg and 4-arg(props) overloads production code uses.
         // Read the running feature's fixture so the value set in a spec's
@@ -189,6 +202,7 @@ abstract class HarnessSpec extends Specification {
 
     def setup() {
         CURRENT_FEATURE = this
+        runInCalls.clear()
         stateMap.clear()
         atomicStateMap.clear()
         settingsMap.clear()

@@ -118,13 +118,13 @@ abstract class HarnessSpec extends Specification {
     private static final List SHARED_CHILD_APPS_LIST = []
     private static final HubInternalGetMock SHARED_HUB_GET = new HubInternalGetMock()
     private static final McpRequestDriver SHARED_MCP_DRIVER = new McpRequestDriver()
+    private static final List SHARED_RUN_IN_CALLS = java.util.Collections.synchronizedList([])
 
     // Records parent-app unsubscribe() calls. A `1 * appExecutor.unsubscribe()`
     // cardinality check from a then-block doesn't fire reliably on the @Shared
     // AppExecutor mock (see RuleHarnessSpec's note), so route the call through this
     // counter and assert on it; lifecycle specs reset it in given: with .set(0).
     protected static final java.util.concurrent.atomic.AtomicInteger UNSUBSCRIBE_CALL_COUNT = new java.util.concurrent.atomic.AtomicInteger(0)
-
 
     // Overridable virtual clock for time-sensitive poll/debounce specs. The base
     // appExecutor.now() interaction reads this: null (default, reset every setup) yields
@@ -139,13 +139,11 @@ abstract class HarnessSpec extends Specification {
 
     @Shared protected AppExecutor appExecutor
     // Every runIn(delay, handler[, opts]) the script scheduled this test, newest last.
-    // Exposed through a GETTER, not as an inherited field: Groovy 2.5 resolves neither an
-    // inherited protected static nor a @Shared field two levels down the hierarchy as a
-    // property, so specs extending ToolSpecBase threw MissingPropertyException on every
-    // assertion that read it. Method inheritance is reliable on both forks.
-    @Shared private final List<List<Object>> runInCallsList = java.util.Collections.synchronizedList([])
-
-    protected List<List<Object>> getRunInCalls() { runInCallsList }
+    // Static-backed like the other fixtures so the stub closure built in setupSpec and the
+    // spec reading it always reach the same list. The ci/groovy2x-spock lane overrides this
+    // file with its own scaffold copy, so a recorder added to one is invisible to the other --
+    // keep the two in lockstep.
+    @Shared protected final List<List<Object>> runInCalls = SHARED_RUN_IN_CALLS
     @Shared protected script
     @Shared protected final Map stateMap = SHARED_STATE_MAP
     @Shared protected final Map atomicStateMap = SHARED_ATOMIC_STATE_MAP
@@ -251,7 +249,12 @@ abstract class HarnessSpec extends Specification {
         // carries). runIn is an AppExecutor method, so `script.metaClass.runIn = {...}` never
         // intercepts it either -- a spec written that way records nothing and its
         // "did it re-arm?" assertion can only ever read false.
-        mock.runIn(*_) >> { args -> runInCallsList << (args as List) }
+        mock.runIn(*_) >> { args -> SHARED_RUN_IN_CALLS << (args as List) }
+        // Permanent recording stub, attached HERE with the others on purpose: a stub added to
+        // the mock from a later setupSpec does not reliably take (same note RuleHarnessSpec
+        // carries). runIn is an AppExecutor method, so `script.metaClass.runIn = {...}` never
+        // intercepts it either -- a spec written that way records nothing and its
+        // "did it re-arm?" assertion can only ever read false.
         return mock
     }
 
@@ -288,7 +291,7 @@ abstract class HarnessSpec extends Specification {
         // keep their identity (the AppExecutor mock's stubs captured
         // references in setupSpec), so clear-and-repopulate rather than
         // reassign.
-        runInCallsList.clear()
+        runInCalls.clear()
         stateMap.clear()
         atomicStateMap.clear()
         settingsMap.clear()
