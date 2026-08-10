@@ -32,11 +32,14 @@ clear_lease() {
       -H "Content-Type: application/json" \
       -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"hub_manage_variables","arguments":{"tool":"hub_set_variable","args":{"name":"_TEST_HUB_LEASED_BY","value":"","bestPracticeKey":"bps-ack-299"}}}}' \
       2>/dev/null)"; then
-    err="$(printf '%s' "$resp" | jq -r '.error.message // ""' 2>/dev/null || echo "")"
-    if [ -n "$err" ]; then
-      echo "::warning::Lease release REFUSED by the hub (${err}) — relying on 30-min TTL to clear it."
-    else
+    # Positive success only -- a malformed body, a missing .result, or isError:true must not
+    # print "Lease released." over a lease that is still held.
+    if printf '%s' "$resp" | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null 2>&1; then
       echo "Lease released."
+    else
+      err="$(printf '%s' "$resp" | jq -r '.error.message // ""' 2>/dev/null || echo "")"
+      [ -z "$err" ] && err="no success in response: $(printf '%s' "$resp" | head -c 200)"
+      echo "::warning::Lease release did not confirm (${err}) — relying on 30-min TTL to clear it."
     fi
   else
     echo "::warning::Lease release failed — relying on 30-min TTL to clear it."

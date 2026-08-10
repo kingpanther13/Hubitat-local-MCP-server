@@ -107,15 +107,19 @@ set_lease_value() {
   # race for three consecutive runs.
   local value_json="$1" resp err
   resp="$(mcp_call "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"hub_manage_variables\",\"arguments\":{\"tool\":\"hub_set_variable\",\"args\":{\"name\":\"_TEST_HUB_LEASED_BY\",\"value\":${value_json},\"bestPracticeKey\":\"bps-ack-299\"}}}}")" || return 1
+  # Demand a POSITIVE success, not merely the absence of an error: a malformed body, a 200
+  # with no .result, and isError:true must all fail here, or the claim is reported as landed
+  # when it never was.
+  if printf '%s' "$resp" | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null 2>&1; then
+    return 0
+  fi
   err="$(printf '%s' "$resp" | jq -r '.error.message // ""' 2>/dev/null || echo "")"
   if [ -n "$err" ]; then
     echo "::error::Lease write REFUSED by the hub: ${err}" >&2
-    return 1
+  else
+    echo "::error::Lease write did not report success: $(printf '%s' "$resp" | head -c 300)" >&2
   fi
-  if printf '%s' "$resp" | jq -e '.result.isError == true' >/dev/null 2>&1; then
-    echo "::error::Lease write returned isError: $(printf '%s' "$resp" | jq -r '.result.content[0].text // ""' | head -c 300)" >&2
-    return 1
-  fi
+  return 1
 }
 
 # True (exit 0) ONLY when the lease holder is a GitHub Actions run that has already FINISHED, so
