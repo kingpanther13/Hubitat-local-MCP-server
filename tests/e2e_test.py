@@ -4288,7 +4288,12 @@ class TestRunner:
                 # Token replay first -- it returns the ORIGINAL create envelope (jobId and
                 # all) rather than inferring identity from a list. The job record is still
                 # the backstop if the buffer is gone.
-                print("    [RECOVER-504] deployment create response lost -- polling its opToken")
+                # Settle FIRST. The op is still executing in the app, and the poll is just
+                # another request to that same app, so polling immediately queues behind it and
+                # burns the whole 25s deadline on calls that 504 exactly like the original
+                # (measured: three consecutive ~10.3s create-shaped 504s per attempt).
+                print("    [RECOVER-504] deployment create response lost -- settling, then polling its opToken")
+                time.sleep(15.0)
                 replayed = self._poll_op_result(create_token, tool="hub_set_rule")
                 job_id = replayed.get("jobId") if isinstance(replayed, dict) else None
                 if not job_id:
@@ -4346,7 +4351,8 @@ class TestRunner:
                     raise
                 # Same replay the create above uses: a lost commit response otherwise costs a
                 # whole test re-run (fresh source rule and job) to learn what already committed.
-                print("    [RECOVER-504] deployment commit response lost -- polling its opToken")
+                print("    [RECOVER-504] deployment commit response lost -- settling, then polling its opToken")
+                time.sleep(15.0)
                 replayed = self._poll_op_result(commit_token, tool="hub_set_rule")
                 commit = replayed if isinstance(replayed, dict) else _dep_call(
                     {"op": "status", "jobId": job_id})
