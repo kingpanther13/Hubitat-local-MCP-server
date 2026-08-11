@@ -149,7 +149,7 @@ def mainPage() {
                 }
                 href name: "regenerateToken", page: "confirmRegenerateTokenPage",
                      title: "Regenerate access token",
-                     description: "Issue a new token if the current one may be compromised.[[FLAT_TRIM]] WARNING: the token is part of the endpoint URL above, so regenerating CHANGES both endpoint URLs -- you must re-copy the new URL into every MCP client afterward.[[/FLAT_TRIM]]"
+                     description: "Issue a new token if the current one may be compromised. WARNING: the token is part of the endpoint URL above, so regenerating CHANGES both endpoint URLs -- you must re-copy the new URL into every MCP client afterward."
             }
         }
 
@@ -160,7 +160,7 @@ def mainPage() {
                 paragraph "Selected ${selectedDevices.size()} devices"
             }
             input "bypassDeviceAllowlist", "bool", title: "Bypass Device Allowlist (reach EVERY device)",
-                  description: "DANGER: when ON, the MCP server IGNORES the device list above and can read, command, and reconfigure ANY device on the hub by id.[[FLAT_TRIM]] The list above no longer limits access. Leave OFF unless you intend to expose the entire hub.[[/FLAT_TRIM]]",
+                  description: "DANGER: when ON, the MCP server IGNORES the device list above and can read, command, and reconfigure ANY device on the hub by id. The list above no longer limits access. Leave OFF unless you intend to expose the entire hub.",
                   defaultValue: false, submitOnChange: true
             if (settings.bypassDeviceAllowlist) {
                 paragraph "<b style='color: red;'>⚠ WARNING: Device allowlist bypass is ON. The MCP server can reach EVERY device on this hub by id, ignoring the device selection above entirely (read, command, and config writes all apply to unlisted devices). Turn this OFF to restore the allowlist.</b>"
@@ -173,7 +173,7 @@ def mainPage() {
                   description: "Expose all read-only tools (list/get/search/diagnostics). Turn OFF for a write-only or fully-locked client.",
                   defaultValue: true, submitOnChange: true
             input "enableWrite", "bool", title: "Enable Write Tools",
-                  description: "Expose all state-changing tools (device control, modes, variables, rooms, files, native rules, hub admin).[[FLAT_TRIM]] Destructive tools additionally require confirm=true + a recent backup.[[/FLAT_TRIM]]",
+                  description: "Expose all state-changing tools (device control, modes, variables, rooms, files, native rules, hub admin). Destructive tools additionally require confirm=true + a recent backup.",
                   defaultValue: true, submitOnChange: true
             if (settings.enableWrite == false) {
                 paragraph "<i>Write tools are OFF — the MCP client sees only read tools.</i>"
@@ -186,7 +186,7 @@ def mainPage() {
         section("Best-Practice Guidance") {
             paragraph "Surfaces this project's best practices to the AI. Reactive hints are always on: a failed write tool's error gains a pointer to that tool's own guide section. The acknowledgment gate below is ON by default."
             input "enableMandatoryBPS", "bool", title: "Require Best-Practice Guide Acknowledgment (write tools)",
-                  description: "ON by default.[[FLAT_TRIM]] When ON, every write tool is blocked until the AI reads hub_get_tool_guide(section='best_practice_reference') and passes the acknowledgment key it publishes as the bestPracticeKey argument. Reads, the guide, and this settings tool stay reachable, so the AI can never lock itself out. Turn OFF for clients that can't carry the extra context.[[/FLAT_TRIM]]",
+                  description: "ON by default. When ON, every write tool is blocked until the AI reads hub_get_tool_guide(section='best_practice_reference') and passes the acknowledgment key it publishes as the bestPracticeKey argument. Reads, the guide, and this settings tool stay reachable, so the AI can never lock itself out. Turn OFF for clients that can't carry the extra context.",
                   defaultValue: true, submitOnChange: true
         }
 
@@ -270,10 +270,10 @@ def mainPage() {
                           "For new rule creation, prefer <code>hub_manage_rule_machine</code> hub_set_rule -- those rules are visible in Hubitat's Rule Machine app list and web UI."
             }
             input "enableCustomRuleEngine", "bool", title: "Enable Custom Rule Engine (legacy)",
-                  description: "Controls the legacy MCP-managed rule engine (custom_* tools).[[FLAT_TRIM]] OFF + Read master ON = read-only mode: hub_get_custom_rule (list/get/diagnostics modes), hub_update_custom_rule(enabled only), hub_test_custom_rule are visible; create/delete/export/import/clone are hidden. OFF + Read master OFF = all custom_* tools hidden. ON = all custom_* tools shown (full mode). The native Hubitat Rule Machine (governed by the Read/Write masters) is independent of this. Note: Hubitat firmware upgrades may briefly reset Boolean toggles -- verify this stays OFF after each firmware upgrade if you've migrated to native Rule Machine.[[/FLAT_TRIM]]",
+                  description: "Controls the legacy MCP-managed rule engine (custom_* tools). OFF + Read master ON = read-only mode: hub_get_custom_rule (list/get/diagnostics modes), hub_update_custom_rule(enabled only), hub_test_custom_rule are visible; create/delete/export/import/clone are hidden. OFF + Read master OFF = all custom_* tools hidden. ON = all custom_* tools shown (full mode). The native Hubitat Rule Machine (governed by the Read/Write masters) is independent of this. Note: Hubitat firmware upgrades may briefly reset Boolean toggles -- verify this stays OFF after each firmware upgrade if you've migrated to native Rule Machine.",
                   defaultValue: false, submitOnChange: true
             input "useGateways", "bool", title: "Consolidate tools behind category gateways",
-                  description: "When ON (default): tools are organized behind domain-named category gateways so tools/list stays compact for clients that struggle with long tool lists.[[FLAT_TRIM]] When OFF: every tool is exposed individually as a top-level MCP tool and hub_search_tools is hidden because its only purpose is finding tools hidden behind gateways. Most LLM clients perform better with the gateway list; turn this off only if your client has its own progressive-disclosure / tool-search layer. Note: other settings (the Read/Write masters, the Custom Rule Engine, and Advanced per-tool/per-gateway overrides) also add or remove entries from tools/list independently of this setting.[[/FLAT_TRIM]]",
+                  description: "When ON (default): tools are organized behind domain-named category gateways so tools/list stays compact for clients that struggle with long tool lists. When OFF: every tool is exposed individually as a top-level MCP tool and hub_search_tools is hidden because its only purpose is finding tools hidden behind gateways. Most LLM clients perform better with the gateway list; turn this off only if your client has its own progressive-disclosure / tool-search layer. Note: other settings (the Read/Write masters, the Custom Rule Engine, and Advanced per-tool/per-gateway overrides) also add or remove entries from tools/list independently of this setting.",
                   defaultValue: true
             input "mcpLogLevel", "enum", title: "MCP Debug Log Level",
                   description: "Controls MCP-accessible debug logs (default: errors only)",
@@ -414,7 +414,7 @@ def advancedOverridesPage() {
                       "Spec-validating clients hold the server to the advertised schema on every call, so any schema inaccuracy surfaces as a failed tool call on those clients. OFF is always the safe choice; nothing requires this setting.<br>" +
                       "<b>Leave OFF if using Claude Desktop.</b>"
             input "publishOutputSchemas", "bool", title: "Publish tool output schemas",
-                  description: "Leave OFF (default).[[FLAT_TRIM]] ON: gateway-mode base tools and the gateway catalog advertise outputSchema (wire form, no required arrays) and successful results carry structuredContent per the MCP spec. The flat tool list never advertises outputSchema regardless of this setting.[[/FLAT_TRIM]]",
+                  description: "Leave OFF (default). ON: gateway-mode base tools and the gateway catalog advertise outputSchema (wire form, no required arrays) and successful results carry structuredContent per the MCP spec. The flat tool list never advertises outputSchema regardless of this setting.",
                   defaultValue: false
         }
         // Deny-by-default stays: this only ADDS names. It exists for reverse-proxy / remote-access
@@ -1426,14 +1426,14 @@ def _resourceCatalog() {
             uri: "hubitat://context-summary",
             name: "context-summary",
             title: "Live Context Summary",
-            description: "One-read plain-text house snapshot: current mode (+ HSM when available) and one line per MCP-visible device -- 'Label (id, room) - capabilities; attr=value, ...'.[[FLAT_TRIM]] Truncates on very large inventories (with an explicit marker); the paginated/filtered tool form is hub_list_devices format='context'.[[/FLAT_TRIM]]",
+            description: "One-read plain-text house snapshot: current mode (+ HSM when available) and one line per MCP-visible device -- 'Label (id, room) - capabilities; attr=value, ...'. Truncates on very large inventories (with an explicit marker); the paginated/filtered tool form is hub_list_devices format='context'.",
             mimeType: "text/plain"
         ]
         entries << [
             uri: "hubitat://context",
             name: "context",
             title: "Live Context (JSON)",
-            description: "JSON twin of the context summary: currentMode, hsmStatus (when available), modes, rooms[] with deviceIds, and one compact record per MCP-visible device (id, label, room, capabilities, attribute values projected through the default context attribute set).[[FLAT_TRIM]] Device records truncate on very large inventories (truncated: true + note); the paginated tool form is hub_list_devices format='context'.[[/FLAT_TRIM]]",
+            description: "JSON twin of the context summary: currentMode, hsmStatus (when available), modes, rooms[] with deviceIds, and one compact record per MCP-visible device (id, label, room, capabilities, attribute values projected through the default context attribute set). Device records truncate on very large inventories (truncated: true + note); the paginated tool form is hub_list_devices format='context'.",
             mimeType: "application/json"
         ]
     }
@@ -2907,7 +2907,7 @@ def _paginateList(List fullList, cursor, int pageSize, String toolName) {
 def getGatewayConfig() {
     return [
         hub_manage_custom_rules: [
-            description: "Legacy MCP custom-rule engine (sandbox rules that fire as installed apps but are NOT visible in Hubitat's RM UI): create, read, update, delete, test, export, import, and clone.[[FLAT_TRIM]] Write ops (create/delete/export/import/clone) require the Custom Rule Engine toggle ON in MCP settings; when OFF only get/test (and the enabled toggle via update) work. For native Rule Machine rules visible in the hub UI use hub_manage_rule_machine / hub_manage_native_rules_and_apps instead. Read-only views are also in hub_read_rules.[[/FLAT_TRIM]]",
+            description: "Legacy MCP custom-rule engine (sandbox rules that fire as installed apps but are NOT visible in Hubitat's RM UI): create, read, update, delete, test, export, import, and clone. Write ops (create/delete/export/import/clone) require the Custom Rule Engine toggle ON in MCP settings; when OFF only get/test (and the enabled toggle via update) work. For native Rule Machine rules visible in the hub UI use hub_manage_rule_machine / hub_manage_native_rules_and_apps instead. Read-only views are also in hub_read_rules.",
             tools: ["hub_get_custom_rule", "hub_create_custom_rule", "hub_update_custom_rule", "hub_delete_custom_rule", "hub_test_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"],
             summaries: [
                 hub_get_custom_rule: "List custom rules (omit ruleId) or get one rule's detail; detailed=true (with ruleId) adds diagnostics. Args: ruleId?, detailed?, cursor?",
@@ -2932,7 +2932,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_variables: [
-            description: "Manage hub variables (every type: Number, Decimal, String, Boolean, DateTime), their connector devices, and rule-engine variables.[[FLAT_TRIM]] Issue #92: full read/write CRUD via the modern Hub Variable API + wizard; observe changes via hub_list_variable_changes.[[/FLAT_TRIM]]",
+            description: "Manage hub variables (every type: Number, Decimal, String, Boolean, DateTime), their connector devices, and rule-engine variables. Issue #92: full read/write CRUD via the modern Hub Variable API + wizard; observe changes via hub_list_variable_changes.",
             tools: ["hub_list_variables", "hub_get_variable", "hub_set_variable", "hub_create_variable", "hub_delete_variable", "hub_create_connector", "hub_delete_connector", "hub_list_variable_changes"],
             summaries: [
                 hub_list_variables: "List all hub variables (with type/connector linkage) and rule-engine variables.",
@@ -2977,7 +2977,7 @@ def getGatewayConfig() {
         // manage_hub_info dissolved — zwave/zigbee moved to hub_manage_diagnostics; the update-status read folded into hub_get_info (includeAppUpdate) and the firmware INSTALL is the core hub_update_firmware
         // hub_create_backup promoted to core; the old hub_call_zwave_repair was absorbed into hub_call_zwave (hub_manage_radio)
         hub_manage_destructive_ops: [
-            description: "DESTRUCTIVE hub operations: reboot, shutdown, permanent device deletion, radio network/fabric resets + firmware flashes, network disconnects, and cloud-controller disable.[[FLAT_TRIM]] All operations are irreversible or cause significant downtime — confirm with user first.[[/FLAT_TRIM]]",
+            description: "DESTRUCTIVE hub operations: reboot, shutdown, permanent device deletion, radio network/fabric resets + firmware flashes, network disconnects, and cloud-controller disable. All operations are irreversible or cause significant downtime — confirm with user first.",
             tools: ["hub_reboot", "hub_shutdown", "hub_delete_device", "hub_call_destructive_ops"],
             summaries: [
                 hub_reboot: "Reboot the hub (DISRUPTIVE, 1-3 min downtime). To install a pending hub firmware update instead, use hub_update_firmware. Args: confirm=true",
@@ -2993,7 +2993,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_read_apps_code: [
-            description: "Read-only inspection of installed apps, drivers, libraries, code bundles, code backups, and HPM packages: list apps (by code type or running instance), list drivers, view Groovy source, list installed bundles, browse code backups, inspect an installed app's config/pages, and list HPM-tracked packages.[[FLAT_TRIM]] All operations are read-only; writes live in hub_manage_code.[[/FLAT_TRIM]]",
+            description: "Read-only inspection of installed apps, drivers, libraries, code bundles, code backups, and HPM packages: list apps (by code type or running instance), list drivers, view Groovy source, list installed bundles, browse code backups, inspect an installed app's config/pages, and list HPM-tracked packages. All operations are read-only; writes live in hub_manage_code.",
             tools: ["hub_list_apps", "hub_list_drivers", "hub_get_source", "hub_list_libraries", "hub_list_bundles", "hub_list_backups", "hub_get_backup", "hub_list_device_dependents", "hub_get_app_config", "hub_list_app_pages", "hub_list_hpm_packages"],
             summaries: [
                 hub_list_apps: "List installed apps. scope='types' (installed app code library) or 'instances' (running apps with parent/child tree). Args: scope, filter?, includeHidden?, cursor?",
@@ -3023,7 +3023,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_backup: [
-            description: "Hub-database backup management plus source-code backup restore (issue #259 item #1): list/restore/delete local + cloud whole-hub backups, restore an uploaded external backup, and restore source-code backups.[[FLAT_TRIM]] Creating a backup and setting the automatic-backup schedule is the core hub_create_backup tool (kept top-level as the pre-flight for destructive ops). Hub-DB restore/delete are destructive — a hub-DB restore REBOOTS the hub — and need confirm + a recent backup. The read tools (hub_list_backups/hub_get_backup) are also in hub_read_apps_code.[[/FLAT_TRIM]]",
+            description: "Hub-database backup management plus source-code backup restore (issue #259 item #1): list/restore/delete local + cloud whole-hub backups, restore an uploaded external backup, and restore source-code backups. Creating a backup and setting the automatic-backup schedule is the core hub_create_backup tool (kept top-level as the pre-flight for destructive ops). Hub-DB restore/delete are destructive — a hub-DB restore REBOOTS the hub — and need confirm + a recent backup. The read tools (hub_list_backups/hub_get_backup) are also in hub_read_apps_code.",
             tools: ["hub_list_backups", "hub_get_backup", "hub_restore_backup", "hub_delete_backup"],
             summaries: [
                 hub_list_backups: "List backups. scope=source (code) | hub_local | hub_cloud | hub | all. Args: scope?, cursor?",
@@ -3039,7 +3039,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_code: [
-            description: "Install, update, and delete hub apps, drivers, libraries, and code bundles (install/delete/export).[[FLAT_TRIM]] All operations modify hub code and require Write master. Read-only counterparts (hub_get_source, list_*) live in the hub_read_apps_code gateway.[[/FLAT_TRIM]]",
+            description: "Install, update, and delete hub apps, drivers, libraries, and code bundles (install/delete/export). All operations modify hub code and require Write master. Read-only counterparts (hub_get_source, list_*) live in the hub_read_apps_code gateway.",
             tools: ["hub_create_app", "hub_create_driver", "hub_update_app", "hub_update_driver", "hub_delete_item", "hub_create_library", "hub_update_library", "hub_install_bundle", "hub_delete_bundle", "hub_export_bundle"],
             summaries: [
                 hub_create_app: "Install new app code (source|sourceFile|importUrl), OR with codeAppId=<id> create a running instance from already-installed code (mutually exclusive). To save context prefer importUrl (hub fetches the source itself) or hub_write_file + sourceFile; inline source for stubs only. confirm=true",
@@ -3068,7 +3068,7 @@ def getGatewayConfig() {
         ],
         // Option B: manage_logs_diagnostics split into logs + diagnostics
         hub_manage_logs: [
-            description: "System logs, performance stats, and log settings: hub logs, device/app performance stats, scheduled jobs, MCP debug logs, and log level configuration.[[FLAT_TRIM]] (Device/app/location event history: use the core hub_list_device_events tool.)[[/FLAT_TRIM]]",
+            description: "System logs, performance stats, and log settings: hub logs, device/app performance stats, scheduled jobs, MCP debug logs, and log level configuration. (Device/app/location event history: use the core hub_list_device_events tool.)",
             tools: ["hub_get_logs", "hub_get_performance_stats", "hub_get_jobs", "hub_get_debug_logs", "hub_delete_debug_logs", "hub_set_log_level"],
             summaries: [
                 hub_get_logs: "Get Hubitat system logs, most recent first. Args: level (trace/debug/info/warn/error), source (substring), pattern (regex), patterns + patternMode (multi-regex any/all), since/until (ISO-8601 or '30m'/'2h'/'1d'), deviceId or appId (server-side scope), limit",
@@ -3088,7 +3088,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_diagnostics: [
-            description: "Health monitoring, diagnostics, and radio details: hub metrics, memory history, garbage collection, device health, radio info, and state snapshots.[[FLAT_TRIM]] (Z-Wave/Zigbee/Matter radio writes — repair, inclusion, config, reset — live in hub_manage_radio. Custom-rule diagnostics: use hub_get_custom_rule with detailed=true.)[[/FLAT_TRIM]]",
+            description: "Health monitoring, diagnostics, and radio details: hub metrics, memory history, garbage collection, device health, radio info, and state snapshots. (Z-Wave/Zigbee/Matter radio writes — repair, inclusion, config, reset — live in hub_manage_radio. Custom-rule diagnostics: use hub_get_custom_rule with detailed=true.)",
             tools: ["hub_get_metrics", "hub_get_memory_history", "hub_call_gc", "hub_get_device_health", "hub_get_radio_details", "hub_list_captured_states", "hub_delete_captured_state"],
             summaries: [
                 hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history + the hub's own health alerts (radio offline, backup failures, low memory, DB bloat, safeMode). Read-only by default; recordSnapshot=true also persists a snapshot. Args: recordSnapshot, trendPoints",
@@ -3110,7 +3110,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_radio: [
-            description: "Manage the Z-Wave, Zigbee, and Matter radios: configure (enable/disable, region, channel, power) and run lifecycle operations (repair, inclusion/exclusion, node maintenance, replace/remove, Zigbee reboot/rebuild/scan, Matter pair/window).[[FLAT_TRIM]] Reads live in hub_get_radio_details (also in hub_read_diagnostics). DESTRUCTIVE resets + firmware flashes live in hub_manage_destructive_ops (hub_call_destructive_ops).[[/FLAT_TRIM]]",
+            description: "Manage the Z-Wave, Zigbee, and Matter radios: configure (enable/disable, region, channel, power) and run lifecycle operations (repair, inclusion/exclusion, node maintenance, replace/remove, Zigbee reboot/rebuild/scan, Matter pair/window). Reads live in hub_get_radio_details (also in hub_read_diagnostics). DESTRUCTIVE resets + firmware flashes live in hub_manage_destructive_ops (hub_call_destructive_ops).",
             tools: ["hub_get_radio_details", "hub_set_zwave", "hub_set_zigbee", "hub_call_zwave", "hub_call_zigbee", "hub_call_matter"],
             summaries: [
                 hub_get_radio_details: "Z-Wave/Zigbee/Matter radio info + read-only radio surface (topology, per-node state, status pollers, channel scan, SmartStart, firmware lists). Args: radio?, node_id?, include_topology/status/logs/channel_scan/smartstart/firmware?",
@@ -3146,7 +3146,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_read_diagnostics: [
-            description: "Read-only hub health, logs, and diagnostics: system logs, performance stats, scheduled jobs, MCP debug logs, hub metrics, free-memory/CPU history, device health/staleness, Z-Wave/Zigbee radio details, and saved state snapshots.[[FLAT_TRIM]] All operations are read-only; the matching writes (gc, Z-Wave repair, clear logs, set log level, delete snapshots) live in hub_manage_logs / hub_manage_diagnostics.[[/FLAT_TRIM]]",
+            description: "Read-only hub health, logs, and diagnostics: system logs, performance stats, scheduled jobs, MCP debug logs, hub metrics, free-memory/CPU history, device health/staleness, Z-Wave/Zigbee radio details, and saved state snapshots. All operations are read-only; the matching writes (gc, Z-Wave repair, clear logs, set log level, delete snapshots) live in hub_manage_logs / hub_manage_diagnostics.",
             tools: ["hub_get_logs", "hub_get_performance_stats", "hub_get_jobs", "hub_get_debug_logs", "hub_get_metrics", "hub_get_memory_history", "hub_get_device_health", "hub_get_radio_details", "hub_list_captured_states"],
             summaries: [
                 hub_get_logs: "Get Hubitat system logs, most recent first. Args: level, source, pattern/patterns, since/until, deviceId|appId, limit",
@@ -3172,7 +3172,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_read_rules: [
-            description: "Read-only inspection of automation rules: list/inspect MCP custom rules (legacy engine), list native Rule Machine rules + check rule health, and list/read Visual Rules Builder rules.[[FLAT_TRIM]] All operations are read-only; rule writes live in hub_manage_custom_rules, hub_manage_rule_machine, and hub_manage_native_rules_and_apps.[[/FLAT_TRIM]]",
+            description: "Read-only inspection of automation rules: list/inspect MCP custom rules (legacy engine), list native Rule Machine rules + check rule health, and list/read Visual Rules Builder rules. All operations are read-only; rule writes live in hub_manage_custom_rules, hub_manage_rule_machine, and hub_manage_native_rules_and_apps.",
             tools: ["hub_get_custom_rule", "hub_test_custom_rule", "hub_list_rules", "hub_get_rule_health", "hub_list_rule_local_variables", "hub_get_visual_rule"],
             summaries: [
                 hub_get_custom_rule: "List MCP custom rules (omit ruleId) or get one rule's detail; detailed=true (with ruleId) adds diagnostics. Args: ruleId?, detailed?, cursor?",
@@ -3192,7 +3192,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_native_rules_and_apps: [
-            description: "Native classic-app CRUD + Rule Machine runtime control.[[FLAT_TRIM]] Use for: create/edit any non-RM classic SmartApp (Room Lighting, Button Controller, Notifier, Groups+Scenes) via hub_set_native_app (Visual Rules use hub_set_visual_rule); delete/clone/export/import any classic app by appId; and RMUtils runtime control of RM rules (list/run, pause/resume, set private boolean, health). To author a Rule Machine rule's triggers/actions/conditions — 'create a rule machine rule', 'make a Hubitat rule' — use the dedicated hub_manage_rule_machine gateway (hub_set_rule) instead; that is the default rule-authoring path. Not the legacy custom_* sandbox engine. Writes snapshot first (restore via hub_list_backups + hub_restore_backup); destructive ops need confirm=true + a recent backup. RM 5.1 writes are async — on success:false / partial:true, verify via hub_get_app_config(appId) before retrying.[[/FLAT_TRIM]]",
+            description: "Native classic-app CRUD + Rule Machine runtime control. Use for: create/edit any non-RM classic SmartApp (Room Lighting, Button Controller, Notifier, Groups+Scenes) via hub_set_native_app (Visual Rules use hub_set_visual_rule); delete/clone/export/import any classic app by appId; and RMUtils runtime control of RM rules (list/run, pause/resume, set private boolean, health). To author a Rule Machine rule's triggers/actions/conditions — 'create a rule machine rule', 'make a Hubitat rule' — use the dedicated hub_manage_rule_machine gateway (hub_set_rule) instead; that is the default rule-authoring path. Not the legacy custom_* sandbox engine. Writes snapshot first (restore via hub_list_backups + hub_restore_backup); destructive ops need confirm=true + a recent backup. RM 5.1 writes are async — on success:false / partial:true, verify via hub_get_app_config(appId) before retrying.",
             tools: ["hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_native_app", "hub_set_app_disabled", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"],
             summaries: [
                 hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
@@ -3222,7 +3222,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_mcp: [
-            description: "Developer Mode self-administration: tools that let an LLM agent or CI/CD pipeline manage the MCP rule app's own configuration, scope, and operational state without manual UI intervention.[[FLAT_TRIM]] Requires `enableDeveloperMode` toggle in the MCP rule app settings (default OFF). Each write is logged at WARN level for audit. Covers self-settings including the device-access scope (selectedDevices); additional self-admin tools (true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same toggle.[[/FLAT_TRIM]]",
+            description: "Developer Mode self-administration: tools that let an LLM agent or CI/CD pipeline manage the MCP rule app's own configuration, scope, and operational state without manual UI intervention. Requires `enableDeveloperMode` toggle in the MCP rule app settings (default OFF). Each write is logged at WARN level for audit. Covers self-settings including the device-access scope (selectedDevices); additional self-admin tools (true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same toggle.",
             tools: ["hub_update_mcp_settings"],
             summaries: [
                 hub_update_mcp_settings: "Update one or more of the MCP rule app's own settings (toggles, log level, tuning params, and the device-access scope selectedDevices). Args: settings (map of key→value), confirm=true. Allowlist-gated; selectedDevices ids validated atomically."
@@ -3232,7 +3232,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_read_devices: [
-            description: "Read-only device inspection: list devices with current states, get one device's full detail, read or block-poll a single attribute, read device/location event history, and search Hubitat's compatible-device catalog (models + pairing/reset instructions).[[FLAT_TRIM]] All operations are read-only; device commands and updates live in hub_manage_devices.[[/FLAT_TRIM]]",
+            description: "Read-only device inspection: list devices with current states, get one device's full detail, read or block-poll a single attribute, read device/location event history, and search Hubitat's compatible-device catalog (models + pairing/reset instructions). All operations are read-only; device commands and updates live in hub_manage_devices.",
             tools: ["hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events", "hub_get_compatible_devices"],
             summaries: [
                 hub_list_devices: "List devices with current states; format='context' = plain-text house snapshot (mode + one line per device). Args: detailed?, filter (enabled/disabled/stale:N/virtual), labelFilter?, capabilityFilter?, roomFilter?, onlyOn?, changedSince?, attributeNames?, format (summary/detailed/ids/context), fields?, limit?, cursor?",
@@ -3250,7 +3250,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_read_rooms: [
-            description: "Read-only room inspection: list rooms and view a room's assigned devices.[[FLAT_TRIM]] All operations are read-only; room create/delete/rename live in hub_manage_rooms.[[/FLAT_TRIM]]",
+            description: "Read-only room inspection: list rooms and view a room's assigned devices. All operations are read-only; room create/delete/rename live in hub_manage_rooms.",
             tools: ["hub_list_rooms", "hub_get_room"],
             summaries: [
                 hub_list_rooms: "List all rooms with IDs, names, and device counts",
@@ -3274,7 +3274,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_read_variables: [
-            description: "Read-only hub-variable inspection: list all variables (with type/connector linkage), get one variable's value + metadata, and watch the recent change timeline.[[FLAT_TRIM]] All operations are read-only; variable create/set/delete and connectors live in hub_manage_variables.[[/FLAT_TRIM]]",
+            description: "Read-only hub-variable inspection: list all variables (with type/connector linkage), get one variable's value + metadata, and watch the recent change timeline. All operations are read-only; variable create/set/delete and connectors live in hub_manage_variables.",
             tools: ["hub_list_variables", "hub_get_variable", "hub_list_variable_changes"],
             summaries: [
                 hub_list_variables: "List all hub variables (with type/connector linkage) and rule-engine variables.",
@@ -3314,7 +3314,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_rule_machine: [
-            description: "Dedicated rule-authoring gateway.[[FLAT_TRIM]] Visual Rules Builder is the primary engine for new automations (hub_set_visual_rule / hub_get_visual_rule / hub_delete_visual_rule) — one clean JSON write with if/then/else gating. Use hub_set_rule to create/edit a full RM rule (triggers, actions, conditions, required expressions, IF/THEN/ELSE, local variables, walkStep) when the automation needs nested logic, loops, variables, or arbitrary device commands; delete RM rules with hub_delete_native_app; plus RMUtils runtime control (list/run, pause/resume, private boolean, health). This is the path for 'create a rule' / 'make a Hubitat automation'. For non-RM classic apps (Room Lighting, Button Controllers, Notifier, Groups+Scenes) use hub_manage_native_rules_and_apps. Read-only views are in hub_read_rules. Inspect a rule's config after a write via hub_get_app_config (in hub_read_apps_code, not here).[[/FLAT_TRIM]]",
+            description: "Dedicated rule-authoring gateway. Visual Rules Builder is the primary engine for new automations (hub_set_visual_rule / hub_get_visual_rule / hub_delete_visual_rule) — one clean JSON write with if/then/else gating. Use hub_set_rule to create/edit a full RM rule (triggers, actions, conditions, required expressions, IF/THEN/ELSE, local variables, walkStep) when the automation needs nested logic, loops, variables, or arbitrary device commands; delete RM rules with hub_delete_native_app; plus RMUtils runtime control (list/run, pause/resume, private boolean, health). This is the path for 'create a rule' / 'make a Hubitat automation'. For non-RM classic apps (Room Lighting, Button Controllers, Notifier, Groups+Scenes) use hub_manage_native_rules_and_apps. Read-only views are in hub_read_rules. Inspect a rule's config after a write via hub_get_app_config (in hub_read_apps_code, not here).",
             tools: ["hub_set_rule", "hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_get_rule_health", "hub_list_rule_local_variables", "hub_delete_native_app", "hub_get_visual_rule", "hub_set_visual_rule", "hub_delete_visual_rule"],
             summaries: [
                 hub_set_rule: "Create or edit a Rule Machine rule (RM 5.1) — the full authoring surface. Omit appId to create (name; optionally bundle addTriggers/addActions); provide appId to edit via addTrigger / addAction / addRequiredExpression / replaceRequiredExpression / addTriggers / addActions / replaceActions / removeAction / clearActions / moveAction / removeTrigger / modifyTrigger / modifyAction / addLocalVariable / removeLocalVariable / patches / walkStep, or raw settings/button. Auto-backs-up first. Args: appId (omit=create), name, <shortcut>|settings|button, confirm.",
@@ -3344,7 +3344,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_dashboards: [
-            description: "Manage Hubitat dashboards -- both Easy Dashboards and legacy Hubitat® Dashboards: list, view, create, update, delete, and clone.[[FLAT_TRIM]] Easy update REPLACES the config wholesale (read it first with hub_get_dashboard); legacy update edits name, authorized devices, or the tile layout (grid, background, colors) either wholesale or via granular tile ops. Delete is destructive (confirm + recent backup). Reads are also in hub_read_dashboards.[[/FLAT_TRIM]]",
+            description: "Manage Hubitat dashboards -- both Easy Dashboards and legacy Hubitat® Dashboards: list, view, create, update, delete, and clone. Easy update REPLACES the config wholesale (read it first with hub_get_dashboard); legacy update edits name, authorized devices, or the tile layout (grid, background, colors) either wholesale or via granular tile ops. Delete is destructive (confirm + recent backup). Reads are also in hub_read_dashboards.",
             tools: ["hub_list_dashboards", "hub_get_dashboard", "hub_create_dashboard", "hub_update_dashboard", "hub_delete_dashboard", "hub_clone_dashboard"],
             summaries: [
                 hub_list_dashboards: "List Easy + legacy Hubitat® Dashboards (id, name, type). Args: pinToken? (optional; resolved automatically)",
@@ -3364,7 +3364,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_read_dashboards: [
-            description: "Read-only dashboard inspection: list dashboards (Easy and legacy Hubitat®) and view one dashboard's full config -- Easy tiles/navigation/theme/devices, or a legacy dashboard's authorized devices and tile layout (grid, colors).[[FLAT_TRIM]] All operations are read-only; create/update/delete/clone live in hub_manage_dashboards.[[/FLAT_TRIM]]",
+            description: "Read-only dashboard inspection: list dashboards (Easy and legacy Hubitat®) and view one dashboard's full config -- Easy tiles/navigation/theme/devices, or a legacy dashboard's authorized devices and tile layout (grid, colors). All operations are read-only; create/update/delete/clone live in hub_manage_dashboards.",
             tools: ["hub_list_dashboards", "hub_get_dashboard"],
             summaries: [
                 hub_list_dashboards: "List Easy + legacy Hubitat® Dashboards (id, name, type). Args: pinToken? (optional; resolved automatically)",
@@ -4038,7 +4038,7 @@ def getToolDefinitions() {
         }.join("\n")
         [[
             name: gwName,
-            description: "${config.description}\n\nCall with no args to see full parameter schemas.[[FLAT_TRIM]] Call with tool='<name>' and args={...} to execute.\n\nAvailable tools:\n${catalog}[[/FLAT_TRIM]]",
+            description: "${config.description}\n\nCall with no args to see full parameter schemas. Call with tool='<name>' and args={...} to execute.\n\nAvailable tools:\n${catalog}",
             inputSchema: [
                 type: "object",
                 properties: [
