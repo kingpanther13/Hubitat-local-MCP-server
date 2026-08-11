@@ -25,7 +25,6 @@ import os
 import random
 import re
 import sys
-import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -6034,78 +6033,6 @@ class TestRunner:
     #      deferred-updateRule suppression are covered deterministically by the Spock
     #      RelayBudgetSpec; here we prove the recovery LOOP works against the live wizard.
     #      Each test owns a small BAT_E2E_* rule (create -> assert -> delete in finally).
-
-    @test("op_replay")
-    def test_write_cap_refuses_a_concurrent_marker_tracked_write(self) -> None:
-        # The ONLY test that issues overlapping writes, and only because the thing under test IS
-        # the guard against them: the cap counts `running` records, so a second write has to
-        # arrive while the first is still executing. Raw _send on the second leg -- call_tool
-        # would sit in its BACKPRESSURE wait instead of surfacing the refusal.
-        def _set_cap(n: int) -> None:
-            # Idempotent settings assignment, so a lost response is safe to re-send. Doing that
-            # here rather than failing the test: the restore 504'd once and took the run with it.
-            last = None
-            for _ in range(3):
-                try:
-                    self.client.call_tool("hub_manage_mcp", {"tool": "hub_update_mcp_settings",
-                        "args": {"settings": {"maxConcurrentWrites": n}, "confirm": True}})
-                    return
-                except (McpError, requests.HTTPError) as exc:
-                    if "504" not in str(exc):
-                        raise
-                    last = exc
-                    print(f"    [RECOVER-504] maxConcurrentWrites={n} response lost -- re-sending")
-                    time.sleep(2.0)
-            raise AssertionError(f"could not set maxConcurrentWrites={n}: {last}")
-
-        # Rule first, cap second: every write this test makes while the cap is 1 competes with
-        # it, and the create used to sit in BACKPRESSURE waits behind its own background leg.
-        app_id = self._create_native_rule("WriteCapProbe")
-        _set_cap(1)
-        first: dict = {}
-        # The background leg gets its OWN client. HubitatMcpClient shares a requests.Session
-        # and a _request_id counter across calls, so two in-flight requests on one instance
-        # could collide on JSON-RPC ids and mis-pair responses. A second instance isolates
-        # both without locking the request path or making the client thread-safe for the one
-        # test in the suite that ever overlaps calls.
-        bg_client = HubitatMcpClient(self.client.hub_url, self.client.app_id,
-                                     self.client.access_token)
-        bg_client.initialize()
-
-        def slow_write():
-            try:
-                first["result"] = bg_client.call_tool("hub_manage_rule_machine", {
-                    "tool": "hub_set_rule",
-                    "args": {"appId": app_id, "confirm": True,
-                             "opToken": self._next_op_token(),
-                             "addAction": {"capability": "log", "message": "cap probe first"}}})
-            except BaseException as exc:
-                first["error"] = exc
-
-        worker = threading.Thread(target=slow_write, daemon=True)
-        try:
-            worker.start()
-            time.sleep(1.5)                          # let the first write register its marker
-            refused = self.client._send("tools/call", {
-                "name": "hub_manage_rule_machine",
-                "arguments": {"tool": "hub_set_rule", "args": {
-                    "appId": app_id, "confirm": True,
-                    "addAction": {"capability": "log", "message": "cap probe second"}}}})
-            body = ""
-            for c in (refused.get("content") or []):
-                if c.get("type") == "text":
-                    body = c["text"]
-            assert '"too_many_writes_in_flight"' in body,                 f"a write arriving while another is in flight must be refused by the cap, got: {body[:400]}"
-            assert refused.get("isError") is True, f"the cap refusal must ride isError: {refused}"
-        finally:
-            worker.join(timeout=90)
-            if worker.is_alive():
-                print(f"    [WARN] background write on {app_id} still running after the 90s join "
-                      f"-- deleting the rule now races it")
-            elif first.get("error"):
-                print(f"    [WARN] background write on {app_id} raised: {first['error']!r}")
-            _set_cap(0)
-            self._delete_native(app_id)
 
     @test("op_replay")
     def test_op_replay_multi_patch_completes_via_recovery(self) -> None:
@@ -12670,9 +12597,11 @@ def main() -> None:
     # wedge a serial client. Real clients keep the default -- only the suite, whose serialness
     # makes the cap pure downside, turns it off. Nothing loses coverage: the refusal contract
     # lives in RelayBudgetSpec (which seeds the running records directly) and the setting's
-    # bounds and string coercion in ToolUpdateMcpSettingsSpec, and
-    # test_write_cap_refuses_a_concurrent_marker_tracked_write raises the cap for one isolated
-    # scenario (the only overlapping writes in the suite) and restores 0 in its finally.
+    # bounds and string coercion in ToolUpdateMcpSettingsSpec. The refusal is NOT reachable
+    # live: the first write replaces its own `running` marker with `complete` in its handler's
+    # finally, and a second request cannot enter the app until that handler returns -- so by
+    # the time the journal is inspected it holds no running record and no refusal can fire.
+    # Seeding one, as RelayBudgetSpec does, has no public API.
     client.call_tool("hub_manage_mcp", {
         "tool": "hub_update_mcp_settings",
         "args": {"settings": {"enableMandatoryBPS": False, "maxConcurrentWrites": 0},
