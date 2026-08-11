@@ -512,7 +512,7 @@ def _getAllToolDefinitions_partDebugLogging() {
             name: "hub_delete_debug_logs",
             description: "Clear all entries from the MCP debug-log buffer (the in-app state log read by hub_get_debug_logs).[[FLAT_TRIM]] Use to reset that buffer before reproducing an issue or to free space. Does NOT touch Hubitat system logs (hub_get_logs) or captured device states (hub_delete_captured_state).[[/FLAT_TRIM]] Cannot be undone.",
             inputSchema: [type: "object", properties: [
-                opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
+                opToken: [type: "string", description: "Idempotency token.[[FLAT_TRIM]] Optional; 8-128 chars, A-Za-z0-9._-. Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
             ]],
             outputSchema: [
                 type: "object",
@@ -530,7 +530,7 @@ def _getAllToolDefinitions_partDebugLogging() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
+                    opToken: [type: "string", description: "Idempotency token.[[FLAT_TRIM]] Optional; 8-128 chars, A-Za-z0-9._-. Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     level: [type: "string", enum: ["debug", "info", "warn", "error"], description: "Minimum log level to store"]
                 ],
                 required: ["level"]

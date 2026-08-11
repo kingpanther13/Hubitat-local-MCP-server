@@ -952,7 +952,7 @@ def _getAllToolDefinitions_partSystem() {
                 properties: [
                     identifyHub: [type: "boolean", description: "Blink the hub LED to identify it.", default: false],
                     includeHealthAlerts: [type: "boolean", description: "Include the full health-alerts block.", default: false],
-                    includeRecentOps: [type: "boolean", description: "Include the recent-operations journal: every tokened call plus every auto-recorded untokened WRITE (the server assigns an auto-opToken to each). If a write's response was lost, find its record here and re-issue token-only with its opToken to replay the buffered result instead of re-running the write.", default: false],
+                    includeRecentOps: [type: "boolean", description: "Include the recent-operations journal.[[FLAT_TRIM]] Every tokened call plus every auto-recorded untokened WRITE (the server assigns an auto-opToken to each). If a write's response was lost, find its record here and re-issue token-only with its opToken to replay the buffered result instead of re-running the write.[[/FLAT_TRIM]]", default: false],
                     recentOpsLimit: [type: "integer", description: "Max recentOps rows (default 25)."],
                     includeAppUpdate: [type: "boolean", description: "Also check GitHub for a newer MCP Rule Server APP version, returned under appUpdate.", default: false]
                 ]

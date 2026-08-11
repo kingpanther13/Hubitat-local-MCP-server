@@ -4741,17 +4741,16 @@ class TestRunner:
         try:
             # This test is a tightly-coupled CHAIN: each step's RESPONSE feeds the next
             # (device id -> controller -> buttonDev write -> buttonRule create -> action).
-            # A relay 504 mid-chain drops a response the next step needs, and the
-            # per-step verify-by-read can recover an id but not the full response shape
-            # the downstream asserts on -- so a 504 anywhere skips the whole chain
-            # (with-print, never a soft-pass). The except below still adopts the
-            # controller by label so cleanup/finally can reap it.
+            # Every write in the chain carries an opToken, so a dropped response is replayed
+            # from it and the chain continues with the REAL envelope the next step needs. The
+            # except below is the backstop for a drop that outlives the replay window: it
+            # adopts the controller by label so cleanup/finally can reap it.
 
             # Virtual button device for the controller to bind to.
-            dev = self.client.call_tool("hub_manage_virtual_device", {
-                "action": "create", "deviceType": "Virtual Button",
-                "deviceLabel": f"{PREFIX}BtnDev", "confirm": True,
-            })
+            dev = self._tokened_write(None, "hub_manage_virtual_device",
+                {"action": "create", "deviceType": "Virtual Button",
+                 "deviceLabel": f"{PREFIX}BtnDev", "confirm": True},
+                "virtual button create")
             button_dni = str((dev.get("device") or {}).get("deviceNetworkId") or dev.get("deviceNetworkId") or "")
             device_id = str((dev.get("device") or {}).get("id") or dev.get("deviceId") or dev.get("id") or "")
             assert device_id, f"virtual button create did not return a device id: {dev}"
@@ -4759,17 +4758,15 @@ class TestRunner:
                 self.created_device_dnis.append(button_dni)
 
             # Button Controller-5.1 instance + assign its button device.
-            ctrl = self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_set_native_app",
-                "args": {"appType": "button_controller", "name": ctrl_label, "confirm": True},
-            })
+            ctrl = self._tokened_write("hub_manage_native_rules_and_apps", "hub_set_native_app",
+                {"appType": "button_controller", "name": ctrl_label, "confirm": True},
+                "button controller create")
             controller_id = ctrl.get("appId")
             assert controller_id, f"button controller create did not return an appId: {ctrl}"
             self.created_native_app_ids.append(str(controller_id))
-            assigned = self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_set_native_app",
-                "args": {"appId": controller_id, "settings": {"buttonDev": [device_id]}, "confirm": True},
-            })
+            assigned = self._tokened_write("hub_manage_native_rules_and_apps", "hub_set_native_app",
+                {"appId": controller_id, "settings": {"buttonDev": [device_id]}, "confirm": True},
+                "buttonDev assignment")
             assert assigned.get("success") is not False, f"buttonDev settings write reported failure: {assigned}"
             assert "buttonDev" in (assigned.get("settingsApplied") or []), (
                 f"buttonDev fell out of the page schema "
@@ -4801,10 +4798,9 @@ class TestRunner:
             assert ch.get("broken") is None, f"a classic app has no compiled broken boolean: {ch}"
 
             # Create the button rule (button 1 pushed) through the controller.
-            br = self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_set_native_app",
-                "args": {"buttonRule": {"controllerId": controller_id, "buttonNumber": 1, "event": "pushed"}, "confirm": True},
-            })
+            br = self._tokened_write("hub_manage_native_rules_and_apps", "hub_set_native_app",
+                {"buttonRule": {"controllerId": controller_id, "buttonNumber": 1, "event": "pushed"}, "confirm": True},
+                "buttonRule create")
             rule_id = br.get("buttonRuleId")
             assert br.get("success") and rule_id, f"buttonRule create failed: {br}"
 
@@ -4812,10 +4808,9 @@ class TestRunner:
             # health should be clean (it renders -- not the broken orphan a bare
             # createchild produces).
             assert (br.get("health") or {}).get("ok") is not False, f"new button rule is unhealthy: {br}"
-            acted = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_set_rule",
-                "args": {"appId": rule_id, "addAction": {"capability": "log", "message": "E2E button rule"}, "confirm": True},
-            })
+            acted = self._tokened_write("hub_manage_rule_machine", "hub_set_rule",
+                {"appId": rule_id, "addAction": {"capability": "log", "message": "E2E button rule"}, "confirm": True},
+                "button rule action")
             assert acted.get("success") is not False, f"authoring the button rule's action failed: {acted}"
             # The trailing main-page Done commit must target the Button Rule's real commit page
             # (selectActions), not a hardcoded 'mainPage' -- a 404 there sets mainPageDoneFailed/Error
@@ -5054,6 +5049,25 @@ class TestRunner:
             self._assert_rule_renders(app_id)
             self._last_write_health = None
             return {"success": True, "asyncCommitLikely": True, "relayDropped": True}
+
+    def _tokened_write(self, gateway: str | None, tool: str, args: dict, label: str) -> Any:
+        """Write carrying a client opToken, replayed from that token if the relay drops the
+        response. For chains where a lost response otherwise leaves no id to continue from.
+        gateway=None calls `tool` directly, for flat top-level tools."""
+        args = dict(args)
+        token = args.setdefault("opToken", self._next_op_token())
+        try:
+            if gateway is None:
+                return self.client.call_tool(tool, args)
+            return self.client.call_tool(gateway, {"tool": tool, "args": args})
+        except (McpError, McpToolError, requests.HTTPError) as exc:
+            if "504" not in str(exc):
+                raise
+            print(f"    [RECOVER-504] {label}: response lost -- replaying opToken")
+            replayed = self._poll_op_result(token, tool=tool)
+            if not isinstance(replayed, dict):
+                raise
+            return replayed
 
     def _retry_unexpected_replay(self, result: Any, args: dict, label: str) -> Any:
         """A replayed:true envelope on a FIRST issue is always a token collision with a

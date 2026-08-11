@@ -682,7 +682,7 @@ def _getAllToolDefinitions_partVisualRules() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
+                    opToken: [type: "string", description: "Idempotency token.[[FLAT_TRIM]] Optional; 8-128 chars, A-Za-z0-9._-. Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     appId: [type: "integer", description: "Existing Visual Rule app id to edit. Omit to create."],
                     name: [type: "string", description: "Rule name. Required on create; renames on edit."],
                     definition: [type: "object", description: "Full rule definition (wholesale replacement).[[FLAT_TRIM]] Classic: {whenNodes, thenNodes, elseNodes}; graph: {version, nodes, edges}.[[/FLAT_TRIM]] Field schemas: hub_get_tool_guide(section='visual_rule_reference')."],
@@ -719,7 +719,7 @@ def _getAllToolDefinitions_partVisualRules() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
+                    opToken: [type: "string", description: "Idempotency token.[[FLAT_TRIM]] Optional; 8-128 chars, A-Za-z0-9._-. Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     appId: [type: "integer", description: "The Visual Rule app id from hub_get_visual_rule."],
                     confirm: [type: "boolean", description: "REQUIRED: must be true (recent backup + user approval)."]
                 ],
