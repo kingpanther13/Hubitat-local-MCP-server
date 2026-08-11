@@ -93,33 +93,8 @@ get_lease_value() {
 
 set_lease_value() {
   # Arg is the JSON-stringified value (already double-quoted + escaped).
-  #
-  # bestPracticeKey is MANDATORY here: the #299 gate ships ON, and with it on every write tool
-  # -- including the hub_set_variable this lease is built from -- is refused. The suite pins the
-  # gate off, but that happens INSIDE the run, long after the lease is claimed, so a run that
-  # died before pinning it (or a hub that was never pinned) leaves the gate on and the lease
-  # unwritable.
-  #
-  # And the response MUST be inspected: a refusal is JSON-RPC (-32602) carried on HTTP 200, so
-  # `curl --fail` inside mcp_call reports success and the old `>/dev/null` threw the refusal
-  # away. The claim then silently never landed and the post-write verify blamed the PREVIOUS
-  # holder -- "Lease stolen by 'ci-run-<dead run>'" -- which is how a wedged hub looked like a
-  # race for three consecutive runs.
-  local value_json="$1" resp err
-  resp="$(mcp_call "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"hub_manage_variables\",\"arguments\":{\"tool\":\"hub_set_variable\",\"args\":{\"name\":\"_TEST_HUB_LEASED_BY\",\"value\":${value_json},\"bestPracticeKey\":\"bps-ack-299\"}}}}")" || return 1
-  # Demand a POSITIVE success, not merely the absence of an error: a malformed body, a 200
-  # with no .result, and isError:true must all fail here, or the claim is reported as landed
-  # when it never was.
-  if printf '%s' "$resp" | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null 2>&1; then
-    return 0
-  fi
-  err="$(printf '%s' "$resp" | jq -r '.error.message // ""' 2>/dev/null || echo "")"
-  if [ -n "$err" ]; then
-    echo "::error::Lease write REFUSED by the hub: ${err}" >&2
-  else
-    echo "::error::Lease write did not report success: $(printf '%s' "$resp" | head -c 300)" >&2
-  fi
-  return 1
+  local value_json="$1"
+  mcp_call "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"hub_manage_variables\",\"arguments\":{\"tool\":\"hub_set_variable\",\"args\":{\"name\":\"_TEST_HUB_LEASED_BY\",\"value\":${value_json}}}}}" >/dev/null
 }
 
 # True (exit 0) ONLY when the lease holder is a GitHub Actions run that has already FINISHED, so

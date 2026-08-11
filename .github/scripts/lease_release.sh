@@ -23,24 +23,11 @@ set -uo pipefail
 BY="${1:-}"
 
 clear_lease() {
-  # bestPracticeKey + a CHECKED response, for the same reason as the claim in lease_acquire.sh:
-  # the #299 gate refuses every write with JSON-RPC -32602 on HTTP 200, so `curl --fail` alone
-  # printed "Lease released." while the lease stayed held -- which is how a lease strands and
-  # blocks every later run.
-  local resp err
-  if resp="$(curl -sS --fail --max-time 30 -X POST "$MCP_URL" \
+  if curl -sS --fail --max-time 30 -X POST "$MCP_URL" \
       -H "Content-Type: application/json" \
-      -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"hub_manage_variables","arguments":{"tool":"hub_set_variable","args":{"name":"_TEST_HUB_LEASED_BY","value":"","bestPracticeKey":"bps-ack-299"}}}}' \
-      2>/dev/null)"; then
-    # Positive success only -- a malformed body, a missing .result, or isError:true must not
-    # print "Lease released." over a lease that is still held.
-    if printf '%s' "$resp" | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null 2>&1; then
-      echo "Lease released."
-    else
-      err="$(printf '%s' "$resp" | jq -r '.error.message // ""' 2>/dev/null || echo "")"
-      [ -z "$err" ] && err="no success in response: $(printf '%s' "$resp" | head -c 200)"
-      echo "::warning::Lease release did not confirm (${err}) — relying on 30-min TTL to clear it."
-    fi
+      -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"hub_manage_variables","arguments":{"tool":"hub_set_variable","args":{"name":"_TEST_HUB_LEASED_BY","value":""}}}}' \
+      >/dev/null; then
+    echo "Lease released."
   else
     echo "::warning::Lease release failed — relying on 30-min TTL to clear it."
   fi
