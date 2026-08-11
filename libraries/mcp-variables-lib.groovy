@@ -1,4 +1,4 @@
-library(name: "McpVariablesLib", namespace: "mcp", author: "kingpanther13", description: "Hub variable + connector tool implementations (list/get/set/create/delete variables, connectors, change history) plus the variable event-subscription handlers for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
+library(name: "McpVariablesLib", namespace: "mcp", author: "kingpanther13", description: "Hub variable + connector tool implementations (list/get/set/create/delete variables, connectors, change history) plus the variable event-subscription handlers for the MCP Rule Server; #include'd by the main app.[[FLAT_TRIM]] Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.[[/FLAT_TRIM]]")
 
 private void _refreshHubVarInUseRegistrations() {
     Set<String> currentVars = [] as Set
@@ -1010,7 +1010,7 @@ def _getAllToolDefinitions_partVariables() {
                 properties: [
                     name: [type: "string", description: "Variable name to delete"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the deletion"],
-                    force: [type: "boolean", description: "OPTIONAL: must be true to proceed when one or more child rule apps reference this variable. Without force, the tool refuses and lists the consumers."],
+                    force: [type: "boolean", description: "OPTIONAL: must be true to proceed when one or more child rule apps reference this variable.[[FLAT_TRIM]] Without force, the tool refuses and lists the consumers.[[/FLAT_TRIM]]"],
                     opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["name", "confirm"]

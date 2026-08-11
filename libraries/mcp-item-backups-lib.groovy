@@ -1,4 +1,4 @@
-library(name: "McpItemBackupsLib", namespace: "mcp", author: "kingpanther13", description: "Backup tool implementations for the MCP Rule Server: source-code backups (hub_list_backups/hub_get_backup/hub_restore_backup) AND whole-hub database backups (hub_create_backup/hub_delete_backup + the hub-DB scope of list/restore) -- issue #259 item #1. #include'd by the main app; gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
+library(name: "McpItemBackupsLib", namespace: "mcp", author: "kingpanther13", description: "Backup tool implementations for the MCP Rule Server: source-code backups (hub_list_backups/hub_get_backup/hub_restore_backup) AND whole-hub database backups (hub_create_backup/hub_delete_backup + the hub-DB scope of list/restore) -- issue #259 item #1.[[FLAT_TRIM]] #include'd by the main app; gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.[[/FLAT_TRIM]]")
 
 def toolListItemBackups(args = null) {
     args = args ?: [:]

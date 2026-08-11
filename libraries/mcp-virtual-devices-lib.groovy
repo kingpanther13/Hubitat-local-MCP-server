@@ -1,4 +1,4 @@
-library(name: "McpVirtualDevicesLib", namespace: "mcp", author: "kingpanther13", description: "MCP-managed virtual device tool implementations (hub_manage_virtual_device + the hub_list_devices filter=virtual listing) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
+library(name: "McpVirtualDevicesLib", namespace: "mcp", author: "kingpanther13", description: "MCP-managed virtual device tool implementations (hub_manage_virtual_device + the hub_list_devices filter=virtual listing) for the MCP Rule Server; #include'd by the main app.[[FLAT_TRIM]] Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.[[/FLAT_TRIM]]")
 
 def toolManageVirtualDevice(args) {
     def action = args.action

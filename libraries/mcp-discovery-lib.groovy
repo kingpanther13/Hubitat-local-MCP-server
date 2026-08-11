@@ -1,4 +1,4 @@
-library(name: "McpDiscoveryLib", namespace: "mcp", author: "kingpanther13", description: "Tool discovery implementations (hub_search_tools BM25 search + the hub_get_tool_guide dispatcher) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
+library(name: "McpDiscoveryLib", namespace: "mcp", author: "kingpanther13", description: "Tool discovery implementations (hub_search_tools BM25 search + the hub_get_tool_guide dispatcher) for the MCP Rule Server; #include'd by the main app.[[FLAT_TRIM]] Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.[[/FLAT_TRIM]]")
 
 def toolSearchTools(args) {
     def query = args.query

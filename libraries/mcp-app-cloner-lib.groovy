@@ -1,4 +1,4 @@
-library(name: "McpAppClonerLib", namespace: "mcp", author: "kingpanther13", description: "Native-app cloner tool implementations (hub_clone_native_app/hub_export_native_app/hub_import_native_app) plus the backup-restore primitive built on them for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
+library(name: "McpAppClonerLib", namespace: "mcp", author: "kingpanther13", description: "Native-app cloner tool implementations (hub_clone_native_app/hub_export_native_app/hub_import_native_app) plus the backup-restore primitive built on them for the MCP Rule Server; #include'd by the main app.[[FLAT_TRIM]] Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.[[/FLAT_TRIM]]")
 
 private Map _appClonerInit(Integer sourceAppId) {
     def resp
@@ -920,7 +920,7 @@ def _getAllToolDefinitions_partAppCloner() {
                     fromFile: [type: "string", description: "File Manager filename to read the JSON from."],
                     parentHintAppId: [type: "integer", description: "Any existing rule's id under the target parent app.[[FLAT_TRIM]] Used purely to seed the cloner instance — has no semantic effect on the imported rule beyond placing it under the same parent.[[/FLAT_TRIM]]"],
                     newName: [type: "string", description: "Label for the imported app.[[FLAT_TRIM]] If omitted, the cloner default ('<original-label> import') is kept.[[/FLAT_TRIM]]"],
-                    stageDisabled: [type: "boolean", description: "true = disable the new app AND every DESCENDANT under it right after the import (staged-migration safety: an import lands ACTIVE). Re-enable via hub_set_app_disabled(disabled=false)."],
+                    stageDisabled: [type: "boolean", description: "true = disable the new app AND every DESCENDANT under it right after the import (staged-migration safety: an import lands ACTIVE).[[FLAT_TRIM]] Re-enable via hub_set_app_disabled(disabled=false).[[/FLAT_TRIM]]"],
                     opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],

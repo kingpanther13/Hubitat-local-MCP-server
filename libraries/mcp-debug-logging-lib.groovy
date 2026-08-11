@@ -1,4 +1,4 @@
-library(name: "McpDebugLoggingLib", namespace: "mcp", author: "kingpanther13", description: "MCP debug-log + bug-report tool implementations (hub_get_debug_logs/hub_delete_debug_logs/hub_set_log_level/hub_report_issue) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
+library(name: "McpDebugLoggingLib", namespace: "mcp", author: "kingpanther13", description: "MCP debug-log + bug-report tool implementations (hub_get_debug_logs/hub_delete_debug_logs/hub_set_log_level/hub_report_issue) for the MCP Rule Server; #include'd by the main app.[[FLAT_TRIM]] Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.[[/FLAT_TRIM]]")
 
 def toolGetDebugLogs(args) {
     initDebugLogs()
@@ -468,7 +468,7 @@ def _getAllToolDefinitions_partDebugLogging() {
         // Debug Logging Tools
         [
             name: "hub_get_debug_logs",
-            description: "Read the MCP debug-log system (stored in app state). mode='logs' (default) returns stored entries; mode='status' returns logging-system status.",
+            description: "Read the MCP debug-log system (stored in app state).[[FLAT_TRIM]] mode='logs' (default) returns stored entries; mode='status' returns logging-system status.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [

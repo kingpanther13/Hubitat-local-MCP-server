@@ -1,4 +1,4 @@
-library(name: "McpHpmLib", namespace: "mcp", author: "kingpanther13", description: "Hubitat Package Manager read tool implementations (hub_list_hpm_packages + drift detection) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
+library(name: "McpHpmLib", namespace: "mcp", author: "kingpanther13", description: "Hubitat Package Manager read tool implementations (hub_list_hpm_packages + drift detection) for the MCP Rule Server; #include'd by the main app.[[FLAT_TRIM]] Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.[[/FLAT_TRIM]]")
 
 private Map _fetchAppsListTree(String caller) {
     def responseText

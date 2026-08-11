@@ -1,4 +1,4 @@
-library(name: "McpRoomsLib", namespace: "mcp", author: "kingpanther13", description: "Room management tool implementations for the MCP Rule Server (hub_list_rooms/hub_get_room/hub_create_room/hub_delete_room/hub_update_room); #include'd by the main app. Gateway entries and dispatch stay in the app; tool definitions live here alongside the impl.")
+library(name: "McpRoomsLib", namespace: "mcp", author: "kingpanther13", description: "Room management tool implementations for the MCP Rule Server (hub_list_rooms/hub_get_room/hub_create_room/hub_delete_room/hub_update_room); #include'd by the main app.[[FLAT_TRIM]] Gateway entries and dispatch stay in the app; tool definitions live here alongside the impl.[[/FLAT_TRIM]]")
 
 def toolListRooms(args = null) {
     def rooms = getRooms()
@@ -272,7 +272,7 @@ def _getAllToolDefinitions_partRooms() {
     return [
         [
             name: "hub_list_rooms",
-            description: "List all rooms on the hub, each with its ID, name, device count, and assigned device IDs. Use to discover available rooms or resolve a room name to its ID before calling hub_get_room/hub_update_room/hub_delete_room. Read-only and parallel-safe. Returns summaries only — call hub_get_room for per-device states.",
+            description: "List all rooms on the hub, each with its ID, name, device count, and assigned device IDs.[[FLAT_TRIM]] Use to discover available rooms or resolve a room name to its ID before calling hub_get_room/hub_update_room/hub_delete_room. Read-only and parallel-safe. Returns summaries only — call hub_get_room for per-device states.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [

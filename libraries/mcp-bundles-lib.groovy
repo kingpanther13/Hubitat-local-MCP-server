@@ -1,4 +1,4 @@
-library(name: "McpBundlesLib", namespace: "mcp", author: "kingpanther13", description: "Bundle management tool implementations for the MCP Rule Server (hub_list_bundles/hub_delete_bundle/hub_export_bundle); included by the main app. Gateway entries and dispatch stay in the app; tool definitions live here alongside the impl.")
+library(name: "McpBundlesLib", namespace: "mcp", author: "kingpanther13", description: "Bundle management tool implementations for the MCP Rule Server (hub_list_bundles/hub_delete_bundle/hub_export_bundle); included by the main app.[[FLAT_TRIM]] Gateway entries and dispatch stay in the app; tool definitions live here alongside the impl.[[/FLAT_TRIM]]")
 
 private Map _parseBundleContent(String content) {
     // Parse the hub's bundle content summary ("apps [A, B], drivers [], libraries [L]") into

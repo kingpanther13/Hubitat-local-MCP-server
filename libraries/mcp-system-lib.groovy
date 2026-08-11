@@ -1,4 +1,4 @@
-library(name: "McpSystemLib", namespace: "mcp", author: "kingpanther13", description: "Hub system tool implementations (hub info/modes/HSM/backup/reboot/shutdown/firmware-update) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
+library(name: "McpSystemLib", namespace: "mcp", author: "kingpanther13", description: "Hub system tool implementations (hub info/modes/HSM/backup/reboot/shutdown/firmware-update) for the MCP Rule Server; #include'd by the main app.[[FLAT_TRIM]] Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.[[/FLAT_TRIM]]")
 
 // /hub2/hubData is the data the modern hub UI computes server-side. It carries the hub's OWN
 // authoritative health alerts plus the pending-platform-update flag (what the UI "bell" reads) --
@@ -946,7 +946,7 @@ def _getAllToolDefinitions_partSystem() {
         // System Tools
         [
             name: "hub_get_info",
-            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, memory, temperature, DB size, MCP stats, and security/toggle settings. See hub_get_tool_guide(section='hub_admin_write') for the optional deep-dive flags and PII gating.",
+            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, memory, temperature, DB size, MCP stats, and security/toggle settings.[[FLAT_TRIM]] See hub_get_tool_guide(section='hub_admin_write') for the optional deep-dive flags and PII gating.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1069,7 +1069,7 @@ def _getAllToolDefinitions_partSystem() {
                 type: "object",
                 properties: [
                     manager: [type: "string", enum: ["builtIn", "legacy", "app"], description: "Which Mode Manager to activate."],
-                    conditions: [type: "object", description: "OPTIONAL per-mode conditions keyed by mode id; REPLACES the whole set, so read-modify-write from hub_list_modes. See hub_get_tool_guide(section='hub_admin_write')."]
+                    conditions: [type: "object", description: "OPTIONAL per-mode conditions keyed by mode id; REPLACES the whole set, so read-modify-write from hub_list_modes.[[FLAT_TRIM]] See hub_get_tool_guide(section='hub_admin_write').[[/FLAT_TRIM]]"]
                 ]
             ],
             outputSchema: [

@@ -1,4 +1,4 @@
-library(name: "McpCodeManagementLib", namespace: "mcp", author: "kingpanther13", description: "App/driver/library code management tool implementations (list/source/install/update/delete, app config + pages, device dependents) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
+library(name: "McpCodeManagementLib", namespace: "mcp", author: "kingpanther13", description: "App/driver/library code management tool implementations (list/source/install/update/delete, app config + pages, device dependents) for the MCP Rule Server; #include'd by the main app.[[FLAT_TRIM]] Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.[[/FLAT_TRIM]]")
 
 def toolListHubApps(args) {
 
@@ -2613,11 +2613,11 @@ def _getAllToolDefinitions_partCodeManagement() {
         // get_hub_details merged into hub_get_info (core tool)
         [
             name: "hub_list_apps",
-            description: """List apps on the hub — running instances or installed app code/types (see scope). Per-app event history: hub_list_device_events with appId. Requires the Read master.""",
+            description: """List apps on the hub — running instances or installed app code/types (see scope).[[FLAT_TRIM]] Per-app event history: hub_list_device_events with appId. Requires the Read master.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    scope: [type: "string", enum: ["instances", "types"], description: "What to list. 'instances' (default) = running app instances with parent/child tree; 'types' = installed app code library / available app types.", default: "instances"],
+                    scope: [type: "string", enum: ["instances", "types"], description: "What to list.[[FLAT_TRIM]] 'instances' (default) = running app instances with parent/child tree; 'types' = installed app code library / available app types.[[/FLAT_TRIM]]", default: "instances"],
                     filter: [type: "string", enum: ["all", "builtin", "user", "disabled", "parents", "children"], description: "scope='instances' only: category filter."],
                     includeHidden: [type: "boolean", description: "scope='instances' only: include hidden apps (typically Hubitat internal). Default: false", default: false],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded (subject to 120KB guard); pass \"\" for the first page, iterate nextCursor (page size 50)."]
@@ -2808,7 +2808,7 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
                     installs: [
                         type: "array",
-                        description: "Bulk mode: one round-trip for many drivers. Each entry {source|sourceFile|importUrl}; cannot mix with single-driver fields; continue-on-error.",
+                        description: "Bulk mode: one round-trip for many drivers.[[FLAT_TRIM]] Each entry {source|sourceFile|importUrl}; cannot mix with single-driver fields; continue-on-error.[[/FLAT_TRIM]]",
                         items: [
                             type: "object",
                             properties: [
@@ -2925,7 +2925,7 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
                     expectedVersion: [type: "integer", description: "Optional optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] In bulk mode, put it inside each updates[] entry.[[/FLAT_TRIM]]"],
                     updates: [
                         type: "array",
-                        description: "Bulk mode: one round-trip for many drivers. Each entry {driverId, sourceFile|source|importUrl|resave, optional expectedVersion}; cannot mix with single-driver fields; continue-on-error.",
+                        description: "Bulk mode: one round-trip for many drivers.[[FLAT_TRIM]] Each entry {driverId, sourceFile|source|importUrl|resave, optional expectedVersion}; cannot mix with single-driver fields; continue-on-error.[[/FLAT_TRIM]]",
                         items: [
                             type: "object",
                             properties: [
@@ -3103,7 +3103,7 @@ Get appId from hub_list_apps (scope='instances') or hub_list_rules.[[FLAT_TRIM]]
             inputSchema: [
                 type: "object",
                 properties: [
-                    appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_apps (scope='instances'), hub_list_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."],
+                    appId: [type: "string", description: "Installed-app ID (decimal).[[FLAT_TRIM]] From hub_list_apps (scope='instances'), hub_list_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>).[[/FLAT_TRIM]]"],
                     pageName: [type: "string", description: "Optional sub-page name for multi-page apps; main page when omitted. Call hub_list_app_pages to discover available names."],
                     includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map (default false). Set true only for power-user inspection.", default: false],
                     summary: [type: "boolean", description: "Fast identity-only read: returns the thin app record (id, name, type, disabled, user), no config page; pageName/includeSettings ignored.", default: false]

@@ -1,4 +1,4 @@
-library(name: "McpSelfAdminLib", namespace: "mcp", author: "kingpanther13", description: "MCP self-administration tool implementations (hub_update_mcp_settings + the hub_update_package Developer Mode deploy) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
+library(name: "McpSelfAdminLib", namespace: "mcp", author: "kingpanther13", description: "MCP self-administration tool implementations (hub_update_mcp_settings + the hub_update_package Developer Mode deploy) for the MCP Rule Server; #include'd by the main app.[[FLAT_TRIM]] Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.[[/FLAT_TRIM]]")
 
 def toolUpdateMcpSettings(args) {
     // IllegalArgumentException (not IllegalStateException) so the dispatcher routes this

@@ -1,4 +1,4 @@
-library(name: "McpDiagnosticsLib", namespace: "mcp", author: "kingpanther13", description: "Diagnostics + maintenance tool implementations (hub logs/performance/jobs/metrics/memory/radio/device-health/GC/Z-Wave repair/captured states) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
+library(name: "McpDiagnosticsLib", namespace: "mcp", author: "kingpanther13", description: "Diagnostics + maintenance tool implementations (hub logs/performance/jobs/metrics/memory/radio/device-health/GC/Z-Wave repair/captured states) for the MCP Rule Server; #include'd by the main app.[[FLAT_TRIM]] Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.[[/FLAT_TRIM]]")
 
 // Radio-details dispatch helper. Extracted from the executeTool switch so the
 // case body is a plain method call: a bare `{ ... }` block right after a

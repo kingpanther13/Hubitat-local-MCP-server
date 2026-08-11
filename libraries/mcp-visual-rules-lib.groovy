@@ -1,4 +1,4 @@
-library(name: "McpVisualRulesLib", namespace: "mcp", author: "kingpanther13", description: "Visual Rules Builder tool implementations for the MCP Rule Server (hub_get_visual_rule/hub_set_visual_rule/hub_delete_visual_rule); included by the main app. Gateway entries and dispatch stay in the app; tool definitions live here alongside the impl.")
+library(name: "McpVisualRulesLib", namespace: "mcp", author: "kingpanther13", description: "Visual Rules Builder tool implementations for the MCP Rule Server (hub_get_visual_rule/hub_set_visual_rule/hub_delete_visual_rule); included by the main app.[[FLAT_TRIM]] Gateway entries and dispatch stay in the app; tool definitions live here alongside the impl.[[/FLAT_TRIM]]")
 
 private Map _vrbAppExistence(Integer appId) {
     // GET /installedapp/json/<id> -> {id, name, type, disabled, user} for any installed app.

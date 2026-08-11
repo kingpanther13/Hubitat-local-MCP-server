@@ -1,4 +1,4 @@
-library(name: "McpCustomRulesLib", namespace: "mcp", author: "kingpanther13", description: "Legacy custom-rule engine parent-side tool implementations (get/create/update/delete/test/export/import/clone custom rules) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
+library(name: "McpCustomRulesLib", namespace: "mcp", author: "kingpanther13", description: "Legacy custom-rule engine parent-side tool implementations (get/create/update/delete/test/export/import/clone custom rules) for the MCP Rule Server; #include'd by the main app.[[FLAT_TRIM]] Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.[[/FLAT_TRIM]]")
 
 def toolListRules(args = null) {
     def childApps = getChildApps()
