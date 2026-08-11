@@ -6045,12 +6045,22 @@ class TestRunner:
             "args": {"settings": {"maxConcurrentWrites": 1}, "confirm": True}})
         app_id = self._create_native_rule("WriteCapProbe")
         first: dict = {}
+        # The background leg gets its OWN client. HubitatMcpClient shares a requests.Session
+        # and a _request_id counter across calls, so two in-flight requests on one instance
+        # could collide on JSON-RPC ids and mis-pair responses. A second instance isolates
+        # both without locking the request path or making the client thread-safe for the one
+        # test in the suite that ever overlaps calls.
+        bg_client = HubitatMcpClient(self.client.hub_url, self.client.app_id,
+                                     self.client.access_token)
+        bg_client.initialize()
 
         def slow_write():
             try:
-                first["result"] = self._rm_call_soft(
-                    {"appId": app_id, "confirm": True,
-                     "addAction": {"capability": "log", "message": "cap probe first"}})
+                first["result"] = bg_client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_set_rule",
+                    "args": {"appId": app_id, "confirm": True,
+                             "opToken": self._next_op_token(),
+                             "addAction": {"capability": "log", "message": "cap probe first"}}})
             except BaseException as exc:
                 first["error"] = exc
 
