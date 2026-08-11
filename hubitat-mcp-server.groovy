@@ -6871,7 +6871,8 @@ private String _classicAppFormat(Map cfg) {
 // report shape instead of a hand-copied literal per degenerate case.
 private Map _rmEmptyHealthVerdict(Map overrides) {
     def v = [ok: false, unreadable: false, broken: null, source: "none", ruleFormat: null,
-             label: null, configPageError: null, brokenMarkers: [], brokenMarkerCounts: [:],
+             label: null, disabled: null, paused: null, configPageError: null,
+             brokenMarkers: [], brokenMarkerCounts: [:],
              multipleFlagPoison: [], structuralIssues: [], validationErrors: [], issues: [],
              checkErrors: []]
     v.putAll(overrides ?: [:])
@@ -6890,6 +6891,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     def issues = []
     def checkErrors = []           // lone-source read failures: visible diagnostics, never gate-failing evidence
     def label = null
+    Boolean appDisabled = null     // red-X state from the configure-json app block; null = not read
     def configPageError = null
     def brokenMarkers = []
     def multipleFlagPoison = []
@@ -6945,6 +6947,9 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
             def cfg = _rmFetchConfigJson(appId)
             sourcesUsed << "configPage"
             label = cfg?.app?.label?.toString()
+            // Same fetch already in hand: reporting the red-X state costs nothing and spares
+            // callers a second tool call (hub_list_rules) just to learn whether a rule can run.
+            if (cfg?.app?.disabled != null) appDisabled = (cfg.app.disabled == true)
             // Recognize the classic app type so the report names what it inspected instead of
             // leaving ruleFormat null. Button Controller / Basic Rule (and other classic apps)
             // share RM's configPage protocol, so the generic detections below (configPage.error,
@@ -7071,6 +7076,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
         source: (sourcesUsed ? sourcesUsed.join("+") : "none"),
         ruleFormat: ruleFormat,
         label: label,
+        disabled: appDisabled,
         configPageError: configPageError,
         brokenMarkers: brokenMarkers.unique(),
         brokenMarkerCounts: brokenMarkerCounts,
