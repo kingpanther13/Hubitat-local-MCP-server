@@ -71,12 +71,16 @@ class McpError(Exception):
     """JSON-RPC level error from the MCP endpoint."""
 
 
-class RelayLostResponseError(McpError):
+class RelayLostResponseError(McpError, requests.HTTPError):
     """A write's response was lost while the hub may have committed it.
 
     Raised ONLY for non-replay-safe calls, so catching this type (rather than sniffing
-    "504" out of arbitrary text) is what tells call_tool a journal recovery is warranted.
-    A read never produces it -- reads are retried in place."""
+    "504" out of arbitrary text) tells a caller a journal recovery is warranted. A read
+    never produces it -- reads are retried in place.
+
+    Subclasses requests.HTTPError as well as McpError on purpose: four call sites catch
+    ONLY HTTPError for the relay-504 contract, and a lost response must keep reaching
+    them (test_set_rule_move_action escaped one and failed the run)."""
 
 
 class McpToolError(McpError):

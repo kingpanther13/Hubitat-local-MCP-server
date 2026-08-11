@@ -3878,6 +3878,11 @@ def stripFlatTrim(String text, boolean dropContent) {
     // on every description surface (flat + gateway tools/list, gateway catalog disclosure,
     // missing-param hints, search corpus) -- strip them before the FLAT_TRIM handling.
     text = _stripLibraryMarkers(text)
+    // Fast path: most descriptions carry no marker at all, and this runs for EVERY description
+    // in EVERY tool's schema on every catalog build (the transform recurses nested schemas), so
+    // the two regex passes below are the dominant cost of a flat tools/list. A containment check
+    // is orders of magnitude cheaper than a regex that matches nothing.
+    if (!text.contains('[[')) return text
     // Markers must be balanced and non-nested. The two branches handle the
     // unbalanced case asymmetrically by design:
     //
@@ -4143,6 +4148,14 @@ def requiredParamsByTool() {
     return built
 }
 
+// hub_call_device_replace(list_options: true) short-circuits to a candidate READ before any
+// write (see toolCallDeviceReplace). Same shape as _isDeploymentStatusOnlyCall: a read-only
+// MODE of a write tool, so it answers to the Read master rather than the Write master.
+// The tool itself stays a write -- only this argument shape is a read.
+def _isDeviceReplaceOptionsOnlyCall(toolName, args) {
+    return toolName == 'hub_call_device_replace' && (args instanceof Map) && args.list_options == true
+}
+
 def executeTool(toolName, args) {
     // ---- Universal Read/Write master gate (issue #113) ----
     // Gateway NAMES are not leaf tools: they route to handleGateway (see switch
@@ -4157,7 +4170,8 @@ def executeTool(toolName, args) {
         // other schema-only exemption returns static reference content; this one returns
         // hub data (job names, ids, created appIds, backup keys), so it answers to the READ
         // master instead of to nothing at all.
-        boolean isDeploymentStatus = _isDeploymentStatusOnlyCall(toolName, args)
+        boolean isDeploymentStatus = _isDeploymentStatusOnlyCall(toolName, args) ||
+                _isDeviceReplaceOptionsOnlyCall(toolName, args)
         if (isDeploymentStatus) {
             if (settings.enableRead == false) {
                 throw new IllegalArgumentException("Read tools are disabled. Enable 'Read Tools' in MCP Rule Server app settings to use ${toolName}'s deployment status read.")
@@ -4194,7 +4208,8 @@ def executeTool(toolName, args) {
             && !getReadOnlyToolNames().contains(toolName)
             && !(toolName in ['hub_get_tool_guide', 'hub_update_mcp_settings'])
             && !(toolName == 'hub_set_rule' && _isSetRuleSchemaOnlyCall(args ?: [:]))
-            && !(toolName == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(args ?: [:]))) {
+            && !(toolName == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(args ?: [:]))
+            && !_isDeviceReplaceOptionsOnlyCall(toolName, args ?: [:])) {
         if (args?.bestPracticeKey?.toString() != hubBpsGuideKey()) {
             throw new IllegalArgumentException("Mandatory best-practice acknowledgment is enabled for write tools. Read hub_get_tool_guide(section='best_practice_reference') to obtain the required acknowledgment key, then pass it as the bestPracticeKey argument on this call. The key appears only in that guide section.")
         }

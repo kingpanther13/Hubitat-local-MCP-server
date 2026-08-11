@@ -109,6 +109,27 @@ class RelayBudgetSpec extends ToolSpecBase {
         atomicStateMap.opTokens[inner.opToken]?.state == 'complete'
     }
 
+    def "hub_call_device_replace(list_options) answers the READ master, not the write gates"() {
+        given: 'writes disabled and the best-practice gate ON -- the read mode must still run'
+        settingsMap.enableWrite = false
+        settingsMap.enableMandatoryBPS = true
+        def ran = 0
+        script.metaClass.toolCallDeviceReplace = { Map a -> ran++; [success: true, listOptions: true, options: []] }
+
+        when:
+        def result = script.executeTool('hub_call_device_replace', [old_device_id: '12', list_options: true])
+
+        then: 'it executed: no Write-master block, no bestPracticeKey demanded'
+        ran == 1
+        result.success == true
+
+        when: 'the same tool WITHOUT the read mode is still gated as the write it is'
+        script.executeTool('hub_call_device_replace', [old_device_id: '12', new_device_id: '13', confirm: true])
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
     def "hub_call_device_replace(list_options) is a read: no auto token, no record"() {
         given: 'list_options short-circuits to a candidate read before any write, and the tool own outputSchema promises no token for it'
         settingsMap.enableWrite = true
