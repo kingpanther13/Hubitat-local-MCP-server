@@ -1226,7 +1226,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
 
     def "an unsupported MCP-Protocol-Version header returns 400 with -32022 and the schema-shaped requested/supported data"() {
         // UnsupportedProtocolVersionError: `data.requested` and `data.supported` are
-        // both REQUIRED by the draft schema -- the client picks a mutually supported
+        // both REQUIRED by the modern schema -- the client picks a mutually supported
         // version out of `supported` and retries, so an empty or absent list would
         // leave a dual-era client with nowhere to go.
         given:
