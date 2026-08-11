@@ -12,7 +12,7 @@ import support.ToolSpecBase
  * {@code src/test/resources/mcp-schema/}. See docs/testing.md § Conformance harness.
  *
  * The two eras are validated against DIFFERENT schemas on purpose, because the shapes genuinely
- * differ: the draft {@code ListToolsResult} REQUIRES {@code resultType}, which a legacy result
+ * differ: the modern {@code ListToolsResult} REQUIRES {@code resultType}, which a legacy result
  * must not carry. Cross-validating an era against the other schema is a bug in the test rather
  * than a finding.
  *
@@ -138,11 +138,11 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
     }
 
     // ---------------------------------------------------------------------
-    // Modern era (2026-07-28) — upstream's draft schema
+    // Modern era — the published 2026-07-28 schema
     // ---------------------------------------------------------------------
 
-    def "a modern tools/list result conforms to the draft ListToolsResult"() {
-        // The draft ListToolsResult REQUIRES resultType, ttlMs, cacheScope and tools -- which
+    def "a modern tools/list result conforms to the 2026-07-28 ListToolsResult"() {
+        // The modern ListToolsResult REQUIRES resultType, ttlMs, cacheScope and tools -- which
         // makes this the schema-side proof that the CacheableResult hints and the era-gated
         // resultType stamp are all present together on the modern path.
         given:
@@ -156,15 +156,15 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
         then: 'served, not rejected'
         mcpDriver.lastRenderArgs.status == null
 
-        and: 'a non-trivial catalog really was rendered -- the draft schema permits tools: []'
+        and: 'a non-trivial catalog really was rendered -- the modern schema permits tools: []'
         response.result.tools.size() > 5
 
         and:
-        McpSchemaValidator.draftErrors('ListToolsResult', response.result) == []
+        McpSchemaValidator.modernErrors('ListToolsResult', response.result) == []
     }
 
-    def "a modern tools/call result conforms to the draft CallToolResult"() {
-        // Draft CallToolResult requires content AND resultType. tools/call answers from the
+    def "a modern tools/call result conforms to the 2026-07-28 CallToolResult"() {
+        // Modern CallToolResult requires content AND resultType. tools/call answers from the
         // preserialized fast path, so this also proves the central decoration was baked into
         // that string rather than applied to a map that never reached the wire.
         given:
@@ -178,15 +178,15 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
         then:
         response.result.resultType == 'complete'
 
-        and: 'the tool really ran -- the draft schema permits content: []'
+        and: 'the tool really ran -- the modern schema permits content: []'
         response.result.isError != true
         response.result.content[0].type == 'text'
 
         and:
-        McpSchemaValidator.draftErrors('CallToolResult', response.result) == []
+        McpSchemaValidator.modernErrors('CallToolResult', response.result) == []
     }
 
-    def "a server/discover result conforms to the draft DiscoverResult"() {
+    def "a server/discover result conforms to the 2026-07-28 DiscoverResult"() {
         // DiscoverResult requires supportedVersions, capabilities, ttlMs, cacheScope AND
         // resultType. Driven HEADERLESS on purpose: discover is the compat probe a stateless
         // client sends before it knows what to put in the header, which is exactly why
@@ -198,11 +198,11 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
         def response = dispatch([jsonrpc: '2.0', id: 8, method: 'server/discover', params: [:]])
 
         then:
-        McpSchemaValidator.draftErrors('DiscoverResult', response.result) == []
+        McpSchemaValidator.modernErrors('DiscoverResult', response.result) == []
     }
 
-    def "an unsupported protocol version rejection conforms to the draft UnsupportedProtocolVersionError"() {
-        // The draft models this as a whole RESPONSE envelope, and both data.requested and
+    def "an unsupported protocol version rejection conforms to the 2026-07-28 UnsupportedProtocolVersionError"() {
+        // The modern schema models this as a whole RESPONSE envelope, and both data.requested and
         // data.supported are REQUIRED -- they are what a client retries from, so a rejection
         // omitting either would wedge it. Schema-checking the envelope is how that stays true.
         when:
@@ -215,10 +215,10 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
         response.error.code == -32022
 
         and:
-        McpSchemaValidator.draftErrors('UnsupportedProtocolVersionError', response) == []
+        McpSchemaValidator.modernErrors('UnsupportedProtocolVersionError', response) == []
     }
 
-    def "a header mismatch rejection conforms to the draft HeaderMismatchError"() {
+    def "a header mismatch rejection conforms to the 2026-07-28 HeaderMismatchError"() {
         when: 'a modern request with no Mcp-Method header -- a missing required header is a mismatch'
         def response = dispatch(
             [jsonrpc: '2.0', id: 10, method: 'tools/list', params: [:]],
@@ -229,12 +229,12 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
         response.error.code == -32020
 
         and:
-        McpSchemaValidator.draftErrors('HeaderMismatchError', response) == []
+        McpSchemaValidator.modernErrors('HeaderMismatchError', response) == []
     }
 
-    def "a modern unknown method rejection conforms to the draft error envelope and MethodNotFoundError"() {
+    def "a modern unknown method rejection conforms to the 2026-07-28 error envelope and MethodNotFoundError"() {
         // A modern unknown method answers 404, and the -32601 BODY is what distinguishes it
-        // from a legacy HTTP+SSE server's 404. The draft models MethodNotFoundError as the
+        // from a legacy HTTP+SSE server's 404. The modern schema models MethodNotFoundError as the
         // error OBJECT (code const -32601) and JSONRPCErrorResponse as the envelope, so both
         // halves are checked.
         when:
@@ -246,10 +246,10 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
         mcpDriver.lastRenderArgs.status == 404
 
         and:
-        McpSchemaValidator.draftErrors('JSONRPCErrorResponse', response) == []
+        McpSchemaValidator.modernErrors('JSONRPCErrorResponse', response) == []
 
         and:
-        McpSchemaValidator.draftErrors('MethodNotFoundError', response.error) == []
+        McpSchemaValidator.modernErrors('MethodNotFoundError', response.error) == []
     }
 
     // ---------------------------------------------------------------------
@@ -267,8 +267,8 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
         McpSchemaValidator.legacyErrors('ListResourcesResult', response.result) == []
     }
 
-    def "a modern resources/list result conforms to the draft ListResourcesResult"() {
-        // The draft REQUIRES resultType, ttlMs and cacheScope alongside resources -- the
+    def "a modern resources/list result conforms to the 2026-07-28 ListResourcesResult"() {
+        // The modern schema REQUIRES resultType, ttlMs and cacheScope alongside resources -- the
         // schema-side proof the cache hints and era-gated stamp are present together here too.
         when:
         def response = dispatch(
@@ -279,7 +279,7 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
         mcpDriver.lastRenderArgs.status == null
 
         and:
-        McpSchemaValidator.draftErrors('ListResourcesResult', response.result) == []
+        McpSchemaValidator.modernErrors('ListResourcesResult', response.result) == []
     }
 
     @Unroll
@@ -300,7 +300,7 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
         'the context JSON'    | 'hubitat://context'
     }
 
-    def "a modern resources/read result conforms to the draft ReadResourceResult"() {
+    def "a modern resources/read result conforms to the 2026-07-28 ReadResourceResult"() {
         // Mcp-Name mirrors params.uri on resources/read, exactly as it mirrors
         // params.name on tools/call -- required on the modern transport.
         when:
@@ -313,7 +313,7 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
         mcpDriver.lastRenderArgs.status == null
 
         and:
-        McpSchemaValidator.draftErrors('ReadResourceResult', response.result) == []
+        McpSchemaValidator.modernErrors('ReadResourceResult', response.result) == []
     }
 
     def "a modern resources/read without Mcp-Name is a HeaderMismatch rejection"() {
@@ -329,7 +329,7 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
         response.error.code == -32020
 
         and:
-        McpSchemaValidator.draftErrors('HeaderMismatchError', response) == []
+        McpSchemaValidator.modernErrors('HeaderMismatchError', response) == []
     }
 
     def "a modern resources/read whose Mcp-Name disagrees with params.uri is a HeaderMismatch rejection"() {
@@ -347,7 +347,7 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
         response.error.message.contains('params.uri')
 
         and:
-        McpSchemaValidator.draftErrors('HeaderMismatchError', response) == []
+        McpSchemaValidator.modernErrors('HeaderMismatchError', response) == []
     }
 
     def "resources/templates/list conforms in both eras"() {
@@ -359,7 +359,7 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
 
         then:
         McpSchemaValidator.legacyErrors('ListResourceTemplatesResult', legacy.result) == []
-        McpSchemaValidator.draftErrors('ListResourceTemplatesResult', modern.result) == []
+        McpSchemaValidator.modernErrors('ListResourceTemplatesResult', modern.result) == []
     }
 
     // ---------------------------------------------------------------------
@@ -412,12 +412,12 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
         McpSchemaValidator.legacyErrors('InitializeResult', response.result) == []
     }
 
-    def "the DRAFT validator rejects a -32022 rejection with error.data.supported removed"() {
-        // The legacy control above cannot speak for the draft leg: that leg reaches a different
+    def "the modern validator rejects a -32022 rejection with error.data.supported removed"() {
+        // The legacy control above cannot speak for the modern leg: that leg reaches a different
         // $defs key, the #/$defs/ ref prefix, the 2020-12 dialect, and -- here -- an allOf whose
         // second branch nests the required data object. Doctoring the REAL rejection is what
-        // proves all four resolve, so a draftErrors(...) == [] elsewhere means "conformant"
-        // rather than "the draft half never validated anything".
+        // proves all four resolve, so a modernErrors(...) == [] elsewhere means "conformant"
+        // rather than "the modern half never validated anything".
         given: 'the real rendered rejection, then the field a client retries from deleted'
         def response = dispatch(
             [jsonrpc: '2.0', id: 15, method: 'tools/list', params: [:]],
@@ -430,11 +430,11 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
         doctored.error = error
 
         expect: 'the same schema that passes above now reports the violation, naming the field'
-        McpSchemaValidator.draftErrors('UnsupportedProtocolVersionError', doctored)
+        McpSchemaValidator.modernErrors('UnsupportedProtocolVersionError', doctored)
             .any { it.contains('supported') }
 
         and: 'the undoctored original is still clean -- so the rejection is about the edit, not the schema'
-        McpSchemaValidator.draftErrors('UnsupportedProtocolVersionError', response) == []
+        McpSchemaValidator.modernErrors('UnsupportedProtocolVersionError', response) == []
     }
 
     def "the strict EmptyResult view rejects a resultType stamped onto a legacy ping"() {
