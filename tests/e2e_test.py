@@ -6041,9 +6041,27 @@ class TestRunner:
         # the guard against them: the cap counts `running` records, so a second write has to
         # arrive while the first is still executing. Raw _send on the second leg -- call_tool
         # would sit in its BACKPRESSURE wait instead of surfacing the refusal.
-        self.client.call_tool("hub_manage_mcp", {"tool": "hub_update_mcp_settings",
-            "args": {"settings": {"maxConcurrentWrites": 1}, "confirm": True}})
+        def _set_cap(n: int) -> None:
+            # Idempotent settings assignment, so a lost response is safe to re-send. Doing that
+            # here rather than failing the test: the restore 504'd once and took the run with it.
+            last = None
+            for _ in range(3):
+                try:
+                    self.client.call_tool("hub_manage_mcp", {"tool": "hub_update_mcp_settings",
+                        "args": {"settings": {"maxConcurrentWrites": n}, "confirm": True}})
+                    return
+                except (McpError, requests.HTTPError) as exc:
+                    if "504" not in str(exc):
+                        raise
+                    last = exc
+                    print(f"    [RECOVER-504] maxConcurrentWrites={n} response lost -- re-sending")
+                    time.sleep(2.0)
+            raise AssertionError(f"could not set maxConcurrentWrites={n}: {last}")
+
+        # Rule first, cap second: every write this test makes while the cap is 1 competes with
+        # it, and the create used to sit in BACKPRESSURE waits behind its own background leg.
         app_id = self._create_native_rule("WriteCapProbe")
+        _set_cap(1)
         first: dict = {}
         # The background leg gets its OWN client. HubitatMcpClient shares a requests.Session
         # and a _request_id counter across calls, so two in-flight requests on one instance
@@ -6086,8 +6104,7 @@ class TestRunner:
                       f"-- deleting the rule now races it")
             elif first.get("error"):
                 print(f"    [WARN] background write on {app_id} raised: {first['error']!r}")
-            self.client.call_tool("hub_manage_mcp", {"tool": "hub_update_mcp_settings",
-                "args": {"settings": {"maxConcurrentWrites": 0}, "confirm": True}})
+            _set_cap(0)
             self._delete_native(app_id)
 
     @test("op_replay")
