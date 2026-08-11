@@ -109,6 +109,25 @@ class RelayBudgetSpec extends ToolSpecBase {
         atomicStateMap.opTokens[inner.opToken]?.state == 'complete'
     }
 
+    def "hub_call_device_replace(list_options) is a read: no auto token, no record"() {
+        given: 'list_options short-circuits to a candidate read before any write, and the tool own outputSchema promises no token for it'
+        settingsMap.enableWrite = true
+        installOpTokenFileStore()
+        script.metaClass.toolCallDeviceReplace = { Map args ->
+            [success: true, listOptions: true, options: []]
+        }
+
+        when:
+        def response = mcpDriver.callTool('hub_call_device_replace', [old_device_id: '12', list_options: true])
+
+        then: 'the response carries no token and the record map stays empty'
+        response.error == null
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.opToken == null
+        (atomicStateMap.opTokens ?: [:]).isEmpty()
+    }
+
     def "_opTokenComplete re-writes a terminal record reverted under the WHOLE-MAP writer"() {
         // Scoped to the whole-map fallback (older firmware / no updateMapValue), which is the
         // only path that still verifies. On the per-entry path the read-back cost a full

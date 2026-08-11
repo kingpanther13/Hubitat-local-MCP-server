@@ -1627,7 +1627,8 @@ def handleToolsCall(msg) {
             // every status poll would mint a running write record, count toward
             // maxConcurrentWrites, and churn the journal it exists to serve.
             String classifiedTool = reactiveToolName?.toString()
-            if (classifiedTool == 'hub_set_rule' || classifiedTool == 'hub_set_native_app') {
+            if (classifiedTool == 'hub_call_device_replace' || classifiedTool == 'hub_set_rule'
+                    || classifiedTool == 'hub_set_native_app') {
                 def leafArgs = args
                 if (gatewayConfigCache.containsKey(toolName)) {
                     if (args.args instanceof Map) {
@@ -1647,8 +1648,17 @@ def handleToolsCall(msg) {
                         } catch (Exception ignored) { }
                     }
                 }
-                if (classifiedTool == 'hub_set_rule') reactiveSchemaOnly = _isSetRuleSchemaOnlyCall(leafArgs)
-                else reactiveSchemaOnly = _isNativeAppSchemaOnlyCall(leafArgs)
+                if (classifiedTool == 'hub_call_device_replace') {
+                    // list_options=true short-circuits to a candidate READ before any write --
+                    // minting a token for it contradicts the tool's own outputSchema ("absent
+                    // for list_options=true") and churns the record cap for a call that cannot
+                    // double-commit. Same exclusion the guide/discover probes get.
+                    reactiveSchemaOnly = (leafArgs instanceof Map) && leafArgs.list_options == true
+                } else if (classifiedTool == 'hub_set_rule') {
+                    reactiveSchemaOnly = _isSetRuleSchemaOnlyCall(leafArgs)
+                } else {
+                    reactiveSchemaOnly = _isNativeAppSchemaOnlyCall(leafArgs)
+                }
             }
             if (!opTokenActive && reactiveToolName && !(reactiveToolName in readOnlyNamesCache)
                     && !reactiveSchemaOnly
