@@ -946,7 +946,7 @@ def _getAllToolDefinitions_partSystem() {
         // System Tools
         [
             name: "hub_get_info",
-            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, memory, temperature, DB size, MCP stats, and security/toggle settings.[[FLAT_TRIM]] See hub_get_tool_guide(section='hub_admin_write') for the optional deep-dive flags and PII gating.[[/FLAT_TRIM]]",
+            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, memory, temperature, DB size, MCP stats, and security/toggle settings. See hub_get_tool_guide(section='hub_admin_write') for the optional deep-dive flags and PII gating.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1069,7 +1069,7 @@ def _getAllToolDefinitions_partSystem() {
                 type: "object",
                 properties: [
                     manager: [type: "string", enum: ["builtIn", "legacy", "app"], description: "Which Mode Manager to activate."],
-                    conditions: [type: "object", description: "OPTIONAL per-mode conditions keyed by mode id; REPLACES the whole set, so read-modify-write from hub_list_modes.[[FLAT_TRIM]] See hub_get_tool_guide(section='hub_admin_write').[[/FLAT_TRIM]]"]
+                    conditions: [type: "object", description: "OPTIONAL per-mode conditions keyed by mode id; REPLACES the whole set, so read-modify-write from hub_list_modes. See hub_get_tool_guide(section='hub_admin_write')."]
                 ]
             ],
             outputSchema: [
