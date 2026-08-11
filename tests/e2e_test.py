@@ -6227,7 +6227,10 @@ class TestRunner:
                        and row.get("auto") is True for row in records), \
                 f"auto-tokened write was absent from the recent-op journal: token={token} rows={records}"
 
-            replay = self._poll_op_result(token, deadline_s=10.0, tool="hub_set_variable")
+            # Default budget, not 10s: each poll is a real call (~3.3s on a busy hub), so 10s
+            # bought two attempts and reported "never replayed" for an op that had committed.
+            # Verified on a healthy hub: the replay lands on the FIRST poll, 1.3s in.
+            replay = self._poll_op_result(token, tool="hub_set_variable")
             assert isinstance(replay, dict) and replay.get("replayed") is True, \
                 f"token-only poll did not replay the auto-recorded write: {replay}"
             assert replay.get("name") == var_name and replay.get("value") == "auto-record", \
@@ -8473,10 +8476,12 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             # Leg 1: round-trip edit -- valid modified source must save, advance the
             # hub's version counter, and be readable back via hub_get_source.
             source_v2 = source_v1.replace("DRIVER-LEG-MARKER-V1", "DRIVER-LEG-MARKER-V2")
-            updated = self.client.call_tool("hub_manage_code", {
-                "tool": "hub_update_driver",
-                "args": {"driverId": driver_id, "source": source_v2, "confirm": True},
-            })
+            # Compile-on-save puts this AT the relay ceiling (measured 10.2s), so a dropped
+            # response is routine -- replay it from the token rather than failing the test.
+            updated = self._tokened_write(
+                "hub_manage_code", "hub_update_driver",
+                {"driverId": driver_id, "source": source_v2, "confirm": True},
+                "driver code round-trip")
             assert updated.get("success") is True, f"hub_update_driver round-trip failed: {updated}"
             assert updated.get("previousVersion") is not None, \
                 f"hub_update_driver success carries no previousVersion: {updated}"
