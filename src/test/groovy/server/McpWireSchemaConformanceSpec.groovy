@@ -278,6 +278,9 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
         then: 'served, not rejected'
         mcpDriver.lastRenderArgs.status == null
 
+        and: 'a non-trivial catalog really was rendered -- an empty list would validate vacuously'
+        response.result.resources.size() > 2
+
         and:
         McpSchemaValidator.modernErrors('ListResourcesResult', response.result) == []
     }

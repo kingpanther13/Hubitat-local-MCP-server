@@ -200,7 +200,7 @@ A label only RE-RUNS e2e when it **flips the lane** (focused↔full), decided by
 
 ### Sources
 
-All rules above cite verified sources, re-checked on 2026-05-26.
+All rules above cite verified sources. The MCP specification source below was re-checked against the 2026-07-28 final release.
 
 - Anthropic — *Writing effective tools for agents* — anthropic.com/engineering/writing-tools-for-agents (2025-09-11).
 - Anthropic — *Code execution with MCP* — anthropic.com/engineering/code-execution-with-mcp (2025-11-04).

@@ -24,7 +24,7 @@ Source repository: <https://github.com/modelcontextprotocol/modelcontextprotocol
 
 ### `2025-06-18/schema.json`
 
-- URL: <https://raw.githubusercontent.com/modelcontextprotocol/modelcontextprotocol/main/schema/2025-06-18/schema.json>
+- URL: <https://raw.githubusercontent.com/modelcontextprotocol/modelcontextprotocol/35ccd9fd63501a68b733fe3ad9e187f62c7ac839/schema/2025-06-18/schema.json>
 - Last upstream commit touching the file: `35ccd9fd63501a68b733fe3ad9e187f62c7ac839` (2025-09-24, *"Clarify purpose of `maxTokens` param for sampling (#1538)"*)
 - Retrieved: 2026-07-26
 - 108236 bytes, `sha256 b3db8f1ca839bc5171ceb4ba013fdf240c5a8a13d4653bb1bdf21f94677aa220`
@@ -56,7 +56,7 @@ From the repo root:
 
 ```bash
 curl -sSfo src/test/resources/mcp-schema/2025-06-18/schema.json \
-  https://raw.githubusercontent.com/modelcontextprotocol/modelcontextprotocol/main/schema/2025-06-18/schema.json
+  https://raw.githubusercontent.com/modelcontextprotocol/modelcontextprotocol/35ccd9fd63501a68b733fe3ad9e187f62c7ac839/schema/2025-06-18/schema.json
 curl -sSfo src/test/resources/mcp-schema/2026-07-28/schema.json \
   https://raw.githubusercontent.com/modelcontextprotocol/modelcontextprotocol/2026-07-28/schema/2026-07-28/schema.json
 ```
