@@ -101,6 +101,37 @@ def test_call_tool_keeps_same_state_contention_inside_one_logical_call():
     )
 
 
+def test_call_tool_paces_ten_same_state_contention_rounds_and_still_completes(monkeypatch):
+    client = object.__new__(et.HubitatMcpClient)
+    client.op_timings = []
+    client._active_test = "mrtr/contention-limit"
+    client._last_op = None
+    client._last_continuation_rounds = 0
+    calls = []
+    sleeps = []
+    contention = {"resultType": "input_required", "requestState": "state-busy"}
+    replies = iter([dict(contention) for _ in range(10)] + [{
+        "resultType": "complete",
+        "content": [{"type": "text", "text": json.dumps({"success": True})}],
+    }])
+
+    def send(method, params=None, headers=None):
+        calls.append((method, dict(params or {}), dict(headers or {})))
+        return next(replies)
+
+    client._send = send
+    monkeypatch.setattr(et.time, "sleep", sleeps.append)
+
+    result = client.call_tool(
+        "hub_call_rule", {"ruleId": [1, 2], "action": "stop"}, flat=True)
+
+    assert result == {"success": True}
+    assert client._last_continuation_rounds == 10
+    assert len(calls) == 11
+    assert sleeps == [0.05, 0.1, 0.2, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25]
+    assert all(call[1].get("requestState") == "state-busy" for call in calls[1:])
+
+
 
 def test_settle_before_504_retry_probes_without_a_fixed_minute(monkeypatch):
     sleeps = []

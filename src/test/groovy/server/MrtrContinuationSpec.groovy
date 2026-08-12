@@ -385,6 +385,103 @@ class MrtrContinuationSpec extends ToolSpecBase {
         first?.join(5000)
     }
 
+    def "repeated contention waits preserve the logical call until the winner finishes"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.maxConcurrentWrites = 1
+        mcpDriver.pushHeaders([
+            'MCP-Protocol-Version': '2026-07-28',
+            'Mcp-Method': 'tools/call',
+            'Mcp-Name': 'hub_call_rule'
+        ])
+        def peer = newCompiledScriptInstance()
+        def args = [ruleId: [921, 922], action: 'stop']
+        def preflight = directCall(script, 1950, 'hub_call_rule', args)
+        String stateId = preflight.result.requestState
+        def entered = new CountDownLatch(1)
+        def release = new CountDownLatch(1)
+        def ownerDone = new CountDownLatch(1)
+        def calls = new AtomicInteger(0)
+        def pauses = new AtomicInteger(0)
+        def releaseOnPause = new AtomicInteger(0)
+        def virtualNow = new AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        Closure pause = { Long delayMs ->
+            pauses.incrementAndGet()
+            virtualNow.addAndGet(delayMs)
+            if (releaseOnPause.compareAndSet(1, 0)) {
+                release.countDown()
+                ownerDone.await(5, TimeUnit.SECONDS)
+            }
+        }
+        script.metaClass.pauseExecution = pause
+        peer.metaClass.pauseExecution = pause
+        Closure leaf = { Map a ->
+            calls.incrementAndGet()
+            entered.countDown()
+            release.await(5, TimeUnit.SECONDS)
+            [success: true, partial: false, ruleIds: a.ruleId,
+             results: a.ruleId.collect { [success: true, ruleId: it] }]
+        }
+        script.metaClass.toolRunRmRule = leaf
+        peer.metaClass.toolRunRmRule = leaf
+        def winner = new AtomicReference()
+        def failure = new AtomicReference()
+        Thread first = Thread.start {
+            try {
+                winner.set(directCall(script, 1951, 'hub_call_rule', args, stateId))
+            } catch (Throwable t) {
+                failure.set(t)
+            } finally {
+                ownerDone.countDown()
+            }
+        }
+
+        when: 'three complete continuation legs wait while the original leaf remains blocked'
+        assert entered.await(5, TimeUnit.SECONDS)
+        def contention = (0..<3).collect { int index ->
+            directCall(peer, 1952 + index, 'hub_call_rule', args, stateId)
+        }
+
+        then:
+        contention.every { it.error == null && it.result.resultType == 'input_required' }
+        contention.every { it.result.requestState == stateId }
+        calls.get() == 1
+        pauses.get() >= 3
+        virtualNow.get() >= 1234567890000L + 3L * 6000L
+
+        when: 'the next leg observes owner completion during its bounded wait'
+        releaseOnPause.set(1)
+        def replay = directCall(peer, 1955, 'hub_call_rule', args, stateId)
+        first.join(5000)
+
+        then:
+        !first.alive
+        failure.get() == null
+        winner.get().result.resultType == 'complete'
+        replay.error == null
+        replay.result.resultType == 'complete'
+        calls.get() == 1
+
+        cleanup:
+        release.countDown()
+        first?.join(5000)
+    }
+
+    def "cloud contention wait leaves half the relay budget for reclaimed slice work"() {
+        given:
+        script.metaClass._isCloudRequest = { -> true }
+
+        expect:
+        script._mrtrContentionWaitMs() == 4000L
+
+        when:
+        settingsMap.relayBudgetMs = 3000
+
+        then:
+        script._mrtrContentionWaitMs() == 1500L
+    }
+
     def "maxConcurrentWrites zero disables the write cap"() {
         given:
         settingsMap.enableWrite = true

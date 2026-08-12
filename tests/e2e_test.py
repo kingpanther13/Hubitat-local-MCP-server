@@ -459,23 +459,30 @@ class HubitatMcpClient:
         params: dict[str, Any] = {"name": wire_name, "arguments": wire_args}
         result = None
         continuation_rounds = 0
+        state_only_delay = 0.05
         _t0 = time.monotonic()
         _op_ok = True
         try:
             # MCP 2026-07-28 request-to-request continuation is the suite's only tool-call
             # path. Slow writes receive requestState automatically and complete as one
             # logical call; ordinary tools return resultType=complete on the first round.
-            for _round in range(10):
+            while True:
                 result = self._send("tools/call", params, headers=headers)
                 if result.get("resultType") != "input_required":
                     break
+                continuation_rounds += 1
+                if continuation_rounds > 10:
+                    raise McpError(
+                        f"tools/call did not complete within 10 continuation rounds: {op_key}")
                 request_state = result.get("requestState")
                 if not isinstance(request_state, str) or not request_state:
                     raise McpError(f"input_required omitted requestState: {result}")
                 params["requestState"] = request_state
-                continuation_rounds += 1
-            else:
-                raise McpError(f"tools/call did not complete within 10 continuation rounds: {op_key}")
+                # Match the official Python SDK v2 state-only driver: a short
+                # capped backoff prevents coordination responses from becoming
+                # a client-side hot loop while preserving one logical call.
+                time.sleep(state_only_delay)
+                state_only_delay = min(state_only_delay * 2, 0.25)
         except BaseException:
             _op_ok = False
             raise

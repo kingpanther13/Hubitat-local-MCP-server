@@ -98,9 +98,12 @@ expired, and is bound to:
 The first resumed request executes the original first slice; later resumed
 requests execute only the stored continuation, never an already-completed slice.
 Another resumable result updates the record and returns `input_required` again.
-A concurrent repeat while that exact generation is executing also returns the
-same state-only `input_required` shape without advancing the record, keeping an
-automatic client inside the original logical call.
+A concurrent repeat while that exact generation is executing first waits a
+bounded, transport-budget-aware interval for the owner to checkpoint or finish,
+then atomically reclaims/replays within the same HTTP leg when possible. If the
+owner remains live, it returns the same state-only `input_required` shape
+without advancing the record. This pacing keeps an automatic client inside the
+original logical call without a hot retry loop.
 A terminal result removes the active record and returns one normal
 `CallToolResult` with `resultType: "complete"`.
 

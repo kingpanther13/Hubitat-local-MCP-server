@@ -1529,7 +1529,8 @@ def handleToolsCall(msg) {
     try {
         def binding = _mrtrBinding(toolName, reactiveToolName, args)
         if (stateId != null) {
-            claim = _mrtrClaim(stateId, toolName, reactiveToolName, binding)
+            claim = _mrtrClaimWithWait(stateId, toolName, reactiveToolName,
+                binding, reqT0)
             rec = claim.record as Map
             if (claim.outcome == "terminal") {
                 return _renderToolResult(msg.id, toolName, reactiveToolName, args,
@@ -2012,6 +2013,18 @@ def _mrtrTerminalTtlMs() { 10L * 60L * 1000L }
 def _mrtrMaxRecords() { 16 }
 def _mrtrMaxContinuationSlices() { 8 }
 
+// The official SDK's state-only retry delay caps at 250 ms, so a response-only
+// contention loop could spend all ten rounds before an ordinary slow slice
+// finishes. Wait within this HTTP leg instead, while preserving at least half
+// of a configured transport budget for a newly reclaimed slice.
+def _mrtrContentionWaitMs() {
+    boolean cloud = _isCloudRequest()
+    long cap = cloud ? 4000L : 6000L
+    long budget = cloud ? _relayBudgetMs() : _lanBudgetMs()
+    if (budget <= 0L) return cap
+    return Math.max(1L, Math.min(cap, (budget / 2L) as Long))
+}
+
 private void _mrtrPutLocked(String stateId, Map rec) {
     if (!(atomicState.mrtrRequests instanceof Map)) atomicState.mrtrRequests = [:]
     try {
@@ -2192,6 +2205,29 @@ def _mrtrClaim(String stateId, outerTool, leafTool, Map binding) {
     if (validationError != null) throw new IllegalArgumentException(validationError)
     if (outcome == null) throw new IllegalArgumentException("Invalid or expired requestState")
     return outcome
+}
+
+private Map _mrtrClaimWithWait(String stateId, outerTool, leafTool, Map binding,
+                               long requestStartedAt) {
+    Map claim = _mrtrClaim(stateId, outerTool, leafTool, binding)
+    if (claim.outcome != "in_progress") return claim
+
+    long deadline = requestStartedAt + _mrtrContentionWaitMs()
+    long remainingBudget = Math.max(0L, deadline - now())
+    while (claim.outcome == "in_progress") {
+        long remaining = Math.min(remainingBudget, Math.max(0L, deadline - now()))
+        if (remaining <= 0L) break
+        long sleepMs = Math.min(250L, remaining)
+        try {
+            pauseExecution(sleepMs as Long)
+        } catch (Exception waitErr) {
+            mcpLog("debug", "mrtr", "Contention wait interrupted: ${waitErr.message}")
+            break
+        }
+        remainingBudget -= sleepMs
+        claim = _mrtrClaim(stateId, outerTool, leafTool, binding)
+    }
+    return claim
 }
 
 private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map rec) {
