@@ -127,10 +127,6 @@ LIBS = [
         "source": LIB_DIR / "mcp-native-rules-lib.groovy",
         "dest": f"{NAMESPACE}.McpNativeRulesLib.groovy",
     },
-    {
-        "source": LIB_DIR / "mcp-deploy-jobs-lib.groovy",
-        "dest": f"{NAMESPACE}.McpDeployJobsLib.groovy",
-    },
 ]
 
 # Deterministic build: a fixed DOS-epoch timestamp + a pinned deflate level make

@@ -1,4 +1,4 @@
-library(name: "McpDiagnosticsLib", namespace: "mcp", author: "kingpanther13", description: "Diagnostics + maintenance tool implementations (hub logs/performance/jobs/metrics/memory/radio/device-health/GC/Z-Wave repair/captured states) for the MCP Rule Server; #include'd by the main app.[[FLAT_TRIM]] Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.[[/FLAT_TRIM]]")
+library(name: "McpDiagnosticsLib", namespace: "mcp", author: "kingpanther13", description: "Diagnostics + maintenance tool implementations (hub logs/performance/jobs/metrics/memory/radio/device-health/GC/Z-Wave repair/captured states) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
 // Radio-details dispatch helper. Extracted from the executeTool switch so the
 // case body is a plain method call: a bare `{ ... }` block right after a
@@ -2293,13 +2293,11 @@ def _getAllToolDefinitions_partDiagnostics() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     beforeFreeMemoryKB: [type: "integer", description: "Free memory before GC (KB), or null"],
                     afterFreeMemoryKB: [type: "integer", description: "Free memory after GC (KB), or null"],
                     timestamp: [type: "string", description: "When GC ran"],
@@ -2319,14 +2317,12 @@ def _getAllToolDefinitions_partDiagnostics() {
                     enabled: [type: "boolean", description: "Enable (true) or disable (false) the Z-Wave radio."],
                     region: [type: "string", description: "Z-Wave RF region (e.g. 'US', 'EU'). Must match a region your hub hardware supports."],
                     long_range_channel: [type: "integer", enum: [0, 1, 255], description: "Z-Wave Long Range channel: 255=Auto, 0=Channel A, 1=Channel B (US_LR hubs)."],
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "Required true to DISABLE the radio (backup <24h also enforced). Not needed for enable or config-only changes."]
                 ]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the change applied"],
                     radio: [type: "string", description: "Always 'zwave'"],
                     enabled: [type: "boolean", description: "Resulting enabled state; present for enable/disable"],
@@ -2352,14 +2348,12 @@ def _getAllToolDefinitions_partDiagnostics() {
                     rebuild_on_reboot: [type: "boolean", description: "Radio setting: rebuild the Zigbee network on each hub reboot."],
                     ping_inactive: [type: "boolean", description: "Radio setting: keep-alive ping inactive Zigbee devices."],
                     ping_device: [type: "object", description: "Toggle keep-alive ping for ONE device: {device_id, enabled}."],
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "Required true to DISABLE the radio (backup <24h also enforced). Not needed for the other changes."]
                 ]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the change applied"],
                     radio: [type: "string", description: "Always 'zigbee'"],
                     enabled: [type: "boolean", description: "Resulting enabled state; present for enable/disable"],
@@ -2387,7 +2381,6 @@ def _getAllToolDefinitions_partDiagnostics() {
                     security_keys: [type: "object", description: "grant_keys only: S2 grant booleans, e.g. {S2Authenticated:true}."],
                     security_code: [type: "object", description: "grant_code only: S2 DSK, e.g. {accept:true, securityCode:'12345'}."],
                     node_dsk: [type: "string", description: "smartstart_delete only: the DSK from hub_get_radio_details(include_smartstart=true)."],
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "Required true for exclusion_start and node_remove (backup <24h also enforced)."]
                 ],
                 required: ["action"]
@@ -2395,7 +2388,6 @@ def _getAllToolDefinitions_partDiagnostics() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the operation was accepted"],
                     action: [type: "string", description: "Echo of the requested action"],
                     nodeId: [type: "string", description: "Echo of node_id; present for per-node actions"],
@@ -2416,14 +2408,12 @@ def _getAllToolDefinitions_partDiagnostics() {
                 type: "object",
                 properties: [
                     action: [type: "string", enum: ["radio_reboot", "rebuild_network", "channel_scan"], description: "radio_reboot (restart the Zigbee chip), rebuild_network (rebuild the mesh), or channel_scan (trigger an energy scan)."],
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["action"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the operation was accepted"],
                     action: [type: "string", description: "Echo of the requested action"],
                     message: [type: "string", description: "Human-readable result"],
@@ -2444,7 +2434,6 @@ def _getAllToolDefinitions_partDiagnostics() {
                     action: [type: "string", enum: ["enable", "disable", "pair", "open_pairing_window"], description: "enable/disable the Matter radio (needs a hub reboot), pair a device by setup_code, or open_pairing_window to share a commissioned node_id."],
                     setup_code: [type: "string", description: "pair only: the 11- or 21-digit Matter setup/pairing code."],
                     node_id: [type: "string", description: "open_pairing_window only: the commissioned Matter node id to share."],
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "Required true to disable Matter (backup <24h also enforced)."]
                 ],
                 required: ["action"]
@@ -2452,7 +2441,6 @@ def _getAllToolDefinitions_partDiagnostics() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the operation was accepted"],
                     action: [type: "string", description: "Echo of the requested action"],
                     nodeId: [type: "string", description: "Echo of node_id; present for open_pairing_window"],
@@ -2479,7 +2467,6 @@ Requires Write master.""",
                     node_id: [description: "Z-Wave node id."],
                     file_name: [type: "string", description: "Firmware file name; required for action=device_firmware_start."],
                     target_index: [description: "Optional Z-Wave firmware target index."],
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true.[[FLAT_TRIM]] Confirms backup was created and the user approved this destructive op.[[/FLAT_TRIM]]"]
                 ],
                 required: ["target", "action", "confirm"]
@@ -2487,7 +2474,6 @@ Requires Write master.""",
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the operation was accepted"],
                     target: [type: "string", description: "Echo of the requested target"],
                     action: [type: "string", description: "Echo of the requested action"],
@@ -2531,13 +2517,11 @@ Requires Write master.""",
                 type: "object",
                 properties: [
                     stateId: [type: "string", description: "The ID of the captured state to delete. Omit to delete ALL captured states."],
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the delete succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     remaining: [type: "integer", description: "States remaining; present on single delete"],

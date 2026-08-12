@@ -1,14 +1,8 @@
-library(name: "McpFilesLib", namespace: "mcp", author: "kingpanther13", description: "File Manager tool implementations (hub_list_files/hub_read_file/hub_write_file/hub_delete_file) for the MCP Rule Server; #include'd by the main app.[[FLAT_TRIM]] Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.[[/FLAT_TRIM]]")
+library(name: "McpFilesLib", namespace: "mcp", author: "kingpanther13", description: "File Manager tool implementations (hub_list_files/hub_read_file/hub_write_file/hub_delete_file) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
-// The op-result exclusion and the name filter, in ONE place. The JSON listing and the
-// HTML-page fallback both apply them, and a drift between the two would mean the same
-// `filter` argument returned different sets depending on which endpoint the firmware served.
-// Order matters: the exclusion runs first so `total` counts what the caller can actually see.
-private List _filesApplyListFilters(List fileList, boolean includeOpResults, String filterLower) {
+// Keep the name filter in one place so JSON and HTML firmware response shapes agree.
+private List _filesApplyListFilters(List fileList, String filterLower) {
     def out = fileList
-    if (!includeOpResults) {
-        out = out.findAll { !(it?.name?.toString()?.startsWith(_opTokenResultFilePrefix())) }
-    }
     if (filterLower) {
         out = out.findAll { it?.name?.toString()?.toLowerCase()?.contains(filterLower) }
     }
@@ -20,13 +14,6 @@ def toolListFiles(args = null) {
     def cursor = args?.cursor
     def filterText = args?.filter?.toString()?.trim()
     def filterLower = filterText?.toLowerCase()
-    // Op-token result buffers are server bookkeeping, not user files, and a busy hub
-    // accumulates enough of them to bury the real listing.
-    if (args instanceof Map && args.containsKey('includeOpResults') && !(args.includeOpResults instanceof Boolean)) {
-        throw new IllegalArgumentException("includeOpResults must be a boolean (got: ${args.includeOpResults})")
-    }
-    boolean includeOpResults = (args?.includeOpResults == true)
-
     // Try known File Manager API endpoints (varies by firmware version)
     def endpoints = ["/hub/fileManager/json", "/hub/fileManager"]
     def responseText = null
@@ -97,7 +84,7 @@ def toolListFiles(args = null) {
             mcpLog("warn", "file-manager", "hub_list_files: parsed response yielded zero files (${shapeHint}) -- shape may not be recognized", null, [details: [endpoint: endpointUsed, shape: shapeHint]])
         }
 
-        fileList = _filesApplyListFilters(fileList, includeOpResults, filterLower)
+        fileList = _filesApplyListFilters(fileList, filterLower)
         mcpLog("info", "file-manager", "Listed ${fileList.size()}${filterLower ? ' matching' : ''} files in File Manager (via ${endpointUsed})")
         def pagedFM = _paginateList(fileList, cursor, 100, "hub_list_files")
         def res = [
@@ -127,7 +114,7 @@ def toolListFiles(args = null) {
 
         if (fileList) {
             fileList = fileList.sort { a, b -> (a.name <=> b.name) }
-            fileList = _filesApplyListFilters(fileList, includeOpResults, filterLower)
+            fileList = _filesApplyListFilters(fileList, filterLower)
             mcpLog("info", "file-manager", "Listed ${fileList.size()}${filterLower ? ' matching' : ''} files from File Manager HTML page")
             def pagedHtml = _paginateList(fileList, cursor, 100, "hub_list_files")
             def res = [
@@ -340,12 +327,11 @@ def _getAllToolDefinitions_partFiles() {
         // File Manager Tools
         [
             name: "hub_list_files",
-            description: "List files stored in the hub's File Manager[[FLAT_TRIM]] (the local web-accessible file store)[[/FLAT_TRIM]], returning each file's name, size, last-modified date, and direct download URL. Optionally filter by a case-insensitive substring of the file name. The server's op-token result buffers are hidden unless includeOpResults=true.[[FLAT_TRIM]] Use this to discover available files before reading one with hub_read_file, or to confirm a write/backup landed.[[/FLAT_TRIM]] Read-only.",
+            description: "List files stored in the hub's File Manager (the local web-accessible file store), returning each file's name, size, last-modified date, and direct download URL. Optionally filter by a case-insensitive substring of the file name. Use this to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. Read-only.",
             inputSchema: [
                 type: "object",
                 properties: [
                     filter: [type: "string", description: "Optional case-insensitive substring to match against file names, e.g. \"backup\" or \"mcp-rm-backup\"."],
-                    includeOpResults: [type: "boolean", description: "Include the server's op-token result buffers (mcp-op-result-*.json). Default false — they are slow-op bookkeeping, not user files."],
                     cursor: [type: "string", description: "Opt-in pagination cursor.[[FLAT_TRIM]] Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
                 ]
             ],
@@ -404,7 +390,6 @@ def _getAllToolDefinitions_partFiles() {
                 properties: [
                     fileName: [type: "string", description: "The file name to write (e.g., 'my-config.json'). Only A-Za-z0-9, hyphens, underscores, and periods allowed."],
                     content: [type: "string", description: "The text content to write to the file"],
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved the write."]
                 ],
                 required: ["fileName", "content", "confirm"]
@@ -412,7 +397,6 @@ def _getAllToolDefinitions_partFiles() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the write succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     fileName: [type: "string", description: "File written"],
@@ -431,7 +415,6 @@ def _getAllToolDefinitions_partFiles() {
                 type: "object",
                 properties: [
                     fileName: [type: "string", description: "The exact file name to delete"],
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved the deletion."]
                 ],
                 required: ["fileName", "confirm"]
@@ -439,7 +422,6 @@ def _getAllToolDefinitions_partFiles() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the deletion succeeded"],
                     message: [type: "string", description: "Human-readable result, including backup status"],
                     fileName: [type: "string", description: "Name of the file that was deleted"],

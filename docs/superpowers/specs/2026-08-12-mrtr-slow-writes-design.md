@@ -32,6 +32,8 @@ is a separate HTTP request, so the cloud relay gets a fresh request budget.
 - Require no client plugin, task extension, app, or user-supplied token.
 - Keep each cloud relay leg under its request deadline.
 - Prevent a second fresh invocation from duplicating an active write.
+- Preserve `maxConcurrentWrites` as a server-side cap around every actual write,
+  including short device commands and parallel agent batches.
 - Return one final success/failure tool result after all continuation legs.
 - Preserve useful, independent fixes already present in PR #378.
 - Keep a legacy-client fallback without maintaining a second tested protocol.
@@ -68,9 +70,9 @@ and the leaf tool name is part of the state binding.
 
 ### 4.2 First round
 
-The server executes a bounded slice using the existing request clock and cloud
-budget. When the handler returns a known resumable result, the server stores the
-next internal continuation and returns only:
+The server performs a mutation-free preflight: validate access, check for an
+identical active operation, reserve one global write slot, and persist the bound
+request record. It does not enter the leaf handler. It returns only:
 
 ```json
 {
@@ -93,10 +95,11 @@ expired, and is bound to:
 - the same canonical original arguments; and
 - the same active operation record.
 
-It then executes only the stored continuation, never the original first slice.
+The first resumed request executes the original first slice; later resumed
+requests execute only the stored continuation, never an already-completed slice.
 Another resumable result updates the record and returns `input_required` again.
 A terminal result removes the active record and returns one normal
-`CallToolResult` with `resultType: "tool_result"`.
+`CallToolResult` with `resultType: "complete"`.
 
 Unknown, expired, mismatched, or already-consumed request state fails loudly and
 does not execute a write.
@@ -114,8 +117,10 @@ does not execute a write.
 - active/terminal status.
 
 Records are bounded by a per-installation cap and TTL. Expired records and their
-fingerprint locks are swept opportunistically. Terminal state is not retained as
-a general replay journal because cross-turn recovery is explicitly out of scope.
+fingerprint locks are swept opportunistically. A terminal result is retained
+briefly under the same opaque `requestState`, so loss of only the final HTTP
+response can be replayed by the still-running logical call. This is not a public
+or long-lived replay journal and does not support arbitrary cross-turn recovery.
 
 ### 4.5 Duplicate prevention
 
@@ -129,7 +134,21 @@ operation is already in progress. Only the call carrying the matching
 This is server-side idempotency for the active window, not a public polling
 protocol.
 
-### 4.6 Final result aggregation
+### 4.6 Global write concurrency
+
+`maxConcurrentWrites` applies independently of MRTR eligibility. Every actual
+mutating call reserves a server-side lease before dispatch and releases it when
+the handler finishes. Active MRTR records and the background package deployment
+worker also consume slots. This protects the hub from rapid device-command spam
+and parallel client/agent batches, not only from long writes.
+
+Read-only tools, gateway catalog calls, schema-only probes,
+`hub_call_device_replace(list_options=true)`, and
+`hub_update_package(dryRun=true)` do not consume a slot. In particular,
+`hub_get_info(identifyHub=true)` remains outside the write safeguards by design.
+Leases contain no public token and abandoned leases expire automatically.
+
+### 4.7 Final result aggregation
 
 Continuation adapters translate each handler's existing remainder envelope into
 the next internal arguments. They also preserve prior slice errors, changed
@@ -219,9 +238,10 @@ boundary while every individual HTTP leg stays within budget.
       caused solely by aggregate duration.
 - [ ] Legacy clients still receive their current immediate remainder result.
 - [ ] A fresh duplicate cannot advance or repeat an active operation.
+- [ ] `maxConcurrentWrites` caps all actual writes, including short device
+      commands, while documented read-shaped calls remain exempt.
 - [ ] One final result represents the complete logical operation.
 - [ ] Package deployment acknowledges immediately and rejects concurrent deploys.
 - [ ] Official schema, SDK, unit, dispatch, sandbox, and focused live E2E checks
       pass.
 - [ ] The PR remains a native GitHub Stack above #378.
-

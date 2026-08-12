@@ -1,6 +1,8 @@
 package server
 
 import spock.lang.Shared
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import support.ToolSpecBase
 
 /**
@@ -33,6 +35,27 @@ import support.ToolSpecBase
  *     write internals.
  */
 class ToolUpdatePackageSpec extends ToolSpecBase {
+
+    private List<Map> racePackageDeploys(int count, Closure<Map> action) {
+        def ready = new CountDownLatch(count)
+        def start = new CountDownLatch(1)
+        def results = java.util.Collections.synchronizedList([])
+        def failures = java.util.Collections.synchronizedList([])
+        def threads = (0..<count).collect { int index ->
+            Thread.start("package-race-${index}") {
+                ready.countDown()
+                start.await()
+                try { results << action.call(index) }
+                catch (Throwable t) { failures << t }
+            }
+        }
+        assert ready.await(5, TimeUnit.SECONDS)
+        start.countDown()
+        threads*.join(5000)
+        assert !threads.any { it.alive }
+        assert failures.isEmpty()
+        return results as List<Map>
+    }
 
     private static final String APP_NO_INCLUDE =
         'definition(name: "MCP Rule Server", namespace: "mcp")\n\ndef foo() { return 1 }\n'
@@ -684,27 +707,43 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         atomicStateMap.packageDeployInFlight == [ref: 'feat/other', startedAt: GUARD_NOW - 60000L]
     }
 
-    def "the guard stands down when lastSelfDeploy postdates it -- the deploy finished, only its response was lost"() {
+    def "an unrelated newer lastSelfDeploy does not stand the package guard down"() {
         given:
         enableDev()
         registerAppTypes()
         def calls = []
         script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true, appId: a.appId] }
-        atomicStateMap.packageDeployInFlight = [ref: 'feat/other', startedAt: GUARD_NOW - 120000L]
-        atomicStateMap.lastSelfDeploy = [success: true, at: GUARD_NOW - 10000L]
+        atomicStateMap.packageDeployInFlight = [requestId: 'pkg-live', ref: 'feat/other', startedAt: GUARD_NOW - 120000L]
+        atomicStateMap.lastSelfDeploy = [success: true, sourceMode: 'importUrl', at: GUARD_NOW - 10000L]
 
         when:
         def result = script.toolUpdatePackage([ref: 'main', confirm: true])
 
         then:
-        result.success == true
-        result.status == 'in_progress'
+        result.success == false
+        result.status == 'duplicate_in_flight'
         calls == []
+        atomicStateMap.packageDeployInFlight.requestId == 'pkg-live'
+        runInCalls.isEmpty()
+    }
 
-        and: 'the fresh deploy owns the marker and schedules the worker'
-        atomicStateMap.packageDeployInFlight.ref == 'main'
-        runInCalls.last()[0..1] == [1, 'runPackageDeploy']
+    def "concurrent package admission creates one marker and refuses every duplicate"() {
+        given:
+        enableDev()
+        registerAppTypes()
+
+        when:
+        def attempts = racePackageDeploys(12) {
+            script.toolUpdatePackage([ref: 'main', confirm: true]) as Map
+        }
+
+        then:
+        attempts.count { it.status == 'in_progress' } == 1
+        attempts.count { it.status == 'duplicate_in_flight' } == 11
+        atomicStateMap.packageDeployInFlight.requestId == attempts.find { it.status == 'in_progress' }.requestId
+        runInCalls.size() == 1
+        runInCalls[0][2].data.requestId == atomicStateMap.packageDeployInFlight.requestId
     }
 
     def "the guard expires after its TTL (a wedged marker cannot block deploys forever)"() {
@@ -738,17 +777,20 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         accepted.success == true
         accepted.status == 'in_progress'
         accepted.startedAt == GUARD_NOW
+        accepted.requestId == atomicStateMap.packageDeployInFlight.requestId
         atomicStateMap.packageDeployInFlight.ref == 'main'
         runInCalls.last()[0..1] == [1, 'runPackageDeploy']
+        runInCalls.last()[2].data.requestId == accepted.requestId
 
         when: 'Hubitat invokes the scheduled worker after the HTTP response is free'
-        script.runPackageDeploy()
+        script.runPackageDeploy([requestId: accepted.requestId])
 
         then:
         atomicStateMap.packageDeployInFlight == null
         atomicStateMap.lastSelfDeploy.success == true
         atomicStateMap.lastSelfDeploy.sourceMode == 'package'
         atomicStateMap.lastSelfDeploy.ref == 'main'
+        atomicStateMap.lastSelfDeploy.requestId == accepted.requestId
         atomicStateMap.lastSelfDeploy.packageResult.success == true
     }
 
@@ -766,13 +808,36 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         accepted.status == 'in_progress'
 
         when:
-        script.runPackageDeploy()
+        script.runPackageDeploy([requestId: accepted.requestId])
 
         then:
         atomicStateMap.packageDeployInFlight == null
         atomicStateMap.lastSelfDeploy.success == false
         atomicStateMap.lastSelfDeploy.packageResult.aborted == true
         atomicStateMap.lastSelfDeploy.packageResult.abortReason == 'bundle_install_failed'
+    }
+
+    def "a stale worker invocation cannot execute or clear a newer package marker"() {
+        given:
+        enableDev()
+        registerAppTypes()
+        def calls = []
+        script.metaClass._updatePackageBody = { Map a, String ref, boolean dryRun ->
+            calls << ref
+            [success: true]
+        }
+        atomicStateMap.packageDeployInFlight = [
+            requestId: 'pkg-new', ref: 'new-ref', startedAt: GUARD_NOW,
+            args: [ref: 'new-ref', confirm: true, __packageRequestId: 'pkg-new']
+        ]
+
+        when:
+        script.runPackageDeploy([requestId: 'pkg-old'])
+
+        then:
+        calls.isEmpty()
+        atomicStateMap.packageDeployInFlight.requestId == 'pkg-new'
+        atomicStateMap.packageDeployInFlight.ref == 'new-ref'
     }
 
     def "dryRun neither checks nor sets the guard"() {

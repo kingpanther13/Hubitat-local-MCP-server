@@ -47,14 +47,12 @@ def _getAllToolDefinitions_partNativeRM() {
                 properties: [
                     ruleId: [type: ["integer", "array"], items: [type: "integer"], description: "Rule ID from hub_list_rules, or an array of rule IDs to act on in one call"],
                     action: [type: "string", enum: ["rule", "actions", "stop", "start"], description: "Which RM action to invoke. Default: rule."],
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["ruleId"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the action succeeded (multi-rule: all succeeded)"],
                     ruleId: [type: "integer", description: "Rule app ID acted on (present when exactly one)"],
                     ruleIds: [type: "array", items: [type: "integer"], description: "All rule app IDs REQUESTED (on a budget-paused batch, remainingRuleIds were not yet acted on). Present on every stop/start call and on all array-form calls."],
@@ -84,7 +82,6 @@ def _getAllToolDefinitions_partNativeRM() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the pause/resume succeeded"],
                     ruleId: [type: "integer", description: "Rule app ID (present when exactly one)"],
                     ruleIds: [type: "array", items: [type: "integer"], description: "All rule app IDs acted on"],
@@ -112,7 +109,6 @@ def _getAllToolDefinitions_partNativeRM() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the set succeeded"],
                     ruleId: [type: "integer", description: "Rule app ID (present when exactly one)"],
                     ruleIds: [type: "array", items: [type: "integer"], description: "All rule app IDs acted on"],
@@ -136,9 +132,7 @@ def _getAllToolDefinitions_partNativeRM() {
 
 Requires the Write master + confirm=true + recent hub backup.
 
-[[FLAT_TRIM]]Slow multi-step calls may return status:'in_progress' with resume instructions once the transport time budget is reached (cloud relay by default; LAN via the lanBudgetMs setting), or the transport may drop with a gateway error while the hub still commits — see hub_get_tool_guide(section='slow_ops') for the recovery protocol.[[/FLAT_TRIM]] ALWAYS pass an opToken: it is the only handle that can replay a dropped response.
-
-For a staged multi-app migration that must survive a disconnect, pass the self-contained `deployment` argument instead of a per-app edit — see hub_get_tool_guide(section='deployment_jobs').""",
+On MCP 2026-07-28, eligible slow writes continue automatically across bounded Streamable HTTP requests and eventually return one final result; no custom token or client extension is needed. Older clients retain the existing status:'in_progress' remainder envelope. See hub_get_tool_guide(section='slow_ops').""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -151,8 +145,6 @@ For a staged multi-app migration that must survive a disconnect, pass the self-c
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click."],
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
                     walkStep: [type: "object", description: "LAST-RESORT multi-page classic-app walker — EDIT-only (requires appId; rejected on create). Use only when settings/button cannot represent the change.[[FLAT_TRIM]] One call per wizard step is the expensive path: for RM rules use hub_set_rule's structured shortcuts instead. Generic classic-dynamicPage walker for stateful apps: introspect/write/click/navigate/done one step per call, or operation='drive' with steps=[...] to run the whole sequence in one call. Same shape as hub_set_rule's walkStep.[[/FLAT_TRIM]]"],
-                    deployment: [type: "object", description: "Durable multi-app deployment job (staged migration that survives disconnects): {op: 'create'|'resume'|'commit'|'cancel'|'delete'|'status', ...}. Self-contained call — cannot combine with other arguments.[[FLAT_TRIM]] op='status' is a pure read (jobId optional; omit to list jobs). op='create' takes ops:[{op, args, alias?}] and checkpoints to hub storage after EVERY op, advancing on-hub with no client attached. Ops: cloneApp/importApp/buttonRule/addActions/modifyAction/pause/resume/setDisabled; commitOps run only on op='commit' after staging auto-validates. cancel deletes ONLY the apps the job created; delete removes a finished (completed/cancelled) job's RECORD, apps and backups untouched. Same argument on hub_set_rule and hub_set_native_app (one shared engine).[[/FLAT_TRIM]] Full op reference + worked example: hub_get_tool_guide(section='deployment_jobs')."],
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "Must be true. Safety gate for Write master operations."]
                 ],
                 required: ["confirm"]
@@ -160,7 +152,6 @@ For a staged multi-app migration that must survive a disconnect, pass the self-c
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the create/edit succeeded"],
                     appId: [type: "integer", description: "App ID created or edited"],
                     ruleId: [type: ["integer", "null"], description: "on create: the same value as appId, surfaced under the name the ruleId-taking downstream tools use (hub_call_rule, hub_set_rule_paused, hub_set_rule_private_boolean) so a create can be chained directly. Null for a non-RM app type; absent on edit."],
@@ -194,16 +185,16 @@ For a staged multi-app migration that must survive a disconnect, pass the self-c
 
 Shortcuts, each orchestrating the full RM 5.1 wizard in one call: addTrigger, addAction, addRequiredExpression/replaceRequiredExpression, bulk addTriggers/addActions/replaceActions, removeAction/clearActions/moveAction/removeTrigger/modifyTrigger/modifyAction, addLocalVariable/removeLocalVariable, patches (atomic multi-op). ALWAYS prefer these one-call shortcuts; walkStep (one wizard page per call) and raw settings+button are LAST RESORTS for capabilities no shortcut can represent.
 
-[[FLAT_TRIM]]Partial-success (every shortcut): success:true can pair with partial:true — inspect partial/repairHints. A rejected trailing updateRule leaves the change written-but-not-live (subscriptionsNotLive / expressionNotLive / variableNotLive / patchesNotLive); retry hub_set_rule(button='updateRule', confirm=true). If wizardStuck:true, first hub_set_rule(button='cancelCapab', pageName=<page>, confirm=true) — restoreHint carries the exact command. On CREATE the new appId is returned even if a bundled item only partially bakes (partialTriggers/partialActions).[[/FLAT_TRIM]]
+Partial-success (every shortcut): success:true can pair with partial:true — inspect partial/repairHints. A rejected trailing updateRule leaves the change written-but-not-live (subscriptionsNotLive / expressionNotLive / variableNotLive / patchesNotLive); retry hub_set_rule(button='updateRule', confirm=true). If wizardStuck:true, first hub_set_rule(button='cancelCapab', pageName=<page>, confirm=true) — restoreHint carries the exact command. On CREATE the new appId is returned even if a bundled item only partially bakes (partialTriggers/partialActions).
 
-[[FLAT_TRIM]]Deep reference (per-capability field specs, extended condition shapes, periodic schedules, the raw settings/button flow, worked examples): pass guide:true to get it inline, or hub_get_tool_guide(section='set_rule_reference'); full create + repair protocol: hub_get_tool_guide(section='set_rule_create_reference'). Pass {discover:true} on addTrigger/addAction for the live machine-readable schema.[[/FLAT_TRIM]]
+Deep reference (per-capability field specs, extended condition shapes, periodic schedules, the raw settings/button flow, worked examples): pass guide:true to get it inline, or hub_get_tool_guide(section='set_rule_reference'); full create + repair protocol: hub_get_tool_guide(section='set_rule_create_reference'). Pass {discover:true} on addTrigger/addAction for the live machine-readable schema.
 
-[[FLAT_TRIM]]Slow multi-step calls may return status:'in_progress' with resume instructions once the transport time budget is reached (cloud relay by default; LAN via the lanBudgetMs setting), or the transport may drop with a gateway error while the hub still commits — see hub_get_tool_guide(section='slow_ops') for the recovery protocol.[[/FLAT_TRIM]] ALWAYS pass an opToken: it is the only handle that can replay a dropped response.""",
+On MCP 2026-07-28, eligible slow writes continue automatically across bounded Streamable HTTP requests and return one final result. Older clients retain the status:'in_progress' remainder envelope. See hub_get_tool_guide(section='slow_ops').""",
             inputSchema: [
                 type: "object",
                 properties: [
                     appId: [type: "integer", description: "RM rule ID (the rule's installed-app id). OMIT to CREATE a new rule (then `name` is required); PROVIDE to EDIT an existing rule."],
-                    name: [type: "string", description: "Label for the new rule (shown in Hubitat's Rule Machine app list). Required on CREATE (when appId is omitted); ignored when appId is provided. [[FLAT_TRIM]]To RENAME an existing rule, do not pass name -- write the new label as a setting: settings:{origLabel:'New Name'} (a mainPage settings write auto-commits via updateRule, which copies origLabel to the display label; passing button:'updateRule' too is harmless but redundant).[[/FLAT_TRIM]]"],
+                    name: [type: "string", description: "Label for the new rule (shown in Hubitat's Rule Machine app list). Required on CREATE (when appId is omitted); ignored when appId is provided. To RENAME an existing rule, do not pass name -- write the new label as a setting: settings:{origLabel:'New Name'} (a mainPage settings write auto-commits via updateRule, which copies origLabel to the display label; passing button:'updateRule' too is harmless but redundant)."],
                     settings: [type: "object", description: "Map {inputName: value}: scalars for bool/enum/text/number inputs, list of device IDs for capability.* multi-device inputs (the multiple=true 3-field contract is emitted and verified automatically — you don't manage it)."],
                     button: [type: "string", description: "Page-transition button name (e.g. updateRule, editCond, pausRule for RM; discover others via hub_get_app_config)."],
                     pageName: [type: "string", description: "Optional sub-page for schema introspection + settings POST."],
@@ -282,9 +273,7 @@ Shortcuts, each orchestrating the full RM 5.1 wizard in one call: addTrigger, ad
                         description: """Add an RM ACTION (structured). DISCRIMINATOR: use `capability` NOT `type` (`{type:'log'}` is rejected); returns actionIndex (no trailing updateRule — doActPage self-bakes). Capability names: switch, dimmer, color, colorTemp, button, runCommand, lock, thermostat, hsm, shade, fan, mode, setVariable/setLocalVariable, log, notification, httpGet, httpPost, ping, volume, mute, chime, siren, privateBoolean, runRule, cancelTimers, pauseRule, capture, restore, refresh, poll, disableDevice, fileWrite/fileAppend/fileDelete, zwavePoll; flow control — delay, delayPerMode, cancelDelay, repeat, stopRepeat, repeatWhile, waitExpression, waitEvents, ifThen, elseIf, else, endIf, exitRule, comment. Expression-based ones (ifThen/elseIf/repeatWhile/waitExpression) take expression={conditions:[...], operator|operators}. LIMIT: only ONE waitEvents per rule. Rule-targeting caps (runRule/cancelTimers/pauseRule/privateBoolean) validate each ruleIds entry against the live RM rule list before any write; a rule id that is not an existing rule is rejected -- use hub_list_rules for valid ids. (On a hub whose rule list can't be resolved -- RM not installed or app-tree unreadable -- the check is skipped; a hub with zero rules instead rejects every rule target.) Per-condition shape: {capability, deviceIds:[N], state?, comparator?, value?, attribute?, not?, rawSettings?} (deviceIds MUST be an array — a bare integer silently stores {N:null}); nested subExpression not supported here (use addRequiredExpression). Optional: delay {hours, minutes, seconds, cancelable}; rawSettings {field:value} with @N = the auto action index (e.g. {'flashRate.@N':750}). Per-field specs + extended shapes (Mode, Between two times, Variable, compareToDevice, variable-sourced values): pass {discover: true} for the live schema, hub_get_tool_guide(section='set_rule_reference'), or docs/rm_action_subtype_schemas.md."""
                     ],
                     guide: [type: "boolean", description: "Set true to return the full hub_set_rule capability reference inline (same content as hub_get_tool_guide(section='set_rule_reference')), without a separate call. Makes NO change to any rule."],
-                    deployment: [type: "object", description: "Durable multi-app deployment job (staged migration that survives disconnects): {op: 'create'|'resume'|'commit'|'cancel'|'delete'|'status', ...}. Self-contained call — cannot combine with other arguments.[[FLAT_TRIM]] op='status' is a pure read (jobId optional; omit to list jobs). op='create' takes ops:[{op, args, alias?}] and checkpoints to hub storage after EVERY op, advancing on-hub with no client attached. Ops: cloneApp/importApp/buttonRule/addActions/modifyAction/pause/resume/setDisabled; commitOps run only on op='commit' after staging auto-validates. cancel deletes ONLY the apps the job created; delete removes a finished (completed/cancelled) job's RECORD, apps and backups untouched. Same argument on hub_set_rule and hub_set_native_app (one shared engine).[[/FLAT_TRIM]] Full op reference + worked example: hub_get_tool_guide(section='deployment_jobs')."],
-                    buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller: {controllerId, buttonNumber, event}.[[FLAT_TRIM]] Returns buttonRuleId with the Button trigger auto-seeded — then author actions via addAction on that appId. The controller must already have a button device.[[/FLAT_TRIM]]", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
+                    buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller: {controllerId, buttonNumber, event}. Returns buttonRuleId with the Button trigger auto-seeded — then author actions via addAction on that appId. The controller must already have a button device.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
                 required: ["confirm"]
@@ -292,7 +281,6 @@ Shortcuts, each orchestrating the full RM 5.1 wizard in one call: addTrigger, ad
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the update succeeded (absent in discover mode)"],
                     appId: [type: "integer", description: "App ID updated"],
                     ruleId: [type: ["integer", "null"], description: "create: the same value as appId (a hub_set_rule create is always a rule_machine rule), surfaced under the name the ruleId-taking downstream tools use (hub_call_rule, hub_set_rule_paused, hub_set_rule_private_boolean) so a create can be chained directly. Absent on edit."],
@@ -465,7 +453,6 @@ Requires Write master + confirm=true + recent hub backup.""",
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the delete succeeded"],
                     appId: [type: "integer", description: "App ID"],
                     mode: [type: "string", description: "delete or forcedelete"],
@@ -491,7 +478,6 @@ Requires Write master + confirm=true + recent hub backup.""",
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the disabled flag now matches the requested value (read-back verified)"],
                     appId: [type: "integer", description: "App ID"],
                     disabled: [type: "boolean", description: "The app's disabled flag after the call"],
@@ -4616,8 +4602,7 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
         // Relay-budget checkpoint: delete + add already consumed real time, and
         // each move is another wizard round-trip. Stop before the response gets
         // severed mid-flight -- a severed composite invites a naive retry that
-        // re-runs the destructive delete (the opToken replay protects a SAME-
-        // token retry, but not a fresh call).
+        // re-runs the destructive delete.
         if (_timeBudgetExceeded(reqT0)) {
             budgetPaused = true
             break
@@ -8938,7 +8923,7 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
             steps: stepResults,
             health: finalHealth,
             resume: [
-                note: "Time budget reached; all completed steps are committed. Re-issue walkStep operation='drive' with steps = stepsRemaining (page inheritance: set page = this result's page) to continue. Attach the same opToken ONLY if the original call carried none; otherwise use a fresh token."
+                note: "Time budget reached; all completed steps are committed. Re-issue walkStep operation='drive' with steps = stepsRemaining (page inheritance: set page = this result's page) to continue."
             ]
         ]
     }
@@ -9259,15 +9244,14 @@ def _setRuleOperations() { (['create'] + _setRuleCreateHonored() + _setRuleEditO
 // in getToolDefinitions()'s useGateways==false branch.
 def _setRuleFlatTool() {
     return [
-        description: """Create or edit a Hubitat Rule Machine rule (RM 5.1) — one self-describing tool. Set `operation` and call WITHOUT confirm to get that operation's argument schema back (no change is made); then call again with `args` filled and confirm:true to apply it (args is opaque — probe it first). operation='create' makes a new rule (omit appId; put name + any bundled triggers/actions/required-expression in args); every other operation EDITs an existing rule (provide appId). RM-only — for non-RM classic apps (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule) use hub_set_native_app. Any write needs the Write master + confirm=true + a recent backup. For a staged multi-app migration that must survive a disconnect, pass `deployment` instead of `operation`. Keywords: create edit rule machine RM trigger action condition required expression local variable walkStep authoring automation staged migration deployment job.""",
+        description: """Create or edit a Hubitat Rule Machine rule (RM 5.1) — one self-describing tool. Set `operation` and call WITHOUT confirm to get that operation's argument schema back (no change is made); then call again with `args` filled and confirm:true to apply it (args is opaque — probe it first). operation='create' makes a new rule (omit appId; put name + any bundled triggers/actions/required-expression in args); every other operation EDITs an existing rule (provide appId). RM-only — for non-RM classic apps (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule) use hub_set_native_app. Any write needs the Write master + confirm=true + a recent backup. Eligible slow writes use automatic MCP 2026-07-28 request-to-request continuation. Keywords: create edit rule machine RM trigger action condition required expression local variable walkStep authoring automation.""",
         inputSchema: [
             type: "object",
             properties: [
-                operation: [type: "string", enum: _setRuleOperations(), description: "REQUIRED for every call except a deployment job (the `deployment` argument replaces it). What to do. Call WITHOUT confirm to get this operation's argument schema back (argsSchema + usage; no mutation), then call again with args + confirm:true. 'create' = new rule (omit appId); all others edit an existing rule (need appId) except guide/discover/buttonRule, which omit it.[[FLAT_TRIM]] On a create, partial bakes are reported via partial/repairHints; full create+repair protocol: hub_get_tool_guide(section='set_rule_create_reference'). 'guide' returns the full capability reference; 'discover' returns the live per-capability field schema (args={kind:'trigger'|'action'}).[[/FLAT_TRIM]]"],
+                operation: [type: "string", enum: _setRuleOperations(), description: "What to do. Call WITHOUT confirm to get this operation's argument schema back (argsSchema + usage; no mutation), then call again with args + confirm:true. 'create' = new rule (omit appId); all others edit an existing rule (need appId) except guide/discover/buttonRule, which omit it. On a create, partial bakes are reported via partial/repairHints; full create+repair protocol: hub_get_tool_guide(section='set_rule_create_reference'). 'guide' returns the full capability reference; 'discover' returns the live per-capability field schema (args={kind:'trigger'|'action'})."],
                 appId: [type: "integer", description: "RM rule ID. OMIT for create/guide/discover/buttonRule; PROVIDE for every other (edit) operation (appId is the create-vs-edit switch)."],
-                args: [type: ["object", "array", "boolean"], description: "Arguments for the chosen operation — the exact shape comes from the schema probe (call without confirm first). Most ops take an object; the list ops (addTriggers/addActions/replaceActions/patches) take a bare array and clearActions takes true.[[FLAT_TRIM]] For 'create' args holds name + optional addTriggers/addActions/addRequiredExpression. Pass the bare operation payload (e.g. {capability:'switch',...}), not wrapped under the operation name.[[/FLAT_TRIM]]"],
-                confirm: [type: "boolean", description: "Set true to APPLY the operation (any write). Omit (or false) to get the schema back instead (a no-mutation probe). Writes also need the Write master + a recent backup."],
-                deployment: [type: "object", description: "Durable multi-app deployment job: {op: 'create'|'resume'|'commit'|'cancel'|'delete'|'status', ...}. Self-contained — cannot combine with operation/appId/args. op='status' is a pure read. Full reference: hub_get_tool_guide(section='deployment_jobs')."]
+                args: [type: ["object", "array", "boolean"], description: "Arguments for the chosen operation — the exact shape comes from the schema probe (call without confirm first). Most ops take an object; the list ops (addTriggers/addActions/replaceActions/patches) take a bare array and clearActions takes true. For 'create' args holds name + optional addTriggers/addActions/addRequiredExpression. Pass the bare operation payload (e.g. {capability:'switch',...}), not wrapped under the operation name."],
+                confirm: [type: "boolean", description: "Set true to APPLY the operation (any write). Omit (or false) to get the schema back instead (a no-mutation probe). Writes also need the Write master + a recent backup."]
             ]
         ]
     ]
@@ -9280,11 +9264,6 @@ def _setRuleFlatTool() {
 // required-param pre-check. confirm:true (an actual write) is NEVER schema-only.
 def _isSetRuleSchemaOnlyCall(args) {
     if (!(args instanceof Map)) return false
-    // Deployment routing runs before everything else in the handler, so it decides
-    // first here too. op='status' is a pure read of the job records and stays usable
-    // with writes off; every other deployment op returns false and stays gated, and a
-    // deployment mixed with other args throws in _deployRouteFromTool before any write.
-    if (args.deployment instanceof Map) return args.deployment.op?.toString() == 'status'
     // Envelope (self-gateway) form decides FIRST and mirrors _setRuleFromEnvelope exactly:
     // a guide/discover op or any call without confirm:true is schema-only; a confirm:true
     // envelope EXECUTES and is never schema-only -- a stray top-level guide/discover flag
@@ -9319,10 +9298,6 @@ def _isSetRuleSchemaOnlyCall(args) {
 // create-shaped call must NOT bypass any gate: the create arm would really execute.
 def _isNativeAppSchemaOnlyCall(args) {
     if (!(args instanceof Map)) return false
-    // Same reasoning as _isSetRuleSchemaOnlyCall: deployment routes first in this
-    // handler, op='status' is a pure read, every other op stays gated, and a mixed
-    // deployment call throws in _deployRouteFromTool before any write.
-    if (args.deployment instanceof Map) return args.deployment.op?.toString() == 'status'
     if (args.appId == null || args.buttonRule != null) return false
     if (args.guide == true) return true
     if (args.addTrigger instanceof Map && args.addTrigger.discover == true) return true
@@ -9448,12 +9423,6 @@ Map _setRuleOperationSchema(String op) {
 }
 
 def toolSetRule(args) {
-    // Deployment jobs ride this tool as a self-contained routing mode (no
-    // dedicated tools): args.deployment routes to the shared job engine and is
-    // rejected when combined with an edit/create in the same call.
-    if (args instanceof Map && args.deployment != null) {
-        return _deployRouteFromTool(args)
-    }
     // Flat self-gateway envelope {operation,...}: re-key to the canonical shape so
     // the rest of this handler and gateway mode stay one code path. A probe (op +
     // empty args) returns that op's schema with NO mutation and returns early.
@@ -9532,11 +9501,6 @@ def toolSetRule(args) {
 }
 
 def toolSetNativeApp(args) {
-    // Deployment jobs ride this tool too (same shared engine as hub_set_rule) --
-    // args.deployment is a self-contained routing mode.
-    if (args instanceof Map && args.deployment != null) {
-        return _deployRouteFromTool(args)
-    }
     // Button Rules are grandchildren of a Button Controller and only get their
     // button/event context via the controller's add-button flow -- a bare
     // createchild yields an un-renderable orphan. buttonRule routes through the
@@ -13175,7 +13139,7 @@ private Map _bulkPauseResult(Integer appId, Map backup, List triggerResults, Lis
         addActionsRemaining: addActionsRemaining.collect { _stripInternalClock(it) },
         repairHints: repairHints,
         resume: [
-            note: "Time budget reached; committed items are written at the settings level (the trailing updateRule is deferred to the resume call). Re-issue the edit (hub_set_rule or hub_set_native_app) with addActions/addTriggers = the remaining items to continue. Attach the same opToken ONLY if the original call carried none; otherwise use a fresh token."
+            note: "Time budget reached; committed items are written at the settings level (the trailing updateRule is deferred to the resume call). Re-issue the edit (hub_set_rule or hub_set_native_app) with addActions/addTriggers = the remaining items to continue."
         ]
     ]
 }
@@ -13198,7 +13162,7 @@ private Map _patchesPauseResult(Integer appId, Map backup, List patchResults, Li
         patchResults: patchResults,
         patchesRemaining: patchesRemaining,
         resume: [
-            note: "Time budget reached; completed patch ops are committed at the settings level but NOT yet baked into the running rule. Re-issue the edit (hub_set_rule or hub_set_native_app) with patches = patchesRemaining to continue; the rule finalize/updateRule runs when the remaining patches complete. Attach the same opToken ONLY if the original call carried none; otherwise use a fresh token."
+            note: "Time budget reached; completed patch ops are committed at the settings level but NOT yet baked into the running rule. Re-issue the edit (hub_set_rule or hub_set_native_app) with patches = patchesRemaining to continue; the rule finalize/updateRule runs when the remaining patches complete."
         ]
     ]
 }

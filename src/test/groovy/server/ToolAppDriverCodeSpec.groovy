@@ -2182,7 +2182,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 12, "source": "old source"}'
         }
         def uploads = []
-        ignoreOpResultUploads(uploads)
+        script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
         def captured = [:]
         script.metaClass.hubInternalPostJson = { String path, String body ->
             captured.path = path
@@ -3243,7 +3243,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         enableWrite()
         def uploads = []
-        ignoreOpResultUploads(uploads)
+        script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 2, "source": "code body"}'
         }
@@ -3590,7 +3590,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 9, "source": "current source on hub"}'
         }
         def uploads = []
-        ignoreOpResultUploads(uploads)
+        script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
         def captured = [:]
         script.metaClass.hubInternalPostJson = { String path, String body ->
             captured.path = path
@@ -4043,7 +4043,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 50, "source": "current source"}'
         }
         def uploads = []
-        ignoreOpResultUploads(uploads)
+        script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
         def postCount = 0
         script.metaClass.hubInternalPostJson = { String path, String body ->
             postCount++

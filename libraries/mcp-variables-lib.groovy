@@ -1,4 +1,4 @@
-library(name: "McpVariablesLib", namespace: "mcp", author: "kingpanther13", description: "Hub variable + connector tool implementations (list/get/set/create/delete variables, connectors, change history) plus the variable event-subscription handlers for the MCP Rule Server; #include'd by the main app.[[FLAT_TRIM]] Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.[[/FLAT_TRIM]]")
+library(name: "McpVariablesLib", namespace: "mcp", author: "kingpanther13", description: "Hub variable + connector tool implementations (list/get/set/create/delete variables, connectors, change history) plus the variable event-subscription handlers for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
 private void _refreshHubVarInUseRegistrations() {
     Set<String> currentVars = [] as Set
@@ -938,7 +938,6 @@ def _getAllToolDefinitions_partVariables() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     name: [type: "string", description: "Variable name"],
                     value: [type: "string", description: "Variable value (string, number, or boolean as string)"]
                 ],
@@ -947,7 +946,6 @@ def _getAllToolDefinitions_partVariables() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the set succeeded"],
                     name: [type: "string", description: "Variable name"],
                     value: [description: "Value that was set"],
@@ -962,7 +960,6 @@ def _getAllToolDefinitions_partVariables() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     name: [type: "string", description: "New variable name, e.g. \"vacationMode\". Omit when using variables."],
                     type: [type: "string", enum: ["Number", "Decimal", "String", "Boolean", "DateTime"], description: "Variable type. Omit when using variables."],
                     value: [description: "Initial value, must match the type; for DateTime e.g. 2026-02-04T14:00. Omit when using variables."],
@@ -982,7 +979,6 @@ def _getAllToolDefinitions_partVariables() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Single form: whether creation succeeded. Bulk form: true only when every item was created."],
                     name: [type: "string", description: "Single form: variable name"],
                     type: [type: "string", description: "Single form: variable type"],
@@ -1004,21 +1000,19 @@ def _getAllToolDefinitions_partVariables() {
         ],
         [
             name: "hub_delete_variable",
-            description: "Permanently delete a variable (DESTRUCTIVE — no undo). Auto-detects whether the target is a hub variable (also deletes its connector device when one exists) or a rule_engine variable. Gated on the Write master + confirm=true + a recent backup.[[FLAT_TRIM]]\n\n**Reference safety:** the tool scans every child rule app for serialized references to this variable name (in triggers/conditions/actions) and refuses by default if any are found. To proceed anyway, pass `force=true` after acknowledging the breakage. The response includes a `brokenConsumers` field listing the affected rules when force=true.\n\nThe consumer scan makes this call slow; over a cloud relay the transport may drop with a gateway error while the hub still commits -- see hub_get_tool_guide(section='slow_ops') for the opToken recovery protocol.[[/FLAT_TRIM]]",
+            description: "Permanently delete a variable (DESTRUCTIVE — no undo). Auto-detects whether the target is a hub variable (also deletes its connector device when one exists) or a rule_engine variable. Gated on the Write master + confirm=true + a recent backup.[[FLAT_TRIM]]\n\n**Reference safety:** the tool scans every child rule app for serialized references to this variable name (in triggers/conditions/actions) and refuses by default if any are found. To proceed anyway, pass `force=true` after acknowledging the breakage. The response includes a `brokenConsumers` field listing the affected rules when force=true.\n\nThe consumer scan makes this call slow; if the transport drops, verify whether the variable still exists before retrying.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     name: [type: "string", description: "Variable name to delete"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the deletion"],
-                    force: [type: "boolean", description: "OPTIONAL: must be true to proceed when one or more child rule apps reference this variable.[[FLAT_TRIM]] Without force, the tool refuses and lists the consumers.[[/FLAT_TRIM]]"],
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
+                    force: [type: "boolean", description: "OPTIONAL: must be true to proceed when one or more child rule apps reference this variable. Without force, the tool refuses and lists the consumers."],
                 ],
                 required: ["name", "confirm"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether deletion succeeded"],
                     name: [type: "string", description: "Variable name"],
                     deleted: [type: "boolean", description: "True when the variable was removed"],
@@ -1040,7 +1034,6 @@ def _getAllToolDefinitions_partVariables() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     name: [type: "string", description: "Existing hub-variable name"],
                     connectorType: [type: "string", description: "Optional connector type for Number/Decimal vars (e.g. 'Dimmer', 'Variable').[[FLAT_TRIM]] Other options: 'Volume', 'ColorTemp', 'Humidity', 'Illuminance'.[[/FLAT_TRIM]] Defaults to 'Variable'. Ignored for vars that don't show a chooser."],
                     confirm: [type: "boolean", description: "REQUIRED: must be true"]
@@ -1050,7 +1043,6 @@ def _getAllToolDefinitions_partVariables() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the connector exists/was created"],
                     name: [type: "string", description: "Variable name"],
                     deviceId: [type: "string", description: "Connector device id"],
@@ -1068,7 +1060,6 @@ def _getAllToolDefinitions_partVariables() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     name: [type: "string", description: "Hub-variable name whose connector device to remove, e.g. \"vacationMode\""],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to perform the deletion"]
                 ],
@@ -1077,7 +1068,6 @@ def _getAllToolDefinitions_partVariables() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the removal succeeded"],
                     name: [type: "string", description: "Variable name"],
                     deviceId: [type: "string", description: "Removed connector device id (when one existed)"],

@@ -1,4 +1,4 @@
-library(name: "McpDiscoveryLib", namespace: "mcp", author: "kingpanther13", description: "Tool discovery implementations (hub_search_tools BM25 search + the hub_get_tool_guide dispatcher) for the MCP Rule Server; #include'd by the main app.[[FLAT_TRIM]] Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.[[/FLAT_TRIM]]")
+library(name: "McpDiscoveryLib", namespace: "mcp", author: "kingpanther13", description: "Tool discovery implementations (hub_search_tools BM25 search + the hub_get_tool_guide dispatcher) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
 def toolSearchTools(args) {
     def query = args.query
@@ -249,7 +249,7 @@ def _getAllToolDefinitions_partDiscovery() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    section: [type: "string", description: "REQUIRED for efficiency: pass one section key (see enum). Omit only to fetch the full guide / discover the available keys.", enum: ["device_authorization", "best_practice_reference", "hub_admin_write", "virtual_devices", "update_device", "rules", "backup", "file_manager", "performance", "builtin_app_tools", "set_rule_reference", "set_rule_create_reference", "visual_rule_reference", "variables", "dashboards", "bundles", "rooms", "deployment_jobs", "slow_ops"]]
+                    section: [type: "string", description: "REQUIRED for efficiency: pass one section key (see enum). Omit only to fetch the full guide / discover the available keys.", enum: ["device_authorization", "best_practice_reference", "hub_admin_write", "virtual_devices", "update_device", "rules", "backup", "file_manager", "performance", "builtin_app_tools", "set_rule_reference", "set_rule_create_reference", "visual_rule_reference", "variables", "dashboards", "bundles", "rooms", "slow_ops"]]
                 ]
             ],
             outputSchema: [

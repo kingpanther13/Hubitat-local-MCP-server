@@ -1,4 +1,4 @@
-library(name: "McpItemBackupsLib", namespace: "mcp", author: "kingpanther13", description: "Backup tool implementations for the MCP Rule Server: source-code backups (hub_list_backups/hub_get_backup/hub_restore_backup) AND whole-hub database backups (hub_create_backup/hub_delete_backup + the hub-DB scope of list/restore) -- issue #259 item #1.[[FLAT_TRIM]] #include'd by the main app; gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.[[/FLAT_TRIM]]")
+library(name: "McpItemBackupsLib", namespace: "mcp", author: "kingpanther13", description: "Backup tool implementations for the MCP Rule Server: source-code backups (hub_list_backups/hub_get_backup/hub_restore_backup) AND whole-hub database backups (hub_create_backup/hub_delete_backup + the hub-DB scope of list/restore) -- issue #259 item #1. #include'd by the main app; gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
 def toolListItemBackups(args = null) {
     args = args ?: [:]
@@ -832,7 +832,7 @@ def _getAllToolDefinitions_partItemBackups() {
             name: "hub_create_backup",
             description: """Create a full hub-database backup (whole-hub .lzf). REQUIRED before any Write master op (24h validity).[[FLAT_TRIM]] Optionally set the automatic-backup schedule via `schedule` (scheduleOnly=true sets the schedule only). The only write tool needing no prior backup.[[/FLAT_TRIM]]
 [[FLAT_TRIM]]
-A transport drop (relay ceiling / client timeout) can lose the response while the hub still commits this write; pass opToken, and on a drop re-issue the call with the SAME opToken to poll/replay the committed result instead of re-running it -- see hub_get_tool_guide(section='slow_ops').
+A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
 [[/FLAT_TRIM]]
 """,
             inputSchema: [
@@ -849,14 +849,12 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
                         cloudBackupPassword: [type: "string", description: "Cloud-backup encryption password. Required when cloud backup is/stays enabled."]
                     ]],
                     scheduleOnly: [type: "boolean", description: "With schedule: set schedule only, no backup now."],
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["confirm"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the operation succeeded"],
                     confirmed: [type: "boolean", description: "Whether backup completion was confirmed via the hub's backup status or a new entry in its backup list (false = best-effort trigger)"],
                     mocked: [type: "boolean", description: "true when mock=true stamped the gate record without a real backup"],
@@ -879,7 +877,6 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
                     location: [type: "string", enum: ["local", "cloud"], description: "Which store to delete from."],
                     fileName: [type: "string", description: "location=local: backup name from hub_list_backups."],
                     path: [type: "string", description: "location=cloud: backup path from hub_list_backups."],
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED true. Confirms the delete."]
                 ],
                 required: ["location", "confirm"]
@@ -887,7 +884,6 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the delete succeeded"],
                     location: [type: "string", description: "local or cloud"],
                     message: [type: "string", description: "Human-readable result"],
@@ -986,7 +982,7 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
             name: "hub_restore_backup",
             description: """⚠️ Restore a backup — tell the user first; hub-DB scopes REBOOT the hub.[[FLAT_TRIM]] scope=source (default): an app/driver/rule by backupKey (deleted code → hub_create_*; deleted rules DO recreate). scope=hub_local/hub_cloud: restore the WHOLE hub DB (hub_local→fileName; hub_cloud→path+cloudBackupPassword). scope=hub_uploaded: upload an external .lzf from backupUrl, then restore (open-world).[[/FLAT_TRIM]] Write master + confirm.
 [[FLAT_TRIM]]
-A transport drop (relay ceiling / client timeout) can lose the response while the hub still commits this write; pass opToken, and on a drop re-issue the call with the SAME opToken to poll/replay the committed result instead of re-running it -- see hub_get_tool_guide(section='slow_ops').
+A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
 [[/FLAT_TRIM]]
 """,
             inputSchema: [
@@ -999,14 +995,12 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
                     cloudBackupPassword: [type: "string", description: "scope=hub_cloud: cloud backup encryption password."],
                     backupUrl: [type: "string", description: "scope=hub_uploaded: http(s) URL to the .lzf to upload+restore."],
                     confirm: [type: "boolean", description: "REQUIRED true. Confirms the restore (hub-DB scopes reboot)."],
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["confirm"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the restore succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     type: [type: "string", description: "Item type restored (app/driver/rm-rule/visual-rule)"],

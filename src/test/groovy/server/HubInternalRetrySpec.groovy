@@ -469,11 +469,9 @@ class HubInternalRetrySpec extends ToolSpecBase {
         invoke.call(script)
 
         then: 'IllegalStateException, NOT IllegalArgumentException'
-        // An IAE maps to -32602, and the opToken machinery RELEASES a token on -32602 because
-        // that code promises nothing was committed. This guard can fire on a LATER leg of a
-        // multi-step tool whose earlier legs already wrote, so a release would license a
-        // same-token double-run over committed work. An ISE lands in the generic catch
-        // (-32603/isError), which SPENDS the token.
+        // An IAE maps to -32602 and promises nothing was committed. This guard can fire on a
+        // LATER leg of a multi-step tool whose earlier legs already wrote, so it must remain
+        // an ISE and land in the generic -32603/isError path.
         def ex = thrown(IllegalStateException)
         !(ex instanceof IllegalArgumentException)
         ex.message.contains('must not contain a querystring')

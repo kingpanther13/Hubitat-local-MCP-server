@@ -28,87 +28,42 @@ def _raw_tool_body(body, *, is_error=False):
     }
 
 
-def test_write_cap_retries_when_first_write_finishes_before_running_is_observed(monkeypatch):
-    """A completed marker is a missed overlap window, so the probe must retry with a
-    fresh app/token and prove refusal only against a marker observed running."""
-    op_tokens = iter(["first.attempt.1", "first.attempt.2", "second.attempt.2"])
-    created_suffixes = []
-    deleted_app_ids = []
-    polled_tokens = []
+def test_call_tool_follows_modern_request_state_continuations():
+    client = object.__new__(et.HubitatMcpClient)
+    client.op_timings = []
+    client._active_test = "mrtr/unit"
+    client._last_op = None
+    client._last_continuation_rounds = 0
+    calls = []
 
-    class FakeMainClient:
-        hub_url = "http://hub.invalid"
-        app_id = "1"
-        access_token = "secret"
+    def send(method, params=None, headers=None):
+        calls.append((method, dict(params or {}), dict(headers or {})))
+        if len(calls) == 1:
+            return {"resultType": "input_required", "requestState": "state-123"}
+        return {
+            "resultType": "complete",
+            "content": [{"type": "text", "text": json.dumps({"success": True})}],
+        }
 
-        def __init__(self):
-            self.setting_values = []
+    client._send = send
 
-        def call_tool(self, name, arguments):
-            if name == "hub_get_info":
-                return {"recentOps": []}
-            if name == "hub_manage_mcp":
-                value = arguments["args"]["settings"]["maxConcurrentWrites"]
-                self.setting_values.append(value)
-                return {"success": True}
-            raise AssertionError(f"unexpected call_tool request: {name} {arguments}")
+    result = client.call_tool(
+        "hub_call_rule", {"ruleId": [1, 2], "action": "stop"}, flat=True)
 
-        def _send(self, method, params):
-            assert method == "tools/call"
-            name = params["name"]
-            arguments = params["arguments"]
-            if name == "hub_set_rule":
-                token = arguments["opToken"]
-                if token == "first.attempt.1":
-                    return _raw_tool_body({"success": True, "replayed": True})
-                if token == "first.attempt.2":
-                    return _raw_tool_body({"status": "running"})
-            if name == "hub_manage_rule_machine":
-                assert arguments["args"]["opToken"] == "second.attempt.2"
-                return _raw_tool_body({
-                    "status": "too_many_writes_in_flight",
-                    "inFlight": [{"opToken": "first.attempt.2"}],
-                }, is_error=True)
-            raise AssertionError(f"unexpected raw request: {params}")
+    assert result == {"success": True}
+    assert client._last_continuation_rounds == 1
+    assert calls[0][1] == {
+        "name": "hub_call_rule",
+        "arguments": {"ruleId": [1, 2], "action": "stop"},
+    }
+    assert calls[1][1]["requestState"] == "state-123"
+    assert calls[1][1]["arguments"] == calls[0][1]["arguments"]
+    assert calls[0][2] == {
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": "hub_call_rule",
+    }
 
-    class FakeBackgroundClient:
-        def __init__(self, hub_url, app_id, access_token):
-            assert (hub_url, app_id, access_token) == (
-                "http://hub.invalid", "1", "secret")
-            self.session = type("Session", (), {"close": lambda self: None})()
-
-        def initialize(self):
-            return None
-
-        def _send(self, method, params):
-            assert method == "tools/call"
-            assert params["arguments"]["args"]["opToken"].startswith("first.attempt.")
-            return _raw_tool_body({"success": True})
-
-    client = FakeMainClient()
-    runner = object.__new__(et.TestRunner)
-    runner.client = client
-
-    def create_native_rule(suffix):
-        created_suffixes.append(suffix)
-        return 100 + len(created_suffixes)
-
-    def poll_op_result(token, **_kwargs):
-        polled_tokens.append(token)
-        return {"success": True, "replayed": True}
-
-    runner._create_native_rule = create_native_rule
-    runner._delete_native = deleted_app_ids.append
-    runner._next_op_token = lambda: next(op_tokens)
-    runner._poll_op_result = poll_op_result
-    monkeypatch.setattr(et, "HubitatMcpClient", FakeBackgroundClient)
-
-    et.TestRunner.test_write_cap_refuses_a_concurrent_marker_tracked_write(runner)
-
-    assert created_suffixes == ["WriteCapProbe1", "WriteCapProbe2"]
-    assert deleted_app_ids == [101, 102]
-    assert polled_tokens == ["first.attempt.2"]
-    assert client.setting_values == [1, 0]
 
 
 def test_settle_before_504_retry_probes_without_a_fixed_minute(monkeypatch):
@@ -130,9 +85,9 @@ def test_settle_before_504_retry_probes_without_a_fixed_minute(monkeypatch):
     assert sleeps == []
 
 
-def test_driver_lifecycle_uses_token_recovery_for_create():
+def test_driver_lifecycle_uses_logical_write_helper_for_create():
     direct_calls = []
-    tokened_calls = []
+    write_calls = []
     reads = iter([
         {"success": True, "version": 1, "source": "DRIVER-LEG-MARKER-V1"},
         {"success": True, "version": 2, "source": "DRIVER-LEG-MARKER-V2"},
@@ -144,7 +99,7 @@ def test_driver_lifecycle_uses_token_recovery_for_create():
             direct_calls.append((name, arguments))
             tool = arguments.get("tool")
             if (name, tool) == ("hub_manage_code", "hub_create_driver"):
-                raise AssertionError("driver creation must use opToken recovery")
+                raise AssertionError("driver creation must use the logical write helper")
             if (name, tool) == ("hub_read_apps_code", "hub_get_source"):
                 return next(reads)
             if (name, tool) == ("hub_manage_code", "hub_update_driver"):
@@ -159,64 +114,26 @@ def test_driver_lifecycle_uses_token_recovery_for_create():
     runner = object.__new__(et.TestRunner)
     runner.client = FakeClient()
 
-    def tokened_write(gateway, tool, args, label):
-        tokened_calls.append((gateway, tool, args, label))
+    def write_once(gateway, tool, args, label):
+        write_calls.append((gateway, tool, args, label))
         if tool == "hub_create_driver":
             return {"success": True, "driverId": 77}
         if tool == "hub_update_driver":
             return {"success": True, "previousVersion": 1}
-        raise AssertionError(f"unexpected tokened write: {tool}")
+        raise AssertionError(f"unexpected logical write: {tool}")
 
-    runner._tokened_write = tokened_write
+    runner._write_once = write_once
 
     et.TestRunner.test_update_driver_code_lifecycle(runner)
 
-    assert [(gateway, tool, label) for gateway, tool, _args, label in tokened_calls] == [
+    assert [(gateway, tool, label) for gateway, tool, _args, label in write_calls] == [
         ("hub_manage_code", "hub_create_driver", "driver code create"),
         ("hub_manage_code", "hub_update_driver", "driver code round-trip"),
     ]
-    create_args = tokened_calls[0][2]
+    create_args = write_calls[0][2]
     assert create_args["confirm"] is True
     assert "DRIVER-LEG-MARKER-V1" in create_args["source"]
 
-
-def test_deployment_staging_resumes_only_after_a_lost_create_lease_expires(monkeypatch):
-    """A relay-dropped create can die after checkpointing its op in-flight. The
-    E2E must not overlap the live 90s lease, but it must actively reconcile after
-    that lease instead of depending forever on a scheduler pass."""
-    clock = [0.0]
-    resume_calls = []
-    replay_calls = []
-
-    def sleep(seconds):
-        clock[0] += seconds
-
-    def dep_call(deployment, op_token=None):
-        if deployment["op"] == "status":
-            return {"phase": "staging", "ops": [{"status": "in_flight"}]}
-        if deployment["op"] == "resume":
-            resume_calls.append((clock[0], deployment, op_token))
-            raise requests.HTTPError("504 Gateway Timeout")
-        raise AssertionError(f"unexpected deployment call: {deployment}")
-
-    runner = object.__new__(et.TestRunner)
-    runner._next_op_token = lambda: "resume-token"
-
-    def poll_op_result(token, **kwargs):
-        replay_calls.append((token, kwargs))
-        return {"phase": "ready_for_commit", "replayed": True}
-
-    runner._poll_op_result = poll_op_result
-    monkeypatch.setattr(et.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(et.time, "sleep", sleep)
-
-    result = runner._wait_deployment_staging(
-        dep_call, "dj-lost-create", lost_create_started_at=0.0)
-
-    assert result["phase"] == "ready_for_commit"
-    assert resume_calls == [(100.0, {"op": "resume", "jobId": "dj-lost-create"},
-                             "resume-token")]
-    assert replay_calls == [("resume-token", {"tool": "hub_set_rule"})]
 
 
 def test_backup_gate_retries_when_an_async_state_write_replaces_the_fallback_stamp():
@@ -539,14 +456,14 @@ def test_membership_guard_allows_valid_membership_then_routes():
     c = _client_with_catalog([_gw("hub_manage_rooms", ["hub_list_rooms", "hub_delete_room"])])
     # No McpError from the guard for a real member; _send would be next (not exercised here).
     # Drive only the guard by monkeypatching _send to short-circuit.
-    c._send = lambda method, params: {"content": [{"type": "text", "text": "{}"}]}
+    c._send = lambda method, params, headers=None: {"content": [{"type": "text", "text": "{}"}]}
     c.call_tool("hub_manage_rooms", {"tool": "hub_delete_room", "args": {"room": "X", "confirm": True}})
 
 
 def test_membership_guard_skipped_for_flat_calls():
     """flat=True bypasses the guard entirely (deliberate flat-dispatch proofs)."""
     c = _client_with_catalog([_gw("hub_manage_rooms", ["hub_list_rooms"])])
-    c._send = lambda method, params: {"content": [{"type": "text", "text": "{}"}]}
+    c._send = lambda method, params, headers=None: {"content": [{"type": "text", "text": "{}"}]}
     # A leaf name with flat=True is never treated as a gateway envelope; no guard, no raise.
     c.call_tool("hub_list_rooms", flat=True)
 
@@ -644,13 +561,13 @@ def test_list_all_file_names_transport_error_is_non_authoritative():
     assert names == ["a.txt"]
 
 
-def test_export_bundle_uses_token_recovery_filtered_verification_and_exact_backup_cleanup():
-    """The export path token-recovers every write, verifies through a targeted live
+def test_export_bundle_uses_logical_writes_filtered_verification_and_exact_backup_cleanup():
+    """The export path issues every write once, verifies through a targeted live
     listing, and deletes the exact backup returned by the first cleanup call."""
     bundle_id = "7"
     file_name = f"{et.PREFIX}bundle_export_{bundle_id}.zip"
     backup_name = f"{et.PREFIX}bundle_export_{bundle_id}_backup_123.zip"
-    tokened_calls = []
+    write_calls = []
     list_filters = []
 
     class NoDirectWritesClient:
@@ -663,39 +580,38 @@ def test_export_bundle_uses_token_recovery_filtered_verification_and_exact_backu
     runner._soft_passes = []
     runner._current_test = "system_tools/test_export_bundle"
 
-    def tokened_write(gateway, tool, args, label):
-        tokened_calls.append((gateway, tool, args, label))
+    def write_once(gateway, tool, args, label):
+        write_calls.append((gateway, tool, args, label))
         if tool == "hub_export_bundle":
             return {"success": True, "bytes": 321, "fileName": file_name}
         if tool == "hub_delete_file" and args["fileName"] == file_name:
             return {"success": True, "fileName": file_name, "backupFile": backup_name}
         if tool == "hub_delete_file" and args["fileName"] == backup_name:
             return {"success": True, "fileName": backup_name}
-        raise AssertionError(f"unexpected tokened write: {tool} {args}")
+        raise AssertionError(f"unexpected logical write: {tool} {args}")
 
     def list_file_names(name_filter=None):
         list_filters.append(name_filter)
         return [file_name], True
 
-    runner._tokened_write = tokened_write
+    runner._write_once = write_once
     runner._list_all_file_names = list_file_names
 
     et.TestRunner.test_export_bundle(runner)
 
     assert list_filters == [file_name]
     assert [(gateway, tool, args["fileName"] if tool == "hub_delete_file" else args["saveAs"])
-            for gateway, tool, args, _label in tokened_calls] == [
+            for gateway, tool, args, _label in write_calls] == [
         ("hub_manage_code", "hub_export_bundle", file_name),
         ("hub_manage_files", "hub_delete_file", file_name),
         ("hub_manage_files", "hub_delete_file", backup_name),
     ]
 
 
-def test_delete_bundle_uses_token_recovery(monkeypatch):
-    """A lost delete response must be replayable without reinstalling the throwaway bundle."""
+def test_delete_bundle_uses_logical_write_helper(monkeypatch):
     monkeypatch.setenv("PR_RAW_BASE", "https://raw.invalid/repo")
     monkeypatch.setenv("PR_HEAD_SHA_RESOLVED", "abc123")
-    tokened_calls = []
+    write_calls = []
     list_results = iter([
         {"bundles": [{"id": "44", "namespace": "mcptest", "name": "throwaway"}]},
         {"bundles": []},
@@ -709,22 +625,20 @@ def test_delete_bundle_uses_token_recovery(monkeypatch):
             if tool == "hub_list_bundles":
                 return next(list_results)
             if tool == "hub_delete_bundle":
-                raise AssertionError("bundle deletion must use opToken recovery")
+                raise AssertionError("bundle deletion must use the logical write helper")
             raise AssertionError(f"unexpected direct call: {name} {arguments}")
 
     runner = object.__new__(et.TestRunner)
     runner.client = FakeClient()
-    runner._next_op_token = lambda: "install-token"
-
-    def tokened_write(gateway, tool, args, label):
-        tokened_calls.append((gateway, tool, args, label))
+    def write_once(gateway, tool, args, label):
+        write_calls.append((gateway, tool, args, label))
         return {"success": True, "verified": True, "bundleId": args["bundleId"]}
 
-    runner._tokened_write = tokened_write
+    runner._write_once = write_once
 
     et.TestRunner.test_delete_bundle(runner)
 
-    assert tokened_calls == [(
+    assert write_calls == [(
         "hub_manage_code",
         "hub_delete_bundle",
         {"bundleId": "44", "confirm": True},

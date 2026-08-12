@@ -547,8 +547,6 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
 
     @spock.lang.Unroll
     def "rejects maxConcurrentWrites=#badValue naming both bounds"() {
-        // The value mirrors the preferences input's 0..100 integer range; a self-admin
-        // write outside it would land a setting the app UI could no longer edit.
         given:
         enableDeveloperModeAndAdminWrite()
 
@@ -559,8 +557,6 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('maxConcurrentWrites')
         ex.message.contains('between 0 and 100')
-
-        and: 'nothing was written'
         sharedAppStub.settingsStore.isEmpty()
 
         where:
@@ -569,10 +565,6 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
 
     @spock.lang.Unroll
     def "accepts maxConcurrentWrites=#okValue at the range boundaries"() {
-        // The rejection cases pin -1/101/2.5. Without the ACCEPTED boundaries an off-by-one
-        // tightening (to 1..99) would keep this suite green while breaking both documented
-        // edges: 0 is the documented "disable the cap" value the e2e suite relies on, and 100
-        // is the preferences input's stated maximum.
         given:
         enableDeveloperModeAndAdminWrite()
 
@@ -580,7 +572,6 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         def result = script.toolUpdateMcpSettings([settings: [maxConcurrentWrites: okValue], confirm: true])
 
         then:
-        notThrown(IllegalArgumentException)
         result.success == true
         sharedAppStub.settingsStore['maxConcurrentWrites'] == [type: 'number', value: okValue]
 

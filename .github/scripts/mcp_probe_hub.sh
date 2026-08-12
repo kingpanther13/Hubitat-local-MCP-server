@@ -91,12 +91,8 @@ section "hub_list_rules (RM rules via RMUtils)" "$MCP_URL" "$(gw_rpc hub_manage_
 section "hub_get_visual_rule (Visual Rules list)" "$MCP_URL" "$(gw_rpc hub_read_rules hub_get_visual_rule '{}')"
 section "hub_list_variables (hub + rule-engine)" "$MCP_URL" "$(gw_rpc hub_manage_variables hub_list_variables '{}')"
 section "hub_list_files (File Manager)" "$MCP_URL" "$(gw_rpc hub_read_files hub_list_files '{}')"
-# Targeted counts: the unfiltered listing routinely exceeds the 120KB response cap on a
-# hub with many files, which hides WHAT is accumulating. These two answer the question
-# the full listing cannot: how many op-result buffers and per-item backups are on the hub.
-# `total` in each response is the count AFTER filtering, so it is the number even when the
-# page itself is truncated.
-section "hub_list_files filter=mcp-op-result (op-token result buffers)" "$MCP_URL" "$(gw_rpc hub_read_files hub_list_files '{"filter":"mcp-op-result","includeOpResults":true}')"
+# Targeted count: the unfiltered listing routinely exceeds the 120KB response cap on a
+# hub with many files. `total` is the count after filtering, even when the page is truncated.
 section "hub_list_files filter=mcp-rm-backup (per-rule snapshots)" "$MCP_URL" "$(gw_rpc hub_read_files hub_list_files '{"filter":"mcp-rm-backup"}')"
 section "location events (lowMemory / systemStart / mode / HSM, last 24h)" "$MCP_URL" "$(tool_rpc hub_list_device_events '{"limit":50}')"
 

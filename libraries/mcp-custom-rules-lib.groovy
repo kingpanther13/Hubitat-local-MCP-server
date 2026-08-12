@@ -1,4 +1,4 @@
-library(name: "McpCustomRulesLib", namespace: "mcp", author: "kingpanther13", description: "Legacy custom-rule engine parent-side tool implementations (get/create/update/delete/test/export/import/clone custom rules) for the MCP Rule Server; #include'd by the main app.[[FLAT_TRIM]] Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.[[/FLAT_TRIM]]")
+library(name: "McpCustomRulesLib", namespace: "mcp", author: "kingpanther13", description: "Legacy custom-rule engine parent-side tool implementations (get/create/update/delete/test/export/import/clone custom rules) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
 def toolListRules(args = null) {
     def childApps = getChildApps()
@@ -826,7 +826,6 @@ Verify rule after creation.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     name: [type: "string", description: "Rule name, e.g. \"Porch light at sunset\""],
                     description: [type: "string", description: "Optional human-readable rule description"],
                     enabled: [type: "boolean", description: "Enable rule immediately on creation", default: true],
@@ -841,7 +840,6 @@ Verify rule after creation.""",
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the rule was created"],
                     ruleId: [type: "string", description: "ID of the new rule"],
                     message: [type: "string", description: "Human-readable result"],
@@ -860,7 +858,6 @@ Verify rule after creation.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     ruleId: [type: "string", description: "ID of the rule to update (from hub_get_custom_rule)"],
                     name: [type: "string", description: "New rule name"],
                     description: [type: "string", description: "New rule description"],
@@ -876,7 +873,6 @@ Verify rule after creation.""",
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the update succeeded"],
                     ruleId: [type: "string", description: "ID of the updated rule"],
                     message: [type: "string", description: "Human-readable result"]
@@ -890,7 +886,6 @@ Verify rule after creation.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     ruleId: [type: "string", description: "Rule ID"],
                     confirm: [type: "boolean", description: "REQUIRED: Set to true to confirm deletion."],
                     skipBackupCheck: [type: "boolean", description: "Force skip backup even for non-test rules."]
@@ -900,7 +895,6 @@ Verify rule after creation.""",
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the rule was deleted"],
                     message: [type: "string", description: "Human-readable result"],
                     backupFile: [type: "string", description: "File Manager backup filename (present when a backup was written)"]
@@ -939,7 +933,6 @@ Verify rule after creation.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     ruleId: [type: "string", description: "Rule ID to export"],
                     saveAs: [type: "string", description: "File Manager filename to write the export JSON to (\".json\" appended if missing). Omit to use a generated name based on the rule."]
                 ],
@@ -948,7 +941,6 @@ Verify rule after creation.""",
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     exportVersion: [type: "string", description: "Export format version"],
                     exportedAt: [type: "string", description: "Export timestamp"],
                     serverVersion: [type: "string", description: "MCP server version at export"],
@@ -979,7 +971,6 @@ Verify rule after creation.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     exportData: [type: "object", description: "The full export JSON object from hub_export_custom_rule"],
                     name: [type: "string", description: "Override the rule name (optional)"],
                     deviceMapping: [type: "object", description: "Map old device IDs to new ones: {\"old_id\": \"new_id\"} (optional)"]
@@ -989,7 +980,6 @@ Verify rule after creation.""",
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the rule was imported"],
                     ruleId: [type: "string", description: "ID of the newly created rule"],
                     message: [type: "string", description: "Human-readable result"],
@@ -1011,7 +1001,6 @@ Verify rule after creation.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     ruleId: [type: "string", description: "Rule ID to clone"],
                     name: [type: "string", description: "Name for the clone (defaults to 'Copy of <original>')"]
                 ],
@@ -1020,7 +1009,6 @@ Verify rule after creation.""",
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the clone was created"],
                     ruleId: [type: "string", description: "ID of the new cloned rule"],
                     message: [type: "string", description: "Human-readable result"],

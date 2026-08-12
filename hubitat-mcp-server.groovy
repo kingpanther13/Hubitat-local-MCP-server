@@ -17,6 +17,12 @@
  * 8. Open app to get endpoint URL with access token
  */
 
+// Hubitat creates a fresh script instance for each concurrent app execution, so
+// locking on `this` does not serialize them. A static @Field is shared by every
+// execution of this single-instance app and gives the compound persistent-state
+// reservations below one short JVM critical section without serializing tool work.
+@groovy.transform.Field static final Object WRITE_RESERVATION_LOCK = new Object()
+
 definition(
     name: "MCP Rule Server",
     namespace: "mcp",
@@ -119,10 +125,6 @@ definition(
 // surface (hub_set_rule) + native-app CRUD. The shared classic-dynamicPage wizard
 // primitives stay in this file (used by other libraries).
 #include mcp.McpNativeRulesLib
-// Deployment jobs (issue #376): durable staged-migration jobs ridden by the
-// deployment ARGUMENT on hub_set_rule / hub_set_native_app -- checkpointed ops,
-// on-hub worker continuation, validation gate, cancel. No dedicated tools.
-#include mcp.McpDeployJobsLib
 
 preferences {
     page(name: "mainPage")
@@ -431,9 +433,9 @@ def advancedOverridesPage() {
                   required: false
         }
         section("Slow-write time budgets") {
-            paragraph "The cloud relay severs a slow /mcp call at a fixed ceiling while the hub keeps running the operation to completion. When a slow multi-step write reaches its budget, the server pauses BETWEEN committed sub-steps and returns a resumable in_progress envelope so no step is lost. The relay budget defaults ON (under the relay ceiling); the LAN budget defaults OFF -- LAN has no transport ceiling, so enable it only when your MCP client's own request timeout kills slow writes (set it just under that timeout). Set 0 to disable either."
+            paragraph "The cloud relay severs a slow /mcp call at a fixed ceiling while the hub keeps running the operation to completion. Modern MCP clients continue slow writes automatically with requestState; legacy clients receive the existing resumable in_progress envelope. The concurrency cap protects the hub from overlapping writes by clients or parallel agents and requires no client token. The relay budget defaults ON (under the relay ceiling); the LAN budget defaults OFF."
             input "maxConcurrentWrites", "number", title: "Maximum concurrent writes (0 = unlimited)",
-                  description: "Refuse new writes while this many recent write records are still running (default: 2; 1 = fully serial; 0 disables the cap).",
+                  description: "Refuse a new write while this many live write requests are active (default: 2; 1 = fully serial; 0 disables the cap). Reads and read-shaped tool modes do not count; abandoned leases expire automatically.",
                   defaultValue: 2, range: "0..100", required: false
             input "relayBudgetMs", "number", title: "Cloud-relay time budget (ms, 0 = off)",
                   description: "Pause a slow multi-step write over the cloud relay once this many ms have elapsed (default: 8000, under the ~10s relay ceiling).",
@@ -617,10 +619,6 @@ def uninstalled() {
 def initialize() {
     // Stamp when THIS app instance came up. Any op record still marked "running" that
     // started before this stamp was written by an instance that no longer exists: its
-    // executing thread died with the old instance, so its terminal record can never be
-    // written and it is provably a ghost, not a slow write. That makes the write cap's
-    // dead-record detection exact instead of a timeout guess -- see _recentRunningWriteOps.
-    atomicState.appInstanceStartedAt = now()
     if (!state.accessToken) {
         createAccessToken()
         log.info "Created access token"
@@ -636,22 +634,6 @@ def initialize() {
     try { unschedule() }
     catch (Exception e) { mcpLog("warn", "server", "unschedule() before re-schedule failed: ${e.message} -- duplicate schedules may persist") }
     schedule("0 0 3 ? * *", "checkForUpdate")
-    // A settings save unschedule()s everything, so anything mid-flight loses its timer:
-    // a checkpointed deployment job loses its worker, and queued op-result files lose the
-    // sweep that deletes them (they would otherwise sit until some later eviction re-armed it).
-    if (_deployJobs().any { k, v -> (v instanceof Map) && (v.phase?.toString() in _deployActivePhases()) && v.background != false }) {
-        runIn(15, "deployJobWorker")
-    }
-    // Always arm it, not just when a queue exists: the sweep also reaps orphaned
-    // result files, which is how a hub that inherited them from an earlier build
-    // (or from a run whose scheduled sweep was replaced mid-flight) cleans itself up.
-    runIn(20, "opTokenFileSweep")
-    // Daily TTL pass under its OWN handler name: runIn(.., "opTokenFileSweep") replaces any
-    // pending schedule for that handler, so a cron on the same name would be cancelled by
-    // the first burst-armed sweep. The write-driven arming only fires every keep-count
-    // records, which a quiet hub may not reach for weeks -- this is what expires its
-    // records (and their result files) on time.
-    schedule("0 20 3 ? * *", "opTokenDailySweep")
     // Only egress to GitHub immediately on first install. state.updateCheck is
     // null until the first check completes; once set, routine settings saves
     // skip the immediate call and rely on the daily schedule + the in-function
@@ -1531,37 +1513,40 @@ def handleToolsCall(msg) {
 
     boolean eligible = _modernEraRequest() && _mrtrEligibleCall(toolName, reactiveToolName, args)
     if (!eligible && requestState == null) return handleToolsCallLegacy(msg)
+    if (!eligible) {
+        return jsonRpcError(msg.id, -32602,
+            "Invalid params: requestState is not valid for this tool call.")
+    }
     if (!(args instanceof Map)) {
         return jsonRpcError(msg.id, -32602, "Invalid params: tool arguments must be an object")
     }
 
     Map rec = null
+    Map claim = null
     String stateId = requestState?.toString()
     long reqT0 = now()
     try {
         def binding = _mrtrBinding(toolName, reactiveToolName, args)
         if (stateId != null) {
-            rec = _mrtrLoadForResume(stateId, toolName, reactiveToolName, binding)
-            if (rec.status == "terminal") {
-                return _mrtrRenderToolResult(msg.id, toolName, reactiveToolName, args,
+            claim = _mrtrClaim(stateId, toolName, reactiveToolName, binding)
+            rec = claim.record as Map
+            if (claim.outcome == "terminal") {
+                return _renderToolResult(msg.id, toolName, reactiveToolName, args,
                     rec.terminalResult, rec.terminalIsError == true)
             }
-            if (rec.status != "active") {
-                throw new IllegalArgumentException("Invalid or expired requestState")
+            if (claim.outcome == "in_progress") {
+                return jsonRpcError(msg.id, -32000,
+                    "This requestState generation is already executing. Retry the same call with the same requestState; no work was advanced or restarted.",
+                    [requestState: stateId, retryable: true])
             }
         } else {
             _mrtrValidateAccess(toolName, reactiveToolName, args)
-            def duplicate = _mrtrFindActive(reactiveToolName, binding)
-            if (duplicate != null) {
-                def refusal = [
-                    success: false, isError: true, status: "duplicate_in_flight",
-                    tool: reactiveToolName,
-                    startedAt: duplicate.startedAt,
-                    note: "An identical operation is already in progress. Nothing was run; wait for its original MCP call to finish before trying again."
-                ]
-                return _mrtrRenderToolResult(msg.id, toolName, reactiveToolName, args, refusal, true)
+            def reservation = _mrtrReserve(toolName, reactiveToolName, binding)
+            if (reservation.accepted != true) {
+                return _renderToolResult(msg.id, toolName, reactiveToolName, args,
+                    reservation.refusal, true)
             }
-            stateId = _mrtrCreate(toolName, reactiveToolName, binding)
+            stateId = reservation.stateId?.toString()
             return jsonRpcResult(msg.id, [resultType: "input_required", requestState: stateId])
         }
 
@@ -1589,21 +1574,26 @@ def handleToolsCall(msg) {
                     note: "The completed slices remain committed. Inspect the current hub state before deciding whether to submit a smaller follow-up operation."
                 ]
                 _mrtrCleanupRecord(rec)
-                _mrtrStoreTerminal(stateId, rec, capped, true)
-                return _mrtrRenderToolResult(msg.id, toolName, reactiveToolName,
+                _mrtrStoreTerminal(stateId, rec, claim, capped, true)
+                return _renderToolResult(msg.id, toolName, reactiveToolName,
                     executionArgs, capped, true)
             }
-            rec = _mrtrRecordSlice(stateId, rec, result as Map, continuation)
+            rec = _mrtrRecordSlice(stateId, rec, claim, result as Map, continuation)
+            if (rec == null) {
+                throw new IllegalStateException("requestState ownership was lost before its continuation checkpoint could be stored")
+            }
             return jsonRpcResult(msg.id, [resultType: "input_required", requestState: stateId])
         }
 
         def terminal = _mrtrAggregateTerminal(rec, result)
-        _mrtrStoreTerminal(stateId, rec, terminal,
+        _mrtrStoreTerminal(stateId, rec, claim, terminal,
             terminal instanceof Map && terminal.isError == true)
-        return _mrtrRenderToolResult(msg.id, toolName, reactiveToolName, executionArgs,
+        return _renderToolResult(msg.id, toolName, reactiveToolName, executionArgs,
             terminal, terminal instanceof Map && terminal.isError == true)
     } catch (IllegalArgumentException e) {
-        if (rec instanceof Map && rec.status == "active") _mrtrAbandon(stateId, rec, "validation_error")
+        if (rec instanceof Map && claim?.outcome == "claimed") {
+            _mrtrAbandon(stateId, rec, claim, "validation_error")
+        }
         mcpLog("warn", "server", "Validation error in ${reactiveToolName}: ${e.message}", null,
             [details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null,
                        error: e.message]])
@@ -1614,580 +1604,86 @@ def handleToolsCall(msg) {
                        error: e.message],
              stackTrace: e.getStackTrace()?.take(5)?.collect { it.toString() }?.join("\n")])
         def failure = [success: false, isError: true, error: "Tool error: ${e.message}", tool: reactiveToolName]
-        if (rec instanceof Map && rec.status == "active") {
+        if (rec instanceof Map && claim?.outcome == "claimed") {
             _mrtrCleanupRecord(rec)
-            _mrtrStoreTerminal(stateId, rec, failure, true)
+            _mrtrStoreTerminal(stateId, rec, claim, failure, true)
         }
-        return _mrtrRenderToolResult(msg.id, toolName, reactiveToolName, args, failure, true)
+        return _renderToolResult(msg.id, toolName, reactiveToolName, args, failure, true)
     }
 }
 
 def handleToolsCallLegacy(msg) {
     def toolName = msg.params?.name
     def args = msg.params?.arguments ?: [:]
-    // For a gateway call (hub_manage_*/hub_read_*) the FAILING tool is args.tool, not the gateway
-    // name -- resolve it so the reactive best-practice hint (issue #299) maps to the right tool's
-    // guide section. A flat call has no gateway entry, so reactiveToolName stays the leaf name.
-    // `args instanceof Map` guards a malformed non-object `arguments` (e.g. a JSON string): probing
-    // .tool on a String here (before the try below) would throw and surface as a -32603 instead of
-    // the handled path -- fall back to the gateway name and let the try block report it cleanly.
-    // The truthiness check keeps an empty-string tool (catalog mode) attributed to the
-    // gateway name -- the catalog IS the gateway's own surface.
-    // Hoisted once: both are AGGREGATORS that rebuild their whole structure per call
-    // (a large gateway map literal; a concat of ~20 library name chunks), and the
-    // token/gate logic below consults them nine times per request.
-    def gatewayConfigCache = getGatewayConfig()
-    def readOnlyNamesCache = getReadOnlyToolNames()
-    def reactiveToolName = (gatewayConfigCache.containsKey(toolName) && args instanceof Map && args.tool instanceof String && args.tool) ? args.tool : toolName
+    def gatewayConfig = getGatewayConfig()
+    def reactiveToolName = (gatewayConfig.containsKey(toolName) && args instanceof Map
+            && args.tool instanceof String && args.tool) ? args.tool : toolName
 
     if (!toolName) {
         return jsonRpcError(msg.id, -32602, "Invalid params: tool name required")
     }
 
-    // ---- Slow-write self-budget clock ----
-    // Capture wall-clock at handler entry; the delta from the actual request
-    // entry is sub-millisecond. Threaded into the dispatched args so a slow
-    // multi-step write can pause before its transport dies and return a resumable
-    // in_progress envelope. The budget is per-source (relayBudgetMs over the
-    // relay, lanBudgetMs on LAN, default 0 = off), so this is inert whenever the
-    // applicable budget is 0.
     long reqT0 = now()
-
-    // Idempotency-token state, declared out here so the completion-buffering
-    // finally can see it; resolved + validated INSIDE the try so a bad token maps
-    // to -32602 via the IllegalArgumentException catch (not the generic -32603).
-    String opToken = null
-    boolean opTokenActive = false
-    boolean opTokenAuto = false
-    Integer opFingerprintHash = null
-    Integer opFingerprintLen = null
-    // True once a pre-dispatch running marker was actually WRITTEN. Only the tools that
-    // can outlive their transport write one, and everything the marker feeds -- the args
-    // fingerprint, the duplicate refusal, the release on a validation error -- is scoped
-    // to the same set. Without this flag the release path creates a "released" record for
-    // a write that never marked anything: two atomicState round trips for a token the
-    // client never received (the response is a JSON-RPC error, not a result).
-    boolean opTokenMarked = false
-    // Buffer the terminal result under the token on every exit path (finally), so
-    // a dropped transport response is recoverable by re-issuing the tokened call
-    // (the dedup gate replays it) and no token is left eternally "running". Each
-    // terminal path sets opCompletionText.
-    String opCompletionText = null
-    boolean opCompletionIsError = false
-    boolean reactiveSchemaOnly = false
-    // Debug-only per-write timing: proves where a write's wall-clock actually goes
-    // (token bookkeeping vs the tool itself vs buffering the result) instead of
-    // inferring it from e2e wall time. Costs a few now() calls; emitted once, at
-    // debug level, so a normal install never renders it.
-    long opTokenPreMs = 0L
-    long opTokenMarkMs = 0L
-    long opToolExecMs = 0L
+    String writeLeaseId = null
     try {
-        // ---- Idempotency token: resolve, validate, dedup, mark ----
-        // All token bookkeeping happens ONCE here, never in executeTool -- a gateway
-        // re-enters executeTool per sub-tool and would double-process. The token is
-        // honoured for EVERY leaf, reads included (issue #351): a read cannot
-        // double-commit, but an expensive read that outlives its transport still
-        // completes and buffers here, so the tokened re-issue serves the buffered
-        // result instead of re-running the work. reactiveToolName is the resolved
-        // leaf (args.tool on a gateway call, the leaf on a flat call).
-        if (args instanceof Map) {
-            def rawToken = args.opToken ?: (args.args instanceof Map ? args.args.opToken : null)
-            // Inner gateway args may arrive as a JSON-encoded STRING (handleGateway
-            // supports that shape) -- a token inside it must still activate the
-            // idempotency machinery (or the shape silently loses all dedup protection)
-            // AND must be stripped even when the OUTER token already resolved, so a
-            // strict-arg leaf never sees the unknown key after the gateway parses the
-            // string. Parse-or-ignore, gated on a cheap substring probe so ordinary
-            // string-args calls never pay a parse; on success hand the parsed Map
-            // onward (the gateway's own Map path). A malformed string falls through
-            // untouched to handleGateway's own -32602 parse error.
-            if (args.args instanceof String && args.args.contains('opToken')) {
-                try {
-                    def parsedInner = new groovy.json.JsonSlurper().parseText(args.args.toString())
-                    if (parsedInner instanceof Map && parsedInner.containsKey('opToken')) {
-                        if (rawToken == null && parsedInner.opToken != null) rawToken = parsedInner.opToken
-                        parsedInner.remove('opToken')
-                        args.args = parsedInner
-                    }
-                } catch (Exception ignored) { }
+        if (_isActualWriteCall(toolName, reactiveToolName, args)) {
+            def reservation = _writeReserveRequest(reactiveToolName,
+                _modernEraRequest() ? "modern" : "legacy")
+            if (reservation.accepted != true) {
+                return _renderToolResult(msg.id, toolName, reactiveToolName, args,
+                    reservation.refusal, true)
             }
-            // The token is consumed HERE, so strip it before dispatch: leaves never
-            // need it, and several validate their args strictly and would reject the
-            // unknown key -- stripping makes EVERY tool tokenable, not just the ones
-            // whose schema advertises the param.
-            args.remove('opToken')
-            if (args.args instanceof Map) args.args.remove('opToken')
-            if (rawToken != null) {
-                opToken = rawToken.toString()
-                _validateOpToken(opToken)
-                opTokenActive = true
-            }
-            // Auto-record untokened WRITES: a client that
-            // never passed a token still gets a server-assigned one, so the op is
-            // recorded and its result buffered exactly like a tokened call. The
-            // token rides back on the response, and hub_get_info(includeRecentOps=
-            // true) lists recent records -- a client that LOST the response can
-            // discover what actually ran and poll the token for the buffered
-            // result instead of blind-retrying (the double-commit hole for
-            // token-less calls). Reads and gateway CATALOG calls are excluded:
-            // a read cannot double-commit, and recording them would churn the
-            // record cap for zero recovery value. Read-shaped calls on the two
-            // write tools (guide/discover probes, deployment op='status') are
-            // excluded by the SAME classifier the Write master uses -- without it
-            // every status poll would mint a running write record, count toward
-            // maxConcurrentWrites, and churn the journal it exists to serve.
-            String classifiedTool = reactiveToolName?.toString()
-            if (classifiedTool == 'hub_call_device_replace' || classifiedTool == 'hub_set_rule'
-                    || classifiedTool == 'hub_set_native_app') {
-                def leafArgs = args
-                if (gatewayConfigCache.containsKey(toolName)) {
-                    if (args.args instanceof Map) {
-                        leafArgs = args.args
-                    } else if (args.args instanceof String) {
-                        // Inner gateway args may still be a JSON STRING here: the opToken
-                        // pre-parse above fires only when the string mentions a token. The
-                        // classifier reads LEAF keys, so leaving it a string classifies a
-                        // read-shaped call as a write -- a deployment:{op:'status'} poll sent
-                        // in that shape mints an auto token, writes a running marker, counts
-                        // toward the write cap, and two concurrent polls refuse each other as
-                        // duplicates. Parse-or-ignore; a malformed string falls through to
-                        // handleGateway's own -32602.
-                        try {
-                            def parsedLeaf = new groovy.json.JsonSlurper().parseText(args.args.toString())
-                            if (parsedLeaf instanceof Map) leafArgs = parsedLeaf
-                        } catch (Exception ignored) { }
-                    }
-                }
-                if (classifiedTool == 'hub_call_device_replace') {
-                    // list_options=true short-circuits to a candidate READ before any write --
-                    // minting a token for it contradicts the tool's own outputSchema ("absent
-                    // for list_options=true") and churns the record cap for a call that cannot
-                    // double-commit. Same exclusion the guide/discover probes get.
-                    reactiveSchemaOnly = (leafArgs instanceof Map) && leafArgs.list_options == true
-                } else if (classifiedTool == 'hub_set_rule') {
-                    reactiveSchemaOnly = _isSetRuleSchemaOnlyCall(leafArgs)
-                } else {
-                    reactiveSchemaOnly = _isNativeAppSchemaOnlyCall(leafArgs)
-                }
-            }
-            if (!opTokenActive && reactiveToolName && !(reactiveToolName in readOnlyNamesCache)
-                    && !reactiveSchemaOnly
-                    && !gatewayConfigCache.containsKey(reactiveToolName.toString())) {
-                // UUID, not a 16-bit random group: auto-tokens are minted on EVERY untokened
-                // write, so same-millisecond mints are routine, and a collision would hand the
-                // second caller the FIRST one's buffered result. (The old nextInt(0xFFFF) was
-                // also exclusive of its bound, so it drew from 65535 values, not 65536.)
-                opToken = "auto-" + Long.toString(now(), 16) + "-" + java.util.UUID.randomUUID().toString()
-                opTokenActive = true
-                opTokenAuto = true
-            }
+            writeLeaseId = reservation.leaseId?.toString()
         }
-        // Resolved once: it scopes the args fingerprint, the pre-dispatch marker and the
-        // release below, and both getters it consults rebuild their structures per call.
-        boolean opTokenNeedsMarker = opTokenActive && _needsRunningMarker(reactiveToolName)
-        if (opTokenActive) {
-            // The fingerprint is only ever STORED by the running marker, so computing it for
-            // a write that writes no marker is a second full serialization of the request
-            // arguments for nothing -- and _findIdenticalRunningOp could never match it.
-            if (opTokenAuto && opTokenNeedsMarker) {
-                String canonicalArgsJson = groovy.json.JsonOutput.toJson(_canonicalOpArgs(args))
-                opFingerprintHash = canonicalArgsJson.hashCode()
-                opFingerprintLen = canonicalArgsJson.length()
-            }
-            boolean isWriteLeaf = (reactiveToolName && !(reactiveToolName in readOnlyNamesCache)
-                    && !reactiveSchemaOnly
-                    && !gatewayConfigCache.containsKey(reactiveToolName.toString()))
-            // ONE read of the record map for EVERY pre-dispatch consumer: the client-token
-            // dedup lookup below, the duplicate refusal, and the write cap. Each used to
-            // deserialize the whole map for itself, so a client-tokened write -- the shape
-            // every opToken-using client sends, and the shape the e2e harness sends on all
-            // ~230 of its hub_set_rule calls -- paid two full deserializations back to back.
-            // Measured on real firmware that is ~0.9s of pure latency each. One read is also
-            // strictly more correct for the checks: they now judge the same instant rather
-            // than two, so a record written between the two reads can no longer make the
-            // dedup and the cap disagree about what is running.
-            //
-            // Read only when something can actually answer from it. Both running-record
-            // checks need a marker to exist, and only the marker tools write one, so for an
-            // AUTO-tokened call to any other write the map is a guaranteed-empty answer.
-            boolean needsTokensSnapshot = isWriteLeaf && (!opTokenAuto || opTokenNeedsMarker)
-            def tokensSnapshot = (!opTokenAuto || needsTokensSnapshot) ? atomicState.opTokens : null
-            // An AUTO token was minted as a fresh UUID a few lines above, so the lookup can
-            // only miss. Client-supplied tokens are the ones that can actually hit a stored
-            // record, and they read it from the snapshot above rather than re-fetching.
-            def dedup = opTokenAuto ? null : _opTokenDedup(opToken, reactiveToolName, tokensSnapshot)
-            if (dedup != null) {
-                // This short-circuit serves a result WITHOUT reaching executeTool, so the
-                // masters must be enforced here too -- otherwise a client with the Write
-                // master off could replay a write's buffered result through its token.
-                boolean isReadTool = reactiveToolName in readOnlyNamesCache
-                if (!isReadTool && settings.enableWrite == false) {
-                    return jsonRpcResult(msg.id, [
-                        content: [[type: "text", text: groovy.json.JsonOutput.toJson([
-                            success: false, isError: true,
-                            error: "Write tools are disabled. Enable 'Write Tools' in MCP Rule Server app settings to use ${reactiveToolName}."
-                        ])]],
-                        isError: true
-                    ])
-                }
-                if (isReadTool && settings.enableRead == false) {
-                    return jsonRpcResult(msg.id, [
-                        content: [[type: "text", text: groovy.json.JsonOutput.toJson([
-                            success: false, isError: true,
-                            error: "Read tools are disabled. Enable 'Read Tools' in MCP Rule Server app settings to use ${reactiveToolName}."
-                        ])]],
-                        isError: true
-                    ])
-                }
-                // Already running (refuse the duplicate) or already complete (replay
-                // the buffered result). Short-circuit BEFORE dispatch so neither the
-                // write nor the completion buffer runs again (opCompletionText stays
-                // null, so the finally does not re-buffer).
-                def dedupBody = [
-                    content: [[type: "text", text: groovy.json.JsonOutput.toJson(dedup.result)]],
-                    isError: dedup.isError
-                ]
-                // A non-error REPLAY of a schema-advertised base tool must carry
-                // structuredContent exactly like the normal path (#342 -- spec-validating
-                // clients reject a schema-advertised "success" without it, and post-#351
-                // this short-circuit is the ONLY recovery path for a dropped response).
-                if (!dedup.isError && settings.publishOutputSchemas == true && settings.useGateways != false
-                        && dedup.result instanceof Map && _advertisesOutputSchema(toolName)) {
-                    dedupBody.structuredContent = dedup.result
-                }
-                return jsonRpcResult(msg.id, dedupBody)
-            }
-            // Token-only poll on an UNSEEN token: the call re-issued with nothing but
-            // its opToken is the documented recovery poll, and a required-args leaf
-            // (write or read) called that way can never be a real execution -- so answer
-            // "unknown" instead of marking the token and burning it on the leaf's
-            // missing-arg validation error. Running/complete tokens were answered above.
-            boolean isGatewayCall = gatewayConfigCache.containsKey(toolName) && args.tool instanceof String && args.tool
-            // An AUTO token can never be a poll: the client sent a normal untokened
-            // call, so a bare-args mistake must surface the leaf's own validation
-            // error, not the token-recovery "unknown" contract.
-            if (!opTokenAuto && _isOpTokenPollShape(args, isGatewayCall, reactiveToolName)) {
-                // A tokened CATALOG call (bare gateway name -- reactiveToolName falls back to
-                // the gateway) never reaches the catalog and its token is never marked, so
-                // "re-issue the original call with this token" would loop forever: the right
-                // exit is dropping the token from the catalog call.
-                // "Never arrived" is only provable for a MARKER-TRACKED write: it records
-                // before it executes, so no record means no execution. Every other write
-                // records at completion, and an absent record there is equally consistent
-                // with a call still running -- telling that caller to re-issue is telling
-                // it to double-execute, the exact failure the token exists to prevent.
-                String unknownNote
-                if (gatewayConfigCache.containsKey(reactiveToolName?.toString())) {
-                    unknownNote = "No operation with this token has started on this hub. This token rode a gateway CATALOG call (no tool selected) -- tokens are never spent on catalog listings, so polling it always answers unknown. Re-issue the catalog call WITHOUT an opToken; put tokens on the {tool, args} call itself. See hub_get_tool_guide(section='slow_ops')."
-                } else if (_needsRunningMarker(reactiveToolName)) {
-                    unknownNote = "No operation with this token has started on this hub. ${reactiveToolName} records a running marker BEFORE it executes, so an absent record proves the original call never arrived and this poll ran nothing. Re-issue the ORIGINAL call (full arguments) with this same opToken. See hub_get_tool_guide(section='slow_ops')."
-                } else {
-                    unknownNote = "No record exists for this token. ${reactiveToolName} is recorded only when it FINISHES, so this answer cannot distinguish 'the original call never arrived' from 'it is still running'. Do NOT re-issue blindly -- that can execute the write twice. Verify current state with a read first; if the write did not land, re-issue the ORIGINAL call (full arguments) with this same opToken. See hub_get_tool_guide(section='slow_ops')."
-                }
-                return jsonRpcResult(msg.id, [
-                    content: [[type: "text", text: groovy.json.JsonOutput.toJson([
-                        success: false, isError: true, status: "unknown", opToken: opToken, tool: reactiveToolName,
-                        note: unknownNote
-                    ])]],
-                    isError: true
-                ])
-            }
-            if (opTokenAuto && opTokenNeedsMarker && isWriteLeaf) {
-                def duplicate = _findIdenticalRunningOp(reactiveToolName, opFingerprintHash, opFingerprintLen, tokensSnapshot)
-                if (duplicate != null) {
-                    long ageSeconds = Math.max(0L, ((now() - (duplicate.startedAt as Long)) / 1000L) as Long)
-                    def refusal = [
-                        success: false, isError: true, status: "duplicate_in_flight",
-                        inFlightOpToken: duplicate.opToken, tool: reactiveToolName,
-                        startedAt: duplicate.startedAt,
-                        note: "An identical operation is already in progress (started ${ageSeconds}s ago). Do not re-run it: poll by re-issuing token-only with opToken '${duplicate.opToken}' to get its result when it finishes. See hub_get_tool_guide(section='slow_ops')."
-                    ]
-                    return jsonRpcResult(msg.id, [
-                        content: [[type: "text", text: groovy.json.JsonOutput.toJson(refusal)]],
-                        isError: true
-                    ])
-                }
-            }
-            // maxWrites <= 0 disables the cap, so scanning the record map for in-flight
-            // writes would be work whose only consumer is the refusal that can no longer
-            // fire. Checked BEFORE the scan, not inside the refusal condition.
-            int maxWrites = needsTokensSnapshot ? _maxConcurrentWrites() : 0
-            if (maxWrites > 0) {
-                def inFlightWrites = _recentRunningWriteOps(readOnlyNamesCache, tokensSnapshot)
-                if (inFlightWrites.size() >= maxWrites) {
-                    def refusal = [
-                        success: false, isError: true, status: "too_many_writes_in_flight",
-                        inFlight: inFlightWrites,
-                        note: "${inFlightWrites.size()} write operation(s) already in flight (cap ${maxWrites}, the maxConcurrentWrites setting). Wait for one to finish or poll its token, then re-issue this call."
-                    ]
-                    return jsonRpcResult(msg.id, [
-                        content: [[type: "text", text: groovy.json.JsonOutput.toJson(refusal)]],
-                        isError: true
-                    ])
-                }
-            }
-            // The pre-dispatch RUNNING marker exists to answer a poll that arrives while
-            // the tool is still executing. Measured on real firmware, it costs ~0.9s (one
-            // atomicState write), and a tool that finishes in well under the transport
-            // ceiling can never BE polled mid-flight -- its response was delivered. So it
-            // is written only for the tools that can genuinely outlive their transport;
-            // every other write still gets its terminal record at completion, so the
-            // journal and the replay contract are unchanged.
-            if (opTokenNeedsMarker) {
-                long _tokMarkT0 = now()
-                _opTokenMark(opToken, reactiveToolName, opFingerprintHash, opFingerprintLen)
-                opTokenMarked = true
-                opTokenMarkMs = now() - _tokMarkT0
-            }
-            opTokenPreMs = now() - reqT0
+        // Legacy clients keep the existing remainder-bearing result. The budget
+        // clock is internal and only reaches the explicitly budget-aware leaves.
+        if (args instanceof Map && _budgetAwareTools().contains(reactiveToolName?.toString())) {
+            args.__reqT0 = reqT0
         }
-        // Thread the budget clock into the dispatched args -- ONLY for the leaves
-        // whose loops consume it. Several tools validate their args strictly and
-        // reject unknown keys, so a blanket injection breaks them; the budget-aware
-        // set is the injection allowlist. (Map guard: a malformed non-object
-        // arguments falls through and simply forgoes the budget.)
-        if (args instanceof Map && _budgetAwareTools().contains(reactiveToolName)) args.__reqT0 = reqT0
-
-        long _execT0 = now()
         def result = executeTool(toolName, args)
-        opToolExecMs = now() - _execT0
-        // Null result is always an internal tool bug -- surface it as a structured
-        // isError envelope instead of letting JsonOutput render the literal string
-        // "null" into the wire payload (which looks like a normal tool result).
         if (result == null) {
-            // Blame the failing SUB-TOOL on a gateway-routed call (issue #299 pattern) --
-            // reactiveToolName already resolved it; keep the gateway for context.
             mcpLog("error", "server", "Tool ${reactiveToolName} returned null -- internal tool bug", null, [
-                details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null]
+                details: [tool: reactiveToolName,
+                          gateway: (reactiveToolName != toolName) ? toolName : null]
             ])
-            def nullErrText = groovy.json.JsonOutput.toJson([
-                isError: true, error: "Tool ${reactiveToolName} returned no result", tool: reactiveToolName
-            ])
-            if (opTokenActive) { opCompletionText = nullErrText; opCompletionIsError = true }
-            return jsonRpcResult(msg.id, [
-                content: [[type: "text", text: nullErrText]],
-                isError: true
-            ])
+            result = [isError: true, error: "Tool ${reactiveToolName} returned no result",
+                      tool: reactiveToolName]
         }
-        // ---- Reactive best-practice hint on a returned error (issue #299, always on) ----
-        // The runtime-error contract is [success:false, error:.., note:..]; some refusals also set
-        // isError:true. Surface a one-line pointer to the FAILING tool's own guide section on either
-        // error shape by mutating the result Map with a bp_warning field, which serializes naturally
-        // below. The detector is a pure function that returns null on success-shaped or
-        // no-section/permission errors, so there is no meaningful overhead on the hot path.
-        if (result instanceof Map && (result.isError == true || result.success == false)) {
-            // A best-practice HINT must never mask the genuine tool error: if attaching it ever throws
-            // (e.g. a future tool returns an immutable result Map), log and fall through with the
-            // original result intact.
-            try {
-                _applyReactiveBpsWarning(reactiveToolName, args, result)
-            } catch (Exception bpErr) {
-                mcpLog("warn", "server", "Reactive BPS hint failed for ${reactiveToolName}: ${bpErr.message}", null, [details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null]])
-            }
-        }
-        // Surface the server-assigned token on the response so a client that DID
-        // get the response can poll it, and the buffered record self-identifies.
-        // Client-supplied tokens are the client's own bookkeeping -- not echoed.
-        if (opTokenAuto && result instanceof Map && !result.containsKey("opToken")) {
-            try { result.opToken = opToken }
-            catch (Exception attachErr) {
-                mcpLog("warn", "server", "Could not attach opToken ${opToken} to the ${reactiveToolName} result (${attachErr.message}) -- the token still recorded; find it via hub_get_info(includeRecentOps=true)")
-            }
-        }
-        def jsonText
-        try {
-            jsonText = groovy.json.JsonOutput.toJson(result)
-        } catch (Exception serErr) {
-            // Tool returned a value JsonOutput cannot encode (Closure, java.util.regex.Pattern,
-            // circular Map, etc.). Surface it as a tool bug rather than letting it look like
-            // a generic execution failure under the bottom catch.
-            mcpLog("error", "server", "Tool ${reactiveToolName} returned a non-serializable result: ${serErr.message}", null, [
-                details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null, resultType: result?.class?.name, error: serErr.message]
-            ])
-            def serErrText = groovy.json.JsonOutput.toJson([
-                isError: true,
-                error: "Tool ${reactiveToolName} returned a result the JSON serializer cannot encode",
-                cause: serErr.message,
-                resultType: result?.class?.name,
-                note: "Internal tool bug -- report with the tool name and arguments used."
-            ])
-            if (opTokenActive) { opCompletionText = serErrText; opCompletionIsError = true }
-            return jsonRpcResult(msg.id, [
-                content: [[type: "text", text: serErrText]],
-                isError: true
-            ])
-        }
-        // Buffer the successful (or returned-error) result under the token. The
-        // oversize branch below OVERWRITES this capture with the too-large envelope
-        // it actually returns -- a replay must reproduce the original wire response.
-        if (opTokenActive) {
-            opCompletionText = jsonText
-            opCompletionIsError = (result instanceof Map && result.isError == true)
-        }
-        // Measure the wire-encoded response (text-escape + content/JSON-RPC envelope)
-        // rather than the raw inner result, so the guard threshold maps directly onto
-        // what handleMcpRequest's outer 128KB check measures. Sizing the inner result
-        // alone left a gap zone where escape-heavy payloads (every `"` becomes `\"`)
-        // could slip the inner guard yet still trip the outer -32603 fallback that
-        // #174 was filed to eliminate.
-        // File-wide error contract: a tool that RETURNS a result with isError:true (the gateway
-        // disabled/missing-required-param refusals, toolCloneNativeApp / native-wizard soft failures,
-        // etc.) MUST surface that on the JSON-RPC envelope so MCP clients route retries -- this
-        // function is documented to "flag isError on the JSON-RPC envelope", but until now only the
-        // throw / null / non-serializable branches set it, so a *returned* isError stayed invisible
-        // top-level (a refused destructive call read as success to a spec-compliant client).
-        def envelopeBody = [content: [[type: "text", text: jsonText]]]
-        if (result instanceof Map && result.isError == true) {
-            envelopeBody.isError = true
-        } else if (settings.publishOutputSchemas == true && settings.useGateways != false
-                && result instanceof Map && _advertisesOutputSchema(toolName)) {
-            // MCP spec (2025-06-18 server/tools): "If an output schema is provided: Servers
-            // MUST provide structured results that conform to this schema." With
-            // publishOutputSchemas ON, the gateway-mode base tools advertise outputSchema,
-            // and spec-validating clients (Claude Desktop's TS SDK, mcp-proxy's Python SDK)
-            // REQUIRE structuredContent on every non-error result of an advertised tool.
-            // Text-only results made every successful call to those tools read as a generic
-            // client-side failure while the hub logged success (issue #342). The text block
-            // above stays: the spec says structured results SHOULD also carry the
-            // serialized JSON for backwards compatibility.
-            envelopeBody.structuredContent = result
-        }
-        def candidateResponse = jsonRpcResult(msg.id, envelopeBody)
-        // Serialize the wire form ONCE here. We measure its byte length for the inner cap,
-        // then (on the common under-limit path) hand the already-built string to
-        // handleMcpRequest via a __preserialized sentinel so it renders verbatim instead of
-        // re-encoding the same object a second time. KEEP byte-accurate getBytes("UTF-8")
-        // sizing -- do NOT regress to char length.
-        String candidateJson = groovy.json.JsonOutput.toJson(candidateResponse)
-        int wireBytes = candidateJson.getBytes("UTF-8").length
-        final int responseSizeLimit = hubResponseCapBytes() - 11072  // =120000; ~11 KB headroom under the 131072-byte (128 KiB) hub cap
-        if (wireBytes > responseSizeLimit) {
-            // reactiveToolName already resolved the real sub-tool for a gateway call
-            // (args.tool, whitelist-checked against getGatewayConfig), so the size
-            // suggestion routes to the failing tool, not the gateway.
-            mcpLog("warn", "server", "Tool ${reactiveToolName} response too large (${wireBytes} > ${responseSizeLimit} bytes) -- returning response_too_large envelope", null, [
-                details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null, bytes: wireBytes, limit: responseSizeLimit]
-            ])
-            String tooLargeJson = groovy.json.JsonOutput.toJson(_responseTooLargeEnvelope(reactiveToolName as String, wireBytes, responseSizeLimit))
-            def tooLargeBody = [content: [[type: "text", text: tooLargeJson]]]
-            // Computed up front: the buffered record must reproduce the SAME isError flag
-            // the wire envelope carries (set below for schema-advertised tools, #342).
-            boolean tooLargeIsError = (settings.publishOutputSchemas == true && settings.useGateways != false
-                    && _advertisesOutputSchema(toolName))
-            // Buffer the SAME envelope (and flag) the caller is getting, replacing the
-            // real result captured above: a replay must reproduce the original wire
-            // response, and the oversize real result could never ride the dedup
-            // short-circuit anyway -- it would just trip the outer 128KB cap as an
-            // opaque -32603 on every poll.
-            if (opTokenActive) { opCompletionText = tooLargeJson; opCompletionIsError = tooLargeIsError }
-            // A schema-advertised tool's NON-ERROR result must carry structuredContent (the
-            // spec MUST behind issue #342), and this fallback deliberately replaces the real
-            // result with a text-only envelope. Flag it isError so spec-validating clients
-            // treat it as the error it is (validation is skipped on error results) instead
-            // of rejecting a schema-noncompliant "success" with the same generic failure
-            // #342 was filed about. Non-advertised tools keep the long-standing non-error
-            // shape (#174: the model reads the suggestion and retries narrower).
-            if (tooLargeIsError) {
-                tooLargeBody.isError = true
-            }
-            return jsonRpcResult(msg.id, tooLargeBody)
-        }
-        // Single-message verbatim-passthrough: handleMcpRequest's single-Map branch detects
-        // this sentinel and renders __preserialized as-is (no re-encode). The batch-collect
-        // path re-parses it back to an object so it never leaks into the batch JSON array.
-        // The sentinel is internal -- never visible on the wire. The oversize branch above
-        // deliberately returns a normal Map (not a sentinel); re-encoding that rare path is fine.
-        return [__preserialized: candidateJson]
+        return _renderToolResult(msg.id, toolName, reactiveToolName, args, result,
+            result instanceof Map && result.isError == true)
     } catch (IllegalArgumentException e) {
         mcpLog("warn", "server", "Validation error in ${reactiveToolName}: ${e.message}", null, [
-            details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null, error: e.message]
+            details: [tool: reactiveToolName,
+                      gateway: (reactiveToolName != toolName) ? toolName : null,
+                      error: e.message]
         ])
-        // Reactive best-practice hint on a thrown validation error (issue #299, always on). Most
-        // recoverable tool errors (device-not-found, unsupported command, missing confirm) throw
-        // IllegalArgumentException -> -32602, so this is the primary reactive surface. _reactiveBpsWarning
-        // already excludes the gate's own refusal + permission errors and returns null when the tool has
-        // no dedicated section, so no extra guard is needed here beyond the null-message check.
         def msgText = e.message
         if (e.message) {
-            // Same guard as the returned-error path: a hint failure must not lose the validation error.
             try {
-                def w = _reactiveBpsWarning(reactiveToolName, args, e.message)
-                if (w) msgText = "${e.message} ${w}"
+                def warning = _reactiveBpsWarning(reactiveToolName, args, e.message)
+                if (warning) msgText = "${e.message} ${warning}"
             } catch (Exception bpErr) {
-                mcpLog("warn", "server", "Reactive BPS hint failed for ${reactiveToolName}: ${bpErr.message}", null, [details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null]])
+                mcpLog("warn", "server",
+                    "Reactive BPS hint failed for ${reactiveToolName}: ${bpErr.message}", null,
+                    [details: [tool: reactiveToolName,
+                               gateway: (reactiveToolName != toolName) ? toolName : null]])
             }
-        }
-        if (opTokenMarked) {
-            // A validation error means the leaf executed NOTHING (the error contract: an
-            // IllegalArgumentException is thrown up front, before any side effect -- the
-            // release below leans on that convention, so a tool must never throw IAE after
-            // partial work), so the token must NOT be spent on it: buffering the -32602 made
-            // the documented recovery (re-issue with the SAME token) replay the stale
-            // rejection even after the caller fixed the arguments (the dedup gate cannot see
-            // that args changed -- issue #361 review).
-            // Release the record instead: a corrected re-issue executes fresh, and a
-            // lost-response re-poll answers "unknown -> re-issue the original call", which
-            // simply re-validates to the identical error. opCompletionText stays null, so
-            // the finally does not buffer.
-            // Gated on a marker having been WRITTEN: with nothing to release, this only
-            // creates a junk record (a map read, a per-entry write and its verification
-            // read), and the recovery it enables is unreachable anyway -- the auto token
-            // rode no response, because a -32602 is a JSON-RPC error, not a result.
-            try { _opTokenRelease(opToken) }
-            catch (Exception re) { mcpLog("warn", "op-token", "Releasing token ${opToken} after a validation error failed: ${re.message}") }
         }
         return jsonRpcError(msg.id, -32602, "Invalid params: ${msgText}")
     } catch (Exception e) {
         mcpLog("error", "server", "Tool execution error in ${reactiveToolName}: ${e.message}", null, [
-            details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null, error: e.message],
+            details: [tool: reactiveToolName,
+                      gateway: (reactiveToolName != toolName) ? toolName : null,
+                      error: e.message],
             stackTrace: e.getStackTrace()?.take(5)?.collect { it.toString() }?.join("\n")
         ])
-        // Hubitat's LogWrapper.error() does NOT accept (String, Throwable) — passing the
-        // exception object as a 2nd arg throws MissingMethodException, masking the real error
-        // (and creating cascading log.error failures). mcpLog above already captured the stack trace.
         log.error "Tool execution error: ${e.message} (${e.class.simpleName})"
-        if (opTokenActive) {
-            opCompletionText = groovy.json.JsonOutput.toJson([isError: true, error: "Tool error: ${e.message}", tool: reactiveToolName])
-            opCompletionIsError = true
-        }
-        // MCP spec: tool execution errors are returned as successful results with isError flag
-        return jsonRpcResult(msg.id, [content: [[type: "text", text: "Tool error: ${e.message}"]], isError: true])
+        return jsonRpcResult(msg.id, [
+            content: [[type: "text", text: "Tool error: ${e.message}"]],
+            isError: true
+        ])
     } finally {
-        // Buffer the terminal result under the token so a dropped transport response
-        // is replayable by re-issuing the tokened call. Reached on every path that set
-        // the text (success, oversize, validation error, runtime error, null/non-serializable).
-        long _cmpT0 = now()
-        if (opTokenActive && opCompletionText != null) {
-            // An auto token that never wrote a marker provably has no record yet (it is a
-            // UUID minted this request), so completion can skip the read-merge entirely --
-            // that read was one of the ~0.9s atomicState round trips every ordinary write
-            // was paying. A client token can have a released record from an earlier
-            // rejection, so it keeps the merge.
-            boolean priorRecordPossible = (!opTokenAuto || opTokenMarked)
-            try { _opTokenComplete(opToken, opCompletionText, opCompletionIsError, reactiveToolName, priorRecordPossible) }
-            catch (Exception ce) {
-                mcpLog("warn", "op-token", "Recording op-result completion for ${opToken} failed: ${ce.message}")
-                // Never leave the token wedged "running" until the 24h TTL while the
-                // running-note forbids the recovering re-run: a failed_buffer record
-                // downgrades every poll to the indeterminate verify-state answer.
-                // startedAt=now() so the record lives its own full TTL (a null would
-                // read as expired and prune to the unsafe "unknown" immediately).
-                // Straight to the whole-map writer: _opTokenPut is part of what just
-                // threw, so retrying it would fail the same way for any non-MME cause.
-                try {
-                    _opTokenPutWholeMap(opToken, [state: "failed_buffer", tool: reactiveToolName?.toString(),
-                                                  startedAt: now(), finishedAt: now(), isError: opCompletionIsError])
-                } catch (Exception ignored) { }
-            }
-        }
-        if (opTokenActive && settings.debugLogging == true) {
-            long _cmpMs = now() - _cmpT0
-            long _totalMs = now() - reqT0
-            mcpLog("debug", "op-token", "write timing ${reactiveToolName}: total ${_totalMs}ms = pre ${opTokenPreMs}ms (mark ${opTokenMarkMs}ms) + tool ${opToolExecMs}ms + buffer ${_cmpMs}ms",
-                   null, [duration: _totalMs, details: [tool: reactiveToolName?.toString(), totalMs: _totalMs,
-                          preDispatchMs: opTokenPreMs, markMs: opTokenMarkMs, toolMs: opToolExecMs, bufferMs: _cmpMs]])
-        }
+        if (writeLeaseId != null) _writeReleaseRequest(writeLeaseId)
     }
 }
 
@@ -2205,25 +1701,10 @@ def _advertisesOutputSchema(toolName) {
     return getAllToolDefinitions().find { it.name == toolName }?.outputSchema != null
 }
 
-// ==================== Slow-op time budgets + idempotency tokens ====================
-// The cloud relay severs any /mcp call at a fixed ceiling while the hub handler
-// runs to completion and commits -- only the RESPONSE is lost, and the client
-// sees an opaque transport 5xx the server cannot reshape. Two mechanisms recover
-// from that: (1) a caller-supplied idempotency token buffers the result so a lost
-// response is replayable and a blind retry is deduped; (2) slow multi-step writes
-// self-budget and return a resumable in_progress envelope BEFORE the ceiling. The
-// token bookkeeping persists through atomicState -- durable, NOT compare-and-set:
-// the dedup read and the started-mark write are separate operations, so two truly
-// simultaneous calls carrying the SAME token can both pass the gate. Records for
-// DIFFERENT tokens are written per-entry (atomicState.updateMapValue), so a client
-// running successive or parallel tokened calls cannot lose a record to a whole-map
-// last-writer-win; the amortized prune is the only whole-map writer left on the
-// normal (updateMapValue) path, and its size-cap hysteresis (engage past the record
-// cap, evict to the keep count) keeps steady-state marks from rewriting the map (its
-// narrow window self-heals via the TTL sweep). The token targets the
-// sequential-retry pattern (response lost, client retries seconds later), where
-// the persisted mark refuses/replays the retry race-free. The buffered result
-// lives in the File Manager under the reserved mcp-op-result- prefix.
+// ==================== Slow-op time budgets ====================
+// Eligible modern calls use MCP request-to-request continuation. Legacy calls
+// retain the established in_progress remainder envelope, so both paths share the
+// same bounded leaf loops and transport-specific time budgets.
 
 // True only when THIS request arrived over the cloud relay. requestSource is a
 // mapped-endpoint property ("local"|"cloud"); any access failure (older firmware,
@@ -2255,38 +1736,6 @@ def _maxConcurrentWrites() {
 // The leaves whose partial-commit loops consume the __reqT0 budget clock. This is
 // the injection allowlist for handleToolsCall/handleGateway: tools outside it never
 // see the key (several validate their args strictly and reject unknown keys).
-// Tools whose hub-side work can plausibly still be running when a client gives up and
-// polls: the multi-step wizard writes, the app installers, and the package deploy. Only
-// these pay for a pre-dispatch running marker (see handleToolsCall).
-def _needsRunningMarker(toolName) {
-    if (toolName == null) return false
-    return _markerTrackedWriteTools().contains(toolName.toString())
-}
-
-// The writes that can outlive their transport, and so are worth a pre-dispatch `running`
-// marker: a poll landing mid-flight is answered, and a token-only poll's "unknown" can be
-// trusted to mean never-arrived. Everything else records only at completion, because its
-// response is delivered long before a poll could be sent -- and the marker is one
-// atomicState write (~0.9s on real firmware) that every such write would otherwise pay.
-// This set IS the contract the slow_ops guide documents; OpTokenReplaySpec pins that the
-// two never drift. Adding a fast hot-path write here (device commands, room ops, file
-// writes, variable sets) re-creates the per-write cost the gate exists to remove.
-def _markerTrackedWriteTools() {
-    return _budgetAwareTools() + ([
-        "hub_update_package", "hub_update_app", "hub_update_driver", "hub_update_library",
-        "hub_install_bundle", "hub_restore_backup", "hub_create_backup", "hub_delete_native_app",
-        "hub_reboot", "hub_shutdown", "hub_update_firmware", "hub_call_device_replace",
-        "hub_call_device_swap", "hub_import_custom_rule", "hub_clone_custom_rule",
-        // Compile-on-save: the hub parses and compiles the submitted source before the
-        // request returns, which is slow enough to be polled mid-flight. Without a marker
-        // a lost response polls back "unknown", and the documented recovery re-runs the
-        // create -- a duplicate app/driver/library.
-        "hub_create_app", "hub_create_driver", "hub_create_library",
-        // Deleting code forces a dependency sweep across installed instances.
-        "hub_delete_item"
-    ] as Set)
-}
-
 def _budgetAwareTools() {
     return ["hub_set_rule", "hub_set_native_app", "hub_call_rule", "hub_clone_native_app", "hub_import_native_app"] as Set
 }
@@ -2311,6 +1760,148 @@ def _mrtrEligibleCall(outerToolName, leafToolName, args) {
         return leafArgs.action in ["stop", "start"] && idCount > 1
     }
     return true
+}
+
+private boolean _isActualWriteCall(outerToolName, leafToolName, args) {
+    String outer = outerToolName?.toString()
+    String leaf = leafToolName?.toString()
+    if (!leaf) return false
+    // A gateway call with no selected leaf returns its catalog and mutates nothing.
+    if (getGatewayConfig().containsKey(outer) && leaf == outer) return false
+
+    def leafArgs = (args instanceof Map) ? _mrtrLeafArguments(outer, leaf, args as Map) : null
+    def safeArgs = (leafArgs instanceof Map) ? leafArgs : [:]
+    // These tools are argument-shaped: annotations classify their normal/default
+    // form, while the write cap must classify what this invocation will do.
+    if (leaf == "hub_get_metrics") return safeArgs.recordSnapshot == true
+    if (leaf == "hub_update_firmware" && safeArgs.statusOnly == true) return false
+    if (getReadOnlyToolNames().contains(leaf)) return false
+    if (_isDeviceReplaceOptionsOnlyCall(leaf, safeArgs)) return false
+    if (leaf == "hub_update_package" && safeArgs.dryRun == true) return false
+    if (leaf == "hub_set_rule" && _isSetRuleSchemaOnlyCall(safeArgs)) return false
+    if (leaf == "hub_set_native_app" && _isNativeAppSchemaOnlyCall(safeArgs)) return false
+    return true
+}
+
+private long _writeLeaseMs() { 3L * 60L * 1000L }
+def _packageDeployMarkerTtlMs() { 10L * 60L * 1000L }
+
+private void _writeSweepRequestsLocked() {
+    def stored = atomicState.writeRequestLeases
+    if (!(stored instanceof Map)) return
+    long at = now()
+    def kept = stored.findAll { k, v ->
+        v instanceof Map && v.expiresAt != null && (v.expiresAt as Long) > at
+    }
+    if (kept.size() != stored.size()) atomicState.writeRequestLeases = kept
+}
+
+private List _activeWritesLocked() {
+    long at = now()
+    def active = []
+    def mrtr = atomicState.mrtrRequests
+    if (mrtr instanceof Map) {
+        mrtr.values().each { rec ->
+            if (rec instanceof Map && rec.status == "active" && rec.expiresAt != null
+                    && (rec.expiresAt as Long) > at) {
+                active << [tool: rec.leafTool, startedAt: rec.startedAt, transport: "mrtr"]
+            }
+        }
+    }
+    def requests = atomicState.writeRequestLeases
+    if (requests instanceof Map) {
+        requests.values().each { rec ->
+            if (rec instanceof Map && rec.expiresAt != null && (rec.expiresAt as Long) > at) {
+                active << [tool: rec.tool, startedAt: rec.startedAt, transport: rec.transport]
+            }
+        }
+    }
+    // hub_update_package deliberately returns before its scheduled worker finishes.
+    // Keep that background write in the same global cap until its own worker
+    // clears the marker or the explicit stale timeout expires. lastSelfDeploy is
+    // informational and may have been written by an unrelated direct self-update.
+    def packageMarker = atomicState.packageDeployInFlight
+    if (packageMarker instanceof Map && packageMarker.startedAt != null) {
+        long startedAt = packageMarker.startedAt as Long
+        if ((at - startedAt) < _packageDeployMarkerTtlMs()) {
+            active << [tool: "hub_update_package", startedAt: startedAt, transport: "background"]
+        }
+    }
+    return active.sort { a, b -> (a.startedAt ?: 0L) <=> (b.startedAt ?: 0L) }
+}
+
+private Map _writeCapacityRefusalLocked() {
+    int limit = _maxConcurrentWrites()
+    if (limit <= 0) return null
+    def active = _activeWritesLocked()
+    if (active.size() < limit) return null
+    return [
+        success: false,
+        isError: true,
+        status: "too_many_writes_in_flight",
+        limit: limit,
+        active: active,
+        note: "${active.size()} write operation(s) are already active (cap ${limit}, the maxConcurrentWrites setting). Nothing was run; wait for one to finish, then retry."
+    ]
+}
+
+def _activeWrites() {
+    List cleanup = []
+    List active
+    synchronized (WRITE_RESERVATION_LOCK) {
+        cleanup = _mrtrSweepLocked()
+        _writeSweepRequestsLocked()
+        active = _activeWritesLocked()
+    }
+    cleanup.each { _mrtrCleanupRecord(it as Map) }
+    return active
+}
+
+// One compound reservation boundary: sweep expired state, evaluate the global
+// cap, and insert the lease while every competing app execution holds the same
+// static mutex. Tool execution happens after this method releases the lock.
+def _writeReserveRequest(toolName, String transport) {
+    List cleanup = []
+    Map outcome
+    synchronized (WRITE_RESERVATION_LOCK) {
+        cleanup = _mrtrSweepLocked()
+        _writeSweepRequestsLocked()
+        def refusal = _writeCapacityRefusalLocked()
+        if (refusal != null) {
+            outcome = [accepted: false, refusal: refusal]
+        } else {
+            String leaseId = "write-${java.util.UUID.randomUUID()}".toString()
+            long at = now()
+            def rec = [tool: toolName?.toString(), startedAt: at,
+                       transport: transport ?: "legacy", expiresAt: at + _writeLeaseMs()]
+            if (!(atomicState.writeRequestLeases instanceof Map)) atomicState.writeRequestLeases = [:]
+            try {
+                atomicState.updateMapValue("writeRequestLeases", leaseId, rec)
+            } catch (Exception ignored) {
+                def all = [:]
+                if (atomicState.writeRequestLeases instanceof Map) all.putAll(atomicState.writeRequestLeases)
+                all[leaseId] = rec
+                atomicState.writeRequestLeases = all
+            }
+            outcome = [accepted: true, leaseId: leaseId]
+        }
+    }
+    cleanup.each { _mrtrCleanupRecord(it as Map) }
+    return outcome
+}
+
+private void _writeReleaseRequest(String leaseId) {
+    if (leaseId == null) return
+    synchronized (WRITE_RESERVATION_LOCK) {
+        try {
+            atomicState.updateMapValue("writeRequestLeases", leaseId, null)
+        } catch (Exception ignored) {
+            def all = [:]
+            if (atomicState.writeRequestLeases instanceof Map) all.putAll(atomicState.writeRequestLeases)
+            all.remove(leaseId)
+            atomicState.writeRequestLeases = all
+        }
+    }
 }
 
 private Map _mrtrCopyMap(Map value) {
@@ -2361,7 +1952,7 @@ private void _mrtrValidateAccess(outerToolName, leafToolName, Map outerArgs) {
 // accidentally echoing the state with another tool/argument object without storing
 // a potentially huge import payload in atomicState.
 private Map _mrtrBinding(outerToolName, leafToolName, Map args) {
-    String canonical = groovy.json.JsonOutput.toJson(_canonicalOpArgs(args))
+    String canonical = groovy.json.JsonOutput.toJson(_mrtrCanonicalArgs(args))
     int edge = Math.min(48, canonical.length())
     return [
         outerTool: outerToolName?.toString(),
@@ -2374,6 +1965,21 @@ private Map _mrtrBinding(outerToolName, leafToolName, Map args) {
     ]
 }
 
+private def _mrtrCanonicalArgs(value) {
+    if (value instanceof Map) {
+        def canonical = [:]
+        value.entrySet().toList().sort { a, b -> a.key.toString() <=> b.key.toString() }.each { entry ->
+            String key = entry.key.toString()
+            if (!(key in ["bestPracticeKey", "__reqT0"])) {
+                canonical[key] = _mrtrCanonicalArgs(entry.value)
+            }
+        }
+        return canonical
+    }
+    if (value instanceof List) return value.collect { _mrtrCanonicalArgs(it) }
+    return value
+}
+
 private boolean _mrtrBindingMatches(Map rec, Map binding) {
     return rec.outerTool?.toString() == binding.outerTool?.toString() &&
         rec.leafTool?.toString() == binding.leafTool?.toString() &&
@@ -2382,16 +1988,13 @@ private boolean _mrtrBindingMatches(Map rec, Map binding) {
         rec.argSuffix == binding.argSuffix
 }
 
-def _mrtrActiveTtlMs() { 15L * 60L * 1000L }
+def _mrtrActiveTtlMs() { _writeLeaseMs() }
 def _mrtrTerminalTtlMs() { 10L * 60L * 1000L }
 def _mrtrMaxRecords() { 16 }
 def _mrtrMaxContinuationSlices() { 8 }
 
-private void _mrtrPut(String stateId, Map rec) {
-    if (state.mrtrRequestsCreated != true) {
-        if (!(atomicState.mrtrRequests instanceof Map)) atomicState.mrtrRequests = [:]
-        state.mrtrRequestsCreated = true
-    }
+private void _mrtrPutLocked(String stateId, Map rec) {
+    if (!(atomicState.mrtrRequests instanceof Map)) atomicState.mrtrRequests = [:]
     try {
         atomicState.updateMapValue("mrtrRequests", stateId, rec)
     } catch (Exception e) {
@@ -2402,70 +2005,45 @@ private void _mrtrPut(String stateId, Map rec) {
     }
 }
 
-private void _mrtrSweep() {
+// Returns expired active records whose external helper resources must be
+// cleaned after the mutex is released. Only terminal/abandoned records may be
+// trimmed for storage pressure; live requestState records are never evicted.
+private List _mrtrSweepLocked() {
     def stored = atomicState.mrtrRequests
-    if (!(stored instanceof Map)) return
+    if (!(stored instanceof Map)) return []
     long at = now()
     def kept = [:]
+    def cleanup = []
     stored.each { k, v ->
         if (v instanceof Map && v.expiresAt != null && (v.expiresAt as Long) > at) {
             kept[k] = v
         } else if (v instanceof Map && v.status == "active") {
-            _mrtrCleanupRecord(v as Map)
+            cleanup << ([:] + (v as Map))
         }
     }
     if (kept.size() > _mrtrMaxRecords()) {
-        def ordered = kept.entrySet().toList().sort { a, b ->
+        def removable = kept.entrySet().findAll { it.value?.status != "active" }.sort { a, b ->
             long av = (a.value?.updatedAt ?: a.value?.startedAt ?: 0L) as Long
             long bv = (b.value?.updatedAt ?: b.value?.startedAt ?: 0L) as Long
             av <=> bv
         }
-        ordered.take(kept.size() - _mrtrMaxRecords()).each { kept.remove(it.key) }
+        removable.take(Math.min(removable.size(), kept.size() - _mrtrMaxRecords())).each {
+            kept.remove(it.key)
+        }
     }
     if (kept.size() != stored.size()) atomicState.mrtrRequests = kept
+    return cleanup
 }
 
-private String _mrtrCreate(outerTool, leafTool, Map binding) {
-    _mrtrSweep()
-    String stateId = "mrtr-${java.util.UUID.randomUUID()}".toString()
-    long at = now()
-    def rec = [
-        schemaVersion: 1,
-        status: "active",
-        outerTool: outerTool?.toString(),
-        leafTool: leafTool?.toString(),
-        argHash: binding.argHash,
-        argReverseHash: binding.argReverseHash,
-        argLength: binding.argLength,
-        argPrefix: binding.argPrefix,
-        argSuffix: binding.argSuffix,
-        startedAt: at,
-        updatedAt: at,
-        expiresAt: at + _mrtrActiveTtlMs(),
-        rounds: 0
-    ]
-    _mrtrPut(stateId, rec)
-    return stateId
+private void _mrtrSweep() {
+    List cleanup
+    synchronized (WRITE_RESERVATION_LOCK) {
+        cleanup = _mrtrSweepLocked()
+    }
+    cleanup.each { _mrtrCleanupRecord(it as Map) }
 }
 
-private Map _mrtrLoadForResume(String stateId, outerTool, leafTool, Map binding) {
-    if (!(stateId ==~ /^mrtr-[A-Za-z0-9-]{20,80}$/)) {
-        throw new IllegalArgumentException("Invalid or expired requestState")
-    }
-    def stored = atomicState.mrtrRequests
-    def rec = (stored instanceof Map && stored[stateId] instanceof Map) ? stored[stateId] as Map : null
-    if (rec == null || rec.expiresAt == null || (rec.expiresAt as Long) <= now()) {
-        _mrtrSweep()
-        throw new IllegalArgumentException("Invalid or expired requestState")
-    }
-    if (!_mrtrBindingMatches(rec, binding) || rec.outerTool?.toString() != outerTool?.toString()
-            || rec.leafTool?.toString() != leafTool?.toString()) {
-        throw new IllegalArgumentException("requestState does not match this tool and its original arguments")
-    }
-    return [:] + rec
-}
-
-private Map _mrtrFindActive(leafTool, Map binding) {
+private Map _mrtrFindActiveLocked(leafTool, Map binding) {
     def stored = atomicState.mrtrRequests
     if (!(stored instanceof Map)) return null
     long at = now()
@@ -2478,6 +2056,117 @@ private Map _mrtrFindActive(leafTool, Map binding) {
         }
     }
     return null
+}
+
+private boolean _mrtrMakeRoomLocked() {
+    def stored = atomicState.mrtrRequests
+    if (!(stored instanceof Map) || stored.size() < _mrtrMaxRecords()) return true
+    def removable = stored.entrySet().findAll { it.value?.status != "active" }.sort { a, b ->
+        long av = (a.value?.updatedAt ?: a.value?.startedAt ?: 0L) as Long
+        long bv = (b.value?.updatedAt ?: b.value?.startedAt ?: 0L) as Long
+        av <=> bv
+    }
+    if (removable.isEmpty()) return false
+    def kept = [:]
+    kept.putAll(stored)
+    int removeCount = Math.max(1, kept.size() - _mrtrMaxRecords() + 1)
+    removable.take(Math.min(removeCount, removable.size())).each { kept.remove(it.key) }
+    atomicState.mrtrRequests = kept
+    return kept.size() < _mrtrMaxRecords()
+}
+
+// Duplicate detection, global write capacity, storage capacity, and record
+// creation are one transaction under the static app-wide mutex.
+def _mrtrReserve(outerTool, leafTool, Map binding) {
+    List cleanup = []
+    Map outcome
+    synchronized (WRITE_RESERVATION_LOCK) {
+        cleanup = _mrtrSweepLocked()
+        _writeSweepRequestsLocked()
+        def duplicate = _mrtrFindActiveLocked(leafTool, binding)
+        if (duplicate != null) {
+            outcome = [accepted: false, refusal: [
+                success: false, isError: true, status: "duplicate_in_flight",
+                tool: leafTool?.toString(), startedAt: duplicate.startedAt,
+                note: "An identical operation is already in progress. Nothing was run; wait for its original MCP call to finish before trying again."
+            ]]
+        } else {
+            def capacityRefusal = _writeCapacityRefusalLocked()
+            if (capacityRefusal != null) {
+                outcome = [accepted: false, refusal: capacityRefusal]
+            } else if (!_mrtrMakeRoomLocked()) {
+                outcome = [accepted: false, refusal: [
+                    success: false, isError: true, status: "request_state_capacity",
+                    limit: _mrtrMaxRecords(),
+                    note: "All ${_mrtrMaxRecords()} retained requestState records are active. Nothing was run; finish or let an existing operation expire before starting another."
+                ]]
+            } else {
+                String stateId = "mrtr-${java.util.UUID.randomUUID()}".toString()
+                long at = now()
+                def rec = [
+                    schemaVersion: 1, status: "active",
+                    outerTool: outerTool?.toString(), leafTool: leafTool?.toString(),
+                    argHash: binding.argHash, argReverseHash: binding.argReverseHash,
+                    argLength: binding.argLength, argPrefix: binding.argPrefix,
+                    argSuffix: binding.argSuffix,
+                    startedAt: at, updatedAt: at, expiresAt: at + _mrtrActiveTtlMs(),
+                    rounds: 0, generation: 0
+                ]
+                _mrtrPutLocked(stateId, rec)
+                outcome = [accepted: true, stateId: stateId]
+            }
+        }
+    }
+    cleanup.each { _mrtrCleanupRecord(it as Map) }
+    return outcome
+}
+
+// Atomically claims the exact stored generation before any leaf is invoked.
+// A lost execution is never stolen: its record expires instead of risking a
+// repeat of a slice that may already have committed on the hub.
+def _mrtrClaim(String stateId, outerTool, leafTool, Map binding) {
+    if (!(stateId ==~ /^mrtr-[A-Za-z0-9-]{20,80}$/)) {
+        throw new IllegalArgumentException("Invalid or expired requestState")
+    }
+    List cleanup = []
+    Map outcome
+    String validationError = null
+    synchronized (WRITE_RESERVATION_LOCK) {
+        cleanup = _mrtrSweepLocked()
+        def stored = atomicState.mrtrRequests
+        def rec = (stored instanceof Map && stored[stateId] instanceof Map)
+            ? ([:] + (stored[stateId] as Map)) : null
+        if (rec == null || rec.expiresAt == null || (rec.expiresAt as Long) <= now()) {
+            outcome = null
+        } else if (!_mrtrBindingMatches(rec, binding)
+                || rec.outerTool?.toString() != outerTool?.toString()
+                || rec.leafTool?.toString() != leafTool?.toString()) {
+            validationError = "requestState does not match this tool and its original arguments"
+        } else if (rec.status == "terminal") {
+            outcome = [outcome: "terminal", record: rec]
+        } else if (rec.status != "active") {
+            outcome = null
+        } else {
+            int generation = (rec.generation ?: 0) as Integer
+            if (rec.claimId != null && rec.claimedGeneration == generation) {
+                outcome = [outcome: "in_progress", record: rec, generation: generation]
+            } else {
+                String claimId = "claim-${java.util.UUID.randomUUID()}".toString()
+                rec.claimId = claimId
+                rec.claimedGeneration = generation
+                rec.claimedAt = now()
+                rec.updatedAt = rec.claimedAt
+                rec.expiresAt = rec.claimedAt + _mrtrActiveTtlMs()
+                _mrtrPutLocked(stateId, rec)
+                outcome = [outcome: "claimed", record: rec,
+                           claimId: claimId, generation: generation]
+            }
+        }
+    }
+    cleanup.each { _mrtrCleanupRecord(it as Map) }
+    if (validationError != null) throw new IllegalArgumentException(validationError)
+    if (outcome == null) throw new IllegalArgumentException("Invalid or expired requestState")
+    return outcome
 }
 
 private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map rec) {
@@ -2537,44 +2226,63 @@ private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map re
     return [kind: kind, nextArguments: _mrtrWithLeafArguments(rec, executionArgs, nextLeaf)]
 }
 
-private Map _mrtrRecordSlice(String stateId, Map originalRec, Map result, Map continuation) {
-    def rec = [:] + originalRec
-    def aggregate = (rec.aggregate instanceof Map) ? ([:] + rec.aggregate) : [:]
-    String kind = continuation.kind?.toString()
-    aggregate.kind = kind
-    switch (kind) {
-        case "call_rule":
-            aggregate.results = ((aggregate.results instanceof List) ? aggregate.results : []) +
-                ((result.results instanceof List) ? result.results : [])
-            aggregate.ruleIds = (((aggregate.ruleIds instanceof List) ? aggregate.ruleIds : []) +
-                ((result.ruleIds instanceof List) ? result.ruleIds : [])).unique()
-            break
-        case "walk_steps":
-            aggregate.steps = ((aggregate.steps instanceof List) ? aggregate.steps : []) +
-                ((result.steps instanceof List) ? result.steps : [])
-            aggregate.stepsRequested = ((aggregate.stepsRequested ?: 0) as Integer) +
-                ((result.stepsRequested ?: 0) as Integer)
-            break
-        case "bulk_edit":
-            aggregate.triggers = ((aggregate.triggers instanceof List) ? aggregate.triggers : []) +
-                ((result.triggers instanceof List) ? result.triggers : [])
-            aggregate.actions = ((aggregate.actions instanceof List) ? aggregate.actions : []) +
-                ((result.actions instanceof List) ? result.actions : [])
-            break
-        case "patches":
-            aggregate.patchResults = ((aggregate.patchResults instanceof List) ? aggregate.patchResults : []) +
-                ((result.patchResults instanceof List) ? result.patchResults : [])
-            break
+private Map _mrtrOwnedRecordLocked(String stateId, Map claim) {
+    def stored = atomicState.mrtrRequests
+    def rec = (stored instanceof Map && stored[stateId] instanceof Map)
+        ? ([:] + (stored[stateId] as Map)) : null
+    if (rec == null || rec.status != "active") return null
+    if (rec.claimId?.toString() != claim?.claimId?.toString()) return null
+    if (rec.claimedGeneration != claim?.generation) return null
+    if ((rec.generation ?: 0) != claim?.generation) return null
+    return rec
+}
+
+private Map _mrtrRecordSlice(String stateId, Map originalRec, Map claim, Map result, Map continuation) {
+    Map rec
+    synchronized (WRITE_RESERVATION_LOCK) {
+        rec = _mrtrOwnedRecordLocked(stateId, claim)
+        if (rec == null) return null
+        def aggregate = (rec.aggregate instanceof Map) ? ([:] + rec.aggregate) : [:]
+        String kind = continuation.kind?.toString()
+        aggregate.kind = kind
+        switch (kind) {
+            case "call_rule":
+                aggregate.results = ((aggregate.results instanceof List) ? aggregate.results : []) +
+                    ((result.results instanceof List) ? result.results : [])
+                aggregate.ruleIds = (((aggregate.ruleIds instanceof List) ? aggregate.ruleIds : []) +
+                    ((result.ruleIds instanceof List) ? result.ruleIds : [])).unique()
+                break
+            case "walk_steps":
+                aggregate.steps = ((aggregate.steps instanceof List) ? aggregate.steps : []) +
+                    ((result.steps instanceof List) ? result.steps : [])
+                aggregate.stepsRequested = ((aggregate.stepsRequested ?: 0) as Integer) +
+                    ((result.stepsRequested ?: 0) as Integer)
+                break
+            case "bulk_edit":
+                aggregate.triggers = ((aggregate.triggers instanceof List) ? aggregate.triggers : []) +
+                    ((result.triggers instanceof List) ? result.triggers : [])
+                aggregate.actions = ((aggregate.actions instanceof List) ? aggregate.actions : []) +
+                    ((result.actions instanceof List) ? result.actions : [])
+                break
+            case "patches":
+                aggregate.patchResults = ((aggregate.patchResults instanceof List) ? aggregate.patchResults : []) +
+                    ((result.patchResults instanceof List) ? result.patchResults : [])
+                break
+        }
+        aggregate.anyPartial = aggregate.anyPartial == true || result.partial == true
+        rec.aggregate = aggregate
+        if (continuation.nextArguments instanceof Map) rec.nextArguments = continuation.nextArguments
+        else rec.remove("nextArguments")
+        if (continuation.checkpoint instanceof Map) rec.checkpoint = continuation.checkpoint
+        rec.rounds = ((rec.rounds ?: 0) as Integer) + 1
+        rec.generation = ((rec.generation ?: 0) as Integer) + 1
+        rec.remove("claimId")
+        rec.remove("claimedGeneration")
+        rec.remove("claimedAt")
+        rec.updatedAt = now()
+        rec.expiresAt = rec.updatedAt + _mrtrActiveTtlMs()
+        _mrtrPutLocked(stateId, rec)
     }
-    aggregate.anyPartial = aggregate.anyPartial == true || result.partial == true
-    rec.aggregate = aggregate
-    if (continuation.nextArguments instanceof Map) rec.nextArguments = continuation.nextArguments
-    else rec.remove("nextArguments")
-    if (continuation.checkpoint instanceof Map) rec.checkpoint = continuation.checkpoint
-    rec.rounds = ((rec.rounds ?: 0) as Integer) + 1
-    rec.updatedAt = now()
-    rec.expiresAt = rec.updatedAt + _mrtrActiveTtlMs()
-    _mrtrPut(stateId, rec)
     return rec
 }
 
@@ -2629,29 +2337,44 @@ private def _mrtrAggregateTerminal(Map rec, result) {
     return out
 }
 
-private void _mrtrStoreTerminal(String stateId, Map originalRec, result, boolean isError) {
-    def rec = [:] + originalRec
-    rec.status = "terminal"
-    rec.remove("nextArguments")
-    rec.remove("checkpoint")
-    rec.terminalResult = result
-    rec.terminalIsError = isError
-    rec.finishedAt = now()
-    rec.updatedAt = rec.finishedAt
-    rec.expiresAt = rec.finishedAt + _mrtrTerminalTtlMs()
-    _mrtrPut(stateId, rec)
+private boolean _mrtrStoreTerminal(String stateId, Map originalRec, Map claim, result, boolean isError) {
+    synchronized (WRITE_RESERVATION_LOCK) {
+        def rec = _mrtrOwnedRecordLocked(stateId, claim)
+        if (rec == null) return false
+        rec.status = "terminal"
+        rec.remove("nextArguments")
+        rec.remove("checkpoint")
+        rec.remove("claimId")
+        rec.remove("claimedGeneration")
+        rec.remove("claimedAt")
+        rec.terminalResult = result
+        rec.terminalIsError = isError
+        rec.finishedAt = now()
+        rec.updatedAt = rec.finishedAt
+        rec.expiresAt = rec.finishedAt + _mrtrTerminalTtlMs()
+        _mrtrPutLocked(stateId, rec)
+        return true
+    }
 }
 
-private void _mrtrAbandon(String stateId, Map originalRec, String reason) {
-    def rec = [:] + originalRec
-    rec.status = "abandoned"
-    rec.reason = reason
-    rec.updatedAt = now()
-    rec.expiresAt = rec.updatedAt + 60000L
-    rec.remove("nextArguments")
-    _mrtrCleanupRecord(rec)
-    rec.remove("checkpoint")
-    _mrtrPut(stateId, rec)
+private void _mrtrAbandon(String stateId, Map originalRec, Map claim, String reason) {
+    Map cleanup = null
+    synchronized (WRITE_RESERVATION_LOCK) {
+        def rec = _mrtrOwnedRecordLocked(stateId, claim)
+        if (rec == null) return
+        rec.status = "abandoned"
+        rec.reason = reason
+        rec.updatedAt = now()
+        rec.expiresAt = rec.updatedAt + 60000L
+        rec.remove("nextArguments")
+        rec.remove("claimId")
+        rec.remove("claimedGeneration")
+        rec.remove("claimedAt")
+        cleanup = [:] + rec
+        rec.remove("checkpoint")
+        _mrtrPutLocked(stateId, rec)
+    }
+    if (cleanup != null) _mrtrCleanupRecord(cleanup)
 }
 
 private def _mrtrExecuteSlice(String stateId, Map rec, Map executionArgs) {
@@ -2962,7 +2685,7 @@ private Map _mrtrAppClonerStageSlice(Map cp, String operationLabel) {
     return result
 }
 
-private def _mrtrRenderToolResult(id, toolName, reactiveToolName, args, result, boolean isErrorOverride) {
+private def _renderToolResult(id, toolName, reactiveToolName, args, result, boolean isErrorOverride = false) {
     // Reactive hints mutate their result map. Terminal MRTR responses are retained
     // for replay, so render from a deep copy and keep the cached canonical result
     // immutable across clients and retries.
@@ -3006,680 +2729,6 @@ def _timeBudgetExceeded(Long t0) {
     return (now() - t0) >= budget
 }
 
-// Idempotency-token shape guard. The token becomes a File Manager filename
-// component, so it is bounded to the filename-safe charset and a sane length. A
-// bad shape throws (-> -32602) like any other bad argument.
-def _validateOpToken(String opToken) {
-    if (!(opToken ==~ /^[A-Za-z0-9._-]{8,128}$/)) {
-        throw new IllegalArgumentException("Invalid opToken (must be 8-128 characters of A-Za-z0-9._- -- it becomes a File Manager filename component). See hub_get_tool_guide(section='slow_ops').")
-    }
-}
-
-// True when a tokened call is a pure status poll: after the token strip the args
-// carry NOTHING else (the #299 bestPracticeKey acknowledgment is tolerated --
-// BPS-gated clients attach it to every write), and the leaf has required params (so
-// the bare call could never be a legitimate execution). Tools with no required
-// params fall through -- a bare tokened call IS their real call shape, so
-// "unknown -> execute" is exactly the documented recovery for them (re-issue the
-// original call), while running/complete still answer from the dedup gate.
-// Consulted only for an UNSEEN token: seen tokens are answered by the dedup gate
-// regardless of shape.
-def _isOpTokenPollShape(args, boolean isGatewayCall, leafName) {
-    if (!(args instanceof Map)) return false
-    // Two name classes skip the required-params rule because a bare tokened call to
-    // them can never be a legitimate tokened execution: the RETIRED hub_get_op_result
-    // poll tool (gone from catalog and dispatch -- a stale client calling it can only
-    // mean a poll), and bare GATEWAY names (a token-only gateway call is catalog mode,
-    // which nobody targets with an idempotency token -- without this, the token would
-    // be marked and spent on the catalog listing, and a later re-issue of the real op
-    // would replay the catalog). Completed/running tokens are already answered by the
-    // dedup gate before this check, name regardless.
-    boolean pollOnlyName = (leafName?.toString() == 'hub_get_op_result') ||
-            getGatewayConfig().containsKey(leafName?.toString())
-    if (!pollOnlyName) {
-        def req = requiredParamsByTool()[leafName]
-        if (!(req instanceof List) || req.isEmpty()) return false
-    }
-    def bare = { Map m -> m.keySet().every { it == 'bestPracticeKey' } }
-    if (isGatewayCall) {
-        if (!args.keySet().every { it in ['tool', 'args', 'bestPracticeKey'] }) return false
-        def inner = args.args
-        return inner == null || ((inner instanceof Map) && bare(inner))
-    }
-    // Degenerate gateway shape: a `tool` key that is present but null/empty fails the
-    // isGatewayCall truthiness check, so the call lands here as "flat" on a gateway
-    // name. Its intent is the same catalog mode as no `tool` at all -- treat the dead
-    // key as absent, or the token would be marked and spent on the catalog listing
-    // (and a later real re-issue of the op would replay the catalog).
-    if (getGatewayConfig().containsKey(leafName?.toString()) && args.containsKey('tool') && !args.tool) {
-        return args.keySet().every { it in ['tool', 'bestPracticeKey'] }
-    }
-    return bare(args)
-}
-
-def _opTokenResultFilePrefix() { "mcp-op-result-" }
-// Results at or under this ride inside the token record instead of a hub file.
-def _opTokenInlineMax() { 1280 }
-// Record-cap hysteresis. Deliberately small: with auto-tokens every write adds a
-// record, the map is read several times per request, and small results are stored
-// inline -- so a big map would be per-write cost. 40 recent ops is the journal.
-// Deliberately small, and it is a LATENCY constant, not a storage one: the platform
-// deserializes the app's whole atomicState blob on every access, so each stored record is
-// paid again by every later atomicState read -- including on pure READS, which touch
-// atomicState for unrelated memos and got measurably slower purely from this map's bulk.
-// 20 recent ops still answers "did my last command land" (a lost response is polled within
-// seconds, not 20 writes later) at half the carried weight of the previous 40.
-def _opTokenMaxRecords() { 20 }
-def _opTokenKeepRecords() { 10 }
-// .toString() matters: a GString here would be stored in atomicState by the sweep
-// queue, and a GString never equals the String it renders as -- List.contains and
-// every other value comparison against it silently answers false.
-def _opTokenResultFile(String opToken) { "${_opTokenResultFilePrefix()}${opToken}.json".toString() }
-
-// Parse the buffered result for a completed token: the inline copy (kept when an
-// upload failed for a small payload) wins, else the File Manager copy. Returns null when nothing readable remains (swept file, failed buffer)
-// so callers surface the "verify state" shape rather than a stale result.
-def _opTokenReadResult(rec) {
-    if (!(rec instanceof Map)) return null
-    if (rec.inline != null) {
-        try { return new groovy.json.JsonSlurper().parseText(rec.inline.toString()) }
-        catch (Exception e) { return null }
-    }
-    if (rec.file) {
-        try {
-            def bytes = downloadHubFile(rec.file.toString())
-            if (bytes == null) return null
-            return new groovy.json.JsonSlurper().parseText(new String(bytes, "UTF-8"))
-        } catch (Exception e) { return null }
-    }
-    return null
-}
-
-// Write ONE token record via the hub's per-entry atomicState.updateMapValue
-// (firmware 2.3.2+) so two overlapping DIFFERENT-token calls cannot clobber each
-// other's records the way a whole-map read-modify-write can -- a lost "running"
-// marker would read back as the safe-to-retry "unknown", the exact double-commit
-// the token exists to prevent. Falls back to the whole-map write (the documented
-// small race) where the platform method is missing.
-// Returns true when the per-entry write was used, false when it fell back to the
-// whole-map writer -- callers verify persistence only on the fallback (see
-// _opTokenPutTerminal). knownMap is the caller's already-deserialized snapshot of
-// atomicState.opTokens where it happens to have one; only its Map-ness is used.
-//
-// updateMapValue needs the map to EXIST, and probing atomicState for that was a whole-map
-// read on every single write. state is an execution-context cache (no round trip), so the
-// one-time creation is remembered there instead. It is only a hint: a stale/absent flag
-// costs one extra probe, never correctness, and a reinstall clears state and atomicState
-// together.
-def _opTokenPut(String opToken, Map rec, Object knownMap = null) {
-    if (!(knownMap instanceof Map) && state.opTokensCreated != true) {
-        if (!(atomicState.opTokens instanceof Map)) atomicState.opTokens = [:]
-        state.opTokensCreated = true
-    }
-    try {
-        atomicState.updateMapValue("opTokens", opToken, rec)
-        return true
-    } catch (MissingMethodException e) {
-        _opTokenPutWholeMap(opToken, rec)
-        return false
-    } catch (Exception e) {
-        // The per-entry write needs the map to already exist, and the state hint above is
-        // the only thing asserting that. If it is ever wrong (atomicState cleared out from
-        // under it), drop the hint so the next write re-probes, and fall back to the
-        // whole-map writer, which creates the map itself.
-        mcpLog("warn", "op-token", "Per-entry op-token write for ${opToken} failed (${e.message}); falling back to the whole-map writer.")
-        state.opTokensCreated = null
-        _opTokenPutWholeMap(opToken, rec)
-        return false
-    }
-}
-
-// Whole-map fallback for _opTokenPut (older firmware / test harnesses without
-// updateMapValue). Read-modify-write: a concurrent different-token write inside
-// this window can be lost -- the pre-#351 behaviour, kept only as the fallback.
-def _opTokenPutWholeMap(String opToken, Map rec) {
-    def tokens = [:]
-    if (atomicState.opTokens instanceof Map) tokens.putAll(atomicState.opTokens)
-    tokens[opToken] = rec
-    atomicState.opTokens = tokens
-}
-
-// Amortized prune: drop entries past the 24h TTL, and past the record cap
-// batch-evict the oldest terminal entries down to the keep count. Two call sites: right
-// after a pre-dispatch marker is written (in-request, for the long-running write tools),
-// and the scheduled opTokenFileSweep, which is what bounds the map on ordinary write
-// traffic -- those writes record only at completion and would otherwise never be pruned.
-// It only rewrites the map when something actually needs removing, so
-// the common path never does a whole-map write; result-file deletions happen
-// after the map write so no file I/O sits inside the read->write window. This is
-// the only whole-map writer on the normal (updateMapValue) path -- a concurrent
-// per-entry write can lose to it in a narrow window, which the sweep
-// self-heals (the record's file TTL-expires; a live token is never the eviction
-// target: the size cap evicts TERMINAL records only, and stuck "running" records
-// are the TTL sweep's job, so the cap cannot wedge on them for long).
-// Queue a delete unless the record PROVABLY has no file: an inlined result never
-// touched the File Manager, so deleting its name would be a pure no-op hub call --
-// and with auto-tokens those no-ops are most of the eviction. Anything else is
-// queued, including a `running` record, because the prune-vs-complete race can
-// strip a completed record's .file pointer while its uploaded file still exists.
-private boolean _opTokenMayHaveFile(Object rec) {
-    return !(rec instanceof Map) || rec.inline == null
-}
-
-def _opTokenPrune() {
-    // Reads fresh, never a caller snapshot: it rewrites the whole map, so a snapshot
-    // taken before the running-marker write would erase that marker.
-    def stored = atomicState.opTokens
-    if (!(stored instanceof Map)) return
-    long cutoff = now() - 86400000L
-    // Decide BEFORE copying: on the marker path this still runs inside the request, so an
-    // unconditional whole-map copy would be per-write cost on the common path where
-    // nothing needs pruning at all.
-    def expiredKeys = stored.findAll { k, v -> (v instanceof Map) && (((v.startedAt as Long) ?: 0L) < cutoff) }.keySet().toList()
-    if (expiredKeys.isEmpty() && stored.size() <= _opTokenMaxRecords()) return
-    def tokens = [:]
-    tokens.putAll(stored)
-    def removedKeys = []
-    def droppedKeys = [] as Set
-    expiredKeys.each { k ->
-        if (_opTokenMayHaveFile(tokens[k])) removedKeys << k
-        droppedKeys << k.toString()
-        tokens.remove(k)
-    }
-    // Hysteresis dead band: a hard at-keep-count cap would turn EVERY tokened call past
-    // the keep count into a whole-map rewrite -- permanent re-exposure of the lost-record
-    // race the per-entry writes exist to close. Engaging only past the record cap and
-    // evicting to the keep count in one batch keeps steady state free of cap-driven
-    // rewrites: one batch eviction per (cap - keep) new tokens.
-    if (tokens.size() > _opTokenMaxRecords()) {
-        def ordered = tokens.entrySet().toList()
-            .findAll { e -> !((e.value instanceof Map) && e.value.state == "running") }
-            .sort { e -> (e.value instanceof Map) ? ((e.value.startedAt as Long) ?: 0L) : 0L }
-        int over = tokens.size() - _opTokenKeepRecords()
-        ordered.take(over).each { e ->
-            if (_opTokenMayHaveFile(e.value)) removedKeys << e.key
-            droppedKeys << e.key.toString()
-            tokens.remove(e.key)
-        }
-    }
-    // Re-read as late as possible and fold in anything a request wrote since the snapshot
-    // above. This whole-map write is the one writer that can lose a per-entry write, and
-    // the request path no longer spends an atomicState round trip verifying its own write
-    // to catch it -- so the repair lives here, where it costs a scheduled pass instead of
-    // every client's response time. Keys this prune deliberately dropped are NOT restored.
-    def latest = atomicState.opTokens
-    if (latest instanceof Map) {
-        latest.each { k, v ->
-            if (droppedKeys.contains(k.toString())) return
-            if (tokens[k] != v) tokens[k] = v
-        }
-    }
-    // Keyed on what was actually dropped, not on a size comparison: the fold-in above can
-    // re-grow the map back to its original size, which would otherwise read as "nothing
-    // changed" and silently skip the eviction.
-    if (droppedKeys.isEmpty()) return
-    atomicState.opTokens = tokens
-    if (removedKeys.isEmpty()) return
-    // Queue the file deletions for a SCHEDULED sweep instead of running them here.
-    // Deleting by the token's DETERMINISTIC filename (not the record's .file pointer)
-    // closes the orphan leak a prune-vs-complete race would otherwise open, but each
-    // delete is an HTTP round trip: the batch eviction removes ~50 keys at once, and
-    // doing that inline made the unlucky write that triggered it take 7-10s -- past
-    // the relay ceiling, turning ordinary writes into 504s (measured on the e2e hub).
-    def queued = []
-    if (atomicState.opTokenSweepFiles instanceof List) queued.addAll(atomicState.opTokenSweepFiles)
-    removedKeys.each { k -> queued << _opTokenResultFile(k.toString()) }
-    // Bound the queue: a runaway backlog must never grow atomicState without limit.
-    // Dropping the oldest names leaks those small JSON files, which the 24h-TTL
-    // pass re-queues on its next eviction only if their records still exist -- so
-    // the bound is a hard stop, logged, not a silent loss.
-    if (queued.size() > 500) {
-        mcpLog("warn", "op-token", "op-result sweep backlog exceeded 500 files; dropping the oldest ${queued.size() - 500} (they remain in File Manager until removed by hand).")
-        queued = queued.drop(queued.size() - 500)
-    }
-    atomicState.opTokenSweepFiles = queued
-    runIn(60, "opTokenFileSweep")
-}
-
-// Scheduled companion to _opTokenPrune: deletes the evicted result files OUTSIDE any
-// request, so no client ever waits on the batch. Bounded per pass and self-re-arming.
-// Daily cron entry point. Separate handler NAME on purpose (see initialize): runIn on
-// opTokenFileSweep would otherwise cancel this cron the first time a write burst armed it.
-def opTokenDailySweep() {
-    opTokenFileSweep()
-}
-
-def opTokenFileSweep() {
-    state.opTokenSweepArmedAt = null
-    // Prune HERE, out of any request: the pre-dispatch marker is the only other prune
-    // site and only the long-running write tools write one, so an ordinary write's
-    // terminal record had nothing trimming it. Running first also means any eviction it
-    // queues is drained by this same pass.
-    try { _opTokenPrune() }
-    catch (Exception e) { mcpLog("warn", "op-token", "scheduled prune failed: ${e.message}") }
-    def queued = (atomicState.opTokenSweepFiles instanceof List) ? atomicState.opTokenSweepFiles : []
-    if (queued.isEmpty()) {
-        // Nothing queued is exactly when the orphan reap should run -- returning here
-        // made it unreachable on the only hub state that needs it.
-        _opTokenReapOrphanResults(10)
-        return
-    }
-    def batch = queued.take(10)
-    def remaining = queued.drop(10)
-    atomicState.opTokenSweepFiles = remaining
-    batch.each { fileName ->
-        try { deleteHubFile(fileName.toString()) }
-        catch (Exception e) {
-            // Best-effort: the record is already gone from the map, so nothing can
-            // re-derive this name later -- a failed delete leaks one small JSON file
-            // until it is removed from File Manager by hand. Logged so the
-            // manual-cleanup case is discoverable (a real failure is otherwise
-            // indistinguishable from the expected never-uploaded no-op).
-            mcpLog("debug", "op-token", "sweep could not delete result file ${fileName}: ${e.message}")
-        }
-    }
-    if (remaining) { runIn(60, "opTokenFileSweep"); return }
-    // Queue drained -- reap ORPHANS: result files whose token no longer has a record.
-    // They are otherwise immortal. An app update (the e2e watchdog restoring main after
-    // every run is the worst case) can land a build whose scheduled sweep never runs, and
-    // the eviction that queued those names has already dropped the records, so nothing
-    // else can re-derive the filenames. Left alone they accumulate in File Manager run
-    // after run and every upload/delete the hub does gets slower.
-    _opTokenReapOrphanResults(10)
-}
-
-// Delete up to maxDeletes reserved-prefix result files that no live record claims.
-// Bounded and scheduled (never in a request); silent no-op when the listing is
-// unreadable, since a failed reap must never break the sweep.
-def _opTokenReapOrphanResults(int maxDeletes) {
-    def known = [] as Set
-    def recs = atomicState.opTokens
-    if (recs instanceof Map) {
-        recs.each { k, v -> known << _opTokenResultFile(k.toString()) }
-    }
-    def listing
-    try {
-        listing = hubInternalGet("/hub/fileManager/json")
-        if (!listing) return
-    } catch (Exception e) {
-        mcpLog("debug", "op-token", "orphan reap: file listing unreadable (${e.message})")
-        return
-    }
-    def files
-    try {
-        def parsed = new groovy.json.JsonSlurper().parseText(listing.toString())
-        files = (parsed instanceof List) ? parsed : (parsed?.files ?: [])
-    } catch (Exception ignored) { return }
-    // A file is uploaded BEFORE its record is written, and Hubitat runs scheduled
-    // methods concurrently with requests -- so a file younger than this window may
-    // belong to a write that is still mid-flight, and deleting it would destroy the
-    // replay buffer the whole feature exists for. Only files old enough that no
-    // request could still be writing them are reaped; unknown age is never reaped.
-    long ageCutoff = now() - 600000L
-    int deleted = 0
-    int skippedYoung = 0
-    int skippedUndated = 0
-    int skippedUnparseable = 0
-    for (f in files) {
-        if (deleted >= maxDeletes) break
-        def name = (f instanceof Map) ? f.name?.toString() : f?.toString()
-        if (name == null || !name.startsWith(_opTokenResultFilePrefix())) continue
-        if (known.contains(name)) continue
-        // The listing's date field is epoch milliseconds carried as a STRING
-        // ("1780502413108" -- live-verified), which parses; a formatted date would not,
-        // and would silently age out NOTHING. Counting an unparseable date apart from an
-        // absent one (some entries genuinely carry no date) is what makes that firmware
-        // shape change visible instead of reading as "everything is too recent".
-        def rawDate = (f instanceof Map) ? ((f.date != null) ? f.date : f.lastModified) : null
-        Long modified = null
-        if (rawDate != null) {
-            try { modified = rawDate.toString() as Long } catch (Exception ignored) { modified = null }
-        }
-        if (modified == null) {
-            if (rawDate == null) skippedUndated++ else skippedUnparseable++
-            continue
-        }
-        if (modified > ageCutoff) { skippedYoung++; continue }
-        try { deleteHubFile(name); deleted++ }
-        catch (Exception e) { mcpLog("debug", "op-token", "orphan reap could not delete ${name}: ${e.message}") }
-    }
-    if (skippedYoung > 0 || skippedUndated > 0) {
-        mcpLog("debug", "op-token", "orphan reap left ${skippedYoung + skippedUndated} unclaimed file(s) alone: ${skippedYoung} too recent to rule out an in-flight write, ${skippedUndated} carrying no date.")
-    }
-    if (skippedUnparseable > 0) {
-        mcpLog("warn", "op-token", "orphan reap could not read the age of ${skippedUnparseable} unclaimed op-result file(s): the File Manager listing's date field did not parse as epoch milliseconds. Those files can never be reaped until the new shape is handled -- remove them from File Manager by hand and report the listing shape.")
-    }
-    if (deleted > 0) {
-        mcpLog("info", "op-token", "orphan reap deleted ${deleted} unclaimed op-result file(s) from File Manager.")
-        runIn(60, "opTokenFileSweep")
-        return
-    }
-    if (skippedYoung > 0) {
-        // A file skipped ONLY for being young becomes reapable the moment the safety
-        // window passes -- but the re-arm above fires only when something was DELETED, so
-        // an orphan produced shortly before an app reload got looked at once and then
-        // never again (initialize arms a single one-shot sweep). Come back just after the
-        // window instead of leaking it until some unrelated sweep happens to run.
-        // Deliberately not armed for an UNDATED file: waiting changes nothing about one,
-        // so that would spin the sweep forever.
-        runIn(660, "opTokenFileSweep")
-    }
-}
-
-// Mark a token running just before dispatch (per-entry write), then prune.
-def _opTokenMark(String opToken, toolName, Integer fpHash = null, Integer fpLen = null) {
-    def rec = [state: "running", tool: toolName?.toString(), startedAt: now()]
-    if (fpHash != null) rec.fpHash = fpHash
-    if (fpLen != null) rec.fpLen = fpLen
-    _opTokenPut(opToken, rec)
-    _opTokenPrune()
-}
-
-def _canonicalOpArgs(value) {
-    if (value instanceof Map) {
-        def canonical = [:]
-        value.entrySet().toList().sort { a, b -> a.key.toString() <=> b.key.toString() }.each { entry ->
-            String key = entry.key.toString()
-            if (!(key in ["opToken", "bestPracticeKey", "__reqT0"])) {
-                canonical[key] = _canonicalOpArgs(entry.value)
-            }
-        }
-        return canonical
-    }
-    if (value instanceof List) return value.collect { _canonicalOpArgs(it) }
-    return value
-}
-
-def _findIdenticalRunningOp(toolName, Integer fpHash, Integer fpLen, tokensArg = null) {
-    // hash AND length, never hash alone: String.hashCode is a 32-bit non-cryptographic
-    // digest that collides trivially, and a false match here would refuse a DIFFERENT
-    // write as a duplicate. Requiring the length to agree too means an accidental
-    // collision has to land on both, which stray argument JSON does not do. Storing the
-    // pair rather than the canonical JSON keeps the record bounded in atomicState.
-    // The 10-minute window here is deliberately LONGER than the cap's 180s window
-    // (_recentRunningWriteOps): an exact-args match is strong evidence of a real
-    // duplicate worth refusing for as long as the original might still be running,
-    // while the cap counts unrelated writes and must not be wedged by a dead record.
-    def tokens = (tokensArg != null) ? tokensArg : atomicState.opTokens
-    if (!(tokens instanceof Map) || fpHash == null || fpLen == null) return null
-    long cutoff = now() - 600000L
-    for (entry in tokens.entrySet()) {
-        def rec = entry.value
-        if (rec instanceof Map && rec.state == "running" && rec.tool?.toString() == toolName?.toString()
-                && rec.fpHash == fpHash && rec.fpLen == fpLen && rec.startedAt != null
-                && (rec.startedAt as Long) >= cutoff) {
-            return [opToken: entry.key.toString(), tool: rec.tool, startedAt: rec.startedAt]
-        }
-    }
-    return null
-}
-
-def _recentRunningWriteOps(readOnlyNamesArg = null, tokensArg = null) {
-    def tokens = (tokensArg != null) ? tokensArg : atomicState.opTokens
-    if (!(tokens instanceof Map)) return []
-    def readOnlyNames = (readOnlyNamesArg != null) ? readOnlyNamesArg : getReadOnlyToolNames()
-    // This window is a ceiling on GHOSTS, not a hold time on healthy calls. A record
-    // leaves "running" the moment its request reaches the terminal path, so a 2s write
-    // stops counting after ~2s regardless of what this number is; only a write whose
-    // hub-side thread died with the severed connection stays "running" and needs to be
-    // aged out. Counting those forever let two dead records block every write for ten
-    // minutes (measured on the e2e hub: 82 refusals, ~14 minutes of client waiting).
-    // 180s, NOT the 10-minute fingerprint window: it has to outlast the slowest write
-    // that can legitimately still be running -- hub_update_package recompiles for well
-    // over 90s, and aging its record out early would let a second write past the cap
-    // while the first is genuinely mid-flight -- while still bounding the wedge a dead
-    // record can cause. The cap exists to stop a client firing writes in PARALLEL, and
-    // those arrive seconds apart, so this window serves it with room to spare.
-    long cutoff = now() - 180000L
-    // Exact ghost test, ahead of the timeout: a record that started before THIS app
-    // instance did was written by an instance that no longer exists, so the thread that
-    // would have written its terminal record is gone. That is the case the 180s timeout
-    // is really guessing at -- an app bounce or hub reboot mid-write -- and here it is
-    // provable, so those records stop blocking immediately instead of after three minutes.
-    // (A plain relay 504 is NOT this case: the hub keeps executing and its finally still
-    // writes the terminal record, which is exactly why opToken replay recovers a 504.)
-    // Deliberate imprecision in one direction: updated() calls initialize() on a plain
-    // settings save, which does not necessarily kill in-flight work, so a save landing
-    // mid-write can un-count a write that IS still running. The cost is the cap allowing
-    // one extra concurrent write during a save; the cost of the opposite error is every
-    // write blocked for three minutes. Erring toward not-blocking is the right side.
-    // Null before the first initialize() of an upgraded install: fall back to the timeout.
-    Long instanceStart = (atomicState.appInstanceStartedAt != null) ? (atomicState.appInstanceStartedAt as Long) : null
-    if (instanceStart != null && instanceStart > cutoff) cutoff = instanceStart
-    def running = []
-    tokens.each { token, rec ->
-        if (rec instanceof Map && rec.state == "running" && rec.tool != null && rec.startedAt != null
-                && (rec.startedAt as Long) >= cutoff && !readOnlyNames.contains(rec.tool.toString())) {
-            running << [opToken: token.toString(), tool: rec.tool, startedAt: rec.startedAt]
-        }
-    }
-    return running
-}
-
-// Release a token after a validation error (the leaf executed nothing, so the token must
-// stay spendable by a corrected re-issue). Called ONLY when a pre-dispatch running marker
-// was actually written -- with no marker there is nothing to release, and a "released"
-// record would be pure cost. Written as a per-entry "released" sentinel that
-// the dedup gate treats as absent -- NOT a whole-map remove: atomicState has no per-key
-// remove, and a whole-map read-modify-write here could clobber a concurrent different-token
-// updateMapValue and silently lose a LIVE record's dedup protection (the prune stays the
-// only whole-map writer, and it only drops terminal records). The TTL sweep / size cap reap
-// released records like any other terminal entry. No result file from THIS request can
-// exist here (only _opTokenComplete uploads, and completion never ran; a prior record would
-// have short-circuited at the dedup gate before dispatch) -- at most a prune-orphaned file
-// from an earlier, already-pruned completion remains, which a later completion overwrites.
-// Write a terminal token record. The read-back verification runs ONLY on the whole-map
-// fallback, where a read-modify-write genuinely loses concurrent records. On the
-// per-entry path it cost a full atomicState round trip -- ~0.9s of client latency on real
-// firmware, on every write -- to catch one narrow race: the prune's whole-map rewrite
-// landing between this write and its own snapshot. The prune now closes that itself, by
-// re-reading late and folding in anything written since (see _opTokenPrune), which pays
-// for it in a scheduled pass instead of in every client's response time.
-private void _opTokenPutTerminal(String opToken, Map rec, String label, Object knownMap = null) {
-    if (_opTokenPut(opToken, rec, knownMap)) return
-    if (_opTokenStateOf(opToken) == rec.state) return
-    mcpLog("warn", "op-token", "${label} record for ${opToken} was overwritten after its whole-map write; re-writing terminal state '${rec.state}' once.")
-    _opTokenPut(opToken, rec, knownMap)
-    if (_opTokenStateOf(opToken) != rec.state) {
-        mcpLog("warn", "op-token", "${label} record for ${opToken} did NOT persist after the retry; the record may read as running until its TTL expires, so a poll of this token can answer 'running' until then.")
-    }
-}
-
-private String _opTokenStateOf(String opToken) {
-    def m = atomicState.opTokens
-    def rec = (m instanceof Map && m[opToken] instanceof Map) ? m[opToken] : null
-    return rec?.state?.toString()
-}
-
-// The cap/TTL sweep is the one normal whole-map writer for opTokens. A terminal
-// updateMapValue can land after the sweep's final snapshot but before that whole-map
-// assignment, so the client may receive an auto token and even see it in recentOps,
-// then find it gone on the immediately following replay. Keep only the newest few
-// terminal records under a separate state key the sweep never rewrites. This is a
-// cheap state update (not another atomicState round trip on every write), and it gives
-// a prompt recovery poll a bounded backstop without growing the journal or weakening
-// its normal cap/TTL behavior.
-def _opTokenHotMax() { 3 }
-
-private void _opTokenRememberHot(String opToken, Map rec) {
-    def hot = [:]
-    if (state.opTokenHotResults instanceof Map) hot.putAll(state.opTokenHotResults)
-    hot[opToken] = [:] + rec
-    while (hot.size() > _opTokenHotMax()) {
-        def oldestKey = hot.keySet().min { a, b ->
-            def av = hot[a]
-            def bv = hot[b]
-            long at = (av instanceof Map && av.finishedAt != null) ? (av.finishedAt as Long) : 0L
-            long bt = (bv instanceof Map && bv.finishedAt != null) ? (bv.finishedAt as Long) : 0L
-            int byTime = at <=> bt
-            return (byTime != 0) ? byTime : (a.toString() <=> b.toString())
-        }
-        hot.remove(oldestKey)
-    }
-    state.opTokenHotResults = hot
-}
-
-private Map _opTokenHotRecord(String opToken) {
-    def hot = state.opTokenHotResults
-    def rec = (hot instanceof Map && hot[opToken] instanceof Map) ? hot[opToken] : null
-    if (!(rec instanceof Map) || rec.startedAt == null) return null
-    try {
-        if ((rec.startedAt as Long) < (now() - 86400000L)) return null
-    } catch (Exception ignored) {
-        return null
-    }
-    return rec
-}
-
-def _opTokenRelease(String opToken) {
-    def stored = atomicState.opTokens
-    def prev = (stored instanceof Map && stored[opToken] instanceof Map) ? stored[opToken] : [:]
-    def rec = [state: "released", tool: prev.tool,
-               startedAt: (prev.startedAt != null ? prev.startedAt : now())]
-    _opTokenPutTerminal(opToken, rec, "Release", stored)
-}
-
-// Buffer a token's terminal result (called once, on the request's terminal path).
-// Uploads the wire JSON to the reserved File Manager file BEFORE touching the
-// token record (no file I/O between the record read and write); on upload failure
-// keeps a small result inline, else marks it failed_buffer so a replay tells the
-// caller to verify state rather than trust a missing file.
-// priorRecordPossible=false says the caller KNOWS no record exists for this token: an
-// auto token is a UUID minted this request, and with no pre-dispatch marker nothing has
-// written it. Reading the map to merge a `prev` that cannot exist was a whole-map
-// atomicState round trip on every ordinary write. Client tokens always pass true -- a
-// released record from an earlier rejection can legitimately be there, and its startedAt
-// still has to be preserved.
-def _opTokenComplete(String opToken, String jsonText, boolean isErrorBool, toolNameArg = null,
-                     boolean priorRecordPossible = true) {
-    def fileName = _opTokenResultFile(opToken)
-    byte[] resultBytes = jsonText?.getBytes("UTF-8")
-    // Auto-tokens buffer EVERY untokened write, so a File Manager round trip here is a
-    // hub operation on every write -- enough added load to trip the platform's per-app
-    // limiter and slow the whole write path. Most results are a few hundred bytes, so
-    // they ride inside the record (the replay path already prefers rec.inline) and only
-    // genuinely large payloads pay for a file. The record cap is kept low to match, so
-    // the map these inline copies live in stays cheap to read on the hot path.
-    boolean inlined = (resultBytes != null && resultBytes.length <= _opTokenInlineMax())
-    boolean uploaded = false
-    if (!inlined) {
-        try {
-            uploadHubFile(fileName, resultBytes)
-            uploaded = true
-        } catch (Exception e) {
-            mcpLog("warn", "op-token", "Buffering op-result for ${opToken} to the File Manager failed: ${e.message}")
-        }
-    }
-    def stored = priorRecordPossible ? atomicState.opTokens : null
-    def prev = (stored instanceof Map && stored[opToken] instanceof Map) ? stored[opToken] : [:]
-    // startedAt drives the prune TTL: if the running marker was lost (the disclosed
-    // prune-vs-per-entry race / whole-map fallback race), prev is empty and a null
-    // startedAt would read as epoch-0-expired -- the very next prune would drop the
-    // record AND its file, downgrading a COMPLETED op to the unsafe "unknown".
-    // Stamp now() so an orphaned completion still lives its own full TTL.
-    // tool from the marker when there is one, else from the caller: a write that skips
-    // the pre-dispatch marker still has to name itself in the recentOps journal.
-    def rec = [state: "complete", tool: (prev.tool != null ? prev.tool : toolNameArg?.toString()),
-               startedAt: (prev.startedAt != null ? prev.startedAt : now()),
-               finishedAt: now(), isError: isErrorBool]
-    if (inlined) {
-        rec.inline = jsonText
-    } else if (uploaded) {
-        rec.file = fileName
-    } else if (resultBytes != null && resultBytes.length <= 2048) {
-        rec.inline = jsonText
-    } else {
-        rec.state = "failed_buffer"
-        rec.note = "Operation committed but its result could not be buffered (upload failed, payload too large to inline). Re-read current state to confirm."
-    }
-    _opTokenRememberHot(opToken, rec)
-    _opTokenPutTerminal(opToken, rec, "Completion", stored)
-    _opTokenNoteTerminalRecord()
-}
-
-// Completion is the ONLY record an ordinary write writes -- the pre-dispatch marker (the
-// other prune site) is written just for the tools that can outlive their transport -- so
-// without an arming signal here the map grew unbounded, and every byte of it is
-// deserialized again on the next atomicState access. Counted in `state`, an
-// execution-context cache: no atomicState round trip, which is the whole point. Every
-// keep-count records, hand the work to the scheduled sweep, which prunes OUT of the
-// request. TTL expiry on a hub too quiet to reach the counter is the daily schedule's job.
-private void _opTokenNoteTerminalRecord() {
-    int n = ((state.opTokenTerminalWrites ?: 0) as Integer) + 1
-    if (n < _opTokenKeepRecords()) {
-        state.opTokenTerminalWrites = n
-        return
-    }
-    state.opTokenTerminalWrites = 0
-    _opTokenArmSweep()
-}
-
-// Arm the scheduled sweep, at most once per pending window. runIn REPLACES a pending
-// schedule for the same handler, so re-arming on every completion under sustained write
-// traffic would push the sweep's deadline out forever and starve the prune it now owns.
-// The window is deliberately just longer than the delay, so a burst gets swept repeatedly
-// rather than once; it also re-arms after a settings save / app update drops the schedule
-// (unschedule() there clears the timer but not this marker).
-private void _opTokenArmSweep() {
-    Long armedAt = (state.opTokenSweepArmedAt != null) ? (state.opTokenSweepArmedAt as Long) : null
-    if (armedAt != null && (now() - armedAt) < 45000L) return
-    state.opTokenSweepArmedAt = now()
-    runIn(30, "opTokenFileSweep")
-}
-
-// Dedup gate consulted before dispatch. Returns null to proceed, or a
-// [result, isError] pair to short-circuit: a "running" refusal (a duplicate write
-// in flight) or a replay of the already-buffered result (adds replayed:true). A
-// completed-but-unreadable buffer degrades to the "verify state" indeterminate shape.
-// knownTokens is the caller's already-deserialized snapshot of atomicState.opTokens, so the
-// dedup lookup does not re-fetch a map the request has already paid to read (~0.9s on real
-// firmware). Passing null falls back to reading it here, which keeps this usable from any
-// future caller that has no snapshot to hand.
-def _opTokenDedup(String opToken, origToolName, Object knownTokens = null) {
-    def toks = (knownTokens instanceof Map) ? knownTokens : atomicState.opTokens
-    def rec = (toks instanceof Map && toks[opToken] instanceof Map) ? toks[opToken] : null
-    if (rec == null) rec = _opTokenHotRecord(opToken)
-    if (rec == null) return null
-    // A released record means a validation error spent NOTHING: treat it as absent so the
-    // corrected re-issue dispatches fresh. Only a token that was MARKED running leaves this
-    // sentinel; a markerless write's rejection leaves no record at all, which reads the same.
-    if (rec.state == "released") return null
-    if (rec.state == "running") {
-        def started = (rec.startedAt != null) ? (rec.startedAt as Long) : null
-        def runningNote = "An operation with this token is already executing on the hub. Do NOT re-run the operation; poll by re-issuing this call with the same opToken (the token alone is enough) until it replays the buffered result. See hub_get_tool_guide(section='slow_ops')."
-        if (rec.tool?.toString() == "hub_update_package") {
-            // The monolithic deploy's recompile can drop even this token's completion:
-            // point at the independent done-signal so a poll can't spin forever.
-            runningNote += " For hub_update_package, hub_get_info's lastSelfDeploy is the independent done-signal: an `at` newer than startedAt means the deploy's final act ran even if this token never completes."
-        }
-        return [isError: true, result: [
-            success: false, isError: true, status: "running", opToken: opToken,
-            tool: rec.tool, startedAt: rec.startedAt,
-            elapsedMs: (started != null) ? (now() - started) : null,
-            note: runningNote
-        ]]
-    }
-    def parsed = _opTokenReadResult(rec)
-    if (parsed == null) {
-        // Distinct from "unknown": the op DID complete here, so a re-issue is NOT
-        // safe -- the wire status must never read as the safe-to-retry shape.
-        return [isError: true, result: [
-            success: false, isError: true, status: "indeterminate", opToken: opToken,
-            note: "This token completed earlier but its buffered result has expired or could not be read. Do not re-issue blindly -- verify current state via reads first. See hub_get_tool_guide(section='slow_ops')."
-        ]]
-    }
-    if (parsed instanceof Map) {
-        parsed.replayed = true
-        if (parsed.status == "in_progress") {
-            // A spent token cannot drive a resume: this replay is the ORIGINAL paused
-            // envelope, not new progress. Without the warning a client that reused the
-            // token would loop on the identical response forever.
-            parsed.replayNote = "REPLAY of the original paused result -- the resume did NOT run. Re-issue the remaining work with a FRESH opToken to continue."
-        }
-    }
-    return [isError: (rec.isError == true), result: parsed]
-}
-
 // Returned in place of the real result when handleToolsCall trips the size guard. Shape
 // is the wire contract for the response_too_large case; keep the field names stable.
 def _responseTooLargeEnvelope(String toolName, int actualBytes, int limitBytes) {
@@ -3704,7 +2753,7 @@ def _responseTooLargeSuggestion(String toolName) {
         case "hub_get_app_config":
             return "Omit includeSettings -- Room Lighting / RM 5.1 apps can have 500-1000 settings keys. For multi-page apps, call hub_list_app_pages then hub_get_app_config with a specific pageName. If you only need identity, pass summary=true."
         case "hub_list_files":
-            return "Pagination here is OPT-IN: with no cursor the tool returns the WHOLE listing, so a large File Manager has no natural page break. Re-issue with cursor='0' to page through it, or narrow with filter='<substring of the name>'. includeOpResults=false (the default) already hides the server's mcp-op-result- buffers, so those are not what is filling this response."
+            return "Pagination here is OPT-IN: with no cursor the tool returns the WHOLE listing, so a large File Manager has no natural page break. Re-issue with cursor='0' to page through it, or narrow with filter='<substring of the name>'."
         case "hub_get_device_health":
             return "Set includeHealthy=false (the default), narrow staleHours, or pass cursor to page through staleDevices."
         case "hub_get_memory_history":
@@ -4449,7 +3498,6 @@ def getToolDisplayMeta() {
     // and lives in getGatewayConfig).
     def meta = [:]
     [_toolDisplayMeta_partNativeRM(),
-     _toolDisplayMeta_partDeployJobs(),
      _toolDisplayMeta_partRooms(),
      _toolDisplayMeta_partBundles(),
      _toolDisplayMeta_partVisualRules(),
@@ -4877,7 +3925,7 @@ def getToolDefinitions() {
             // fat schema (already lazily disclosed by its gateway).
             if (base.name == 'hub_set_rule') {
                 // The selector REPLACES the schema that applyDescriptionTransform already
-                // walked, so it has to be stripped itself -- otherwise every [[FLAT_TRIM]]
+                // walked, so it has to be stripped itself -- otherwise every trim marker
                 // marker in the selector's own descriptions ships raw in the flat catalog
                 // (caught by the flat-mode no-leak specs, and it is the flat wire an LLM
                 // actually reads).
@@ -4956,7 +4004,7 @@ def getAllToolDefinitions() {
     // McpBundlesLib / McpVisualRulesLib #include libraries (issue #209 modularization -- a
     // domain's tool DEFINITIONS live with its impl in the library; only the gateway membership
     // + dispatch case stay in this file).
-    return _getAllToolDefinitions_partNativeRM() + _getAllToolDefinitions_partDeployJobs() + _getAllToolDefinitions_partRooms() + _getAllToolDefinitions_partBundles() + _getAllToolDefinitions_partVisualRules() + _getAllToolDefinitions_partDiscovery() + _getAllToolDefinitions_partAppCloner() + _getAllToolDefinitions_partSelfAdmin() + _getAllToolDefinitions_partHpm() + _getAllToolDefinitions_partCodeManagement() + _getAllToolDefinitions_partCustomRules() + _getAllToolDefinitions_partVariables() + _getAllToolDefinitions_partVirtualDevices() + _getAllToolDefinitions_partDevices() + _getAllToolDefinitions_partSystem() + _getAllToolDefinitions_partDiagnostics() + _getAllToolDefinitions_partDebugLogging() + _getAllToolDefinitions_partItemBackups() + _getAllToolDefinitions_partFiles() + _getAllToolDefinitions_partDashboards()
+    return _getAllToolDefinitions_partNativeRM() + _getAllToolDefinitions_partRooms() + _getAllToolDefinitions_partBundles() + _getAllToolDefinitions_partVisualRules() + _getAllToolDefinitions_partDiscovery() + _getAllToolDefinitions_partAppCloner() + _getAllToolDefinitions_partSelfAdmin() + _getAllToolDefinitions_partHpm() + _getAllToolDefinitions_partCodeManagement() + _getAllToolDefinitions_partCustomRules() + _getAllToolDefinitions_partVariables() + _getAllToolDefinitions_partVirtualDevices() + _getAllToolDefinitions_partDevices() + _getAllToolDefinitions_partSystem() + _getAllToolDefinitions_partDiagnostics() + _getAllToolDefinitions_partDebugLogging() + _getAllToolDefinitions_partItemBackups() + _getAllToolDefinitions_partFiles() + _getAllToolDefinitions_partDashboards()
 }
 
 // Content fingerprint of the catalog's name -> required-params shape, used as
@@ -5005,8 +4053,8 @@ def requiredParamsByTool() {
 }
 
 // hub_call_device_replace(list_options: true) short-circuits to a candidate READ before any
-// write (see toolCallDeviceReplace). Same shape as _isDeploymentStatusOnlyCall: a read-only
-// MODE of a write tool, so it answers to the Read master rather than the Write master.
+// write (see toolCallDeviceReplace). It is a read-only MODE of a write tool, so it
+// answers to the Read master rather than the Write master.
 // The tool itself stays a write -- only this argument shape is a read.
 def _isDeviceReplaceOptionsOnlyCall(toolName, args) {
     return toolName == 'hub_call_device_replace' && (args instanceof Map) && args.list_options == true
@@ -5021,16 +4069,10 @@ def executeTool(toolName, args) {
     // `== false` blocks (null/unset => allowed).
     def isGatewayName = getGatewayConfig().containsKey(toolName)
     if (!isGatewayName) {
-        // deployment op='status' rides a WRITE tool but is a pure read of the job records,
-        // and it is exempt from the Write master via the schema-only classifier. Every
-        // other schema-only exemption returns static reference content; this one returns
-        // hub data (job names, ids, created appIds, backup keys), so it answers to the READ
-        // master instead of to nothing at all.
-        boolean isDeploymentStatus = _isDeploymentStatusOnlyCall(toolName, args) ||
-                _isDeviceReplaceOptionsOnlyCall(toolName, args)
-        if (isDeploymentStatus) {
+        boolean isReadShapedWrite = _isDeviceReplaceOptionsOnlyCall(toolName, args)
+        if (isReadShapedWrite) {
             if (settings.enableRead == false) {
-                throw new IllegalArgumentException("Read tools are disabled. Enable 'Read Tools' in MCP Rule Server app settings to use ${toolName}'s deployment status read.")
+                throw new IllegalArgumentException("Read tools are disabled. Enable 'Read Tools' in MCP Rule Server app settings to use ${toolName}'s options read.")
             }
         } else if (getReadOnlyToolNames().contains(toolName)) {
             if (settings.enableRead == false) {
@@ -6127,10 +5169,9 @@ private String _redactSecretsInPath(String path) {
  */
 private _hubRequest(String method, String path, Map opts = [:]) {
     if (path?.contains("?")) {
-        // ISE, not IAE: an IAE maps to -32602, which RELEASES the opToken on the promise that
-        // nothing committed -- but this can fire on a later leg of a multi-step tool whose
-        // earlier legs already wrote, licensing a same-token double-run. ISE -> -32603, token
-        // SPENT. Path redacted so a psk-bearing path never reaches a log or error envelope.
+        // Keep this an internal-state error rather than blaming the caller for a
+        // malformed public tool argument: it can fire on a later leg after earlier
+        // writes committed. Path is redacted so a psk-bearing value never reaches a log.
         throw new IllegalStateException(
             "hubInternal* path must not contain a querystring: '${_redactSecretsInPath(path)}'. The platform client escapes an embedded '?' into the literal path (exact routes then 404, wildcard routes silently swallow it) -- pass the parameters as the query map instead, e.g. hubInternalGet('/device/updateLabel', [deviceId: id, label: name]). Do NOT pre-encode the values; the query map does that.")
     }
@@ -9663,103 +8704,35 @@ To move EXISTING devices into an existing room, set each device's room via hub_u
 Renaming a room preserves device assignments, but may require updating automations/dashboards that reference the room by name.
 ''',
 
-        deployment_jobs: '''## Deployment jobs (the `deployment` argument on hub_set_rule / hub_set_native_app)
+        slow_ops: '''## Slow writes over Streamable HTTP
 
-A deployment job runs a staged multi-app migration ON-HUB with a durable checkpoint after every op: the job record (ops, per-op status, aliases, created apps, backup keys, validation results) lives in hub storage, and while a job is staging or committing the hub scheduler keeps advancing it in bounded slices with NO client attached. A client that dies mid-migration loses nothing -- any fresh session reads `deployment={op:"status"}` and resumes. The SAME argument works on both tools (one shared engine); every call is self-contained (`deployment` cannot be combined with an edit/create in the same call). Write ops (create/resume/commit/cancel/delete) require confirm=true AND a hub backup taken within the last 24h (the standard destructive-write gate); op="status" is a pure read (op='status' takes jobId?, includeOps -- default true -- for the per-op detail).
+Hubitat\x27s cloud relay can end one HTTP request while hub-side work continues. MCP 2026-07-28 request-to-request continuation solves this without changing transport, installing an extension, or asking the caller to invent a token.
 
-### Op reference (each entry in ops/commitOps is {op, args, alias?})
+### Automatic request-to-request continuation
 
-| op | args | notes |
-|---|---|---|
-| cloneApp | sourceAppId, newName?, stageDisabled? | Clone via appCloner; stageDisabled=true lands it disabled (recommended for staging) |
-| importApp | jsonContent OR fromFile, parentHintAppId, newName?, stageDisabled? | Import an exported JSON |
-| buttonRule | controllerId, buttonNumber, event | Create a Button Rule via its parent controller |
-| addActions | appId, actions (array of RM action specs) | hub_set_rule addActions |
-| modifyAction | appId, index, mods | hub_set_rule modifyAction (e.g. retarget runRule) |
-| pause / resume | ruleId (id or array) | RM pause/resume (whole-set in one op) |
-| setDisabled | appId, disabled | Enable/disable any app (reversible red-X); disabled is REQUIRED and must be an explicit boolean |
+The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, and `hub_import_native_app`.
 
-A create-type op (cloneApp/importApp/buttonRule) may declare alias:"name"; later ops write {"alias":"name"} wherever an appId/ruleId/controllerId is taken and it resolves to the created app's id at execution time.
+The first request is a mutation-free preflight. The server returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients automatically repeat the same tool call with that state. Each resumed request runs one bounded slice and gets a fresh relay deadline. The logical call eventually returns one normal `resultType: "complete"` result describing all slices.
 
-CONSTRAINT (verified live): RM's classic wizard silently ignores delete-class button clicks (delAct/trashAll -- the remove leg of modifyAction, removeAction, replaceActions) on a DISABLED app, and a disabled parent breaks a child rule's page render. To edit a staged-disabled clone, interleave setDisabled ops: {setDisabled false} -> edit op -> {setDisabled true}. Also note: Button Rules that show "(Not Installed)" reject those delete-class clicks even when enabled -- retarget plain RM caller rules, not not-installed Button Rule children.
+The state is bound to the original leaf tool and exact original arguments. A mismatched, unknown, or expired state executes nothing. A fresh identical call while the original is active is refused as `duplicate_in_flight` and cannot advance or repeat the write. The terminal result remains replayable briefly under the same requestState so losing only the final HTTP response does not rerun the operation.
 
-### Phases + lifecycle
+### Global write concurrency cap
 
-draft > staging > ready_for_commit > committing > completed | failed | cancelled.
+Every actual write obtains a server-side lease, whether it uses MRTR or completes in one request. `maxConcurrentWrites` defaults to 2 (1 fully serializes writes; 0 disables the cap). A new write at capacity is refused as `too_many_writes_in_flight` before dispatch, so parallel agents or a client burst cannot overwhelm the hub. Active MRTR calls and the background `hub_update_package` worker keep their slot until completion; abandoned leases expire automatically. Reads, gateway catalog calls, schema-only probes, `hub_call_device_replace(list_options=true)`, and `hub_update_package(dryRun=true)` do not count. No client token or extra argument is involved.
 
-- op="create": validates the whole manifest up front (unknown ops, each op type's required args, duplicate aliases, forward alias refs are rejected before anything runs -- commitOps included, so a cutover-op typo surfaces before staging creates a single app), then stages. Each call slice is bounded by the response-time budget (and optional maxOpsPerCall); the on-hub worker continues the rest (background=false disables the worker: the job then advances only on op="resume"). draft:true creates the job without starting it -- validation still runs up front; op="resume" starts staging. A manifest is capped at 50 ops (ops + commitOps) and 64000 serialized characters.
-- Staging validation gate: when the last staging op completes, every created app is health-checked (hub_get_rule_health, which reads live config -- an existence readback). Only an all-healthy job becomes ready_for_commit; otherwise it fails with per-app results in `validation`.
-- op="commit": runs the declared commitOps (typically pause the old set + enable the new set). Refused unless phase is ready_for_commit.
-- op="cancel": deletes ONLY the apps recorded in createdAppIds (newest first) and marks the job cancelled. A completed job cannot be cancelled (reverse the cutover manually).
-- op="delete": removes a FINISHED (completed/cancelled) job's record from hub storage -- the apps and backups it references are untouched, and its backupKeys keep working with hub_restore_backup. Any other phase is refused (finish via commit/cancel first). Terminal records otherwise persist ~indefinitely (only evicted lazily when the 8-job cap is hit, and a FAILED job is never evicted -- cancel it to free its slot and roll back its created apps), so delete is the tidy-up.
-- op="resume": continues after a failure (retries the failed op), a disconnect/hub restart (picks up from the checkpoint), or starts a draft. An op interrupted MID-write is reconciled where that is safe: an interrupted create-type op adopts the app if the create actually committed (matched against a pre-op child snapshot); pause/resume/setDisabled/modifyAction re-run (convergent); an interrupted addActions requires retryInFlight=true because a blind re-run can duplicate actions -- verify via hub_get_app_config first.
+### Older clients
 
-### Worked example (migrate a Button Controller topology)
+Clients negotiated below MCP 2026-07-28 do not understand requestState. They retain the existing `status: "in_progress"` remainder envelope for bounded multi-step writes. Completed steps are already committed; reissue only the returned remaining work. This is a compatibility fallback, not a second polling protocol.
 
-```json
-{"deployment": {"op": "create", "name": "migrate-BC",
- "ops": [
-   {"op": "cloneApp", "alias": "newTarget", "args": {"sourceAppId": 100, "newName": "Target v2", "stageDisabled": true}},
-   {"op": "cloneApp", "alias": "newCaller", "args": {"sourceAppId": 200, "newName": "Caller v2", "stageDisabled": true}},
-   {"op": "setDisabled", "args": {"appId": {"alias": "newCaller"}, "disabled": false}},
-   {"op": "modifyAction", "args": {"appId": {"alias": "newCaller"}, "index": 1, "mods": {"ruleIds": [{"alias": "newTarget"}]}}},
-   {"op": "setDisabled", "args": {"appId": {"alias": "newCaller"}, "disabled": true}}],
- "commitOps": [
-   {"op": "pause", "args": {"ruleId": [100, 200]}},
-   {"op": "setDisabled", "args": {"appId": {"alias": "newTarget"}, "disabled": false}},
-   {"op": "setDisabled", "args": {"appId": {"alias": "newCaller"}, "disabled": false}}]},
- "confirm": true}
-```
+The advanced `relayBudgetMs` setting (default 8000 ms, 0 disables) controls cloud slices. `lanBudgetMs` defaults to 0; set it just below a LAN client\x27s request timeout only when needed.
 
-Then poll `deployment={op:"status", jobId:"..."}` until ready_for_commit, review `validation`, and `{op:"commit"}`. Rollback handles on the job: backupKeys (hub_restore_backup) for edited apps + createdAppIds (cancel) for created ones.
-''',
-        slow_ops: '''## Slow ops (opToken recovery + in_progress resume)
+### Package deployment
 
-A slow write can outlive its transport: the cloud relay severs calls at a fixed ceiling, and an MCP client's own request timeout can kill a long LAN call. Either way the hub still runs the operation to completion and commits it -- only the RESPONSE is lost, and your client surfaces an opaque transport error (a gateway/timeout error, often worded as "try again"). RE-RUNNING THE CALL IS THE WRONG RECOVERY: it double-commits the write. Recovery is always a POLL, and the write tool itself is the poll.
+`hub_update_package` is intentionally asynchronous instead of MRTR because a full repair can take minutes and recompiles this app. A real call validates and schedules the repair, then immediately returns `status: "in_progress"` with `requestId`. Do not submit it again: the server rejects a concurrent deploy until that worker clears its marker (or the marker reaches its explicit stale timeout). Poll `hub_get_info.lastSelfDeploy` until its `requestId` matches; its `success` and `error` fields are the terminal outcome. `dryRun: true` remains synchronous.
 
-### Idempotency token (opToken): auto-record first, optional client token for verbatim retries
+### Other writes
 
-Every untokened WRITE is auto-recorded. The server assigns an `auto-...` token, buffers the terminal result, returns the token in the response, and exposes recent records through hub_get_info(includeRecentOps=true). If a response is lost, find the record by tool + startedAt and poll by re-issuing token-only with that opToken; do not blind-retry the write. Records sweep about 24 hours after start, and past 20 stored records the oldest terminal records batch-evict down to 10.
-
-MARKER-TRACKED writes -- the ones slow enough to still be running when a poll arrives -- additionally record a `running` marker BEFORE they execute, so a mid-flight poll is answered and an "unknown" verdict can be trusted. That set is: hub_set_rule, hub_set_native_app, hub_call_rule, hub_clone_native_app, hub_import_native_app, hub_update_package, hub_update_app, hub_update_driver, hub_update_library, hub_create_app, hub_create_driver, hub_create_library, hub_delete_item, hub_install_bundle, hub_restore_backup, hub_create_backup, hub_delete_native_app, hub_reboot, hub_shutdown, hub_update_firmware, hub_call_device_replace, hub_call_device_swap, hub_import_custom_rule, hub_clone_custom_rule. Every OTHER write records only when it finishes -- its response is delivered long before a poll could be sent, so the marker would be pure latency.
-
-A client-invented `opToken` is an optional extra, never something to ask the user for: 8-128 characters of A-Za-z0-9._-. Its one unique advantage is verbatim-retry dedup: a transport re-send of the same bytes carries the same token and is refused while running or replayed after completion. An untokened re-send gets a new auto token; while a LONG-RUNNING write is in flight the server also fingerprints the stripped arguments and refuses the match as `duplicate_in_flight`. EVERY tool -- reads included -- accepts a client token; a tokened expensive read also replays instead of re-running. Tokens are per-call nonces, and records are written per-entry so different tokens do not interfere.
-
-If the response is lost, DO NOT re-run the operation and DO NOT invent a fresh token. Re-issue the SAME tool call with the SAME `opToken` -- the token alone is enough: a flat tool takes `{opToken: "<yours>"}` with no other arguments (e.g. hub_update_package), a gateway member takes `{tool: "<leaf>", opToken: "<yours>"}` (e.g. `{tool: "hub_set_rule", opToken: "<yours>"}` via hub_manage_rule_machine). The server answers from the token record without running anything twice:
-
-- `status: "running"` -- still executing on the hub. Poll again in a few seconds by re-issuing the same tokened call. The operation completes and commits even though your response dropped.
-- `replayed: true` -- it finished; this IS the original buffered result (including `isError` if that attempt failed).
-- `status: "unknown"` (returned only to a token-only poll) -- no RECORD of this token exists. What that means depends on the tool. For a MARKER-TRACKED write (list above) a record would already exist if the call had arrived, so a prompt poll reliably means never-arrived: re-issue the ORIGINAL call (full arguments) with this same token. For any OTHER write the record is only written at completion, so "unknown" cannot distinguish never-arrived from still-running, and re-issuing blindly can double-execute: verify current state with a read first, then re-issue if the write did not land. Either way the record can also have aged out (records sweep ~24h after start, and past 20 stored records the oldest terminal records batch-evict down to 10), so do not trust day-old tokens.
-- `status: "indeterminate"` -- the operation completed here but its buffered result cannot be read (buffering failed, or the result file is gone while the record survives). Do NOT re-issue blindly; verify current state via reads first.
-
-A NEW write may also be refused before it runs:
-
-- `status: "duplicate_in_flight"` -- an identical untokened call to one of the long-running write tools is already running. Do not re-run it; poll the named `inFlightOpToken` until its result replays. This guards the writes that can outlive their transport, not every write: a short write answers before a duplicate could be sent.
-- `status: "too_many_writes_in_flight"` -- the in-flight count reached `maxConcurrentWrites` (default 2; 1 serializes, 0 disables). The cap gates EVERY write, but only the long-running write tools count toward it. Wait for one named `inFlight` token to finish or poll it, then re-issue this call. The wait is bounded, and it tracks the ACTUAL write: a record stops counting the moment its operation reaches a terminal state, so a fast write frees its slot in seconds. Only a write whose hub-side thread died stays counted, and that is aged out 180s after it started, so it can never block you indefinitely.
-
-A token is SPENT once its operation completes -- runtime errors included. A replayed result carrying an error means that attempt failed; to retry with corrected arguments after a RUNTIME failure, invent a FRESH token. Never reuse a token for a DIFFERENT operation. Exception: a call rejected for invalid arguments (-32602) executed nothing and does not spend its token -- fix the arguments and re-issue with the SAME token.
-
-A replayed result whose `status` is "in_progress" carries `replayNote`: it is the ORIGINAL paused envelope, not new progress -- a spent token cannot drive a resume; re-issue the remaining work with a fresh token.
-
-### hub_update_package: never re-run on a timeout
-
-The package deploy is monolithic (it cannot checkpoint-pause) and takes minutes -- it is the write most likely to outlive a client timeout, and a re-run repeats the WHOLE bundle+apps repair on a hub that is already mid-deploy. On any transport error or timeout:
-
-1. Poll with the same `opToken` (token-only re-issue, as above). While the deploy runs you get the "running" refusal; when it finishes you get the exact buffered result.
-2. The hub also refuses a concurrent second deploy outright while one is in flight, so an untokened re-run is caught server-side too.
-3. `hub_get_info`'s `lastSelfDeploy` is the deploy's done-signal: its `at` flipping fresh (check `ageMs`) means the self-app leg ran; its `success`/`error` carry the outcome even if every response was lost.
-
-### in_progress resume (multi-step writes only)
-
-hub_set_rule and hub_set_native_app run multi-step wizard edits. Once the time budget for the request's transport is reached BETWEEN steps they stop early and return a SUCCESS-shaped envelope with `status: "in_progress"` -- every completed step is already committed. The envelope carries the remaining work so you can resume:
-
-- A paused `walkStep(operation='drive')` returns `pausedAtStep`, `stepsRemaining` (the unrun step specs), and `page`. Re-issue the drive with `steps = stepsRemaining` and `page` set to the returned page to continue.
-- A paused bulk `addTriggers`/`addActions` edit returns `triggersCommitted`/`actionsCommitted`, the per-item `triggers`/`actions` arrays, and `addTriggersRemaining`/`addActionsRemaining` (the unprocessed specs). Re-issue the hub_set_rule / hub_set_native_app edit with `addTriggers`/`addActions` set to those remaining lists. Unlike the walkStep pause (which only pauses when everything so far is clean), this pause -- like the patch pause -- can stop right after a failed/degraded item to protect the response from a transport drop, so check the top-level `success`/`partial` and the per-item arrays -- a committed item that failed is surfaced there, not masked.
-- A paused patch edit returns `patchResults` so far and `patchesRemaining`. Re-issue the hub_set_rule / hub_set_native_app edit with `patches = patchesRemaining`. A patch op carrying a large inner `addTriggers`/`addActions` list can pause MID-op: `patchesRemaining` then leads with that op rewritten to only its unprocessed inner items. The rule finalize (updateRule) runs when the remaining patches complete, not on the paused call.
-- Resume the remaining work with a fresh client token, or omit it and let the server assign a new auto token. Never reuse the spent token from the paused call; that only replays the original `in_progress` envelope.
-Once the budget is spent, a walkStep op also SHEDS its trailing health probe (the result's health carries skipped: true) so the committed op returns under the transport ceiling -- verify via hub_get_rule_health when you see it; an UNREADABLE probe (transient fetch failure) never fails committed work, only positive evidence of breakage does.
-
-The budget is per-transport: the advanced `relayBudgetMs` setting for cloud-relay requests (default 8000 ms, 0 disables) and `lanBudgetMs` for LAN requests (default 0 = off; set it just under your MCP client's request timeout to make long LAN edits pause instead of dying). With the LAN knob unset, LAN behaviour is unchanged.
+No custom operation-token or deployment-job protocol is exposed. If a non-continuation write loses its response, read current hub state before deciding whether it is safe to retry.
 '''
     ]
 }

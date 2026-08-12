@@ -1,4 +1,4 @@
-library(name: "McpRoomsLib", namespace: "mcp", author: "kingpanther13", description: "Room management tool implementations for the MCP Rule Server (hub_list_rooms/hub_get_room/hub_create_room/hub_delete_room/hub_update_room); #include'd by the main app.[[FLAT_TRIM]] Gateway entries and dispatch stay in the app; tool definitions live here alongside the impl.[[/FLAT_TRIM]]")
+library(name: "McpRoomsLib", namespace: "mcp", author: "kingpanther13", description: "Room management tool implementations for the MCP Rule Server (hub_list_rooms/hub_get_room/hub_create_room/hub_delete_room/hub_update_room); #include'd by the main app. Gateway entries and dispatch stay in the app; tool definitions live here alongside the impl.")
 
 def toolListRooms(args = null) {
     def rooms = getRooms()
@@ -272,7 +272,7 @@ def _getAllToolDefinitions_partRooms() {
     return [
         [
             name: "hub_list_rooms",
-            description: "List all rooms on the hub, each with its ID, name, device count, and assigned device IDs.[[FLAT_TRIM]] Use to discover available rooms or resolve a room name to its ID before calling hub_get_room/hub_update_room/hub_delete_room. Read-only and parallel-safe. Returns summaries only — call hub_get_room for per-device states.[[/FLAT_TRIM]]",
+            description: "List all rooms on the hub, each with its ID, name, device count, and assigned device IDs. Use to discover available rooms or resolve a room name to its ID before calling hub_get_room/hub_update_room/hub_delete_room. Read-only and parallel-safe. Returns summaries only — call hub_get_room for per-device states.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -329,7 +329,6 @@ def _getAllToolDefinitions_partRooms() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     name: [type: "string", description: "Name for the new room, e.g. \"Garage\""],
                     deviceIds: [type: "array", description: "Optional device IDs to assign to the room at creation, e.g. [\"12\",\"34\"].", items: [type: "string"]],
                     confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms a recent backup exists and the user approved creating this room."]
@@ -339,7 +338,6 @@ def _getAllToolDefinitions_partRooms() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether creation succeeded"],
                     room: [type: "object", description: "Created room", properties: [
                         id: [type: "string", description: "New room ID"],
@@ -359,7 +357,6 @@ PRE-FLIGHT: 1) Backup <24h 2) Verify correct room 3) List affected devices to us
             inputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     room: [type: "string", description: "Room name (case-insensitive) or room ID to delete, e.g. \"Garage\" or \"5\""],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user explicitly approved the deletion."]
                 ],
@@ -368,7 +365,6 @@ PRE-FLIGHT: 1) Backup <24h 2) Verify correct room 3) List affected devices to us
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether deletion succeeded"],
                     deletedRoom: [type: "object", description: "Deleted room", properties: [
                         id: [type: "string", description: "Room ID"],
@@ -386,7 +382,6 @@ PRE-FLIGHT: 1) Backup <24h 2) Verify correct room 3) List affected devices to us
             inputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     room: [type: "string", description: "Current room name (case-insensitive) or room ID, e.g. \"Garage\" or \"5\""],
                     newName: [type: "string", description: "New name for the room, e.g. \"Workshop\""],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
@@ -396,7 +391,6 @@ PRE-FLIGHT: 1) Backup <24h 2) Verify correct room 3) List affected devices to us
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether rename succeeded"],
                     room: [type: "object", description: "Renamed room", properties: [
                         id: [type: "string", description: "Room ID"],

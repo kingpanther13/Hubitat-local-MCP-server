@@ -1,8 +1,9 @@
 # MRTR Slow Writes — Implementation Plan
 
-> Execute inline in the isolated worktree. Do not run local Gradle, Ruff, or the
-> full local suite; the maintainer requested manually dispatched GitHub fast
-> workflows instead. Do not cancel an E2E run after it starts.
+> Execute inline in the isolated worktree. Do not run the full local Gradle
+> suite; one focused three-spec run was permitted and completed, with the full
+> matrix delegated to manually dispatched GitHub fast workflows. Do not cancel
+> an E2E run after it starts.
 
 **Goal:** Replace PR #378's public `opToken`/deployment-job continuation protocol
 with MCP 2026-07-28 request-to-request continuation for slow Rule Machine and
@@ -37,10 +38,8 @@ Steps:
 
 Files:
 
-- Create `libraries/mcp-request-state-lib.groovy` if a separate library keeps the
-  core app smaller and clearer.
-- Modify `hubitat-mcp-server.groovy` include marker.
-- Modify test `LIBS` arrays and include-resolution fixtures in lockstep.
+- Modify `hubitat-mcp-server.groovy`; keep the small request-boundary state
+  helpers beside the dispatcher rather than adding another included library.
 
 Steps:
 
@@ -119,6 +118,22 @@ Steps:
 - [ ] Keep completion/failure visible through `hub_get_info.lastSelfDeploy`.
 - [ ] Reject concurrent deploy requests server-side.
 
+## Task 6b — Preserve the global all-write concurrency cap
+
+Files:
+
+- Modify `hubitat-mcp-server.groovy`, `libraries/mcp-self-admin-lib.groovy`, and
+  focused specs/docs.
+
+Steps:
+
+- [ ] Acquire a lease before every actual non-MRTR write and release it in a
+      `finally` block.
+- [ ] Count active MRTR records and the asynchronous package worker too.
+- [ ] Exclude only read-only, gateway-catalog, schema-only, device-replace
+      list-options, package dry-run, and hub LED-identification calls.
+- [ ] Prove parallel device-command refusal and ordinary-write lease cleanup.
+
 ## Task 7 — Add official SDK and live-relay coverage
 
 Files:
@@ -128,9 +143,14 @@ Files:
 
 Steps:
 
-- [ ] Exercise automatic state-only MRTR rounds with the official Python SDK.
+- [ ] Pin official Python SDK `mcp==2.0.0` and exercise automatic state-only
+      MRTR rounds through the high-level `mcp.client.Client.call_tool()` API;
+      do not use `ClientSession.call_tool()` or a project-owned continuation loop.
 - [ ] Assert a single logical call receives a final result after multiple HTTP
       requests.
+- [ ] Use the official Streamable HTTP transport with observer-only redacted
+      HTTP timing hooks; assert the logical call exceeds 10 seconds, each leg
+      stays below the relay deadline, and the v2 result is `complete`.
 - [ ] Add one modern path E2E; do not duplicate it for the legacy fallback.
 - [ ] Keep the test deterministic and safely idempotent on the fixture hub.
 
@@ -164,3 +184,35 @@ Steps:
 - [ ] Stop with the draft PR green and CodeRabbit feedback addressed. Do not merge
       or close either PR.
 
+## Task 10 — Integration hardening from independent concurrency audit
+
+Files:
+
+- Modify `hubitat-mcp-server.groovy`, the package-deploy implementation, focused
+  Spock specs, and only directly affected docs/fixtures.
+
+Steps:
+
+- [ ] Restore the `slow_ops` guide as a valid triple-single-quoted map value;
+      `python tests/sandbox_lint.py` must parse the guide map again.
+- [ ] Replace check-then-insert admission with one Hubitat-safe serialized or
+      atomic reservation boundary covering duplicate detection, global capacity,
+      and record/lease creation. Concurrent cap-one device writes must never both
+      dispatch; concurrent identical MRTR preflights must never both be admitted.
+- [ ] Claim each active `requestState` generation before executing its stored
+      slice, so two concurrent repeats cannot execute the same checkpoint twice.
+      A contender must fail/retry safely without advancing or restarting work.
+- [ ] Never evict an active MRTR record to enforce the 16-record storage cap.
+      Evict expired/terminal records first, clean active resources on expiry, and
+      refuse a new preflight when active records leave no safe room.
+- [ ] Correct mixed-mode cap classification: `hub_get_metrics` counts only when
+      `recordSnapshot=true`; `hub_update_firmware(statusOnly=true)` is read-shaped;
+      `hub_get_info(identifyHub=true)` remains deliberately exempt.
+- [ ] Keep a package deployment counted/duplicate-locked until its own worker
+      clears its marker (or the marker reaches the explicit stale timeout); an
+      unrelated newer `lastSelfDeploy` timestamp must not release it.
+- [ ] Add focused concurrency, mixed-mode, record-cap, and package-marker identity
+      regression tests. Do not run the full local Gradle suite; use remote fast CI
+      for Groovy coverage after the quick Python/sandbox checks pass.
+- [ ] Preserve every unrelated #378 Boy Scout fix and commit the complete current
+      integration cleanup on the stacked feature branch.

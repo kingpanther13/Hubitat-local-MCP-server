@@ -1,4 +1,4 @@
-library(name: "McpVirtualDevicesLib", namespace: "mcp", author: "kingpanther13", description: "MCP-managed virtual device tool implementations (hub_manage_virtual_device + the hub_list_devices filter=virtual listing) for the MCP Rule Server; #include'd by the main app.[[FLAT_TRIM]] Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.[[/FLAT_TRIM]]")
+library(name: "McpVirtualDevicesLib", namespace: "mcp", author: "kingpanther13", description: "MCP-managed virtual device tool implementations (hub_manage_virtual_device + the hub_list_devices filter=virtual listing) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
 def toolManageVirtualDevice(args) {
     def action = args.action
@@ -301,7 +301,6 @@ action="delete": provide the target deviceNetworkId.
             inputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     action: [type: "string", description: "Operation to perform", enum: ["create", "delete"]],
                     deviceType: [type: "string", description: "Built-in virtual driver type for create; mutually exclusive with customDriver.",
                         enum: getSupportedVirtualDeviceTypes()],
@@ -326,7 +325,6 @@ action="delete": provide the target deviceNetworkId.
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the operation succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     device: [type: "object", description: "create only: the new virtual device", properties: [

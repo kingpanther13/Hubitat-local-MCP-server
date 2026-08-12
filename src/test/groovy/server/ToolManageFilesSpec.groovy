@@ -54,31 +54,6 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.files[0].directDownload.contains('/local/a.txt')
     }
 
-    def "hub_list_files hides op-token result buffers unless includeOpResults is set"() {
-        given: 'a hub whose File Manager is mostly slow-op bookkeeping'
-        hubGet.register('/hub/fileManager/json') { params ->
-            JsonOutput.toJson([
-                [name: 'mcp-op-result-auto-abc.json', size: 10],
-                [name: 'mcp-op-result-auto-def.json', size: 20],
-                [name: 'dashboard-backup.json', size: 30]
-            ])
-        }
-
-        when:
-        def hidden = script.toolListFiles()
-
-        then: 'the buffers stay out of the way of the real listing'
-        hidden.total == 1
-        hidden.files*.name == ['dashboard-backup.json']
-
-        when:
-        def shown = script.toolListFiles([includeOpResults: true])
-
-        then:
-        shown.total == 3
-        shown.files*.name.containsAll(['mcp-op-result-auto-abc.json', 'mcp-op-result-auto-def.json'])
-    }
-
     def "hub_list_files filters file names by case-insensitive substring"() {
         given:
         hubGet.register('/hub/fileManager/json') { params ->
@@ -493,7 +468,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         def uploads = []
         script.metaClass.downloadHubFile = { String name -> null }
         script.metaClass.uploadHubFile = { String name, byte[] content ->
-            if (!name.startsWith('mcp-op-result-')) uploads << [name: name, content: new String(content, 'UTF-8')]
+            uploads << [name: name, content: new String(content, 'UTF-8')]
         }
 
         when:
@@ -714,7 +689,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String name ->
             name == 'notes.txt' ? 'saved content'.getBytes('UTF-8') : null
         }
-        ignoreOpResultUploads(uploads)
+        script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
         script.metaClass.deleteHubFile = { String name -> deleted << name }
 
         when:
@@ -759,7 +734,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         def uploads = []
         def deleted = []
         script.metaClass.downloadHubFile = { String name -> 'ignored'.getBytes('UTF-8') }
-        ignoreOpResultUploads(uploads)
+        script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
         script.metaClass.deleteHubFile = { String name -> deleted << name }
 
         when:

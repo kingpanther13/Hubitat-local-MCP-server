@@ -1,4 +1,4 @@
-library(name: "McpDebugLoggingLib", namespace: "mcp", author: "kingpanther13", description: "MCP debug-log + bug-report tool implementations (hub_get_debug_logs/hub_delete_debug_logs/hub_set_log_level/hub_report_issue) for the MCP Rule Server; #include'd by the main app.[[FLAT_TRIM]] Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.[[/FLAT_TRIM]]")
+library(name: "McpDebugLoggingLib", namespace: "mcp", author: "kingpanther13", description: "MCP debug-log + bug-report tool implementations (hub_get_debug_logs/hub_delete_debug_logs/hub_set_log_level/hub_report_issue) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
 def toolGetDebugLogs(args) {
     initDebugLogs()
@@ -468,7 +468,7 @@ def _getAllToolDefinitions_partDebugLogging() {
         // Debug Logging Tools
         [
             name: "hub_get_debug_logs",
-            description: "Read the MCP debug-log system (stored in app state).[[FLAT_TRIM]] mode='logs' (default) returns stored entries; mode='status' returns logging-system status.[[/FLAT_TRIM]]",
+            description: "Read the MCP debug-log system (stored in app state). mode='logs' (default) returns stored entries; mode='status' returns logging-system status.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -512,12 +512,10 @@ def _getAllToolDefinitions_partDebugLogging() {
             name: "hub_delete_debug_logs",
             description: "Clear all entries from the MCP debug-log buffer (the in-app state log read by hub_get_debug_logs).[[FLAT_TRIM]] Use to reset that buffer before reproducing an issue or to free space. Does NOT touch Hubitat system logs (hub_get_logs) or captured device states (hub_delete_captured_state).[[/FLAT_TRIM]] Cannot be undone.",
             inputSchema: [type: "object", properties: [
-                opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
             ]],
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the clear succeeded"],
                     clearedCount: [type: "integer", description: "Number of entries removed"]
                 ],
@@ -530,7 +528,6 @@ def _getAllToolDefinitions_partDebugLogging() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     level: [type: "string", enum: ["debug", "info", "warn", "error"], description: "Minimum log level to store"]
                 ],
                 required: ["level"]
@@ -538,7 +535,6 @@ def _getAllToolDefinitions_partDebugLogging() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the level was set"],
                     previousLevel: [type: "string", description: "Log level before the change"],
                     newLevel: [type: "string", description: "Log level after the change"]

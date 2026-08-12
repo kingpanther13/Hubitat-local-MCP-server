@@ -1068,7 +1068,6 @@ def _getAllToolDefinitions_partDashboards() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     name: [type: "string", description: "Display name."],
                     type: [type: "string", enum: ["easy", "legacy"], description: "Dashboard kind: 'easy' (default) or 'legacy' Hubitat® Dashboard."],
                     deviceIds: [type: "array", description: "Device ids. Required (>=1, runtime-enforced) for an Easy Dashboard; for a legacy dashboard these are its authorized devices (optional).", items: [type: "string"]],
@@ -1079,7 +1078,6 @@ def _getAllToolDefinitions_partDashboards() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean"], id: [type: "string"], type: [type: "string"],
                     name: [type: "string"], dashboard: [type: "object"], dashboards: [type: "array"],
                     message: [type: "string"], error: [type: "string"], note: [type: "string"],
@@ -1094,7 +1092,6 @@ def _getAllToolDefinitions_partDashboards() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     dashboardId: [type: "string", description: "installedAppId."],
                     name: [type: "string", description: "Display name (Easy) or app label (legacy)."],
                     deviceIds: [type: "array", description: "Full device id set. Required (>=1) for Easy; wholesale-replaces a legacy dashboard's authorized devices.", items: [type: "string"]],
@@ -1110,7 +1107,6 @@ def _getAllToolDefinitions_partDashboards() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean"], id: [type: "string"], type: [type: "string"],
                     name: [type: "string"], deviceIds: [type: "array"],
                     applied: [type: "array"], tileCount: [type: "integer"], layout: [type: "object"],
@@ -1126,7 +1122,6 @@ def _getAllToolDefinitions_partDashboards() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     dashboardId: [type: "string", description: "installedAppId to delete."],
                     confirm: [type: "boolean", description: "Must be true (requires a recent backup + user approval)."]
                 ],
@@ -1135,7 +1130,6 @@ def _getAllToolDefinitions_partDashboards() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean"], id: [type: "string"], type: [type: "string"],
                     message: [type: "string"], error: [type: "string"], note: [type: "string"]
                 ],
@@ -1148,7 +1142,6 @@ def _getAllToolDefinitions_partDashboards() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     dashboardId: [type: "string", description: "Source installedAppId."]
                 ],
                 required: ["dashboardId"]
@@ -1156,7 +1149,6 @@ def _getAllToolDefinitions_partDashboards() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean"], sourceId: [type: "string"], newId: [type: "string"],
                     type: [type: "string"], message: [type: "string"], error: [type: "string"], note: [type: "string"]
                 ],

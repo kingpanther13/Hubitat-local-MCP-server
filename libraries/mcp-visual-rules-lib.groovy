@@ -1,4 +1,4 @@
-library(name: "McpVisualRulesLib", namespace: "mcp", author: "kingpanther13", description: "Visual Rules Builder tool implementations for the MCP Rule Server (hub_get_visual_rule/hub_set_visual_rule/hub_delete_visual_rule); included by the main app.[[FLAT_TRIM]] Gateway entries and dispatch stay in the app; tool definitions live here alongside the impl.[[/FLAT_TRIM]]")
+library(name: "McpVisualRulesLib", namespace: "mcp", author: "kingpanther13", description: "Visual Rules Builder tool implementations for the MCP Rule Server (hub_get_visual_rule/hub_set_visual_rule/hub_delete_visual_rule); included by the main app. Gateway entries and dispatch stay in the app; tool definitions live here alongside the impl.")
 
 private Map _vrbAppExistence(Integer appId) {
     // GET /installedapp/json/<id> -> {id, name, type, disabled, user} for any installed app.
@@ -682,7 +682,6 @@ def _getAllToolDefinitions_partVisualRules() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     appId: [type: "integer", description: "Existing Visual Rule app id to edit. Omit to create."],
                     name: [type: "string", description: "Rule name. Required on create; renames on edit."],
                     definition: [type: "object", description: "Full rule definition (wholesale replacement).[[FLAT_TRIM]] Classic: {whenNodes, thenNodes, elseNodes}; graph: {version, nodes, edges}.[[/FLAT_TRIM]] Field schemas: hub_get_tool_guide(section='visual_rule_reference')."],
@@ -694,7 +693,6 @@ def _getAllToolDefinitions_partVisualRules() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean"],
                     appId: [type: "integer", description: "The created or edited rule's app id"],
                     format: [type: "string", description: "'classic' or 'graph' -- the serialization this rule speaks"],
@@ -719,7 +717,6 @@ def _getAllToolDefinitions_partVisualRules() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     appId: [type: "integer", description: "The Visual Rule app id from hub_get_visual_rule."],
                     confirm: [type: "boolean", description: "REQUIRED: must be true (recent backup + user approval)."]
                 ],
@@ -728,7 +725,6 @@ def _getAllToolDefinitions_partVisualRules() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean"],
                     appId: [type: "integer"],
                     name: [type: "string"],

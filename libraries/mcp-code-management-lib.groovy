@@ -1,4 +1,4 @@
-library(name: "McpCodeManagementLib", namespace: "mcp", author: "kingpanther13", description: "App/driver/library code management tool implementations (list/source/install/update/delete, app config + pages, device dependents) for the MCP Rule Server; #include'd by the main app.[[FLAT_TRIM]] Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.[[/FLAT_TRIM]]")
+library(name: "McpCodeManagementLib", namespace: "mcp", author: "kingpanther13", description: "App/driver/library code management tool implementations (list/source/install/update/delete, app config + pages, device dependents) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
 def toolListHubApps(args) {
 
@@ -1508,6 +1508,10 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
                     sourceLength: sourceCode.length(),
                     at: now()
                 ]
+                if (args.__packageRequestId != null) {
+                    stash.requestId = args.__packageRequestId.toString()
+                    stash.packageRef = atomicState.packageDeployInFlight?.ref
+                }
                 // A dropped (empty) response is the expected self-update signature, but the success
                 // is inferred, not hub-confirmed -- mark it so consumers can choose to re-verify.
                 if (success && parsed == null) stash.assumed = true
@@ -1610,7 +1614,7 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
         mcpLogError("hub-admin", "${type} update failed", e)
         if (isSelfUpdate) {
             try {
-                atomicState.lastSelfDeploy = [
+                def stash = [
                     success: false,
                     error: "${type.capitalize()} update failed: ${e.message}",
                     sourceMode: sourceMode,
@@ -1618,6 +1622,11 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
                     sourceLength: (sourceCode != null ? sourceCode.length() : 0),
                     at: now()
                 ]
+                if (args.__packageRequestId != null) {
+                    stash.requestId = args.__packageRequestId.toString()
+                    stash.packageRef = atomicState.packageDeployInFlight?.ref
+                }
+                atomicState.lastSelfDeploy = stash
             } catch (Exception stashErr) {
                 mcpLog("error", "hub-admin", "lastSelfDeploy stash write failed -- self-deploy outcome record lost: ${stashErr}")
             }
@@ -2613,11 +2622,11 @@ def _getAllToolDefinitions_partCodeManagement() {
         // get_hub_details merged into hub_get_info (core tool)
         [
             name: "hub_list_apps",
-            description: """List apps on the hub — running instances or installed app code/types (see scope).[[FLAT_TRIM]] Per-app event history: hub_list_device_events with appId. Requires the Read master.[[/FLAT_TRIM]]""",
+            description: """List apps on the hub — running instances or installed app code/types (see scope). Per-app event history: hub_list_device_events with appId. Requires the Read master.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    scope: [type: "string", enum: ["instances", "types"], description: "What to list.[[FLAT_TRIM]] 'instances' (default) = running app instances with parent/child tree; 'types' = installed app code library / available app types.[[/FLAT_TRIM]]", default: "instances"],
+                    scope: [type: "string", enum: ["instances", "types"], description: "What to list. 'instances' (default) = running app instances with parent/child tree; 'types' = installed app code library / available app types.", default: "instances"],
                     filter: [type: "string", enum: ["all", "builtin", "user", "disabled", "parents", "children"], description: "scope='instances' only: category filter."],
                     includeHidden: [type: "boolean", description: "scope='instances' only: include hidden apps (typically Hubitat internal). Default: false", default: false],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded (subject to 120KB guard); pass \"\" for the first page, iterate nextCursor (page size 50)."]
@@ -2750,7 +2759,7 @@ After the code installs, create a running instance with a SECOND call: hub_creat
 
 Verifies the install compiled -- returns success=false with the error if it didn't. Requires Write master + confirm + backup <24h. Returns the new app ID.
 [[FLAT_TRIM]]
-A transport drop (relay ceiling / client timeout) can lose the response while the hub still commits this write; pass opToken, and on a drop re-issue the call with the SAME opToken to poll/replay the committed result instead of re-running it -- see hub_get_tool_guide(section='slow_ops').
+A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
 [[/FLAT_TRIM]]
 """,
             inputSchema: [
@@ -2761,14 +2770,12 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
                     codeAppId: [type: "integer", description: "Second-step mode: instantiate already-installed code (codeAppId from a prior call) and commit the install; not combinable with source/sourceFile/importUrl."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["confirm"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the install/instantiation succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     appId: [description: "New app code ID (code-install mode)"],
@@ -2797,7 +2804,7 @@ Supply the code via exactly one of source / sourceFile / importUrl (mutually exc
 
 Verifies the install compiled: returns success=false with the error if the hub accepted the request but the driver failed to compile. Requires Write master + confirm + backup <24h. Returns new driver ID(s).
 [[FLAT_TRIM]]
-A transport drop (relay ceiling / client timeout) can lose the response while the hub still commits this write; pass opToken, and on a drop re-issue the call with the SAME opToken to poll/replay the committed result instead of re-running it -- see hub_get_tool_guide(section='slow_ops').
+A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
 [[/FLAT_TRIM]]
 """,
             inputSchema: [
@@ -2808,7 +2815,7 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
                     installs: [
                         type: "array",
-                        description: "Bulk mode: one round-trip for many drivers.[[FLAT_TRIM]] Each entry {source|sourceFile|importUrl}; cannot mix with single-driver fields; continue-on-error.[[/FLAT_TRIM]]",
+                        description: "Bulk mode: one round-trip for many drivers. Each entry {source|sourceFile|importUrl}; cannot mix with single-driver fields; continue-on-error.",
                         items: [
                             type: "object",
                             properties: [
@@ -2819,14 +2826,12 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
                         ]
                     ],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["confirm"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the install (or all bulk installs) succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     driverId: [description: "New driver code ID (single-driver mode)"],
@@ -2860,7 +2865,7 @@ Auto-backs up before modifying. Requires Write master + confirm + backup <24h.[[
 
 Self-update guard: refuses to overwrite the MCP server's own app source or OAuth unless Developer Mode is on.[[/FLAT_TRIM]]
 [[FLAT_TRIM]]
-A transport drop (relay ceiling / client timeout) can lose the response while the hub still commits this write; pass opToken, and on a drop re-issue the call with the SAME opToken to poll/replay the committed result instead of re-running it -- see hub_get_tool_guide(section='slow_ops').
+A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
 [[/FLAT_TRIM]]
 """,
             inputSchema: [
@@ -2872,17 +2877,15 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
                     resave: [type: "boolean", description: "Re-save the current source without changes; runs entirely on-hub."],
                     expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] Stringified integers coerced; explicit null rejected.[[/FLAT_TRIM]]"],
-                    triggerUpdated: [type: "integer", description: "OPTIONAL: running instance appId to fire updated() on after the code save, so its subscriptions/schedules/atomicState re-initialize against the new code. [[FLAT_TRIM]]Mechanically this submits the app's mainPage 'Done' form, which RE-SENDS EVERY input on that page -- the tool rebuilds them from the instance's live settings so nothing is blanked, and REFUSES to submit (updatedFired:false, partial:true) if it cannot read them, rather than risk clearing device selections. On failure the code save still stands: success stays true with partial:true, updatedFired:false and repairHints.[[/FLAT_TRIM]] Omit it to match what the hub's own editor Save does (no lifecycle call)."],
+                    triggerUpdated: [type: "integer", description: "OPTIONAL: running instance appId to fire updated() on after the code save, so its subscriptions/schedules/atomicState re-initialize against the new code. Mechanically this submits the app's mainPage 'Done' form, which RE-SENDS EVERY input on that page -- the tool rebuilds them from the instance's live settings so nothing is blanked, and REFUSES to submit (updatedFired:false, partial:true) if it cannot read them, rather than risk clearing device selections. On failure the code save still stands: success stays true with partial:true, updatedFired:false and repairHints. Omit it to match what the hub's own editor Save does (no lifecycle call)."],
                     oauth: [type: "object", description: "OPTIONAL: enable/configure OAuth on this app (apps only); e.g. {enabled:true}. Full shape: hub_get_tool_guide(section='hub_admin_write')."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["appId", "confirm"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the update succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     appId: [description: "App ID updated"],
@@ -2911,7 +2914,7 @@ Supply the new code via exactly one of source / sourceFile / importUrl, or resav
 
 Auto-backs up before modifying. Requires Write master + confirm + backup <24h.
 [[FLAT_TRIM]]
-A transport drop (relay ceiling / client timeout) can lose the response while the hub still commits this write; pass opToken, and on a drop re-issue the call with the SAME opToken to poll/replay the committed result instead of re-running it -- see hub_get_tool_guide(section='slow_ops').
+A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
 [[/FLAT_TRIM]]
 """,
             inputSchema: [
@@ -2925,7 +2928,7 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
                     expectedVersion: [type: "integer", description: "Optional optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] In bulk mode, put it inside each updates[] entry.[[/FLAT_TRIM]]"],
                     updates: [
                         type: "array",
-                        description: "Bulk mode: one round-trip for many drivers.[[FLAT_TRIM]] Each entry {driverId, sourceFile|source|importUrl|resave, optional expectedVersion}; cannot mix with single-driver fields; continue-on-error.[[/FLAT_TRIM]]",
+                        description: "Bulk mode: one round-trip for many drivers. Each entry {driverId, sourceFile|source|importUrl|resave, optional expectedVersion}; cannot mix with single-driver fields; continue-on-error.",
                         items: [
                             type: "object",
                             properties: [
@@ -2940,14 +2943,12 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
                         ]
                     ],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["confirm"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the update (or all bulk updates) succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     driverId: [description: "Driver ID updated (single-driver mode)"],
@@ -2988,7 +2989,6 @@ Tell the user the item name/ID, warn it's permanent, get confirmation. Requires 
                 properties: [
                     type: [type: "string", enum: ["app", "driver", "library"], description: "What to delete."],
                     item_id: [type: "string", description: "The app/driver/library ID to delete."],
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
                 ],
                 required: ["type", "item_id", "confirm"]
@@ -2996,7 +2996,6 @@ Tell the user the item name/ID, warn it's permanent, get confirmation. Requires 
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the deletion succeeded"],
                     message: [type: "string", description: "Human-readable result, including backup status"],
                     appId: [description: "Deleted app ID (type='app')"],
@@ -3019,7 +3018,7 @@ Provide exactly one of source / sourceFile / importUrl (see each param).
 
 Source must include a library() block with name/namespace/author/description (all required). The hub does NOT compile-check libraries at install -- syntax errors surface only when an app/driver #includes it. Requires Write master + confirm + backup <24h. Returns new libraryId.
 [[FLAT_TRIM]]
-A transport drop (relay ceiling / client timeout) can lose the response while the hub still commits this write; pass opToken, and on a drop re-issue the call with the SAME opToken to poll/replay the committed result instead of re-running it -- see hub_get_tool_guide(section='slow_ops').
+A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
 [[/FLAT_TRIM]]
 """,
             inputSchema: [
@@ -3029,14 +3028,12 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
                     sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["confirm"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the library installed"],
                     message: [type: "string", description: "Human-readable result"],
                     libraryId: [description: "New library ID"],
@@ -3059,7 +3056,7 @@ Supply the new code via exactly one of source / sourceFile / importUrl, or resav
 
 Auto-backs up before modifying. Requires Write master + confirm + backup <24h.
 [[FLAT_TRIM]]
-A transport drop (relay ceiling / client timeout) can lose the response while the hub still commits this write; pass opToken, and on a drop re-issue the call with the SAME opToken to poll/replay the committed result instead of re-running it -- see hub_get_tool_guide(section='slow_ops').
+A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
 [[/FLAT_TRIM]]
 """,
             inputSchema: [
@@ -3071,14 +3068,12 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
                     resave: [type: "boolean", description: "Re-save the current source without changes. Runs entirely on-hub."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                    opToken: [type: "string", description: "Optional idempotency token (8-128 chars, A-Za-z0-9._-).[[FLAT_TRIM]] Omit it to get a server-assigned auto-... token back. Re-issuing token-only replays the committed result after a dropped response (records last ~24h); protocol: hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["libraryId", "confirm"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the update succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     libraryId: [description: "Library ID updated"],
@@ -3103,7 +3098,7 @@ Get appId from hub_list_apps (scope='instances') or hub_list_rules.[[FLAT_TRIM]]
             inputSchema: [
                 type: "object",
                 properties: [
-                    appId: [type: "string", description: "Installed-app ID (decimal).[[FLAT_TRIM]] From hub_list_apps (scope='instances'), hub_list_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>).[[/FLAT_TRIM]]"],
+                    appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_apps (scope='instances'), hub_list_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."],
                     pageName: [type: "string", description: "Optional sub-page name for multi-page apps; main page when omitted. Call hub_list_app_pages to discover available names."],
                     includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map (default false). Set true only for power-user inspection.", default: false],
                     summary: [type: "boolean", description: "Fast identity-only read: returns the thin app record (id, name, type, disabled, user), no config page; pageName/includeSettings ignored.", default: false]

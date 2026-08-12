@@ -1,4 +1,4 @@
-library(name: "McpSystemLib", namespace: "mcp", author: "kingpanther13", description: "Hub system tool implementations (hub info/modes/HSM/backup/reboot/shutdown/firmware-update) for the MCP Rule Server; #include'd by the main app.[[FLAT_TRIM]] Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.[[/FLAT_TRIM]]")
+library(name: "McpSystemLib", namespace: "mcp", author: "kingpanther13", description: "Hub system tool implementations (hub info/modes/HSM/backup/reboot/shutdown/firmware-update) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
 // /hub2/hubData is the data the modern hub UI computes server-side. It carries the hub's OWN
 // authoritative health alerts plus the pending-platform-update flag (what the UI "bell" reads) --
@@ -56,20 +56,6 @@ def _healthAlertsFromHub2(hub2) {
 }
 
 def toolGetHubInfo(args = null) {
-    // Validate BEFORE anything with a side effect. identifyHub blinks the hub LED partway
-    // through this tool, so validating recentOpsLimit at its point of use meant a call with
-    // both arguments blinked the LED and THEN returned -32602 -- a rejected call that still
-    // did something to the hub, which the error contract forbids.
-    Integer recentOpsCap = 25
-    if (args?.recentOpsLimit != null) {
-        Integer parsedLimit = null
-        try { parsedLimit = args.recentOpsLimit.toString().trim() as Integer }
-        catch (Exception ignored) { parsedLimit = null }
-        if (parsedLimit == null || parsedLimit < 1) {
-            throw new IllegalArgumentException("recentOpsLimit must be an integer >= 1 (got: '${args.recentOpsLimit}').")
-        }
-        recentOpsCap = parsedLimit
-    }
     def hub = location.hub
     def info = [
         temperatureScale: location.temperatureScale
@@ -223,35 +209,6 @@ def toolGetHubInfo(args = null) {
         def ha = _healthAlertsFromHub2(hub2)
         if (ha != null) info.healthAlerts = ha
     }
-    if (args?.includeRecentOps == true) {
-        // The op-record journal: every tokened call PLUS every auto-recorded
-        // untokened write (dispatch assigns an auto-token). This is the
-        // did-my-last-command-land surface for a client whose response was lost
-        // and who never invented a token -- find the record here, then poll its
-        // token (token-only re-issue) to replay the buffered result.
-        def recs = (atomicState.opTokens instanceof Map) ? atomicState.opTokens : [:]
-        def rows = recs.collect { k, v ->
-            (v instanceof Map) ? [
-                opToken: k, tool: v.tool, state: v.state,
-                startedAt: v.startedAt, startedAtText: (v.startedAt != null ? formatTimestamp(v.startedAt) : null),
-                finishedAt: v.finishedAt, isError: v.isError,
-                auto: k.toString().startsWith("auto-")
-            ] : null
-        }.findAll { it != null }
-        // A write token replays that write's buffered result, so write records stay
-        // hidden while the Write master is off.
-        if (settings.enableWrite == false) {
-            // Hoisted: the getter is an aggregator that concatenates ~20 library name
-            // chunks, and inside the closure it rebuilt that whole set once per row.
-            def readOnlyNames = getReadOnlyToolNames()
-            rows = rows.findAll { readOnlyNames.contains(it.tool) }
-        }
-        rows = rows.sort { -((it.startedAt ?: 0) as Long) }
-        Integer cap = recentOpsCap
-        info.recentOps = rows.take(cap)
-        info.recentOpsTotal = rows.size()
-    }
-
     // Opt-in MCP Rule Server APP version check on GitHub (distinct from platformUpdate, the hub's
     // own firmware). Off by default: it is asynchronous (the first call may return latestVersion
     // 'unknown (check in progress)' -- call again in a few seconds) AND reaches the open internet,
@@ -952,8 +909,6 @@ def _getAllToolDefinitions_partSystem() {
                 properties: [
                     identifyHub: [type: "boolean", description: "Blink the hub LED to identify it.", default: false],
                     includeHealthAlerts: [type: "boolean", description: "Include the full health-alerts block.", default: false],
-                    includeRecentOps: [type: "boolean", description: "Include the recent-operations journal.[[FLAT_TRIM]] Every tokened call plus every auto-recorded untokened WRITE (the server assigns an auto-opToken to each). If a write's response was lost, find its record here and re-issue token-only with its opToken to replay the buffered result instead of re-running the write.[[/FLAT_TRIM]]", default: false],
-                    recentOpsLimit: [type: "integer", description: "Max recentOps rows (default 25)."],
                     includeAppUpdate: [type: "boolean", description: "Also check GitHub for a newer MCP Rule Server APP version, returned under appUpdate.", default: false]
                 ]
             ],
@@ -988,7 +943,7 @@ def _getAllToolDefinitions_partSystem() {
                     writeEnabled: [type: "boolean", description: "Write master toggle state (default ON)"],
                     customRuleEngineEnabled: [type: "boolean", description: "Custom rule engine toggle state"],
                     developerModeEnabled: [type: "boolean", description: "Developer Mode toggle state"],
-                    lastSelfDeploy: [type: "object", description: "issue #237: outcome of the last hub_update_app self-update (the MCP server updating its own app). Recovers the result that can't return on the deploy call (success reloads the app; a big-file compile failure 504s). Keys: success (bool), error (hub's verbatim message or null), sourceMode, importUrl, sourceLength, at (epoch ms), ageMs (ms since `at`, computed at read). PERSISTS in atomicState across app reloads -- it is NOT cleared on update, so a read can return a STALE record from an earlier deploy; check ageMs (or baseline `at` across your own deploy) for freshness before trusting it. Absent until the first self-update."],
+                    lastSelfDeploy: [type: "object", description: "issue #237: outcome of the last hub_update_app self-update (the MCP server updating its own app). Recovers the result that can't return on the deploy call (success reloads the app; a big-file compile failure 504s). Keys: success (bool), error (hub's verbatim message or null), sourceMode, importUrl, sourceLength, at (epoch ms), ageMs (ms since `at`, computed at read), and requestId for hub_update_package workers. PERSISTS in atomicState across app reloads -- it is NOT cleared on update, so a read can return a STALE or unrelated direct-self-update record. For hub_update_package, trust only a record whose requestId matches the acceptance response; for direct hub_update_app, baseline `at` across your own deploy. Absent until the first self-update."],
                     headerValidation: [type: "object", description: "Transport header readability, recorded on the first MCP request served. Keys: requestHeadersReadable (bool), originValidation, modernEraDetection, and originAllowlist when the hub LAN IP could not be read. When requestHeadersReadable is false the firmware does not expose request.headers, which INACTIVATES Origin validation (the DNS-rebinding check) and makes every request be served as legacy-era regardless of its MCP-Protocol-Version header. Absent until the first request."],
                     name: [type: "string", description: "Hub name (Read master only)"],
                     localIP: [type: "string", description: "Hub local IP (Read master only)"],
@@ -1003,9 +958,7 @@ def _getAllToolDefinitions_partSystem() {
                     platformUpdate: [type: "object", description: "Pending HUB FIRMWARE/platform update from /hub2/hubData: {available (bool or null), currentVersion, availableVersion (when available), note (only when available=null)}. Distinct from the appUpdate MCP-server-app check; available=null means /hub2/hubData was unreadable/unrecognized and the note explains why. Install a pending update with hub_update_firmware."],
                     appUpdate: [type: "object", description: "MCP Rule Server APP version check; present only when includeAppUpdate=true. {installedVersion, latestVersion ('unknown (check in progress)' while the async GitHub check is pending), updateAvailable, lastChecked}. Separate from platformUpdate (the hub's own firmware)."],
                     safeMode: [type: "boolean", description: "Whether the hub is running in Safe Mode (from /hub2/hubData). Absent if /hub2/hubData was unreadable."],
-                    healthAlerts: [type: "object", description: "Present only when includeHealthAlerts=true: the hub's health alerts from /hub2/hubData -- {safeMode, active (list of currently-firing alert flags), details (full alert map + message strings)}."],
-                    recentOps: [type: "array", description: "Present only when includeRecentOps=true: recent op records, newest first -- {opToken, tool, state, startedAt, startedAtText, finishedAt, isError, auto}.", items: [type: "object"]],
-                    recentOpsTotal: [type: "integer", description: "Present only when includeRecentOps=true: how many records matched THIS call (write-master filtering applied), before recentOpsLimit caps the returned rows -- not the size of the whole stored journal."]
+                    healthAlerts: [type: "object", description: "Present only when includeHealthAlerts=true: the hub's health alerts from /hub2/hubData -- {safeMode, active (list of currently-firing alert flags), details (full alert map + message strings)}."]
                 ]
             ]
         ],
@@ -1049,7 +1002,6 @@ def _getAllToolDefinitions_partSystem() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the action succeeded"],
                     action: [type: "string", description: "The action performed"],
                     modes: [type: "array", description: "Resulting mode list (create/rename/delete)", items: [type: "object"]],
@@ -1075,7 +1027,6 @@ def _getAllToolDefinitions_partSystem() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the change succeeded"],
                     manager: [type: "string", description: "The manager that was selected"],
                     conditionsUpdated: [type: "boolean", description: "True if conditions were applied"],
@@ -1117,7 +1068,6 @@ def _getAllToolDefinitions_partSystem() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the HSM arm event was sent"],
                     previousStatus: [type: "string", description: "HSM status before the change"],
                     newMode: [type: "string", description: "Requested HSM mode"]
@@ -1155,7 +1105,6 @@ def _getAllToolDefinitions_partSystem() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the settings were applied"],
                     applied: [type: "array", description: "The fields that were changed; may include darkMode and the network legs (network.staticIp / network.dhcp / network.ethernetAutoneg / network.wifi)", items: [type: "string"]],
                     error: [type: "string", description: "Failure reason (success=false)"],
@@ -1179,7 +1128,6 @@ PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the reboot was initiated"],
                     message: [type: "string", description: "Human-readable result"],
                     lastBackup: [type: "string", description: "Formatted timestamp of last backup"],
@@ -1204,7 +1152,6 @@ PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user it won't restart automaticall
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the shutdown was initiated"],
                     message: [type: "string", description: "Human-readable result"],
                     lastBackup: [type: "string", description: "Formatted timestamp of last backup"],
@@ -1229,7 +1176,6 @@ PRE-FLIGHT (apply): 1) Ensure backup <24h old 2) Confirm an update is actually p
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the install was initiated (or the status poll ran)"],
                     statusOnly: [type: "boolean", description: "True when this was a status poll (no install)"],
                     status: [description: "The /hub/cloud/checkUpdateStatus payload; present for statusOnly. Usually a parsed object (e.g. {status:'IDLE'}) but can be a plain string if the hub returns a non-JSON body (e.g. during the reboot)."],

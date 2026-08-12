@@ -41228,8 +41228,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def def_ = script.getAllToolDefinitions().find { it.name == 'hub_set_native_app' }
         def props = def_.inputSchema.properties.keySet()
 
-        then: "the generic upsert params, plus the generic classic-page walkStep walker, the buttonRule create helper (issue #185), and the opToken idempotency handle"
-        props == (['appId', 'appType', 'name', 'settings', 'button', 'pageName', 'stateAttribute', 'buttonRule', 'walkStep', 'deployment', 'opToken', 'confirm'] as Set)
+        then: "the generic upsert params, plus the generic classic-page walkStep walker and buttonRule create helper (issue #185)"
+        props == (['appId', 'appType', 'name', 'settings', 'button', 'pageName', 'stateAttribute', 'buttonRule', 'walkStep', 'confirm'] as Set)
 
         and: "the FAT RM trigger/action authoring shortcuts still stay OUT of the schema (use hub_set_rule)"
         ['addTrigger', 'addTriggers', 'addAction', 'addActions', 'addRequiredExpression',
