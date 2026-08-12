@@ -6061,86 +6061,119 @@ class TestRunner:
             running = _recent_running()
         assert not running, f"earlier marker-tracked writes did not drain before cap test: {running}"
 
-        app_id = self._create_native_rule("WriteCapProbe")
-        self.client.call_tool("hub_manage_mcp", {
-            "tool": "hub_update_mcp_settings",
-            "args": {"settings": {"maxConcurrentWrites": 1}, "confirm": True},
-        })
-        first_token = self._next_op_token()
-        second_token = self._next_op_token()
-        first: dict = {}
-        first_terminal = False
         bg_client = HubitatMcpClient(self.client.hub_url, self.client.app_id,
                                      self.client.access_token)
-        bg_client.initialize()
-
-        def slow_write() -> None:
-            try:
-                first["raw"] = bg_client._send("tools/call", {
-                    "name": "hub_manage_rule_machine",
-                    "arguments": {"tool": "hub_set_rule", "args": {
-                        "appId": app_id, "confirm": True, "opToken": first_token,
-                        "addAction": {"capability": "log", "message": "cap probe first"},
-                    }},
-                })
-            except BaseException as exc:
-                first["error"] = exc
-
-        worker = threading.Thread(target=slow_write, daemon=True)
+        cap_enabled = False
         try:
-            worker.start()
-
-            # Synchronize on the server marker, not a sleep: seeing this exact token running
-            # proves the following refusal cannot be supplied by an unrelated stale record.
-            marker_deadline = time.monotonic() + 15.0
-            marker = None
-            while time.monotonic() < marker_deadline:
-                marker = _body(self.client._send("tools/call", {
-                    "name": "hub_set_rule", "arguments": {"opToken": first_token},
-                }))
-                if marker.get("status") == "running":
-                    break
-                if marker.get("replayed") is True:
-                    break
-                time.sleep(0.5)
-            assert marker and marker.get("status") == "running", \
-                f"first write was never observable in flight: {marker}"
-
-            refused_raw = self.client._send("tools/call", {
-                "name": "hub_manage_rule_machine",
-                "arguments": {"tool": "hub_set_rule", "args": {
-                    "appId": app_id, "confirm": True, "opToken": second_token,
-                    "addAction": {"capability": "log", "message": "cap probe second"},
-                }},
-            })
-            refused = _body(refused_raw)
-            assert refused_raw.get("isError") is True, \
-                f"the write-cap refusal must ride isError: {refused_raw}"
-            assert refused.get("status") == "too_many_writes_in_flight", \
-                f"a write arriving while the slot is occupied must be refused: {refused}"
-            assert any(row.get("opToken") == first_token
-                       for row in (refused.get("inFlight") or [])), \
-                f"the refusal did not name the write proven in flight: {refused}"
-
-            terminal = self._poll_op_result(first_token, deadline_s=90.0)
-            assert isinstance(terminal, dict) and terminal.get("replayed") is True, \
-                f"the first write did not reach a replayable terminal state: {terminal}"
-            first_terminal = True
-        finally:
-            if not first_terminal:
-                first_terminal = isinstance(
-                    self._poll_op_result(first_token, deadline_s=90.0), dict)
-            worker.join(timeout=15.0)
-            if worker.is_alive():
-                print(f"    [WARN] background write on {app_id} did not return after its token settled")
-            elif first.get("error") and "504" not in str(first["error"]):
-                print(f"    [WARN] background write on {app_id} raised: {first['error']!r}")
-            bg_client.session.close()
+            bg_client.initialize()
+            # Mark this before the call: even if the idempotent settings response is lost
+            # after the hub applies it, the outer cleanup must still disable the cap.
+            cap_enabled = True
             self.client.call_tool("hub_manage_mcp", {
                 "tool": "hub_update_mcp_settings",
-                "args": {"settings": {"maxConcurrentWrites": 0}, "confirm": True},
+                "args": {"settings": {"maxConcurrentWrites": 1}, "confirm": True},
             })
-            self._delete_native(app_id)
+            last_marker = None
+            for attempt in range(1, 4):
+                app_id = None
+                first_token = None
+                first: dict = {}
+                first_terminal = False
+                worker = None
+                try:
+                    # A completed first write cannot prove concurrent refusal. Give each
+                    # retry a fresh app label and token so deferred fixture deletion and the
+                    # op replay journal cannot collide with the previous attempt.
+                    app_id = self._create_native_rule(f"WriteCapProbe{attempt}")
+                    first_token = self._next_op_token()
+
+                    def slow_write() -> None:
+                        try:
+                            first["raw"] = bg_client._send("tools/call", {
+                                "name": "hub_manage_rule_machine",
+                                "arguments": {"tool": "hub_set_rule", "args": {
+                                    "appId": app_id, "confirm": True, "opToken": first_token,
+                                    "addAction": {"capability": "log", "message": "cap probe first"},
+                                }},
+                            })
+                        except BaseException as exc:
+                            first["error"] = exc
+
+                    worker = threading.Thread(target=slow_write, daemon=True)
+                    worker.start()
+
+                    # Synchronize on the server marker, not a sleep: seeing this exact token
+                    # running proves the following refusal cannot be supplied by an unrelated
+                    # stale record. A replay is terminal, so it is a missed overlap window and
+                    # must start a fresh attempt rather than weaken the assertion.
+                    marker_deadline = time.monotonic() + 15.0
+                    marker = None
+                    while time.monotonic() < marker_deadline:
+                        marker = _body(self.client._send("tools/call", {
+                            "name": "hub_set_rule", "arguments": {"opToken": first_token},
+                        }))
+                        if marker.get("status") == "running":
+                            break
+                        if marker.get("replayed") is True:
+                            break
+                        time.sleep(0.5)
+                    last_marker = marker
+                    if marker and marker.get("replayed") is True:
+                        first_terminal = True
+                        print(f"    write-cap probe attempt {attempt} completed before its "
+                              "running marker was observed -- retrying with a fresh fixture")
+                        continue
+                    assert marker and marker.get("status") == "running", \
+                        f"first write was never observable in flight: {marker}"
+
+                    second_token = self._next_op_token()
+                    refused_raw = self.client._send("tools/call", {
+                        "name": "hub_manage_rule_machine",
+                        "arguments": {"tool": "hub_set_rule", "args": {
+                            "appId": app_id, "confirm": True, "opToken": second_token,
+                            "addAction": {"capability": "log", "message": "cap probe second"},
+                        }},
+                    })
+                    refused = _body(refused_raw)
+                    assert refused_raw.get("isError") is True, \
+                        f"the write-cap refusal must ride isError: {refused_raw}"
+                    assert refused.get("status") == "too_many_writes_in_flight", \
+                        f"a write arriving while the slot is occupied must be refused: {refused}"
+                    assert any(row.get("opToken") == first_token
+                               for row in (refused.get("inFlight") or [])), \
+                        f"the refusal did not name the write proven in flight: {refused}"
+
+                    terminal = self._poll_op_result(first_token, deadline_s=90.0)
+                    assert isinstance(terminal, dict) and terminal.get("replayed") is True, \
+                        f"the first write did not reach a replayable terminal state: {terminal}"
+                    first_terminal = True
+                    return
+                finally:
+                    if first_token and not first_terminal:
+                        first_terminal = isinstance(
+                            self._poll_op_result(first_token, deadline_s=90.0), dict)
+                    if worker is not None:
+                        worker.join(timeout=15.0)
+                        if worker.is_alive():
+                            print(f"    [WARN] background write on {app_id} did not return "
+                                  "after its token settled")
+                        elif first.get("error") and "504" not in str(first["error"]):
+                            print(f"    [WARN] background write on {app_id} raised: "
+                                  f"{first['error']!r}")
+                    if app_id is not None:
+                        self._delete_native(app_id)
+            raise AssertionError(
+                "first write completed before its running marker was observable in all "
+                f"3 write-cap probe attempts; last marker: {last_marker}")
+        finally:
+            try:
+                if cap_enabled:
+                    self.client.call_tool("hub_manage_mcp", {
+                        "tool": "hub_update_mcp_settings",
+                        "args": {"settings": {"maxConcurrentWrites": 0}, "confirm": True},
+                    })
+            finally:
+                bg_client.session.close()
 
     @test("op_replay")
     def test_op_replay_multi_patch_completes_via_recovery(self) -> None:

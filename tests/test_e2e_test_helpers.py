@@ -1,16 +1,11 @@
-"""pytest unit tests for pure helper functions in tests/e2e_test.py
+"""pytest unit tests for helpers and transport-isolated TestRunner behavior.
 
-Scanned e2e_test.py for testable pure helpers; found one:
-  - _inject_device_id(obj, dev_id): replaces 'PLACEHOLDER' device IDs in a rule dict
-
-All other code in e2e_test.py requires a live Hubitat hub (HubitatMcpClient,
-TestRunner, load_config) and cannot be exercised without network access.
 Importing the module itself is skipped if the 'requests' library is not available,
 which keeps a bare `pytest` invocation usable; CI installs requests so this module
-actually runs there (it did not until the install line was fixed, which is how two
-broken fixtures in here went unnoticed).
+actually runs there.
 """
 
+import json
 import os
 import sys
 
@@ -24,6 +19,96 @@ import pytest
 requests = pytest.importorskip("requests", reason="'requests' not installed; skipping e2e helpers")
 
 import e2e_test as et  # noqa: E402 -- must follow the importorskip above (e2e_test imports requests at module level)
+
+
+def _raw_tool_body(body, *, is_error=False):
+    return {
+        "isError": is_error,
+        "content": [{"type": "text", "text": json.dumps(body)}],
+    }
+
+
+def test_write_cap_retries_when_first_write_finishes_before_running_is_observed(monkeypatch):
+    """A completed marker is a missed overlap window, so the probe must retry with a
+    fresh app/token and prove refusal only against a marker observed running."""
+    op_tokens = iter(["first.attempt.1", "first.attempt.2", "second.attempt.2"])
+    created_suffixes = []
+    deleted_app_ids = []
+    polled_tokens = []
+
+    class FakeMainClient:
+        hub_url = "http://hub.invalid"
+        app_id = "1"
+        access_token = "secret"
+
+        def __init__(self):
+            self.setting_values = []
+
+        def call_tool(self, name, arguments):
+            if name == "hub_get_info":
+                return {"recentOps": []}
+            if name == "hub_manage_mcp":
+                value = arguments["args"]["settings"]["maxConcurrentWrites"]
+                self.setting_values.append(value)
+                return {"success": True}
+            raise AssertionError(f"unexpected call_tool request: {name} {arguments}")
+
+        def _send(self, method, params):
+            assert method == "tools/call"
+            name = params["name"]
+            arguments = params["arguments"]
+            if name == "hub_set_rule":
+                token = arguments["opToken"]
+                if token == "first.attempt.1":
+                    return _raw_tool_body({"success": True, "replayed": True})
+                if token == "first.attempt.2":
+                    return _raw_tool_body({"status": "running"})
+            if name == "hub_manage_rule_machine":
+                assert arguments["args"]["opToken"] == "second.attempt.2"
+                return _raw_tool_body({
+                    "status": "too_many_writes_in_flight",
+                    "inFlight": [{"opToken": "first.attempt.2"}],
+                }, is_error=True)
+            raise AssertionError(f"unexpected raw request: {params}")
+
+    class FakeBackgroundClient:
+        def __init__(self, hub_url, app_id, access_token):
+            assert (hub_url, app_id, access_token) == (
+                "http://hub.invalid", "1", "secret")
+            self.session = type("Session", (), {"close": lambda self: None})()
+
+        def initialize(self):
+            return None
+
+        def _send(self, method, params):
+            assert method == "tools/call"
+            assert params["arguments"]["args"]["opToken"].startswith("first.attempt.")
+            return _raw_tool_body({"success": True})
+
+    client = FakeMainClient()
+    runner = object.__new__(et.TestRunner)
+    runner.client = client
+
+    def create_native_rule(suffix):
+        created_suffixes.append(suffix)
+        return 100 + len(created_suffixes)
+
+    def poll_op_result(token, **_kwargs):
+        polled_tokens.append(token)
+        return {"success": True, "replayed": True}
+
+    runner._create_native_rule = create_native_rule
+    runner._delete_native = deleted_app_ids.append
+    runner._next_op_token = lambda: next(op_tokens)
+    runner._poll_op_result = poll_op_result
+    monkeypatch.setattr(et, "HubitatMcpClient", FakeBackgroundClient)
+
+    et.TestRunner.test_write_cap_refuses_a_concurrent_marker_tracked_write(runner)
+
+    assert created_suffixes == ["WriteCapProbe1", "WriteCapProbe2"]
+    assert deleted_app_ids == [101, 102]
+    assert polled_tokens == ["first.attempt.2"]
+    assert client.setting_values == [1, 0]
 
 # ---------------------------------------------------------------------------
 # _inject_device_id
