@@ -718,10 +718,12 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         def entered = new CountDownLatch(1)
         def release = new CountDownLatch(1)
         def leafEntries = new AtomicInteger(0)
-        Closure confirm = { value -> leafEntries.incrementAndGet() }
-        script.metaClass.requireDestructiveConfirm = confirm
-        peer.metaClass.requireDestructiveConfirm = confirm
+        // runIn is reached only after the real package leaf has passed its
+        // Developer Mode, confirm/backup, and package-marker admission gates.
+        // Count that concrete boundary; an internal compiled self-call such as
+        // requireDestructiveConfirm cannot be observed through metaClass.
         RUN_IN_OVERRIDE.set({ List call ->
+            leafEntries.incrementAndGet()
             runInCalls << call
             entered.countDown()
             release.await(5, TimeUnit.SECONDS)

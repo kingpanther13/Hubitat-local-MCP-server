@@ -79,6 +79,10 @@ abstract class HarnessSpec extends Specification {
     // The lane replaces the root HarnessSpec with this scaffold, so these
     // controls must exist here as well as in src/test/groovy/support.
     protected static final java.util.concurrent.atomic.AtomicReference NOW_OVERRIDE = new java.util.concurrent.atomic.AtomicReference(null)
+    // Optional per-feature pause seam. HubitatAppScript.pauseExecution delegates
+    // directly to AppExecutor, so a script metaClass override does not reliably
+    // intercept compiled peer instances.
+    protected static final java.util.concurrent.atomic.AtomicReference PAUSE_EXECUTION_OVERRIDE = new java.util.concurrent.atomic.AtomicReference(null)
     protected static final java.util.concurrent.atomic.AtomicReference RUN_IN_OVERRIDE = new java.util.concurrent.atomic.AtomicReference(null)
 
     @Shared protected AppExecutor appExecutor
@@ -147,6 +151,10 @@ abstract class HarnessSpec extends Specification {
                 "call and relax this stub. See ci/groovy2x-spock/scaffold/support/HarnessSpec.groovy.")
         }
         mock.unsubscribe() >> { UNSUBSCRIBE_CALL_COUNT.incrementAndGet() }
+        mock.pauseExecution(_) >> { args ->
+            def ov = PAUSE_EXECUTION_OVERRIDE.get()
+            if (ov != null) ov.call(args[0] as Long)
+        }
         // Attached HERE with the other permanent stubs: one added from a later setupSpec does
         // not reliably take, and runIn is an AppExecutor method, so a script.metaClass override
         // never intercepts it.
@@ -230,6 +238,7 @@ abstract class HarnessSpec extends Specification {
         hubGet.reset()
         mcpDriver.reset()
         NOW_OVERRIDE.set(null)
+        PAUSE_EXECUTION_OVERRIDE.set(null)
         RUN_IN_OVERRIDE.set(null)
         // Drop per-test metaClass writes from previous features before
         // re-installing the standard hooks. Both wipes matter when

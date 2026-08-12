@@ -415,8 +415,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
                 ownerDone.await(5, TimeUnit.SECONDS)
             }
         }
-        script.metaClass.pauseExecution = pause
-        peer.metaClass.pauseExecution = pause
+        PAUSE_EXECUTION_OVERRIDE.set(pause)
         Closure leaf = { Map a ->
             calls.incrementAndGet()
             entered.countDown()

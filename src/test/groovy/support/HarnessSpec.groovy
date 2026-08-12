@@ -136,6 +136,10 @@ abstract class HarnessSpec extends Specification {
     // A single static holder is safe under the current single-fork test config
     // (maxParallelForks=1); if specs ever run in parallel this would need to be a ThreadLocal.
     protected static final java.util.concurrent.atomic.AtomicReference NOW_OVERRIDE = new java.util.concurrent.atomic.AtomicReference(null)
+    // Optional per-feature pause seam. HubitatAppScript.pauseExecution delegates
+    // directly to AppExecutor, so a script metaClass override does not reliably
+    // intercept compiled peer instances.
+    protected static final java.util.concurrent.atomic.AtomicReference PAUSE_EXECUTION_OVERRIDE = new java.util.concurrent.atomic.AtomicReference(null)
     // Optional per-feature runIn seam. Kept beside NOW_OVERRIDE because both are
     // execution-boundary controls used by concurrency specs; null preserves the
     // normal recorder behavior for every other feature.
@@ -248,6 +252,10 @@ abstract class HarnessSpec extends Specification {
         }
         // Record unsubscribe() so lifecycle specs (e.g. initialize) can assert it.
         mock.unsubscribe() >> { UNSUBSCRIBE_CALL_COUNT.incrementAndGet() }
+        mock.pauseExecution(_) >> { args ->
+            def ov = PAUSE_EXECUTION_OVERRIDE.get()
+            if (ov != null) ov.call(args[0] as Long)
+        }
         // Attached HERE with the other permanent stubs: one added from a later setupSpec does
         // not reliably take, and runIn is an AppExecutor method, so a script.metaClass override
         // never intercepts it.
@@ -316,6 +324,7 @@ abstract class HarnessSpec extends Specification {
         // Drop any per-test virtual-clock override so now() returns the fixed default
         // for every spec that doesn't opt in (prevents clock leakage across features).
         NOW_OVERRIDE.set(null)
+        PAUSE_EXECUTION_OVERRIDE.set(null)
         RUN_IN_OVERRIDE.set(null)
         // Drop any per-test metaClass writes installed on the shared
         // script by previous features (e.g. individual specs' given:
