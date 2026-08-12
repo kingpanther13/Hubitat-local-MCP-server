@@ -2,14 +2,127 @@
 
 from __future__ import annotations
 
+import re
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 MODERN_PROTOCOL_VERSION = "2026-07-28"
 DEFAULT_SDK_INPUT_REQUIRED_MAX_ROUNDS = 10
 RELAY_LEG_CEILING_SECONDS = 9.5
 MINIMUM_LOGICAL_SECONDS = 10.0
+
+
+def _indexed_settings(settings: dict[str, Any], prefix: str) -> dict[int, Any]:
+    pattern = re.compile(rf"^{re.escape(prefix)}(\d+)$")
+    indexed = {}
+    for key, value in settings.items():
+        match = pattern.fullmatch(str(key))
+        if match:
+            indexed[int(match.group(1))] = value
+    return indexed
+
+
+def assert_exact_rule_log_messages(
+    config: Any,
+    expected_messages: list[str],
+    *,
+    operation: str,
+) -> list[str]:
+    """Assert an empty RM fixture persisted exactly six requested log actions."""
+    assert isinstance(config, dict), f"{operation} returned no config object"
+    assert config.get("success") is not False, (
+        f"{operation} failed: {config.get('error')!r}"
+    )
+    settings = config.get("settings")
+    assert isinstance(settings, dict), (
+        f"{operation} did not return raw settings; includeSettings=true is required"
+    )
+    assert len(expected_messages) == 6 and len(set(expected_messages)) == 6, (
+        "the MRTR proof must request exactly 6 distinct log messages"
+    )
+
+    action_types = _indexed_settings(settings, "actType.")
+    action_subtypes = _indexed_settings(settings, "actSubType.")
+    log_messages = _indexed_settings(settings, "logmsg.")
+    assert len(action_types) == 6, (
+        f"{operation} must contain exactly 6 action rows; saw indices "
+        f"{sorted(action_types)}"
+    )
+    action_indices = set(action_types)
+    assert set(action_subtypes) == action_indices, (
+        f"{operation} action-subtype indices do not match action rows: "
+        f"actions={sorted(action_indices)}, subtypes={sorted(action_subtypes)}"
+    )
+    assert set(log_messages) == action_indices, (
+        f"{operation} log-message indices do not match action rows: "
+        f"actions={sorted(action_indices)}, messages={sorted(log_messages)}"
+    )
+    assert all(action_types[index] == "messageActs" for index in action_indices), (
+        f"{operation} contains a non-log action type: {action_types}"
+    )
+    assert all(action_subtypes[index] == "getLogMsg" for index in action_indices), (
+        f"{operation} contains a non-log action subtype: {action_subtypes}"
+    )
+
+    actual = [log_messages[index] for index in sorted(action_indices)]
+    assert len(set(actual)) == 6, (
+        f"{operation} log messages are not distinct: {actual}"
+    )
+    assert actual == expected_messages, (
+        f"{operation} did not persist the exact messages: "
+        f"expected={expected_messages}, actual={actual}"
+    )
+    return actual
+
+
+def assert_legacy_ping_result(result: Any) -> None:
+    """Keep the legacy ping wire strict under the v2 EmptyResult model."""
+    assert getattr(result, "result_type", None) is None, (
+        "legacy ping must not carry resultType"
+    )
+    extra = getattr(result, "model_extra", None) or {}
+    assert not extra, (
+        f"legacy ping must be exactly the modeled envelope; extra keys={sorted(extra)}"
+    )
+
+
+async def find_exact_fixture_id_with_settle(
+    list_rules: Callable[[], Awaitable[list[dict[str, Any]]]],
+    fixture_name: str,
+    *,
+    attempts: int = 6,
+    delay_seconds: float = 2.0,
+    sleep: Callable[[float], Awaitable[None]],
+) -> str | None:
+    """Boundedly settle a lost create and adopt at most one exact-name rule."""
+    assert attempts >= 1, "cleanup lookup attempts must be positive"
+    for attempt in range(attempts):
+        try:
+            rules = await list_rules()
+        except Exception:
+            if attempt == attempts - 1:
+                raise
+        else:
+            assert isinstance(rules, list), "fixture cleanup rule listing is not a list"
+            matches = [
+                rule for rule in rules
+                if isinstance(rule, dict)
+                and (rule.get("name") == fixture_name or rule.get("label") == fixture_name)
+            ]
+            assert len(matches) <= 1, (
+                f"refusing ambiguous cleanup: {len(matches)} rules exactly match "
+                f"{fixture_name!r}"
+            )
+            if matches:
+                target_id = str(matches[0].get("id") or matches[0].get("appId") or "")
+                assert target_id, (
+                    f"exact cleanup match for {fixture_name!r} has no id/appId"
+                )
+                return target_id
+        if attempt < attempts - 1:
+            await sleep(delay_seconds)
+    return None
 
 
 class RequestTrace:

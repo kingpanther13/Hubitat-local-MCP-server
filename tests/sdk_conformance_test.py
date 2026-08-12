@@ -34,6 +34,7 @@ import logging
 import sys
 import time
 import uuid
+import warnings
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,7 @@ _INSTALL_HINT = "pip install -r tests/sdk-conformance-requirements.txt"
 try:
     import anyio
     import httpx2
+    from mcp import MCPDeprecationWarning
     from mcp.client import Client
     from mcp.client.streamable_http import streamable_http_client
     from mcp_types import CallToolResult
@@ -59,6 +61,9 @@ from sdk_conformance_helpers import (  # noqa: E402  (import guard above supplie
     DEFAULT_SDK_INPUT_REQUIRED_MAX_ROUNDS,
     MODERN_PROTOCOL_VERSION,
     RequestTrace,
+    assert_exact_rule_log_messages,
+    assert_legacy_ping_result,
+    find_exact_fixture_id_with_settle,
     summarize_mrtr_proof,
 )
 
@@ -81,23 +86,36 @@ def pinned_sdk_version() -> str:
 
 
 def deprecated_sdk_usages() -> list[str]:
-    """Any SDK entry point this file calls that the pinned SDK marks `@deprecated`.
+    """Unexpected deprecations on SDK entry points this file calls.
 
     Read from the callables' own `__deprecated__` markers (`typing_extensions.deprecated`
     records its message there) rather than a hand-maintained list, so a pin bump that
     deprecates something used here fails the run and names the replacement.
 
-    Deprecated `@overload`s are invisible here -- the decorator sits on the overload, not the
+    The sole allowed marker is the exact v2 legacy-only ping contract below. Deprecated
+    `@overload`s are invisible here -- the decorator sits on the overload, not the
     implementation -- but `list_tools()` is called with no arguments, which binds to the
     undecorated no-arg overload, not the deprecated positional-`cursor` one.
     """
     checked = [("streamable_http_client", streamable_http_client)] + [
         (f"Client.{name}", getattr(Client, name))
-        for name in ("list_tools", "call_tool", "list_resources", "read_resource",
+        for name in ("send_ping", "list_tools", "call_tool", "list_resources", "read_resource",
                      "list_resource_templates")
     ]
-    return [f"{label}: {fn.__deprecated__}"
-            for label, fn in checked if getattr(fn, "__deprecated__", None)]
+    # v2 retains one deliberate legacy-only compatibility method. Its deprecation says
+    # it is removed from the modern protocol, not that legacy-mode callers lack support.
+    # Pin the exact upstream message so a changed contract still fails this preflight.
+    allowed_legacy_only = {
+        "Client.send_ping": (
+            "ping is removed as of 2026-07-28; the method only works under mode='legacy'."
+        ),
+    }
+    return [
+        f"{label}: {fn.__deprecated__}"
+        for label, fn in checked
+        if getattr(fn, "__deprecated__", None)
+        and allowed_legacy_only.get(label) != str(fn.__deprecated__)
+    ]
 
 
 def _http_failure_detail(exc: httpx2.HTTPError, endpoint: str) -> str:
@@ -216,6 +234,8 @@ class LegacyScenarios:
     async def run_all(self, client: Client) -> bool:
         await self._run("high-level Client negotiates the expected legacy revision",
                         lambda: self._initialize(client))
+        await self._run("legacy ping round-trips as a strict EmptyResult through high-level Client",
+                        lambda: self._ping(client))
         await self._run("tools/list parses through the SDK's models and the catalog is sane",
                         lambda: self._list_tools(client))
         await self._run("a benign tools/call (hub_get_info) parses as a CallToolResult",
@@ -269,6 +289,15 @@ class LegacyScenarios:
         assert client.instructions and client.instructions.strip(), \
             "initialize must carry non-empty instructions"
         print(f"         negotiated={self.negotiated} server={info.name} v{info.version}")
+
+    async def _ping(self, client: Client) -> None:
+        # v2 deliberately retains this public high-level method only for mode='legacy'.
+        # Suppress its modern-era deprecation warning here: this scenario is specifically
+        # the live compatibility test for the legacy wire method.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", MCPDeprecationWarning)
+            result = await client.send_ping()
+        assert_legacy_ping_result(result)
 
     async def _list_tools(self, client: Client) -> None:
         # Every entry is parsed into types.Tool by the SDK (name required, inputSchema
@@ -571,6 +600,19 @@ class ModernMrtrScenario:
                 f"logical={summary['logical_elapsed']:.3f}s max_leg={summary['max_leg_elapsed']:.3f}s "
                 f"leg_durations=[{durations}]"
             )
+            # Read the persisted app state through a second ordinary high-level SDK call,
+            # outside the timing mark/window above. Successful write-shaped rows alone do
+            # not prove that Rule Machine stored the intended distinct values.
+            readback = await client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config",
+                "args": {"appId": fixture_id, "includeSettings": True},
+            })
+            readback_payload = _tool_payload(readback, "slow fixture persisted-state readback")
+            assert_exact_rule_log_messages(
+                readback_payload,
+                [action["message"] for action in requested_actions],
+                operation="SDK MRTR proof readback",
+            )
         finally:
             await self._cleanup_fixture(client, fixture_name, fixture_id)
 
@@ -580,17 +622,19 @@ class ModernMrtrScenario:
         """Delete only this run's exact UUID-named app; never sweep backups or probe apps."""
         target_id = fixture_id
         if target_id is None:
-            listed = await client.call_tool(self.GATEWAY, {
-                "tool": "hub_list_rules", "args": {},
-            })
-            rules = _tool_payload(listed, "fixture cleanup lookup").get("rules") or []
-            matches = [rule for rule in rules
-                       if (rule.get("name") or rule.get("label")) == fixture_name]
-            assert len(matches) <= 1, (
-                f"refusing ambiguous cleanup: {len(matches)} rules exactly match {fixture_name!r}"
+            async def _list_rules() -> list[dict[str, Any]]:
+                listed = await client.call_tool(self.GATEWAY, {
+                    "tool": "hub_list_rules", "args": {},
+                })
+                rules = _tool_payload(listed, "fixture cleanup lookup").get("rules") or []
+                assert isinstance(rules, list), "fixture cleanup lookup returned non-list rules"
+                return rules
+
+            target_id = await find_exact_fixture_id_with_settle(
+                _list_rules,
+                fixture_name,
+                sleep=anyio.sleep,
             )
-            if matches:
-                target_id = str(matches[0].get("id") or matches[0].get("appId") or "") or None
         if target_id is None:
             return
         deleted = await client.call_tool(self.GATEWAY, {

@@ -411,7 +411,7 @@ jobs:
           while IFS= read -r f; do
             [ -z "$f" ] && continue
             case "$f" in
-              hubitat-mcp-server.groovy|hubitat-mcp-rule.groovy|e2e-deadman-watchdog.groovy|e2e-deadman-watchdog-v2.groovy|tests/e2e_test.py|tests/sdk_conformance_test.py|tests/sdk-conformance-requirements.txt|.github/workflows/hub-e2e.yml|.github/scripts/lease_acquire.sh|.github/scripts/lease_release.sh|.github/scripts/mcp_setup_env.sh|.github/scripts/mcp_restore_env.sh|.github/scripts/mcp_validate_package_tool.sh|.github/scripts/mcp_watchdog_lib.sh|.github/scripts/mcp_watchdog_deploy.sh|.github/scripts/mcp_arm_watchdog.sh|.github/scripts/mcp_disarm_watchdog.sh|.github/scripts/e2e_scope.py|libraries/*|bundles/*)
+              hubitat-mcp-server.groovy|hubitat-mcp-rule.groovy|e2e-deadman-watchdog.groovy|e2e-deadman-watchdog-v2.groovy|tests/e2e_test.py|tests/sdk_conformance_test.py|tests/sdk_conformance_helpers.py|tests/sdk-conformance-requirements.txt|.github/workflows/hub-e2e.yml|.github/scripts/lease_acquire.sh|.github/scripts/lease_release.sh|.github/scripts/mcp_setup_env.sh|.github/scripts/mcp_restore_env.sh|.github/scripts/mcp_validate_package_tool.sh|.github/scripts/mcp_watchdog_lib.sh|.github/scripts/mcp_watchdog_deploy.sh|.github/scripts/mcp_arm_watchdog.sh|.github/scripts/mcp_disarm_watchdog.sh|.github/scripts/e2e_scope.py|libraries/*|bundles/*)
                 relevant=true ;;
             esac
           done <<< "$files"

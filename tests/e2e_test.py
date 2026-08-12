@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 import requests
+from sdk_conformance_helpers import assert_exact_rule_log_messages
 
 # ---------------------------------------------------------------------------
 # Artifact prefix — every test-created resource uses this for safe cleanup
@@ -5709,6 +5710,17 @@ class TestRunner:
                 f"logical={proof['logical_elapsed']:.3f}s "
                 f"max_leg={proof['max_leg_elapsed']:.3f}s "
                 f"leg_durations=[{durations}]"
+            )
+            # Independent persisted-state proof, deliberately after the measured
+            # logical call and through the ordinary repository client's read gateway.
+            config = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config",
+                "args": {"appId": app_id, "includeSettings": True},
+            })
+            assert_exact_rule_log_messages(
+                config,
+                [action["message"] for action in requested_actions],
+                operation="regular MRTR proof readback",
             )
             self._assert_rule_healthy(app_id)
         finally:
