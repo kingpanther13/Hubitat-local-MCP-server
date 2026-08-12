@@ -2628,10 +2628,9 @@ def getGatewayConfig() {
         ],
         hub_manage_devices: [
             description: "Control and inspect devices: send commands, update a device, create a device from a driver type, and swap/replace a device across all referencing apps, plus read-only inspection (list/get/attribute/events). Device reads are also in hub_read_devices.",
-            tools: ["hub_call_device_command", "hub_call_device_commands", "hub_call_device_swap", "hub_call_device_replace", "hub_update_device", "hub_create_device", "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events"],
+            tools: ["hub_call_device_command", "hub_call_device_swap", "hub_call_device_replace", "hub_update_device", "hub_create_device", "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events"],
             summaries: [
                 hub_call_device_command: "Send a command to a device (verify state after). Args: deviceId, command, parameters?, waitFor?",
-                hub_call_device_commands: "Send commands to SEVERAL devices in ONE call (max 20) -- far faster than repeating hub_call_device_command; per-entry results, no waitFor. Args: commands[{deviceId, command, parameters?}]",
                 hub_call_device_swap: "Replace a device across ALL apps/rules that reference it (built-in Swap Device tool). Args: from_device_id, to_device_id, confirm",
                 hub_call_device_replace: "Replace a dead device's hardware while KEEPING its id + all app/rule references (re-points to new_device_id; list_options=true reads compatible candidates). Args: old_device_id, new_device_id?, list_options?, confirm",
                 hub_update_device: "Update a device's properties: label, name, room, deviceNetworkId, enabled, dataValues, preferences, showOnHome, defaultCurrentState (Status-column attribute), tags. Args: deviceId, label?, name?, room?, deviceNetworkId?, enabled?, dataValues?, preferences?, showOnHome?, defaultCurrentState?, tags?",
@@ -2643,7 +2642,6 @@ def getGatewayConfig() {
             ],
             searchHints: [
                 hub_call_device_command: "send command control turn on off set level dim lock unlock device run",
-                hub_call_device_commands: "send multiple commands batch bulk several many devices at once all lights room group turn off everything one call faster",
                 hub_call_device_swap: "swap replace device migrate references substitute rewire apps rules everywhere retire failing hardware",
                 hub_call_device_replace: "replace device hardware failed dead broken re-point preserve keep id references rules dashboard compatible replacement candidates getReplacementOptions",
                 hub_update_device: "rename relabel move room device edit show on home status attribute default current state tags label preferences",
@@ -3553,8 +3551,7 @@ def executeTool(toolName, args) {
             }
             return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.fields, args.cursor, args.scope, args.roomFilter, args.onlyOn, args.changedSince, args.attributeNames)
         case "hub_get_device": return toolGetDevice(args.deviceId)
-        case "hub_call_device_command": return toolSendCommand(args.deviceId, args.command, args.parameters, args.waitFor)
-        case "hub_call_device_commands": return toolSendCommands(args.commands)
+        case "hub_call_device_command": return toolSendCommand(args.deviceId, args.command, args.parameters, args.waitFor, args.commands)
         case "hub_call_device_swap": return toolCallDeviceSwap(args)
         case "hub_call_device_replace": return toolCallDeviceReplace(args)
         case "hub_list_device_events":
@@ -6640,7 +6637,7 @@ def _guideSectionForTool(toolName) {
     if (t in ['hub_delete_device', 'hub_delete_room', 'hub_delete_item', 'hub_reboot', 'hub_shutdown',
               'hub_update_firmware', 'hub_call_destructive_ops', 'hub_call_zwave', 'hub_call_zigbee',
               'hub_call_matter', 'hub_call_device_swap', 'hub_call_device_replace']) return 'hub_admin_write'
-    if (t in ['hub_call_device_command', 'hub_call_device_commands', 'hub_get_device_attribute']) return 'device_authorization'
+    if (t in ['hub_call_device_command', 'hub_get_device_attribute']) return 'device_authorization'
     return null
 }
 
@@ -6822,15 +6819,12 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 
 **`waitFor` arg.** comparator (eq/ne/gt/gte/lt/lte/between) and stableForMs (debounce) work as on hub_get_device_attribute. BLOCKS the request up to timeoutMs and queues concurrent MCP calls; reuses the hub_get_device_attribute poll engine.
 
-### hub_call_device_commands
+**`commands` arg (several devices in one call).** Up to 20 entries of `{deviceId, command, parameters?}`. Reach for it whenever an intent touches more than one device ("turn off the kitchen lights", "close all the shades"): the per-call round trip -- not the hub actuating the device -- is most of the time, so six devices in one batch measured ~2.75s against ~5.0s for six separate calls. Firing separate calls concurrently does not help; the hub serialises them anyway.
 
-Sends up to 20 commands in ONE request. Prefer it whenever an intent touches more than one device ("turn off the kitchen lights", "close all the shades"): the per-call round trip -- not the hub actuating the device -- is what costs the time, so six devices in one batch takes roughly as long as one device on its own, against ~5x that for six separate calls. Firing the separate calls concurrently does not help; the hub serialises them anyway.
-
-**What it does NOT change.** The hub still actuates the devices one at a time, so they do not all move simultaneously. What disappears is the protocol overhead.
-
-**Entries are independent.** Different devices and different commands may be mixed. A bad entry (unknown id, unsupported command) is reported in its own `results[]` slot and the remaining entries are still sent; `success` is true only when all of them succeeded. Malformed input -- a missing deviceId, a non-array `parameters`, more than 20 entries -- is rejected up front, before anything is sent, so a bad request never actuates part of a batch.
-
-**No `waitFor`.** The per-entry `state` is the same PRE-effect snapshot hub_call_device_command returns without `waitFor`. To confirm the result, follow with hub_get_device_attribute, whose `deviceIds` form polls the whole set in one call.
+- **Mutually exclusive with `deviceId`/`command`**, and cannot be combined with `waitFor` -- that would block a hub thread per device. Confirm a batch with hub_get_device_attribute's `deviceIds` form instead: one call to fire, one to confirm.
+- **What it does NOT change.** The hub still actuates the devices one at a time, so they do not all move simultaneously. What disappears is the protocol overhead, not the hub's own work.
+- **Entries are independent.** Mixed devices and mixed commands. A bad entry (unknown id, unsupported command) is reported in its own `results[]` slot and the remaining entries are still sent; `success` is true only when all of them succeeded. Malformed input -- a missing deviceId, a non-array `parameters`, more than 20 entries -- is rejected before anything is sent, so a bad request never actuates part of a batch.
+- **Groups and scenes are better for a set you command repeatedly** -- one device to command, with the hub doing the fan-out. `commands` is for the set nobody defined in advance: the arbitrary collection of devices a spoken sentence resolves to, which cannot be anticipated as a group without predicting the sentence.
 
 ### hub_call_device_swap
 
@@ -7236,13 +7230,14 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 
         performance: '''## Performance Tips
 
-**hub_call_device_commands (batch) -- the biggest single win on a multi-device intent:**
+**hub_call_device_command with `commands` -- the biggest single win on a multi-device intent:**
 - The per-call ROUND TRIP dominates, not the hub actuating the device. Measured on a live hub over LAN: one command ~1.0s end to end, six separate commands ~4.5-5.0s (~0.8s each). That per-device figure is the same for a Z-Wave switch as for a shade behind a Bond bridge, which is what shows the cost is protocol overhead, not the radio.
-- So collapse them: one hub_call_device_commands carrying six entries costs about what ONE hub_call_device_command costs. Reach for it whenever an intent touches more than one device ("turn off the kitchen lights", "close all the shades").
+- So collapse them: the same six as one `commands` batch measured ~2.75s. Reach for it whenever an intent touches more than one device ("turn off the kitchen lights", "close all the shades").
 - Firing the separate calls in parallel does NOT help -- the hub serialises them anyway (see "Make tool calls sequentially" below).
-- It does not make the devices move simultaneously; the hub still actuates one at a time. What disappears is the overhead.
+- It does not make the devices move simultaneously; the hub still actuates one at a time. What disappears is the protocol overhead, which is why the batch lands near 2.75s rather than near 1.0s.
 - Entries are independent, so mixed devices and mixed commands go in one batch. Max 20.
-- No waitFor. To confirm the result, follow with hub_get_device_attribute using deviceIds (multi-device convergence): one batch to fire, one poll to confirm -- two round trips for the whole group.
+- No waitFor with `commands`. To confirm, follow with hub_get_device_attribute using deviceIds (multi-device convergence): one batch to fire, one poll to confirm -- two round trips for the whole group.
+- For a set commanded repeatedly, a group or scene beats both: one device to command and the hub fans out. `commands` is for the ad-hoc set that was never defined in advance.
 
 **hub_list_devices:**
 - Use detailed=false for initial discovery

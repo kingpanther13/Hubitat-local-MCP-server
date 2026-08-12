@@ -17,7 +17,7 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
 
     def "a thrown device-command error points at device_authorization (the tool's section)"() {
         given:
-        script.metaClass.toolSendCommand = { d, c, p = null, w = null ->
+        script.metaClass.toolSendCommand = { d, c, p = null, w = null, cmds = null ->
             throw new IllegalArgumentException("Device not found: ${d}")
         }
 
@@ -130,7 +130,7 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
 
     def "a returned success:false error gets a bp_warning pointing at the tool's section"() {
         given:
-        script.metaClass.toolSendCommand = { d, c, p = null, w = null -> [success: false, error: "Device not found: 42"] }
+        script.metaClass.toolSendCommand = { d, c, p = null, w = null, cmds = null -> [success: false, error: "Device not found: 42"] }
 
         when:
         def inner = mcpDriver.parseInner(mcpDriver.callTool('hub_call_device_command', [deviceId: '42', command: 'on']))
@@ -143,7 +143,7 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
 
     def "a successful result is never scanned (no bp_warning)"() {
         given:
-        script.metaClass.toolSendCommand = { d, c, p = null, w = null -> [success: true] }
+        script.metaClass.toolSendCommand = { d, c, p = null, w = null, cmds = null -> [success: true] }
 
         when:
         def inner = mcpDriver.parseInner(mcpDriver.callTool('hub_call_device_command', [deviceId: '1', command: 'on']))
@@ -155,7 +155,7 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
 
     def "a pre-existing bp_warning is not overwritten (idempotent)"() {
         given:
-        script.metaClass.toolSendCommand = { d, c, p = null, w = null -> [success: false, error: "x", bp_warning: "PRESET"] }
+        script.metaClass.toolSendCommand = { d, c, p = null, w = null, cmds = null -> [success: false, error: "x", bp_warning: "PRESET"] }
 
         when:
         def inner = mcpDriver.parseInner(mcpDriver.callTool('hub_call_device_command', [deviceId: '1', command: 'on']))
@@ -166,7 +166,7 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
 
     def "a thrown IAE with a null message does not crash and is not augmented"() {
         given:
-        script.metaClass.toolSendCommand = { d, c, p = null, w = null -> throw new IllegalArgumentException() }
+        script.metaClass.toolSendCommand = { d, c, p = null, w = null, cmds = null -> throw new IllegalArgumentException() }
 
         when:
         def response = mcpDriver.callTool('hub_call_device_command', [deviceId: '1', command: 'on'])
@@ -178,7 +178,7 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
 
     def "a hint-attach failure (immutable result Map) does NOT mask the original error"() {
         given:
-        script.metaClass.toolSendCommand = { d, c, p = null, w = null -> [success: false, error: "Device not found: 7"].asImmutable() }
+        script.metaClass.toolSendCommand = { d, c, p = null, w = null, cmds = null -> [success: false, error: "Device not found: 7"].asImmutable() }
 
         when:
         def response = mcpDriver.callTool('hub_call_device_command', [deviceId: '7', command: 'on'])

@@ -1192,7 +1192,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    // ---- toolSendCommands (batch) -------------------------------------------
+    // ---- hub_call_device_command, commands form (batch) -------------------------------------------
 
     private def switchDevice(int id, String label) {
         Spy(TestDevice) {
@@ -1204,14 +1204,14 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         }
     }
 
-    def "toolSendCommands fires every entry and reports per-entry results in request order"() {
+    def "commands form fires every entry and reports per-entry results in request order"() {
         given:
         def a = switchDevice(10, 'Lamp A')
         def b = switchDevice(11, 'Lamp B')
         childDevicesList << a << b
 
         when:
-        def result = script.toolSendCommands([
+        def result = script.toolSendCommand(null, null, null, null, [
             [deviceId: '10', command: 'on'],
             [deviceId: '11', command: 'off']
         ])
@@ -1236,27 +1236,27 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         result.results[0].state.switch.value == 'off'
     }
 
-    def "toolSendCommands passes parameters through to the device command"() {
+    def "commands form passes parameters through to the device command"() {
         given:
         def device = switchDevice(10, 'Dimmer')
         childDevicesList << device
 
         when:
-        def result = script.toolSendCommands([[deviceId: '10', command: 'setLevel', parameters: ['75']]])
+        def result = script.toolSendCommand(null, null, null, null, [[deviceId: '10', command: 'setLevel', parameters: ['75']]])
 
         then: 'normalized to a number, as on the single-device path'
         1 * device.setLevel(75)
         result.results[0].parameters == [75]
     }
 
-    def "toolSendCommands keeps sending after a failing entry and reports it individually"() {
+    def "commands form keeps sending after a failing entry and reports it individually"() {
         given: 'the middle entry names a device that does not exist'
         def a = switchDevice(10, 'Lamp A')
         def c = switchDevice(12, 'Lamp C')
         childDevicesList << a << c
 
         when:
-        def result = script.toolSendCommands([
+        def result = script.toolSendCommand(null, null, null, null, [
             [deviceId: '10', command: 'on'],
             [deviceId: '999', command: 'on'],
             [deviceId: '12', command: 'on']
@@ -1283,13 +1283,13 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         result.results[2].success == true
     }
 
-    def "toolSendCommands reports an unsupported command per entry rather than failing the batch"() {
+    def "commands form reports an unsupported command per entry rather than failing the batch"() {
         given:
         def a = switchDevice(10, 'Lamp A')
         childDevicesList << a
 
         when:
-        def result = script.toolSendCommands([
+        def result = script.toolSendCommand(null, null, null, null, [
             [deviceId: '10', command: 'on'],
             [deviceId: '10', command: 'lock']
         ])
@@ -1302,13 +1302,13 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "toolSendCommands rejects a malformed batch BEFORE firing anything (#scenario)"() {
+    def "commands form rejects a malformed batch BEFORE firing anything (#scenario)"() {
         given: 'a valid first entry, so a fire-then-validate implementation would actuate it'
         def device = switchDevice(10, 'Lamp A')
         childDevicesList << device
 
         when:
-        script.toolSendCommands(commands)
+        script.toolSendCommand(null, null, null, null, commands)
 
         then: 'rejected on validation, with nothing sent'
         def ex = thrown(IllegalArgumentException)
@@ -1327,13 +1327,13 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         'unknown key'             | [[deviceId: '10', command: 'on'], [deviceId: '11', command: 'on', waitFor: [:]]]      || 'unknown keys: waitFor'
     }
 
-    def "toolSendCommands rejects more than 20 entries"() {
+    def "commands form rejects more than 20 entries"() {
         given:
         def device = switchDevice(10, 'Lamp A')
         childDevicesList << device
 
         when:
-        script.toolSendCommands((1..21).collect { [deviceId: '10', command: 'on'] })
+        script.toolSendCommand(null, null, null, null, (1..21).collect { [deviceId: '10', command: 'on'] })
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -1341,13 +1341,13 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         0 * device.on()
     }
 
-    def "toolSendCommands accepts exactly 20 entries (the boundary is inclusive)"() {
+    def "commands form accepts exactly 20 entries (the boundary is inclusive)"() {
         given:
         def device = switchDevice(10, 'Lamp A')
         childDevicesList << device
 
         when:
-        def result = script.toolSendCommands((1..20).collect { [deviceId: '10', command: 'on'] })
+        def result = script.toolSendCommand(null, null, null, null, (1..20).collect { [deviceId: '10', command: 'on'] })
 
         then:
         20 * device.on()
@@ -1355,8 +1355,88 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         result.sentCount == 20
     }
 
+    def "commands counts a returned success:false as a failure, not only a thrown one"() {
+        given: 'the non-throwing failure path - a bypass fire that could not be confirmed'
+        // Returned rather than thrown is this project's contract for a runtime (non-argument)
+        // error, so the batch has to notice it. Stubbed because reaching it for real needs the
+        // allowlist bypass plus a hub that answers the runmethod endpoint unconfirmably.
+        script.metaClass.toolSendCommand = { d, c, p = null, w = null, cmds = null ->
+            d == '11' ? [success: false, error: 'Command not confirmed', note: 'retry'] : [success: true, device: 'Lamp A']
+        }
+
+        when:
+        def result = script._sendCommandBatch([
+            [deviceId: '10', command: 'on'],
+            [deviceId: '11', command: 'on']
+        ])
+
+        then: 'the aggregate tells the truth, so the documented fast path is not misleading'
+        result.success == false
+        result.sentCount == 1
+        result.failedCount == 1
+
+        and: 'the failed entry still carries the fields its schema promises'
+        result.results[1].success == false
+        result.results[1].deviceId == '11'
+        result.results[1].command == 'on'
+    }
+
     @spock.lang.Unroll
-    def "via dispatch: hub_call_device_commands sends the batch and returns per-entry results (useGateways=#useGateways)"() {
+    def "commands is mutually exclusive with the single-device arguments (#scenario)"() {
+        given: 'a device that would answer either form, so only the validation can stop it'
+        def device = switchDevice(10, 'Lamp A')
+        childDevicesList << device
+
+        when:
+        script.toolSendCommand(deviceId, command, null, null, [[deviceId: '10', command: 'on']])
+
+        then: 'rejected by name, and nothing fired'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('mutually exclusive')
+        ex.message.contains(named)
+        0 * device.on()
+
+        where:
+        scenario           | deviceId | command || named
+        'deviceId as well' | '10'     | null    || 'deviceId'
+        'command as well'  | null     | 'on'    || 'command'
+        'both as well'     | '10'     | 'on'    || 'deviceId and command'
+    }
+
+    def "commands rejects waitFor rather than silently ignoring it"() {
+        given: 'a caller asking to confirm a batch the way they would confirm one device'
+        def device = switchDevice(10, 'Lamp A')
+        childDevicesList << device
+
+        when:
+        script.toolSendCommand(null, null, null, [attribute: 'switch', expectedValue: 'on'],
+            [[deviceId: '10', command: 'on']])
+
+        then: 'told why, and pointed at the call that does confirm a whole set'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('waitFor is not supported with commands')
+        ex.message.contains('hub_get_device_attribute')
+        0 * device.on()
+    }
+
+    @spock.lang.Unroll
+    def "the single-device form still requires #missing"() {
+        when:
+        script.toolSendCommand(deviceId, command, null)
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("${missing} is required")
+        ex.message.contains('commands')      // names the alternative, rather than only the omission
+
+        where:
+        missing    | deviceId | command
+        'deviceId' | null     | 'on'
+        'command'  | '10'     | null
+    }
+
+    @spock.lang.Unroll
+    def "via dispatch: hub_call_device_command with commands sends the batch and returns per-entry results (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         def a = switchDevice(10, 'Lamp A')
@@ -1364,7 +1444,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         childDevicesList << a << b
 
         when:
-        def response = mcpDriver.callTool('hub_call_device_commands', [commands: [
+        def response = mcpDriver.callTool('hub_call_device_command', [commands: [
             [deviceId: '10', command: 'on'],
             [deviceId: '11', command: 'on']
         ]])
@@ -1384,12 +1464,12 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "via dispatch: hub_call_device_commands returns -32602 on a malformed batch (useGateways=#useGateways)"() {
+    def "via dispatch: hub_call_device_command with commands returns -32602 on a malformed batch (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
 
         when:
-        def response = mcpDriver.callTool('hub_call_device_commands', [commands: [[command: 'on']]])
+        def response = mcpDriver.callTool('hub_call_device_command', [commands: [[command: 'on']]])
 
         then:
         response.error.code == -32602

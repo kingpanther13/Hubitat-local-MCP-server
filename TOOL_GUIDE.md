@@ -4,7 +4,7 @@ Detailed reference for MCP Rule Server tools. Consult this when tool description
 
 ## Category Gateway Proxy (v0.8.0+)
 
-As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 36 items (13 core + 23 gateways) covering 118 total tools. Use `hub_search_tools` to find any tool by natural language query.
+As of v0.8.0, the server uses **domain-named gateways** to organize lesser-used tools behind gateway tools. The MCP `tools/list` shows 36 items (13 core + 23 gateways) covering 117 total tools. Use `hub_search_tools` to find any tool by natural language query.
 
 **How to use a gateway:**
 1. Call the gateway with no arguments to see full parameter schemas for all its tools
@@ -14,7 +14,7 @@ Gateway verbs encode mutation: **`hub_read_*`** gateways are pure-read (every su
 
 **Read gateways (8):** `hub_read_apps_code` (11), `hub_read_dashboards` (2), `hub_read_devices` (5), `hub_read_diagnostics` (9), `hub_read_files` (2), `hub_read_rooms` (2), `hub_read_rules` (6), `hub_read_variables` (3)
 
-**Manage gateways (15):** `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (10), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
+**Manage gateways (15):** `hub_manage_backup` (4), `hub_manage_code` (10), `hub_manage_custom_rules` (8), `hub_manage_dashboards` (6), `hub_manage_destructive_ops` (4), `hub_manage_devices` (9), `hub_manage_diagnostics` (7), `hub_manage_files` (4), `hub_manage_logs` (6), `hub_manage_mcp` (1), `hub_manage_native_rules_and_apps` (11), `hub_manage_radio` (6), `hub_manage_rooms` (5), `hub_manage_rule_machine` (11), `hub_manage_variables` (8)
 
 All safety gates are preserved: the Read/Write master gate runs centrally in `executeTool()` and re-applies per sub-tool when a gateway routes back through it, and the destructive `confirm`+backup checks run in the handlers of the destructive write tools.
 
@@ -460,9 +460,9 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 
 ## Performance Tips
 
-**hub_call_device_commands (batch) — the biggest single win on a multi-device intent:**
+**hub_call_device_command with `commands` — the biggest single win on a multi-device intent:**
 - The per-call ROUND TRIP dominates, not the hub actuating the device. Measured on a live hub over LAN: one command ~1.0s end to end, six separate commands ~4.5–5.0s (~0.8s each). That per-device figure is the same for a Z-Wave switch as for a shade behind a Bond bridge — which is what shows the cost is protocol overhead, not the radio
-- So collapse them: one `hub_call_device_commands` carrying six entries costs about what ONE `hub_call_device_command` costs. Reach for it whenever an intent touches more than one device ("turn off the kitchen lights", "close all the shades")
+- So collapse them: the same six as one `commands` batch measured ~2.75s. Reach for it whenever an intent touches more than one device ("turn off the kitchen lights", "close all the shades"). `commands` is mutually exclusive with `deviceId`/`command` and cannot be combined with `waitFor`
 - Firing the separate calls in parallel does NOT help — the hub serialises them anyway (same reason as "Make tool calls sequentially, not in parallel" below)
 - It does not make the devices move simultaneously; the hub still actuates one at a time. What disappears is the overhead
 - Entries are independent, so mixed devices and mixed commands go in one batch. Max 20. A bad entry is reported in its own `results[]` slot and the rest still fire; malformed input (missing `deviceId`, non-array `parameters`, >20 entries) is rejected BEFORE anything is sent, so a bad request never actuates part of a batch
@@ -511,7 +511,7 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 - The SAME condition (`attribute`, `comparator`, `expectedValue`/`expectedValues`, `stableForMs`) is applied to every device -- validated once. Each device must support the attribute; a missing device ID or an unsupported attribute is rejected up front, naming WHICH device.
 - `mode` (default `all`) controls the aggregate: `all` converges when EVERY device matches; `any` converges as soon as ONE device matches. `mode` applies only to `deviceIds` -- passing it with a single `deviceId` is rejected; an invalid value lists `[any, all]`. The aggregate predicate also drives `stableForMs` -- the whole any/all condition must hold continuously for the window. In `all` mode any single device flapping out resets the window (the aggregate goes false). In `any` mode the aggregate stays satisfied while ANY other device still matches, so one device flapping resets the window only when it was the sole match.
 - Returns a COMPACT per-device array, never full device objects: `success` (the mode predicate converged), `mode`, `devices: [{deviceId, device, finalValue, matched}, ...]`, `convergedCount` (devices currently matched), `elapsedMs`, `polledCount`, `timedOut`. A device entry adds `readError: true` (on SUCCESS or timeout) if reading THAT device threw on any poll (e.g. it was removed mid-poll) -- only that device's tick degrades to unread; the other devices' state is still returned, the poll never errors out. On TIMEOUT, each device entry also adds `neverReported: true` / `nonNumericAttribute: true` only where true; an aggregate `transitioning` (any device still changing) and a `note` (present when >=1 device is a can-never-match non-numeric) round it out. A hub-reload interrupt returns `interrupted: true` with the per-device array.
-- Multi-device is the standalone poll ONLY. `hub_call_device_command`'s `waitFor` stays single-device because it blocks that one command's in-flight write thread. To confirm a multi-device command sequence, fire it with `hub_call_device_commands` (one round trip), then call `hub_get_device_attribute` with `deviceIds` to await the aggregate — the batch tool has no `waitFor` for the same reason, so this pairing is the intended confirmed-multi-device flow.
+- Multi-device is the standalone poll ONLY. `hub_call_device_command`'s `waitFor` stays single-device because it blocks that one command's in-flight write thread. To confirm a multi-device command sequence, fire it with `hub_call_device_command`'s `commands` array (one round trip), then call `hub_get_device_attribute` with `deviceIds` to await the aggregate — `commands` rejects `waitFor` for the same reason, so this pairing is the intended confirmed-multi-device flow.
 
 **hub_get_logs:**
 - Returns most recent entries first
