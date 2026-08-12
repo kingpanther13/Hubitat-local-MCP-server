@@ -179,6 +179,66 @@ def test_driver_lifecycle_uses_token_recovery_for_create():
     assert create_args["confirm"] is True
     assert "DRIVER-LEG-MARKER-V1" in create_args["source"]
 
+
+def test_backup_gate_retries_when_an_async_state_write_replaces_the_fallback_stamp():
+    """A concurrent Hubitat state save can restore an unrelated fresh stamp after the
+    test proves its stale stamp landed. Retry the controlled fallback proof instead of
+    accepting that interference or failing the full lane."""
+    from datetime import UTC, datetime, timedelta
+
+    newest_dt = (datetime.now(UTC) - timedelta(hours=1)).replace(microsecond=0)
+    newest_ms = int(newest_dt.timestamp() * 1000)
+    unrelated_fresh_ms = newest_ms + 20 * 60 * 1000
+
+    class FakeClient:
+        def __init__(self):
+            self.last_stamp = unrelated_fresh_ms
+            self.list_calls = 0
+            self.stale_stamps = 0
+            self.write_calls = 0
+            self.returned_interference = False
+
+        def call_tool(self, name, arguments=None):
+            arguments = arguments or {}
+            if name == "hub_manage_backup":
+                assert arguments == {"tool": "hub_list_backups", "args": {"scope": "hub_local"}}
+                self.list_calls += 1
+                return {"hubLocalBackups": [{
+                    "createTimeOrig": newest_dt.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                }]}
+            if name == "hub_create_backup":
+                mock_epoch = arguments.get("mockEpoch")
+                if mock_epoch is not None:
+                    self.stale_stamps += 1
+                    self.last_stamp = mock_epoch
+                    return {"success": True, "mocked": True}
+                self.last_stamp = unrelated_fresh_ms
+                return {"success": True, "mocked": True}
+            if name == "hub_get_info":
+                if self.write_calls == 1 and not self.returned_interference:
+                    self.returned_interference = True
+                    return {"lastBackupEpoch": unrelated_fresh_ms}
+                return {"lastBackupEpoch": self.last_stamp}
+            if name == "hub_manage_files":
+                tool = arguments["tool"]
+                if tool == "hub_write_file":
+                    self.write_calls += 1
+                    self.last_stamp = newest_ms
+                    return {"success": True}
+                if tool == "hub_delete_file":
+                    return {"success": True}
+            raise AssertionError(f"unexpected call: {name} {arguments}")
+
+    client = FakeClient()
+    runner = object.__new__(et.TestRunner)
+    runner.client = client
+
+    et.TestRunner.test_backup_gate_list_fallback(runner)
+
+    assert client.list_calls == 2
+    assert client.stale_stamps == 2
+    assert client.write_calls == 2
+
 # ---------------------------------------------------------------------------
 # _inject_device_id
 # ---------------------------------------------------------------------------
@@ -283,10 +343,12 @@ def test_op_key_gateway_other_subtool_uses_sub_tool():
     assert et._op_key("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}}) == "hub_list_rules"
 
 
-def test_op_key_tolerates_stringified_inner_args():
-    """Inner args can be a JSON string (the server parses that shape) -- the timing key must not blow up on it."""
-    assert et._op_key("hub_manage_rule_machine",
-                      {"tool": "hub_set_rule", "args": '{"deployment":{"op":"status"}}'}) == "hub_set_rule:create"
+def test_op_key_decodes_stringified_inner_args_before_classifying_edit():
+    """A stringified appId must still classify the operation as an edit."""
+    assert et._op_key(
+        "hub_manage_rule_machine",
+        {"tool": "hub_set_rule", "args": json.dumps({"appId": "5"})},
+    ) == "hub_set_rule:edit"
 
 
 def test_op_key_flat_tool_uses_name():
