@@ -22,6 +22,7 @@
 // execution of this single-instance app and gives the compound persistent-state
 // reservations below one short JVM critical section without serializing tool work.
 @groovy.transform.Field static final Object WRITE_RESERVATION_LOCK = new Object()
+@groovy.transform.Field static final Set LIVE_WRITE_EXECUTIONS = new java.util.HashSet()
 
 definition(
     name: "MCP Rule Server",
@@ -1535,9 +1536,11 @@ def handleToolsCall(msg) {
                     rec.terminalResult, rec.terminalIsError == true)
             }
             if (claim.outcome == "in_progress") {
-                return jsonRpcError(msg.id, -32000,
-                    "This requestState generation is already executing. Retry the same call with the same requestState; no work was advanced or restarted.",
-                    [requestState: stateId, retryable: true])
+                // Runtime contention is still the same logical request, not a
+                // malformed JSON-RPC call. Keep an automatic modern client in
+                // its continuation loop without advancing or restarting work.
+                return jsonRpcResult(msg.id,
+                    [resultType: "input_required", requestState: stateId])
             }
         } else {
             _mrtrValidateAccess(toolName, reactiveToolName, args)
@@ -1786,12 +1789,20 @@ private boolean _isActualWriteCall(outerToolName, leafToolName, args) {
 private long _writeLeaseMs() { 3L * 60L * 1000L }
 def _packageDeployMarkerTtlMs() { 10L * 60L * 1000L }
 
+// Persistent TTLs recover abandoned state after a JVM/class reload. Until
+// then, only the owning execution's terminal/finally path clears this ID;
+// elapsed wall time alone can never prove a handler stopped running.
+private boolean _writeExecutionLiveLocked(executionId) {
+    return executionId != null && LIVE_WRITE_EXECUTIONS.contains(executionId.toString())
+}
+
 private void _writeSweepRequestsLocked() {
     def stored = atomicState.writeRequestLeases
     if (!(stored instanceof Map)) return
     long at = now()
     def kept = stored.findAll { k, v ->
-        v instanceof Map && v.expiresAt != null && (v.expiresAt as Long) > at
+        v instanceof Map && ((_writeExecutionLiveLocked(k)) ||
+            (v.expiresAt != null && (v.expiresAt as Long) > at))
     }
     if (kept.size() != stored.size()) atomicState.writeRequestLeases = kept
 }
@@ -1802,16 +1813,18 @@ private List _activeWritesLocked() {
     def mrtr = atomicState.mrtrRequests
     if (mrtr instanceof Map) {
         mrtr.values().each { rec ->
-            if (rec instanceof Map && rec.status == "active" && rec.expiresAt != null
-                    && (rec.expiresAt as Long) > at) {
+            if (rec instanceof Map && rec.status == "active" &&
+                    (_writeExecutionLiveLocked(rec.claimId) ||
+                     (rec.expiresAt != null && (rec.expiresAt as Long) > at))) {
                 active << [tool: rec.leafTool, startedAt: rec.startedAt, transport: "mrtr"]
             }
         }
     }
     def requests = atomicState.writeRequestLeases
     if (requests instanceof Map) {
-        requests.values().each { rec ->
-            if (rec instanceof Map && rec.expiresAt != null && (rec.expiresAt as Long) > at) {
+        requests.each { leaseId, rec ->
+            if (rec instanceof Map && (_writeExecutionLiveLocked(leaseId) ||
+                    (rec.expiresAt != null && (rec.expiresAt as Long) > at))) {
                 active << [tool: rec.tool, startedAt: rec.startedAt, transport: rec.transport]
             }
         }
@@ -1883,6 +1896,7 @@ def _writeReserveRequest(toolName, String transport) {
                 all[leaseId] = rec
                 atomicState.writeRequestLeases = all
             }
+            LIVE_WRITE_EXECUTIONS.add(leaseId)
             outcome = [accepted: true, leaseId: leaseId]
         }
     }
@@ -1900,6 +1914,8 @@ private void _writeReleaseRequest(String leaseId) {
             if (atomicState.writeRequestLeases instanceof Map) all.putAll(atomicState.writeRequestLeases)
             all.remove(leaseId)
             atomicState.writeRequestLeases = all
+        } finally {
+            LIVE_WRITE_EXECUTIONS.remove(leaseId)
         }
     }
 }
@@ -1947,22 +1963,29 @@ private void _mrtrValidateAccess(outerToolName, leafToolName, Map outerArgs) {
     }
 }
 
-// Hubitat's sandbox does not expose a guaranteed cryptographic digest API. The
-// random UUID is the unguessable authority; this compact binding catches a client
-// accidentally echoing the state with another tool/argument object without storing
-// a potentially huge import payload in atomicState.
+// Hubitat allowlists java.security.MessageDigest. Hash the complete canonical
+// client argument object before persistence: this binds large import JSON exactly
+// without duplicating that payload in atomicState.
 private Map _mrtrBinding(outerToolName, leafToolName, Map args) {
     String canonical = groovy.json.JsonOutput.toJson(_mrtrCanonicalArgs(args))
-    int edge = Math.min(48, canonical.length())
     return [
         outerTool: outerToolName?.toString(),
         leafTool: leafToolName?.toString(),
-        argHash: canonical.hashCode(),
-        argReverseHash: canonical.reverse().hashCode(),
-        argLength: canonical.length(),
-        argPrefix: canonical.substring(0, edge),
-        argSuffix: canonical.substring(canonical.length() - edge)
+        argDigest: _mrtrSha256(canonical)
     ]
+}
+
+private String _mrtrSha256(String value) {
+    def digester = java.security.MessageDigest.getInstance("SHA-256")
+    def digest = digester.digest(value.getBytes("UTF-8"))
+    String digits = "0123456789abcdef"
+    StringBuilder hex = new StringBuilder(digest.length * 2)
+    for (def one : digest) {
+        int v = (one as Integer) & 0xff
+        hex.append(digits.charAt(v >>> 4))
+        hex.append(digits.charAt(v & 0x0f))
+    }
+    return hex.toString()
 }
 
 private def _mrtrCanonicalArgs(value) {
@@ -1970,9 +1993,7 @@ private def _mrtrCanonicalArgs(value) {
         def canonical = [:]
         value.entrySet().toList().sort { a, b -> a.key.toString() <=> b.key.toString() }.each { entry ->
             String key = entry.key.toString()
-            if (!(key in ["bestPracticeKey", "__reqT0"])) {
-                canonical[key] = _mrtrCanonicalArgs(entry.value)
-            }
+            canonical[key] = _mrtrCanonicalArgs(entry.value)
         }
         return canonical
     }
@@ -1983,9 +2004,7 @@ private def _mrtrCanonicalArgs(value) {
 private boolean _mrtrBindingMatches(Map rec, Map binding) {
     return rec.outerTool?.toString() == binding.outerTool?.toString() &&
         rec.leafTool?.toString() == binding.leafTool?.toString() &&
-        rec.argHash == binding.argHash && rec.argReverseHash == binding.argReverseHash &&
-        rec.argLength == binding.argLength && rec.argPrefix == binding.argPrefix &&
-        rec.argSuffix == binding.argSuffix
+        rec.argDigest?.toString() == binding.argDigest?.toString()
 }
 
 def _mrtrActiveTtlMs() { _writeLeaseMs() }
@@ -2015,7 +2034,10 @@ private List _mrtrSweepLocked() {
     def kept = [:]
     def cleanup = []
     stored.each { k, v ->
-        if (v instanceof Map && v.expiresAt != null && (v.expiresAt as Long) > at) {
+        boolean executing = v instanceof Map && v.status == "active" &&
+            _writeExecutionLiveLocked(v.claimId)
+        if (v instanceof Map && (executing ||
+                (v.expiresAt != null && (v.expiresAt as Long) > at))) {
             kept[k] = v
         } else if (v instanceof Map && v.status == "active") {
             cleanup << ([:] + (v as Map))
@@ -2049,8 +2071,10 @@ private Map _mrtrFindActiveLocked(leafTool, Map binding) {
     long at = now()
     for (def entry : stored.entrySet()) {
         def rec = entry.value
-        if (rec instanceof Map && rec.status == "active" && rec.expiresAt != null
-                && (rec.expiresAt as Long) > at && rec.leafTool?.toString() == leafTool?.toString()
+        if (rec instanceof Map && rec.status == "active" &&
+                (_writeExecutionLiveLocked(rec.claimId) ||
+                 (rec.expiresAt != null && (rec.expiresAt as Long) > at)) &&
+                rec.leafTool?.toString() == leafTool?.toString()
                 && _mrtrBindingMatches(rec as Map, binding)) {
             return [startedAt: rec.startedAt]
         }
@@ -2106,9 +2130,7 @@ def _mrtrReserve(outerTool, leafTool, Map binding) {
                 def rec = [
                     schemaVersion: 1, status: "active",
                     outerTool: outerTool?.toString(), leafTool: leafTool?.toString(),
-                    argHash: binding.argHash, argReverseHash: binding.argReverseHash,
-                    argLength: binding.argLength, argPrefix: binding.argPrefix,
-                    argSuffix: binding.argSuffix,
+                    argDigest: binding.argDigest,
                     startedAt: at, updatedAt: at, expiresAt: at + _mrtrActiveTtlMs(),
                     rounds: 0, generation: 0
                 ]
@@ -2136,7 +2158,9 @@ def _mrtrClaim(String stateId, outerTool, leafTool, Map binding) {
         def stored = atomicState.mrtrRequests
         def rec = (stored instanceof Map && stored[stateId] instanceof Map)
             ? ([:] + (stored[stateId] as Map)) : null
-        if (rec == null || rec.expiresAt == null || (rec.expiresAt as Long) <= now()) {
+        boolean executing = rec != null && _writeExecutionLiveLocked(rec.claimId)
+        if (rec == null || (!executing &&
+                (rec.expiresAt == null || (rec.expiresAt as Long) <= now()))) {
             outcome = null
         } else if (!_mrtrBindingMatches(rec, binding)
                 || rec.outerTool?.toString() != outerTool?.toString()
@@ -2158,6 +2182,7 @@ def _mrtrClaim(String stateId, outerTool, leafTool, Map binding) {
                 rec.updatedAt = rec.claimedAt
                 rec.expiresAt = rec.claimedAt + _mrtrActiveTtlMs()
                 _mrtrPutLocked(stateId, rec)
+                LIVE_WRITE_EXECUTIONS.add(claimId)
                 outcome = [outcome: "claimed", record: rec,
                            claimId: claimId, generation: generation]
             }
@@ -2241,47 +2266,54 @@ private Map _mrtrRecordSlice(String stateId, Map originalRec, Map claim, Map res
     Map rec
     synchronized (WRITE_RESERVATION_LOCK) {
         rec = _mrtrOwnedRecordLocked(stateId, claim)
-        if (rec == null) return null
-        def aggregate = (rec.aggregate instanceof Map) ? ([:] + rec.aggregate) : [:]
-        String kind = continuation.kind?.toString()
-        aggregate.kind = kind
-        switch (kind) {
-            case "call_rule":
-                aggregate.results = ((aggregate.results instanceof List) ? aggregate.results : []) +
-                    ((result.results instanceof List) ? result.results : [])
-                aggregate.ruleIds = (((aggregate.ruleIds instanceof List) ? aggregate.ruleIds : []) +
-                    ((result.ruleIds instanceof List) ? result.ruleIds : [])).unique()
-                break
-            case "walk_steps":
-                aggregate.steps = ((aggregate.steps instanceof List) ? aggregate.steps : []) +
-                    ((result.steps instanceof List) ? result.steps : [])
-                aggregate.stepsRequested = ((aggregate.stepsRequested ?: 0) as Integer) +
-                    ((result.stepsRequested ?: 0) as Integer)
-                break
-            case "bulk_edit":
-                aggregate.triggers = ((aggregate.triggers instanceof List) ? aggregate.triggers : []) +
-                    ((result.triggers instanceof List) ? result.triggers : [])
-                aggregate.actions = ((aggregate.actions instanceof List) ? aggregate.actions : []) +
-                    ((result.actions instanceof List) ? result.actions : [])
-                break
-            case "patches":
-                aggregate.patchResults = ((aggregate.patchResults instanceof List) ? aggregate.patchResults : []) +
-                    ((result.patchResults instanceof List) ? result.patchResults : [])
-                break
+        if (rec == null) {
+            LIVE_WRITE_EXECUTIONS.remove(claim?.claimId)
+            return null
         }
-        aggregate.anyPartial = aggregate.anyPartial == true || result.partial == true
-        rec.aggregate = aggregate
-        if (continuation.nextArguments instanceof Map) rec.nextArguments = continuation.nextArguments
-        else rec.remove("nextArguments")
-        if (continuation.checkpoint instanceof Map) rec.checkpoint = continuation.checkpoint
-        rec.rounds = ((rec.rounds ?: 0) as Integer) + 1
-        rec.generation = ((rec.generation ?: 0) as Integer) + 1
-        rec.remove("claimId")
-        rec.remove("claimedGeneration")
-        rec.remove("claimedAt")
-        rec.updatedAt = now()
-        rec.expiresAt = rec.updatedAt + _mrtrActiveTtlMs()
-        _mrtrPutLocked(stateId, rec)
+        try {
+            def aggregate = (rec.aggregate instanceof Map) ? ([:] + rec.aggregate) : [:]
+            String kind = continuation.kind?.toString()
+            aggregate.kind = kind
+            switch (kind) {
+                case "call_rule":
+                    aggregate.results = ((aggregate.results instanceof List) ? aggregate.results : []) +
+                        ((result.results instanceof List) ? result.results : [])
+                    aggregate.ruleIds = (((aggregate.ruleIds instanceof List) ? aggregate.ruleIds : []) +
+                        ((result.ruleIds instanceof List) ? result.ruleIds : [])).unique()
+                    break
+                case "walk_steps":
+                    aggregate.steps = ((aggregate.steps instanceof List) ? aggregate.steps : []) +
+                        ((result.steps instanceof List) ? result.steps : [])
+                    aggregate.stepsRequested = ((aggregate.stepsRequested ?: 0) as Integer) +
+                        ((result.stepsRequested ?: 0) as Integer)
+                    break
+                case "bulk_edit":
+                    aggregate.triggers = ((aggregate.triggers instanceof List) ? aggregate.triggers : []) +
+                        ((result.triggers instanceof List) ? result.triggers : [])
+                    aggregate.actions = ((aggregate.actions instanceof List) ? aggregate.actions : []) +
+                        ((result.actions instanceof List) ? result.actions : [])
+                    break
+                case "patches":
+                    aggregate.patchResults = ((aggregate.patchResults instanceof List) ? aggregate.patchResults : []) +
+                        ((result.patchResults instanceof List) ? result.patchResults : [])
+                    break
+            }
+            aggregate.anyPartial = aggregate.anyPartial == true || result.partial == true
+            rec.aggregate = aggregate
+            if (continuation.nextArguments instanceof Map) rec.nextArguments = continuation.nextArguments
+            else rec.remove("nextArguments")
+            if (continuation.checkpoint instanceof Map) rec.checkpoint = continuation.checkpoint
+            rec.rounds = ((rec.rounds ?: 0) as Integer) + 1
+            rec.generation = ((rec.generation ?: 0) as Integer) + 1
+            rec.remove("claimId")
+            rec.remove("claimedGeneration")
+            rec.remove("claimedAt")
+            rec.updatedAt = now()
+            rec.expiresAt = rec.updatedAt + _mrtrActiveTtlMs()
+            _mrtrPutLocked(stateId, rec)
+        } finally {
+            LIVE_WRITE_EXECUTIONS.remove(claim?.claimId)
+        }
     }
     return rec
 }
@@ -2340,20 +2372,27 @@ private def _mrtrAggregateTerminal(Map rec, result) {
 private boolean _mrtrStoreTerminal(String stateId, Map originalRec, Map claim, result, boolean isError) {
     synchronized (WRITE_RESERVATION_LOCK) {
         def rec = _mrtrOwnedRecordLocked(stateId, claim)
-        if (rec == null) return false
-        rec.status = "terminal"
-        rec.remove("nextArguments")
-        rec.remove("checkpoint")
-        rec.remove("claimId")
-        rec.remove("claimedGeneration")
-        rec.remove("claimedAt")
-        rec.terminalResult = result
-        rec.terminalIsError = isError
-        rec.finishedAt = now()
-        rec.updatedAt = rec.finishedAt
-        rec.expiresAt = rec.finishedAt + _mrtrTerminalTtlMs()
-        _mrtrPutLocked(stateId, rec)
-        return true
+        if (rec == null) {
+            LIVE_WRITE_EXECUTIONS.remove(claim?.claimId)
+            return false
+        }
+        try {
+            rec.status = "terminal"
+            rec.remove("nextArguments")
+            rec.remove("checkpoint")
+            rec.remove("claimId")
+            rec.remove("claimedGeneration")
+            rec.remove("claimedAt")
+            rec.terminalResult = result
+            rec.terminalIsError = isError
+            rec.finishedAt = now()
+            rec.updatedAt = rec.finishedAt
+            rec.expiresAt = rec.finishedAt + _mrtrTerminalTtlMs()
+            _mrtrPutLocked(stateId, rec)
+            return true
+        } finally {
+            LIVE_WRITE_EXECUTIONS.remove(claim?.claimId)
+        }
     }
 }
 
@@ -2361,18 +2400,25 @@ private void _mrtrAbandon(String stateId, Map originalRec, Map claim, String rea
     Map cleanup = null
     synchronized (WRITE_RESERVATION_LOCK) {
         def rec = _mrtrOwnedRecordLocked(stateId, claim)
-        if (rec == null) return
-        rec.status = "abandoned"
-        rec.reason = reason
-        rec.updatedAt = now()
-        rec.expiresAt = rec.updatedAt + 60000L
-        rec.remove("nextArguments")
-        rec.remove("claimId")
-        rec.remove("claimedGeneration")
-        rec.remove("claimedAt")
-        cleanup = [:] + rec
-        rec.remove("checkpoint")
-        _mrtrPutLocked(stateId, rec)
+        if (rec == null) {
+            LIVE_WRITE_EXECUTIONS.remove(claim?.claimId)
+            return
+        }
+        try {
+            rec.status = "abandoned"
+            rec.reason = reason
+            rec.updatedAt = now()
+            rec.expiresAt = rec.updatedAt + 60000L
+            rec.remove("nextArguments")
+            rec.remove("claimId")
+            rec.remove("claimedGeneration")
+            rec.remove("claimedAt")
+            cleanup = [:] + rec
+            rec.remove("checkpoint")
+            _mrtrPutLocked(stateId, rec)
+        } finally {
+            LIVE_WRITE_EXECUTIONS.remove(claim?.claimId)
+        }
     }
     if (cleanup != null) _mrtrCleanupRecord(cleanup)
 }

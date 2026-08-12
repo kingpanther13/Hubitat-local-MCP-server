@@ -65,6 +65,42 @@ def test_call_tool_follows_modern_request_state_continuations():
     }
 
 
+def test_call_tool_keeps_same_state_contention_inside_one_logical_call():
+    client = object.__new__(et.HubitatMcpClient)
+    client.op_timings = []
+    client._active_test = "mrtr/contention"
+    client._last_op = None
+    client._last_continuation_rounds = 0
+    calls = []
+    replies = iter([
+        {"resultType": "input_required", "requestState": "state-live"},
+        {"resultType": "input_required", "requestState": "state-live"},
+        {"resultType": "complete", "content": [
+            {"type": "text", "text": json.dumps({"success": True})}
+        ]},
+    ])
+
+    def send(method, params=None, headers=None):
+        calls.append((method, dict(params or {}), dict(headers or {})))
+        return next(replies)
+
+    client._send = send
+
+    result = client.call_tool(
+        "hub_call_rule", {"ruleId": [1, 2], "action": "stop"}, flat=True)
+
+    assert result == {"success": True}
+    assert client._last_continuation_rounds == 2
+    assert len(calls) == 3
+    assert calls[1][1]["requestState"] == "state-live"
+    assert calls[2][1]["requestState"] == "state-live"
+    assert (
+        calls[0][1]["arguments"]
+        == calls[1][1]["arguments"]
+        == calls[2][1]["arguments"]
+    )
+
+
 
 def test_settle_before_504_retry_probes_without_a_fixed_minute(monkeypatch):
     sleeps = []

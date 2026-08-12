@@ -136,6 +136,10 @@ abstract class HarnessSpec extends Specification {
     // A single static holder is safe under the current single-fork test config
     // (maxParallelForks=1); if specs ever run in parallel this would need to be a ThreadLocal.
     protected static final java.util.concurrent.atomic.AtomicReference NOW_OVERRIDE = new java.util.concurrent.atomic.AtomicReference(null)
+    // Optional per-feature runIn seam. Kept beside NOW_OVERRIDE because both are
+    // execution-boundary controls used by concurrency specs; null preserves the
+    // normal recorder behavior for every other feature.
+    protected static final java.util.concurrent.atomic.AtomicReference RUN_IN_OVERRIDE = new java.util.concurrent.atomic.AtomicReference(null)
 
     @Shared protected AppExecutor appExecutor
     // Every runIn(delay, handler[, opts]) the script scheduled this test, newest last.
@@ -247,7 +251,11 @@ abstract class HarnessSpec extends Specification {
         // Attached HERE with the other permanent stubs: one added from a later setupSpec does
         // not reliably take, and runIn is an AppExecutor method, so a script.metaClass override
         // never intercepts it.
-        mock.runIn(*_) >> { args -> SHARED_RUN_IN_CALLS << (args as List) }
+        mock.runIn(*_) >> { args ->
+            def ov = RUN_IN_OVERRIDE.get()
+            if (ov != null) return ov.call(args as List)
+            SHARED_RUN_IN_CALLS << (args as List)
+        }
         return mock
     }
 
@@ -308,6 +316,7 @@ abstract class HarnessSpec extends Specification {
         // Drop any per-test virtual-clock override so now() returns the fixed default
         // for every spec that doesn't opt in (prevents clock leakage across features).
         NOW_OVERRIDE.set(null)
+        RUN_IN_OVERRIDE.set(null)
         // Drop any per-test metaClass writes installed on the shared
         // script by previous features (e.g. individual specs' given:
         // blocks that do `script.metaClass.getRooms = { ... }`).
@@ -332,6 +341,18 @@ abstract class HarnessSpec extends Specification {
         // reference non-@Shared spec fields (e.g. per-feature stubs) and
         // still see their own test's values.
         wireScriptOverrides()
+    }
+
+    /**
+     * Create another execution instance of the already compiled app class.
+     * Hubitat gives concurrent executions distinct script instances; the
+     * inherited initializer copies the same AppExecutor and therefore the same
+     * atomicState backing while class-static fields remain genuinely shared.
+     */
+    protected Object newCompiledScriptInstance() {
+        def peer = script.getClass().getDeclaredConstructor().newInstance()
+        peer.initializeFromParent(script)
+        return peer
     }
 
     /**

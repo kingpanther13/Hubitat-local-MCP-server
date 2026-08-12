@@ -2,6 +2,9 @@ package server
 
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 import support.ToolSpecBase
 
@@ -49,6 +52,14 @@ class MrtrContinuationSpec extends ToolSpecBase {
         mcpDriver.pushBody([jsonrpc: '2.0', id: id, method: 'tools/call', params: params])
         script.handleMcpRequest()
         return mcpDriver.parseResponseJson() as Map
+    }
+
+    private Map directCall(Object target, int id, String toolName, Map args,
+                           String requestState = null) {
+        def params = [name: toolName, arguments: args]
+        if (requestState != null) params.requestState = requestState
+        return target.handleToolsCall([jsonrpc: '2.0', id: id,
+            method: 'tools/call', params: params]) as Map
     }
 
     def "modern slow write preflights, continues across bounded slices, and replays its terminal result"() {
@@ -166,55 +177,212 @@ class MrtrContinuationSpec extends ToolSpecBase {
         !inner.toString().contains(first.result.requestState.toString())
     }
 
-    def "concurrent cap-one device-write reservations admit exactly one before dispatch"() {
+    def "two compiled app instances keep a blocked ordinary write counted past lease TTL"() {
         given:
+        settingsMap.enableWrite = true
         settingsMap.maxConcurrentWrites = 1
-
-        when:
-        def attempts = race(24) {
-            script._writeReserveRequest('hub_call_device_command', 'legacy') as Map
+        def peer = newCompiledScriptInstance()
+        assert !peer.is(script)
+        assert peer.getClass().is(script.getClass())
+        def entered = new CountDownLatch(1)
+        def release = new CountDownLatch(1)
+        def calls = new AtomicInteger(0)
+        def virtualNow = new AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        Closure leaf = { deviceId, command, parameters, waitFor ->
+            calls.incrementAndGet()
+            entered.countDown()
+            release.await(5, TimeUnit.SECONDS)
+            [success: true, deviceId: deviceId, command: command]
+        }
+        script.metaClass.toolSendCommand = leaf
+        peer.metaClass.toolSendCommand = leaf
+        def winner = new AtomicReference()
+        def failure = new AtomicReference()
+        Thread first = Thread.start {
+            try {
+                winner.set(directCall(script, 1701, 'hub_call_device_command',
+                    [deviceId: '17', command: 'on']))
+            } catch (Throwable t) {
+                failure.set(t)
+            }
         }
 
+        when:
+        assert entered.await(5, TimeUnit.SECONDS)
+        virtualNow.addAndGet((script._mrtrActiveTtlMs() as Long) + 1L)
+        def contender = directCall(peer, 1702, 'hub_call_device_command',
+            [deviceId: '18', command: 'off'])
+        def contenderInner = mcpDriver.parseInner(contender)
+        release.countDown()
+        first.join(5000)
+
         then:
-        attempts.count { it.accepted == true } == 1
-        attempts.count { it.refusal?.status == 'too_many_writes_in_flight' } == 23
-        (atomicStateMap.writeRequestLeases as Map).values().count { it instanceof Map } == 1
+        !first.alive
+        failure.get() == null
+        calls.get() == 1
+        contender.result.isError == true
+        contenderInner.status == 'too_many_writes_in_flight'
+        winner.get().result.isError != true
+
+        cleanup:
+        release.countDown()
+        first?.join(5000)
     }
 
-    def "concurrent identical MRTR preflights create one state and refuse every duplicate"() {
+    def "simultaneous cap-one device calls on two compiled instances dispatch one leaf"() {
         given:
-        settingsMap.maxConcurrentWrites = 0
-        def args = [ruleId: [901, 902], action: 'stop']
-        Map binding = script._mrtrBinding('hub_call_rule', 'hub_call_rule', args) as Map
+        settingsMap.enableWrite = true
+        settingsMap.maxConcurrentWrites = 1
+        def peer = newCompiledScriptInstance()
+        def ready = new CountDownLatch(2)
+        def start = new CountDownLatch(1)
+        def entered = new CountDownLatch(1)
+        def oneFinished = new CountDownLatch(1)
+        def release = new CountDownLatch(1)
+        def calls = new AtomicInteger(0)
+        def results = java.util.Collections.synchronizedList([])
+        def failures = java.util.Collections.synchronizedList([])
+        Closure leaf = { deviceId, command, parameters, waitFor ->
+            calls.incrementAndGet()
+            entered.countDown()
+            release.await(10, TimeUnit.SECONDS)
+            [success: true, deviceId: deviceId, command: command]
+        }
+        script.metaClass.toolSendCommand = leaf
+        peer.metaClass.toolSendCommand = leaf
+        def targets = [script, peer]
+        def threads = (0..<2).collect { int index ->
+            Thread.start("device-dispatch-race-${index}") {
+                ready.countDown()
+                start.await()
+                try {
+                    results << directCall(targets[index], 1750 + index,
+                        'hub_call_device_command',
+                        [deviceId: "${20 + index}".toString(), command: 'on'])
+                } catch (Throwable t) {
+                    failures << t
+                } finally {
+                    oneFinished.countDown()
+                }
+            }
+        }
 
         when:
-        def attempts = race(24) {
-            script._mrtrReserve('hub_call_rule', 'hub_call_rule', binding) as Map
+        assert ready.await(5, TimeUnit.SECONDS)
+        start.countDown()
+        assert entered.await(5, TimeUnit.SECONDS)
+        assert oneFinished.await(5, TimeUnit.SECONDS)
+
+        then: 'the loser was refused while the winner remains blocked in its leaf'
+        calls.get() == 1
+        results.size() == 1
+        mcpDriver.parseInner(results[0]).status == 'too_many_writes_in_flight'
+
+        when:
+        release.countDown()
+        threads*.join(5000)
+
+        then:
+        !threads.any { it.alive }
+        failures.isEmpty()
+        calls.get() == 1
+        results.size() == 2
+        results.count { it.result.isError == true } == 1
+        results.count { it.result.isError != true } == 1
+
+        cleanup:
+        release.countDown()
+        threads*.join(5000)
+    }
+
+    def "two compiled app instances serialize complete identical MRTR preflights"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.maxConcurrentWrites = 0
+        mcpDriver.pushHeaders([
+            'MCP-Protocol-Version': '2026-07-28',
+            'Mcp-Method': 'tools/call',
+            'Mcp-Name': 'hub_call_rule'
+        ])
+        def peer = newCompiledScriptInstance()
+        def args = [ruleId: [901, 902], action: 'stop']
+
+        when:
+        def attempts = race(24) { int index ->
+            directCall(index % 2 == 0 ? script : peer, 1800 + index,
+                'hub_call_rule', args)
         }
 
         then:
-        attempts.count { it.accepted == true } == 1
-        attempts.count { it.refusal?.status == 'duplicate_in_flight' } == 23
+        attempts.count { it.result?.resultType == 'input_required' } == 1
+        attempts.count { it.result?.isError == true &&
+            mcpDriver.parseInner(it).status == 'duplicate_in_flight' } == 23
         (atomicStateMap.mrtrRequests as Map).values().count { it?.status == 'active' } == 1
     }
 
-    def "concurrent repeats claim one MRTR generation and never both own its slice"() {
+    def "a blocked MRTR generation stays counted past TTL and contention remains a continuation"() {
         given:
+        settingsMap.enableWrite = true
+        settingsMap.maxConcurrentWrites = 1
+        mcpDriver.pushHeaders([
+            'MCP-Protocol-Version': '2026-07-28',
+            'Mcp-Method': 'tools/call',
+            'Mcp-Name': 'hub_call_rule'
+        ])
+        def peer = newCompiledScriptInstance()
         def args = [ruleId: [911, 912], action: 'stop']
-        Map binding = script._mrtrBinding('hub_call_rule', 'hub_call_rule', args) as Map
-        Map admitted = script._mrtrReserve('hub_call_rule', 'hub_call_rule', binding) as Map
-
-        when:
-        def claims = race(2) {
-            script._mrtrClaim(admitted.stateId as String, 'hub_call_rule', 'hub_call_rule', binding) as Map
+        def preflight = directCall(script, 1900, 'hub_call_rule', args)
+        String stateId = preflight.result.requestState
+        def entered = new CountDownLatch(1)
+        def release = new CountDownLatch(1)
+        def calls = new AtomicInteger(0)
+        def virtualNow = new AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        Closure leaf = { Map a ->
+            calls.incrementAndGet()
+            entered.countDown()
+            release.await(5, TimeUnit.SECONDS)
+            [success: true, partial: false, ruleIds: a.ruleId,
+             results: a.ruleId.collect { [success: true, ruleId: it] }]
+        }
+        script.metaClass.toolRunRmRule = leaf
+        peer.metaClass.toolRunRmRule = leaf
+        def winner = new AtomicReference()
+        def failure = new AtomicReference()
+        Thread first = Thread.start {
+            try {
+                winner.set(directCall(script, 1901, 'hub_call_rule', args, stateId))
+            } catch (Throwable t) {
+                failure.set(t)
+            }
         }
 
+        when:
+        assert entered.await(5, TimeUnit.SECONDS)
+        virtualNow.addAndGet((script._mrtrActiveTtlMs() as Long) + 1L)
+        def sameState = directCall(peer, 1902, 'hub_call_rule', args, stateId)
+        def competingFresh = directCall(peer, 1903, 'hub_call_rule',
+            [ruleId: [913, 914], action: 'stop'])
+        def competingInner = mcpDriver.parseInner(competingFresh)
+        release.countDown()
+        first.join(5000)
+
         then:
-        claims.count { it.outcome == 'claimed' } == 1
-        claims.count { it.outcome == 'in_progress' } == 1
-        atomicStateMap.mrtrRequests[admitted.stateId].generation == 0
-        atomicStateMap.mrtrRequests[admitted.stateId].claimedGeneration == 0
-        atomicStateMap.mrtrRequests[admitted.stateId].claimId == claims.find { it.outcome == 'claimed' }.claimId
+        !first.alive
+        failure.get() == null
+        calls.get() == 1
+        sameState.error == null
+        sameState.result.resultType == 'input_required'
+        sameState.result.requestState == stateId
+        !sameState.result.containsKey('content')
+        competingFresh.result.isError == true
+        competingInner.status == 'too_many_writes_in_flight'
+        winner.get().result.resultType == 'complete'
+
+        cleanup:
+        release.countDown()
+        first?.join(5000)
     }
 
     def "maxConcurrentWrites zero disables the write cap"() {
@@ -372,8 +540,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
                 [ruleId: [1000 + index, 2000 + index], action: 'stop']) as Map
             [("mrtr-seeded-active-${index}".toString()): [
                 schemaVersion: 1, status: 'active', outerTool: 'hub_call_rule', leafTool: 'hub_call_rule',
-                argHash: b.argHash, argReverseHash: b.argReverseHash, argLength: b.argLength,
-                argPrefix: b.argPrefix, argSuffix: b.argSuffix,
+                argDigest: b.argDigest,
                 startedAt: 1234567880000L + index, updatedAt: 1234567880000L + index,
                 expiresAt: 1234567990000L, rounds: 0, generation: 0
             ]]
@@ -399,8 +566,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         atomicStateMap.mrtrRequests = (0..<15).collectEntries { int index ->
             [("mrtr-live-${index}".toString()): [
                 schemaVersion: 1, status: 'active', outerTool: 'hub_call_rule', leafTool: 'hub_call_rule',
-                argHash: index, argReverseHash: -index, argLength: index + 1,
-                argPrefix: "p${index}", argSuffix: "s${index}",
+                argDigest: "seed-digest-${index}".toString(),
                 startedAt: 1234567880000L + index, updatedAt: 1234567880000L + index,
                 expiresAt: 1234567990000L, rounds: 0, generation: 0
             ]]
@@ -466,6 +632,68 @@ class MrtrContinuationSpec extends ToolSpecBase {
         mismatchedTool.error.code == -32602
         mismatchedTool.error.message.contains('requestState')
         ran == 0
+    }
+
+    def "requestState binding includes a changed best-practice acknowledgment"() {
+        given:
+        settingsMap.enableWrite = true
+        def original = [ruleId: [81, 82], action: 'stop', bestPracticeKey: 'original-key']
+        def first = modernCall('hub_call_rule', original)
+
+        when:
+        def changed = modernCall('hub_call_rule',
+            [ruleId: [81, 82], action: 'stop', bestPracticeKey: 'different-key'],
+            first.result.requestState as String)
+
+        then:
+        changed.error.code == -32602
+        changed.error.message.contains('requestState')
+    }
+
+    def "SHA-256 request binding separates payloads that collide under the legacy compact tuple"() {
+        given: 'two equal-length payloads with identical 48-char edges and both Java hashes equal'
+        String payloadA = 'PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP' +
+            'AaBBAaAaBBBBAaBBBBBBAaAaBBBBBBAaBBAaBBBBAaAaBBBBAaBBAaAaAaBBBBAaBBAaAaBBBBBBBBBBAaAaAaBBBBBBAaAaBBBBBBBBBBBBBBAaBBAaBBBBAaBBAaBB' +
+            'SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS'
+        String payloadB = 'PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP' +
+            'BBAaBBAaBBBBBBAaBBBBAaBBBBAaAaBBAaAaBBAaBBBBAaBBBBAaAaBBAaAaBBBBBBAaBBBBBBBBBBBBAaAaBBAaBBAaBBBBAaAaBBBBBBBBAaBBAaBBBBBBAaAaAaBB' +
+            'SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS'
+        String oldA = groovy.json.JsonOutput.toJson([importJson: payloadA])
+        String oldB = groovy.json.JsonOutput.toJson([importJson: payloadB])
+
+        expect:
+        oldA != oldB
+        oldA.length() == oldB.length()
+        oldA.substring(0, 48) == oldB.substring(0, 48)
+        oldA.substring(oldA.length() - 48) == oldB.substring(oldB.length() - 48)
+        oldA.hashCode() == oldB.hashCode()
+        oldA.reverse().hashCode() == oldB.reverse().hashCode()
+        script._mrtrSha256('abc') ==
+            'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'
+        script._mrtrBinding('hub_import_native_app', 'hub_import_native_app',
+            [importJson: payloadA]).argDigest !=
+            script._mrtrBinding('hub_import_native_app', 'hub_import_native_app',
+                [importJson: payloadB]).argDigest
+    }
+
+    def "large import binding persists only a fixed-size digest"() {
+        given:
+        settingsMap.maxConcurrentWrites = 0
+        String importJson = '{"apps":[' + ('x' * 200000) + ']}'
+        Map binding = script._mrtrBinding('hub_import_native_app',
+            'hub_import_native_app', [importJson: importJson]) as Map
+
+        when:
+        Map admitted = script._mrtrReserve('hub_import_native_app',
+            'hub_import_native_app', binding) as Map
+        Map stored = atomicStateMap.mrtrRequests[admitted.stateId] as Map
+
+        then:
+        admitted.accepted == true
+        binding.argDigest ==~ /[0-9a-f]{64}/
+        stored.argDigest == binding.argDigest
+        !stored.toString().contains(importJson.substring(0, 100))
+        stored.keySet().intersect(['canonicalArgs', 'originalArgs', 'importJson']).isEmpty()
     }
 
     def "unknown and expired requestState fail without dispatching a write"() {

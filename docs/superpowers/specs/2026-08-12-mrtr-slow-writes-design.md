@@ -98,6 +98,9 @@ expired, and is bound to:
 The first resumed request executes the original first slice; later resumed
 requests execute only the stored continuation, never an already-completed slice.
 Another resumable result updates the record and returns `input_required` again.
+A concurrent repeat while that exact generation is executing also returns the
+same state-only `input_required` shape without advancing the record, keeping an
+automatic client inside the original logical call.
 A terminal result removes the active record and returns one normal
 `CallToolResult` with `resultType: "complete"`.
 
@@ -111,13 +114,17 @@ does not execute a write.
 
 - schema version;
 - creation, update, and expiry timestamps;
-- leaf tool name and canonical-argument fingerprint;
+- leaf tool name and a SHA-256 digest of every canonical client-visible
+  argument (computed before any server-only timing field is injected);
 - stored next arguments/checkpoint;
 - accumulated slice outcome needed for the final result; and
 - active/terminal status.
 
-Records are bounded by a per-installation cap and TTL. Expired records and their
-fingerprint locks are swept opportunistically. A terminal result is retained
+Records are bounded by a per-installation cap and TTL. A class-static execution
+registry distinguishes a handler that is still running from abandoned persisted
+state: a live generation cannot be swept merely because its recovery TTL passed,
+while a JVM reload clears the registry and lets an abandoned record expire.
+Expired records and their fingerprint locks are swept opportunistically. A terminal result is retained
 briefly under the same opaque `requestState`, so loss of only the final HTTP
 response can be replayed by the still-running logical call. This is not a public
 or long-lived replay journal and does not support arbitrary cross-turn recovery.
@@ -146,7 +153,9 @@ Read-only tools, gateway catalog calls, schema-only probes,
 `hub_call_device_replace(list_options=true)`, and
 `hub_update_package(dryRun=true)` do not consume a slot. In particular,
 `hub_get_info(identifyHub=true)` remains outside the write safeguards by design.
-Leases contain no public token and abandoned leases expire automatically.
+Leases contain no public token. The same class-static execution registry keeps a
+running ordinary handler counted without a fixed-duration assumption; after a
+JVM reload, only abandoned persisted leases age out by TTL.
 
 ### 4.7 Final result aggregation
 

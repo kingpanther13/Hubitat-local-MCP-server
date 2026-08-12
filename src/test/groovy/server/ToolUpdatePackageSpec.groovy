@@ -3,6 +3,8 @@ package server
 import spock.lang.Shared
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import support.ToolSpecBase
 
 /**
@@ -35,27 +37,6 @@ import support.ToolSpecBase
  *     write internals.
  */
 class ToolUpdatePackageSpec extends ToolSpecBase {
-
-    private List<Map> racePackageDeploys(int count, Closure<Map> action) {
-        def ready = new CountDownLatch(count)
-        def start = new CountDownLatch(1)
-        def results = java.util.Collections.synchronizedList([])
-        def failures = java.util.Collections.synchronizedList([])
-        def threads = (0..<count).collect { int index ->
-            Thread.start("package-race-${index}") {
-                ready.countDown()
-                start.await()
-                try { results << action.call(index) }
-                catch (Throwable t) { failures << t }
-            }
-        }
-        assert ready.await(5, TimeUnit.SECONDS)
-        start.countDown()
-        threads*.join(5000)
-        assert !threads.any { it.alive }
-        assert failures.isEmpty()
-        return results as List<Map>
-    }
 
     private static final String APP_NO_INCLUDE =
         'definition(name: "MCP Rule Server", namespace: "mcp")\n\ndef foo() { return 1 }\n'
@@ -728,22 +709,57 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         runInCalls.isEmpty()
     }
 
-    def "concurrent package admission creates one marker and refuses every duplicate"() {
+    def "two compiled app instances admit one package leaf through the complete dispatcher"() {
         given:
         enableDev()
-        registerAppTypes()
-
-        when:
-        def attempts = racePackageDeploys(12) {
-            script.toolUpdatePackage([ref: 'main', confirm: true]) as Map
+        settingsMap.enableWrite = true
+        settingsMap.maxConcurrentWrites = 1
+        def peer = newCompiledScriptInstance()
+        def entered = new CountDownLatch(1)
+        def release = new CountDownLatch(1)
+        def leafEntries = new AtomicInteger(0)
+        Closure confirm = { value -> leafEntries.incrementAndGet() }
+        script.metaClass.requireDestructiveConfirm = confirm
+        peer.metaClass.requireDestructiveConfirm = confirm
+        RUN_IN_OVERRIDE.set({ List call ->
+            runInCalls << call
+            entered.countDown()
+            release.await(5, TimeUnit.SECONDS)
+        })
+        def winner = new AtomicReference()
+        def failure = new AtomicReference()
+        Thread first = Thread.start {
+            try {
+                winner.set(script.handleToolsCall([jsonrpc: '2.0', id: 7401,
+                    method: 'tools/call', params: [name: 'hub_update_package',
+                        arguments: [ref: 'main', confirm: true]]]))
+            } catch (Throwable t) {
+                failure.set(t)
+            }
         }
 
+        when:
+        assert entered.await(5, TimeUnit.SECONDS)
+        def contender = peer.handleToolsCall([jsonrpc: '2.0', id: 7402,
+            method: 'tools/call', params: [name: 'hub_update_package',
+                arguments: [ref: 'other', confirm: true]]]) as Map
+        def contenderInner = mcpDriver.parseInner(contender)
+        release.countDown()
+        first.join(5000)
+
         then:
-        attempts.count { it.status == 'in_progress' } == 1
-        attempts.count { it.status == 'duplicate_in_flight' } == 11
-        atomicStateMap.packageDeployInFlight.requestId == attempts.find { it.status == 'in_progress' }.requestId
+        !first.alive
+        failure.get() == null
+        leafEntries.get() == 1
+        contender.result.isError == true
+        contenderInner.status == 'too_many_writes_in_flight'
+        mcpDriver.parseInner(winner.get()).status == 'in_progress'
         runInCalls.size() == 1
-        runInCalls[0][2].data.requestId == atomicStateMap.packageDeployInFlight.requestId
+        atomicStateMap.packageDeployInFlight.requestId == runInCalls[0][2].data.requestId
+
+        cleanup:
+        release.countDown()
+        first?.join(5000)
     }
 
     def "the guard expires after its TTL (a wedged marker cannot block deploys forever)"() {

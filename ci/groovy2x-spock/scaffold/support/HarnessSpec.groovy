@@ -75,6 +75,11 @@ abstract class HarnessSpec extends Specification {
     // AppExecutor mock, so route the call through this counter and assert on
     // it; lifecycle specs reset it in given: with .set(0).
     protected static final java.util.concurrent.atomic.AtomicInteger UNSUBSCRIBE_CALL_COUNT = new java.util.concurrent.atomic.AtomicInteger(0)
+    // Virtual-time and scheduler seams used by the contention regressions.
+    // The lane replaces the root HarnessSpec with this scaffold, so these
+    // controls must exist here as well as in src/test/groovy/support.
+    protected static final java.util.concurrent.atomic.AtomicReference NOW_OVERRIDE = new java.util.concurrent.atomic.AtomicReference(null)
+    protected static final java.util.concurrent.atomic.AtomicReference RUN_IN_OVERRIDE = new java.util.concurrent.atomic.AtomicReference(null)
 
     @Shared protected AppExecutor appExecutor
     // Every runIn(delay, handler[, opts]) the script scheduled this test, newest last.
@@ -130,7 +135,7 @@ abstract class HarnessSpec extends Specification {
             // @Delegate to AppExecutor (unlike eighty20results, which defines
             // concrete methods over private factory closures). Stub both here.
             _ * getChildApps() >> SHARED_CHILD_APPS_LIST
-            _ * now() >> 1234567890000L
+            _ * now() >> { def ov = NOW_OVERRIDE.get(); ov != null ? (ov.call() as Long) : 1234567890000L }
             _ * getLog() >> SHARED_LOG
             _ * getSettings() >> SHARED_SETTINGS_MAP
         }
@@ -145,7 +150,11 @@ abstract class HarnessSpec extends Specification {
         // Attached HERE with the other permanent stubs: one added from a later setupSpec does
         // not reliably take, and runIn is an AppExecutor method, so a script.metaClass override
         // never intercepts it.
-        mock.runIn(*_) >> { args -> SHARED_RUN_IN_CALLS << (args as List) }
+        mock.runIn(*_) >> { args ->
+            def ov = RUN_IN_OVERRIDE.get()
+            if (ov != null) return ov.call(args as List)
+            SHARED_RUN_IN_CALLS << (args as List)
+        }
         // addChildApp routes via @Delegate to AppExecutor under joelwetzel. *_
         // covers the 3-arg and 4-arg(props) overloads production code uses.
         // Read the running feature's fixture so the value set in a spec's
@@ -220,6 +229,8 @@ abstract class HarnessSpec extends Specification {
         childAppsList.clear()
         hubGet.reset()
         mcpDriver.reset()
+        NOW_OVERRIDE.set(null)
+        RUN_IN_OVERRIDE.set(null)
         // Drop per-test metaClass writes from previous features before
         // re-installing the standard hooks. Both wipes matter when
         // SHARED_SCRIPT is reused across spec classes: removeMetaClass(class)
@@ -229,6 +240,16 @@ abstract class HarnessSpec extends Specification {
         script.setMetaClass(null)
         checkMetaClassClean(script, 'HarnessSpec')
         wireScriptOverrides()
+    }
+
+    /**
+     * Create a peer execution of the compiled app with the same AppExecutor
+     * and atomicState backing. Class-static production fields remain shared.
+     */
+    protected Object newCompiledScriptInstance() {
+        def peer = script.getClass().getDeclaredConstructor().newInstance()
+        peer.initializeFromParent(script)
+        return peer
     }
 
     def cleanup() {
