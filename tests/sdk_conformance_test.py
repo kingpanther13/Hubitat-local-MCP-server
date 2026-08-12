@@ -4,7 +4,7 @@ Hubitat MCP Server — conformance scenarios driven by the OFFICIAL MCP Python S
 
 The hub sandbox whitelists imports and cannot load jars, so this server's protocol layer is
 hand-written. That makes an independent referee necessary: here the official `mcp` package's
-client speaks Streamable HTTP to a real hub endpoint and exercises the real negotiation path,
+client speaks Streamable HTTP to a real hub endpoint on the pinned modern protocol,
 with every response parsed through the SDK's own validators rather than through assertions
 written against this repo's reading of the spec. The companion leg is
 `src/test/groovy/server/McpWireSchemaConformanceSpec.groovy`. Read docs/testing.md
@@ -13,10 +13,11 @@ written against this repo's reading of the spec. The companion leg is
 NO SILENT SKIPS. A missing `mcp` package, a version other than the pin, or missing hub config
 all FAIL with a remediation message. A skip here would look like coverage.
 
-The legacy scenarios preserve handshake-era compatibility. A separate modern scenario creates
-one uniquely named BAT_E2E_ Rule Machine fixture, proves one high-level SDK call continues across
-several cloud-relay requests, and removes only that exact fixture in a `finally`. The other writing
-scenario flips the advanced `publishOutputSchemas` setting ON and restores it in a `finally`.
+Every scenario uses MCP 2026-07-28; this E2E harness never negotiates or exercises legacy mode.
+The MRTR scenario creates one uniquely named BAT_E2E_ Rule Machine fixture, proves one high-level
+SDK call continues across several cloud-relay requests, and removes only that exact fixture in a
+`finally`. The other writing scenario flips the advanced `publishOutputSchemas` setting ON and
+restores it in a `finally`.
 
 Configuration is shared with tests/e2e_test.py — `tests/e2e_config.json` (gitignored) or
 HUBITAT_HUB_URL / HUBITAT_APP_ID / HUBITAT_ACCESS_TOKEN.
@@ -34,7 +35,6 @@ import logging
 import sys
 import time
 import uuid
-import warnings
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any
@@ -44,7 +44,6 @@ _INSTALL_HINT = "pip install -r tests/sdk-conformance-requirements.txt"
 try:
     import anyio
     import httpx2
-    from mcp import MCPDeprecationWarning
     from mcp.client import Client
     from mcp.client.streamable_http import streamable_http_client
     from mcp_types import CallToolResult
@@ -62,8 +61,8 @@ from sdk_conformance_helpers import (  # noqa: E402  (import guard above supplie
     MODERN_PROTOCOL_VERSION,
     RequestTrace,
     assert_exact_rule_log_messages,
-    assert_legacy_ping_result,
     find_exact_fixture_id_with_settle,
+    summarize_modern_posts,
     summarize_mrtr_proof,
 )
 
@@ -92,29 +91,19 @@ def deprecated_sdk_usages() -> list[str]:
     records its message there) rather than a hand-maintained list, so a pin bump that
     deprecates something used here fails the run and names the replacement.
 
-    The sole allowed marker is the exact v2 legacy-only ping contract below. Deprecated
-    `@overload`s are invisible here -- the decorator sits on the overload, not the
+    Deprecated `@overload`s are invisible here -- the decorator sits on the overload, not the
     implementation -- but `list_tools()` is called with no arguments, which binds to the
     undecorated no-arg overload, not the deprecated positional-`cursor` one.
     """
     checked = [("streamable_http_client", streamable_http_client)] + [
         (f"Client.{name}", getattr(Client, name))
-        for name in ("send_ping", "list_tools", "call_tool", "list_resources", "read_resource",
+        for name in ("list_tools", "call_tool", "list_resources", "read_resource",
                      "list_resource_templates")
     ]
-    # v2 retains one deliberate legacy-only compatibility method. Its deprecation says
-    # it is removed from the modern protocol, not that legacy-mode callers lack support.
-    # Pin the exact upstream message so a changed contract still fails this preflight.
-    allowed_legacy_only = {
-        "Client.send_ping": (
-            "ping is removed as of 2026-07-28; the method only works under mode='legacy'."
-        ),
-    }
     return [
         f"{label}: {fn.__deprecated__}"
         for label, fn in checked
         if getattr(fn, "__deprecated__", None)
-        and allowed_legacy_only.get(label) != str(fn.__deprecated__)
     ]
 
 
@@ -193,7 +182,6 @@ def _load_hub_config() -> dict:
         # Passed to streamable_http_client and nothing else -- never printed, never sliced.
         "endpoint": endpoint,
         "safe_endpoint": safe_endpoint,
-        "initialize_versions": e2e_test.INITIALIZE_PROTOCOL_VERSIONS,
         "supported_versions": e2e_test.SUPPORTED_PROTOCOL_VERSIONS,
     }
 
@@ -207,14 +195,13 @@ def build_http_client(trace: RequestTrace) -> httpx2.AsyncClient:
     )
 
 
-class LegacyScenarios:
-    """Runs handshake-era conformance through the SDK's high-level Client."""
+class ModernScenarios:
+    """Run every general conformance scenario through one modern high-level Client."""
 
     def __init__(self, config: dict, trace: RequestTrace) -> None:
         self.config = config
         self.trace = trace
         self.results: list[tuple[str, bool, str]] = []
-        self.negotiated: str | None = None
 
     def _record(self, name: str, error: str | None) -> None:
         self.results.append((name, error is None, error or ""))
@@ -232,72 +219,34 @@ class LegacyScenarios:
         return True
 
     async def run_all(self, client: Client) -> bool:
-        await self._run("high-level Client negotiates the expected legacy revision",
-                        lambda: self._initialize(client))
-        await self._run("legacy ping round-trips as a strict EmptyResult through high-level Client",
-                        lambda: self._ping(client))
+        await self._run("high-level Client is pinned to MCP 2026-07-28",
+                        lambda: self._modern_connection(client))
         await self._run("tools/list parses through the SDK's models and the catalog is sane",
                         lambda: self._list_tools(client))
         await self._run("a benign tools/call (hub_get_info) parses as a CallToolResult",
                         lambda: self._call_tool(client))
-        await self._run("resources/list + templates parse through the SDK's models and match the "
-                        "advertised capability",
+        await self._run("resources/list + templates parse through the SDK's modern models",
                         lambda: self._list_resources(client))
         await self._run("resources/read round-trips a guide section and the live context summary",
                         lambda: self._read_resources(client))
         await self._run("with publishOutputSchemas ON, the SDK's own validator accepts the "
                         "structuredContent against the advertised outputSchema",
                         lambda: self._published_output_schema(client))
-        await self._run("every post-initialize POST carried the legacy MCP-Protocol-Version header "
-                        "and was served",
-                        self._legacy_header_contract)
         return all(ok for _, ok, _ in self.results)
 
-    async def _initialize(self, client: Client) -> None:
-        # Entering Client(mode="legacy") already performed initialize through the SDK. These
-        # high-level properties expose the validated result without using the low-level session API.
-        self.negotiated = client.protocol_version
-        expected = self.config["initialize_versions"][0]
-        assert self.negotiated == expected, (
-            f"initialize echoed {self.negotiated!r}; expected the newest revision the handshake may "
-            f"negotiate, {expected!r}. initialize is legacy-capped on purpose -- 2026-07-28 deleted "
-            f"the handshake, so it must never hand back the modern revision."
+    async def _modern_connection(self, client: Client) -> None:
+        assert client.protocol_version == MODERN_PROTOCOL_VERSION, (
+            f"Client protocol is {client.protocol_version!r}, expected {MODERN_PROTOCOL_VERSION!r}"
         )
-        # Cross-era invariant: whatever initialize negotiates, the SDK will send back as an
-        # MCP-Protocol-Version header on every later POST -- so a version outside the
-        # server's TRANSPORT list would earn a -32022 on the very next request.
-        assert self.negotiated in self.config["supported_versions"], (
-            f"initialize negotiated {self.negotiated!r}, which is not in the transport's supported "
-            f"list {self.config['supported_versions']} -- the next request's header would be rejected."
+        assert client.input_required_max_rounds == DEFAULT_SDK_INPUT_REQUIRED_MAX_ROUNDS, (
+            "the harness must retain the SDK's default input-required round limit; "
+            f"saw {client.input_required_max_rounds}"
         )
-        info = client.server_info
-        capabilities = client.server_capabilities
-        assert info is not None and info.name == "hubitat-mcp-rule-server", \
-            f"unexpected serverInfo: {info!r}"
-        assert info.version, "serverInfo carries no version"
-        assert capabilities.tools is not None, \
-            f"server must advertise the tools capability: {capabilities!r}"
-        # Issue #366: resources advertised, with both change-notification flags false --
-        # this endpoint is request-response only (no SSE), so a true here would promise
-        # notifications the transport cannot deliver.
-        assert capabilities.resources is not None, \
-            f"server must advertise the resources capability: {capabilities!r}"
-        assert capabilities.resources.subscribe is not True, \
-            "resources.subscribe must not be advertised true on a no-SSE endpoint"
-        assert capabilities.resources.list_changed is not True, \
-            "resources.listChanged must not be advertised true on a no-SSE endpoint"
-        assert client.instructions and client.instructions.strip(), \
-            "initialize must carry non-empty instructions"
-        print(f"         negotiated={self.negotiated} server={info.name} v{info.version}")
-
-    async def _ping(self, client: Client) -> None:
-        # v2 deliberately retains this public high-level method only for mode='legacy'.
-        # Suppress its modern-era deprecation warning here: this scenario is specifically
-        # the live compatibility test for the legacy wire method.
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", MCPDeprecationWarning)
-            result = await client.send_ping()
-        assert_legacy_ping_result(result)
+        assert MODERN_PROTOCOL_VERSION == self.config["supported_versions"][0], (
+            "the E2E client pin must equal the server's preferred advertised version"
+        )
+        print(f"         protocol={client.protocol_version} "
+              f"input_required_max_rounds={client.input_required_max_rounds}")
 
     async def _list_tools(self, client: Client) -> None:
         # Every entry is parsed into types.Tool by the SDK (name required, inputSchema
@@ -324,6 +273,8 @@ class LegacyScenarios:
         # Benign and read-only: hub_get_info mutates nothing, so this is safe against the
         # shared test hub. The SDK parses the reply as types.CallToolResult.
         result = await client.call_tool("hub_get_info", {})
+        assert result.result_type == "complete", \
+            f"hub_get_info returned non-terminal result_type={result.result_type!r}"
         assert result.is_error is not True, f"hub_get_info reported a tool error: {result.content!r}"
         assert result.content, "CallToolResult carried no content blocks"
         block = result.content[0]
@@ -339,10 +290,9 @@ class LegacyScenarios:
         print(f"         hub_get_info returned {len(block.text)} chars of JSON, keys={sorted(payload)[:6]}")
 
     async def _list_resources(self, client: Client) -> None:
-        # Issue #366: every entry is parsed into types.Resource by the SDK (uri + name
-        # required). The assertions add catalog sanity: the guide sections and both live
-        # context resources are advertised, and the templates surface is empty rather
-        # than -32601.
+        # Every entry is parsed into types.Resource by the SDK (uri + name required). The
+        # assertions add catalog sanity: the guide sections and both live context resources
+        # are advertised, and the templates surface is empty rather than -32601.
         result = await client.list_resources(cache_mode="refresh")
         uris = [str(r.uri) for r in result.resources]
         assert len(uris) == len(set(uris)), "resources/list advertises duplicate URIs"
@@ -456,39 +406,14 @@ class LegacyScenarios:
                 f"{_failure_detail(last, self.config['safe_endpoint']) if last else 'none'}"
             )
 
-    async def _legacy_header_contract(self) -> None:
-        # THE compatibility pin. Reading MCP-Protocol-Version's PRESENCE as "modern era"
-        # would 400 + -32020 every request below -- i.e. every deployed client, all of which
-        # are legacy-era. The era switch has to be the header's VALUE.
-        posts = self.trace.posts_after_initialize()
-        assert posts, (
-            "no POST carried an MCP-Protocol-Version header, so this scenario proved nothing. "
-            "Either the SDK stopped stamping the negotiated version or the trace hook is not wired."
-        )
-        wrong = [p["mcp_protocol_version"] for p in posts
-                 if p["mcp_protocol_version"] != self.negotiated]
-        assert not wrong, f"expected every header to be the negotiated {self.negotiated!r}, saw {sorted(set(wrong))}"
-        modern_only = [p for p in posts if p["mcp_method"] is not None or p["mcp_name"] is not None]
-        assert not modern_only, (
-            "the SDK sent Mcp-Method/Mcp-Name, which exist only in 2026-07-28 -- this scenario's "
-            f"premise no longer holds and the SDK pin's era must be re-read: {modern_only}"
-        )
-        # "Served" is the half that matters and it has to be READ, not inferred: an era-detection
-        # regression 400s every one of these, and a scenario that only inspects the REQUEST hook
-        # would still pass and print "all served" while every other scenario failed.
-        answered = [p for p in posts if p["status"] is not None]
-        assert len(answered) == len(posts), (
-            f"{len(posts)} legacy-versioned POST(s) went out but only {len(answered)} came back -- "
-            "the response hook is not wired, so nothing here proves the server served them."
-        )
-        rejected = sorted({r["status"] for r in answered} - {HTTPStatus.OK, HTTPStatus.ACCEPTED})
-        assert not rejected, (
-            f"the server did not serve every legacy-versioned POST: saw status {rejected}. A 400 "
-            "here is the presence-vs-value era bug -- it breaks every deployed client, all of "
-            "which send MCP-Protocol-Version and no Mcp-Method/Mcp-Name."
-        )
-        print(f"         {len(posts)} legacy-versioned POST(s) sent with no Mcp-Method/Mcp-Name, "
-              f"all answered {sorted({r['status'] for r in answered})}")
+    async def run_modern_header_contract(self) -> bool:
+        name = "every SDK POST carried complete 2026-07-28 routing headers and was served"
+        return await self._run(name, self._modern_header_contract)
+
+    async def _modern_header_contract(self) -> None:
+        summary = summarize_modern_posts(self.trace.posts())
+        print(f"         {summary['posts']} modern SDK POST(s) carried mirrored routing "
+              f"headers, all answered {summary['statuses']}")
 
 
 def _tool_payload(result: CallToolResult, operation: str) -> dict[str, Any]:
@@ -536,7 +461,7 @@ class ModernMrtrScenario:
 
     async def _run(self, client: Client) -> None:
         assert client.protocol_version == MODERN_PROTOCOL_VERSION, (
-            f"auto mode negotiated {client.protocol_version!r}, expected {MODERN_PROTOCOL_VERSION!r}"
+            f"pinned client uses {client.protocol_version!r}, expected {MODERN_PROTOCOL_VERSION!r}"
         )
         assert client.input_required_max_rounds == DEFAULT_SDK_INPUT_REQUIRED_MAX_ROUNDS, (
             "the proof must use the SDK's default input-required round limit; "
@@ -649,24 +574,25 @@ async def _main_async(config: dict) -> int:
     # safe_endpoint, never config['endpoint'] -- the live URL carries the access token.
     print(f"Connecting the official MCP Python SDK client to {config['safe_endpoint']} ...")
     # The caller-owned httpx2 client is observer-only. Client receives the SDK's official
-    # transport object and owns negotiation plus every request-to-request continuation.
+    # transport object and owns every request-to-request continuation. Pinning the mode to
+    # the version string prevents Client's auto mode from falling back to legacy.
     async with build_http_client(trace) as http_client:
-        legacy_transport = streamable_http_client(config["endpoint"], http_client=http_client)
-        async with Client(legacy_transport, mode="legacy", cache=None) as legacy_client:
-            legacy = LegacyScenarios(config, trace)
-            legacy_ok = await legacy.run_all(legacy_client)
-
         modern_transport = streamable_http_client(config["endpoint"], http_client=http_client)
-        async with Client(modern_transport, mode="auto", cache=None) as modern_client:
-            modern = ModernMrtrScenario(config, trace)
-            modern_ok = await modern.run(modern_client)
+        async with Client(
+            modern_transport, mode=MODERN_PROTOCOL_VERSION, cache=None,
+        ) as modern_client:
+            scenarios = ModernScenarios(config, trace)
+            scenarios_ok = await scenarios.run_all(modern_client)
+            mrtr = ModernMrtrScenario(config, trace)
+            mrtr_ok = await mrtr.run(modern_client)
+            headers_ok = await scenarios.run_modern_header_contract()
 
-    results = legacy.results + ([modern.result] if modern.result else [])
+    results = scenarios.results + ([mrtr.result] if mrtr.result else [])
     passed = sum(1 for _, good, _ in results if good)
     total = len(results)
     print(f"\n{'=' * 60}\nSDK conformance: {passed}/{total} scenarios passed "
           f"(mcp=={pinned_sdk_version()})\n{'=' * 60}")
-    ok = legacy_ok and modern_ok
+    ok = scenarios_ok and mrtr_ok and headers_ok
     if not ok:
         for name, good, err in results:
             if not good:

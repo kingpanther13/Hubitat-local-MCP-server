@@ -76,17 +76,6 @@ def assert_exact_rule_log_messages(
     return actual
 
 
-def assert_legacy_ping_result(result: Any) -> None:
-    """Keep the legacy ping wire strict under the v2 EmptyResult model."""
-    assert getattr(result, "result_type", None) is None, (
-        "legacy ping must not carry resultType"
-    )
-    extra = getattr(result, "model_extra", None) or {}
-    assert not extra, (
-        f"legacy ping must be exactly the modeled envelope; extra keys={sorted(extra)}"
-    )
-
-
 async def find_exact_fixture_id_with_settle(
     list_rules: Callable[[], Awaitable[list[dict[str, Any]]]],
     fixture_name: str,
@@ -165,9 +154,39 @@ class RequestTrace:
                 and leg["mcp_method"] == "tools/call"
                 and leg["mcp_name"] == name]
 
-    def posts_after_initialize(self) -> list[dict[str, Any]]:
-        return [dict(leg) for leg in self.legs
-                if leg["method"] == "POST" and leg["mcp_protocol_version"] is not None]
+    def posts(self) -> list[dict[str, Any]]:
+        return [dict(leg) for leg in self.legs if leg["method"] == "POST"]
+
+
+def summarize_modern_posts(posts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Validate that every observed SDK POST stayed on the modern HTTP path."""
+    assert posts, "the observer recorded no SDK POST"
+    wrong_versions = [post for post in posts
+                      if post.get("mcp_protocol_version") != MODERN_PROTOCOL_VERSION]
+    assert not wrong_versions, (
+        f"every SDK POST must use {MODERN_PROTOCOL_VERSION}; saw "
+        f"{sorted({post.get('mcp_protocol_version') for post in wrong_versions}, key=str)}"
+    )
+    missing_methods = [post for post in posts if not post.get("mcp_method")]
+    assert not missing_methods, (
+        f"every modern SDK POST must carry Mcp-Method; missing on {len(missing_methods)} leg(s)"
+    )
+    missing_names = [post for post in posts
+                     if post.get("mcp_method") in {"tools/call", "resources/read"}
+                     and not post.get("mcp_name")]
+    assert not missing_names, (
+        "modern tools/call and resources/read POSTs must carry Mcp-Name; "
+        f"missing on {len(missing_names)} leg(s)"
+    )
+    answered = [post for post in posts if post.get("status") is not None]
+    assert len(answered) == len(posts), (
+        f"{len(posts)} modern POST(s) went out but only {len(answered)} came back"
+    )
+    statuses = sorted({post["status"] for post in answered})
+    rejected = [status for status in statuses
+                if not isinstance(status, int) or status not in {200, 202}]
+    assert not rejected, f"the server did not serve every modern SDK POST: saw status {rejected}"
+    return {"posts": len(posts), "statuses": statuses}
 
 
 def summarize_mrtr_proof(

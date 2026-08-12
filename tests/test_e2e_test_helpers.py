@@ -48,9 +48,98 @@ def test_send_records_only_the_actual_http_post_duration(monkeypatch):
     monkeypatch.setattr(et.time, "monotonic", lambda: next(ticks))
     monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)
 
-    client._send("tools/call", {"name": "hub_get_info", "arguments": {}}, headers={})
+    client._send("tools/call", {"name": "hub_get_info", "arguments": {}})
 
     assert client._http_leg_timings == [("tools/call", 8.0, 200)]
+
+
+@pytest.mark.parametrize(
+    ("method", "params", "expected_name"),
+    [
+        ("server/discover", None, None),
+        ("tools/list", {"cursor": "next"}, None),
+        ("resources/read", {"uri": "hubitat://context"}, "hubitat://context"),
+        ("tools/call", {"name": "hub_get_info", "arguments": {}}, "hub_get_info"),
+    ],
+)
+def test_send_defaults_every_standard_e2e_request_to_modern_headers(
+    monkeypatch, method, params, expected_name,
+):
+    client = object.__new__(et.HubitatMcpClient)
+    client._request_id = 0
+    client._transport_retries = 0
+    client._http_leg_timings = []
+    client.endpoint = "https://example.invalid/mcp"
+    client.access_token = "secret"
+    client.verbose = False
+    posted = []
+    response = SimpleNamespace(
+        status_code=200,
+        reason="OK",
+        json=lambda: {"jsonrpc": "2.0", "id": 1, "result": {}},
+        raise_for_status=lambda: None,
+    )
+
+    def post(*args, **kwargs):
+        posted.append(kwargs)
+        return response
+
+    client.session = SimpleNamespace(post=post)
+    monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)
+
+    client._send(method, params)
+
+    assert posted[0]["headers"] == {
+        "MCP-Protocol-Version": et.MODERN_PROTOCOL_VERSION,
+        "Mcp-Method": method,
+        **({"Mcp-Name": expected_name} if expected_name else {}),
+    }
+
+
+def test_raw_request_defaults_a_single_message_to_modern_headers(monkeypatch):
+    client = object.__new__(et.HubitatMcpClient)
+    client.endpoint = "https://example.invalid/mcp"
+    client.access_token = "secret"
+    posted = []
+    response = SimpleNamespace(status_code=200, reason="OK")
+
+    def post(*args, **kwargs):
+        posted.append(kwargs)
+        return response
+
+    client.session = SimpleNamespace(post=post)
+    monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)
+
+    client.raw_request({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "hub_get_info", "arguments": {}},
+    })
+
+    assert posted[0]["headers"] == {
+        "MCP-Protocol-Version": et.MODERN_PROTOCOL_VERSION,
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": "hub_get_info",
+    }
+
+
+def test_regular_e2e_client_refuses_an_explicit_legacy_or_headerless_path(monkeypatch):
+    client = object.__new__(et.HubitatMcpClient)
+    client._request_id = 0
+    client._transport_retries = 0
+    client._http_leg_timings = []
+    client.endpoint = "https://example.invalid/mcp"
+    client.access_token = "secret"
+    client.verbose = False
+    client.session = SimpleNamespace(post=lambda *args, **kwargs: pytest.fail("must not POST"))
+    monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+
+    with pytest.raises(AssertionError, match="only 2026-07-28"):
+        client._send("tools/list", headers={"MCP-Protocol-Version": "2025-06-18"})
+    with pytest.raises(AssertionError, match="only 2026-07-28"):
+        client.raw_request(payload, headers={})
 
 
 def test_regular_e2e_mrtr_summary_requires_a_long_multi_leg_terminal_call():

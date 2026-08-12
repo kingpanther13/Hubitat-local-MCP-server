@@ -711,7 +711,7 @@ jobs:
           fi
 
       # Conformance leg: the official MCP Python SDK's client + validators judge the deployed
-      # PR's negotiation path (sibling: McpWireSchemaConformanceSpec; docs/testing.md).
+      # PR's pinned 2026-07-28 client path (sibling: McpWireSchemaConformanceSpec; docs/testing.md).
       #
       # Skipped under skip_install, like pkg_validate: it WRITES (one scenario flips
       # publishOutputSchemas ON and restores it in a finally), and on a skip_install dispatch it

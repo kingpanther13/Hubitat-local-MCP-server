@@ -4,9 +4,10 @@
 # between runs, so the script reads `mcp==` from this file and refuses to run against any other
 # version. It is deliberately NOT Dependabot-tracked -- a bump changes what the harness asserts.
 #
-# This v2 pin is the independent referee for BOTH handshake-era compatibility and the modern
-# 2026-07-28 automatic request-to-request continuation scenario. Procedure for any later bump:
-# docs/testing.md § Conformance harness.
+# This v2 pin is the independent referee for the modern 2026-07-28 catalog, resource,
+# result-model, and automatic request-to-request continuation scenarios. The live E2E harness
+# deliberately does not exercise the server's retained legacy fallback. Procedure for any later
+# bump: docs/testing.md § Conformance harness.
 #
 # Pinned here are ONLY the packages whose behaviour can move a verdict: mcp-types (the v2 result
 # models), pydantic/pydantic-core (their parsing), typing-extensions (the `__deprecated__` markers

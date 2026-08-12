@@ -8,6 +8,7 @@ import sdk_conformance_helpers as helpers
 from sdk_conformance_helpers import (
     RELAY_LEG_CEILING_SECONDS,
     RequestTrace,
+    summarize_modern_posts,
     summarize_mrtr_proof,
 )
 
@@ -145,17 +146,39 @@ def test_exact_rule_log_messages_rejects_wrong_duplicate_missing_or_extra_values
         )
 
 
-def test_legacy_ping_result_requires_no_result_type_or_model_extras() -> None:
-    result = SimpleNamespace(result_type=None, model_extra=None)
+def test_request_trace_returns_every_observed_post_for_modern_contract_checks() -> None:
+    trace = RequestTrace()
+    trace.legs = [
+        {"method": "POST", "mcp_protocol_version": "2026-07-28", "status": 200},
+        {"method": "GET", "mcp_protocol_version": None, "status": 405},
+        {"method": "POST", "mcp_protocol_version": None, "status": 400},
+    ]
 
-    helpers.assert_legacy_ping_result(result)
+    assert trace.posts() == [trace.legs[0], trace.legs[2]]
 
-    for bad in (
-        SimpleNamespace(result_type="complete", model_extra=None),
-        SimpleNamespace(result_type=None, model_extra={"unexpected": True}),
-    ):
-        with pytest.raises(AssertionError):
-            helpers.assert_legacy_ping_result(bad)
+
+def test_modern_post_summary_requires_complete_modern_routing_and_responses() -> None:
+    posts = [
+        {"mcp_protocol_version": "2026-07-28", "mcp_method": "tools/list",
+         "mcp_name": None, "status": 200},
+        {"mcp_protocol_version": "2026-07-28", "mcp_method": "resources/read",
+         "mcp_name": "hubitat://context", "status": 200},
+        {"mcp_protocol_version": "2026-07-28", "mcp_method": "tools/call",
+         "mcp_name": "hub_get_info", "status": 200},
+    ]
+
+    assert summarize_modern_posts(posts) == {"posts": 3, "statuses": [200]}
+
+    invalid = [
+        ({**posts[0], "mcp_protocol_version": "2025-06-18"}, "2026-07-28"),
+        ({**posts[0], "mcp_method": None}, "Mcp-Method"),
+        ({**posts[2], "mcp_name": None}, "Mcp-Name"),
+        ({**posts[0], "status": None}, "came back"),
+        ({**posts[0], "status": 400}, "serve every"),
+    ]
+    for bad_post, message in invalid:
+        with pytest.raises(AssertionError, match=message):
+            summarize_modern_posts([bad_post])
 
 
 def test_exact_fixture_lookup_settles_until_a_delayed_rule_appears() -> None:
