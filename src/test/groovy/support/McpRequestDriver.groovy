@@ -278,6 +278,26 @@ class McpRequestDriver {
     }
 
     /**
+     * Decode the serialize-once sentinel returned by a direct
+     * {@code handleToolsCall()} invocation. The production HTTP dispatcher
+     * unwraps this before writing the wire response; tier-1 dispatcher specs
+     * call the method below that boundary and therefore need the same decode.
+     * A fresh slurper is intentional because concurrency specs invoke this
+     * helper from multiple threads.
+     */
+    Map decodeToolCallResponse(Map response) {
+        if (response != null && response.containsKey('__preserialized')) {
+            def decoded = new JsonSlurper().parseText(response.__preserialized as String)
+            if (!(decoded instanceof Map)) {
+                throw new IllegalStateException(
+                    'The __preserialized tools/call response did not decode to a JSON object')
+            }
+            return decoded as Map
+        }
+        return response
+    }
+
+    /**
      * Parse the inner tool-result payload from a successful tools/call response.
      * MCP wraps tool output as {@code response.result.content[0].text}, JSON-encoded;
      * dispatch-envelope specs commonly assert on the decoded shape. Centralized here
@@ -285,7 +305,8 @@ class McpRequestDriver {
      * {@code new JsonSlurper().parseText(...)} pattern from every spec.
      */
     Object parseInner(Map response) {
-        SLURPER.parseText(response.result.content[0].text as String)
+        Map decoded = decodeToolCallResponse(response)
+        SLURPER.parseText(decoded.result.content[0].text as String)
     }
 
     /**

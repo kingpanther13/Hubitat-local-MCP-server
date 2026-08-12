@@ -730,9 +730,10 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         def failure = new AtomicReference()
         Thread first = Thread.start {
             try {
-                winner.set(script.handleToolsCall([jsonrpc: '2.0', id: 7401,
+                Map response = script.handleToolsCall([jsonrpc: '2.0', id: 7401,
                     method: 'tools/call', params: [name: 'hub_update_package',
-                        arguments: [ref: 'main', confirm: true]]]))
+                        arguments: [ref: 'main', confirm: true]]]) as Map
+                winner.set(mcpDriver.decodeToolCallResponse(response))
             } catch (Throwable t) {
                 failure.set(t)
             }
@@ -740,9 +741,10 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
 
         when:
         assert entered.await(5, TimeUnit.SECONDS)
-        def contender = peer.handleToolsCall([jsonrpc: '2.0', id: 7402,
+        Map contenderResponse = peer.handleToolsCall([jsonrpc: '2.0', id: 7402,
             method: 'tools/call', params: [name: 'hub_update_package',
                 arguments: [ref: 'other', confirm: true]]]) as Map
+        def contender = mcpDriver.decodeToolCallResponse(contenderResponse)
         def contenderInner = mcpDriver.parseInner(contender)
         release.countDown()
         first.join(5000)

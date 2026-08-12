@@ -58,8 +58,9 @@ class MrtrContinuationSpec extends ToolSpecBase {
                            String requestState = null) {
         def params = [name: toolName, arguments: args]
         if (requestState != null) params.requestState = requestState
-        return target.handleToolsCall([jsonrpc: '2.0', id: id,
+        Map response = target.handleToolsCall([jsonrpc: '2.0', id: id,
             method: 'tools/call', params: params]) as Map
+        return mcpDriver.decodeToolCallResponse(response)
     }
 
     def "modern slow write preflights, continues across bounded slices, and replays its terminal result"() {

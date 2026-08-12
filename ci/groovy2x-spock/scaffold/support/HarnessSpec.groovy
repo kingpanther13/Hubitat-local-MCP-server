@@ -249,6 +249,7 @@ abstract class HarnessSpec extends Specification {
     protected Object newCompiledScriptInstance() {
         HubitatAppScript peer = script.getClass().getDeclaredConstructor().newInstance() as HubitatAppScript
         peer.initialize(script as HubitatAppScript)
+        wireRequestProxy(peer)
         return peer
     }
 
@@ -299,15 +300,7 @@ abstract class HarnessSpec extends Specification {
         // install the McpRequestDriver's stable proxy directly into that field.
         // The proxy reads driver state at each getJSON() access, so tests can
         // call pushBody from their given: block without re-running this wire.
-        def injectedField = me.biocomp.hubitat_ci.app.HubitatAppScript
-            .getDeclaredField('injectedMappingHandlerData')
-        injectedField.accessible = true
-        Map injectedMap = injectedField.get(script) as Map
-        if (injectedMap == null) {
-            injectedMap = [:]
-            injectedField.set(script, injectedMap)
-        }
-        injectedMap['request'] = mcpDriver.scriptRequest
+        wireRequestProxy(script)
         // hubInternalGet has no declaration on HubitatAppScript — pure dynamic
         // Groovy resolved through metaClass, so the per-instance write here
         // intercepts cleanly. The captured hubGetRef is the @Shared
@@ -315,5 +308,18 @@ abstract class HarnessSpec extends Specification {
         script.metaClass.hubInternalGet = { String p, Map pp = [:], Integer t = 30 ->
             hubGetRef.call(p, pp)
         }
+    }
+
+    /** Install the live request/header proxy on any compiled app instance. */
+    private void wireRequestProxy(Object target) {
+        def injectedField = me.biocomp.hubitat_ci.app.HubitatAppScript
+            .getDeclaredField('injectedMappingHandlerData')
+        injectedField.accessible = true
+        Map injectedMap = injectedField.get(target) as Map
+        if (injectedMap == null) {
+            injectedMap = [:]
+            injectedField.set(target, injectedMap)
+        }
+        injectedMap['request'] = mcpDriver.scriptRequest
     }
 }

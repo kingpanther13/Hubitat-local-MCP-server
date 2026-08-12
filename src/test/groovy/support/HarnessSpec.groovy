@@ -352,6 +352,7 @@ abstract class HarnessSpec extends Specification {
     protected Object newCompiledScriptInstance() {
         HubitatAppScript peer = script.getClass().getDeclaredConstructor().newInstance() as HubitatAppScript
         peer.initializeFromParent(script as HubitatAppScript)
+        wireRequestProxy(peer)
         return peer
     }
 
@@ -432,15 +433,7 @@ abstract class HarnessSpec extends Specification {
         // setupSpec()) because setup() wipes the script's metaClass;
         // the reflective write here survives that wipe and is idempotent
         // against the stable proxy instance.
-        def injectedField = me.biocomp.hubitat_ci.app.HubitatAppScript
-            .getDeclaredField('injectedMappingHandlerData')
-        injectedField.accessible = true
-        Map injectedMap = injectedField.get(script) as Map
-        if (injectedMap == null) {
-            injectedMap = [:]
-            injectedField.set(script, injectedMap)
-        }
-        injectedMap['request'] = mcpDriver.scriptRequest
+        wireRequestProxy(script)
         // hubInternalGet has no declaration on HubitatAppScript — it's
         // pure dynamic Groovy resolved through metaClass, so the
         // per-instance metaClass write here intercepts cleanly. The
@@ -489,5 +482,18 @@ abstract class HarnessSpec extends Specification {
                         "mock needs a new case; see src/test/groovy/support/HarnessSpec.groovy")
             }
         } as Closure)
+    }
+
+    /** Install the live request/header proxy on any compiled app instance. */
+    private void wireRequestProxy(Object target) {
+        def injectedField = me.biocomp.hubitat_ci.app.HubitatAppScript
+            .getDeclaredField('injectedMappingHandlerData')
+        injectedField.accessible = true
+        Map injectedMap = injectedField.get(target) as Map
+        if (injectedMap == null) {
+            injectedMap = [:]
+            injectedField.set(target, injectedMap)
+        }
+        injectedMap['request'] = mcpDriver.scriptRequest
     }
 }

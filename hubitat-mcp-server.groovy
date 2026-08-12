@@ -2769,9 +2769,11 @@ private Map _mrtrAppClonerStageSlice(Map cp, String operationLabel) {
 
 private def _renderToolResult(id, toolName, reactiveToolName, args, result, boolean isErrorOverride = false) {
     // Reactive hints mutate their result map. Terminal MRTR responses are retained
-    // for replay, so render from a deep copy and keep the cached canonical result
-    // immutable across clients and retries.
-    def rendered = (result instanceof Map) ? _mrtrCopyMap(result as Map) : result
+    // for replay, so render from a top-level copy and keep the cached canonical
+    // result immutable across clients and retries. Do not use _mrtrCopyMap here:
+    // its JSON round-trip would throw on a non-serializable tool result before the
+    // guarded serialization below can turn that tool bug into a valid MCP error.
+    def rendered = (result instanceof Map) ? new LinkedHashMap(result as Map) : result
     if (rendered instanceof Map && (rendered.isError == true || rendered.success == false)) {
         try { _applyReactiveBpsWarning(reactiveToolName, args, rendered) }
         catch (Exception bpErr) {
