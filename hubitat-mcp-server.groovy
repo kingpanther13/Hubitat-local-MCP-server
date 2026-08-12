@@ -2677,6 +2677,46 @@ private String _opTokenStateOf(String opToken) {
     return rec?.state?.toString()
 }
 
+// The cap/TTL sweep is the one normal whole-map writer for opTokens. A terminal
+// updateMapValue can land after the sweep's final snapshot but before that whole-map
+// assignment, so the client may receive an auto token and even see it in recentOps,
+// then find it gone on the immediately following replay. Keep only the newest few
+// terminal records under a separate state key the sweep never rewrites. This is a
+// cheap state update (not another atomicState round trip on every write), and it gives
+// a prompt recovery poll a bounded backstop without growing the journal or weakening
+// its normal cap/TTL behavior.
+def _opTokenHotMax() { 3 }
+
+private void _opTokenRememberHot(String opToken, Map rec) {
+    def hot = [:]
+    if (state.opTokenHotResults instanceof Map) hot.putAll(state.opTokenHotResults)
+    hot[opToken] = [:] + rec
+    while (hot.size() > _opTokenHotMax()) {
+        def oldestKey = hot.keySet().min { a, b ->
+            def av = hot[a]
+            def bv = hot[b]
+            long at = (av instanceof Map && av.finishedAt != null) ? (av.finishedAt as Long) : 0L
+            long bt = (bv instanceof Map && bv.finishedAt != null) ? (bv.finishedAt as Long) : 0L
+            int byTime = at <=> bt
+            return (byTime != 0) ? byTime : (a.toString() <=> b.toString())
+        }
+        hot.remove(oldestKey)
+    }
+    state.opTokenHotResults = hot
+}
+
+private Map _opTokenHotRecord(String opToken) {
+    def hot = state.opTokenHotResults
+    def rec = (hot instanceof Map && hot[opToken] instanceof Map) ? hot[opToken] : null
+    if (!(rec instanceof Map) || rec.startedAt == null) return null
+    try {
+        if ((rec.startedAt as Long) < (now() - 86400000L)) return null
+    } catch (Exception ignored) {
+        return null
+    }
+    return rec
+}
+
 def _opTokenRelease(String opToken) {
     def stored = atomicState.opTokens
     def prev = (stored instanceof Map && stored[opToken] instanceof Map) ? stored[opToken] : [:]
@@ -2738,6 +2778,7 @@ def _opTokenComplete(String opToken, String jsonText, boolean isErrorBool, toolN
         rec.state = "failed_buffer"
         rec.note = "Operation committed but its result could not be buffered (upload failed, payload too large to inline). Re-read current state to confirm."
     }
+    _opTokenRememberHot(opToken, rec)
     _opTokenPutTerminal(opToken, rec, "Completion", stored)
     _opTokenNoteTerminalRecord()
 }
@@ -2783,6 +2824,7 @@ private void _opTokenArmSweep() {
 def _opTokenDedup(String opToken, origToolName, Object knownTokens = null) {
     def toks = (knownTokens instanceof Map) ? knownTokens : atomicState.opTokens
     def rec = (toks instanceof Map && toks[opToken] instanceof Map) ? toks[opToken] : null
+    if (rec == null) rec = _opTokenHotRecord(opToken)
     if (rec == null) return null
     // A released record means a validation error spent NOTHING: treat it as absent so the
     // corrected re-issue dispatches fresh. Only a token that was MARKED running leaves this

@@ -601,6 +601,38 @@ class OpTokenReplaySpec extends ToolSpecBase {
         atomicStateMap.opTokens['freshtok1234'].state == 'running'
     }
 
+    def "a just-completed token still replays if a sweep overwrites its journal entry"() {
+        given: 'a real auto-token completion, followed by the narrow final sweep-write race'
+        settingsMap.enableWrite = true
+        installFileStore()
+        def ran = 0
+        script.metaClass.toolCreateRoom = { Map args ->
+            ran++
+            [success: true, roomId: 7, name: args.name]
+        }
+
+        when: 'the untokened write completes and returns its server-assigned token'
+        def first = mcpDriver.callTool('hub_create_room', [name: 'Den', confirm: true])
+        def firstInner = mcpDriver.parseInner(first)
+        def token = firstInner.opToken?.toString()
+
+        and: 'a sweep snapshot taken before that completion wins its whole-map write afterward'
+        atomicStateMap.opTokens = [:]
+
+        and: 'the client promptly polls the token it just received'
+        def replay = mcpDriver.callTool('hub_create_room', [opToken: token])
+        def replayInner = mcpDriver.parseInner(replay)
+
+        then: 'the original buffered result replays; the room write never runs twice'
+        token?.startsWith('auto-')
+        ran == 1
+        replay.error == null
+        replayInner.success == true
+        replayInner.replayed == true
+        replayInner.roomId == 7
+        replayInner.name == 'Den'
+    }
+
     def "a tokened call with PARTIAL args is NOT a poll -- it dispatches, and the leaf's validation error releases the token"() {
         given: 'negative-space pin: only a truly bare tokened call polls; partial args mean a real (malformed) execution attempt'
         settingsMap.enableWrite = true
