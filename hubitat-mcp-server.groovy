@@ -6819,7 +6819,7 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 
 **`waitFor` arg.** comparator (eq/ne/gt/gte/lt/lte/between) and stableForMs (debounce) work as on hub_get_device_attribute. BLOCKS the request up to timeoutMs and queues concurrent MCP calls; reuses the hub_get_device_attribute poll engine.
 
-**`commands` arg (several devices in one call).** Up to 20 entries of `{deviceId, command, parameters?}`. Reach for it whenever an intent touches more than one device ("turn off the kitchen lights", "close all the shades"): the per-call round trip -- not the hub actuating the device -- is most of the time, so six devices in one batch measured ~2.75s against ~5.0s for six separate calls. Firing separate calls concurrently does not help; the hub serialises them anyway.
+**`commands` arg (several devices in one call).** Up to 20 entries of `{deviceId, command, parameters?}`. Reach for it whenever an intent touches more than one device ("turn off the kitchen lights", "close all the shades"): the per-call round trip -- not the hub actuating the device -- is nearly the whole cost: six Z-Wave switches measured ~1.5s batched against ~4.4s one at a time, and a batch of 1, 2 or 4 is flat at ~0.95s. Firing separate calls concurrently does not help; the hub serialises them anyway. Devices behind a bridge are the exception -- six Bond shades batched came back at ~2.75s, because that hop costs real time per device.
 
 - **Mutually exclusive with `deviceId`/`command`**, and cannot be combined with `waitFor` -- that would block a hub thread per device. Confirm a batch with hub_get_device_attribute's `deviceIds` form instead: one call to fire, one to confirm.
 - **What it does NOT change.** The hub still actuates the devices one at a time, so they do not all move simultaneously. What disappears is the protocol overhead, not the hub's own work.
@@ -7231,10 +7231,10 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
         performance: '''## Performance Tips
 
 **hub_call_device_command with `commands` -- the biggest single win on a multi-device intent:**
-- The per-call ROUND TRIP dominates, not the hub actuating the device. Measured on a live hub over LAN: one command ~1.0s end to end, six separate commands ~4.5-5.0s (~0.8s each). That per-device figure is the same for a Z-Wave switch as for a shade behind a Bond bridge, which is what shows the cost is protocol overhead, not the radio.
-- So collapse them: the same six as one `commands` batch measured ~2.75s. Reach for it whenever an intent touches more than one device ("turn off the kitchen lights", "close all the shades").
+- The per-call ROUND TRIP dominates, not the hub actuating the device. Measured on a live hub over LAN: one command ~1.0s end to end, six separate commands ~4.4s (~0.73s each).
+- So collapse them: the same six Z-Wave switches as one `commands` batch measured ~1.5s -- and a batch of 1, 2 or 4 devices is FLAT at ~0.95s, which is the signature of the round trip being the entire cost. Reach for it whenever an intent touches more than one device ("turn off the kitchen lights", "close all the shades").
 - Firing the separate calls in parallel does NOT help -- the hub serialises them anyway (see "Make tool calls sequentially" below).
-- It does not make the devices move simultaneously; the hub still actuates one at a time. What disappears is the protocol overhead, which is why the batch lands near 2.75s rather than near 1.0s.
+- It does not make the devices move simultaneously; the hub still actuates one at a time. For a directly-attached device that costs almost nothing, but a device behind a bridge carries real per-device time that batching cannot remove: six Bond shades batched came back at ~2.75s, against ~1.5s for six Z-Wave switches.
 - Entries are independent, so mixed devices and mixed commands go in one batch. Max 20.
 - No waitFor with `commands`. To confirm, follow with hub_get_device_attribute using deviceIds (multi-device convergence): one batch to fire, one poll to confirm -- two round trips for the whole group.
 - For a set commanded repeatedly, a group or scene beats both: one device to command and the hub fans out. `commands` is for the ad-hoc set that was never defined in advance.

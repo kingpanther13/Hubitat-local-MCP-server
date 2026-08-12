@@ -461,8 +461,9 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 ## Performance Tips
 
 **hub_call_device_command with `commands` — the biggest single win on a multi-device intent:**
-- The per-call ROUND TRIP dominates, not the hub actuating the device. Measured on a live hub over LAN: one command ~1.0s end to end, six separate commands ~4.5–5.0s (~0.8s each). That per-device figure is the same for a Z-Wave switch as for a shade behind a Bond bridge — which is what shows the cost is protocol overhead, not the radio
-- So collapse them: the same six as one `commands` batch measured ~2.75s. Reach for it whenever an intent touches more than one device ("turn off the kitchen lights", "close all the shades"). `commands` is mutually exclusive with `deviceId`/`command` and cannot be combined with `waitFor`
+- The per-call ROUND TRIP dominates, not the hub actuating the device. Measured on a live hub over LAN: one command ~1.0s end to end, six separate commands ~4.4s (~0.73s each)
+- So collapse them: the same six Z-Wave switches as one `commands` batch measured **~1.5s**, and a batch of 1, 2 or 4 devices is **flat at ~0.95s** — the signature of the round trip being the entire cost. Reach for it whenever an intent touches more than one device ("turn off the kitchen lights", "close all the shades"). `commands` is mutually exclusive with `deviceId`/`command` and cannot be combined with `waitFor`
+- A device behind a BRIDGE is the exception: six Bond shades batched measured ~2.75s (vs ~5.0s separately), because that hop costs real time per device which batching cannot remove
 - Firing the separate calls in parallel does NOT help — the hub serialises them anyway (same reason as "Make tool calls sequentially, not in parallel" below)
 - It does not make the devices move simultaneously; the hub still actuates one at a time. What disappears is the overhead
 - Entries are independent, so mixed devices and mixed commands go in one batch. Max 20. A bad entry is reported in its own `results[]` slot and the rest still fire; malformed input (missing `deviceId`, non-array `parameters`, >20 entries) is rejected BEFORE anything is sent, so a bad request never actuates part of a batch

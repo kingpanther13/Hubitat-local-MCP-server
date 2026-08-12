@@ -188,7 +188,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_call_device_command` ONCE with `commands=[{deviceId, command:"on"} x3]` — not three separate calls. The response is `success: true, count: 3, sentCount: 3` plus a `results` array in request order, each entry carrying its own `deviceId` and the same shape a single `hub_call_device_command` returns (label, command, PRE-effect `state` snapshot). `commands` rejects `waitFor`, so the confirmation is a separate `hub_get_device_attribute` using the multi-device `deviceIds` form with `mode:"all"` — two round trips for the whole group. Watch for the AI falling back to three separate command calls: that is the behaviour the parameter exists to replace, and it costs roughly 2x the wall-clock time.
+**Expected**: Calls `hub_call_device_command` ONCE with `commands=[{deviceId, command:"on"} x3]` — not three separate calls. The response is `success: true, count: 3, sentCount: 3` plus a `results` array in request order, each entry carrying its own `deviceId` and the same shape a single `hub_call_device_command` returns (label, command, PRE-effect `state` snapshot). `commands` rejects `waitFor`, so the confirmation is a separate `hub_get_device_attribute` using the multi-device `deviceIds` form with `mode:"all"` — two round trips for the whole group. Watch for the AI falling back to three separate command calls: that is the behaviour the parameter exists to replace, and it costs roughly 3x the wall-clock time.
 
 ### T05d — `commands` partial failure (one bad entry)
 

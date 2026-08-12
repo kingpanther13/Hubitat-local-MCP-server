@@ -1147,9 +1147,12 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
 // the round trip rather than the radio. Issuing the six concurrently barely helps, because the
 // hub serialises them on its side regardless.
 //
-// Batching collapses N round trips into one. It does NOT change the actuation: the hub still
-// drives the devices one at a time, so a measured six-shade batch came back in ~2.75s against
-// ~5.0s for six separate calls -- the protocol overhead disappears, the hub's own work does not.
+// Batching collapses N round trips into one, and the measurement says that is nearly the whole
+// cost: on Z-Wave switches a batch of 1, 2 and 4 devices all came back in ~0.95s -- flat, because
+// one round trip is one round trip -- with six at ~1.5s against ~4.4s sent one at a time.
+//
+// A device reached through a bridge is the exception: six Bond shades batched came back in ~2.75s,
+// because that hop costs real time per device and no amount of batching removes it.
 //
 // A group or scene is the better answer for a set you use repeatedly: it is one device to command
 // and the hub does the fan-out. This is for the set nobody defined in advance -- the arbitrary
