@@ -2660,7 +2660,7 @@ All 117 distinct tools are covered by at least one test, excluding the destructi
 
 Sections 1-9 each target a specific tool — named in the test's title and **Expected** criteria while the `test_prompt` stays goal-first (see Prompt style above). Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 266 test scenarios** (124 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 3 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 device-state state-change / fail-loud authoring parity + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 5 read-side convergence + 1 multi-device convergence + 3 MCP device-access scope) plus 13 excluded destructive operations documented for manual testing
+**Total: 267 test scenarios** (124 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 3 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 device-state state-change / fail-loud authoring parity + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 5 read-side convergence + 1 multi-device convergence + 3 MCP device-access scope + 1 official-SDK MRTR proof) plus 13 excluded destructive operations documented for manual testing
 
 ---
 
@@ -4419,6 +4419,24 @@ Tools in this section require **the Read master** and HPM itself must be install
 **Expected**: both are rejected pre-write with a clear steer -- nothing is committed (`predCapabs` stays empty, `wizardStuck=false`). (1) `Last Event Device` is not usable as a condition at all: it is an action-side reference to the device that fired the rule's trigger (used in ACTIONS, e.g. running a command on the triggering device), not a testable state, and not a trigger capability either. `success=false`, `error` says it is "not usable as a condition" and steers to actions. (2) `Lock codes` IS a real condition type but is not authorable via the structured path -- it needs a lock device plus a specific code name the condition path has no field for, and would otherwise commit a silently-incomplete "on null: null" condition the health guard does not catch. `success=false`, `error` names the lock-device + code-name requirement and steers to the Rule Machine UI. The same rejects fire identically on `addTrigger.condition` and `addAction` `ifThen` expressions.
 
 **Failure modes**: `Last Event Device` committing a *BROKEN* condition (the pre-fix behavior); `Lock codes` committing a health-ok-but-incomplete "on null: null" condition the health guard does not catch (the pre-fix behavior); either reject surfacing an opaque exception mid-walk instead of the uniform steer; a leftover in-flight condition slot (`wizardStuck=true`) after the reject.
+
+### T665 — Official Python SDK v2 automatically completes a long MRTR Rule Machine write
+
+> **Automated live-relay scenario**: `tests/sdk_conformance_test.py` runs this after the branch is deployed by `hub-e2e.yml`. It is not a conversational agent prompt: the official SDK is the independent client under test.
+
+```json
+{
+  "setup_prompt": "Create one uniquely named BAT_E2E_SDK_MRTR_<random> Rule Machine rule through the official mcp==2.0.0 high-level client and retain its returned appId.",
+  "test_prompt": "Make one high-level Client.call_tool Rule Machine edit that adds six deterministic log actions, allowing the SDK's standard Streamable HTTP client to complete every state-only continuation automatically.",
+  "teardown_prompt": "In a finally block, delete only the exact appId created for this run. If creation lost its response, adopt at most one exact random-name match before deleting it. Never sweep existing apps or delete backup artifacts."
+}
+```
+
+**Expected**: the test invokes `mcp.client.Client.call_tool()` exactly once for the measured edit, without supplying continuation state or raising the SDK's default 10-round limit. The returned object is a successful `CallToolResult` with `result_type='complete'`. Observer-only `httpx2` hooks retain no URL, token, or body; they show at least three modern `tools/call` POST legs for the gateway (at least two continuation rounds), all 2xx, with each leg under the 9.5-second cloud-ceiling guard. The aggregate logical call is over 10 seconds. The terminal payload's `mrtr.rounds` equals the observed continuation count, distinguishing ordinary owner slices (normally about 8 seconds) from Task-10 contention waits. The log reports leg count, continuation rounds, the unchanged SDK limit, aggregate duration, max-leg duration, and every leg duration so clients with lower round limits can be assessed.
+
+**Failure modes**: using `ClientSession.call_tool()` or a project-owned state loop instead of the high-level SDK driver; requesting a task/extension or passing a custom token; only one continuation round; aggregate time at or below 10 seconds; any leg at or above 9.5 seconds or non-2xx; final `result_type` not `complete`; tool-level `success=false`; a mismatch between HTTP rounds and the server's owner-slice count; increasing `input_required_max_rounds`; logging a credentialed URL/body; or cleanup touching anything except this run's random BAT fixture.
+
+**Independent regular-E2E companion**: the existing `mrtr`-category `test_mrtr_rule_edit_uses_standard_continuation` creates its own throwaway Rule Machine app and performs its own six-action edit through the repository's normal `HubitatMcpClient`. It separately requires automatic request-state following, terminal `complete`, all six successful mutation results, multiple continuation rounds/HTTP legs, aggregate duration over 10 seconds, every actual POST below 9.5 seconds, and an owner-slice count matching the continuation count. Success or telemetry from either client cannot satisfy the other client's assertions.
 
 ---
 

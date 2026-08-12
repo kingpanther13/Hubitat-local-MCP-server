@@ -8,6 +8,7 @@ actually runs there.
 import json
 import os
 import sys
+from types import SimpleNamespace
 
 # tests/ is already on sys.path conceptually, but be explicit for safety.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
@@ -26,6 +27,71 @@ def _raw_tool_body(body, *, is_error=False):
         "isError": is_error,
         "content": [{"type": "text", "text": json.dumps(body)}],
     }
+
+
+def test_send_records_only_the_actual_http_post_duration(monkeypatch):
+    client = object.__new__(et.HubitatMcpClient)
+    client._request_id = 0
+    client._transport_retries = 0
+    client._http_leg_timings = []
+    client.endpoint = "https://example.invalid/mcp"
+    client.access_token = "secret"
+    client.verbose = False
+    response = SimpleNamespace(
+        status_code=200,
+        reason="OK",
+        json=lambda: {"jsonrpc": "2.0", "id": 1, "result": {"resultType": "complete"}},
+        raise_for_status=lambda: None,
+    )
+    client.session = SimpleNamespace(post=lambda *args, **kwargs: response)
+    ticks = iter((100.0, 108.0))
+    monkeypatch.setattr(et.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)
+
+    client._send("tools/call", {"name": "hub_get_info", "arguments": {}}, headers={})
+
+    assert client._http_leg_timings == [("tools/call", 8.0, 200)]
+
+
+def test_regular_e2e_mrtr_summary_requires_a_long_multi_leg_terminal_call():
+    summary = et._summarize_mrtr_e2e_proof(
+        continuation_rounds=3,
+        result_type="complete",
+        logical_elapsed=20.8,
+        leg_seconds=[0.2, 8.1, 8.0, 4.1],
+        server_rounds=3,
+    )
+
+    assert summary == {
+        "legs": 4,
+        "continuation_rounds": 3,
+        "logical_elapsed": 20.8,
+        "max_leg_elapsed": 8.1,
+    }
+
+
+@pytest.mark.parametrize(
+    ("rounds", "result_type", "elapsed", "legs", "server_rounds", "message"),
+    [
+        (1, "complete", 12.0, [0.2, 8.0], 1, "multiple continuation"),
+        (2, "input_required", 12.0, [0.2, 8.0, 4.0], 2, "terminal complete"),
+        (2, "complete", 10.0, [0.2, 8.0, 4.0], 2, "exceed 10"),
+        (2, "complete", 12.0, [0.2, 8.0], 2, "HTTP leg"),
+        (2, "complete", 12.0, [0.2, 9.5, 4.0], 2, "relay ceiling"),
+        (2, "complete", 12.0, [0.2, 8.0, 4.0], 1, "owner slices"),
+    ],
+)
+def test_regular_e2e_mrtr_summary_rejects_an_invalid_proof(
+    rounds, result_type, elapsed, legs, server_rounds, message,
+):
+    with pytest.raises(AssertionError, match=message):
+        et._summarize_mrtr_e2e_proof(
+            continuation_rounds=rounds,
+            result_type=result_type,
+            logical_elapsed=elapsed,
+            leg_seconds=legs,
+            server_rounds=server_rounds,
+        )
 
 
 def test_call_tool_follows_modern_request_state_continuations():
@@ -52,6 +118,7 @@ def test_call_tool_follows_modern_request_state_continuations():
 
     assert result == {"success": True}
     assert client._last_continuation_rounds == 1
+    assert client._last_result_type == "complete"
     assert calls[0][1] == {
         "name": "hub_call_rule",
         "arguments": {"ruleId": [1, 2], "action": "stop"},

@@ -61,6 +61,56 @@ SUPPORTED_PROTOCOL_VERSIONS = ["2026-07-28", "2025-11-25", "2025-06-18", "2025-0
 # falls back to INITIALIZE_PROTOCOL_VERSIONS[0], NOT SUPPORTED_PROTOCOL_VERSIONS[0].
 INITIALIZE_PROTOCOL_VERSIONS = [v for v in SUPPORTED_PROTOCOL_VERSIONS if v != "2026-07-28"]
 
+MRTR_MIN_LOGICAL_SECONDS = 10.0
+MRTR_RELAY_LEG_CEILING_SECONDS = 9.5
+
+
+def _summarize_mrtr_e2e_proof(
+    *,
+    continuation_rounds: int,
+    result_type: str | None,
+    logical_elapsed: float,
+    leg_seconds: list[float],
+    server_rounds: int | None,
+) -> dict[str, int | float]:
+    """Validate the regular client's independent long-write continuation proof.
+
+    ``continuation_rounds`` counts state-following requests, while ``leg_seconds``
+    includes the initial tools/call.  ``server_rounds`` counts completed owner slices;
+    requiring equality prevents Task 10 coordination waits from masquerading as
+    ordinary execution slices.
+    """
+    assert continuation_rounds >= 2, (
+        "MRTR proof needs multiple continuation rounds, got "
+        f"{continuation_rounds}"
+    )
+    assert result_type == "complete", (
+        f"MRTR proof did not reach terminal complete: {result_type!r}"
+    )
+    assert logical_elapsed > MRTR_MIN_LOGICAL_SECONDS, (
+        "MRTR proof must exceed 10 seconds end-to-end, got "
+        f"{logical_elapsed:.3f}s"
+    )
+    assert len(leg_seconds) == continuation_rounds + 1, (
+        "MRTR proof HTTP leg count does not match the initial call plus continuation "
+        f"rounds: legs={len(leg_seconds)}, rounds={continuation_rounds}"
+    )
+    assert leg_seconds and max(leg_seconds) < MRTR_RELAY_LEG_CEILING_SECONDS, (
+        "MRTR proof exceeded the per-leg relay ceiling: "
+        f"max={max(leg_seconds, default=0.0):.3f}s, "
+        f"ceiling={MRTR_RELAY_LEG_CEILING_SECONDS:.1f}s"
+    )
+    assert server_rounds == continuation_rounds, (
+        "MRTR proof continuation count must represent owner slices, not contention "
+        f"waits: client={continuation_rounds}, server={server_rounds!r}"
+    )
+    return {
+        "legs": len(leg_seconds),
+        "continuation_rounds": continuation_rounds,
+        "logical_elapsed": logical_elapsed,
+        "max_leg_elapsed": max(leg_seconds),
+    }
+
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
@@ -185,6 +235,10 @@ class HubitatMcpClient:
         self._transport_retries = 0       # silent read-side transport retries (504/network), verbose-gated
         self._last_op: tuple[str, float, bool] | None = None   # (op_key, seconds, ok) of the most recent call
         self._last_continuation_rounds = 0
+        self._last_result_type: str | None = None
+        self._http_leg_timings: list[tuple[str, float, int | None]] = []
+        self._last_http_leg_seconds: list[float] = []
+        self._last_logical_elapsed = 0.0
         # Catalog-derived maps (issue #319), built lazily together from the live
         # gateway-mode catalog; None = not built yet. _gateway_members (gateway -> its
         # sub-tools) backs the membership guard; _gateway_route (leaf -> owning gateway)
@@ -264,13 +318,19 @@ class HubitatMcpClient:
         for attempt in range(_attempts):
             resp = None
             try:
-                resp = self.session.post(
-                    self.endpoint,
-                    params={"access_token": self.access_token},
-                    json=payload,
-                    headers=headers,
-                    timeout=60,
-                )
+                _http_started = time.monotonic()
+                try:
+                    resp = self.session.post(
+                        self.endpoint,
+                        params={"access_token": self.access_token},
+                        json=payload,
+                        headers=headers,
+                        timeout=60,
+                    )
+                finally:
+                    _http_elapsed = time.monotonic() - _http_started
+                    _http_status = int(resp.status_code) if resp is not None else None
+                    self._http_leg_timings.append((method, _http_elapsed, _http_status))
                 if 500 <= resp.status_code < 600:
                     # Hub or cloud relay returned a transient error. Heavy
                     # queries (e.g. hub_get_performance_stats) sometimes 504.
@@ -460,6 +520,7 @@ class HubitatMcpClient:
         result = None
         continuation_rounds = 0
         state_only_delay = 0.05
+        http_mark = len(getattr(self, "_http_leg_timings", []))
         _t0 = time.monotonic()
         _op_ok = True
         try:
@@ -495,6 +556,11 @@ class HubitatMcpClient:
                       f"{'' if _op_ok else '  [err/504]'}")
         assert result is not None
         self._last_continuation_rounds = continuation_rounds
+        self._last_result_type = result.get("resultType")
+        self._last_logical_elapsed = _dur
+        self._last_http_leg_seconds = [duration for method, duration, _status
+                                       in getattr(self, "_http_leg_timings", [])[http_mark:]
+                                       if method == "tools/call"]
 
         # Check for tool-level error
         if result.get("isError"):
@@ -5603,18 +5669,47 @@ class TestRunner:
     def test_mrtr_rule_edit_uses_standard_continuation(self) -> None:
         app_id = self._create_native_rule("MrtrContinuation")
         try:
+            requested_actions = [
+                {"capability": "log", "message": f"MRTR regular E2E proof {index}"}
+                for index in range(1, 7)
+            ]
             result = self._call_slow_rule({
                 "appId": app_id,
-                "addActions": [
-                    {"capability": "log", "message": "MRTR first"},
-                    {"capability": "log", "message": "MRTR second"},
-                ],
+                "addActions": requested_actions,
             })
             rounds = self.client._last_continuation_rounds
+            result_type = self.client._last_result_type
             assert result.get("success") is not False, \
                 f"MRTR rule edit failed: {result}"
-            assert rounds >= 1, \
-                f"eligible hub_set_rule completed without an input_required/requestState round: {rounds}"
+            assert not result.get("partial"), f"MRTR rule edit was partial: {result}"
+            action_results = result.get("actions") or []
+            assert len(action_results) == len(requested_actions), (
+                "MRTR rule edit did not return every requested mutation result: "
+                f"requested={len(requested_actions)}, returned={len(action_results)}, "
+                f"result={result}"
+            )
+            assert all(isinstance(action, dict) and action.get("success") is not False
+                       for action in action_results), (
+                f"MRTR rule edit contained a failed mutation: {action_results}"
+            )
+            proof = _summarize_mrtr_e2e_proof(
+                continuation_rounds=rounds,
+                result_type=result_type,
+                logical_elapsed=self.client._last_logical_elapsed,
+                leg_seconds=self.client._last_http_leg_seconds,
+                server_rounds=(result.get("mrtr") or {}).get("rounds"),
+            )
+            durations = ", ".join(
+                f"{duration:.3f}s" for duration in self.client._last_http_leg_seconds
+            )
+            print(
+                "    regular MRTR proof: "
+                f"legs={proof['legs']} "
+                f"continuation_rounds={proof['continuation_rounds']} "
+                f"logical={proof['logical_elapsed']:.3f}s "
+                f"max_leg={proof['max_leg_elapsed']:.3f}s "
+                f"leg_durations=[{durations}]"
+            )
             self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
