@@ -1511,7 +1511,118 @@ def handleResourcesRead(msg) {
     return jsonRpcError(msg.id, -32002, "Resource not found: ${uri}. Call resources/list for available URIs.", [uri: uri])
 }
 
+// MCP 2026-07-28 request-to-request continuation wrapper. Only modern, explicitly
+// eligible slow writes enter this path; every other call keeps the established
+// dispatcher below. The first round is deliberately mutation-free so the client
+// possesses requestState before any write can outlive its HTTP response.
 def handleToolsCall(msg) {
+    def toolName = msg.params?.name
+    def args = msg.params?.arguments ?: [:]
+    def gatewayConfig = getGatewayConfig()
+    def reactiveToolName = (gatewayConfig.containsKey(toolName) && args instanceof Map
+            && args.tool instanceof String && args.tool) ? args.tool : toolName
+    def requestState = msg.params?.requestState
+
+    if (!toolName) return jsonRpcError(msg.id, -32602, "Invalid params: tool name required")
+    if (requestState != null && !_modernEraRequest()) {
+        return jsonRpcError(msg.id, -32602,
+            "Invalid params: requestState requires MCP-Protocol-Version ${modernProtocolVersion()}.")
+    }
+
+    boolean eligible = _modernEraRequest() && _mrtrEligibleCall(toolName, reactiveToolName, args)
+    if (!eligible && requestState == null) return handleToolsCallLegacy(msg)
+    if (!(args instanceof Map)) {
+        return jsonRpcError(msg.id, -32602, "Invalid params: tool arguments must be an object")
+    }
+
+    Map rec = null
+    String stateId = requestState?.toString()
+    long reqT0 = now()
+    try {
+        def binding = _mrtrBinding(toolName, reactiveToolName, args)
+        if (stateId != null) {
+            rec = _mrtrLoadForResume(stateId, toolName, reactiveToolName, binding)
+            if (rec.status == "terminal") {
+                return _mrtrRenderToolResult(msg.id, toolName, reactiveToolName, args,
+                    rec.terminalResult, rec.terminalIsError == true)
+            }
+            if (rec.status != "active") {
+                throw new IllegalArgumentException("Invalid or expired requestState")
+            }
+        } else {
+            _mrtrValidateAccess(toolName, reactiveToolName, args)
+            def duplicate = _mrtrFindActive(reactiveToolName, binding)
+            if (duplicate != null) {
+                def refusal = [
+                    success: false, isError: true, status: "duplicate_in_flight",
+                    tool: reactiveToolName,
+                    startedAt: duplicate.startedAt,
+                    note: "An identical operation is already in progress. Nothing was run; wait for its original MCP call to finish before trying again."
+                ]
+                return _mrtrRenderToolResult(msg.id, toolName, reactiveToolName, args, refusal, true)
+            }
+            stateId = _mrtrCreate(toolName, reactiveToolName, binding)
+            return jsonRpcResult(msg.id, [resultType: "input_required", requestState: stateId])
+        }
+
+        Map executionArgs = (rec.nextArguments instanceof Map)
+            ? _mrtrCopyMap(rec.nextArguments as Map)
+            : _mrtrCopyMap(args as Map)
+        if (_budgetAwareTools().contains(reactiveToolName?.toString())) executionArgs.__reqT0 = reqT0
+
+        _mrtrValidateAccess(toolName, reactiveToolName, executionArgs)
+        def result = _mrtrExecuteSlice(stateId, rec, executionArgs)
+        if (result == null) {
+            result = [isError: true, error: "Tool ${reactiveToolName} returned no result", tool: reactiveToolName]
+        }
+
+        def continuation = _mrtrContinuation(reactiveToolName?.toString(), executionArgs, result, rec)
+        if (continuation instanceof Map) {
+            // The official Python SDK stops after ten request-to-request rounds.
+            // Finish with a protocol-level terminal result before a conforming client
+            // can hit that ceiling and surface its own opaque retry-limit exception.
+            if (((rec.rounds ?: 0) as Integer) >= (_mrtrMaxContinuationSlices() - 1)) {
+                def capped = [
+                    success: false, isError: true, status: "continuation_limit",
+                    tool: reactiveToolName,
+                    error: "The operation did not finish within ${_mrtrMaxContinuationSlices()} bounded continuation slices.",
+                    note: "The completed slices remain committed. Inspect the current hub state before deciding whether to submit a smaller follow-up operation."
+                ]
+                _mrtrCleanupRecord(rec)
+                _mrtrStoreTerminal(stateId, rec, capped, true)
+                return _mrtrRenderToolResult(msg.id, toolName, reactiveToolName,
+                    executionArgs, capped, true)
+            }
+            rec = _mrtrRecordSlice(stateId, rec, result as Map, continuation)
+            return jsonRpcResult(msg.id, [resultType: "input_required", requestState: stateId])
+        }
+
+        def terminal = _mrtrAggregateTerminal(rec, result)
+        _mrtrStoreTerminal(stateId, rec, terminal,
+            terminal instanceof Map && terminal.isError == true)
+        return _mrtrRenderToolResult(msg.id, toolName, reactiveToolName, executionArgs,
+            terminal, terminal instanceof Map && terminal.isError == true)
+    } catch (IllegalArgumentException e) {
+        if (rec instanceof Map && rec.status == "active") _mrtrAbandon(stateId, rec, "validation_error")
+        mcpLog("warn", "server", "Validation error in ${reactiveToolName}: ${e.message}", null,
+            [details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null,
+                       error: e.message]])
+        return jsonRpcError(msg.id, -32602, "Invalid params: ${e.message}")
+    } catch (Exception e) {
+        mcpLog("error", "server", "MRTR tool execution error in ${reactiveToolName}: ${e.message}", null,
+            [details: [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null,
+                       error: e.message],
+             stackTrace: e.getStackTrace()?.take(5)?.collect { it.toString() }?.join("\n")])
+        def failure = [success: false, isError: true, error: "Tool error: ${e.message}", tool: reactiveToolName]
+        if (rec instanceof Map && rec.status == "active") {
+            _mrtrCleanupRecord(rec)
+            _mrtrStoreTerminal(stateId, rec, failure, true)
+        }
+        return _mrtrRenderToolResult(msg.id, toolName, reactiveToolName, args, failure, true)
+    }
+}
+
+def handleToolsCallLegacy(msg) {
     def toolName = msg.params?.name
     def args = msg.params?.arguments ?: [:]
     // For a gateway call (hub_manage_*/hub_read_*) the FAILING tool is args.tool, not the gateway
@@ -2178,6 +2289,709 @@ def _markerTrackedWriteTools() {
 
 def _budgetAwareTools() {
     return ["hub_set_rule", "hub_set_native_app", "hub_call_rule", "hub_clone_native_app", "hub_import_native_app"] as Set
+}
+
+// ==================== MCP 2026-07-28 request-to-request continuation ====================
+
+def _mrtrEligibleTools() {
+    return ["hub_set_rule", "hub_set_native_app", "hub_call_rule",
+            "hub_clone_native_app", "hub_import_native_app"] as Set
+}
+
+def _mrtrEligibleCall(outerToolName, leafToolName, args) {
+    String leaf = leafToolName?.toString()
+    if (!_mrtrEligibleTools().contains(leaf) || !(args instanceof Map)) return false
+    def leafArgs = _mrtrLeafArguments(outerToolName?.toString(), leaf, args as Map)
+    if (!(leafArgs instanceof Map)) return false
+    if (leaf == "hub_set_rule" && _isSetRuleSchemaOnlyCall(leafArgs)) return false
+    if (leaf == "hub_set_native_app" && _isNativeAppSchemaOnlyCall(leafArgs)) return false
+    if (leaf == "hub_call_rule") {
+        def ids = leafArgs.ruleId
+        def idCount = (ids instanceof List) ? ids.size() : (ids == null ? 0 : 1)
+        return leafArgs.action in ["stop", "start"] && idCount > 1
+    }
+    return true
+}
+
+private Map _mrtrCopyMap(Map value) {
+    if (value == null) return [:]
+    return new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(value)) as Map
+}
+
+private def _mrtrLeafArguments(String outerTool, String leafTool, Map outerArgs) {
+    if (outerTool == leafTool) return outerArgs
+    def inner = outerArgs.args
+    if (inner instanceof Map) return inner
+    if (inner instanceof String) {
+        try {
+            def parsed = new groovy.json.JsonSlurper().parseText(inner.toString())
+            if (parsed instanceof Map) return parsed
+        } catch (Exception ignored) { }
+    }
+    return null
+}
+
+private Map _mrtrWithLeafArguments(Map rec, Map outerArgs, Map nextLeafArgs) {
+    if (rec.outerTool?.toString() == rec.leafTool?.toString()) return nextLeafArgs
+    def next = _mrtrCopyMap(outerArgs)
+    next.args = nextLeafArgs
+    return next
+}
+
+private void _mrtrValidateAccess(outerToolName, leafToolName, Map outerArgs) {
+    String outer = outerToolName?.toString()
+    String leaf = leafToolName?.toString()
+    def leafArgs = _mrtrLeafArguments(outer, leaf, outerArgs)
+    if (settings.enableWrite == false) {
+        throw new IllegalArgumentException("Write tools are disabled. Enable 'Write Tools' in MCP Rule Server app settings to use ${leaf}.")
+    }
+    if ((settings.disabled_gateways ?: []).contains(outer)) {
+        throw new IllegalArgumentException("${outer} is disabled in Advanced settings (Per-tool Overrides). Re-enable it in MCP Rule Server app settings.")
+    }
+    if (getEffectiveDisabledTools().contains(leaf)) {
+        throw new IllegalArgumentException("${leaf} is disabled in Advanced settings (Per-tool Overrides). Re-enable it in MCP Rule Server app settings.")
+    }
+    if (settings.enableMandatoryBPS != false && leafArgs?.bestPracticeKey?.toString() != hubBpsGuideKey()) {
+        throw new IllegalArgumentException("Mandatory best-practice acknowledgment is enabled for write tools. Read hub_get_tool_guide(section='best_practice_reference') to obtain the required acknowledgment key, then pass it as the bestPracticeKey argument on this call. The key appears only in that guide section.")
+    }
+}
+
+// Hubitat's sandbox does not expose a guaranteed cryptographic digest API. The
+// random UUID is the unguessable authority; this compact binding catches a client
+// accidentally echoing the state with another tool/argument object without storing
+// a potentially huge import payload in atomicState.
+private Map _mrtrBinding(outerToolName, leafToolName, Map args) {
+    String canonical = groovy.json.JsonOutput.toJson(_canonicalOpArgs(args))
+    int edge = Math.min(48, canonical.length())
+    return [
+        outerTool: outerToolName?.toString(),
+        leafTool: leafToolName?.toString(),
+        argHash: canonical.hashCode(),
+        argReverseHash: canonical.reverse().hashCode(),
+        argLength: canonical.length(),
+        argPrefix: canonical.substring(0, edge),
+        argSuffix: canonical.substring(canonical.length() - edge)
+    ]
+}
+
+private boolean _mrtrBindingMatches(Map rec, Map binding) {
+    return rec.outerTool?.toString() == binding.outerTool?.toString() &&
+        rec.leafTool?.toString() == binding.leafTool?.toString() &&
+        rec.argHash == binding.argHash && rec.argReverseHash == binding.argReverseHash &&
+        rec.argLength == binding.argLength && rec.argPrefix == binding.argPrefix &&
+        rec.argSuffix == binding.argSuffix
+}
+
+def _mrtrActiveTtlMs() { 15L * 60L * 1000L }
+def _mrtrTerminalTtlMs() { 10L * 60L * 1000L }
+def _mrtrMaxRecords() { 16 }
+def _mrtrMaxContinuationSlices() { 8 }
+
+private void _mrtrPut(String stateId, Map rec) {
+    if (state.mrtrRequestsCreated != true) {
+        if (!(atomicState.mrtrRequests instanceof Map)) atomicState.mrtrRequests = [:]
+        state.mrtrRequestsCreated = true
+    }
+    try {
+        atomicState.updateMapValue("mrtrRequests", stateId, rec)
+    } catch (Exception e) {
+        def all = [:]
+        if (atomicState.mrtrRequests instanceof Map) all.putAll(atomicState.mrtrRequests)
+        all[stateId] = rec
+        atomicState.mrtrRequests = all
+    }
+}
+
+private void _mrtrSweep() {
+    def stored = atomicState.mrtrRequests
+    if (!(stored instanceof Map)) return
+    long at = now()
+    def kept = [:]
+    stored.each { k, v ->
+        if (v instanceof Map && v.expiresAt != null && (v.expiresAt as Long) > at) {
+            kept[k] = v
+        } else if (v instanceof Map && v.status == "active") {
+            _mrtrCleanupRecord(v as Map)
+        }
+    }
+    if (kept.size() > _mrtrMaxRecords()) {
+        def ordered = kept.entrySet().toList().sort { a, b ->
+            long av = (a.value?.updatedAt ?: a.value?.startedAt ?: 0L) as Long
+            long bv = (b.value?.updatedAt ?: b.value?.startedAt ?: 0L) as Long
+            av <=> bv
+        }
+        ordered.take(kept.size() - _mrtrMaxRecords()).each { kept.remove(it.key) }
+    }
+    if (kept.size() != stored.size()) atomicState.mrtrRequests = kept
+}
+
+private String _mrtrCreate(outerTool, leafTool, Map binding) {
+    _mrtrSweep()
+    String stateId = "mrtr-${java.util.UUID.randomUUID()}".toString()
+    long at = now()
+    def rec = [
+        schemaVersion: 1,
+        status: "active",
+        outerTool: outerTool?.toString(),
+        leafTool: leafTool?.toString(),
+        argHash: binding.argHash,
+        argReverseHash: binding.argReverseHash,
+        argLength: binding.argLength,
+        argPrefix: binding.argPrefix,
+        argSuffix: binding.argSuffix,
+        startedAt: at,
+        updatedAt: at,
+        expiresAt: at + _mrtrActiveTtlMs(),
+        rounds: 0
+    ]
+    _mrtrPut(stateId, rec)
+    return stateId
+}
+
+private Map _mrtrLoadForResume(String stateId, outerTool, leafTool, Map binding) {
+    if (!(stateId ==~ /^mrtr-[A-Za-z0-9-]{20,80}$/)) {
+        throw new IllegalArgumentException("Invalid or expired requestState")
+    }
+    def stored = atomicState.mrtrRequests
+    def rec = (stored instanceof Map && stored[stateId] instanceof Map) ? stored[stateId] as Map : null
+    if (rec == null || rec.expiresAt == null || (rec.expiresAt as Long) <= now()) {
+        _mrtrSweep()
+        throw new IllegalArgumentException("Invalid or expired requestState")
+    }
+    if (!_mrtrBindingMatches(rec, binding) || rec.outerTool?.toString() != outerTool?.toString()
+            || rec.leafTool?.toString() != leafTool?.toString()) {
+        throw new IllegalArgumentException("requestState does not match this tool and its original arguments")
+    }
+    return [:] + rec
+}
+
+private Map _mrtrFindActive(leafTool, Map binding) {
+    def stored = atomicState.mrtrRequests
+    if (!(stored instanceof Map)) return null
+    long at = now()
+    for (def entry : stored.entrySet()) {
+        def rec = entry.value
+        if (rec instanceof Map && rec.status == "active" && rec.expiresAt != null
+                && (rec.expiresAt as Long) > at && rec.leafTool?.toString() == leafTool?.toString()
+                && _mrtrBindingMatches(rec as Map, binding)) {
+            return [startedAt: rec.startedAt]
+        }
+    }
+    return null
+}
+
+private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map rec) {
+    if (!(result instanceof Map)) return null
+    if (result.__mrtrContinue instanceof Map) {
+        return [kind: result.__mrtrContinue.kind,
+                checkpoint: result.__mrtrContinue.checkpoint,
+                // Clone/import checkpoints contain everything needed for their next
+                // bounded phase. Do not duplicate the original (potentially very
+                // large) import JSON into atomicState; the client already resends the
+                // exact original arguments with requestState on every MRTR request.
+                nextArguments: null]
+    }
+    def leafArgs = _mrtrLeafArguments(rec.outerTool?.toString(), rec.leafTool?.toString(), executionArgs)
+    if (!(leafArgs instanceof Map)) return null
+    def nextLeaf = _mrtrCopyMap(leafArgs as Map)
+    String kind = null
+
+    if (leafTool == "hub_call_rule" && result.remainingRuleIds instanceof List
+            && !result.remainingRuleIds.isEmpty()) {
+        def retryIds = []
+        if (result.failedRuleIds instanceof List) retryIds.addAll(result.failedRuleIds)
+        retryIds.addAll(result.remainingRuleIds)
+        nextLeaf.ruleId = retryIds.unique()
+        kind = "call_rule"
+    } else if (leafTool in ["hub_set_rule", "hub_set_native_app"] && result.status == "in_progress") {
+        if (result.stepsRemaining instanceof List && !result.stepsRemaining.isEmpty()) {
+            if (nextLeaf.operation?.toString() == "walkStep") {
+                def spec = (nextLeaf.args instanceof Map) ? _mrtrCopyMap(nextLeaf.args as Map) : [:]
+                spec.steps = result.stepsRemaining
+                if (result.page != null) spec.page = result.page
+                nextLeaf.args = spec
+            } else {
+                def spec = (nextLeaf.walkStep instanceof Map) ? _mrtrCopyMap(nextLeaf.walkStep as Map) : [:]
+                spec.steps = result.stepsRemaining
+                if (result.page != null) spec.page = result.page
+                nextLeaf.walkStep = spec
+            }
+            kind = "walk_steps"
+        } else if ((result.addTriggersRemaining instanceof List && !result.addTriggersRemaining.isEmpty())
+                || (result.addActionsRemaining instanceof List && !result.addActionsRemaining.isEmpty())) {
+            if (nextLeaf.operation?.toString() in ["addTriggers", "addActions"]) {
+                nextLeaf.args = nextLeaf.operation == "addTriggers"
+                    ? (result.addTriggersRemaining ?: []) : (result.addActionsRemaining ?: [])
+            } else {
+                nextLeaf.addTriggers = result.addTriggersRemaining ?: []
+                nextLeaf.addActions = result.addActionsRemaining ?: []
+            }
+            kind = "bulk_edit"
+        } else if (result.patchesRemaining instanceof List && !result.patchesRemaining.isEmpty()) {
+            if (nextLeaf.operation?.toString() == "patches") nextLeaf.args = result.patchesRemaining
+            else nextLeaf.patches = result.patchesRemaining
+            kind = "patches"
+        }
+    }
+    if (kind == null) return null
+    return [kind: kind, nextArguments: _mrtrWithLeafArguments(rec, executionArgs, nextLeaf)]
+}
+
+private Map _mrtrRecordSlice(String stateId, Map originalRec, Map result, Map continuation) {
+    def rec = [:] + originalRec
+    def aggregate = (rec.aggregate instanceof Map) ? ([:] + rec.aggregate) : [:]
+    String kind = continuation.kind?.toString()
+    aggregate.kind = kind
+    switch (kind) {
+        case "call_rule":
+            aggregate.results = ((aggregate.results instanceof List) ? aggregate.results : []) +
+                ((result.results instanceof List) ? result.results : [])
+            aggregate.ruleIds = (((aggregate.ruleIds instanceof List) ? aggregate.ruleIds : []) +
+                ((result.ruleIds instanceof List) ? result.ruleIds : [])).unique()
+            break
+        case "walk_steps":
+            aggregate.steps = ((aggregate.steps instanceof List) ? aggregate.steps : []) +
+                ((result.steps instanceof List) ? result.steps : [])
+            aggregate.stepsRequested = ((aggregate.stepsRequested ?: 0) as Integer) +
+                ((result.stepsRequested ?: 0) as Integer)
+            break
+        case "bulk_edit":
+            aggregate.triggers = ((aggregate.triggers instanceof List) ? aggregate.triggers : []) +
+                ((result.triggers instanceof List) ? result.triggers : [])
+            aggregate.actions = ((aggregate.actions instanceof List) ? aggregate.actions : []) +
+                ((result.actions instanceof List) ? result.actions : [])
+            break
+        case "patches":
+            aggregate.patchResults = ((aggregate.patchResults instanceof List) ? aggregate.patchResults : []) +
+                ((result.patchResults instanceof List) ? result.patchResults : [])
+            break
+    }
+    aggregate.anyPartial = aggregate.anyPartial == true || result.partial == true
+    rec.aggregate = aggregate
+    if (continuation.nextArguments instanceof Map) rec.nextArguments = continuation.nextArguments
+    else rec.remove("nextArguments")
+    if (continuation.checkpoint instanceof Map) rec.checkpoint = continuation.checkpoint
+    rec.rounds = ((rec.rounds ?: 0) as Integer) + 1
+    rec.updatedAt = now()
+    rec.expiresAt = rec.updatedAt + _mrtrActiveTtlMs()
+    _mrtrPut(stateId, rec)
+    return rec
+}
+
+private def _mrtrAggregateTerminal(Map rec, result) {
+    if (!(result instanceof Map)) return result
+    def out = [:] + (result as Map)
+    def aggregate = (rec.aggregate instanceof Map) ? rec.aggregate as Map : [:]
+    switch (aggregate.kind?.toString()) {
+        case "call_rule":
+            out.results = ((aggregate.results instanceof List) ? aggregate.results : []) +
+                ((out.results instanceof List) ? out.results : [])
+            out.ruleIds = (((aggregate.ruleIds instanceof List) ? aggregate.ruleIds : []) +
+                ((out.ruleIds instanceof List) ? out.ruleIds : [])).unique()
+            def failed = out.results.findAll { it instanceof Map && it.success != true }
+            out.success = out.success == true && failed.isEmpty()
+            out.partial = !failed.isEmpty()
+            if (!failed.isEmpty()) {
+                out.failedRuleIds = failed.collect { it.ruleId }.findAll { it != null }.unique()
+                if (!out.error) out.error = "One or more rule operations failed; inspect results[]."
+            }
+            out.remove("remainingRuleIds")
+            break
+        case "walk_steps":
+            out.steps = ((aggregate.steps instanceof List) ? aggregate.steps : []) +
+                ((out.steps instanceof List) ? out.steps : [])
+            out.stepsRun = out.steps.size()
+            out.stepsRequested = Math.max(out.stepsRun as Integer,
+                ((aggregate.stepsRequested ?: 0) as Integer) + ((out.stepsRequested ?: 0) as Integer))
+            out.partial = aggregate.anyPartial == true || out.partial == true
+            break
+        case "bulk_edit":
+            out.triggers = ((aggregate.triggers instanceof List) ? aggregate.triggers : []) +
+                ((out.triggers instanceof List) ? out.triggers : [])
+            out.actions = ((aggregate.actions instanceof List) ? aggregate.actions : []) +
+                ((out.actions instanceof List) ? out.actions : [])
+            boolean itemsOk = out.triggers.every { it?.success != false } && out.actions.every { it?.success != false }
+            out.success = out.success == true && itemsOk
+            out.partial = aggregate.anyPartial == true || out.partial == true || !itemsOk
+            break
+        case "patches":
+            out.patchResults = ((aggregate.patchResults instanceof List) ? aggregate.patchResults : []) +
+                ((out.patchResults instanceof List) ? out.patchResults : [])
+            boolean patchesOk = out.patchResults.every { it?.success != false }
+            out.success = out.success == true && patchesOk
+            out.partial = aggregate.anyPartial == true || out.partial == true || !patchesOk
+            break
+    }
+    out.remove("status")
+    out.remove("resume")
+    out.mrtr = [continued: true, rounds: ((rec.rounds ?: 0) as Integer) + 1,
+                startedAt: rec.startedAt]
+    return out
+}
+
+private void _mrtrStoreTerminal(String stateId, Map originalRec, result, boolean isError) {
+    def rec = [:] + originalRec
+    rec.status = "terminal"
+    rec.remove("nextArguments")
+    rec.remove("checkpoint")
+    rec.terminalResult = result
+    rec.terminalIsError = isError
+    rec.finishedAt = now()
+    rec.updatedAt = rec.finishedAt
+    rec.expiresAt = rec.finishedAt + _mrtrTerminalTtlMs()
+    _mrtrPut(stateId, rec)
+}
+
+private void _mrtrAbandon(String stateId, Map originalRec, String reason) {
+    def rec = [:] + originalRec
+    rec.status = "abandoned"
+    rec.reason = reason
+    rec.updatedAt = now()
+    rec.expiresAt = rec.updatedAt + 60000L
+    rec.remove("nextArguments")
+    _mrtrCleanupRecord(rec)
+    rec.remove("checkpoint")
+    _mrtrPut(stateId, rec)
+}
+
+private def _mrtrExecuteSlice(String stateId, Map rec, Map executionArgs) {
+    String leaf = rec.leafTool?.toString()
+    if (leaf == "hub_clone_native_app") return _mrtrCloneNativeAppSlice(rec, executionArgs)
+    if (leaf == "hub_import_native_app") return _mrtrImportNativeAppSlice(rec, executionArgs)
+    return executeTool(rec.outerTool, executionArgs)
+}
+
+private Map _mrtrControl(String kind, Map checkpoint) {
+    return [__mrtrContinue: [kind: kind, checkpoint: checkpoint]]
+}
+
+private void _mrtrCleanupRecord(Map rec) {
+    def clonerId = rec?.checkpoint?.clonerAppId
+    if (clonerId == null) return
+    try { _appClonerCleanup(clonerId as Integer) }
+    catch (Exception e) {
+        mcpLog("warn", "mrtr", "Could not clean temporary appCloner ${clonerId}: ${e.message}")
+    }
+}
+
+private Map _mrtrCloneNativeAppSlice(Map rec, Map outerArgs) {
+    Map args = _mrtrLeafArguments(rec.outerTool?.toString(), rec.leafTool?.toString(), outerArgs) as Map
+    Map cp = (rec.checkpoint instanceof Map) ? ([:] + rec.checkpoint) : null
+    if (cp == null) {
+        requireDestructiveConfirm(args?.confirm as Boolean)
+        def rawSource = (args?.sourceAppId != null) ? args.sourceAppId : args?.appId
+        if (rawSource == null) throw new IllegalArgumentException("sourceAppId (or appId) is required")
+        Integer sourceAppId = normalizeRuleId(rawSource)
+        String newName = args?.newName?.toString()?.trim()
+        def sourceCfg
+        try { sourceCfg = _rmFetchConfigJson(sourceAppId) }
+        catch (Exception sourceErr) {
+            mcpLog("warn", "rm-native", "hub_clone_native_app: source ${sourceAppId} config fetch failed: ${sourceErr.message}")
+            sourceCfg = null
+        }
+        if (!sourceCfg?.app) throw new IllegalArgumentException("Source app ${sourceAppId} not found or unreadable")
+        String sourceLabel = sourceCfg.app.label?.toString()
+        Integer parentAppId = null
+        try {
+            parentAppId = sourceCfg.app.parentAppId != null ? sourceCfg.app.parentAppId.toString() as Integer : null
+        } catch (NumberFormatException ignored) { }
+        def preIds = []
+        if (parentAppId != null) {
+            try {
+                def parentCfg = _rmFetchConfigJson(parentAppId)
+                preIds = ((parentCfg?.childApps ?: []) as List).collect { it?.id?.toString() }.findAll { it }
+            } catch (Exception preErr) {
+                mcpLog("warn", "rm-native", "hub_clone_native_app: pre-clone parent ${parentAppId} fetch failed: ${preErr.message}; new-child discovery may be less precise")
+            }
+        }
+        def initRes = _appClonerInit(sourceAppId)
+        cp = [phase: "clone_clicks", clonerAppId: initRes.clonerAppId,
+              referrer: initRes.referrer, configUrl: initRes.configUrl,
+              sourceAppId: sourceAppId, sourceLabel: sourceLabel,
+              parentAppId: parentAppId, preIds: preIds, newName: newName,
+              stageDisabled: args?.stageDisabled == true]
+        return _mrtrControl("clone_native_app", cp)
+    }
+
+    Integer clonerAppId = cp.clonerAppId as Integer
+    try {
+        if (cp.phase == "clone_clicks") {
+            def btnBody = [
+                id: clonerAppId.toString(), name: "cloneRuleButton",
+                ("settings[cloneRuleButton]".toString()): "clicked",
+                ("cloneRuleButton.type".toString()): "button"
+            ]
+            for (int attempt = 0; attempt < 2; attempt++) {
+                hubInternalPostForm("/installedapp/btn", btnBody)
+                pauseExecution(500)
+                _appClonerSubmitForm(clonerAppId, "main", "source", cp.referrer?.toString(), cp.configUrl?.toString(), null)
+                pauseExecution(500)
+            }
+            cp.phase = "clone_commit"
+            return _mrtrControl("clone_native_app", cp)
+        }
+        if (cp.phase == "clone_commit") {
+            _appClonerCommitImportRule(clonerAppId, cp.sourceAppId as Integer,
+                cp.newName?.toString(), cp.referrer?.toString(), cp.configUrl?.toString())
+            Integer newAppId = _appClonerDiscoverNewChild(cp.parentAppId as Integer,
+                (cp.preIds ?: []) as Set, cp.sourceLabel?.toString(), cp.newName?.toString())
+            String note = newAppId
+                ? "Cloned source ${cp.sourceAppId} -> new app ${newAppId}${cp.newName ? " (renamed to '${cp.newName}')" : ""}. Use hub_set_native_app (or hub_set_rule for RM rules) to further customize."
+                : "Clone fired but no new child appeared under parent ${cp.parentAppId}. Re-check via hub_list_apps (scope='instances') shortly."
+            def baseResult = [success: newAppId != null, sourceAppId: cp.sourceAppId,
+                              clonerAppId: clonerAppId, newAppId: newAppId, note: note]
+            if (newAppId == null) {
+                baseResult.isError = true
+                baseResult.error = note
+                _appClonerCleanup(clonerAppId)
+                return baseResult
+            }
+            if (cp.stageDisabled != true) {
+                _appClonerCleanup(clonerAppId)
+                return baseResult
+            }
+            def stagePlan = _mrtrAppClonerStagePlan(newAppId)
+            cp.phase = "stage_disable"
+            cp.newAppId = newAppId
+            cp.stageTargets = stagePlan.targets
+            cp.stageFailures = stagePlan.failures
+            cp.stagedDisabled = []
+            cp.baseResult = baseResult
+            return _mrtrControl("clone_native_app", cp)
+        }
+        if (cp.phase == "stage_disable") return _mrtrAppClonerStageSlice(cp, "clone")
+        throw new IllegalStateException("Unknown clone continuation phase '${cp.phase}'")
+    } catch (Exception e) {
+        try { _appClonerCleanup(clonerAppId) } catch (Exception ignored) { }
+        throw e
+    }
+}
+
+private Map _mrtrImportNativeAppSlice(Map rec, Map outerArgs) {
+    Map args = _mrtrLeafArguments(rec.outerTool?.toString(), rec.leafTool?.toString(), outerArgs) as Map
+    Map cp = (rec.checkpoint instanceof Map) ? ([:] + rec.checkpoint) : null
+    if (cp == null) {
+        requireDestructiveConfirm(args?.confirm as Boolean)
+        if (args?.parentHintAppId == null) {
+            throw new IllegalArgumentException("parentHintAppId is required (any existing rule's id under the target parent — used to seed the cloner)")
+        }
+        Integer parentHintAppId = normalizeRuleId(args.parentHintAppId)
+        String newName = args?.newName?.toString()?.trim()
+        String jsonContent = args?.jsonContent?.toString()
+        if (!jsonContent && args?.fromFile) {
+            try { jsonContent = new String(downloadHubFile(args.fromFile.toString()), "UTF-8") }
+            catch (Exception e) { throw new IllegalArgumentException("Cannot read fromFile '${args.fromFile}': ${e.message}") }
+        }
+        if (!jsonContent) throw new IllegalArgumentException("jsonContent or fromFile is required")
+        def parsed
+        try { parsed = new groovy.json.JsonSlurper().parseText(jsonContent) }
+        catch (Exception e) { throw new IllegalArgumentException("jsonContent is not valid JSON: ${e.message}") }
+        def replacements = (parsed instanceof Map) ? parsed.appReplacements : null
+        if (!(replacements instanceof Map) || replacements.isEmpty()) {
+            throw new IllegalArgumentException("jsonContent does not contain an appReplacements map — not an appCloner export")
+        }
+        Integer originalSourceId
+        try { originalSourceId = ((replacements.keySet() as List)[0]).toString() as Integer }
+        catch (Exception e) { throw new IllegalArgumentException("Could not extract original source id from appReplacements: ${e.message}") }
+        String originalLabel = replacements[originalSourceId.toString()]?.appLabel?.toString()
+        def hintCfg
+        try { hintCfg = _rmFetchConfigJson(parentHintAppId) }
+        catch (Exception ignored) { hintCfg = null }
+        if (!hintCfg?.app) throw new IllegalArgumentException("parentHintAppId ${parentHintAppId} not found or unreadable")
+        Integer parentAppId = null
+        try { parentAppId = hintCfg.app.parentAppId?.toString() as Integer }
+        catch (Exception ignored) { }
+        if (parentAppId == null) {
+            throw new IllegalArgumentException("parentHintAppId ${parentHintAppId} has no numeric parentAppId — pass a child of the target parent app")
+        }
+        def preIds = []
+        try {
+            def parentCfg = _rmFetchConfigJson(parentAppId)
+            preIds = ((parentCfg?.childApps ?: []) as List).collect { it?.id?.toString() }.findAll { it }
+        } catch (Exception preErr) {
+            mcpLog("warn", "rm-native", "hub_import_native_app: pre-import parent ${parentAppId} fetch failed: ${preErr.message}")
+        }
+        def initRes = _appClonerInit(parentHintAppId)
+        Integer clonerAppId = initRes.clonerAppId as Integer
+        try {
+            String configUrl = initRes.configUrl?.toString()
+            _appClonerSubmitForm(clonerAppId, "main", "source", configUrl, configUrl,
+                [("settings[ruleUpload]".toString()): jsonContent])
+            pauseExecution(2000)
+            cp = [phase: "import_commit", clonerAppId: clonerAppId,
+                  referrer: configUrl, configUrl: configUrl,
+                  parentAppId: parentAppId, preIds: preIds,
+                  originalSourceId: originalSourceId, originalLabel: originalLabel,
+                  contentLength: jsonContent.length(), newName: newName,
+                  stageDisabled: args?.stageDisabled == true]
+            return _mrtrControl("import_native_app", cp)
+        } catch (Exception e) {
+            try { _appClonerCleanup(clonerAppId) } catch (Exception ignored) { }
+            throw e
+        }
+    }
+
+    Integer clonerAppId = cp.clonerAppId as Integer
+    try {
+        if (cp.phase == "import_commit") {
+            _appClonerCommitImportRule(clonerAppId, cp.originalSourceId as Integer,
+                cp.newName?.toString(), cp.referrer?.toString(), cp.configUrl?.toString())
+            Integer newAppId = _appClonerDiscoverNewChild(cp.parentAppId as Integer,
+                (cp.preIds ?: []) as Set, cp.originalLabel?.toString(), cp.newName?.toString())
+            String note = newAppId
+                ? "Imported '${cp.originalLabel ?: 'app'}' as new app ${newAppId}${cp.newName ? " (renamed to '${cp.newName}')" : ""}. Use hub_set_native_app (or hub_set_rule for RM rules) to further customize."
+                : "Import fired but no new child appeared under parent ${cp.parentAppId}. Re-check via hub_list_apps (scope='instances') shortly."
+            def baseResult = [success: newAppId != null, clonerAppId: clonerAppId,
+                              newAppId: newAppId, originalSourceId: cp.originalSourceId,
+                              originalLabel: cp.originalLabel, contentLength: cp.contentLength,
+                              note: note]
+            if (newAppId == null) {
+                baseResult.isError = true
+                baseResult.error = note
+                _appClonerCleanup(clonerAppId)
+                return baseResult
+            }
+            if (cp.stageDisabled != true) {
+                _appClonerCleanup(clonerAppId)
+                return baseResult
+            }
+            def stagePlan = _mrtrAppClonerStagePlan(newAppId)
+            cp.phase = "stage_disable"
+            cp.newAppId = newAppId
+            cp.stageTargets = stagePlan.targets
+            cp.stageFailures = stagePlan.failures
+            cp.stagedDisabled = []
+            cp.baseResult = baseResult
+            return _mrtrControl("import_native_app", cp)
+        }
+        if (cp.phase == "stage_disable") return _mrtrAppClonerStageSlice(cp, "import")
+        throw new IllegalStateException("Unknown import continuation phase '${cp.phase}'")
+    } catch (Exception e) {
+        try { _appClonerCleanup(clonerAppId) } catch (Exception ignored) { }
+        throw e
+    }
+}
+
+private Map _mrtrAppClonerStagePlan(Integer newAppId) {
+    List targets = []
+    List failures = []
+    try {
+        def parsed = new groovy.json.JsonSlurper().parseText(hubInternalGet("/hub2/appsList"))
+        Map root = null
+        def findNode
+        findNode = { List nodes ->
+            for (def node : (nodes ?: [])) {
+                if (node?.data?.id?.toString() == newAppId.toString()) { root = node; return }
+                findNode(node?.children as List)
+                if (root != null) return
+            }
+        }
+        findNode(parsed?.apps as List)
+        if (root == null) throw new IllegalStateException("app ${newAppId} not present in /hub2/appsList")
+        Set visited = [] as Set
+        def collect
+        collect = { Map node ->
+            String id = node?.data?.id?.toString()
+            if (!id?.isInteger() || visited.contains(id)) return
+            visited << id
+            targets << id.toInteger()
+            (node?.children as List ?: []).each { child -> if (child instanceof Map) collect(child) }
+        }
+        collect(root)
+    } catch (Exception treeErr) {
+        mcpLog("warn", "rm-native", "stageDisabled: /hub2/appsList enumeration failed (${treeErr.message}) — falling back to configure/json BFS")
+        Set visited = [] as Set
+        List queue = [newAppId]
+        while (queue) {
+            Integer id = queue.remove(0) as Integer
+            if (visited.contains(id)) continue
+            visited << id
+            targets << id
+            try {
+                def cfg = _rmFetchConfigJson(id)
+                ((cfg?.childApps ?: []) as List).each { child ->
+                    String childId = child?.id?.toString()
+                    if (childId?.isInteger()) queue << childId.toInteger()
+                }
+            } catch (Exception childErr) {
+                failures << [appId: id, kind: "childEnumeration",
+                             error: "child enumeration failed for app ${id}: ${childErr.message}; descendants may not have been discovered"]
+            }
+        }
+    }
+    return [targets: targets.unique(), failures: failures]
+}
+
+private Map _mrtrAppClonerStageSlice(Map cp, String operationLabel) {
+    List targets = (cp.stageTargets instanceof List) ? cp.stageTargets as List : []
+    List staged = (cp.stagedDisabled instanceof List) ? cp.stagedDisabled as List : []
+    List failures = (cp.stageFailures instanceof List) ? cp.stageFailures as List : []
+    List remaining = []
+    long t0 = now()
+    for (int i = 0; i < targets.size(); i++) {
+        if (i > 0 && _timeBudgetExceeded(t0)) {
+            remaining = targets.subList(i, targets.size()).collect { it }
+            break
+        }
+        def id = targets[i]
+        def disabled
+        try { disabled = toolSetAppDisabled([appId: id, disabled: true]) }
+        catch (Exception e) { disabled = [success: false, error: e.message ?: e.toString()] }
+        if (disabled?.success == true) staged << id
+        else failures << [appId: id, kind: "disable", error: disabled?.error ?: "disable read-back mismatch"]
+    }
+    if (remaining) {
+        cp.stageTargets = remaining
+        cp.stagedDisabled = staged
+        cp.stageFailures = failures
+        return _mrtrControl("${operationLabel}_native_app".toString(), cp)
+    }
+    def result = (cp.baseResult instanceof Map) ? ([:] + cp.baseResult) : [:]
+    result.stagedDisabled = staged.unique()
+    if (failures) {
+        result.success = false
+        result.partial = true
+        result.isError = true
+        result.stageFailures = failures
+        result.error = "stageDisabled did not fully land for ${failures.size()} app(s). The ${operationLabel} committed (newAppId=${cp.newAppId}); do not repeat it."
+        result.note = "${result.note} STAGING FAILED — inspect stageFailures."
+    } else {
+        result.note = "${result.note} Staged inactive: ${result.stagedDisabled.size()} app(s) disabled."
+    }
+    _appClonerCleanup(cp.clonerAppId as Integer)
+    return result
+}
+
+private def _mrtrRenderToolResult(id, toolName, reactiveToolName, args, result, boolean isErrorOverride) {
+    // Reactive hints mutate their result map. Terminal MRTR responses are retained
+    // for replay, so render from a deep copy and keep the cached canonical result
+    // immutable across clients and retries.
+    def rendered = (result instanceof Map) ? _mrtrCopyMap(result as Map) : result
+    if (rendered instanceof Map && (rendered.isError == true || rendered.success == false)) {
+        try { _applyReactiveBpsWarning(reactiveToolName, args, rendered) }
+        catch (Exception bpErr) {
+            mcpLog("warn", "server", "Reactive BPS hint failed for ${reactiveToolName}: ${bpErr.message}")
+        }
+    }
+    String jsonText = groovy.json.JsonOutput.toJson(rendered)
+    def envelopeBody = [content: [[type: "text", text: jsonText]]]
+    if (isErrorOverride || (rendered instanceof Map && rendered.isError == true)) {
+        envelopeBody.isError = true
+    } else if (settings.publishOutputSchemas == true && settings.useGateways != false
+            && rendered instanceof Map && _advertisesOutputSchema(toolName)) {
+        envelopeBody.structuredContent = rendered
+    }
+    def candidateResponse = jsonRpcResult(id, envelopeBody)
+    String candidateJson = groovy.json.JsonOutput.toJson(candidateResponse)
+    int wireBytes = candidateJson.getBytes("UTF-8").length
+    final int responseSizeLimit = hubResponseCapBytes() - 11072
+    if (wireBytes > responseSizeLimit) {
+        String tooLarge = groovy.json.JsonOutput.toJson(
+            _responseTooLargeEnvelope(reactiveToolName as String, wireBytes, responseSizeLimit))
+        def body = [content: [[type: "text", text: tooLarge]], isError: true]
+        return jsonRpcResult(id, body)
+    }
+    return [__preserialized: candidateJson]
 }
 
 // True when a partial-commit loop should pause and hand back a resumable
