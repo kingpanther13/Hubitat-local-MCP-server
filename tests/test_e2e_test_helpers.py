@@ -110,6 +110,75 @@ def test_write_cap_retries_when_first_write_finishes_before_running_is_observed(
     assert polled_tokens == ["first.attempt.2"]
     assert client.setting_values == [1, 0]
 
+
+def test_settle_before_504_retry_probes_without_a_fixed_minute(monkeypatch):
+    sleeps = []
+    probes = []
+
+    class FakeClient:
+        def _send(self, method, params):
+            probes.append((method, params))
+            return _raw_tool_body({"success": True})
+
+    runner = object.__new__(et.TestRunner)
+    runner.client = FakeClient()
+    monkeypatch.setattr(et.time, "sleep", sleeps.append)
+
+    runner._settle_before_504_retry("example")
+
+    assert probes == [("tools/call", {"name": "hub_get_info", "arguments": {}})]
+    assert sleeps == []
+
+
+def test_driver_lifecycle_uses_token_recovery_for_create():
+    direct_calls = []
+    tokened_calls = []
+    reads = iter([
+        {"success": True, "version": 1, "source": "DRIVER-LEG-MARKER-V1"},
+        {"success": True, "version": 2, "source": "DRIVER-LEG-MARKER-V2"},
+        {"success": True, "version": 2, "source": "DRIVER-LEG-MARKER-V2"},
+    ])
+
+    class FakeClient:
+        def call_tool(self, name, arguments):
+            direct_calls.append((name, arguments))
+            tool = arguments.get("tool")
+            if (name, tool) == ("hub_manage_code", "hub_create_driver"):
+                raise AssertionError("driver creation must use opToken recovery")
+            if (name, tool) == ("hub_read_apps_code", "hub_get_source"):
+                return next(reads)
+            if (name, tool) == ("hub_manage_code", "hub_update_driver"):
+                return {
+                    "success": False,
+                    "error": "unable to resolve class ClassThatDoesNotExistBatE2eDrv",
+                }
+            if (name, tool) == ("hub_manage_code", "hub_delete_item"):
+                return {"success": True}
+            raise AssertionError(f"unexpected direct call: {name} {arguments}")
+
+    runner = object.__new__(et.TestRunner)
+    runner.client = FakeClient()
+
+    def tokened_write(gateway, tool, args, label):
+        tokened_calls.append((gateway, tool, args, label))
+        if tool == "hub_create_driver":
+            return {"success": True, "driverId": 77}
+        if tool == "hub_update_driver":
+            return {"success": True, "previousVersion": 1}
+        raise AssertionError(f"unexpected tokened write: {tool}")
+
+    runner._tokened_write = tokened_write
+
+    et.TestRunner.test_update_driver_code_lifecycle(runner)
+
+    assert [(gateway, tool, label) for gateway, tool, _args, label in tokened_calls] == [
+        ("hub_manage_code", "hub_create_driver", "driver code create"),
+        ("hub_manage_code", "hub_update_driver", "driver code round-trip"),
+    ]
+    create_args = tokened_calls[0][2]
+    assert create_args["confirm"] is True
+    assert "DRIVER-LEG-MARKER-V1" in create_args["source"]
+
 # ---------------------------------------------------------------------------
 # _inject_device_id
 # ---------------------------------------------------------------------------

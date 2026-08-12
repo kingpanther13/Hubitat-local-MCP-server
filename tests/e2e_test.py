@@ -1073,14 +1073,14 @@ class TestRunner:
         return f"{op_key} {dur:.1f}s{'' if ok else ' [err]'}"
 
     def _settle_before_504_retry(self, name: str) -> None:
-        """A relay 504 means a heavy op crossed the ~10s cloud ceiling; an immediate re-run re-rolls
-        the same near-ceiling op straight back into the same window. Back off, then poll a trivial
-        call until it round-trips fast, so the single re-run starts from a settled transport. Only
-        ever runs on a 504, so a green run's wall-clock is unchanged."""
+        """After a relay 504, poll a trivial call until transport is responsive before re-running.
+
+        Probe immediately because a dropped response does not prove the transport needs a fixed
+        cooldown; only wait between probes while it is actually slow or unavailable.
+        """
         print(f"    [BACKOFF] {name}: relay 504 -- settling before the single re-run "
               "(polling hub_get_info until it round-trips fast)")
-        time.sleep(60.0)
-        deadline = time.monotonic() + 30.0   # up to ~90s total, then re-run regardless
+        deadline = time.monotonic() + 30.0
         while time.monotonic() < deadline:
             _p0 = time.monotonic()
             try:
@@ -8542,10 +8542,10 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
 '''
         driver_id = None
         try:
-            created = self.client.call_tool("hub_manage_code", {
-                "tool": "hub_create_driver",
-                "args": {"source": source_v1, "confirm": True},
-            })
+            created = self._tokened_write(
+                "hub_manage_code", "hub_create_driver",
+                {"source": source_v1, "confirm": True},
+                "driver code create")
             driver_id = created.get("driverId")
             assert created.get("success") is True and driver_id, \
                 f"hub_create_driver(source) failed or returned no driverId: {created}"

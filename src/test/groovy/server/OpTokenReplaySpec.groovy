@@ -1245,8 +1245,8 @@ class OpTokenReplaySpec extends ToolSpecBase {
         // Column named `location`, not `where`: a data column called `where` shadows the block
         // label inside the where: block itself.
         bytes | inlineExpected | location
-        1024  | true           | 'inline'
-        1025  | false          | 'file'
+        1280  | true           | 'inline'
+        1281  | false          | 'file'
     }
 
     def "a result too large to inline goes to the reserved File Manager file"() {

@@ -2245,7 +2245,7 @@ def _isOpTokenPollShape(args, boolean isGatewayCall, leafName) {
 
 def _opTokenResultFilePrefix() { "mcp-op-result-" }
 // Results at or under this ride inside the token record instead of a hub file.
-def _opTokenInlineMax() { 1024 }
+def _opTokenInlineMax() { 1280 }
 // Record-cap hysteresis. Deliberately small: with auto-tokens every write adds a
 // record, the map is read several times per request, and small results are stored
 // inline -- so a big map would be per-write cost. 40 recent ops is the journal.
