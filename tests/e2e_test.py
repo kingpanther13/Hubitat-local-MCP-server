@@ -4315,6 +4315,8 @@ class TestRunner:
 
         try:
             create_token = self._next_op_token()
+            create_started_at = time.monotonic()
+            lost_create_started_at = None
             try:
                 create = _dep_call({"op": "create", "name": job_name,
                     "ops": [{"op": "cloneApp", "alias": "copy",
@@ -4327,6 +4329,7 @@ class TestRunner:
             except (McpError, McpToolError, requests.HTTPError) as exc:
                 if "504" not in str(exc):
                     raise
+                lost_create_started_at = create_started_at
                 # Token replay first -- it returns the ORIGINAL create envelope (jobId and
                 # all) rather than inferring identity from a list. The job record is still
                 # the backstop if the buffer is gone.
@@ -4347,12 +4350,11 @@ class TestRunner:
             assert job_id, "deployment create landed no job record"
 
             # The single clone op usually finishes in the create call's inline slice; the
-            # on-hub worker owns the tail either way, so poll the record, not the client.
-            deadline = time.time() + 60
-            st = _dep_call({"op": "status", "jobId": job_id})
-            while st.get("phase") not in ("ready_for_commit", "failed") and time.time() < deadline:
-                time.sleep(2.0)
-                st = _dep_call({"op": "status", "jobId": job_id})
+            # on-hub worker owns the normal tail. If the relay also killed that slice after
+            # its in-flight checkpoint, the helper waits out its lease before asking the
+            # job's own reconciliation path to resume it once.
+            st = self._wait_deployment_staging(
+                _dep_call, job_id, lost_create_started_at=lost_create_started_at)
             assert st.get("phase") == "ready_for_commit", \
                 f"job should validate to ready_for_commit, got: {st}"
             # Track from createdAppIds FIRST, before asserting anything about the alias: the
@@ -5110,6 +5112,53 @@ class TestRunner:
             if not isinstance(replayed, dict):
                 raise
             return replayed
+
+    def _wait_deployment_staging(self, dep_call, job_id: str,
+                                 lost_create_started_at: float | None = None) -> dict:
+        """Wait for a deployment's staging gate, actively reconciling only after a
+        relay-dropped create has outlived the server's 90-second slice lease.
+
+        The normal path remains a read-only poll of the background worker. A request
+        killed after checkpointing an op ``in_flight`` can leave that worker waiting for
+        the lease to expire, though, and scheduler dispatch is not guaranteed to land in
+        the E2E's polling window. Once 100 seconds have elapsed from the lost create's
+        issue time, one tokened ``resume`` safely drives the existing create-reconciliation
+        path; it never overlaps the live lease and does not blindly repeat the clone.
+        """
+        terminal = ("ready_for_commit", "failed")
+
+        def _poll_until(deadline: float, current: dict | None = None) -> dict:
+            status = current or dep_call({"op": "status", "jobId": job_id})
+            while status.get("phase") not in terminal and time.monotonic() < deadline:
+                time.sleep(2.0)
+                status = dep_call({"op": "status", "jobId": job_id})
+            return status
+
+        status = _poll_until(time.monotonic() + 60.0)
+        if status.get("phase") in terminal or lost_create_started_at is None:
+            return status
+
+        # _deployLeaseMs is 90s. Ten seconds of margin covers the checkpoint work that
+        # occurs after the outbound request begins, without penalizing the ordinary path.
+        recovery_at = lost_create_started_at + 100.0
+        if time.monotonic() < recovery_at:
+            print("    [RECOVER-LEASE] deployment create stopped in-flight -- "
+                  "waiting out its lease before one reconciliation resume")
+            status = _poll_until(recovery_at, status)
+        if status.get("phase") in terminal:
+            return status
+
+        resume_token = self._next_op_token()
+        try:
+            status = dep_call({"op": "resume", "jobId": job_id}, resume_token)
+        except (McpError, McpToolError, requests.HTTPError) as exc:
+            if "504" not in str(exc):
+                raise
+            print("    [RECOVER-504] deployment resume response lost -- polling its opToken")
+            replayed = self._poll_op_result(resume_token, tool="hub_set_rule")
+            status = replayed if isinstance(replayed, dict) else dep_call(
+                {"op": "status", "jobId": job_id})
+        return _poll_until(time.monotonic() + 30.0, status)
 
     def _retry_unexpected_replay(self, result: Any, args: dict, label: str) -> Any:
         """A replayed:true envelope on a FIRST issue is always a token collision with a

@@ -180,6 +180,45 @@ def test_driver_lifecycle_uses_token_recovery_for_create():
     assert "DRIVER-LEG-MARKER-V1" in create_args["source"]
 
 
+def test_deployment_staging_resumes_only_after_a_lost_create_lease_expires(monkeypatch):
+    """A relay-dropped create can die after checkpointing its op in-flight. The
+    E2E must not overlap the live 90s lease, but it must actively reconcile after
+    that lease instead of depending forever on a scheduler pass."""
+    clock = [0.0]
+    resume_calls = []
+    replay_calls = []
+
+    def sleep(seconds):
+        clock[0] += seconds
+
+    def dep_call(deployment, op_token=None):
+        if deployment["op"] == "status":
+            return {"phase": "staging", "ops": [{"status": "in_flight"}]}
+        if deployment["op"] == "resume":
+            resume_calls.append((clock[0], deployment, op_token))
+            raise requests.HTTPError("504 Gateway Timeout")
+        raise AssertionError(f"unexpected deployment call: {deployment}")
+
+    runner = object.__new__(et.TestRunner)
+    runner._next_op_token = lambda: "resume-token"
+
+    def poll_op_result(token, **kwargs):
+        replay_calls.append((token, kwargs))
+        return {"phase": "ready_for_commit", "replayed": True}
+
+    runner._poll_op_result = poll_op_result
+    monkeypatch.setattr(et.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(et.time, "sleep", sleep)
+
+    result = runner._wait_deployment_staging(
+        dep_call, "dj-lost-create", lost_create_started_at=0.0)
+
+    assert result["phase"] == "ready_for_commit"
+    assert resume_calls == [(100.0, {"op": "resume", "jobId": "dj-lost-create"},
+                             "resume-token")]
+    assert replay_calls == [("resume-token", {"tool": "hub_set_rule"})]
+
+
 def test_backup_gate_retries_when_an_async_state_write_replaces_the_fallback_stamp():
     """A concurrent Hubitat state save can restore an unrelated fresh stamp after the
     test proves its stale stamp landed. Retry the controlled fallback proof instead of
