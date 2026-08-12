@@ -14,7 +14,7 @@ import java.util.concurrent.ConcurrentHashMap
  * {@code server.McpWireSchemaConformanceSpec}. Provenance and refresh: that folder's README.
  *
  * Why a wrapper document is spliced per type: the MCP schemas have NO root schema. The legacy
- * file is {@code $schema} + {@code definitions}, the draft is {@code $schema} + {@code $defs};
+ * file is {@code $schema} + {@code definitions}, the modern file is {@code $schema} + {@code $defs};
  * every type is reachable only as a named entry. So {@link #schemaFor} builds
  *
  * <pre>{ "$schema": …, "$ref": "#/definitions/InitializeResult", "definitions": { … } }</pre>
@@ -33,8 +33,8 @@ class McpSchemaValidator {
 
     /** Published 2025-06-18 schema (draft-07) — the legacy era. */
     static final String LEGACY_SCHEMA = 'src/test/resources/mcp-schema/2025-06-18/schema.json'
-    /** Upstream's in-progress schema (2020-12) — the 2026-07-28 revision. */
-    static final String DRAFT_SCHEMA = 'src/test/resources/mcp-schema/draft/schema.json'
+    /** Published 2026-07-28 schema (2020-12) — the modern era. */
+    static final String MODERN_SCHEMA = 'src/test/resources/mcp-schema/2026-07-28/schema.json'
 
     private static final JsonSlurper SLURPER = new JsonSlurper()
     private static final Map DOCS = new ConcurrentHashMap()
@@ -49,11 +49,11 @@ class McpSchemaValidator {
     }
 
     /**
-     * Validation messages for {@code instance} against the named type in the draft
+     * Validation messages for {@code instance} against the named type in the modern
      * (2026-07-28) schema. Empty list == conformant.
      */
-    static List<String> draftErrors(String typeName, Object instance) {
-        return errors(DRAFT_SCHEMA, typeName, instance, null)
+    static List<String> modernErrors(String typeName, Object instance) {
+        return errors(MODERN_SCHEMA, typeName, instance, null)
     }
 
     /**
