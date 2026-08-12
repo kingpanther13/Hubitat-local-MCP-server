@@ -549,6 +549,24 @@ def test_list_all_file_names_accumulates_across_pages_and_forwards_cursor():
     assert client.calls[1][1]["args"]["cursor"] == "2"
 
 
+def test_list_all_file_names_forwards_filter_on_every_page():
+    """A targeted listing keeps its server-side filter across cursor pages."""
+    runner = object.__new__(et.TestRunner)
+    runner.client = _PagedFilesClient([
+        {"files": [{"name": "needle-a.zip"}], "nextCursor": "2"},
+        {"files": [{"name": "needle-b.zip"}]},
+    ])
+
+    names, authoritative = et.TestRunner._list_all_file_names(runner, "needle")
+
+    assert names == ["needle-a.zip", "needle-b.zip"]
+    assert authoritative is True
+    assert [call[1]["args"] for call in runner.client.calls] == [
+        {"cursor": "", "filter": "needle"},
+        {"cursor": "2", "filter": "needle"},
+    ]
+
+
 def test_list_all_file_names_response_too_large_is_non_authoritative():
     """A response_too_large envelope must NOT read as an authoritative empty listing
     (the false-'absent' verdict that failed test_export_bundle)."""
@@ -585,3 +603,91 @@ def test_list_all_file_names_transport_error_is_non_authoritative():
     ])
     assert authoritative is False
     assert names == ["a.txt"]
+
+
+def test_export_bundle_uses_token_recovery_filtered_verification_and_exact_backup_cleanup():
+    """The export path token-recovers every write, verifies through a targeted live
+    listing, and deletes the exact backup returned by the first cleanup call."""
+    bundle_id = "7"
+    file_name = f"{et.PREFIX}bundle_export_{bundle_id}.zip"
+    backup_name = f"{et.PREFIX}bundle_export_{bundle_id}_backup_123.zip"
+    tokened_calls = []
+    list_filters = []
+
+    class NoDirectWritesClient:
+        def call_tool(self, name, arguments=None):
+            raise AssertionError(f"unexpected direct call: {name} {arguments}")
+
+    runner = object.__new__(et.TestRunner)
+    runner.client = NoDirectWritesClient()
+    runner._mcp_bundle_id = bundle_id
+    runner._soft_passes = []
+    runner._current_test = "system_tools/test_export_bundle"
+
+    def tokened_write(gateway, tool, args, label):
+        tokened_calls.append((gateway, tool, args, label))
+        if tool == "hub_export_bundle":
+            return {"success": True, "bytes": 321, "fileName": file_name}
+        if tool == "hub_delete_file" and args["fileName"] == file_name:
+            return {"success": True, "fileName": file_name, "backupFile": backup_name}
+        if tool == "hub_delete_file" and args["fileName"] == backup_name:
+            return {"success": True, "fileName": backup_name}
+        raise AssertionError(f"unexpected tokened write: {tool} {args}")
+
+    def list_file_names(name_filter=None):
+        list_filters.append(name_filter)
+        return [file_name], True
+
+    runner._tokened_write = tokened_write
+    runner._list_all_file_names = list_file_names
+
+    et.TestRunner.test_export_bundle(runner)
+
+    assert list_filters == [file_name]
+    assert [(gateway, tool, args["fileName"] if tool == "hub_delete_file" else args["saveAs"])
+            for gateway, tool, args, _label in tokened_calls] == [
+        ("hub_manage_code", "hub_export_bundle", file_name),
+        ("hub_manage_files", "hub_delete_file", file_name),
+        ("hub_manage_files", "hub_delete_file", backup_name),
+    ]
+
+
+def test_delete_bundle_uses_token_recovery(monkeypatch):
+    """A lost delete response must be replayable without reinstalling the throwaway bundle."""
+    monkeypatch.setenv("PR_RAW_BASE", "https://raw.invalid/repo")
+    monkeypatch.setenv("PR_HEAD_SHA_RESOLVED", "abc123")
+    tokened_calls = []
+    list_results = iter([
+        {"bundles": [{"id": "44", "namespace": "mcptest", "name": "throwaway"}]},
+        {"bundles": []},
+    ])
+
+    class FakeClient:
+        def call_tool(self, name, arguments=None):
+            tool = (arguments or {}).get("tool")
+            if tool == "hub_install_bundle":
+                return {"success": True}
+            if tool == "hub_list_bundles":
+                return next(list_results)
+            if tool == "hub_delete_bundle":
+                raise AssertionError("bundle deletion must use opToken recovery")
+            raise AssertionError(f"unexpected direct call: {name} {arguments}")
+
+    runner = object.__new__(et.TestRunner)
+    runner.client = FakeClient()
+    runner._next_op_token = lambda: "install-token"
+
+    def tokened_write(gateway, tool, args, label):
+        tokened_calls.append((gateway, tool, args, label))
+        return {"success": True, "verified": True, "bundleId": args["bundleId"]}
+
+    runner._tokened_write = tokened_write
+
+    et.TestRunner.test_delete_bundle(runner)
+
+    assert tokened_calls == [(
+        "hub_manage_code",
+        "hub_delete_bundle",
+        {"bundleId": "44", "confirm": True},
+        "throwaway bundle delete",
+    )]

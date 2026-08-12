@@ -10039,8 +10039,8 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         self._mcp_bundle_id = str(mcp_bundle["id"])
         print(f"    BUNDLES_LIST ok -- '{mcp_bundle.get('name')}' contains {(mcp_bundle.get('contains') or {}).get('libraries')}")
 
-    def _list_all_file_names(self) -> tuple[list, bool]:
-        """Enumerate ALL File Manager file names via cursor pagination -> (names, authoritative).
+    def _list_all_file_names(self, name_filter: str | None = None) -> tuple[list, bool]:
+        """Enumerate File Manager names via cursor pagination -> (names, authoritative).
 
         A no-cursor hub_list_files returns the UNBOUNDED list, so on a file-heavy hub the
         response trips the 120KB size guard and comes back as a response_too_large envelope
@@ -10049,15 +10049,20 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         grown past the cap). Cursor pages (size 100) each stay under the guard, so this
         enumeration is authoritative regardless of how much cruft the hub carries.
 
-        Contract (same in every branch): `names` is everything enumerated before any
-        failure -- PRESENCE in it is trustworthy evidence even when partial; ABSENCE is
+        `name_filter`, when supplied, is the server-side case-insensitive substring filter;
+        callers still compare exact names because the server deliberately returns substring
+        matches. Contract (same in every branch): `names` is everything enumerated before
+        any failure -- PRESENCE in it is trustworthy evidence even when partial; ABSENCE is
         only meaningful when `authoritative` is True (every page enumerated cleanly)."""
         names: list = []
         cursor = ""
         for _ in range(100):  # hard stop: 100 pages x 100 files
             try:
+                args = {"cursor": cursor}
+                if name_filter:
+                    args["filter"] = name_filter
                 page = self.client.call_tool(
-                    "hub_read_files", {"tool": "hub_list_files", "args": {"cursor": cursor}})
+                    "hub_read_files", {"tool": "hub_list_files", "args": args})
             except (McpError, McpToolError, requests.RequestException):
                 return names, False
             if not isinstance(page, dict) or page.get("response_too_large"):
@@ -10098,10 +10103,11 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             # message/error marker), a relay 504 is equally inconclusive, and a
             # NO-CURSOR listing on a file-heavy hub trips the 120KB size guard into a
             # response_too_large envelope that reads as a false authoritative-empty.
-            # _list_all_file_names handles all three: only a listing that enumerated
-            # every page (or a clean, marker-free empty one) is evidence of
-            # presence/absence.
-            return self._list_all_file_names()
+            # The exact export name is unique, so filter on the hub before paginating;
+            # _poll_export still compares the exact name because filter is substring-based.
+            # Only a listing that enumerated every filtered page (or a clean, marker-free
+            # empty one) is evidence of presence/absence.
+            return self._list_all_file_names(fname)
 
         def _poll_export(window: float) -> str:
             # 'found' | 'absent' (>=1 authoritative listing, file in none of them)
@@ -10118,10 +10124,10 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
 
         def _export_once():
             return self._soft_write(
-                lambda: self.client.call_tool("hub_manage_code", {
-                    "tool": "hub_export_bundle",
-                    "args": {"bundleId": bid, "saveAs": fname},
-                }),
+                lambda: self._tokened_write(
+                    "hub_manage_code", "hub_export_bundle",
+                    {"bundleId": bid, "saveAs": fname},
+                    "bundle export"),
                 lambda: _poll_export(45.0) == "found",
                 "hub_export_bundle",
             )
@@ -10179,20 +10185,32 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                     print("    BUNDLE_EXPORT skip-on-504 -- relay 504 + listing unavailable under load; tool proven via BAT")
         finally:
             # hub_delete_file auto-backs-up a normal file before deleting it, so deleting the export
-            # leaves "{base}_backup_<ts>.zip" behind. Delete the export, THEN sweep the backup(s) it
-            # spawned (their names carry "_backup_", so deleting them makes no further backup-of-backup).
+            # leaves "{base}_backup_<ts>.zip" behind. Its response names that exact backup; delete it
+            # directly instead of enumerating the whole File Manager. A targeted-list fallback keeps
+            # cleanup best-effort if the delete returns no backup name.
+            deleted = None
             try:
-                self.client.call_tool("hub_manage_files", {
-                    "tool": "hub_delete_file", "args": {"fileName": fname, "confirm": True},
-                })
+                deleted = self._tokened_write(
+                    "hub_manage_files", "hub_delete_file",
+                    {"fileName": fname, "confirm": True},
+                    "bundle export cleanup")
             except Exception as exc:
                 print(f"  [WARN] bundle export cleanup: delete {fname} failed: {exc}")
+            backup_names = []
+            if isinstance(deleted, dict) and isinstance(deleted.get("backupFile"), str):
+                backup_names = [deleted["backupFile"]]
+            elif isinstance(deleted, dict) and deleted.get("success") is True:
+                backup_prefix = f"{fname[:-4]}_backup_" if fname.endswith(".zip") else f"{fname}_backup_"
+                backup_names = [
+                    nm for nm in self._list_all_file_names(backup_prefix)[0]
+                    if nm.startswith(backup_prefix)
+                ]
             try:
-                for nm in self._list_all_file_names()[0]:
-                    if nm.startswith(f"{PREFIX}bundle_export_") and "_backup_" in nm:
-                        self.client.call_tool("hub_manage_files", {
-                            "tool": "hub_delete_file", "args": {"fileName": nm, "confirm": True},
-                        })
+                for nm in backup_names:
+                    self._tokened_write(
+                        "hub_manage_files", "hub_delete_file",
+                        {"fileName": nm, "confirm": True},
+                        "bundle export backup cleanup")
             except Exception as exc:
                 print(f"  [WARN] bundle export backup sweep failed: {exc}")
 
@@ -10230,9 +10248,10 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             assert tw and tw.get("id"), \
                 f"throwaway bundle not listed after install: {[b.get('name') for b in bundles]}"
             bid = str(tw["id"])
-            deleted = self.client.call_tool("hub_manage_code", {
-                "tool": "hub_delete_bundle", "args": {"bundleId": bid, "confirm": True},
-            })
+            deleted = self._tokened_write(
+                "hub_manage_code", "hub_delete_bundle",
+                {"bundleId": bid, "confirm": True},
+                "throwaway bundle delete")
             assert deleted.get("success") is True, f"hub_delete_bundle did not succeed: {deleted}"
             assert deleted.get("verified") is True, f"hub_delete_bundle did not verify the id gone: {deleted}"
             relisted = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
@@ -10244,9 +10263,10 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         finally:
             if bid:
                 try:
-                    self.client.call_tool("hub_manage_code", {
-                        "tool": "hub_delete_bundle", "args": {"bundleId": bid, "confirm": True},
-                    })
+                    self._tokened_write(
+                        "hub_manage_code", "hub_delete_bundle",
+                        {"bundleId": bid, "confirm": True},
+                        "throwaway bundle cleanup")
                 except Exception as exc:
                     print(f"  [WARN] throwaway bundle cleanup: delete {bid} failed: {exc}")
             # Deleting the bundle removes only the container, not the library it delivered
