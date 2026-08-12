@@ -186,6 +186,29 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
         McpSchemaValidator.modernErrors('CallToolResult', response.result) == []
     }
 
+    def "a state-only modern tools/call continuation conforms to InputRequiredResult"() {
+        given:
+        settingsMap.enableWrite = true
+        def ran = 0
+        script.metaClass.toolRunRmRule = { Map a -> ran++; [success: true] }
+
+        when:
+        def response = dispatch(
+            [jsonrpc: '2.0', id: 71, method: 'tools/call',
+             params: [name: 'hub_call_rule', arguments: [ruleId: [71, 72], action: 'stop']]],
+            ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'tools/call',
+             'Mcp-Name': 'hub_call_rule'])
+
+        then: 'the preflight performs no write and asks only for automatic state echo'
+        ran == 0
+        response.result.resultType == 'input_required'
+        response.result.requestState instanceof String
+        !response.result.containsKey('inputRequests')
+
+        and:
+        McpSchemaValidator.modernErrors('InputRequiredResult', response.result) == []
+    }
+
     def "a server/discover result conforms to the 2026-07-28 DiscoverResult"() {
         // DiscoverResult requires supportedVersions, capabilities, ttlMs, cacheScope AND
         // resultType. Driven HEADERLESS on purpose: discover is the compat probe a stateless
