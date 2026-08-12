@@ -247,8 +247,8 @@ abstract class HarnessSpec extends Specification {
      * and atomicState backing. Class-static production fields remain shared.
      */
     protected Object newCompiledScriptInstance() {
-        def peer = script.getClass().getDeclaredConstructor().newInstance()
-        peer.initializeFromParent(script)
+        HubitatAppScript peer = script.getClass().getDeclaredConstructor().newInstance() as HubitatAppScript
+        peer.initialize(script as HubitatAppScript)
         return peer
     }
 

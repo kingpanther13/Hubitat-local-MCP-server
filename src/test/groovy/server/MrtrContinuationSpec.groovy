@@ -687,8 +687,11 @@ class MrtrContinuationSpec extends ToolSpecBase {
     def "expired active request-state cleanup runs before its storage slot is reused"() {
         given:
         settingsMap.maxConcurrentWrites = 0
-        def cleaned = []
-        script.metaClass._appClonerCleanup = { Integer id -> cleaned << id }
+        def cleanupPaths = []
+        script.metaClass.hubInternalGetRaw = { String path, Map params = null, Integer timeout = 30 ->
+            cleanupPaths << path
+            [status: 302, data: '']
+        }
         atomicStateMap.mrtrRequests = ['mrtr-expired-with-helper': [
             schemaVersion: 1, status: 'active', outerTool: 'hub_clone_native_app',
             leafTool: 'hub_clone_native_app', startedAt: 1L, updatedAt: 1L, expiresAt: 2L,
@@ -702,7 +705,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         then:
         result.accepted == true
-        cleaned == [77]
+        cleanupPaths == ['/installedapp/forcedelete/77/quiet']
         !atomicStateMap.mrtrRequests.containsKey('mrtr-expired-with-helper')
     }
 

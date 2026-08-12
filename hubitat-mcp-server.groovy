@@ -2778,7 +2778,28 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
             mcpLog("warn", "server", "Reactive BPS hint failed for ${reactiveToolName}: ${bpErr.message}")
         }
     }
-    String jsonText = groovy.json.JsonOutput.toJson(rendered)
+    String jsonText
+    try {
+        jsonText = groovy.json.JsonOutput.toJson(rendered)
+    } catch (Exception serErr) {
+        mcpLog("error", "server", "Tool ${reactiveToolName} returned a non-serializable result: ${serErr.message}", null, [
+            details: [tool: reactiveToolName,
+                      gateway: (reactiveToolName != toolName) ? toolName : null,
+                      resultType: result?.class?.name,
+                      error: serErr.message]
+        ])
+        def errorResult = [
+            isError: true,
+            error: "Tool ${reactiveToolName} returned a result the JSON serializer cannot encode",
+            cause: serErr.message,
+            resultType: result?.class?.name,
+            note: "Internal tool bug -- report with the tool name and arguments used."
+        ]
+        return jsonRpcResult(id, [
+            content: [[type: "text", text: groovy.json.JsonOutput.toJson(errorResult)]],
+            isError: true
+        ])
+    }
     def envelopeBody = [content: [[type: "text", text: jsonText]]]
     if (isErrorOverride || (rendered instanceof Map && rendered.isError == true)) {
         envelopeBody.isError = true
@@ -2791,9 +2812,18 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
     int wireBytes = candidateJson.getBytes("UTF-8").length
     final int responseSizeLimit = hubResponseCapBytes() - 11072
     if (wireBytes > responseSizeLimit) {
+        mcpLog("warn", "server", "Tool ${reactiveToolName} response too large (${wireBytes} > ${responseSizeLimit} bytes) -- returning response_too_large envelope", null, [
+            details: [tool: reactiveToolName,
+                      gateway: (reactiveToolName != toolName) ? toolName : null,
+                      bytes: wireBytes,
+                      limit: responseSizeLimit]
+        ])
         String tooLarge = groovy.json.JsonOutput.toJson(
             _responseTooLargeEnvelope(reactiveToolName as String, wireBytes, responseSizeLimit))
-        def body = [content: [[type: "text", text: tooLarge]], isError: true]
+        def body = [content: [[type: "text", text: tooLarge]]]
+        boolean schemaAdvertised = settings.publishOutputSchemas == true &&
+            settings.useGateways != false && _advertisesOutputSchema(toolName)
+        if (envelopeBody.isError == true || schemaAdvertised) body.isError = true
         return jsonRpcResult(id, body)
     }
     return [__preserialized: candidateJson]

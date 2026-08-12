@@ -2292,8 +2292,7 @@ def _getAllToolDefinitions_partDiagnostics() {
             description: "Force JVM garbage collection to reclaim memory. Non-destructive but may cause a brief pause. Requires the Write master.",
             inputSchema: [
                 type: "object",
-                properties: [
-                ]
+                properties: [:]
             ],
             outputSchema: [
                 type: "object",

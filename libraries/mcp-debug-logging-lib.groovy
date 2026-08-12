@@ -511,8 +511,7 @@ def _getAllToolDefinitions_partDebugLogging() {
         [
             name: "hub_delete_debug_logs",
             description: "Clear all entries from the MCP debug-log buffer (the in-app state log read by hub_get_debug_logs).[[FLAT_TRIM]] Use to reset that buffer before reproducing an issue or to free space. Does NOT touch Hubitat system logs (hub_get_logs) or captured device states (hub_delete_captured_state).[[/FLAT_TRIM]] Cannot be undone.",
-            inputSchema: [type: "object", properties: [
-            ]],
+            inputSchema: [type: "object", properties: [:]],
             outputSchema: [
                 type: "object",
                 properties: [
