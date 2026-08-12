@@ -6073,6 +6073,19 @@ class TestRunner:
                 "tool": "hub_update_mcp_settings",
                 "args": {"settings": {"maxConcurrentWrites": 1}, "confirm": True},
             })
+
+            def slow_write(target_app_id: Any, target_token: str, result: dict) -> None:
+                try:
+                    result["raw"] = bg_client._send("tools/call", {
+                        "name": "hub_manage_rule_machine",
+                        "arguments": {"tool": "hub_set_rule", "args": {
+                            "appId": target_app_id, "confirm": True, "opToken": target_token,
+                            "addAction": {"capability": "log", "message": "cap probe first"},
+                        }},
+                    })
+                except BaseException as exc:
+                    result["error"] = exc
+
             last_marker = None
             for attempt in range(1, 4):
                 app_id = None
@@ -6086,20 +6099,8 @@ class TestRunner:
                     # op replay journal cannot collide with the previous attempt.
                     app_id = self._create_native_rule(f"WriteCapProbe{attempt}")
                     first_token = self._next_op_token()
-
-                    def slow_write() -> None:
-                        try:
-                            first["raw"] = bg_client._send("tools/call", {
-                                "name": "hub_manage_rule_machine",
-                                "arguments": {"tool": "hub_set_rule", "args": {
-                                    "appId": app_id, "confirm": True, "opToken": first_token,
-                                    "addAction": {"capability": "log", "message": "cap probe first"},
-                                }},
-                            })
-                        except BaseException as exc:
-                            first["error"] = exc
-
-                    worker = threading.Thread(target=slow_write, daemon=True)
+                    worker = threading.Thread(
+                        target=slow_write, args=(app_id, first_token, first), daemon=True)
                     worker.start()
 
                     # Synchronize on the server marker, not a sleep: seeing this exact token
