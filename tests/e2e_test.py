@@ -6629,7 +6629,12 @@ class TestRunner:
             "addRequiredExpression": re_spec,
         }, return_result=True)
         try:
-            result = created.get("requiredExpression") if created is not None else {"recovered504": True}
+            if created is None:
+                result = {"recovered504": True}
+            else:
+                result = created.get("requiredExpression")
+                assert isinstance(result, dict), \
+                    f"multi-condition create omitted a requiredExpression result object: {created}"
             assert result.get("success") is not False, \
                 f"multi-condition addRequiredExpression reported failure (the gap-oper cache regression): {result}"
             # ALL THREE condition slots must have allocated -- before the fix a `cond=a` after a
@@ -6672,7 +6677,12 @@ class TestRunner:
             "addRequiredExpression": sub_spec,
         }, return_result=True)
         try:
-            sub = sub_created.get("requiredExpression") if sub_created is not None else {"recovered504": True}
+            if sub_created is None:
+                sub = {"recovered504": True}
+            else:
+                sub = sub_created.get("requiredExpression")
+                assert isinstance(sub, dict), \
+                    f"sub-expression create omitted a requiredExpression result object: {sub_created}"
             assert sub.get("success") is not False, \
                 f"sub-expression addRequiredExpression reported failure (close-paren/outer-oper cache regression): {sub}"
             # Two inner + one outer condition slot must all allocate. On a recovered 504 the

@@ -3030,7 +3030,7 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 }
 ```
 
-**Expected**: the four requested writes append four distinctly messaged Log Message actions. With the default OFF policy, the first two edits return the same non-empty `backup.backupKey`, proving the recent same-rule baseline was reused. After `hub_manage_mcp(tool='hub_update_mcp_settings', args={settings:{backupEveryRuleWrite:true}, confirm:true})`, the next two edits return different non-empty backup keys, proving strict per-write snapshots. Teardown restores OFF even if an edit fails.
+**Expected**: the four requested writes append four distinctly messaged Log Message actions. All four backup keys are non-empty. With the default OFF policy, key 2 equals baseline key 1, proving the recent same-rule baseline was reused. After `hub_manage_mcp(tool='hub_update_mcp_settings', args={settings:{backupEveryRuleWrite:true}, confirm:true})`, key 3 differs from key 1, key 4 differs from key 1, and key 3 differs from key 4, proving both strict-mode writes took fresh per-write snapshots rather than reusing either the default baseline or each other. Teardown restores OFF even if an edit fails.
 
 ### T224 — hub_delete_variable removes a stale rule_engine variable
 
