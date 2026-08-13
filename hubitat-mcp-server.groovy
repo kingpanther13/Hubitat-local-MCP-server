@@ -1553,9 +1553,14 @@ def handleToolsCall(msg) {
             }
         } else {
             _mrtrValidateAccess(toolName, reactiveToolName, args)
-            if (reactiveToolName?.toString() in ["hub_set_rule", "hub_set_native_app"]) {
-                Map leafArgs = _mrtrLeafArguments(toolName?.toString(),
-                    reactiveToolName?.toString(), args as Map) as Map
+            String outerName = toolName?.toString()
+            String leafName = reactiveToolName?.toString()
+            boolean validPureRoute = outerName == leafName ||
+                (settings.useGateways != false &&
+                    gatewayConfig[outerName]?.tools?.contains(leafName))
+            if (validPureRoute && leafName in ["hub_set_rule", "hub_set_native_app"]) {
+                Map leafArgs = _mrtrLeafArguments(outerName, leafName,
+                    args as Map) as Map
                 Map refusal = _rmRoundZeroNativeEditRefusal(leafArgs)
                 if (refusal != null) {
                     // Validation is pure, but confirmation/backup freshness must

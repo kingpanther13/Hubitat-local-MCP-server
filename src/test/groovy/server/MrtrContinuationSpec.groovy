@@ -157,6 +157,57 @@ class MrtrContinuationSpec extends ToolSpecBase {
         'action verb in state'      | 'hub_manage_native_rules_and_apps' | 'hub_set_native_app' | [appId: 777, addAction: [capability: 'switch', state: 'on'], confirm: true]                                 | 'action:'
     }
 
+    def "direct flat-mode native preflight still returns a terminal refusal"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.useGateways = false
+        stateMap.lastBackupTimestamp = 1234567890000L
+        def args = [appId: 781,
+            addAction: [capability: 'switch', state: 'on'], confirm: true]
+
+        when:
+        def response = modernCall('hub_set_rule', args)
+        def inner = mcpDriver.parseInner(response)
+
+        then:
+        response.error == null
+        response.result.resultType == 'complete'
+        !response.result.containsKey('requestState')
+        inner.success == false
+        inner.error.toLowerCase().contains('action:')
+        !(atomicStateMap.mrtrRequests instanceof Map) || atomicStateMap.mrtrRequests.isEmpty()
+        runInMillisCalls.isEmpty()
+    }
+
+    def "round-zero preflight defers #caseName to canonical worker dispatch"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.useGateways = useGateways
+        stateMap.lastBackupTimestamp = 1234567890000L
+        def leafArgs = [appId: 782, confirm: true] + editShape
+        def wireArgs = outer == leaf
+            ? leafArgs
+            : [tool: leaf, args: leafArgs]
+
+        when:
+        def response = modernCall(outer, wireArgs)
+        String requestState = response.result.requestState
+
+        then: 'round zero does not replace bulk or gateway routing semantics'
+        response.error == null
+        response.result.resultType == 'input_required'
+        requestState instanceof String
+        atomicStateMap.mrtrRequests[requestState].leafTool == leaf
+        runInMillisCalls.isEmpty()
+
+        where:
+        caseName                  | useGateways | outer                     | leaf           | editShape
+        'plural trigger envelope' | true        | 'hub_set_rule'            | 'hub_set_rule' | [addTriggers: [[capability: 'Switch', state: 'changed']]]
+        'plural action envelope'  | true        | 'hub_set_rule'            | 'hub_set_rule' | [addActions: [[capability: 'switch', state: 'on']]]
+        'disabled gateway route'  | false       | 'hub_manage_rule_machine' | 'hub_set_rule' | [addAction: [capability: 'switch', state: 'on']]
+        'wrong gateway route'     | true        | 'hub_manage_devices'      | 'hub_set_rule' | [addAction: [capability: 'switch', state: 'on']]
+    }
+
     def "round-zero native validation cannot outrank the #gateName gate"() {
         given:
         settingsMap.enableWrite = enableWrite

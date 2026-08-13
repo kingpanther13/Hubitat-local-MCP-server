@@ -13264,9 +13264,7 @@ private Map _rmRoundZeroNativeEditRefusal(Map args) {
 
     def candidates = []
     if (args.addTrigger instanceof Map) candidates << "addTrigger"
-    if (args.addTriggers instanceof List) candidates << "addTriggers"
     if (args.addAction instanceof Map) candidates << "addAction"
-    if (args.addActions instanceof List) candidates << "addActions"
     // Keep the seam narrower than EDIT dispatch. In particular, never let an
     // argument refusal outrank the existing multi-operation-family error.
     if (candidates.size() != 1) return null
@@ -13290,24 +13288,8 @@ private Map _rmRoundZeroNativeEditRefusal(Map args) {
                     _rmValidateRoundZeroPeriodicSpec(triggerSpec)
                 }
                 break
-            case "addTriggers":
-                (args.addTriggers as List).each { spec ->
-                    if (!(spec instanceof Map)) return
-                    def triggerSpec = spec as Map
-                    _rmValidateRoundZeroTriggerSpec(triggerSpec)
-                    if (triggerSpec.deviceIds == null &&
-                            !(triggerSpec.condition instanceof Map)) {
-                        _rmValidateRoundZeroPeriodicSpec(triggerSpec)
-                    }
-                }
-                break
             case "addAction":
                 _rmValidateRoundZeroActionSpec(args.addAction as Map)
-                break
-            case "addActions":
-                (args.addActions as List).each { spec ->
-                    if (spec instanceof Map) _rmValidateRoundZeroActionSpec(spec as Map)
-                }
                 break
         }
         return null
