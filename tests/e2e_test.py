@@ -197,6 +197,23 @@ def _gateway_route_from_catalog(tools: list) -> dict[str, str]:
     return route
 
 
+def _read_only_tools_from_catalog(tools: list) -> set[str]:
+    """Return catalog entries that are explicitly safe to transport-replay.
+
+    The server emits readOnlyHint on every tool and gateway.  Treat a missing or
+    malformed annotation as a write: transport recovery must fail closed rather
+    than infer safety from naming or the absence of confirm=true.
+    """
+    safe: set[str] = set()
+    for entry in tools:
+        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+            continue
+        annotations = entry.get("annotations")
+        if isinstance(annotations, dict) and annotations.get("readOnlyHint") is True:
+            safe.add(entry["name"])
+    return safe
+
+
 class HubitatMcpClient:
     """Thin client for the Hubitat MCP Server JSON-RPC 2.0 endpoint."""
 
@@ -241,6 +258,7 @@ class HubitatMcpClient:
         # backs auto-routing.
         self._gateway_members: dict[str, set[str]] | None = None
         self._gateway_route: dict[str, str] | None = None
+        self._read_only_catalog_tools: set[str] | None = None
         # Mask token for safe logging: show first 4 chars only
         self._masked_token = access_token[:4] + "..." if len(access_token) > 4 else "****"
 
@@ -306,19 +324,45 @@ class HubitatMcpClient:
 
         self._log(f">> {method} {json.dumps(params or {})[:300]}")
 
-        # NEVER transport-replay a WRITE. The retry loop below re-sends the identical request
-        # on a 5xx or network error -- but a relay 504 means the response was LOST while the hub
-        # kept processing, so replaying a non-idempotent wizard write commits it AGAIN (observed
-        # live: one slow addAction(ifThen) -> relay 504 -> 2 transport replays -> THREE unclosed
-        # IF blocks in the rule; same mechanism makes duplicate devices from replayed creates).
-        # Every destructive/wizard write in this suite carries confirm:true -- use that as the
-        # write marker and surface the failure immediately instead, so the callers' soft
-        # contracts (verify-first, never blind-retry) handle the unknown-commit state.
-        _pj = json.dumps(payload)
-        replay_safe = '"confirm": true' not in _pj and '"confirm":true' not in _pj
+        # NEVER transport-replay an ordinary write. A relay 504 can lose its response after
+        # the hub committed, so replaying a non-idempotent wizard write commits it again.
+        # MRTR is the deliberate exception: round zero is mutation-free, and resumed calls are
+        # bound to one requestState generation, so replaying the exact physical request can
+        # only rejoin/observe that logical operation. This also recovers a round-zero response
+        # lost after the server reserved state but before the client learned requestState.
+        replay_safe = method != "tools/call"
+        leaf = None
+        if method == "tools/call" and isinstance(params, dict):
+            request_state = params.get("requestState")
+            call_args = params.get("arguments")
+            leaf = params.get("name")
+            leaf_args = call_args
+            if isinstance(call_args, dict) and isinstance(call_args.get("tool"), str):
+                leaf = call_args["tool"]
+                leaf_args = call_args.get("args")
+            round_zero_mrtr = leaf in {
+                "hub_set_rule", "hub_set_native_app", "hub_clone_native_app",
+                "hub_import_native_app", "hub_create_driver", "hub_update_driver",
+            }
+            if leaf == "hub_delete_item" and isinstance(leaf_args, dict):
+                round_zero_mrtr = leaf_args.get("type") == "driver"
+            if leaf == "hub_call_rule" and isinstance(leaf_args, dict):
+                ids = leaf_args.get("ruleId")
+                round_zero_mrtr = (
+                    leaf_args.get("action") in {"start", "stop"}
+                    and isinstance(ids, list) and len(ids) > 1
+                )
+            catalog_read = params.get("name") in (
+                getattr(self, "_read_only_catalog_tools", None) or set()
+            )
+            replay_safe = bool(
+                catalog_read
+                or (isinstance(request_state, str) and request_state)
+                or round_zero_mrtr
+            )
         # Idempotent-write exception: settings assignment yields the same state on re-delivery,
         # so transport replay is safe for it (unlike wizard writes, where replay double-commits).
-        if "hub_update_mcp_settings" in _pj:
+        if leaf == "hub_update_mcp_settings":
             replay_safe = True
 
         # Pace EVERY call with a 0.2s pre-send gap. The gap caps the server app's short-window
@@ -509,6 +553,7 @@ class HubitatMcpClient:
         if self._gateway_members is None:
             tools = self.list_tools().get("tools", [])
             members = _gateway_members_from_catalog(tools)
+            self._read_only_catalog_tools = _read_only_tools_from_catalog(tools)
             if members:   # don't poison the cache with a degraded/flat catalog
                 self._gateway_members = members
                 self._gateway_route = _gateway_route_from_catalog(tools)

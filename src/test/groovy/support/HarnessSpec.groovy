@@ -303,6 +303,14 @@ abstract class HarnessSpec extends Specification {
         runInCalls.clear()
         stateMap.clear()
         atomicStateMap.clear()
+        // The production app deliberately keeps exact terminal-generation
+        // evidence in a class-static map so a Hubitat disable/enable bounce can
+        // repair an older atomicState snapshot.  The shared compiled script and
+        // fixed test clock would otherwise retain that evidence across features.
+        def terminalEvidenceField = script.getClass().getDeclaredField(
+            'MRTR_TERMINAL_EVIDENCE')
+        terminalEvidenceField.accessible = true
+        (terminalEvidenceField.get(null) as Map).clear()
         settingsMap.clear()
         settingsMap.selectedDevices = []
         // The issue #299 best-practice gate ships ON (settings.enableMandatoryBPS != false), which

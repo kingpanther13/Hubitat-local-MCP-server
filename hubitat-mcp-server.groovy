@@ -24,6 +24,7 @@
 @groovy.transform.Field static final Object WRITE_RESERVATION_LOCK = new Object()
 @groovy.transform.Field static final Set LIVE_WRITE_EXECUTIONS = new java.util.HashSet()
 @groovy.transform.Field static final Map MRTR_WORK_ITEMS = new java.util.HashMap()
+@groovy.transform.Field static final Map MRTR_TERMINAL_EVIDENCE = new java.util.HashMap()
 
 definition(
     name: "MCP Rule Server",
@@ -2081,16 +2082,70 @@ private void _mrtrPutLocked(String stateId, Map rec) {
     }
 }
 
+// Hubitat can expose an older atomicState snapshot after the app is disabled and
+// immediately re-enabled (the E2E limiter-recovery bounce). Keep class-live proof
+// of a terminal generation so that exact snapshot can be repaired without guessing
+// that an absent/aged worker completed. Caller holds WRITE_RESERVATION_LOCK.
+private Map _mrtrRecoverTerminalEvidenceLocked(String stateId, Map rec) {
+    def evidence = MRTR_TERMINAL_EVIDENCE[stateId]
+    if (!(evidence instanceof Map)) return null
+    if (evidence.expiresAt == null || (evidence.expiresAt as Long) <= now()) {
+        MRTR_TERMINAL_EVIDENCE.remove(stateId)
+        return null
+    }
+    def terminal = evidence.record
+    if (!(terminal instanceof Map) || terminal.status != "terminal") return null
+    if (rec == null) return null
+    if (rec.status == "terminal") return rec
+    if (rec.status != "active") return null
+    if (rec.claimId?.toString() != evidence.claimId?.toString()) return null
+    if (rec.claimedGeneration != evidence.generation) return null
+    if ((rec.generation ?: 0) != evidence.generation) return null
+    def repaired = [:] + (terminal as Map)
+    _mrtrPutLocked(stateId, repaired)
+    return repaired
+}
+
+// Bound the class-live shadow to the same cardinality as durable requestState.
+// Prefer evidence whose durable record still exists; evicted terminal records have
+// already lost the protocol replay window and are the first safe entries to drop.
+// Caller holds WRITE_RESERVATION_LOCK.
+private void _mrtrSweepTerminalEvidenceLocked() {
+    long at = now()
+    MRTR_TERMINAL_EVIDENCE.entrySet().findAll { entry ->
+        !(entry.value instanceof Map) || entry.value.expiresAt == null ||
+            (entry.value.expiresAt as Long) <= at
+    }.collect { it.key }.each { MRTR_TERMINAL_EVIDENCE.remove(it) }
+    if (MRTR_TERMINAL_EVIDENCE.size() <= _mrtrMaxRecords()) return
+    def stored = atomicState.mrtrRequests
+    def durableIds = (stored instanceof Map) ? (stored.keySet() as Set) : ([] as Set)
+    def removable = MRTR_TERMINAL_EVIDENCE.entrySet().findAll {
+        !durableIds.contains(it.key)
+    }.sort { a, b ->
+        long av = (a.value?.expiresAt ?: 0L) as Long
+        long bv = (b.value?.expiresAt ?: 0L) as Long
+        av <=> bv
+    }
+    int removeCount = MRTR_TERMINAL_EVIDENCE.size() - _mrtrMaxRecords()
+    removable.take(Math.min(removeCount, removable.size())).each {
+        MRTR_TERMINAL_EVIDENCE.remove(it.key)
+    }
+}
+
 // Returns expired active records whose external helper resources must be
 // cleaned after the mutex is released. Only terminal/abandoned records may be
 // trimmed for storage pressure; live requestState records are never evicted.
 private List _mrtrSweepLocked() {
+    _mrtrSweepTerminalEvidenceLocked()
     def stored = atomicState.mrtrRequests
     if (!(stored instanceof Map)) return []
     long at = now()
     def kept = [:]
     def cleanup = []
     stored.each { k, v ->
+        def recovered = _mrtrRecoverTerminalEvidenceLocked(k?.toString(),
+            v instanceof Map ? v as Map : null)
+        if (recovered instanceof Map) v = recovered
         boolean executing = v instanceof Map && v.status == "active" &&
             _writeExecutionLiveLocked(v.claimId)
         if (v instanceof Map && (executing ||
@@ -2133,7 +2188,7 @@ private Map _mrtrFindActiveLocked(leafTool, Map binding) {
                  (rec.expiresAt != null && (rec.expiresAt as Long) > at)) &&
                 rec.leafTool?.toString() == leafTool?.toString()
                 && _mrtrBindingMatches(rec as Map, binding)) {
-            return [startedAt: rec.startedAt]
+            return [stateId: entry.key?.toString(), startedAt: rec.startedAt]
         }
     }
     return null
@@ -2166,11 +2221,11 @@ def _mrtrReserve(outerTool, leafTool, Map binding) {
         _writeSweepRequestsLocked()
         def duplicate = _mrtrFindActiveLocked(leafTool, binding)
         if (duplicate != null) {
-            outcome = [accepted: false, refusal: [
-                success: false, isError: true, status: "duplicate_in_flight",
-                tool: leafTool?.toString(), startedAt: duplicate.startedAt,
-                note: "An identical operation is already in progress. Nothing was run; wait for its original MCP call to finish before trying again."
-            ]]
+            // A relay can drop the mutation-free preflight after this state was
+            // reserved but before the client learned requestState. Coalesce an exact
+            // binding replay onto that record; capacity and worker ownership remain
+            // unchanged, so this cannot schedule or execute the write twice.
+            outcome = [accepted: true, stateId: duplicate.stateId, rejoined: true]
         } else {
             def capacityRefusal = _writeCapacityRefusalLocked()
             if (capacityRefusal != null) {
@@ -2505,6 +2560,15 @@ private boolean _mrtrStoreTerminal(String stateId, Map originalRec, Map claim, r
             rec.updatedAt = rec.finishedAt
             rec.expiresAt = rec.finishedAt + _mrtrTerminalTtlMs()
             _mrtrPutLocked(stateId, rec)
+            // Record proof only AFTER the durable terminal write returned. If a
+            // subsequent app disable/enable exposes the older claimed-active
+            // atomicState snapshot, this exact claim+generation is sufficient to
+            // repair it without treating worker absence or TTL age as completion.
+            MRTR_TERMINAL_EVIDENCE[stateId] = [
+                claimId: claim?.claimId?.toString(), generation: claim?.generation,
+                expiresAt: rec.expiresAt, record: [:] + rec
+            ]
+            _mrtrSweepTerminalEvidenceLocked()
             return true
         } finally {
             LIVE_WRITE_EXECUTIONS.remove(claim?.claimId)
@@ -9007,7 +9071,7 @@ The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop
 
 The first request is a mutation-free preflight. The server returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients automatically repeat the same tool call with that state. Each resumed request advances or coordinates one bounded slice and gets a fresh relay deadline; native wizard slices may run in the internal worker. The logical call eventually returns one normal `resultType: "complete"` result describing all slices.
 
-The state is bound to the original leaf tool and exact original arguments. A mismatched, unknown, or expired state executes nothing. A fresh identical call while the original is active is refused as `duplicate_in_flight` and cannot advance or repeat the write. The terminal result remains replayable briefly under the same requestState so losing only the final HTTP response does not rerun the operation.
+The state is bound to the original leaf tool and exact original arguments. A mismatched, unknown, or expired state executes nothing. A fresh identical call while the original is active rejoins that same `requestState`; it cannot reserve or run a second write. This lets a client safely replay a mutation-free preflight whose HTTP response was lost. The terminal result remains replayable briefly under the same requestState so losing only the final HTTP response does not rerun the operation.
 
 ### Global write concurrency cap
 

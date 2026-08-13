@@ -1161,11 +1161,11 @@ Surfaced via `hub_get_tool_guide(section='slow_ops')`. Hubitat's cloud relay can
 
 ### Automatic request-to-request continuation
 
-The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, and `hub_import_native_app`.
+The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, and the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`.
 
 The first request is a mutation-free preflight. The server returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients automatically repeat the same tool call with that state. Each resumed request advances or coordinates one bounded slice and gets a fresh relay deadline; native wizard slices may run in the internal worker. The logical call eventually returns one normal `resultType: "complete"` result describing all slices.
 
-The state is bound to the original leaf tool and exact original arguments. A mismatched, unknown, or expired state executes nothing. A fresh identical call while the original is active is refused as `duplicate_in_flight` and cannot advance or repeat the write. The terminal result remains replayable briefly under the same requestState so losing only the final HTTP response does not rerun the operation.
+The state is bound to the original leaf tool and exact original arguments. A mismatched, unknown, or expired state executes nothing. A fresh identical call while the original is active rejoins that same `requestState`; it cannot reserve or run a second write. This lets a client safely replay a mutation-free preflight whose HTTP response was lost. The terminal result remains replayable briefly under the same requestState so losing only the final HTTP response does not rerun the operation.
 
 ### Global write concurrency cap
 

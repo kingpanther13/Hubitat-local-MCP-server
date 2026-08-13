@@ -264,7 +264,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         worker?.join(5000)
     }
 
-    def "fresh duplicate is refused while an MRTR operation is active without disclosing its state"() {
+    def "an exact round-zero replay rejoins the active MRTR operation without running a second write"() {
         given:
         settingsMap.enableWrite = true
         def ran = 0
@@ -274,16 +274,12 @@ class MrtrContinuationSpec extends ToolSpecBase {
         when:
         def first = modernCall('hub_call_rule', original)
         def duplicate = modernCall('hub_call_rule', original)
-        def inner = mcpDriver.parseInner(duplicate)
 
         then:
         first.result.resultType == 'input_required'
-        duplicate.result.resultType == 'complete'
-        duplicate.result.isError == true
-        inner.status == 'duplicate_in_flight'
-        inner.tool == 'hub_call_rule'
-        !inner.containsKey('requestState')
-        !inner.containsKey('opToken')
+        duplicate.result.resultType == 'input_required'
+        duplicate.result.requestState == first.result.requestState
+        !duplicate.result.containsKey('opToken')
         ran == 0
     }
 
@@ -445,9 +441,8 @@ class MrtrContinuationSpec extends ToolSpecBase {
         }
 
         then:
-        attempts.count { it.result?.resultType == 'input_required' } == 1
-        attempts.count { it.result?.isError == true &&
-            mcpDriver.parseInner(it).status == 'duplicate_in_flight' } == 23
+        attempts.every { it.result?.resultType == 'input_required' }
+        attempts.collect { it.result.requestState }.unique().size() == 1
         (atomicStateMap.mrtrRequests as Map).values().count { it?.status == 'active' } == 1
     }
 
@@ -789,6 +784,104 @@ class MrtrContinuationSpec extends ToolSpecBase {
         replay.result.resultType == 'complete'
         mcpDriver.parseInner(replay).previousVersion == 7
         dispatched.size() == 1
+    }
+
+    def "terminal evidence repairs an active MRTR snapshot resurrected by an app bounce"() {
+        // Live E2E: a limiter recovery disabled/enabled the MCP app immediately after
+        // an identical pausRule fallback had returned its terminal result.  The next
+        // execution observed that request's older active atomicState snapshot and
+        // refused the legitimate next toggle as duplicate_in_flight.  Reproduce the
+        // platform boundary by restoring the exact claimed-active snapshot after the
+        // worker has completed.  Only terminal evidence captured by that worker may
+        // repair it; absence/age alone is deliberately insufficient.
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.maxConcurrentWrites = 1
+        def args = [appId: 654, confirm: true, button: 'pausRule']
+        def binding = script._mrtrBinding('hub_set_rule', 'hub_set_rule', args) as Map
+        def calls = 0
+        script.metaClass.toolSetRule = { Map actual ->
+            calls++
+            [success: true, appId: actual.appId]
+        }
+        def preflight = modernCall('hub_set_rule', args)
+        String stateId = preflight.result.requestState
+        def scheduled = modernCall('hub_set_rule', args, stateId)
+        Map activeSnapshot = script._mrtrCopyMap(
+            atomicStateMap.mrtrRequests[stateId] as Map) as Map
+        Map workerData = new LinkedHashMap(runInCalls[0][2].data as Map)
+        script.runMrtrSlice(workerData)
+        def complete = modernCall('hub_set_rule', args, stateId)
+
+        expect: 'the original logical write completed exactly once before the simulated bounce'
+        scheduled.result.resultType == 'input_required'
+        complete.result.resultType == 'complete'
+        calls == 1
+
+        when: 'disable/enable exposes the older claimed-active snapshot'
+        atomicStateMap.mrtrRequests[stateId] = activeSnapshot
+        def recovered = script._mrtrClaim(stateId, 'hub_set_rule', 'hub_set_rule', binding) as Map
+
+        then: 'the exact terminal generation is recovered, never treated as still running'
+        recovered.outcome == 'terminal'
+        recovered.record.status == 'terminal'
+        recovered.record.terminalResult.success == true
+        calls == 1
+
+        when: 'a later identical toggle is a new logical operation'
+        def next = script._mrtrReserve('hub_set_rule', 'hub_set_rule', binding) as Map
+
+        then: 'the stale snapshot cannot cause duplicate_in_flight or consume the write cap'
+        next.accepted == true
+        next.stateId != stateId
+        calls == 1
+    }
+
+    def "terminal evidence does not repair an active snapshot with mismatched #field"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.maxConcurrentWrites = 1
+        def args = [appId: 654, confirm: true, button: 'pausRule']
+        def binding = script._mrtrBinding('hub_set_rule', 'hub_set_rule', args) as Map
+        def calls = 0
+        script.metaClass.toolSetRule = { Map actual ->
+            calls++
+            [success: true, appId: actual.appId]
+        }
+        def preflight = modernCall('hub_set_rule', args)
+        String stateId = preflight.result.requestState
+        modernCall('hub_set_rule', args, stateId)
+        Map activeSnapshot = script._mrtrCopyMap(
+            atomicStateMap.mrtrRequests[stateId] as Map) as Map
+        Map workerData = new LinkedHashMap(runInCalls[0][2].data as Map)
+        script.runMrtrSlice(workerData)
+        def complete = modernCall('hub_set_rule', args, stateId)
+
+        expect: 'terminal evidence exists for the actual claim and generation'
+        complete.result.resultType == 'complete'
+        calls == 1
+
+        when: 'the exposed active snapshot does not identify that exact execution'
+        activeSnapshot[field] = mismatch
+        atomicStateMap.mrtrRequests[stateId] = activeSnapshot
+        script._mrtrSweep()
+        Map afterSweep = atomicStateMap.mrtrRequests[stateId] as Map
+        def replay = script._mrtrReserve(
+            'hub_set_rule', 'hub_set_rule', binding) as Map
+
+        then: 'terminal proof is ignored and the active operation retains the write slot'
+        afterSweep.status == 'active'
+        afterSweep[field] == mismatch
+        replay.accepted == true
+        replay.rejoined == true
+        replay.stateId == stateId
+        calls == 1
+
+        where:
+        field               | mismatch
+        'claimId'           | 'different-claim'
+        'claimedGeneration' | 999
+        'generation'        | 999
     }
 
     def "clone continuation checkpoints clicks then commits exactly once"() {

@@ -53,6 +53,252 @@ def test_send_records_only_the_actual_http_post_duration(monkeypatch):
     assert client._http_leg_timings == [("tools/call", 8.0, 200)]
 
 
+def test_send_retries_a_lost_round_zero_mrtr_reservation(monkeypatch):
+    client = object.__new__(et.HubitatMcpClient)
+    client._request_id = 0
+    client._transport_retries = 0
+    client._http_leg_timings = []
+    client.endpoint = "https://example.invalid/mcp"
+    client.access_token = "secret"
+    client.verbose = False
+    responses = iter([
+        SimpleNamespace(status_code=504, reason="Gateway Timeout"),
+        SimpleNamespace(
+            status_code=200,
+            reason="OK",
+            json=lambda: {"jsonrpc": "2.0", "id": 1, "result": {
+                "resultType": "input_required", "requestState": "state-live",
+            }},
+            raise_for_status=lambda: None,
+        ),
+    ])
+    posts = []
+
+    def post(*args, **kwargs):
+        posts.append(kwargs["json"])
+        return next(responses)
+
+    client.session = SimpleNamespace(post=post)
+    monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)
+
+    result = client._send("tools/call", {
+        "name": "hub_manage_native_rules_and_apps",
+        "arguments": {
+            "tool": "hub_set_native_app",
+            "args": {"appType": "basic_rule", "name": "BAT", "confirm": True},
+        },
+    })
+
+    assert result == {"resultType": "input_required", "requestState": "state-live"}
+    assert len(posts) == 2
+    assert posts[0] == posts[1]
+    assert client._transport_retries == 1
+
+
+def test_send_does_not_retry_a_lost_non_mrtr_write(monkeypatch):
+    client = object.__new__(et.HubitatMcpClient)
+    client._request_id = 0
+    client._transport_retries = 0
+    client._http_leg_timings = []
+    client.endpoint = "https://example.invalid/mcp"
+    client.access_token = "secret"
+    client.verbose = False
+    posts = []
+
+    def post(*args, **kwargs):
+        posts.append(kwargs["json"])
+        return SimpleNamespace(status_code=504, reason="Gateway Timeout")
+
+    client.session = SimpleNamespace(post=post)
+    monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(et.RelayLostResponseError):
+        client._send("tools/call", {
+            "name": "hub_manage_variables",
+            "arguments": {
+                "tool": "hub_create_variable",
+                "args": {"name": "BAT", "value": "x", "confirm": True},
+            },
+        })
+
+    assert len(posts) == 1
+
+
+@pytest.mark.parametrize("leaf_args", [
+    {"ruleId": 1, "action": "rule"},
+    json.dumps({"ruleId": 1, "action": "rule"}),
+])
+def test_send_does_not_retry_a_lost_single_rule_call_without_confirm(
+    monkeypatch, leaf_args,
+):
+    client = object.__new__(et.HubitatMcpClient)
+    client._request_id = 0
+    client._transport_retries = 0
+    client._http_leg_timings = []
+    client._read_only_catalog_tools = {"hub_read_rules"}
+    client.endpoint = "https://example.invalid/mcp"
+    client.access_token = "secret"
+    client.verbose = False
+    posts = []
+
+    def post(*args, **kwargs):
+        posts.append(kwargs["json"])
+        return SimpleNamespace(status_code=504, reason="Gateway Timeout")
+
+    client.session = SimpleNamespace(post=post)
+    monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(et.RelayLostResponseError):
+        client._send("tools/call", {
+            "name": "hub_manage_native_rules_and_apps",
+            "arguments": {
+                "tool": "hub_call_rule",
+                "args": leaf_args,
+            },
+        })
+
+    assert len(posts) == 1
+
+
+def test_send_retries_only_catalog_proven_read_tool(monkeypatch):
+    client = object.__new__(et.HubitatMcpClient)
+    client._request_id = 0
+    client._transport_retries = 0
+    client._http_leg_timings = []
+    client._read_only_catalog_tools = {"hub_read_rules"}
+    client.endpoint = "https://example.invalid/mcp"
+    client.access_token = "secret"
+    client.verbose = False
+    responses = iter([
+        SimpleNamespace(status_code=504, reason="Gateway Timeout"),
+        SimpleNamespace(
+            status_code=200,
+            reason="OK",
+            json=lambda: {"jsonrpc": "2.0", "id": 1, "result": {
+                "resultType": "complete", "content": [],
+            }},
+            raise_for_status=lambda: None,
+        ),
+    ])
+    posts = []
+
+    def post(*args, **kwargs):
+        posts.append(kwargs["json"])
+        return next(responses)
+
+    client.session = SimpleNamespace(post=post)
+    monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)
+
+    result = client._send("tools/call", {
+        "name": "hub_read_rules",
+        "arguments": {"tool": "hub_list_rules", "args": {}},
+    })
+
+    assert result["resultType"] == "complete"
+    assert len(posts) == 2
+    assert client._transport_retries == 1
+
+
+@pytest.mark.parametrize(
+    ("wire_name", "arguments"),
+    [
+        (
+            "hub_update_mcp_settings",
+            {"settings": {"maxConcurrentWrites": 2}, "confirm": True},
+        ),
+        (
+            "hub_manage_mcp",
+            {"tool": "hub_update_mcp_settings", "args": {
+                "settings": {"maxConcurrentWrites": 2}, "confirm": True,
+            }},
+        ),
+    ],
+)
+def test_send_retries_the_structurally_identified_settings_write(
+    monkeypatch, wire_name, arguments,
+):
+    client = object.__new__(et.HubitatMcpClient)
+    client._request_id = 0
+    client._transport_retries = 0
+    client._http_leg_timings = []
+    client._read_only_catalog_tools = set()
+    client.endpoint = "https://example.invalid/mcp"
+    client.access_token = "secret"
+    client.verbose = False
+    responses = iter([
+        SimpleNamespace(status_code=504, reason="Gateway Timeout"),
+        SimpleNamespace(
+            status_code=200,
+            reason="OK",
+            json=lambda: {"jsonrpc": "2.0", "id": 1, "result": {
+                "resultType": "complete", "content": [],
+            }},
+            raise_for_status=lambda: None,
+        ),
+    ])
+    posts = []
+
+    def post(*args, **kwargs):
+        posts.append(kwargs["json"])
+        return next(responses)
+
+    client.session = SimpleNamespace(post=post)
+    monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)
+
+    result = client._send("tools/call", {
+        "name": wire_name,
+        "arguments": arguments,
+    })
+
+    assert result["resultType"] == "complete"
+    assert len(posts) == 2
+
+
+def test_send_does_not_trust_settings_tool_name_inside_write_data(monkeypatch):
+    client = object.__new__(et.HubitatMcpClient)
+    client._request_id = 0
+    client._transport_retries = 0
+    client._http_leg_timings = []
+    client._read_only_catalog_tools = set()
+    client.endpoint = "https://example.invalid/mcp"
+    client.access_token = "secret"
+    client.verbose = False
+    posts = []
+
+    def post(*args, **kwargs):
+        posts.append(kwargs["json"])
+        return SimpleNamespace(status_code=504, reason="Gateway Timeout")
+
+    client.session = SimpleNamespace(post=post)
+    monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(et.RelayLostResponseError):
+        client._send("tools/call", {
+            "name": "hub_manage_devices",
+            "arguments": {
+                "tool": "hub_call_device_command",
+                "args": {
+                    "deviceId": 1,
+                    "command": "send",
+                    "parameters": ["hub_update_mcp_settings"],
+                },
+            },
+        })
+
+    assert len(posts) == 1
+
+
+def test_read_only_tools_from_catalog_fails_closed():
+    tools = [
+        {"name": "hub_read_rules", "annotations": {"readOnlyHint": True}},
+        {"name": "hub_manage_rules", "annotations": {"readOnlyHint": False}},
+        {"name": "missing_annotations"},
+        {"name": "malformed", "annotations": []},
+    ]
+
+    assert et._read_only_tools_from_catalog(tools) == {"hub_read_rules"}
+
+
 @pytest.mark.parametrize(
     ("method", "params", "expected_name"),
     [
