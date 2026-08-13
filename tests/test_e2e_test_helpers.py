@@ -259,6 +259,40 @@ def test_call_tool_keeps_same_state_contention_inside_one_logical_call():
     )
 
 
+def test_call_tool_retains_physical_leg_telemetry_when_a_continuation_504s():
+    client = object.__new__(et.HubitatMcpClient)
+    client.op_timings = []
+    client._active_test = "mrtr/relay-failure"
+    client._last_op = None
+    client._last_continuation_rounds = 0
+    client._last_result_type = None
+    client._last_logical_elapsed = 0.0
+    client._last_http_leg_seconds = []
+    client._http_leg_timings = []
+    calls = 0
+
+    def send(method, params=None, headers=None):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            client._http_leg_timings.append(("tools/call", 2.1, 200))
+            return {"resultType": "input_required", "requestState": "state-live"}
+        client._http_leg_timings.append(("tools/call", 9.8, 504))
+        raise et.RelayLostResponseError("504 Gateway Timeout on tools/call")
+
+    client._send = send
+
+    with pytest.raises(et.RelayLostResponseError):
+        client.call_tool(
+            "hub_set_rule", {"appId": 42, "confirm": True}, flat=True,
+        )
+
+    assert client._last_continuation_rounds == 1
+    assert client._last_result_type == "input_required"
+    assert client._last_http_leg_seconds == [2.1, 9.8]
+    assert client._last_logical_elapsed > 0
+
+
 def test_call_tool_paces_ten_same_state_contention_rounds_and_still_completes(monkeypatch):
     client = object.__new__(et.HubitatMcpClient)
     client.op_timings = []

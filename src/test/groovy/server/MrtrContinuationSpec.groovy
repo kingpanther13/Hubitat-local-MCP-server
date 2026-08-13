@@ -575,9 +575,9 @@ class MrtrContinuationSpec extends ToolSpecBase {
         given:
         script.metaClass._isCloudRequest = { -> true }
 
-        expect: 'detached writes spend more of the leg waiting because they only schedule after reclaim'
-        script._mrtrContentionWaitMs('hub_set_rule') == 6000L
-        script._mrtrContentionWaitMs('hub_set_native_app') == 6000L
+        expect: 'detached writes wait in-leg but preserve measured cloud-relay jitter headroom'
+        script._mrtrContentionWaitMs('hub_set_rule') == 4500L
+        script._mrtrContentionWaitMs('hub_set_native_app') == 4500L
 
         and: 'synchronous slices retain half their request budget for actual leaf work'
         script._mrtrContentionWaitMs('hub_call_rule') == 4000L
@@ -585,9 +585,16 @@ class MrtrContinuationSpec extends ToolSpecBase {
         when: 'an operator configures a smaller cloud leg budget'
         settingsMap.relayBudgetMs = 5000
 
-        then: 'the worker path keeps 1500ms for parsing, scheduling, and rendering'
-        script._mrtrContentionWaitMs('hub_set_rule') == 3500L
+        then: 'the worker path keeps 2000ms for parsing, scheduling, and rendering'
+        script._mrtrContentionWaitMs('hub_set_rule') == 3000L
         script._mrtrContentionWaitMs('hub_call_rule') == 2500L
+
+        when: 'the same explicit budget is applied to a LAN request'
+        script.metaClass._isCloudRequest = { -> false }
+        settingsMap.lanBudgetMs = 5000
+
+        then: 'LAN retains its prior 1500ms reserve because the measured defect is cloud-only'
+        script._mrtrContentionWaitMs('hub_set_rule') == 3500L
     }
 
     def "gateway native-app resume schedules the resolved leaf and its worker returns the terminal result"() {

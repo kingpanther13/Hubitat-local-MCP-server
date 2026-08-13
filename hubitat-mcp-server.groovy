@@ -2013,13 +2013,19 @@ def _mrtrMaxContinuationSlices() { 8 }
 // finishes. Wait within this HTTP leg instead. Synchronous slices preserve at
 // least half of a configured transport budget for reclaimed leaf work; detached
 // native writes need only enough headroom to render the observed worker state.
+// Live cloud proof put a 6s worker wait at 9.057s end-to-end and a second
+// standards-identical client crossed the relay ceiling. Keep 2s of the known
+// relay budget plus a lower absolute cap for dispatch/rendering jitter.
 def _mrtrContentionWaitMs(String leafTool = null) {
     boolean cloud = _isCloudRequest()
     boolean detached = _mrtrDetachedWorkerTools().contains(leafTool)
-    long cap = cloud ? (detached ? 6000L : 4000L) : 6000L
+    long cap = cloud ? (detached ? 4500L : 4000L) : 6000L
     long budget = cloud ? _relayBudgetMs() : _lanBudgetMs()
     if (budget <= 0L) return cap
-    if (detached) return Math.max(1L, Math.min(cap, budget - 1500L))
+    if (detached) {
+        long headroom = cloud ? 2000L : 1500L
+        return Math.max(1L, Math.min(cap, budget - headroom))
+    }
     return Math.max(1L, Math.min(cap, (budget / 2L) as Long))
 }
 

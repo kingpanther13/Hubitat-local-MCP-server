@@ -593,16 +593,23 @@ class HubitatMcpClient:
             _dur = time.monotonic() - _t0
             self.op_timings.append((op_key, _dur, self._active_test, _op_ok))
             self._last_op = (op_key, _dur, _op_ok)
+            # Preserve the physical-leg evidence even when one continuation loses its
+            # response. Without this, the exact 504 leg that failed the MRTR proof is
+            # discarded and the run reports only the aggregate logical-call duration.
+            self._last_continuation_rounds = continuation_rounds
+            self._last_result_type = (
+                result.get("resultType") if isinstance(result, dict) else None
+            )
+            self._last_logical_elapsed = _dur
+            self._last_http_leg_seconds = [
+                duration for method, duration, _status
+                in getattr(self, "_http_leg_timings", [])[http_mark:]
+                if method == "tools/call"
+            ]
             if _dur >= 7.5:
                 print(f"  [SLOW] {_dur:4.1f}s  {op_key}  ({self._active_test or '?'})"
                       f"{'' if _op_ok else '  [err/504]'}")
         assert result is not None
-        self._last_continuation_rounds = continuation_rounds
-        self._last_result_type = result.get("resultType")
-        self._last_logical_elapsed = _dur
-        self._last_http_leg_seconds = [duration for method, duration, _status
-                                       in getattr(self, "_http_leg_timings", [])[http_mark:]
-                                       if method == "tools/call"]
 
         # Check for tool-level error
         if result.get("isError"):
