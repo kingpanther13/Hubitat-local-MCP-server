@@ -561,6 +561,134 @@ def test_settle_before_504_retry_probes_without_a_fixed_minute(monkeypatch):
     assert sleeps == []
 
 
+def _native_rule_runner(client):
+    runner = object.__new__(et.TestRunner)
+    runner.client = client
+    runner.created_native_app_ids = []
+    return runner
+
+
+def test_create_native_rule_defaults_to_scalar_app_id():
+    class FakeClient:
+        def call_tool(self, name, arguments):
+            assert name == "hub_manage_rule_machine"
+            assert arguments == {
+                "tool": "hub_set_rule",
+                "args": {"name": "BAT_E2E_ScalarCreate", "confirm": True},
+            }
+            return {"success": True, "appId": 41, "ruleId": 41}
+
+    runner = _native_rule_runner(FakeClient())
+
+    result = runner._create_native_rule("ScalarCreate")
+
+    assert result == 41
+    assert runner.created_native_app_ids == ["41"]
+
+
+def test_create_native_rule_return_result_preserves_create_envelope():
+    envelope = {
+        "success": True,
+        "appId": 42,
+        "ruleId": 42,
+        "actions": [{"success": True, "actionIndex": 3}],
+    }
+
+    class FakeClient:
+        def call_tool(self, name, arguments):
+            assert name == "hub_manage_rule_machine"
+            assert arguments["args"]["addActions"] == [
+                {"capability": "log", "message": "fixture"},
+            ]
+            return envelope
+
+    runner = _native_rule_runner(FakeClient())
+
+    result = runner._create_native_rule(
+        "TupleCreate",
+        {"addActions": [{"capability": "log", "message": "fixture"}]},
+        return_result=True,
+    )
+
+    assert result == (42, envelope)
+    assert runner.created_native_app_ids == ["42"]
+
+
+def test_create_native_rule_relay_lost_adoption_marks_bundled_fixture_for_readback(
+    monkeypatch,
+):
+    calls = []
+    fixture = {"conditions": [
+        {"capability": "Switch", "deviceIds": [88], "state": "on"},
+    ]}
+
+    class FakeClient:
+        def call_tool(self, name, arguments):
+            calls.append((name, arguments))
+            if len(calls) == 1:
+                raise et.RelayLostResponseError("504 Gateway Timeout")
+            if len(calls) == 2:
+                assert name == "hub_manage_native_rules_and_apps"
+                return {"rules": [{"id": 43, "label": "BAT_E2E_AdoptedCreate"}]}
+            assert name == "hub_read_apps_code"
+            return {
+                "page": {"paragraphs": ["Required Expression: Test Switch is on"]},
+                "settings": {
+                    "rCapab_4": "Switch",
+                    "rDev_4": [88],
+                    "state_4": "on",
+                },
+            }
+
+    runner = _native_rule_runner(FakeClient())
+    monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)
+
+    result = runner._create_native_rule(
+        "AdoptedCreate",
+        {"addRequiredExpression": fixture},
+        return_result=True,
+    )
+
+    assert result == (43, None)
+    attempted_args = calls[0][1]["args"]
+    assert attempted_args["addRequiredExpression"] == fixture
+    runner._assert_switch_required_expression(43, 88)
+    assert runner.created_native_app_ids == ["43"]
+
+
+def test_assert_switch_required_expression_accepts_exact_persisted_fixture():
+    class FakeClient:
+        def call_tool(self, name, arguments):
+            assert name == "hub_read_apps_code"
+            assert arguments == {
+                "tool": "hub_get_app_config",
+                "args": {"appId": 43, "includeSettings": True},
+            }
+            return {
+                "page": {"paragraphs": ["Required Expression: Switch is on"]},
+                "settings": {
+                    "rCapab_7": "Switch",
+                    "rDev_7": {"88": "Test Switch"},
+                    "state_7": "on",
+                },
+            }
+
+    runner = _native_rule_runner(FakeClient())
+
+    runner._assert_switch_required_expression(43, 88, "on")
+
+
+def test_assert_switch_required_expression_rejects_shell_without_expression():
+    class FakeClient:
+        def call_tool(self, _name, _arguments):
+            return {"page": {"paragraphs": ["Define Required Expression"]}, "settings": {}}
+
+    runner = _native_rule_runner(FakeClient())
+
+    with pytest.raises(AssertionError, match=r"relay 504.*did not persist the Required Expression"):
+        runner._assert_switch_required_expression(43, 88, "on")
+
+
 def test_driver_lifecycle_uses_logical_write_helper_for_create():
     direct_calls = []
     write_calls = []

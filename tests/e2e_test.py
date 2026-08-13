@@ -4504,8 +4504,9 @@ class TestRunner:
         # doActPage schema") whenever the slot was offset. Here a seed log action plus a
         # Required Expression put the waitEvents past the first slot. Its own small throwaway
         # rule (a Required Expression conflicts with any other per-concern rule's state),
-        # deleted in the finally; strict so a relay-dropped response re-runs on a fresh rule
-        # rather than skipping the wire assertion.
+        # deleted in the finally. A relay-dropped create is adopted only after an
+        # authoritative config/settings read proves its RE fixture; failed proof raises so
+        # _run_one re-runs the whole test on a fresh rule.
         switch_id = int(self.get_test_switch_id())
         app_id, created = self._create_native_rule("WaitEvtOffset", {
             "addActions": [{"capability": "log", "message": "E2E waitEvents offset base"}],
@@ -4520,6 +4521,8 @@ class TestRunner:
                 re_res = created.get("requiredExpression")
                 assert isinstance(re_res, dict) and re_res.get("success") is not False, \
                     f"bundled addRequiredExpression should commit, got: {created}"
+            else:
+                self._assert_switch_required_expression(app_id, switch_id)
 
             # THE fix: adding a waitEvents action past index 1 must commit -- the walker
             # writes the offset slot (tCapab-2 here) instead of throwing on tCapab-1.
@@ -4906,6 +4909,40 @@ class TestRunner:
             return app_id, created
         return app_id
 
+    def _assert_switch_required_expression(self, app_id: Any, switch_id: Any,
+                                           state: str = "on") -> None:
+        """Prove a relay-adopted create persisted its bundled Switch RE fixture."""
+        cfg = self.client.call_tool("hub_read_apps_code", {
+            "tool": "hub_get_app_config",
+            "args": {"appId": app_id, "includeSettings": True},
+        })
+        settings = cfg.get("settings") or {}
+        page_blob = json.dumps(cfg.get("page") or {}).lower()
+        wanted_id = str(switch_id)
+
+        def _holds_device_id(value: Any) -> bool:
+            if isinstance(value, dict):
+                return any(str(key) == wanted_id or _holds_device_id(item)
+                           for key, item in value.items())
+            if isinstance(value, (list, tuple, set)):
+                return any(_holds_device_id(item) for item in value)
+            return str(value) == wanted_id
+
+        matching_indices = []
+        for key, value in settings.items():
+            if not key.startswith("rCapab_") or str(value).lower() != "switch":
+                continue
+            idx = key.split("_", 1)[1]
+            if (str(settings.get(f"state_{idx}")).lower() == state.lower()
+                    and _holds_device_id(settings.get(f"rDev_{idx}"))):
+                matching_indices.append(idx)
+
+        assert "required expression:" in page_blob and f"is {state.lower()}" in page_blob \
+            and matching_indices, (
+                "relay 504 adopted create did not persist the Required Expression Switch fixture "
+                f"(appId={app_id}, switchId={switch_id}, state={state!r}): {cfg}"
+            )
+
     def _set_rule(self, app_id: Any, extra: dict, strict: bool = False) -> Any:
         """Edit a Rule Machine rule through the modern continuation-aware client."""
         args = {"appId": app_id, "confirm": True}
@@ -5195,7 +5232,8 @@ class TestRunner:
         # with predCapabs already cleared. test_set_rule_action_after_required_expression
         # proves the same guard for _rmAddAction; this one proves the single-step walker
         # path -- _rmWalkStep's own deferred-clear hook -- which _rmAddAction's flow never
-        # exercises. strict=True so a relay 504 re-runs this small rule once.
+        # exercises. A relay-dropped create is accepted only after authoritative RE
+        # settings/readback proof; a failed proof raises into the whole-test retry.
         sw = int(self.get_test_switch_id())
         app_id, created = self._create_native_rule("WalkActRE", {
             "addRequiredExpression": {"conditions": [
@@ -5208,6 +5246,8 @@ class TestRunner:
                 re_res = created.get("requiredExpression")
                 assert isinstance(re_res, dict) and re_res.get("success") is not False, \
                     f"bundled addRequiredExpression reported failure: {created}"
+            else:
+                self._assert_switch_required_expression(app_id, sw)
             # Single-step navigate into the action editor -- this is the op that fires the
             # deferred predCapabs clear, BEFORE the new action slot is created.
             nav = self._set_rule(app_id, {"walkStep": {"page": "selectActions", "operation": "navigate",
@@ -6619,7 +6659,8 @@ class TestRunner:
         # so the ghost-ifThen -- and the page-cache threading that optimizes it -- had no live
         # guard: a silent predCapabs leak passes every other RE test (none add a trailing action).
         # Build an RE, add a plain log action, and assert it lands as a top-level action, NOT a
-        # Broken-Condition wrap. strict=True so a relay 504 re-runs this small rule once.
+        # Broken-Condition wrap. A relay-dropped create is accepted only after authoritative
+        # RE settings/readback proof; a failed proof raises into the whole-test retry.
         sw = int(self.get_test_switch_id())
         app_id, created = self._create_native_rule("ActAfterRE", {
             "addRequiredExpression": {"conditions": [
@@ -6630,6 +6671,8 @@ class TestRunner:
                 re_res = created.get("requiredExpression")
                 assert isinstance(re_res, dict) and re_res.get("success") is not False, \
                     f"bundled addRequiredExpression reported failure: {created}"
+            else:
+                self._assert_switch_required_expression(app_id, sw)
             # The action added AFTER the RE must NOT be wrapped under a Broken Condition IF --
             # that wrap is exactly the stale-predCapabs symptom the ghost-ifThen clears.
             self._add_action_or_raise_504(app_id, {"capability": "log", "message": "after-RE"})
