@@ -768,6 +768,39 @@ def test_create_native_rule_return_result_preserves_create_envelope():
     assert runner.created_native_app_ids == ["42"]
 
 
+def test_patch_rule_returns_all_checkpointed_entries_from_one_logical_call():
+    calls = []
+
+    class FakeClient:
+        def call_tool(self, name, arguments):
+            calls.append((name, arguments))
+            return {
+                "success": False,
+                "partial": True,
+                "patchResults": [{"op": "addAction", "success": True, "actionIndex": 3}],
+                "patches": [{"op": "addAction", "success": False, "error": "refused"}],
+                "health": {"ok": True},
+            }
+
+    runner = _native_rule_runner(FakeClient())
+    patches = [
+        {"addAction": {"capability": "log", "message": "land"}},
+        {"addAction": {"capability": "switch", "state": "on"}},
+    ]
+
+    entries = runner._patch_rule(42, patches)
+
+    assert entries == [
+        {"op": "addAction", "success": True, "actionIndex": 3},
+        {"op": "addAction", "success": False, "error": "refused"},
+    ]
+    assert calls == [("hub_manage_rule_machine", {
+        "tool": "hub_set_rule",
+        "args": {"appId": 42, "patches": patches, "confirm": True},
+    })]
+    assert runner._last_write_health == ("42", {"ok": True})
+
+
 def test_create_native_rule_relay_lost_adoption_marks_bundled_fixture_for_readback(
     monkeypatch,
 ):
