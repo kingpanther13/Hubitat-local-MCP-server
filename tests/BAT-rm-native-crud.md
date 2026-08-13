@@ -1549,7 +1549,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: Calls `hub_manage_rule_machine.hub_set_rule` with a Local End Point trigger bound to `runRuleAct` and `<target_id>`. `hub_get_app_config` round-trip shows the supported trigger/verb/target configuration. [INV-1] `configPage.error == null`; `statusJson.eventSubscriptions.length > 0`. The token-bearing endpoint URL is deliberately not exposed through MCP reads. Teardown force-deletes both rules; final `hub_list_rules` count returns to baseline.
+**Expected**: Calls `hub_manage_rule_machine.hub_set_rule` with a Local End Point trigger bound to `runRuleAct` and `<target_id>`. `hub_get_app_config` round-trip shows the supported trigger/verb/target configuration. [INV-1] `configPage.error == null`. This HTTP-only rule may correctly have zero `eventSubscriptions`, so subscriptions are not graded. The token-bearing endpoint URL is deliberately not exposed through MCP reads. Teardown force-deletes both rules; final `hub_list_rules` count returns to baseline.
 
 ### T431 — Local End Point trigger with /stopRuleAct verb
 
@@ -1674,12 +1674,12 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create BAT-RM-T441-TargetA and BAT-RM-T441-TargetB (two simple log-only rules). Note both ruleIds.",
-  "test_prompt": "Create 'BAT-RM-T441-Switchable' with a Local End Point trigger using runRuleAct for TargetA. Read the supported configuration. Then edit the rule to target TargetB, read it back again, and confirm the target field changed and the old TargetA subscription is gone from eventSubscriptions.",
+  "test_prompt": "Create 'BAT-RM-T441-Switchable' with a Local End Point trigger using runRuleAct for TargetA. Read the supported configuration. Then edit the rule to target TargetB, read it back again, and confirm the persisted target field changed from TargetA to TargetB.",
   "teardown_prompt": "Force-delete all three BAT-RM-T441-* rules."
 }
 ```
 
-**Expected**: `hub_set_rule` (create) then `hub_set_rule(appId=ruleId)` (edit) flips the endpoint target. `hub_get_app_config` after update shows the new target ID in the supported configuration fields. `statusJson.eventSubscriptions` reflects the new binding (no stale A reference). URL retrieval is not graded. [INV-1] `configPage.error == null` throughout. Clean teardown.
+**Expected**: `hub_set_rule` (create) then `hub_set_rule(appId=ruleId)` (edit) flips the endpoint target. `hub_get_app_config` after update shows TargetB, not TargetA, in the supported endpoint target field. This HTTP-only rule may correctly have zero `eventSubscriptions`, so subscriptions are not used to grade rebinding. URL retrieval is not graded. [INV-1] `configPage.error == null` throughout. Clean teardown.
 
 ### T442 — Orphan cleanup after failed create — must EXERCISE the cleanup path, not pre-validate
 
