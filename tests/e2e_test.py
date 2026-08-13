@@ -4410,15 +4410,34 @@ class TestRunner:
                         sorted(str(x) for x in batch_ids), \
                         f"two-id batch should echo both ruleIds, got: {batch}"
                     batch_committed = True
-            # The envelope/limiter text alone is not mutation proof. Read both rules:
-            # success must pause both; a pre-write limiter must leave both active.
-            expected_paused = batch_committed
-            observed = [self._rm_rule_status_when(
-                rule_id, lambda state: state.get("paused") is expected_paused)
-                for rule_id in batch_ids]
-            assert all(state.get("paused") is expected_paused for state in observed), \
-                f"two-id pause did not persist atomically for both rules " \
-                f"(expected paused={expected_paused}): {observed}"
+            if batch_committed:
+                observed = self._rm_rule_statuses_when(
+                    batch_ids, lambda state: state.get("paused") is True)
+            else:
+                # A platform limiter can interrupt between ids. Poll the pair as one list
+                # read for a short bounded settle window; accept only a uniform terminal
+                # outcome (both committed or neither committed), never a mixed half-write.
+                observed = {}
+                stable_uniform = None
+                stable_reads = 0
+                for _ in range(5):
+                    observed = self._rm_rule_statuses_when(
+                        batch_ids, lambda _state: True, attempts=1, gap=0)
+                    pause_values = {observed[str(rule_id)].get("paused") for rule_id in batch_ids}
+                    uniform = next(iter(pause_values)) if len(pause_values) == 1 else None
+                    stable_reads = stable_reads + 1 if uniform is stable_uniform and uniform is not None else 1
+                    stable_uniform = uniform
+                    if uniform is not None and stable_reads >= 2:
+                        break
+                    time.sleep(1.0)
+            pause_values = {observed[str(rule_id)].get("paused") for rule_id in batch_ids}
+            if batch_committed:
+                assert pause_values == {True}, \
+                    f"successful two-id pause did not pause both rules: {observed}"
+            else:
+                assert stable_reads >= 2 and pause_values in ({True}, {False}), \
+                    f"limiter did not reach two consecutive uniform pair reads " \
+                    f"(mixed or unsettled partial commit): {observed}"
         finally:
             if caller_id:
                 self._delete_native(caller_id)
@@ -4873,7 +4892,7 @@ class TestRunner:
         Verify-after-504: writes are never transport-replayed (duplicate-commit risk), so a
         relay 504 here means the CREATE may or may not have committed. Look the rule up by
         its unique label: found -> adopt it; not found -> the create truly failed."""
-        label = f"{PREFIX}{suffix}"
+        label = f"{PREFIX}{suffix}_{_run_artifact_suffix()}"
         args = {"name": label, "confirm": True}
         if extra:
             args.update(extra)
@@ -4887,16 +4906,22 @@ class TestRunner:
             if "504" not in str(exc):
                 raise
             print(f"    create '{label}' response lost to relay 504 -- verifying by label lookup")
-            time.sleep(3.0)
             app_id = None
-            listed = self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_list_rules", "args": {},
-            })
-            for r in (listed.get("rules") or []):
-                if r.get("label") == label or r.get("name") == label:
-                    app_id = r.get("id")
+            for lookup_attempt in range(4):
+                listed = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                    "tool": "hub_list_rules", "args": {},
+                })
+                exact_matches = [r for r in (listed.get("rules") or [])
+                                 if r.get("label") == label or r.get("name") == label]
+                assert len(exact_matches) <= 1, \
+                    f"ambiguous relay-504 create lookup for exact label {label!r}: {exact_matches}"
+                if len(exact_matches) == 1:
+                    app_id = exact_matches[0].get("id")
+                    assert app_id, f"exact create-label match has no app id: {exact_matches[0]}"
                     print(f"    create committed despite the dropped response -- adopting appId {app_id}")
                     break
+                if lookup_attempt < 3:
+                    time.sleep(1.0)
             if not app_id:
                 # Verified NON-commit: re-issuing is duplicate-safe (the only point a write
                 # retry is allowed -- after evidence the first attempt never landed).
@@ -4921,9 +4946,20 @@ class TestRunner:
             assert created.get("ruleId") == app_id, \
                 f"native create did not surface ruleId==appId (got ruleId={created.get('ruleId')}, appId={app_id})"
         self.created_native_app_ids.append(str(app_id))
+
         if return_result:
+
             return app_id, created
         return app_id
+    @staticmethod
+    def _require_create_envelope(created: dict | None, contract: str) -> dict:
+        """Retry a fresh unique fixture when relay loss erased response metadata."""
+        if created is None:
+            raise RelayLostResponseError(
+                f"504 relay response loss erased {contract} response metadata; "
+                "retry this test with its run-unique fixture label"
+            )
+        return created
 
     def _get_persisted_rule_config(self, app_id: Any) -> dict:
         """Fetch config/settings and bind the readback to the exact rule."""
@@ -5655,15 +5691,20 @@ class TestRunner:
                 assert not bad and not result.get("partial"), \
                     f"device-state *changed* trigger was partial or wrote ReltDev: {result}"
 
+            # The test also owns the response-metadata contract; readback cannot replace it.
+            created = self._require_create_envelope(created, "ChangedTrig")
             # Read the PERSISTED settings back via the read-only hub_get_app_config: the change
             # token is stored in tstate<N> (asterisk-wrapped live), the behavioural proof it
             # renders as a change trigger rather than the "turns null" orphan.
             cfg = self._get_persisted_rule_config(app_id)
             settings = cfg.get("settings") or {}
-            change_tstate = {k: v for k, v in settings.items()
-                             if str(k).startswith("tstate") and "changed" in str(v).lower()}
-            assert change_tstate, \
-                f"persisted tstate<N> does not carry the *changed* token (turns-null render): settings={settings}"
+            switch_slots = [str(key)[4:] for key, value in settings.items()
+                            if str(key).startswith("tDev")
+                            and self._setting_holds_exact(value, sw)]
+            assert any(str(settings.get(f"tCapab{slot}")).lower() == "switch"
+                       and str(settings.get(f"tstate{slot}")) == "*changed*"
+                       for slot in switch_slots), \
+                f"persisted Switch device and *changed* state are not correlated in one trigger slot: {settings}"
             self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
@@ -5795,6 +5836,15 @@ class TestRunner:
                         return [str(x) for x in parsed]
                 return [s]
 
+            switch_slots = [str(key).split("-", 1)[1] for key, value in settings.items()
+                            if str(key).startswith("tCapab-")
+                            and str(value).lower() == "switch"]
+            assert any(self._setting_holds_exact(settings.get(f"tDev-{slot}"), sw)
+                       and str(settings.get(f"tstate-{slot}")).lower() == "on"
+                       for slot in switch_slots), \
+                f"bundled Switch wait event did not persist exact device/state in one slot: {settings}"
+            created = self._require_create_envelope(created, "WaitEventsMode")
+
             mode_id_carried = any(
                 mode_id in _mode_id_values(settings[k]) for k in mode_setting_keys)
             assert mode_id_carried, \
@@ -5831,11 +5881,13 @@ class TestRunner:
 
             cfg = self._get_persisted_rule_config(app_id)
             settings = cfg.get("settings") or {}
-            # optSwitch.<N> landed true.
-            opt_keys = [k for k in settings if str(k).startswith("optSwitch.")]
-            assert opt_keys, f"optSwitch.<N> not persisted (onlyOn did not write the 'only switches that are on' flag): {sorted(settings)}"
-            assert any(str(settings[k]).lower() in ("true", "on") for k in opt_keys), \
-                f"optSwitch.<N> persisted but not true: { {k: settings[k] for k in opt_keys} }"
+            switch_slots = [str(key).split(".", 1)[1] for key, value in settings.items()
+                            if str(key).startswith("onOffSwitch.")
+                            and self._setting_holds_exact(value, sw)]
+            assert any(str(settings.get(f"onOff.{slot}")).lower() in ("false", "off")
+                       and str(settings.get(f"optSwitch.{slot}")).lower() in ("true", "on")
+                       for slot in switch_slots), \
+                f"switch device/off/onlyOn did not persist together in one action slot: {settings}"
             self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
@@ -5877,6 +5929,7 @@ class TestRunner:
                 str(shade_settings.get(f"shadeRL.{slot}")).lower() in ("true", "on")
                 for slot in shade_slots), \
                 f"shade close device/action did not persist together: {shade_settings}"
+            shade_created = self._require_create_envelope(shade_created, "ShadeDeviceList")
             self._assert_rule_healthy(shade_app)
         finally:
             self._delete_native(shade_app)
@@ -5907,11 +5960,18 @@ class TestRunner:
             cfg = self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}})
             settings = cfg.get("settings") or {}
-            stays_keys = [k for k in settings if str(k).startswith("stays-")]
-            smins_keys = [k for k in settings if str(k).startswith("SMins-")]
-            assert stays_keys, f"stays-<N> toggle not persisted: {sorted(settings)}"
-            assert smins_keys and any(str(settings[k]) == "5" for k in smins_keys), \
-                f"SMins-<N>=5 duration not persisted (dash-indexed andStays duration regression): { {k: settings[k] for k in smins_keys} }"
+            stays_slots = [str(key).split("-", 1)[1] for key, value in settings.items()
+                           if str(key).startswith("stays-")
+                           and str(value).lower() in ("true", "on")]
+            assert any(str(settings.get(f"tCapab-{slot}")).lower() == "switch"
+                       and self._setting_holds_exact(settings.get(f"tDev-{slot}"), sw)
+                       and str(settings.get(f"tstate-{slot}")).lower() == "on"
+                       and str(settings.get(f"SHours-{slot}")) in ("0", "0.0")
+                       and str(settings.get(f"SMins-{slot}")) == "5"
+                       and str(settings.get(f"SSecs-{slot}")) in ("0", "0.0")
+                       for slot in stays_slots), \
+                f"Switch event and exact andStays duration did not persist in one slot: {settings}"
+            created = self._require_create_envelope(created, "WaitStays")
             self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
@@ -6110,9 +6170,15 @@ class TestRunner:
             # Persisted settings are authoritative both normally and after create-response loss.
             cfg = self._get_persisted_rule_config(app_id)
             settings = cfg.get("settings") or {}
-            tstate_vals = [v for k, v in settings.items() if str(k).startswith("tstate")]
-            assert any(str(v) == "*changed*" for v in tstate_vals), \
-                f"persisted tstate did not carry the change token; tstate values={tstate_vals}"
+            enum_slots = [str(key)[4:] for key, value in settings.items()
+                          if str(key).startswith("tDev")
+                          and self._setting_holds_exact(value, sw)]
+            assert any(str(settings.get(f"tCustomAttr{slot}")) == "switch"
+                       and str(settings.get(f"tstate{slot}")) == "*changed*"
+                       for slot in enum_slots), \
+                f"Custom Attribute device/attribute/change token did not persist together " \
+                f"in one trigger slot: {settings}"
+            created = self._require_create_envelope(created, "CustEnumChangedTrig")
             self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
@@ -6524,9 +6590,14 @@ class TestRunner:
                 "tool": "hub_get_app_config",
                 "args": {"appId": stp_app_id, "includeSettings": True},
             }).get("settings") or {}
-            assert any(str(key).startswith("state_") and str(value) == "on"
-                       for key, value in persisted.items()), \
-                f"enum Required Expression state did not persist: {persisted}"
+            enum_slots = [str(key).split("_", 1)[1] for key, value in persisted.items()
+                          if str(key).startswith("rCustomAttr_") and value == "switch"]
+            assert any(str(persisted.get(f"state_{slot}")) == "on"
+                       and self._setting_holds_exact(persisted.get(f"rDev_{slot}"), sw)
+                       for slot in enum_slots), \
+                f"enum Required Expression device/attribute/value did not persist " \
+                f"together in one slot: {persisted}"
+            created = self._require_create_envelope(created, "WalkerStp")
             self._assert_rule_healthy(stp_app_id)
         finally:
             self._delete_native(stp_app_id)
@@ -6576,6 +6647,7 @@ class TestRunner:
                 and str(settings.get(f"state_{slot}")) in ("-2", "-2.0")
                 for slot in slots), \
                 f"device-relative RHS/offset did not persist together: {settings}"
+            created = self._require_create_envelope(created, "CtdLand")
             blob = str(cfg)
             assert ("Temperature of" in blob) or ("temperature of" in blob.lower()), \
                 f"rule paragraph does not render a device-relative Temperature comparison: {blob[:600]}"
@@ -6972,6 +7044,7 @@ class TestRunner:
             page_blob = json.dumps(cfg.get("page") or {}).lower()
             assert "fired" in page_blob and "broken condition" not in page_blob, \
                 f"balanced IF/log/END-IF did not persist cleanly: {cfg}"
+            created = self._require_create_envelope(created, "DoActEnum")
             self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)

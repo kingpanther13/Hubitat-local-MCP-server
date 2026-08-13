@@ -722,17 +722,18 @@ def _native_rule_runner(client):
     return runner
 
 
-def test_create_native_rule_defaults_to_scalar_app_id():
+def test_create_native_rule_defaults_to_scalar_app_id(monkeypatch):
     class FakeClient:
         def call_tool(self, name, arguments):
             assert name == "hub_manage_rule_machine"
             assert arguments == {
                 "tool": "hub_set_rule",
-                "args": {"name": "BAT_E2E_ScalarCreate", "confirm": True},
+                "args": {"name": "BAT_E2E_ScalarCreate_run_1", "confirm": True},
             }
             return {"success": True, "appId": 41, "ruleId": 41}
 
     runner = _native_rule_runner(FakeClient())
+    monkeypatch.setattr(et, "_run_artifact_suffix", lambda: "run_1")
 
     result = runner._create_native_rule("ScalarCreate")
 
@@ -833,7 +834,7 @@ def test_create_native_rule_relay_lost_adoption_marks_bundled_fixture_for_readba
                 raise et.RelayLostResponseError("504 Gateway Timeout")
             if len(calls) == 2:
                 assert name == "hub_manage_native_rules_and_apps"
-                return {"rules": [{"id": 43, "label": "BAT_E2E_AdoptedCreate"}]}
+                return {"rules": [{"id": 43, "label": "BAT_E2E_AdoptedCreate_run_1"}]}
             assert name == "hub_read_apps_code"
             return {
                 "page": {"paragraphs": ["Required Expression: Test Switch is on"]},
@@ -846,6 +847,7 @@ def test_create_native_rule_relay_lost_adoption_marks_bundled_fixture_for_readba
 
     runner = _native_rule_runner(FakeClient())
     monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(et, "_run_artifact_suffix", lambda: "run_1")
 
     result = runner._create_native_rule(
         "AdoptedCreate",
@@ -855,9 +857,58 @@ def test_create_native_rule_relay_lost_adoption_marks_bundled_fixture_for_readba
 
     assert result == (43, None)
     attempted_args = calls[0][1]["args"]
+    assert attempted_args["name"] == "BAT_E2E_AdoptedCreate_run_1"
     assert attempted_args["addRequiredExpression"] == fixture
     runner._assert_switch_required_expression(43, 88)
     assert runner.created_native_app_ids == ["43"]
+
+
+def test_create_native_rule_relay_lost_refuses_ambiguous_exact_label(monkeypatch):
+    class FakeClient:
+        def call_tool(self, _name, _arguments):
+            if not hasattr(self, "called"):
+                self.called = True
+                raise et.RelayLostResponseError("504 Gateway Timeout")
+            return {"rules": [
+                {"id": 43, "label": "BAT_E2E_Ambiguous_run_1"},
+                {"id": 44, "name": "BAT_E2E_Ambiguous_run_1"},
+            ]}
+
+    runner = _native_rule_runner(FakeClient())
+    monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(et, "_run_artifact_suffix", lambda: "run_1")
+
+    with pytest.raises(AssertionError, match="ambiguous"):
+        runner._create_native_rule("Ambiguous", return_result=True)
+
+
+
+
+def test_create_native_rule_relay_lost_waits_for_delayed_exact_match(monkeypatch):
+    calls = []
+
+    class FakeClient:
+        def call_tool(self, name, arguments):
+            calls.append((name, arguments))
+            if len(calls) == 1:
+                raise et.RelayLostResponseError("504 Gateway Timeout")
+            if len(calls) == 2:
+                return {"rules": [{"id": 99, "label": "some other rule"}]}
+            assert name == "hub_manage_native_rules_and_apps"
+            return {"rules": [{"id": 43, "label": "BAT_E2E_Delayed_run_1"}]}
+
+    runner = _native_rule_runner(FakeClient())
+    monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(et, "_run_artifact_suffix", lambda: "run_1")
+
+    result = runner._create_native_rule("Delayed", return_result=True)
+
+    assert result == (43, None)
+    assert [name for name, _arguments in calls] == [
+        "hub_manage_rule_machine",
+        "hub_manage_native_rules_and_apps",
+        "hub_manage_native_rules_and_apps",
+    ]
 
 
 def test_get_persisted_rule_config_requires_exact_target_app():
@@ -869,14 +920,26 @@ def test_get_persisted_rule_config_requires_exact_target_app():
             return {"success": True, "app": {"id": 43}, "settings": {"state_1": "on"}}
 
     runner = _native_rule_runner(FakeClient())
-
     cfg = runner._get_persisted_rule_config(43)
-
     assert cfg["settings"] == {"state_1": "on"}
     assert calls == [("hub_read_apps_code", {
         "tool": "hub_get_app_config",
         "args": {"appId": 43, "includeSettings": True},
     })]
+
+
+def test_require_create_envelope_requests_retry_after_relay_loss():
+    runner = _native_rule_runner(None)
+
+    with pytest.raises(et.RelayLostResponseError, match=r"504.*metadata"):
+        runner._require_create_envelope(None, "ChangedTrig")
+
+
+def test_require_create_envelope_preserves_delivered_response():
+    runner = _native_rule_runner(None)
+    envelope = {"success": True, "partial": False}
+
+    assert runner._require_create_envelope(envelope, "ChangedTrig") is envelope
 
 
 def test_get_persisted_rule_config_rejects_wrong_app():
