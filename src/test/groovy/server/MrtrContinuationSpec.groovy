@@ -103,6 +103,141 @@ class MrtrContinuationSpec extends ToolSpecBase {
         return decoded
     }
 
+    def "pure native-write preflight refuses #caseName before reserving MRTR state"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.useGateways = true
+        stateMap.lastBackupTimestamp = 1234567890000L
+        def backupCalls = []
+        def posts = []
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason ->
+            backupCalls << [id: id, reason: reason]
+            [backupKey: 'must-not-exist']
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer timeout = 420 ->
+            posts << [path: path, body: new LinkedHashMap(body)]
+            [status: 200, location: null, data: '{}']
+        }
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, Integer timeout = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '{}']
+        }
+        def wireArgs = (outer == leaf)
+            ? new LinkedHashMap(leafArgs)
+            : [tool: leaf, args: new LinkedHashMap(leafArgs)]
+
+        when:
+        def response = modernCall(outer, wireArgs)
+        def inner = mcpDriver.parseInner(response)
+
+        then: 'the ordinary structured refusal is terminal and no continuation protocol leaks out'
+        response.error == null
+        response.result.resultType == 'complete'
+        response.result.isError != true
+        !response.result.containsKey('requestState')
+        inner.success == false
+        inner.appId == 777
+        inner.error.toLowerCase().contains(errorNeedle)
+        inner.wizardStuck == false
+        inner.backup == null
+        inner.restoreHint == script._rmPreflightRestoreHint()
+
+        and: 'round zero created no durable work and touched no backup or wizard surface'
+        !(atomicStateMap.mrtrRequests instanceof Map) || atomicStateMap.mrtrRequests.isEmpty()
+        backupCalls.isEmpty()
+        posts.isEmpty()
+        hubGet.calls.isEmpty()
+        runInMillisCalls.isEmpty()
+
+        where:
+        caseName                    | outer                              | leaf                 | leafArgs                                                                                                    | errorNeedle
+        'periodic map missing'      | 'hub_manage_rule_machine'          | 'hub_set_rule'       | [appId: 777, addTrigger: [capability: 'Periodic Schedule', minutes: 1], confirm: true]                       | 'periodic'
+        'state token in state'      | 'hub_set_rule'                     | 'hub_set_rule'       | [appId: 777, addTrigger: [capability: 'Temperature', state: 'changed'], confirm: true]                      | 'comparator'
+        'periodic field missing'    | 'hub_manage_rule_machine'          | 'hub_set_rule'       | [appId: 777, addTrigger: [capability: 'Periodic Schedule', periodic: [frequency: 'Hourly']], confirm: true] | 'everyn'
+        'action verb in state'      | 'hub_manage_native_rules_and_apps' | 'hub_set_native_app' | [appId: 777, addAction: [capability: 'switch', state: 'on'], confirm: true]                                 | 'action:'
+    }
+
+    def "round-zero native validation cannot outrank the #gateName gate"() {
+        given:
+        settingsMap.enableWrite = enableWrite
+        settingsMap.enableMandatoryBPS = mandatoryBps
+        stateMap.lastBackupTimestamp = backupEpoch
+        def leafArgs = [appId: 778,
+            addTrigger: [capability: 'Periodic Schedule', minutes: 1],
+            confirm: confirm]
+        if (bestPracticeKey != null) leafArgs.bestPracticeKey = bestPracticeKey
+        if (backupEpoch == null) {
+            hubGet.register('/hub2/localBackups') { params -> '[]' }
+        }
+        def args = [tool: 'hub_set_rule', args: leafArgs]
+
+        when:
+        def response = modernCall('hub_manage_rule_machine', args)
+
+        then:
+        response.result == null
+        response.error.code == -32602
+        response.error.message.contains(expected)
+        !response.error.message.toLowerCase().contains('periodic')
+        !(atomicStateMap.mrtrRequests instanceof Map) || atomicStateMap.mrtrRequests.isEmpty()
+        runInMillisCalls.isEmpty()
+
+        where:
+        gateName        | enableWrite | mandatoryBps | backupEpoch    | confirm | bestPracticeKey || expected
+        'Write master'  | false       | false        | 1234567890000L | true    | null            || 'Write tools are disabled'
+        'mandatory BPS' | true        | true         | 1234567890000L | true    | 'wrong'         || 'Mandatory best-practice acknowledgment'
+        'confirmation'  | true        | false        | 1234567890000L | false   | null            || 'SAFETY CHECK FAILED'
+        'backup freshness' | true     | false        | null           | true    | null            || 'BACKUP REQUIRED'
+    }
+
+    def "valid #leaf native write still allocates requestState after pure preflight"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.useGateways = true
+        stateMap.lastBackupTimestamp = 1234567890000L
+        def leafArgs = [appId: 779,
+            addAction: [capability: 'log', message: 'valid preflight'],
+            confirm: true]
+        def args = (outer == leaf) ? leafArgs : [tool: leaf, args: leafArgs]
+
+        when:
+        def response = modernCall(outer, args)
+        String requestState = response.result.requestState
+
+        then:
+        response.error == null
+        response.result.resultType == 'input_required'
+        requestState instanceof String
+        atomicStateMap.mrtrRequests[requestState].leafTool == leaf
+        runInMillisCalls.isEmpty()
+
+        where:
+        outer                              | leaf
+        'hub_set_rule'                     | 'hub_set_rule'
+        'hub_manage_native_rules_and_apps' | 'hub_set_native_app'
+    }
+
+    def "pure refusal does not outrank existing multi-operation dispatch"() {
+        given:
+        settingsMap.enableWrite = true
+        stateMap.lastBackupTimestamp = 1234567890000L
+        def args = [appId: 780,
+            addTrigger: [capability: 'Periodic Schedule', minutes: 1],
+            addLocalVariable: [name: 'mustNotLand', type: 'String', value: 'x'],
+            confirm: true]
+
+        when:
+        def response = modernCall('hub_set_rule', args)
+        String requestState = response.result.requestState
+
+        then: 'round zero defers to the existing worker-side operation-family guard'
+        response.error == null
+        response.result.resultType == 'input_required'
+        requestState instanceof String
+        atomicStateMap.mrtrRequests[requestState].leafTool == 'hub_set_rule'
+        runInMillisCalls.isEmpty()
+    }
+
     def "modern slow write preflights, continues across bounded slices, and replays its terminal result"() {
         given:
         settingsMap.enableWrite = true

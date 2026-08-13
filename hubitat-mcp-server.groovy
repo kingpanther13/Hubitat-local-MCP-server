@@ -1553,6 +1553,18 @@ def handleToolsCall(msg) {
             }
         } else {
             _mrtrValidateAccess(toolName, reactiveToolName, args)
+            if (reactiveToolName?.toString() in ["hub_set_rule", "hub_set_native_app"]) {
+                Map leafArgs = _mrtrLeafArguments(toolName?.toString(),
+                    reactiveToolName?.toString(), args as Map) as Map
+                Map refusal = _rmRoundZeroNativeEditRefusal(leafArgs)
+                if (refusal != null) {
+                    // Validation is pure, but confirmation/backup freshness must
+                    // retain precedence over exposing its argument-specific detail.
+                    requireDestructiveConfirm(leafArgs?.confirm as Boolean)
+                    return _renderToolResult(msg.id, toolName, reactiveToolName,
+                        args, refusal, false)
+                }
+            }
             def reservation = _mrtrReserve(toolName, reactiveToolName, binding)
             if (reservation.accepted != true) {
                 return _renderToolResult(msg.id, toolName, reactiveToolName, args,

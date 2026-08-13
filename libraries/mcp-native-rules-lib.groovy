@@ -2043,46 +2043,25 @@ private String _rmPeriodicShapeError(String freq, Map per) {
     return null
 }
 
-private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
-    if (!(triggerSpec instanceof Map)) throw new IllegalArgumentException("addTrigger requires a Map spec. RM is not touched.")
-    // Discover mode -- return static schema without touching the hub.
-    // No capability field required; no Write master gate; no backup.
-    if (triggerSpec.discover == true) {
-        return _rmTriggerSchemaForDiscover()
-    }
+// Argument-only refusal seam used before MRTR allocates requestState. Keep this
+// allowlist narrower than the full leaf validation: every check here is decided
+// solely from the supplied trigger map and must not read or mutate hub state.
+private void _rmValidateRoundZeroTriggerSpec(Map triggerSpec) {
+    if (!(triggerSpec instanceof Map) || triggerSpec.discover == true) return
     def cap = triggerSpec.capability?.toString()?.trim()
-    if (!cap) throw new IllegalArgumentException("addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema. RM is not touched.")
+    if (!cap) return
 
-    // Fail loud on the two plausible-but-wrong shapes the wizard would otherwise commit
-    // as a broken trigger with success:true. Both checks run before any hub round-trip, so
-    // a rejected spec never leaves a half-written trigger editor open.
-    //
-    // A state-change token belongs in `comparator`, not `state`/`value`. Supplied as either on a
-    // numeric or device-state trigger it falls through to the generic tstate path, which the hub
-    // rejects (tstate not_in_schema) and leaves a partial trigger with no hint. Guard the
-    // EFFECTIVE value -- state, else value, matching the generic sink below (state != null ?
-    // state : value) -- so the numeric-idiomatic `value:'increased'` bypass is caught too. Fires
-    // only when no comparator was given (an explicit comparator is the correct channel and takes
-    // precedence) and only for the families the guard applies to (device-state / numeric); the
-    // family scope leaves Mode / Variable / Custom Attribute and the time family untouched,
-    // because their state/value legitimately carries names, enum values, or nothing.
     def effState = triggerSpec.state != null ? triggerSpec.state : triggerSpec.value
     def offendingField = triggerSpec.state != null ? "state" : "value"
-    if (triggerSpec.comparator == null && _rmLooksLikeStateChangeToken(effState) && _rmStateChangeGuardApplies(cap)) {
+    if (triggerSpec.comparator == null && _rmLooksLikeStateChangeToken(effState) &&
+            _rmStateChangeGuardApplies(cap)) {
         throw new IllegalArgumentException("${offendingField}:'${effState}' is not a valid state value -- for a state-change trigger use comparator:'*changed*' (or '*became*'/'*increased*'/'*decreased*'), not ${offendingField}. Pass {discover:true} for this capability's field schema. RM is not touched.")
     }
 
-    // A Periodic Schedule trigger's schedule lives entirely in the periodic map; without it
-    // only tCapab is written, the trigger renders as "?" (the parent renderer cannot reach the
-    // unwritten sub-page state), and the response is success:true.
-    // Reject early and name the concrete mistake: a present-but-non-Map `periodic`, else any
-    // stray top-level keys the caller passed (e.g. a bare `minutes`). Match on the raw
-    // capability string -- the canonical enum value is not resolved until the wizard opens.
     if (cap.equalsIgnoreCase("Periodic Schedule") && !(triggerSpec.periodic instanceof Map)) {
-        def strayKeys = triggerSpec.keySet().findAll { !(it?.toString() in _rmRecognizedTriggerKeys()) }
-        // Only name a clause when there is something concrete to name -- "Received keys: []"
-        // (bare capability, or a wrong-typed `periodic` which is itself a recognized key) told
-        // the caller nothing.
+        def strayKeys = triggerSpec.keySet().findAll {
+            !(it?.toString() in _rmRecognizedTriggerKeys())
+        }
         def detail
         if (triggerSpec.containsKey("periodic")) {
             detail = " periodic was supplied but is not a Map of schedule fields."
@@ -2093,6 +2072,71 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         }
         throw new IllegalArgumentException("Periodic Schedule trigger requires periodic:{frequency:'Seconds'|'Minutes'|'Hourly'|'Daily'|'Weekly'|'Monthly'|'Yearly'|'Cron String', everyN:<n>, ...}.${detail} Pass {discover:true} for the full periodic field schema. RM is not touched.")
     }
+}
+
+// Pure periodic fields that historically run after device-ID prevalidation.
+// Round zero invokes these only when no earlier dynamic validator can apply.
+private void _rmValidateRoundZeroPeriodicSpec(Map triggerSpec) {
+    def cap = triggerSpec?.capability?.toString()?.trim()
+    if (!cap) return
+    if (cap.equalsIgnoreCase("Periodic Schedule") && triggerSpec.periodic instanceof Map) {
+        def periodic = triggerSpec.periodic as Map
+        def frequency = periodic.frequency?.toString()
+        if (!frequency) {
+            throw new IllegalArgumentException("Periodic Schedule trigger requires periodic.frequency (one of: Seconds, Minutes, Hourly, Daily, Weekly, Monthly, Yearly, 'Cron String'). Pass {discover:true} for the full periodic field schema. RM is not touched.")
+        }
+        if ((frequency == "Seconds" || frequency == "Minutes") && periodic.everyN != null) {
+            def allowedCounts = [1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30]
+            def requestedCount = null
+            try { requestedCount = periodic.everyN as Integer }
+            catch (Exception ignored) { requestedCount = null }
+            if (requestedCount == null || !(requestedCount in allowedCounts)) {
+                throw new IllegalArgumentException("Periodic ${frequency} everyN must be one of ${allowedCounts} (RM restricts the count to this enum); got '${periodic.everyN}'. RM is not touched.")
+            }
+        }
+        if (frequency == "Monthly" && periodic.dayOfMonth != null &&
+                periodic.weekOfMonth != null) {
+            throw new IllegalArgumentException("Periodic Monthly: dayOfMonth and weekOfMonth are mutually exclusive -- dayOfMonth selects a calendar day (e.g. the 15th), weekOfMonth selects the Nth weekday (e.g. the Second Monday). Pass one mode's fields, not both. RM is not touched.")
+        }
+        def shapeErr = _rmPeriodicShapeError(frequency, periodic)
+        if (shapeErr) {
+            throw new IllegalArgumentException("${shapeErr} Pass {discover:true} for the full periodic field schema. RM is not touched.")
+        }
+    }
+}
+
+// Pure action checks in their established order. Structural checks and
+// picker/existence checks need live rule state and remain inside the worker.
+private void _rmValidateRoundZeroActionSpec(Map actionSpec) {
+    if (!(actionSpec instanceof Map) || actionSpec.discover == true) return
+    def cap = actionSpec.capability?.toString()?.trim()
+    if (!cap) return
+    _rmRejectUnwalkableExpressionConditions(actionSpec)
+
+    def capLc = cap.toLowerCase()
+    def expressionBearingCaps = ["ifthen", "elseif", "repeatwhile", "waitexpression"]
+    if (capLc in expressionBearingCaps && actionSpec.conditions != null &&
+            !(actionSpec.expression instanceof Map)) {
+        throw new IllegalArgumentException("${cap} action takes expression:{conditions:[...], operator|operators}, not a top-level conditions array. Wrap them: expression:{conditions:[...], operator:'AND'}. Pass {discover:true} for the expression shape. RM is not touched.")
+    }
+
+    def action = actionSpec.action?.toString()?.trim()
+    if (action == null && actionSpec.state != null &&
+            _rmActionCapUsesActionVerb(cap)) {
+        throw new IllegalArgumentException("${cap} action uses action: (not state:) to select the operation -- e.g. addAction(capability:'${cap}', action:'${actionSpec.state}', ...). Pass {discover:true} for this capability's action list. RM is not touched.")
+    }
+}
+
+private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
+    if (!(triggerSpec instanceof Map)) throw new IllegalArgumentException("addTrigger requires a Map spec. RM is not touched.")
+    // Discover mode -- return static schema without touching the hub.
+    // No capability field required; no Write master gate; no backup.
+    if (triggerSpec.discover == true) {
+        return _rmTriggerSchemaForDiscover()
+    }
+    _rmValidateRoundZeroTriggerSpec(triggerSpec)
+    def cap = triggerSpec.capability?.toString()?.trim()
+    if (!cap) throw new IllegalArgumentException("addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema. RM is not touched.")
 
     // Pre-validate device IDs exist — RM 5.1 silently stores
     // {<bogusId>: null} in tDev_<N> if the ID doesn't resolve, and the
@@ -2111,55 +2155,14 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         _rmValidateDeviceIdsExist("addTrigger.condition.deviceIds", cm.deviceIds)
     }
 
-    // Periodic argument validation, run before the moreCond click opens the
-    // wizard so a bad spec surfaces a structured failure without leaving an
-    // in-flight trigger editor half-open. NOTE: this half-open guarantee is
-    // PER-SPEC -- it protects the single trigger being added here. The bulk
-    // addTriggers/patches paths share one pre-batch backup, so a mid-batch reject
-    // leaves earlier triggers in the batch already committed; batch callers should
-    // verify rule state and restore from the batch backup if needed. The full
-    // per-frequency field map lives in the periodic block further down; these are
-    // just the arg guards.
+    _rmValidateRoundZeroPeriodicSpec(triggerSpec)
+    // Preserve the legacy valid-path normalization without making the pure
+    // round-zero validator mutate caller arguments.
     if (cap.equalsIgnoreCase("Periodic Schedule") && triggerSpec.periodic instanceof Map) {
-        def perEarly = triggerSpec.periodic as Map
-        def freqEarly = perEarly.frequency?.toString()
-        // frequency is the periodic mode selector -- without it the sub-page never opens and
-        // the row renders as "?". Reject up front (pre-write) instead of the later post-write
-        // throw in the periodic write block (which fires after the trigger editor has opened).
-        if (!freqEarly) {
-            throw new IllegalArgumentException("Periodic Schedule trigger requires periodic.frequency (one of: Seconds, Minutes, Hourly, Daily, Weekly, Monthly, Yearly, 'Cron String'). Pass {discover:true} for the full periodic field schema. RM is not touched.")
-        }
-        // Seconds/Minutes count is a restricted RM enum, not a free integer.
-        // Fractional values truncate toward zero (5.5 -> 5) and are then
-        // range-checked against the enum. Normalize everyN to the truncated
-        // integer in place so the downstream write sends the enum-valid value,
-        // not the raw fractional (RM's enum field would silent-reject "5.5").
-        if ((freqEarly == "Seconds" || freqEarly == "Minutes") && perEarly.everyN != null) {
-            def allowedCounts = [1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30]
-            def reqCount = null
-            // Broad catch: everyN may arrive as a non-numeric String
-            // (NumberFormatException) or a Map/List (GroovyCastException);
-            // both mean "not a usable count" and route to the throw below.
-            try { reqCount = perEarly.everyN as Integer } catch (Exception ignored) { reqCount = null }
-            if (reqCount == null || !(reqCount in allowedCounts)) {
-                throw new IllegalArgumentException("Periodic ${freqEarly} everyN must be one of ${allowedCounts} (RM restricts the count to this enum); got '${perEarly.everyN}'. RM is not touched.")
-            }
-            perEarly.everyN = reqCount
-        }
-        // Monthly has two mutually-exclusive modes whose field sets hide each
-        // other: by-day (dayOfMonth) and nth-weekday (weekOfMonth). Reject a
-        // spec that mixes them so the caller gets a clear error instead of an
-        // unrenderable half-written sub-page.
-        if (freqEarly == "Monthly" && perEarly.dayOfMonth != null && perEarly.weekOfMonth != null) {
-            throw new IllegalArgumentException("Periodic Monthly: dayOfMonth and weekOfMonth are mutually exclusive -- dayOfMonth selects a calendar day (e.g. the 15th), weekOfMonth selects the Nth weekday (e.g. the Second Monday). Pass one mode's fields, not both. RM is not touched.")
-        }
-        // Each frequency needs its mode-defining field(s) or only whichPeriod is written and
-        // the row renders unusable (a phantom "?"/"null"). Fail loud on an under-specified
-        // shape so the family, not just the missing-map case, is covered by the fail-loud
-        // contract. Pre-write, so it carries the not-touched sentinel.
-        def shapeErr = _rmPeriodicShapeError(freqEarly, perEarly)
-        if (shapeErr) {
-            throw new IllegalArgumentException("${shapeErr} Pass {discover:true} for the full periodic field schema. RM is not touched.")
+        def periodic = triggerSpec.periodic as Map
+        def frequency = periodic.frequency?.toString()
+        if ((frequency == "Seconds" || frequency == "Minutes") && periodic.everyN != null) {
+            periodic.everyN = periodic.everyN as Integer
         }
     }
 
@@ -5502,49 +5505,13 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     def action = actionSpec.action?.toString()?.trim()
     if (!cap) throw new IllegalArgumentException("addAction.capability is required (e.g. 'switch'). Common values: switch, dimmer, color, log, notification, mode, setVariable, runCommand, delay, repeat, ifThen. Pass {discover: true} to get the full structured schema.")
 
-    // Pre-flight, zero hub round-trips: for an expression-bearing action, reject an unwalkable
-    // condition capability (Last Event Device / Lock codes / date-day pickers) from the RAW
-    // requested name BEFORE any wizard write or opener commit. These caps are decidable from the
-    // requested name alone -- no hub state -- so refusing here keeps the reject atomic by
-    // construction: it never commits the IF-block opener that the expression-block rollback path
-    // (below) would then have to unwind. That open -> reject -> rollback sequence is enough
-    // sequential wizard round-trips (each POST re-renders the full rule page) to cross the cloud
-    // relay's per-call timeout, so hoisting the decidable-from-name reject up front is the cheap
-    // path. The rollback wrapper stays for the OTHER mid-expression throws that genuinely commit an
-    // opener before failing (device-not-found, operators-length mismatch, live-picker misses).
-    // Mirrors the pre-write reject already applied on the addRequiredExpression and static
-    // addTrigger.condition surfaces. This top-of-function hoist is the catch-all for the
-    // intra-batch and patch paths that do not pass through the dispatcher's single/bulk pre-flight.
-    _rmRejectUnwalkableExpressionConditions(actionSpec)
-
     // 'action' is required only for capabilities that have multiple action
     // variants (e.g. switch needs on/off/toggle/flash). Single-action
     // capabilities (log, mode, delay, comment, exitRule, capture, restore,
     // refresh, poll, runRule, cancelTimers, etc.) accept a null/missing
     // action — each capability's branch validates as needed.
 
-    // Fail loud on two plausible-but-wrong action shapes before any hub round-trip, so a rejected
-    // spec never opens the action editor (both are pre-write, hence "RM is not touched"). First:
-    // the condition-bearing action subtypes take their conditions INSIDE an expression wrapper
-    // (expression:{conditions:[...], operator|operators}); a flat top-level conditions array is
-    // never read, so name that mistake rather than surfacing only the generic "requires
-    // expression=..." from the capability branch further down. Compare case-insensitively so a
-    // caller carrying the addTrigger title-case convention (capability:'Switch') still trips it.
-    def capLc = cap?.toLowerCase()
-    def expressionBearingCaps = ["ifthen", "elseif", "repeatwhile", "waitexpression"]
-    if (capLc in expressionBearingCaps && actionSpec.conditions != null && !(actionSpec.expression instanceof Map)) {
-        throw new IllegalArgumentException("${cap} action takes expression:{conditions:[...], operator|operators}, not a top-level conditions array. Wrap them: expression:{conditions:[...], operator:'AND'}. Pass {discover:true} for the expression shape. RM is not touched.")
-    }
-
-    // Second: an action-driven capability selects its operation via action: (on/off/toggle;
-    // setSpeed/cycle; open/close/...), not the trigger-style state:. Passing state: leaves action
-    // null and the capability branch rejects with an opaque "Unknown <cap> action 'null'"; name
-    // the real mistake so the caller moves the value to action:. The action-driven set is derived
-    // from the action schema (every capability with an action enum), so the steer covers all of
-    // them -- not just a hardcoded few.
-    if (action == null && actionSpec.state != null && _rmActionCapUsesActionVerb(cap)) {
-        throw new IllegalArgumentException("${cap} action uses action: (not state:) to select the operation -- e.g. addAction(capability:'${cap}', action:'${actionSpec.state}', ...). Pass {discover:true} for this capability's action list. RM is not touched.")
-    }
+    _rmValidateRoundZeroActionSpec(actionSpec)
 
     // Pre-flight: refuse closers (endIf / stopRepeat) and orphan branch
     // keywords (elseIf / else) that would render as orphaned because they
@@ -13286,6 +13253,74 @@ private Map _patchesPauseResult(Integer appId, Map backup, List patchResults, Li
             note: "Time budget reached; completed patch ops are committed at the settings level but NOT yet baked into the running rule. Re-issue the edit (hub_set_rule or hub_set_native_app) with patches = patchesRemaining to continue; the rule finalize/updateRule runs when the remaining patches complete."
         ]
     ]
+}
+
+// Return a terminal structured refusal only for edit shapes whose rejection is
+// fully determined by argument maps. This method must remain free of hub reads,
+// writes, state mutation, backup creation, and wizard calls.
+private Map _rmRoundZeroNativeEditRefusal(Map args) {
+    if (!(args instanceof Map) || !(args.appId instanceof Number) ||
+            args.operation != null) return null
+
+    def candidates = []
+    if (args.addTrigger instanceof Map) candidates << "addTrigger"
+    if (args.addTriggers instanceof List) candidates << "addTriggers"
+    if (args.addAction instanceof Map) candidates << "addAction"
+    if (args.addActions instanceof List) candidates << "addActions"
+    // Keep the seam narrower than EDIT dispatch. In particular, never let an
+    // argument refusal outrank the existing multi-operation-family error.
+    if (candidates.size() != 1) return null
+    String candidate = candidates.first()
+    def competingEditKeys = [
+        "settings", "button", "addTrigger", "addTriggers", "addAction",
+        "addActions", "addRequiredExpression", "replaceRequiredExpression",
+        "addLocalVariable", "removeLocalVariable", "patches", "removeAction",
+        "clearActions", "replaceActions", "moveAction", "walkStep",
+        "removeTrigger", "modifyTrigger", "modifyAction", "guide"
+    ].findAll { it != candidate }
+    if (competingEditKeys.any { args.containsKey(it) }) return null
+
+    try {
+        switch (candidate) {
+            case "addTrigger":
+                def triggerSpec = args.addTrigger as Map
+                _rmValidateRoundZeroTriggerSpec(triggerSpec)
+                if (triggerSpec.deviceIds == null &&
+                        !(triggerSpec.condition instanceof Map)) {
+                    _rmValidateRoundZeroPeriodicSpec(triggerSpec)
+                }
+                break
+            case "addTriggers":
+                (args.addTriggers as List).each { spec ->
+                    if (!(spec instanceof Map)) return
+                    def triggerSpec = spec as Map
+                    _rmValidateRoundZeroTriggerSpec(triggerSpec)
+                    if (triggerSpec.deviceIds == null &&
+                            !(triggerSpec.condition instanceof Map)) {
+                        _rmValidateRoundZeroPeriodicSpec(triggerSpec)
+                    }
+                }
+                break
+            case "addAction":
+                _rmValidateRoundZeroActionSpec(args.addAction as Map)
+                break
+            case "addActions":
+                (args.addActions as List).each { spec ->
+                    if (spec instanceof Map) _rmValidateRoundZeroActionSpec(spec as Map)
+                }
+                break
+        }
+        return null
+    } catch (IllegalArgumentException refusal) {
+        return [
+            success: false,
+            appId: (args.appId as Number).intValue(),
+            error: refusal.message,
+            wizardStuck: false,
+            backup: null,
+            restoreHint: _rmPreflightRestoreHint()
+        ]
+    }
 }
 
 // pageName lets callers target a specific sub-page (e.g. ruleActions,
