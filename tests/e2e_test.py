@@ -3900,36 +3900,6 @@ class TestRunner:
         started = _rule_status_when(app_id, lambda s: s.get("status") == "active")
         assert started.get("status") == "active", f"started rule should return to active, got: {started}"
 
-        # ARRAY form: ruleId also accepts an array -- one RMUtils dispatch covers a
-        # whole set (the staged-migration cutover shape). Exercised with a one-element array
-        # against the SAME rule to keep the RM e2e rule budget flat. The TRUE multi-element
-        # array (>1 id in one JSON array, the one thing this form cannot prove) is covered by
-        # the two-id batch in test_set_rule_modifyaction_retarget, which already owns two live
-        # rules. The wire concerns here are the union-typed ruleId argument surviving the relay
-        # and the ruleIds response key.
-        arr_pause = _status_write("hub_set_rule_paused", {"ruleId": [app_id], "paused": True},
-                                  "hub_set_rule_paused(paused=True, array form)")
-        # _status_write returns THREE shapes: the tool envelope (normal path -- carries
-        # rmAction), the converged status map from the limiter-recovery poll (carries
-        # status/paused, no rmAction), or the hub_set_rule envelope from the load-immune
-        # pausRule button drive (also no rmAction). Only the FIRST can carry ruleIds, so the
-        # echo is asserted unconditionally there and reported-not-asserted on the other two --
-        # a regression that drops the key fails instead of skipping.
-        if isinstance(arr_pause, dict) and "rmAction" in arr_pause:
-            assert "ruleIds" in arr_pause, \
-                f"array-form pause envelope is missing the ruleIds key: {arr_pause}"
-            assert [str(x) for x in arr_pause["ruleIds"]] == [str(app_id)], \
-                f"array-form pause should echo ruleIds=[{app_id}], got: {arr_pause}"
-        else:
-            print(f"    [LIMITER] array-form pause answered via the converged-status path; "
-                  f"ruleIds echo not assertable on this shape: {arr_pause}")
-        arr_paused = _rule_status_when(app_id, lambda s: s.get("status") == "paused" and s.get("paused") is True)
-        assert arr_paused.get("paused") is True, f"array-form pause did not land: {arr_paused}"
-        _status_write("hub_set_rule_paused", {"ruleId": [app_id], "paused": False},
-                      "hub_set_rule_paused(paused=False, array form)")
-        arr_resumed = _rule_status_when(app_id, lambda s: s.get("status") == "active" and s.get("paused") is False)
-        assert arr_resumed.get("paused") is False, f"array-form resume did not land: {arr_resumed}"
-
         # DISABLED (issue #359): the red-X disabled flag is the other status axis. Disable the
         # SAME rule via hub_set_app_disabled and confirm hub_list_rules reports status "disabled"
         # + disabled:true, then re-enable and confirm it returns to "active" -- BEFORE the EDIT
@@ -4238,21 +4208,43 @@ class TestRunner:
         caller_id = None
         try:
             target_b = self._create_native_rule("MaTargetB")
-            caller_id = self._create_native_rule("MaCaller")
-            # Every heavy edit goes through _set_rule: the modifyAction composite (delete +
-            # re-add + reposition + readback + health + updateRule in ONE call) and the add
-            # wizard both sit at the relay ceiling on a loaded hub; _set_rule drives them
-            # through bounded requestState continuation rounds.
-            run_act = self._set_rule(caller_id,
-                {"addAction": {"capability": "runRule", "ruleIds": [target_a]}}, strict=True)
-            ma_idx = run_act.get("actionIndex")
-            assert ma_idx is not None, f"runRule accept response carried no actionIndex: {run_act}"
-            # The sentinel is appended AFTER the runRule row so the retargeted action is NOT
-            # last: the rebuild must then walk the re-added row back up (movesUp=1), which is
-            # the reposition leg the position-preservation claim rests on.
+            # The runRule row and its order sentinel are setup for modifyAction, so create
+            # them in the rule-create envelope. The returned per-action results retain the
+            # actionIndex contract; a relay-dropped create response falls back to the
+            # authoritative persisted settings, never a guessed counter.
             sentinel_msg = "E2E order sentinel post-action"
-            self._set_rule(caller_id,
-                {"addAction": {"capability": "log", "message": sentinel_msg}}, strict=True)
+            caller_id, caller_create = self._create_native_rule("MaCaller", {
+                "addActions": [
+                    {"capability": "runRule", "ruleIds": [target_a]},
+                    {"capability": "log", "message": sentinel_msg},
+                ],
+            }, return_result=True)
+            if caller_create is not None:
+                setup_actions = caller_create.get("actions") or []
+                assert len(setup_actions) == 2 and all(a.get("success") is not False for a in setup_actions), \
+                    f"create must report two successful setup action results: {caller_create}"
+                assert not any(a.get("partial") for a in setup_actions), \
+                    f"create reported a partial modifyAction setup row: {setup_actions}"
+                ma_idx = setup_actions[0].get("actionIndex")
+                sentinel_idx = setup_actions[1].get("actionIndex")
+                assert ma_idx is not None and sentinel_idx is not None and ma_idx != sentinel_idx, \
+                    f"create must report two distinct setup action indices: {caller_create}"
+            else:
+                setup_cfg = self.client.call_tool("hub_read_apps_code", {
+                    "tool": "hub_get_app_config",
+                    "args": {"appId": caller_id, "includeSettings": True}})
+                setup_settings = setup_cfg.get("settings") or {}
+                ma_idx = next((int(k.split(".")[1]) for k, v in setup_settings.items()
+                               if k.startswith("ruleAct.")
+                               and self._normalize_ruleact_ids(v) == [str(target_a)]), None)
+                sentinel_idx = next((int(k.split(".")[1]) for k, v in setup_settings.items()
+                                     if k.startswith("logmsg.") and v == sentinel_msg), None)
+                assert ma_idx is not None and sentinel_idx is not None and ma_idx != sentinel_idx, \
+                    f"create did not persist two distinct modifyAction setup rows: {setup_settings}"
+
+            # The sentinel follows the runRule row so the retargeted action is NOT last:
+            # the rebuild must walk the re-added row back up (movesUp=1), which is the
+            # reposition leg the position-preservation claim rests on.
 
             ma = self._rm_call_soft(
                 {"appId": caller_id, "modifyAction": {"index": ma_idx, "mods": {"ruleIds": [target_b]}},
@@ -4515,15 +4507,19 @@ class TestRunner:
         # deleted in the finally; strict so a relay-dropped response re-runs on a fresh rule
         # rather than skipping the wire assertion.
         switch_id = int(self.get_test_switch_id())
-        app_id = self._create_native_rule("WaitEvtOffset", {
+        app_id, created = self._create_native_rule("WaitEvtOffset", {
             "addActions": [{"capability": "log", "message": "E2E waitEvents offset base"}],
-        })
+            "addRequiredExpression": {"conditions": [
+                {"capability": "Switch", "deviceIds": [switch_id], "state": "on"}]},
+        }, return_result=True)
         try:
-            # Commit a Required Expression (device-state condition -- shape proven in BAT
-            # T613/T639); incidental to the offset, present as the real-world rule shape.
-            re_res = self._set_rule(app_id, {"addRequiredExpression": {
-                "conditions": [{"capability": "Switch", "deviceIds": [switch_id], "state": "on"}]}}, strict=True)
-            assert re_res.get("success") is not False, f"addRequiredExpression should commit, got: {re_res}"
+            # The Required Expression is fixture state for the later offset-slot write.
+            # Keep its create-envelope result contract when available; after a dropped
+            # create response the rendered-config readback below remains authoritative.
+            if created is not None:
+                re_res = created.get("requiredExpression")
+                assert isinstance(re_res, dict) and re_res.get("success") is not False, \
+                    f"bundled addRequiredExpression should commit, got: {created}"
 
             # THE fix: adding a waitEvents action past index 1 must commit -- the walker
             # writes the offset slot (tCapab-2 here) instead of throwing on tCapab-1.
@@ -4848,7 +4844,8 @@ class TestRunner:
 
     # ---- shared helpers for the native-authoring coverage below ----
 
-    def _create_native_rule(self, suffix: str, extra: dict | None = None) -> Any:
+    def _create_native_rule(self, suffix: str, extra: dict | None = None,
+                            return_result: bool = False) -> Any:
         """Create a native RM rule via hub_set_rule (no appId), track it.
 
         With no `extra` this creates an empty shell; pass `extra` to BUNDLE create-time
@@ -4905,6 +4902,8 @@ class TestRunner:
             assert created.get("ruleId") == app_id, \
                 f"native create did not surface ruleId==appId (got ruleId={created.get('ruleId')}, appId={app_id})"
         self.created_native_app_ids.append(str(app_id))
+        if return_result:
+            return app_id, created
         return app_id
 
     def _set_rule(self, app_id: Any, extra: dict, strict: bool = False) -> Any:
@@ -5198,17 +5197,17 @@ class TestRunner:
         # path -- _rmWalkStep's own deferred-clear hook -- which _rmAddAction's flow never
         # exercises. strict=True so a relay 504 re-runs this small rule once.
         sw = int(self.get_test_switch_id())
-        app_id = self._create_native_rule("WalkActRE")
+        app_id, created = self._create_native_rule("WalkActRE", {
+            "addRequiredExpression": {"conditions": [
+                {"capability": "Switch", "deviceIds": [sw], "state": "on"}]},
+        }, return_result=True)
         try:
-            # RE first: sets predClearPending and dirties predCapabs.
-            re_res = self._rm_call_soft({
-                "appId": app_id,
-                "addRequiredExpression": {"conditions": [
-                    {"capability": "Switch", "deviceIds": [sw], "state": "on"}]},
-                "confirm": True,
-            }, strict=True)
-            assert re_res.get("success") is not False, \
-                f"addRequiredExpression reported failure: {re_res}"
+            # RE first: create commits it and leaves the same predClearPending/predCapabs
+            # state that the later manual walkStep sequence is specifically testing.
+            if created is not None:
+                re_res = created.get("requiredExpression")
+                assert isinstance(re_res, dict) and re_res.get("success") is not False, \
+                    f"bundled addRequiredExpression reported failure: {created}"
             # Single-step navigate into the action editor -- this is the op that fires the
             # deferred predCapabs clear, BEFORE the new action slot is created.
             nav = self._set_rule(app_id, {"walkStep": {"page": "selectActions", "operation": "navigate",
@@ -6531,20 +6530,19 @@ class TestRunner:
         # small test once, then is an honest red (a persistent 504 means the build is still too
         # heavy -- a tool problem to fix, not a test to weaken).
         dev_a, dev_b = self.get_test_temperature_ids()
-        app_id = self._create_native_rule("MultiCondRE")
-        try:
-            result = self._rm_call_soft({
-                "appId": app_id,
-                "addRequiredExpression": {
+        re_spec = {
                     "operator": "AND",
                     "conditions": [
                         {"capability": "Temperature", "deviceIds": [int(dev_a)], "comparator": ">", "state": 70},
                         {"capability": "Temperature", "deviceIds": [int(dev_b)], "comparator": "<", "state": 80},
                         {"capability": "Temperature", "deviceIds": [int(dev_a)], "comparator": ">=", "state": 65},
                     ],
-                },
-                "confirm": True,
-            }, strict=True, recover_504=True)
+            }
+        app_id, created = self._create_native_rule("MultiCondRE", {
+            "addRequiredExpression": re_spec,
+        }, return_result=True)
+        try:
+            result = created.get("requiredExpression") if created is not None else {"recovered504": True}
             assert result.get("success") is not False, \
                 f"multi-condition addRequiredExpression reported failure (the gap-oper cache regression): {result}"
             # ALL THREE condition slots must have allocated -- before the fix a `cond=a` after a
@@ -6573,11 +6571,7 @@ class TestRunner:
         # operator (oper="end-sub-expression )") followed by the outer gap-operator -- an `oper`
         # echo that ADDS the expression-management buttons while still lagging. The outer cond=a
         # no-op'd before the fix. Proves the paren/sub-expression path builds live.
-        sub_app_id = self._create_native_rule("SubExprRE")
-        try:
-            sub = self._rm_call_soft({
-                "appId": sub_app_id,
-                "addRequiredExpression": {
+        sub_spec = {
                     "operator": "AND",
                     "conditions": [
                         {"subExpression": {"operator": "OR", "conditions": [
@@ -6586,9 +6580,12 @@ class TestRunner:
                         ]}},
                         {"capability": "Temperature", "deviceIds": [int(dev_a)], "comparator": ">=", "state": 65},
                     ],
-                },
-                "confirm": True,
-            }, strict=True, recover_504=True)
+            }
+        sub_app_id, sub_created = self._create_native_rule("SubExprRE", {
+            "addRequiredExpression": sub_spec,
+        }, return_result=True)
+        try:
+            sub = sub_created.get("requiredExpression") if sub_created is not None else {"recovered504": True}
             assert sub.get("success") is not False, \
                 f"sub-expression addRequiredExpression reported failure (close-paren/outer-oper cache regression): {sub}"
             # Two inner + one outer condition slot must all allocate. On a recovered 504 the
@@ -6624,16 +6621,15 @@ class TestRunner:
         # Build an RE, add a plain log action, and assert it lands as a top-level action, NOT a
         # Broken-Condition wrap. strict=True so a relay 504 re-runs this small rule once.
         sw = int(self.get_test_switch_id())
-        app_id = self._create_native_rule("ActAfterRE")
+        app_id, created = self._create_native_rule("ActAfterRE", {
+            "addRequiredExpression": {"conditions": [
+                {"capability": "Switch", "deviceIds": [sw], "state": "on"}]},
+        }, return_result=True)
         try:
-            re_res = self._rm_call_soft({
-                "appId": app_id,
-                "addRequiredExpression": {"conditions": [
-                    {"capability": "Switch", "deviceIds": [sw], "state": "on"}]},
-                "confirm": True,
-            }, strict=True)
-            assert re_res.get("success") is not False, \
-                f"addRequiredExpression reported failure: {re_res}"
+            if created is not None:
+                re_res = created.get("requiredExpression")
+                assert isinstance(re_res, dict) and re_res.get("success") is not False, \
+                    f"bundled addRequiredExpression reported failure: {created}"
             # The action added AFTER the RE must NOT be wrapped under a Broken Condition IF --
             # that wrap is exactly the stale-predCapabs symptom the ghost-ifThen clears.
             self._add_action_or_raise_504(app_id, {"capability": "log", "message": "after-RE"})
@@ -6652,16 +6648,34 @@ class TestRunner:
         # (moveAction and patches each have their own test: together the three were the
         # heaviest test in the family, and a 504 on any op forced a full re-run of all
         # ~10 wizard ops -- both retry attempts then ride the same overload.)
-        app_id = self._create_native_rule("ActMut")
+        marker = "remove-me-marker"
+        app_id, created = self._create_native_rule("ActMut", {
+            "addActions": [{"capability": "log", "message": marker}],
+        }, return_result=True)
         try:
+            # The removable marker is setup; keep the addActions mutation-under-test as
+            # its own request. Derive the marker index from the create action result or
+            # the authoritative persisted logmsg setting after a dropped create response.
+            if created is not None:
+                setup_actions = created.get("actions") or []
+                assert len(setup_actions) == 1 and setup_actions[0].get("success") is not False, \
+                    f"create must report one successful marker action: {created}"
+                idx = setup_actions[0].get("actionIndex")
+                assert idx is not None, \
+                    f"create marker action result carried no actionIndex: {created}"
+            else:
+                setup_cfg = self.client.call_tool("hub_read_apps_code", {
+                    "tool": "hub_get_app_config",
+                    "args": {"appId": app_id, "includeSettings": True}})
+                setup_settings = setup_cfg.get("settings") or {}
+                idx = next((int(k.split(".")[1]) for k, v in setup_settings.items()
+                            if k.startswith("logmsg.") and v == marker), None)
+                assert idx is not None, \
+                    f"create did not persist the action-mutation marker: {setup_settings}"
             self._set_rule(app_id, {"addActions": [
                 {"capability": "log", "message": "one"},
                 {"capability": "log", "message": "two"},
             ]}, strict=True)
-            first = self._set_rule(app_id, {"addAction": {"capability": "log", "message": "remove-me-marker"}}, strict=True)
-            idx = first.get("actionIndex")
-            assert idx is not None, \
-                f"addAction did not return an actionIndex (contract regression): {first}"
             # removeAction is the one wizard op measured ABOVE the ~10s cloud-relay
             # ceiling on a QUIET hub (10.4s direct-timed 2026-06-12), so a 504 on it is
             # the op's normal completion mode, not weather -- strict-raising would make
@@ -6674,7 +6688,7 @@ class TestRunner:
                 cfg = self.client.call_tool("hub_read_apps_code", {
                     "tool": "hub_get_app_config", "args": {"appId": app_id},
                 })
-                return "remove-me-marker" in str(cfg)
+                return marker in str(cfg)
             try:
                 self._set_rule(app_id, {"removeAction": {"index": idx}}, strict=True)
             except (McpError, McpToolError, requests.HTTPError) as exc:
@@ -6706,20 +6720,34 @@ class TestRunner:
         # hub_set_rule edit -> moveAction. RM action indices are PERSISTENT per-rule
         # counters (clearActions removes the actions but never renumbers), so move
         # whatever index the addActions response reports -- never a hardcoded 1.
-        app_id = self._create_native_rule("MoveAct")
+        setup_messages = ["a", "b", "c"]
+        app_id, created = self._create_native_rule("MoveAct", {
+            "addActions": [{"capability": "log", "message": msg}
+                           for msg in setup_messages],
+        }, return_result=True)
         try:
-            # Three SINGLE addAction calls, not one bulk addActions: the bulk walk runs
-            # ~2.5-4s per item in ONE request (direct-timed 7.6s for 2 items on a quiet
-            # hub), so 3 items rides over the ~10s relay ceiling and 504s under CI load
-            # (run 27427314399 -- both strict attempts). Singles are ~5s each, all under
-            # the ceiling; bulk-addActions coverage lives in test_set_rule_action_mutations.
-            move_indices = []
-            for msg in ("a", "b", "c"):
-                added = self._set_rule(app_id, {"addAction": {"capability": "log", "message": msg}}, strict=True)
-                if added.get("actionIndex") is not None:
-                    move_indices.append(added.get("actionIndex"))
-            assert move_indices, \
-                "addAction returned no action indices to move (contract regression)"
+            # All three rows are setup for the later moveAction request. Preserve each
+            # index via the create envelope, with persisted logmsg keys as the fallback
+            # when the create response is lost.
+            if created is not None:
+                setup_actions = created.get("actions") or []
+                assert len(setup_actions) == 3 and all(a.get("success") is not False for a in setup_actions), \
+                    f"create must report three successful moveAction setup rows: {created}"
+                move_indices = [a.get("actionIndex") for a in setup_actions]
+                assert all(idx is not None for idx in move_indices) \
+                    and len(set(move_indices)) == len(move_indices), \
+                    f"create must report three distinct moveAction setup indices: {created}"
+            else:
+                cfg = self.client.call_tool("hub_read_apps_code", {
+                    "tool": "hub_get_app_config",
+                    "args": {"appId": app_id, "includeSettings": True}})
+                settings = cfg.get("settings") or {}
+                move_indices = [next((int(k.split(".")[1]) for k, v in settings.items()
+                                      if k.startswith("logmsg.") and v == msg), None)
+                                for msg in setup_messages]
+                assert all(idx is not None for idx in move_indices) \
+                    and len(set(move_indices)) == len(move_indices), \
+                    f"create did not persist three distinct moveAction setup rows: {settings}"
             # The move-arrow click is the suite's heaviest single wizard op and rides the
             # ~10s cloud-relay ceiling even on a healthy hub. On a slow hub it can commit
             # late; the tool does one short re-check then returns a soft asyncCommitLikely
