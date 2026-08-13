@@ -14,6 +14,18 @@ RELAY_LEG_CEILING_SECONDS = 9.5
 MINIMUM_LOGICAL_SECONDS = 10.0
 
 
+def extract_bps_acknowledgment_key(guide: Any) -> str:
+    """Extract only the key published on the best-practice guide's canonical line."""
+    assert isinstance(guide, str), "best-practice guide content is not text"
+    match = re.search(
+        r"^Acknowledgment key:\s*(bps-ack-[A-Za-z0-9._-]+)\s*$",
+        guide,
+        flags=re.MULTILINE,
+    )
+    assert match, "best-practice guide did not publish an acknowledgment key"
+    return match.group(1)
+
+
 def _indexed_settings(settings: dict[str, Any], prefix: str) -> dict[int, Any]:
     pattern = re.compile(rf"^{re.escape(prefix)}(\d+)$")
     indexed = {}

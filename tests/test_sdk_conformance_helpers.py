@@ -9,6 +9,7 @@ from sdk_conformance_helpers import (
     RELAY_LEG_CEILING_SECONDS,
     RequestTrace,
     assert_mrtr_owner_rounds,
+    extract_bps_acknowledgment_key,
     summarize_modern_posts,
     summarize_mrtr_proof,
 )
@@ -17,6 +18,18 @@ from sdk_conformance_helpers import (
 class _Headers(dict):
     def get(self, key, default=None):
         return super().get(key.lower(), default)
+
+
+def test_bps_key_extraction_requires_the_documented_guide_line() -> None:
+    guide = """# Best-Practice Reference
+
+Acknowledgment key: bps-ack-299
+"""
+
+    assert extract_bps_acknowledgment_key(guide) == "bps-ack-299"
+
+    with pytest.raises(AssertionError, match="acknowledgment key"):
+        extract_bps_acknowledgment_key("bestPracticeKey is required")
 
 
 def _request(name: str = "hub_manage_rule_machine") -> SimpleNamespace:

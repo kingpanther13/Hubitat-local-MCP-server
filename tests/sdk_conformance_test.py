@@ -62,6 +62,7 @@ from sdk_conformance_helpers import (  # noqa: E402  (import guard above supplie
     RequestTrace,
     assert_exact_rule_log_messages,
     assert_mrtr_owner_rounds,
+    extract_bps_acknowledgment_key,
     find_exact_fixture_id_with_settle,
     summarize_modern_posts,
     summarize_mrtr_proof,
@@ -262,7 +263,7 @@ class ModernScenarios:
         assert not misprefixed, f"every tool name must carry the hub_ service prefix: {misprefixed}"
         undescribed = sorted(t.name for t in tools if not (t.description or "").strip())
         assert not undescribed, f"tools advertised with no description: {undescribed}"
-        badschema = sorted(t.name for t in tools if (t.inputSchema or {}).get("type") != "object")
+        badschema = sorted(t.name for t in tools if (t.input_schema or {}).get("type") != "object")
         assert not badschema, f"inputSchema root must be type 'object': {badschema}"
         assert "hub_get_info" in names, (
             "hub_get_info is a flat top-level tool (never behind a gateway) and the tools/call "
@@ -475,10 +476,19 @@ class ModernMrtrScenario:
 
         fixture_name = f"BAT_E2E_SDK_MRTR_{uuid.uuid4().hex[:12]}"
         fixture_id: str | None = None
+        guide_result = await client.call_tool(
+            "hub_get_tool_guide", {"section": "best_practice_reference"},
+        )
+        guide_payload = _tool_payload(guide_result, "best-practice guide read")
+        bps_key = extract_bps_acknowledgment_key(guide_payload.get("content"))
         try:
             created = await client.call_tool(self.GATEWAY, {
                 "tool": "hub_set_rule",
-                "args": {"name": fixture_name, "confirm": True},
+                "args": {
+                    "name": fixture_name,
+                    "confirm": True,
+                    "bestPracticeKey": bps_key,
+                },
             })
             create_payload = _tool_payload(created, "fixture create")
             fixture_id = str(create_payload.get("appId") or "") or None
@@ -496,6 +506,7 @@ class ModernMrtrScenario:
                     "appId": fixture_id,
                     "addActions": requested_actions,
                     "confirm": True,
+                    "bestPracticeKey": bps_key,
                 },
             })
             logical_elapsed = time.monotonic() - started
@@ -538,10 +549,14 @@ class ModernMrtrScenario:
                 operation="SDK MRTR proof readback",
             )
         finally:
-            await self._cleanup_fixture(client, fixture_name, fixture_id)
+            await self._cleanup_fixture(client, fixture_name, fixture_id, bps_key)
 
     async def _cleanup_fixture(
-        self, client: Client, fixture_name: str, fixture_id: str | None,
+        self,
+        client: Client,
+        fixture_name: str,
+        fixture_id: str | None,
+        bps_key: str,
     ) -> None:
         """Delete only this run's exact UUID-named app; never sweep backups or probe apps."""
         target_id = fixture_id
@@ -563,7 +578,11 @@ class ModernMrtrScenario:
             return
         deleted = await client.call_tool(self.GATEWAY, {
             "tool": "hub_delete_native_app",
-            "args": {"appId": target_id, "confirm": True},
+            "args": {
+                "appId": target_id,
+                "confirm": True,
+                "bestPracticeKey": bps_key,
+            },
         })
         _tool_payload(deleted, "fixture cleanup delete")
 
