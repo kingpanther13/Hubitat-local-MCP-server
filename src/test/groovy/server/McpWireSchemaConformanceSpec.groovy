@@ -238,7 +238,9 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
         McpSchemaValidator.modernErrors('InputRequiredResult', response.result) == []
 
         cleanup:
-        script._mrtrAbandon(stateId, claimed.record as Map, claimed, 'test_cleanup')
+        if (claimed != null) {
+            script._mrtrAbandon(stateId, claimed.record as Map, claimed, 'test_cleanup')
+        }
     }
 
     def "a server/discover result conforms to the 2026-07-28 DiscoverResult"() {

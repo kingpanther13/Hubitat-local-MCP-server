@@ -258,4 +258,13 @@ class McpRequestDriverSpec extends ToolSpecBase {
         expect:
         driver.decodeToolCallResponse(response).is(response)
     }
+
+    def "decodeToolCallResponse rejects a preserialized payload that is not a JSON object"() {
+        when:
+        driver.decodeToolCallResponse([__preserialized: '[1,2,3]'])
+
+        then:
+        def e = thrown(IllegalStateException)
+        e.message.contains('did not decode to a JSON object')
+    }
 }

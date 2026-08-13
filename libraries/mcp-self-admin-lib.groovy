@@ -489,29 +489,27 @@ def toolUpdatePackage(args) {
     if (args?.baseUrl instanceof String && args.baseUrl.trim()) storedArgs.baseUrl = args.baseUrl.trim()
     Map refusal = null
     synchronized (WRITE_RESERVATION_LOCK) {
+        _packageSweepMarkerLocked()
         def inFlight = atomicState.packageDeployInFlight
         if (inFlight instanceof Map) {
-            if (_packageMarkerHasTerminalEvidenceLocked(inFlight)) {
-                atomicState.packageDeployInFlight = null
-                try { atomicState.remove("packageDeployInFlight") } catch (Exception ignored) { }
-            } else {
-                def summary = [ref: inFlight.ref, requestId: inFlight.requestId,
-                               startedAt: inFlight.startedAt]
-                if (inFlight.startedAt != null) {
-                    try { summary.elapsedMs = now() - (inFlight.startedAt as Long) }
-                    catch (Exception ignored) { }
-                }
-                refusal = [
-                    success: false, isError: true, status: "duplicate_in_flight",
-                    inFlight: summary,
-                    error: "A package deploy (ref '${inFlight.ref}') is already running on this hub. Nothing was changed.",
-                    note: "Do not re-run the deploy. Watch hub_get_info.lastSelfDeploy for a record whose requestId matches the original acceptance response."
-                ]
+            def summary = [ref: inFlight.ref, requestId: inFlight.requestId,
+                           startedAt: inFlight.startedAt]
+            if (inFlight.startedAt != null) {
+                try { summary.elapsedMs = now() - (inFlight.startedAt as Long) }
+                catch (Exception ignored) { }
             }
+            refusal = [
+                success: false, isError: true, status: "duplicate_in_flight",
+                inFlight: summary,
+                error: "A package deploy (ref '${inFlight.ref}') is already running on this hub. Nothing was changed.",
+                note: "Do not re-run the deploy. Watch hub_get_info.lastSelfDeploy for a record whose requestId matches the original acceptance response."
+            ]
         }
         if (refusal == null) {
             atomicState.packageDeployInFlight = [
-                requestId: requestId, ref: ref, startedAt: startedAt, args: storedArgs
+                requestId: requestId, ref: ref, startedAt: startedAt,
+                phase: "queued", expiresAt: startedAt + _packageDeployRecoveryMs(),
+                args: storedArgs
             ]
         }
     }
@@ -548,8 +546,13 @@ def runPackageDeploy(Map job = [:]) {
     synchronized (WRITE_RESERVATION_LOCK) {
         def current = atomicState.packageDeployInFlight
         if (current instanceof Map && current.requestId?.toString() == requestId
-                && current.args instanceof Map && current.ref) {
+                && current.args instanceof Map && current.ref
+                && !_writeExecutionLiveLocked(requestId)) {
             marker = [:] + (current as Map)
+            marker.phase = "running"
+            marker.expiresAt = now() + _packageDeployRecoveryMs()
+            atomicState.packageDeployInFlight = marker
+            LIVE_WRITE_EXECUTIONS.add(requestId)
         }
     }
     if (marker == null) return
@@ -576,12 +579,15 @@ def runPackageDeploy(Map job = [:]) {
                                       requestId: requestId, at: now()]
     } finally {
         synchronized (WRITE_RESERVATION_LOCK) {
-            def current = atomicState.packageDeployInFlight
-            if (current instanceof Map && current.requestId?.toString() == requestId) {
-                try {
+            try {
+                def current = atomicState.packageDeployInFlight
+                if (current instanceof Map && current.requestId?.toString() == requestId) {
                     atomicState.packageDeployInFlight = null
                     atomicState.remove("packageDeployInFlight")
-                } catch (Exception ignored) { }
+                }
+            } catch (Exception ignored) {
+            } finally {
+                LIVE_WRITE_EXECUTIONS.remove(requestId)
             }
         }
     }

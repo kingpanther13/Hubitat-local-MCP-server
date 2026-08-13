@@ -32,6 +32,9 @@ RPC_BODY="$(jq -nc --argjson p "$SETTINGS_PAYLOAD" '{jsonrpc:"2.0",id:1,method:"
 attempt=1
 until curl -sS --fail --max-time 30 -X POST "$MCP_URL" \
     -H "Content-Type: application/json" \
+    -H "MCP-Protocol-Version: 2026-07-28" \
+    -H "Mcp-Method: tools/call" \
+    -H "Mcp-Name: hub_manage_mcp" \
     -d "$RPC_BODY" \
     | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null; do
   if [ "$attempt" -ge 5 ]; then

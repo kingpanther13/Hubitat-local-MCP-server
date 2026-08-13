@@ -61,6 +61,7 @@ from sdk_conformance_helpers import (  # noqa: E402  (import guard above supplie
     RequestTrace,
     assert_exact_rule_log_messages,
     assert_mrtr_owner_rounds,
+    cleanup_preserving_primary,
     extract_bps_acknowledgment_key,
     find_exact_fixture_id_with_settle,
     summarize_modern_posts,
@@ -404,6 +405,7 @@ class ModernMrtrScenario:
         )
         guide_payload = _tool_payload(guide_result, "best-practice guide read")
         bps_key = extract_bps_acknowledgment_key(guide_payload.get("content"))
+        primary_error: BaseException | None = None
         try:
             created = await client.call_tool(self.GATEWAY, {
                 "tool": "hub_set_rule",
@@ -471,8 +473,21 @@ class ModernMrtrScenario:
                 [action["message"] for action in requested_actions],
                 operation="SDK MRTR proof readback",
             )
+        except BaseException as exc:
+            primary_error = exc
+            raise
         finally:
-            await self._cleanup_fixture(client, fixture_name, fixture_id, bps_key)
+            cleanup_error = await cleanup_preserving_primary(
+                lambda: self._cleanup_fixture(
+                    client, fixture_name, fixture_id, bps_key,
+                ),
+                primary_error,
+            )
+            if cleanup_error is not None:
+                print(
+                    "         [WARN] fixture cleanup also failed: "
+                    f"{_failure_detail(cleanup_error, self.config['safe_endpoint'])}"
+                )
 
     async def _cleanup_fixture(
         self,

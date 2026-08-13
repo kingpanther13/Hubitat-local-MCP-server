@@ -258,7 +258,7 @@ abstract class HarnessSpec extends Specification {
     protected Object newCompiledScriptInstance() {
         HubitatAppScript peer = script.getClass().getDeclaredConstructor().newInstance() as HubitatAppScript
         peer.initialize(script as HubitatAppScript)
-        wireRequestProxy(peer)
+        wireInstanceOverrides(peer)
         return peer
     }
 
@@ -267,6 +267,9 @@ abstract class HarnessSpec extends Specification {
         // last spec for the JVM's lifetime and stops a stale feature's fixture
         // from being read in the gap before the next spec class's setup() runs.
         CURRENT_FEATURE = null
+        NOW_OVERRIDE.set(null)
+        PAUSE_EXECUTION_OVERRIDE.set(null)
+        RUN_IN_OVERRIDE.set(null)
     }
 
     /**
@@ -303,18 +306,23 @@ abstract class HarnessSpec extends Specification {
     }
 
     protected void wireScriptOverrides() {
+        wireInstanceOverrides(script)
+    }
+
+    /** Apply every per-instance harness seam to a compiled execution instance. */
+    private void wireInstanceOverrides(Object target) {
         def hubGetRef = hubGet
         // `request` resolution inside the script: HubitatAppScript reads the
         // name "request" from its private injectedMappingHandlerData map, so
         // install the McpRequestDriver's stable proxy directly into that field.
         // The proxy reads driver state at each getJSON() access, so tests can
         // call pushBody from their given: block without re-running this wire.
-        wireRequestProxy(script)
+        wireRequestProxy(target)
         // hubInternalGet has no declaration on HubitatAppScript — pure dynamic
         // Groovy resolved through metaClass, so the per-instance write here
         // intercepts cleanly. The captured hubGetRef is the @Shared
         // HubInternalGetMock whose maps reset between tests.
-        script.metaClass.hubInternalGet = { String p, Map pp = [:], Integer t = 30 ->
+        target.metaClass.hubInternalGet = { String p, Map pp = [:], Integer t = 30 ->
             hubGetRef.call(p, pp)
         }
     }

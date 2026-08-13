@@ -361,7 +361,7 @@ abstract class HarnessSpec extends Specification {
     protected Object newCompiledScriptInstance() {
         HubitatAppScript peer = script.getClass().getDeclaredConstructor().newInstance() as HubitatAppScript
         peer.initializeFromParent(script as HubitatAppScript)
-        wireRequestProxy(peer)
+        wireInstanceOverrides(peer)
         return peer
     }
 
@@ -423,6 +423,11 @@ abstract class HarnessSpec extends Specification {
     }
 
     protected void wireScriptOverrides() {
+        wireInstanceOverrides(script)
+    }
+
+    /** Apply every per-instance harness seam to a compiled execution instance. */
+    private void wireInstanceOverrides(Object target) {
         def hubGetRef = hubGet
         def childAppsRef = childAppsList
         def self = this
@@ -442,14 +447,14 @@ abstract class HarnessSpec extends Specification {
         // setupSpec()) because setup() wipes the script's metaClass;
         // the reflective write here survives that wipe and is idempotent
         // against the stable proxy instance.
-        wireRequestProxy(script)
+        wireRequestProxy(target)
         // hubInternalGet has no declaration on HubitatAppScript — it's
         // pure dynamic Groovy resolved through metaClass, so the
         // per-instance metaClass write here intercepts cleanly. The
         // captured hubGetRef is the @Shared HubInternalGetMock whose
         // internal maps get reset() between tests, so a single wire-up
         // in setupSpec routes all tests to a fresh-feeling stub.
-        script.metaClass.hubInternalGet = { String p, Map pp = [:], Integer t = 30 ->
+        target.metaClass.hubInternalGet = { String p, Map pp = [:], Integer t = 30 ->
             hubGetRef.call(p, pp)
         }
         // Replace HubitatAppScript's private factory closures so the
@@ -460,7 +465,7 @@ abstract class HarnessSpec extends Specification {
         // test's fixture content is visible without re-wiring.
         def factoryField = HubitatAppScript.getDeclaredField('childAppFactory')
         factoryField.accessible = true
-        factoryField.set(script, { String ns, String name, String label, Map props = [:] ->
+        factoryField.set(target, { String ns, String name, String label, Map props = [:] ->
             if (self.mockChildAppForCreate == null) {
                 throw new IllegalStateException(
                     "Spec invoked addChildApp(${ns}, ${name}, ${label}) but " +
@@ -472,7 +477,7 @@ abstract class HarnessSpec extends Specification {
 
         def accessorField = HubitatAppScript.getDeclaredField('childAppAccessor')
         accessorField.accessible = true
-        accessorField.set(script, { String op, Object arg = null ->
+        accessorField.set(target, { String op, Object arg = null ->
             switch (op) {
                 case 'list':
                     return childAppsRef

@@ -4608,6 +4608,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def marker = [requestId: 'pkg-live', ref: 'main', startedAt: 1234567880000L,
                       args: [ref: 'main', confirm: true]]
         atomicStateMap.packageDeployInFlight = marker
+        def expectedMarker = new LinkedHashMap(marker)
 
         when:
         def result = script.toolUpdateAppCode([
@@ -4617,8 +4618,36 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         then:
         result.success == true
-        atomicStateMap.packageDeployInFlight == marker
+        atomicStateMap.packageDeployInFlight == expectedMarker
         atomicStateMap.lastSelfDeploy.success == true
+        !atomicStateMap.lastSelfDeploy.containsKey('requestId')
+        !atomicStateMap.lastSelfDeploy.containsKey('packageRef')
+    }
+
+    def "hub_update_app dispatch args cannot spoof package correlation"() {
+        given:
+        enableWrite()
+        settingsMap.enableDeveloperMode = true
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 5, "source": "self source"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true] }
+        def marker = [requestId: 'pkg-live', ref: 'main', startedAt: 1234567880000L,
+                      args: [ref: 'main', confirm: true]]
+        atomicStateMap.packageDeployInFlight = marker
+        def expectedMarker = new LinkedHashMap(marker)
+
+        when:
+        def response = mcpDriver.callTool('hub_update_app', [
+            appId: '1', source: 'self-update spoof', confirm: true,
+            __packageRequestId: 'pkg-live', __packageRef: 'attacker-ref'
+        ])
+
+        then:
+        response.error == null
+        mcpDriver.parseInner(response).success == true
+        atomicStateMap.packageDeployInFlight == expectedMarker
         !atomicStateMap.lastSelfDeploy.containsKey('requestId')
         !atomicStateMap.lastSelfDeploy.containsKey('packageRef')
     }
@@ -4637,6 +4666,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def marker = [requestId: 'pkg-live', ref: 'main', startedAt: 1234567880000L,
                       args: [ref: 'main', confirm: true]]
         atomicStateMap.packageDeployInFlight = marker
+        def expectedMarker = new LinkedHashMap(marker)
 
         when:
         def result = script.toolUpdateAppCode([
@@ -4646,7 +4676,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         then:
         result.success == false
-        atomicStateMap.packageDeployInFlight == marker
+        atomicStateMap.packageDeployInFlight == expectedMarker
         atomicStateMap.lastSelfDeploy.success == false
         atomicStateMap.lastSelfDeploy.error.contains('cloud 504')
         !atomicStateMap.lastSelfDeploy.containsKey('requestId')
@@ -4675,6 +4705,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         then:
         mismatched.success == true
+        atomicStateMap.packageDeployInFlight.requestId == 'pkg-live'
         !atomicStateMap.lastSelfDeploy.containsKey('requestId')
         !atomicStateMap.lastSelfDeploy.containsKey('packageRef')
 

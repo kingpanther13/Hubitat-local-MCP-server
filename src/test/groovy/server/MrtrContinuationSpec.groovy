@@ -577,7 +577,8 @@ class MrtrContinuationSpec extends ToolSpecBase {
         contention.every { it.result.requestState == stateId }
         calls.get() == 1
         pauses.get() >= 3
-        virtualNow.get() >= 1234567890000L + 3L * 6000L
+        virtualNow.get() >= 1234567890000L +
+            3L * (script._mrtrContentionWaitMs('hub_call_rule') as Long)
 
         when: 'the next leg observes owner completion during its bounded wait'
         releaseOnPause.set(1)
@@ -1001,11 +1002,12 @@ class MrtrContinuationSpec extends ToolSpecBase {
         mcpDriver.parseInner(firmwareWrite).status == 'too_many_writes_in_flight'
     }
 
-    def "an aged package marker with unrelated terminal evidence keeps its write slot"() {
+    def "a nonexpired package marker with unrelated terminal evidence keeps its write slot"() {
         given:
         settingsMap.maxConcurrentWrites = 1
         atomicStateMap.packageDeployInFlight = [
-            requestId: 'pkg-live', ref: 'feat/live', startedAt: 1234567200000L, args: [ref: 'feat/live']
+            requestId: 'pkg-live', ref: 'feat/live', startedAt: 1234567800000L,
+            phase: 'queued', expiresAt: 1234567920000L, args: [ref: 'feat/live']
         ]
         atomicStateMap.lastSelfDeploy = [
             success: true, sourceMode: 'importUrl', at: 1234567889000L
@@ -1018,8 +1020,28 @@ class MrtrContinuationSpec extends ToolSpecBase {
         reservation.accepted == false
         reservation.refusal.status == 'too_many_writes_in_flight'
         reservation.refusal.active == [[
-            tool: 'hub_update_package', startedAt: 1234567200000L, transport: 'background'
+            tool: 'hub_update_package', startedAt: 1234567800000L, transport: 'background'
         ]]
+    }
+
+    def "an expired inactive package marker is removed before ordinary write admission"() {
+        given:
+        settingsMap.maxConcurrentWrites = 1
+        atomicStateMap.packageDeployInFlight = [
+            requestId: 'pkg-dead', ref: 'feat/dead', startedAt: 1234567200000L,
+            phase: 'queued', expiresAt: 1234567889999L, args: [ref: 'feat/dead']
+        ]
+
+        when:
+        Map reservation = script._writeReserveRequest('hub_call_device_command', 'legacy') as Map
+
+        then:
+        reservation.accepted == true
+        atomicStateMap.packageDeployInFlight == null
+        script._activeWrites()*.tool == ['hub_call_device_command']
+
+        cleanup:
+        if (reservation?.leaseId) script._writeReleaseRequest(reservation.leaseId as String)
     }
 
     def "matching package terminal evidence releases an orphaned write slot"() {

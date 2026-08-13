@@ -1783,6 +1783,7 @@ private boolean _isActualWriteCall(outerToolName, leafToolName, args) {
 }
 
 private long _writeLeaseMs() { 3L * 60L * 1000L }
+private long _packageDeployRecoveryMs() { 10L * 60L * 1000L }
 
 // Caller holds WRITE_RESERVATION_LOCK. A package marker is terminal only when
 // the durable outcome names that exact request; timestamps and age cannot prove
@@ -1792,6 +1793,30 @@ private boolean _packageMarkerHasTerminalEvidenceLocked(marker) {
     def last = atomicState.lastSelfDeploy
     return last instanceof Map && last.requestId != null &&
         last.requestId.toString() == marker.requestId.toString()
+}
+
+// Caller holds WRITE_RESERVATION_LOCK. A queued or running marker may be
+// recovered only after its durable lease expires AND no execution in this
+// loaded app class owns it. Removing it here is atomic with admission/capacity:
+// a delayed old runIn callback then fails its requestId check before any write.
+private boolean _packageSweepMarkerLocked() {
+    def marker = atomicState.packageDeployInFlight
+    if (!(marker instanceof Map)) return false
+    String requestId = marker.requestId?.toString()
+    boolean terminal = _packageMarkerHasTerminalEvidenceLocked(marker)
+    boolean structurallyInvalid = !requestId || marker.ref == null || marker.startedAt == null
+    long expiresAt = 0L
+    if (!structurallyInvalid) {
+        expiresAt = marker.expiresAt != null
+            ? (marker.expiresAt as Long)
+            : ((marker.startedAt as Long) + _packageDeployRecoveryMs())
+    }
+    boolean expiredAndInactive = !structurallyInvalid && expiresAt <= now() &&
+        !_writeExecutionLiveLocked(requestId)
+    if (!(terminal || structurallyInvalid || expiredAndInactive)) return false
+    atomicState.packageDeployInFlight = null
+    try { atomicState.remove("packageDeployInFlight") } catch (Exception ignored) { }
+    return true
 }
 
 // Persistent TTLs recover abandoned state after a JVM/class reload. Until
@@ -1813,6 +1838,7 @@ private void _writeSweepRequestsLocked() {
 }
 
 private List _activeWritesLocked() {
+    _packageSweepMarkerLocked()
     long at = now()
     def active = []
     def mrtr = atomicState.mrtrRequests
@@ -1836,8 +1862,8 @@ private List _activeWritesLocked() {
     }
     // hub_update_package deliberately returns before its scheduled worker finishes.
     // Keep that background write in the same global cap until its worker clears
-    // the marker or its exact requestId has matching terminal evidence. Age alone
-    // never proves that a scheduled worker stopped.
+    // the marker, exact terminal evidence exists, or the locked sweep proves its
+    // recovery lease expired with no live owner. Age never evicts a live worker.
     def packageMarker = atomicState.packageDeployInFlight
     if (packageMarker instanceof Map && packageMarker.startedAt != null &&
             !_packageMarkerHasTerminalEvidenceLocked(packageMarker)) {

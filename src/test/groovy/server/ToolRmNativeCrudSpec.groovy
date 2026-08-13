@@ -1974,6 +1974,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         given:
         enableWrite()
         def posts = []
+        def backups = []
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason ->
+            backups << [id: id, reason: reason]
+            [backupKey: 'snap']
+        }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
             [status: 200, location: null, data: '']
@@ -36984,6 +36989,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "the validation throw precedes every backup or wizard write"
         posts.isEmpty()
+        backups.isEmpty()
     }
 
     def "hub_set_rule EDIT allows addTriggers plus addActions and processes both bulk lists"() {

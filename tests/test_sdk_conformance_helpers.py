@@ -9,6 +9,7 @@ from sdk_conformance_helpers import (
     RELAY_LEG_CEILING_SECONDS,
     RequestTrace,
     assert_mrtr_owner_rounds,
+    cleanup_preserving_primary,
     extract_bps_acknowledgment_key,
     summarize_modern_posts,
     summarize_mrtr_proof,
@@ -42,6 +43,7 @@ def _request(name: str = "hub_manage_rule_machine") -> SimpleNamespace:
             "authorization": "Bearer must-not-be-recorded",
         }),
         url="https://example.invalid/mcp?access_token=must-not-be-recorded",
+        extensions={},
         content=b'{"jsonrpc":"2.0","method":"tools/call","params":{"requestState":"must-not-be-recorded"}}',
     )
 
@@ -73,6 +75,39 @@ def test_request_trace_times_tool_legs_without_secret_bearing_fields() -> None:
     assert "access_token" not in serialized
     assert "Bearer" not in serialized
     assert "requestState" not in serialized
+
+
+def test_request_trace_uses_secret_free_leg_ids_and_rejects_unknown_response() -> None:
+    trace = RequestTrace(clock=lambda: 100.0)
+    request = _request()
+    request.extensions = {}
+
+    asyncio.run(trace.record_request(request))
+
+    trace_id = request.extensions[RequestTrace.TRACE_ID_EXTENSION]
+    assert trace._pending[trace_id] == 0
+    assert all(value is not request for value in trace._pending.values())
+    unknown = _request()
+    unknown.extensions = {}
+    with pytest.raises(AssertionError, match="unrecorded request leg"):
+        asyncio.run(trace.record_response(SimpleNamespace(
+            request=unknown, status_code=200,
+        )))
+
+
+def test_cleanup_preserves_a_primary_failure_but_stays_strict_after_success() -> None:
+    cleanup_error = RuntimeError("cleanup failed")
+
+    async def fail_cleanup() -> None:
+        raise cleanup_error
+
+    primary_error = AssertionError("proof failed")
+    assert asyncio.run(cleanup_preserving_primary(
+        fail_cleanup, primary_error,
+    )) is cleanup_error
+
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        asyncio.run(cleanup_preserving_primary(fail_cleanup, None))
 
 
 def test_request_trace_marks_an_initial_tool_leg_without_retaining_its_body() -> None:

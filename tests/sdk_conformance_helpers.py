@@ -138,11 +138,28 @@ async def find_exact_fixture_id_with_settle(
     return None
 
 
+async def cleanup_preserving_primary(
+    cleanup: Callable[[], Awaitable[None]],
+    primary_error: BaseException | None,
+) -> Exception | None:
+    """Run strict cleanup without replacing an already-propagating failure."""
+    try:
+        await cleanup()
+    except Exception as cleanup_error:
+        if primary_error is None:
+            raise
+        return cleanup_error
+    return None
+
+
 class RequestTrace:
     """Observe request timing and MCP routing headers without retaining secrets."""
 
+    TRACE_ID_EXTENSION = "hubitat_mrtr_trace_id"
+
     def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
         self._clock = clock
+        self._next_trace_id = 1
         self._pending: dict[int, int] = {}
         self.legs: list[dict[str, Any]] = []
 
@@ -178,11 +195,19 @@ class RequestTrace:
     async def record_request(self, request: Any) -> None:
         leg = {**self._fields(request), "status": None, "started": self._clock(),
                "ended": None, "duration": None}
-        self._pending[id(request)] = len(self.legs)
+        trace_id = self._next_trace_id
+        self._next_trace_id += 1
+        request.extensions[self.TRACE_ID_EXTENSION] = trace_id
+        self._pending[trace_id] = len(self.legs)
         self.legs.append(leg)
 
     async def record_response(self, response: Any) -> None:
-        index = self._pending.pop(id(response.request))
+        trace_id = response.request.extensions.get(self.TRACE_ID_EXTENSION)
+        index = self._pending.pop(trace_id, None)
+        if index is None:
+            raise AssertionError(
+                "observer defect: a response arrived for an unrecorded request leg"
+            )
         ended = self._clock()
         leg = self.legs[index]
         leg["status"] = int(response.status_code)

@@ -4,6 +4,7 @@ import spock.lang.Shared
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import support.ToolSpecBase
 
@@ -773,15 +774,17 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         first?.join(5000)
     }
 
-    def "an aged preterminal marker still refuses a duplicate deploy"() {
+    def "a nonexpired queued marker refuses a duplicate deploy"() {
         given:
         enableDev()
         registerAppTypes()
         script.metaClass.toolInstallBundle = { a -> [success: true] }
         script.metaClass.toolUpdateAppCode = { a -> [success: true, appId: a.appId] }
         def marker = [requestId: 'pkg-live', ref: 'feat/other',
-                      startedAt: GUARD_NOW - (11L * 60L * 1000L),
+                      startedAt: GUARD_NOW - (9L * 60L * 1000L), phase: 'queued',
+                      expiresAt: GUARD_NOW + 60000L,
                       args: [ref: 'feat/other', confirm: true]]
+        def expectedMarker = new LinkedHashMap(marker)
         atomicStateMap.packageDeployInFlight = marker
 
         when:
@@ -790,8 +793,80 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         then:
         result.success == false
         result.status == 'duplicate_in_flight'
-        atomicStateMap.packageDeployInFlight == marker
+        atomicStateMap.packageDeployInFlight == expectedMarker
         runInCalls.isEmpty()
+    }
+
+    def "an expired queued marker is atomically replaced and its delayed worker cannot write"() {
+        given:
+        enableDev()
+        registerAppTypes()
+        def calls = []
+        script.metaClass.toolInstallBundle = { a -> calls << a; [success: true] }
+        atomicStateMap.packageDeployInFlight = [
+            requestId: 'pkg-old', ref: 'old-ref', startedAt: GUARD_NOW - 700000L,
+            phase: 'queued', expiresAt: GUARD_NOW - 1L,
+            args: [ref: 'old-ref', confirm: true]
+        ]
+
+        when:
+        def accepted = script.toolUpdatePackage([ref: 'main', confirm: true])
+        String newRequestId = accepted.requestId
+        script.runPackageDeploy([requestId: 'pkg-old'])
+
+        then:
+        accepted.success == true
+        accepted.status == 'in_progress'
+        newRequestId != 'pkg-old'
+        atomicStateMap.packageDeployInFlight.requestId == newRequestId
+        atomicStateMap.packageDeployInFlight.ref == 'main'
+        calls.isEmpty()
+    }
+
+    def "a running worker remains live beyond its lease and refuses a duplicate"() {
+        given:
+        enableDev()
+        registerAppTypes()
+        def virtualNow = new AtomicLong(GUARD_NOW)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        def entered = new CountDownLatch(1)
+        def release = new CountDownLatch(1)
+        def failure = new AtomicReference()
+        def workerEntries = new AtomicInteger(0)
+        script.metaClass.toolInstallBundle = { a ->
+            workerEntries.incrementAndGet()
+            entered.countDown()
+            release.await(5, TimeUnit.SECONDS)
+            [success: true]
+        }
+        script.metaClass.toolUpdateAppCode = { a -> [success: true, appId: a.appId] }
+        def accepted = script.toolUpdatePackage([ref: 'main', confirm: true])
+        Thread worker = Thread.start {
+            try { script.runPackageDeploy([requestId: accepted.requestId]) }
+            catch (Throwable t) { failure.set(t) }
+        }
+
+        when:
+        assert entered.await(5, TimeUnit.SECONDS)
+        virtualNow.addAndGet(11L * 60L * 1000L)
+        script.runPackageDeploy([requestId: accepted.requestId])
+        def duplicate = script.toolUpdatePackage([ref: 'other', confirm: true])
+        def markerDuringRun = new LinkedHashMap(atomicStateMap.packageDeployInFlight as Map)
+        release.countDown()
+        worker.join(5000)
+
+        then:
+        !worker.alive
+        failure.get() == null
+        workerEntries.get() == 1
+        duplicate.status == 'duplicate_in_flight'
+        markerDuringRun.requestId == accepted.requestId
+        markerDuringRun.phase == 'running'
+        atomicStateMap.packageDeployInFlight == null
+
+        cleanup:
+        release.countDown()
+        worker?.join(5000)
     }
 
     def "matching terminal evidence clears an orphaned marker before admitting a deploy"() {

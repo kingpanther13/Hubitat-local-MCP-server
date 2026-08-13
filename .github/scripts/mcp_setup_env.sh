@@ -31,15 +31,19 @@ set -euo pipefail
 PRE_STATE_FILE="${RUNNER_TEMP:-/tmp}/mcp_pre_state.json"
 
 mcp_call() {
+  local tool_name="$2"
   curl -sS --fail --max-time 30 -X POST "$MCP_URL" \
     -H "Content-Type: application/json" \
+    -H "MCP-Protocol-Version: 2026-07-28" \
+    -H "Mcp-Method: tools/call" \
+    -H "Mcp-Name: ${tool_name}" \
     -d "$1"
 }
 
 # Pull the toggle state from hub_get_info. The settings-visibility block on
 # lines 3026+ of hubitat-mcp-server.groovy exposes these fields without
 # requiring Hub Admin Read.
-PRE_INFO_JSON="$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}' \
+PRE_INFO_JSON="$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}' hub_get_info \
   | jq -r '.result.content[0].text')"
 
 DEV_MODE="$(echo "$PRE_INFO_JSON" | jq -r '.developerModeEnabled // false')"
@@ -79,14 +83,19 @@ echo "Stamping a backup to satisfy the destructive-confirm 24h gate before enabl
 # pins it off, but only AFTER this step -- so a run that died between the test that re-enables the
 # gate and its restore leaves it on, and every backup here is refused. A refusal is -32602 on
 # HTTP 200, which surfaced as a bare `jq: null (null)` and read as "the hub can't back up".
-BACKUP_RESP="$(mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true,"mock":true,"bestPracticeKey":"bps-ack-299"}}}' 2>/dev/null || true)"
+BACKUP_RESP="$(mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true,"mock":true,"bestPracticeKey":"bps-ack-299"}}}' hub_create_backup 2>/dev/null || true)"
 if printf '%s' "$BACKUP_RESP" | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null 2>&1; then
   echo "  Backup gate stamped (MOCK -- no real backupDB write)."
 else
   echo "::notice::Mock backup unsupported/failed on the baseline app -- falling back to a real backup."
-  REAL_BACKUP_RESP="$(mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true,"bestPracticeKey":"bps-ack-299"}}}' 2>/dev/null || true)"
+  REAL_BACKUP_RESP="$(mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true,"bestPracticeKey":"bps-ack-299"}}}' hub_create_backup 2>/dev/null || true)"
   if ! printf '%s' "$REAL_BACKUP_RESP" | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null 2>&1; then
-    RB_ERR="$(printf '%s' "$REAL_BACKUP_RESP" | jq -r '.error.message // ""' 2>/dev/null || echo "")"
+    RB_ERR="$(printf '%s' "$REAL_BACKUP_RESP" | jq -r '
+      .error.message //
+      (.result.content[0].text | fromjson? | .error) //
+      (.result.content[0].text | fromjson? | .message) //
+      empty
+    ' 2>/dev/null || echo "")"
     [ -n "$RB_ERR" ] && echo "::error::Backup call refused by the hub: ${RB_ERR}"
     echo "::error::Could not create a hub backup (mock AND real failed). hub_update_mcp_settings below needs one (destructive-confirm 24h gate). Check the test hub."
     exit 1
@@ -101,7 +110,7 @@ fi
 # run left it off. Both keys are long-standing and persist through the source swap into the PR app.
 # (The issue #299 best-practice gate ships ON by default; it is pinned OFF POST-deploy by the e2e
 # runner -- this pre-deploy step runs against main, which does not know that key.)
-mcp_call '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"hub_manage_mcp","arguments":{"tool":"hub_update_mcp_settings","args":{"settings":{"enableCustomRuleEngine":true,"useGateways":true},"confirm":true}}}}' \
+mcp_call '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"hub_manage_mcp","arguments":{"tool":"hub_update_mcp_settings","args":{"settings":{"enableCustomRuleEngine":true,"useGateways":true},"confirm":true}}}}' hub_manage_mcp \
   | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null
 
 echo "Test environment configured: enableCustomRuleEngine=true, useGateways=true (gateway mode ON; Read/Write masters default ON)"
