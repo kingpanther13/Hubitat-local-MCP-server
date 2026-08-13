@@ -593,6 +593,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
     def "gateway native-app resume schedules the resolved leaf and its worker returns the terminal result"() {
         given:
         settingsMap.enableWrite = true
+        settingsMap.useGateways = true
         def gateway = 'hub_manage_native_rules_and_apps'
         def args = [tool: 'hub_set_native_app', args: [appId: 654, confirm: true,
             settings: [description: 'gateway worker']]]
