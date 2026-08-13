@@ -29,6 +29,88 @@ def _raw_tool_body(body, *, is_error=False):
     }
 
 
+def _watchdog_response(logs):
+    return SimpleNamespace(
+        raise_for_status=lambda: None,
+        json=lambda: {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": _raw_tool_body({"success": True, "logs": logs}),
+        },
+    )
+
+
+def test_limiter_lines_falls_back_to_watchdog_and_filters_exact_device_method(monkeypatch):
+    target = (
+        "dev|5781|BAT_E2E_CmdRoundtrip|error|"
+        "LimitExceededException: App 38 generates excessive hub load (method on)"
+    )
+
+    class UnavailableMainClient:
+        def call_tool(self, _name, _arguments):
+            raise et.RelayLostResponseError("504 Gateway Timeout")
+
+    posted = []
+
+    def post(*args, **kwargs):
+        posted.append((args, kwargs))
+        return _watchdog_response([
+            {"name": "fresh-exact", "message": target},
+            {"name": "wrong-method", "message": target.replace("method on", "method off")},
+            {"name": "wrong-device", "message": target.replace("dev|5781|", "dev|5782|")},
+            {"name": "not-limited", "message": "dev|5781|BAT|error|ordinary failure (method on)"},
+        ])
+
+    runner = object.__new__(et.TestRunner)
+    runner.client = UnavailableMainClient()
+    runner.watchdog_url = "https://watchdog.invalid/mcp"
+    monkeypatch.setattr(et.requests, "post", post)
+
+    assert runner._limiter_lines(5781, method="on") == {f"fresh-exact|{target}"}
+    assert posted == [((), {
+        "url": "https://watchdog.invalid/mcp",
+        "json": {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {
+                "name": "hub_get_hub_logs",
+                "arguments": {"level": "ERROR", "limit": 40},
+            },
+        },
+        "timeout": 30,
+    })]
+
+
+def test_limiter_logged_uses_watchdog_for_unusable_main_reads_and_requires_fresh_line(monkeypatch):
+    stale = (
+        "dev|5781|BAT_E2E_CmdRoundtrip|error|"
+        "LimitExceededException: App 38 generates excessive hub load (method on)"
+    )
+    fresh = stale.replace("App 38", "App 39")
+
+    class UnusableMainClient:
+        def call_tool(self, _name, _arguments):
+            return {"success": False, "error": "log endpoint unavailable"}
+
+    watchdog_replies = iter([
+        _watchdog_response([{"name": "stale", "message": stale}]),
+        _watchdog_response([
+            {"name": "stale", "message": stale},
+            {"name": "fresh", "message": fresh},
+            {"name": "other-method", "message": fresh.replace("method on", "method off")},
+        ]),
+    ])
+
+    runner = object.__new__(et.TestRunner)
+    runner.client = UnusableMainClient()
+    runner.watchdog_url = "https://watchdog.invalid/mcp"
+    monkeypatch.setattr(et.requests, "post", lambda *args, **kwargs: next(watchdog_replies))
+
+    baseline = runner._limiter_lines(5781, method="on")
+
+    assert baseline == {f"stale|{stale}"}
+    assert runner._limiter_logged(5781, method="on", baseline=baseline) is True
+
+
 def test_run_artifact_suffix_is_stable_and_unique_per_github_attempt():
     first_attempt = {"GITHUB_RUN_ID": "31680286237", "GITHUB_RUN_ATTEMPT": "1"}
     second_attempt = {"GITHUB_RUN_ID": "31680286237", "GITHUB_RUN_ATTEMPT": "2"}

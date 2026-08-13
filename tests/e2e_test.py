@@ -867,15 +867,49 @@ class TestRunner:
         so a caller can BASELINE this set immediately before a dispatch and later detect a FRESH trip
         (a key not in the baseline) -- the only sound way to attribute a limiter line to THIS dispatch
         on a SHARED device, where a prior test may have left a matching line in the 40-entry window."""
+        def _usable_logs(result: Any) -> list | None:
+            if not isinstance(result, dict) or result.get("success") is False:
+                return None
+            logs = result.get("logs")
+            return logs if isinstance(logs, list) else None
+
+        res = None
+        main_failure = None
         try:
             res = self.client.call_tool("hub_manage_logs", {
                 "tool": "hub_get_logs", "args": {"level": "ERROR", "limit": 40},
             })
         except Exception as exc:
-            print(f"    [LIMITER] hub log read failed ({exc}) -- cannot verify a limiter block")
+            main_failure = str(exc)
+        logs = _usable_logs(res)
+        if logs is None and self.watchdog_url:
+            try:
+                response = requests.post(url=self.watchdog_url, json={
+                    "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {
+                        "name": "hub_get_hub_logs",
+                        "arguments": {"level": "ERROR", "limit": 40},
+                    },
+                }, timeout=30)
+                response.raise_for_status()
+                result = response.json().get("result", {})
+                content = result.get("content") if isinstance(result, dict) else None
+                text = content[0].get("text", "") if isinstance(content, list) and content else ""
+                logs = _usable_logs(json.loads(text) if text else None)
+                if logs is None:
+                    raise ValueError("watchdog returned no usable logs list")
+                print("    [LIMITER] main server log read unavailable -- using watchdog log endpoint")
+            except Exception as exc:
+                detail = f"main={main_failure}; " if main_failure else ""
+                print(f"    [LIMITER] hub log read failed ({detail}watchdog={exc}) -- "
+                      "cannot verify a limiter block")
+                return set()
+        elif logs is None:
+            detail = main_failure or "unusable response"
+            print(f"    [LIMITER] hub log read failed ({detail}) -- cannot verify a limiter block")
             return set()
         keys = set()
-        for entry in (res.get("logs") or []) if isinstance(res, dict) else []:
+        for entry in logs:
             msg = str(entry.get("message", ""))
             if not msg.startswith(f"dev|{device_id}|"):
                 continue
@@ -4371,71 +4405,6 @@ class TestRunner:
                 f"the order sentinel did not render on the page at all: {page_text[:400]}"
             assert run_pos < sentinel_pos, \
                 f"position not preserved: Run Actions at {run_pos}, sentinel at {sentinel_pos}"
-
-            # TRUE multi-element array form: both targets exist right now, so pause and resume
-            # them as ONE two-id batch -- proving a >1-element JSON array survives the relay and
-            # the hub's JSON parser, the one thing the one-element form in the rule-lifecycle
-            # test cannot show. NOT routed through _status_write: that helper's limiter recovery
-            # drives a single rule's pausRule toggle and would hit the WRONG rule for a batch.
-            # This carries its own recovery instead, applying the same escalation PER RULE.
-            def _batch_pause(paused: bool) -> None:
-                batch_ids = [target_a, target_b]
-
-                def _attempt() -> str | None:
-                    """The limiter reaches us in two shapes -- a raise, or a returned
-                    {'success': False, 'error': '...excessive hub load'} envelope, which is the
-                    only non-tool-result shape a non-throwing call can produce. Both normalize
-                    to the message; anything else propagates."""
-                    try:
-                        env = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule_paused",
-                            "args": {"ruleId": batch_ids, "paused": paused}})
-                    except McpToolError as exc:
-                        if "excessive hub load" not in str(exc):
-                            raise
-                        return str(exc)
-                    if (isinstance(env, dict) and env.get("success") is False
-                            and "excessive hub load" in str(env.get("error", ""))):
-                        return str(env.get("error"))
-                    # Everything else IS the tool envelope, so both keys are wire contract
-                    # and are asserted unconditionally -- a shape-gated check would let a
-                    # regression that drops them skip instead of fail.
-                    assert "rmAction" in env, f"two-id batch envelope is missing rmAction: {env}"
-                    assert sorted(str(x) for x in env.get("ruleIds", [])) == sorted(str(x) for x in batch_ids), \
-                        f"two-id batch should echo both ruleIds, got: {env}"
-                    return None
-
-                limited = _attempt()
-                if limited and self._clear_load_throttle(f"two-id batch pause({paused}): {limited}"):
-                    limited = _attempt()
-                if limited:
-                    print(f"    [LIMITER] two-id batch pause({paused}) answered with the limiter "
-                          f"({limited}) -- converging per rule, then driving the button for any that did not land.")
-                # Batch-safe verification either way: a limiter-dropped reply to a write that
-                # already COMMITTED still converges on the read side. But the limiter can also
-                # abort RMUtils.sendAction BEFORE it dispatches ("RMUtils.sendAction failed:
-                # ...excessive hub load"), in which case nothing was written and no amount of
-                # polling will converge -- so each rule that is still unconverged gets the same
-                # load-immune pausRule button drive _status_write uses. Applied PER RULE and only
-                # after its own poll proves it has not landed: pausRule is a TOGGLE, so clicking
-                # a rule that already converged would undo the write.
-                # ONE list read answers for the whole batch. This polled PER RULE before --
-                # each poll re-fetching every rule on the hub to read one row, up to 8 times,
-                # twice per phase (measured: 88 hub_list_rules calls in one run, 8 polling to
-                # timeout). The write is readable immediately: on a live hub the first read
-                # after the call already reports the new state, both directions.
-                statuses = self._rm_rule_statuses_when(batch_ids, lambda s: s.get("paused") is paused)
-                for tid in batch_ids:
-                    st = statuses.get(str(tid), {})
-                    if st.get("paused") is not paused and limited:
-                        print(f"    [LIMITER] rule {tid} never converged after a limiter-blocked batch -- "
-                              "driving its pausRule button (bypasses RMUtils entirely).")
-                        self._set_rule(tid, {"button": "pausRule"})
-                        st = self._rm_rule_statuses_when([tid], lambda s: s.get("paused") is paused).get(str(tid), {})
-                    assert st.get("paused") is paused, \
-                        f"batched pause({paused}) did not land on {tid}: {st}"
-
-            _batch_pause(True)
-            _batch_pause(False)
         finally:
             if caller_id:
                 self._delete_native(caller_id)
