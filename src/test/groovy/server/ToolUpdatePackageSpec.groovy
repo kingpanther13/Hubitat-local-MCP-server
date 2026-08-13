@@ -651,7 +651,13 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         def calls = []
         script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true, appId: a.appId] }
-        atomicStateMap.packageDeployInFlight = [ref: 'feat/other', startedAt: GUARD_NOW - 60000L]
+        def marker = [
+            requestId: 'pkg-live', ref: 'feat/other', startedAt: GUARD_NOW - 60000L,
+            phase: 'running', expiresAt: GUARD_NOW + 60000L,
+            args: [ref: 'feat/other', confirm: true]
+        ]
+        def expectedMarker = new LinkedHashMap(marker)
+        atomicStateMap.packageDeployInFlight = marker
 
         when:
         def result = script.toolUpdatePackage([ref: 'main', confirm: true])
@@ -671,7 +677,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         calls == []
 
         and: 'the RUNNING deploy\'s marker is untouched -- a refusal that cleared it would make the guard one-shot, re-opening the double-deploy on the very next retry'
-        atomicStateMap.packageDeployInFlight == [ref: 'feat/other', startedAt: GUARD_NOW - 60000L]
+        atomicStateMap.packageDeployInFlight == expectedMarker
     }
 
     def "a STALE lastSelfDeploy (older than the marker) does NOT stand the guard down -- only a fresh one proves the deploy finished"() {
@@ -681,7 +687,13 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         def calls = []
         script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true, appId: a.appId] }
-        atomicStateMap.packageDeployInFlight = [ref: 'feat/other', startedAt: GUARD_NOW - 60000L]
+        def marker = [
+            requestId: 'pkg-live', ref: 'feat/other', startedAt: GUARD_NOW - 60000L,
+            phase: 'running', expiresAt: GUARD_NOW + 60000L,
+            args: [ref: 'feat/other', confirm: true]
+        ]
+        def expectedMarker = new LinkedHashMap(marker)
+        atomicStateMap.packageDeployInFlight = marker
         atomicStateMap.lastSelfDeploy = [success: true, at: GUARD_NOW - 300000L]   // predates the marker
 
         when:
@@ -693,7 +705,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         calls == []
 
         and: 'the running deploy\'s marker survives the refusal'
-        atomicStateMap.packageDeployInFlight == [ref: 'feat/other', startedAt: GUARD_NOW - 60000L]
+        atomicStateMap.packageDeployInFlight == expectedMarker
     }
 
     def "an unrelated newer lastSelfDeploy does not stand the package guard down"() {
