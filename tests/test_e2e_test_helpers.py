@@ -29,38 +29,45 @@ def _raw_tool_body(body, *, is_error=False):
     }
 
 
-def test_send_records_only_the_actual_http_post_duration(monkeypatch):
-    client = object.__new__(et.HubitatMcpClient)
-    client._request_id = 0
-    client._transport_retries = 0
-    client._http_leg_timings = []
-    client.endpoint = "https://example.invalid/mcp"
-    client.access_token = "secret"
-    client.verbose = False
+@pytest.fixture
+def send_client(monkeypatch):
+    """Build a fully seeded transport-isolated client for `_send` tests."""
+    def factory(post, *, read_only_tools=()):
+        client = object.__new__(et.HubitatMcpClient)
+        client._request_id = 0
+        client._transport_retries = 0
+        client._http_leg_timings = []
+        client._read_only_catalog_tools = set(read_only_tools)
+        client.endpoint = "https://example.invalid/mcp"
+        client.access_token = "secret"
+        client.verbose = False
+        client.session = SimpleNamespace(post=post)
+        return client
+
+    monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)
+    return factory
+
+
+def test_send_records_only_the_actual_http_post_duration(monkeypatch, send_client):
     response = SimpleNamespace(
         status_code=200,
         reason="OK",
         json=lambda: {"jsonrpc": "2.0", "id": 1, "result": {"resultType": "complete"}},
         raise_for_status=lambda: None,
     )
-    client.session = SimpleNamespace(post=lambda *args, **kwargs: response)
+    client = send_client(
+        lambda *args, **kwargs: response,
+        read_only_tools={"hub_get_info"},
+    )
     ticks = iter((100.0, 108.0))
     monkeypatch.setattr(et.time, "monotonic", lambda: next(ticks))
-    monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)
 
     client._send("tools/call", {"name": "hub_get_info", "arguments": {}})
 
     assert client._http_leg_timings == [("tools/call", 8.0, 200)]
 
 
-def test_send_retries_a_lost_round_zero_mrtr_reservation(monkeypatch):
-    client = object.__new__(et.HubitatMcpClient)
-    client._request_id = 0
-    client._transport_retries = 0
-    client._http_leg_timings = []
-    client.endpoint = "https://example.invalid/mcp"
-    client.access_token = "secret"
-    client.verbose = False
+def test_send_retries_a_lost_round_zero_mrtr_reservation(send_client):
     responses = iter([
         SimpleNamespace(status_code=504, reason="Gateway Timeout"),
         SimpleNamespace(
@@ -78,8 +85,7 @@ def test_send_retries_a_lost_round_zero_mrtr_reservation(monkeypatch):
         posts.append(kwargs["json"])
         return next(responses)
 
-    client.session = SimpleNamespace(post=post)
-    monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)
+    client = send_client(post)
 
     result = client._send("tools/call", {
         "name": "hub_manage_native_rules_and_apps",
@@ -95,22 +101,14 @@ def test_send_retries_a_lost_round_zero_mrtr_reservation(monkeypatch):
     assert client._transport_retries == 1
 
 
-def test_send_does_not_retry_a_lost_non_mrtr_write(monkeypatch):
-    client = object.__new__(et.HubitatMcpClient)
-    client._request_id = 0
-    client._transport_retries = 0
-    client._http_leg_timings = []
-    client.endpoint = "https://example.invalid/mcp"
-    client.access_token = "secret"
-    client.verbose = False
+def test_send_does_not_retry_a_lost_non_mrtr_write(send_client):
     posts = []
 
     def post(*args, **kwargs):
         posts.append(kwargs["json"])
         return SimpleNamespace(status_code=504, reason="Gateway Timeout")
 
-    client.session = SimpleNamespace(post=post)
-    monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)
+    client = send_client(post)
 
     with pytest.raises(et.RelayLostResponseError):
         client._send("tools/call", {
@@ -129,24 +127,15 @@ def test_send_does_not_retry_a_lost_non_mrtr_write(monkeypatch):
     json.dumps({"ruleId": 1, "action": "rule"}),
 ])
 def test_send_does_not_retry_a_lost_single_rule_call_without_confirm(
-    monkeypatch, leaf_args,
+    send_client, leaf_args,
 ):
-    client = object.__new__(et.HubitatMcpClient)
-    client._request_id = 0
-    client._transport_retries = 0
-    client._http_leg_timings = []
-    client._read_only_catalog_tools = {"hub_read_rules"}
-    client.endpoint = "https://example.invalid/mcp"
-    client.access_token = "secret"
-    client.verbose = False
     posts = []
 
     def post(*args, **kwargs):
         posts.append(kwargs["json"])
         return SimpleNamespace(status_code=504, reason="Gateway Timeout")
 
-    client.session = SimpleNamespace(post=post)
-    monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)
+    client = send_client(post, read_only_tools={"hub_read_rules"})
 
     with pytest.raises(et.RelayLostResponseError):
         client._send("tools/call", {
@@ -160,15 +149,7 @@ def test_send_does_not_retry_a_lost_single_rule_call_without_confirm(
     assert len(posts) == 1
 
 
-def test_send_retries_only_catalog_proven_read_tool(monkeypatch):
-    client = object.__new__(et.HubitatMcpClient)
-    client._request_id = 0
-    client._transport_retries = 0
-    client._http_leg_timings = []
-    client._read_only_catalog_tools = {"hub_read_rules"}
-    client.endpoint = "https://example.invalid/mcp"
-    client.access_token = "secret"
-    client.verbose = False
+def test_send_retries_only_catalog_proven_read_tool(send_client):
     responses = iter([
         SimpleNamespace(status_code=504, reason="Gateway Timeout"),
         SimpleNamespace(
@@ -186,8 +167,7 @@ def test_send_retries_only_catalog_proven_read_tool(monkeypatch):
         posts.append(kwargs["json"])
         return next(responses)
 
-    client.session = SimpleNamespace(post=post)
-    monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)
+    client = send_client(post, read_only_tools={"hub_read_rules"})
 
     result = client._send("tools/call", {
         "name": "hub_read_rules",
@@ -215,16 +195,8 @@ def test_send_retries_only_catalog_proven_read_tool(monkeypatch):
     ],
 )
 def test_send_retries_the_structurally_identified_settings_write(
-    monkeypatch, wire_name, arguments,
+    send_client, wire_name, arguments,
 ):
-    client = object.__new__(et.HubitatMcpClient)
-    client._request_id = 0
-    client._transport_retries = 0
-    client._http_leg_timings = []
-    client._read_only_catalog_tools = set()
-    client.endpoint = "https://example.invalid/mcp"
-    client.access_token = "secret"
-    client.verbose = False
     responses = iter([
         SimpleNamespace(status_code=504, reason="Gateway Timeout"),
         SimpleNamespace(
@@ -242,8 +214,7 @@ def test_send_retries_the_structurally_identified_settings_write(
         posts.append(kwargs["json"])
         return next(responses)
 
-    client.session = SimpleNamespace(post=post)
-    monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)
+    client = send_client(post)
 
     result = client._send("tools/call", {
         "name": wire_name,
@@ -254,23 +225,14 @@ def test_send_retries_the_structurally_identified_settings_write(
     assert len(posts) == 2
 
 
-def test_send_does_not_trust_settings_tool_name_inside_write_data(monkeypatch):
-    client = object.__new__(et.HubitatMcpClient)
-    client._request_id = 0
-    client._transport_retries = 0
-    client._http_leg_timings = []
-    client._read_only_catalog_tools = set()
-    client.endpoint = "https://example.invalid/mcp"
-    client.access_token = "secret"
-    client.verbose = False
+def test_send_does_not_trust_settings_tool_name_inside_write_data(send_client):
     posts = []
 
     def post(*args, **kwargs):
         posts.append(kwargs["json"])
         return SimpleNamespace(status_code=504, reason="Gateway Timeout")
 
-    client.session = SimpleNamespace(post=post)
-    monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)
+    client = send_client(post)
 
     with pytest.raises(et.RelayLostResponseError):
         client._send("tools/call", {
