@@ -350,7 +350,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         scheduled.result.requestState == stateId
         leafCalls.get() == 0
         observedWaitMs.get() ==
-            (script._mrtrContentionWaitMs('hub_set_rule') as Long) - schedulerElapsedMs
+            (script._mrtrScheduleObserveWaitMs('hub_set_rule') as Long) - schedulerElapsedMs
         runInMillisCalls.size() == 1
         runInMillisCalls[0][0..1] == [200, 'runMrtrSlice']
         runInMillisCalls[0][2].overwrite == false
@@ -858,6 +858,10 @@ class MrtrContinuationSpec extends ToolSpecBase {
         script._mrtrContentionWaitMs('hub_set_rule') == 4500L
         script._mrtrContentionWaitMs('hub_set_native_app') == 4500L
 
+        and: 'the scheduling observer has one more second of cloud-relay headroom'
+        script._mrtrScheduleObserveWaitMs('hub_set_rule') == 3500L
+        script._mrtrScheduleObserveWaitMs('hub_set_native_app') == 3500L
+
         and: 'synchronous slices retain half their request budget for actual leaf work'
         script._mrtrContentionWaitMs('hub_call_rule') == 4000L
 
@@ -866,6 +870,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         then: 'the worker path keeps 2000ms for parsing, scheduling, and rendering'
         script._mrtrContentionWaitMs('hub_set_rule') == 3000L
+        script._mrtrScheduleObserveWaitMs('hub_set_rule') == 3000L
         script._mrtrContentionWaitMs('hub_call_rule') == 2500L
 
         when: 'the same explicit budget is applied to a LAN request'
@@ -874,6 +879,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         then: 'LAN retains its prior 1500ms reserve because the measured defect is cloud-only'
         script._mrtrContentionWaitMs('hub_set_rule') == 3500L
+        script._mrtrScheduleObserveWaitMs('hub_set_rule') == 3500L
     }
 
     def "a gateway scheduling request observes the resolved leaf terminal result"() {

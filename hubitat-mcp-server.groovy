@@ -2095,6 +2095,18 @@ def _mrtrContentionWaitMs(String leafTool = null) {
     return Math.max(1L, Math.min(cap, (budget / 2L) as Long))
 }
 
+// A scheduling request also pays claim, scheduler, cloud transit, and render
+// costs. Keep one more second of cloud headroom than an ordinary contention
+// observer while retaining the measured 2-4s fast-worker terminal window.
+def _mrtrScheduleObserveWaitMs(String leafTool = null) {
+    if (!_isCloudRequest()) return _mrtrContentionWaitMs(leafTool)
+    long cap = 3500L
+    long budget = _relayBudgetMs()
+    if (budget <= 0L) return cap
+    long headroom = 2000L
+    return Math.max(1L, Math.min(cap, budget - headroom))
+}
+
 private void _mrtrPutLocked(String stateId, Map rec) {
     if (!(atomicState.mrtrRequests instanceof Map)) atomicState.mrtrRequests = [:]
     try {
@@ -2360,7 +2372,7 @@ private Map _mrtrObserveScheduled(String stateId, Map claim, long requestStarted
                                   String waitClass = null) {
     String claimId = claim?.claimId?.toString()
     Integer generation = claim?.generation as Integer
-    long deadline = requestStartedAt + _mrtrContentionWaitMs(waitClass)
+    long deadline = requestStartedAt + _mrtrScheduleObserveWaitMs(waitClass)
     Map observed = [outcome: "in_progress"]
     long remainingBudget = Math.max(0L, deadline - now())
     while (true) {

@@ -72,17 +72,32 @@ def _summarize_mrtr_e2e_proof(
     continuation_rounds: int,
     result_type: str | None,
     logical_elapsed: float,
-    leg_seconds: list[float],
+    http_legs: list[tuple[float, int | None, bool]],
     server_rounds: int | None,
 ) -> dict[str, int | float]:
     """Validate the regular client's independent long-write continuation proof.
 
-    ``continuation_rounds`` counts state-following requests, while ``leg_seconds``
-    includes the initial tools/call. ``server_rounds`` counts completed owner slices.
-    Detached native-write workers deliberately add coordination rounds while the
-    claimed generation is still running, so the owner count must be positive and
-    cannot exceed the client continuation count.
+    ``continuation_rounds`` counts decoded input-required responses. ``http_legs``
+    includes every physical attempt, including a safely replayed transport failure.
+    ``server_rounds`` counts completed owner slices. Detached native-write workers
+    deliberately add coordination rounds while the claimed generation is still
+    running, so the owner count must be positive and cannot exceed the client count.
     """
+    leg_seconds = [duration for duration, _status, _decoded in http_legs]
+    indexed_legs = list(enumerate(http_legs))
+    decoded_responses = [
+        (leg_index, leg) for leg_index, leg in indexed_legs
+        if leg[2] and leg[1] is not None and 200 <= leg[1] < 300
+    ]
+    replayed = [
+        (leg_index, leg) for leg_index, leg in indexed_legs
+        if not (leg[2] and leg[1] is not None and 200 <= leg[1] < 300)
+    ]
+    unsafe_replays = [
+        (leg_index, status) for leg_index, (_duration, status, decoded) in replayed
+        if decoded or (
+            status is not None and not (200 <= status < 300 or 500 <= status < 600))
+    ]
     assert continuation_rounds >= 2, (
         "MRTR proof needs multiple continuation rounds, got "
         f"{continuation_rounds}"
@@ -94,9 +109,13 @@ def _summarize_mrtr_e2e_proof(
         "MRTR proof must exceed 10 seconds end-to-end, got "
         f"{logical_elapsed:.3f}s"
     )
-    assert len(leg_seconds) == continuation_rounds + 1, (
-        "MRTR proof HTTP leg count does not match the initial call plus continuation "
-        f"rounds: legs={len(leg_seconds)}, rounds={continuation_rounds}"
+    assert len(decoded_responses) == continuation_rounds + 1, (
+        "MRTR proof decoded response count does not match the initial call plus "
+        f"continuation rounds: decoded={len(decoded_responses)}, rounds={continuation_rounds}"
+    )
+    assert not unsafe_replays, (
+        "MRTR proof observed a physical leg that the client must not safely replay: "
+        f"statuses={unsafe_replays}"
     )
     assert leg_seconds and max(leg_seconds) < MRTR_RELAY_LEG_CEILING_SECONDS, (
         "MRTR proof exceeded the per-leg relay ceiling: "
@@ -109,6 +128,8 @@ def _summarize_mrtr_e2e_proof(
     )
     return {
         "legs": len(leg_seconds),
+        "successful_decoded_responses": len(decoded_responses),
+        "replayed_legs": len(replayed),
         "continuation_rounds": continuation_rounds,
         "logical_elapsed": logical_elapsed,
         "max_leg_elapsed": max(leg_seconds),
@@ -296,7 +317,9 @@ class HubitatMcpClient:
         self._last_continuation_rounds = 0
         self._last_result_type: str | None = None
         self._http_leg_timings: list[tuple[str, float, int | None]] = []
+        self._decoded_http_leg_indexes: set[int] = set()
         self._last_http_leg_seconds: list[float] = []
+        self._last_http_legs: list[tuple[float, int | None, bool]] = []
         self._last_logical_elapsed = 0.0
         # Catalog-derived maps (issue #319), built lazily together from the live
         # gateway-mode catalog; None = not built yet. _gateway_members (gateway -> its
@@ -654,6 +677,8 @@ class HubitatMcpClient:
         continuation_rounds = 0
         state_only_delay = 0.05
         http_mark = len(getattr(self, "_http_leg_timings", []))
+        if not hasattr(self, "_decoded_http_leg_indexes"):
+            self._decoded_http_leg_indexes = set()
         _t0 = time.monotonic()
         _op_ok = True
         try:
@@ -661,7 +686,13 @@ class HubitatMcpClient:
             # path. Slow writes receive requestState automatically and complete as one
             # logical call; ordinary tools return resultType=complete on the first round.
             while True:
+                attempt_mark = len(getattr(self, "_http_leg_timings", []))
                 result = self._send("tools/call", params, headers=headers)
+                http_leg_timings = getattr(self, "_http_leg_timings", [])
+                for leg_index in range(len(http_leg_timings) - 1, attempt_mark - 1, -1):
+                    if http_leg_timings[leg_index][0] == "tools/call":
+                        self._decoded_http_leg_indexes.add(leg_index)
+                        break
                 if result.get("resultType") != "input_required":
                     break
                 continuation_rounds += 1
@@ -692,11 +723,13 @@ class HubitatMcpClient:
                 result.get("resultType") if isinstance(result, dict) else None
             )
             self._last_logical_elapsed = _dur
-            self._last_http_leg_seconds = [
-                duration for method, duration, _status
-                in getattr(self, "_http_leg_timings", [])[http_mark:]
-                if method == "tools/call"
+            self._last_http_legs = [
+                (duration, status, leg_index in self._decoded_http_leg_indexes)
+                for leg_index, (method, duration, status)
+                in enumerate(getattr(self, "_http_leg_timings", []))
+                if leg_index >= http_mark and method == "tools/call"
             ]
+            self._last_http_leg_seconds = [leg[0] for leg in self._last_http_legs]
             if not hasattr(self, "continuation_timings"):
                 self.continuation_timings = []
             self.continuation_timings.append((
@@ -5823,6 +5856,15 @@ class TestRunner:
             })
             rounds = self.client._last_continuation_rounds
             result_type = self.client._last_result_type
+            http_legs = self.client._last_http_legs
+            leg_evidence = ", ".join(
+                f"{duration:.3f}s/{status if status is not None else 'network'}/"
+                f"{'decoded' if decoded else 'replayed'}"
+                for duration, status, decoded in http_legs
+            )
+            print("    observed regular MRTR transport before assertions: "
+                  f"physical_legs={len(http_legs)} continuation_rounds={rounds} "
+                  f"leg_evidence=[{leg_evidence}]")
             assert result.get("success") is not False, \
                 f"MRTR rule edit failed: {result}"
             assert not result.get("partial"), f"MRTR rule edit was partial: {result}"
@@ -5840,19 +5882,18 @@ class TestRunner:
                 continuation_rounds=rounds,
                 result_type=result_type,
                 logical_elapsed=self.client._last_logical_elapsed,
-                leg_seconds=self.client._last_http_leg_seconds,
+                http_legs=http_legs,
                 server_rounds=(result.get("mrtr") or {}).get("rounds"),
-            )
-            durations = ", ".join(
-                f"{duration:.3f}s" for duration in self.client._last_http_leg_seconds
             )
             print(
                 "    regular MRTR proof: "
                 f"legs={proof['legs']} "
+                f"decoded_responses={proof['successful_decoded_responses']} "
+                f"replayed_legs={proof['replayed_legs']} "
                 f"continuation_rounds={proof['continuation_rounds']} "
                 f"logical={proof['logical_elapsed']:.3f}s "
                 f"max_leg={proof['max_leg_elapsed']:.3f}s "
-                f"leg_durations=[{durations}]"
+                f"leg_evidence=[{leg_evidence}]"
             )
             # Independent persisted-state proof, deliberately after the measured
             # logical call and through the ordinary repository client's read gateway.

@@ -446,16 +446,42 @@ def test_regular_e2e_mrtr_summary_requires_a_long_multi_leg_terminal_call():
         continuation_rounds=3,
         result_type="complete",
         logical_elapsed=20.8,
-        leg_seconds=[0.2, 8.1, 8.0, 4.1],
+        http_legs=[
+            (0.2, 200, True),
+            (8.1, 200, True),
+            (8.0, 200, True),
+            (4.1, 200, True),
+        ],
         server_rounds=1,
     )
 
     assert summary == {
         "legs": 4,
+        "successful_decoded_responses": 4,
+        "replayed_legs": 0,
         "continuation_rounds": 3,
         "logical_elapsed": 20.8,
         "max_leg_elapsed": 8.1,
     }
+
+
+def test_regular_e2e_mrtr_summary_accepts_one_safe_transport_replay():
+    summary = et._summarize_mrtr_e2e_proof(
+        continuation_rounds=2,
+        result_type="complete",
+        logical_elapsed=20.8,
+        http_legs=[
+            (0.2, 200, True),
+            (9.2, 504, False),
+            (3.0, 200, True),
+            (4.1, 200, True),
+        ],
+        server_rounds=1,
+    )
+
+    assert summary["legs"] == 4
+    assert summary["successful_decoded_responses"] == 3
+    assert summary["replayed_legs"] == 1
 
 
 def test_continuation_telemetry_aggregates_and_ranks_zero_one_and_multi_round_calls():
@@ -500,7 +526,7 @@ def test_continuation_telemetry_aggregates_and_ranks_zero_one_and_multi_round_ca
         (1, "complete", 12.0, [0.2, 8.0], 1, "multiple continuation"),
         (2, "input_required", 12.0, [0.2, 8.0, 4.0], 2, "terminal complete"),
         (2, "complete", 10.0, [0.2, 8.0, 4.0], 2, "exceed 10"),
-        (2, "complete", 12.0, [0.2, 8.0], 2, "HTTP leg"),
+        (2, "complete", 12.0, [0.2, 8.0], 2, "decoded response"),
         (2, "complete", 12.0, [0.2, 9.5, 4.0], 2, "relay ceiling"),
         (2, "complete", 12.0, [0.2, 8.0, 4.0], 0, "owner slices"),
         (2, "complete", 12.0, [0.2, 8.0, 4.0], 2, "owner slices"),
@@ -515,7 +541,7 @@ def test_regular_e2e_mrtr_summary_rejects_an_invalid_proof(
             continuation_rounds=rounds,
             result_type=result_type,
             logical_elapsed=elapsed,
-            leg_seconds=legs,
+            http_legs=[(duration, 200, True) for duration in legs],
             server_rounds=server_rounds,
         )
 
@@ -608,6 +634,7 @@ def test_call_tool_retains_physical_leg_telemetry_when_a_continuation_504s():
     client._last_result_type = None
     client._last_logical_elapsed = 0.0
     client._last_http_leg_seconds = []
+    client._last_http_legs = []
     client._http_leg_timings = []
     calls = 0
 
@@ -631,6 +658,10 @@ def test_call_tool_retains_physical_leg_telemetry_when_a_continuation_504s():
     assert client._last_result_type == "input_required"
     assert client._last_http_leg_seconds == [2.1, 9.8]
     assert client._last_logical_elapsed > 0
+    assert client._last_http_legs == [
+        (2.1, 200, True),
+        (9.8, 504, False),
+    ]
 
 
 def test_call_tool_paces_ten_same_state_contention_rounds_and_still_completes(monkeypatch):
