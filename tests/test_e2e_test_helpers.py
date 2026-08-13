@@ -376,6 +376,42 @@ def test_regular_e2e_mrtr_summary_requires_a_long_multi_leg_terminal_call():
     }
 
 
+def test_continuation_telemetry_aggregates_and_ranks_zero_one_and_multi_round_calls():
+    rows = et._summarize_continuation_telemetry([
+        ("hub_get_info", 0.4, 0, [0.4]),
+        ("hub_set_rule:edit", 4.5, 1, [0.2, 4.0]),
+        ("hub_set_rule:edit", 6.0, 2, [0.1, 2.5, 3.0]),
+        ("hub_call_rule", 1.2, 1, [0.3, 0.7]),
+    ])
+
+    assert rows == [
+        {
+            "operation": "hub_set_rule:edit",
+            "logical_calls": 2,
+            "logical_seconds": 10.5,
+            "physical_legs": 5,
+            "continuation_rounds": 3,
+            "max_leg_seconds": 4.0,
+        },
+        {
+            "operation": "hub_call_rule",
+            "logical_calls": 1,
+            "logical_seconds": 1.2,
+            "physical_legs": 2,
+            "continuation_rounds": 1,
+            "max_leg_seconds": 0.7,
+        },
+        {
+            "operation": "hub_get_info",
+            "logical_calls": 1,
+            "logical_seconds": 0.4,
+            "physical_legs": 1,
+            "continuation_rounds": 0,
+            "max_leg_seconds": 0.4,
+        },
+    ]
+
+
 @pytest.mark.parametrize(
     ("rounds", "result_type", "elapsed", "legs", "server_rounds", "message"),
     [
@@ -443,9 +479,11 @@ def test_call_tool_follows_modern_request_state_continuations():
 def test_call_tool_keeps_same_state_contention_inside_one_logical_call():
     client = object.__new__(et.HubitatMcpClient)
     client.op_timings = []
+    client.continuation_timings = []
     client._active_test = "mrtr/contention"
     client._last_op = None
     client._last_continuation_rounds = 0
+    client._http_leg_timings = []
     calls = []
     replies = iter([
         {"resultType": "input_required", "requestState": "state-live"},
@@ -457,6 +495,7 @@ def test_call_tool_keeps_same_state_contention_inside_one_logical_call():
 
     def send(method, params=None, headers=None):
         calls.append((method, dict(params or {}), dict(headers or {})))
+        client._http_leg_timings.append(("tools/call", 0.5, 200))
         return next(replies)
 
     client._send = send
@@ -474,6 +513,8 @@ def test_call_tool_keeps_same_state_contention_inside_one_logical_call():
         == calls[1][1]["arguments"]
         == calls[2][1]["arguments"]
     )
+    assert client.continuation_timings[-1][0] == "hub_call_rule"
+    assert client.continuation_timings[-1][2:] == (2, [0.5, 0.5, 0.5])
 
 
 def test_call_tool_retains_physical_leg_telemetry_when_a_continuation_504s():

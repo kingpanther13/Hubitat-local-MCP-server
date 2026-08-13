@@ -167,6 +167,42 @@ def _op_key(name: str, arguments: dict | None) -> str:
     return key
 
 
+def _summarize_continuation_telemetry(
+    samples: list[tuple[str, float, int, list[float]]],
+) -> list[dict[str, str | int | float]]:
+    """Aggregate safe per-call continuation measurements by logical operation.
+
+    Samples contain only the operation key and numeric timings/counts.  In
+    particular, request URLs, bodies, tokens, and opaque requestState values
+    must never enter this diagnostic summary.
+    """
+    aggregate: dict[str, dict[str, str | int | float]] = {}
+    for operation, logical_seconds, continuation_rounds, leg_seconds in samples:
+        row = aggregate.setdefault(operation, {
+            "operation": operation,
+            "logical_calls": 0,
+            "logical_seconds": 0.0,
+            "physical_legs": 0,
+            "continuation_rounds": 0,
+            "max_leg_seconds": 0.0,
+        })
+        row["logical_calls"] += 1
+        row["logical_seconds"] += logical_seconds
+        row["physical_legs"] += len(leg_seconds)
+        row["continuation_rounds"] += continuation_rounds
+        row["max_leg_seconds"] = max(row["max_leg_seconds"], max(leg_seconds, default=0.0))
+
+    return sorted(
+        aggregate.values(),
+        key=lambda row: (
+            row["continuation_rounds"],
+            row["physical_legs"] - row["logical_calls"],
+            row["logical_seconds"],
+        ),
+        reverse=True,
+    )
+
+
 def _gateway_members_from_catalog(tools: list) -> dict[str, set[str]]:
     """Build the gateway-name -> set of advertised sub-tool leaf names from a gateway-mode
     tools/list catalog (issue #319). A gateway entry is recognized by its envelope
@@ -251,6 +287,9 @@ class HubitatMcpClient:
         # are FAILED-op latencies (a 504'd/errored call) -- otherwise never recorded, yet they are the
         # tail that brackets the relay's effective per-call ceiling, which the avg cannot show.
         self.op_timings: list[tuple[str, float, str, bool]] = []
+        # Safe continuation telemetry: (operation key, logical seconds, continuation
+        # rounds, physical-leg seconds). It deliberately excludes request data/state.
+        self.continuation_timings: list[tuple[str, float, int, list[float]]] = []
         self._active_test = ""            # set by the runner per test, for slow-op attribution
         self._transport_retries = 0       # silent read-side transport retries (504/network), verbose-gated
         self._last_op: tuple[str, float, bool] | None = None   # (op_key, seconds, ok) of the most recent call
@@ -658,6 +697,14 @@ class HubitatMcpClient:
                 in getattr(self, "_http_leg_timings", [])[http_mark:]
                 if method == "tools/call"
             ]
+            if not hasattr(self, "continuation_timings"):
+                self.continuation_timings = []
+            self.continuation_timings.append((
+                op_key,
+                _dur,
+                continuation_rounds,
+                self._last_http_leg_seconds,
+            ))
             if _dur >= 7.5:
                 print(f"  [SLOW] {_dur:4.1f}s  {op_key}  ({self._active_test or '?'})"
                       f"{'' if _op_ok else '  [err/504]'}")
@@ -11842,6 +11889,18 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                 for k, xs in sorted(near, key=lambda kv: _p95(kv[1]), reverse=True):
                     flag = "  <-- max over ceiling, 504s deterministically" if max(xs) > 10.0 else ""
                     print(f"    p95 {_p95(xs):4.1f}s  max {max(xs):4.1f}s  {k}{flag}")
+
+        continuation_rows = _summarize_continuation_telemetry(
+            getattr(self.client, "continuation_timings", []))
+        if continuation_rows:
+            print("\n  Continuation overhead by operation (logical calls / seconds / physical legs / "
+                  "continuation rounds / max leg; highest continuation overhead first):")
+            for row in continuation_rows[:25]:
+                print(
+                    f"    {row['logical_calls']:3d}x  {row['logical_seconds']:6.1f}s  "
+                    f"{row['physical_legs']:3d} legs  {row['continuation_rounds']:3d} cont  "
+                    f"{row['max_leg_seconds']:4.1f}s max-leg  {row['operation']}"
+                )
 
         # List failures
         failures = [r for r in self.results if r["status"] == "fail"]
