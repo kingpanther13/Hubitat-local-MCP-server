@@ -670,6 +670,127 @@ class MrtrContinuationSpec extends ToolSpecBase {
         inner.success == true
     }
 
+    def "modern driver-code lifecycle leaf #leaf preflights without dispatching"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.useGateways = true
+        def dispatched = []
+        script.metaClass.toolInstallDriver = { Map actual ->
+            dispatched << [leaf: 'hub_create_driver', arguments: new LinkedHashMap(actual)]
+            [success: true]
+        }
+        script.metaClass.toolUpdateDriverCode = { Map actual ->
+            dispatched << [leaf: 'hub_update_driver', arguments: new LinkedHashMap(actual)]
+            [success: true]
+        }
+        script.metaClass.toolDeleteItem = { Map actual ->
+            dispatched << [leaf: 'hub_delete_item', arguments: new LinkedHashMap(actual)]
+            [success: true]
+        }
+        def gatewayArgs = [tool: leaf, args: leafArgs]
+
+        when:
+        def preflight = modernCall('hub_manage_code', gatewayArgs)
+
+        then: 'round zero allocates requestState but cannot mutate Hubitat code'
+        preflight.error == null
+        preflight.result.resultType == 'input_required'
+        preflight.result.requestState instanceof String
+        dispatched.isEmpty()
+
+        where:
+        leaf                | leafArgs
+        'hub_create_driver' | [source: 'metadata { }', confirm: true]
+        'hub_update_driver' | [driverId: '55', source: 'metadata { }', confirm: true]
+        'hub_delete_item'   | [type: 'driver', item_id: '55', confirm: true]
+    }
+
+    def "modern hub_delete_item keeps unproven #itemType deletion on the synchronous path"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.useGateways = true
+        def dispatched = []
+        script.metaClass.toolDeleteItem = { Map actual ->
+            dispatched << new LinkedHashMap(actual)
+            [success: true, itemType: actual.type]
+        }
+        def args = [tool: 'hub_delete_item', args: [
+            type: itemType, item_id: '55', confirm: true
+        ]]
+
+        when:
+        def response = modernCall('hub_manage_code', args)
+
+        then: 'app/library deletion remains outside the driver-only detached proof'
+        response.error == null
+        response.result.resultType == 'complete'
+        mcpDriver.parseInner(response).success == true
+        dispatched == [args.args]
+        runInCalls.isEmpty()
+
+        where:
+        itemType << ['app', 'library']
+    }
+
+    def "gateway driver update runs once in a detached worker and replays its terminal result"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.useGateways = true
+        settingsMap.maxConcurrentWrites = 1
+        def gateway = 'hub_manage_code'
+        def args = [tool: 'hub_update_driver', args: [
+            driverId: '55', source: 'metadata { }', confirm: true
+        ]]
+        def preflight = modernCall(gateway, args)
+        String stateId = preflight.result.requestState
+        def dispatched = []
+        script.metaClass.toolUpdateDriverCode = { Map actual ->
+            dispatched << new LinkedHashMap(actual)
+            [success: true, driverId: '55', previousVersion: 7]
+        }
+
+        when: 'the first resumed HTTP leg only schedules the claimed generation'
+        def scheduled = modernCall(gateway, args, stateId)
+
+        then:
+        preflight.result.resultType == 'input_required'
+        scheduled.error == null
+        scheduled.result.resultType == 'input_required'
+        scheduled.result.requestState == stateId
+        dispatched.isEmpty()
+        runInCalls.size() == 1
+        runInCalls[0][0..1] == [1, 'runMrtrSlice']
+
+        when: 'another slow code write arrives while the worker is queued'
+        def capped = modernCall(gateway, [tool: 'hub_create_driver', args: [
+            source: 'metadata { }', confirm: true
+        ]])
+        def cappedInner = mcpDriver.parseInner(capped)
+
+        then: 'the queued code update owns the global write slot'
+        capped.result.resultType == 'complete'
+        capped.result.isError == true
+        cappedInner.status == 'too_many_writes_in_flight'
+        cappedInner.active*.tool == ['hub_update_driver']
+        cappedInner.active*.transport == ['mrtr']
+
+        when: 'the worker executes once and later calls observe its retained terminal result'
+        Map workerData = new LinkedHashMap(runInCalls[0][2].data as Map)
+        script.runMrtrSlice(workerData)
+        def complete = modernCall(gateway, args, stateId)
+        def replay = modernCall(gateway, args, stateId)
+
+        then:
+        dispatched == [args.args]
+        complete.result.resultType == 'complete'
+        complete.result.isError != true
+        mcpDriver.parseInner(complete).success == true
+        mcpDriver.parseInner(complete).mrtr.rounds == 1
+        replay.result.resultType == 'complete'
+        mcpDriver.parseInner(replay).previousVersion == 7
+        dispatched.size() == 1
+    }
+
     def "clone continuation checkpoints clicks then commits exactly once"() {
         given:
         settingsMap.enableWrite = true

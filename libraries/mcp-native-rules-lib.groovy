@@ -8537,8 +8537,33 @@ Map _rmWalkStep(Integer appId, Map spec) {
         if (writeMap.size() != 1) throw new IllegalArgumentException("walkStep.write should contain exactly one key -- call once per field for clean schema-diff signals")
         writtenKey = writeMap.keySet().iterator().next().toString()
         writtenValue = writeMap[writtenKey]
-        // Validate against schema if asked.
+        // A doActPage navigation response can expose an indexed field (actType.N,
+        // actSubType.N, logmsg.N, etc.) and then advance RM's internal wizard slot
+        // before the caller's next request.  Resolve that correctly-derived-but-stale
+        // key against THIS request's fresh schema.  Rebinding is deliberately narrow:
+        // doActPage only, the exact requested key must be absent, both names must end
+        // in a numeric index with the same stem/delimiter, and there must be exactly
+        // one live candidate.  With zero or multiple candidates we retain the legacy
+        // warning + exact-key attempt rather than risk mutating the wrong action.
         def schemaInput = beforeSchema.inputs.find { it.name == writtenKey }
+        if (!schemaInput && page == "doActPage") {
+            def requestedMatcher = (writtenKey =~ /^(.+[._-])(\d+)$/)
+            if (requestedMatcher.matches()) {
+                def requestedStem = requestedMatcher.group(1)
+                def liveCandidates = beforeSchema.inputs.findAll { input ->
+                    def candidateName = input?.name?.toString() ?: ""
+                    def candidateMatcher = (candidateName =~ /^(.+[._-])(\d+)$/)
+                    candidateMatcher.matches() && candidateMatcher.group(1) == requestedStem
+                }
+                if (liveCandidates.size() == 1) {
+                    def requestedKey = writtenKey
+                    schemaInput = liveCandidates[0]
+                    writtenKey = schemaInput.name.toString()
+                    opResult.rebound = [requestedKey: requestedKey, resolvedKey: writtenKey]
+                }
+            }
+        }
+        // Validate against schema if asked.
         if (!schemaInput) {
             opResult.warning = "Field '${writtenKey}' not in current schema for page '${page}'. Available: ${beforeSchema.inputs.collect { it.name }}. The write will be attempted but the hub may silently drop it."
         }

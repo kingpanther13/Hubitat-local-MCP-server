@@ -8597,6 +8597,120 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.after?.inputs == result.before.inputs
     }
 
+    def "walkStep progressively rebinds a stale doActPage slot through a complete log action"() {
+        // A navigate into doActPage can return actType.N and then advance RM's internal
+        // wizard counter before the caller's next request.  The next write therefore
+        // arrives with the correctly-derived-but-now-stale actType.N while the fresh
+        // schema exposes actType.N+1.  Hubitat accepts the stale form POST but silently
+        // drops it.  Rebind only when the requested indexed stem has exactly one live
+        // counterpart; the absence of ambiguity is what makes this automatic recovery
+        // safe for the raw walker.
+        given:
+        enableWrite()
+        def stored = [:]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def inputs = [[name: "actType.3", type: "enum", options: ["messageActs"]]]
+            if (stored["actType.3"] == "messageActs") {
+                inputs << [name: "actSubType.3", type: "enum", options: ["getLogMsg"]]
+            }
+            if (stored["actSubType.3"] == "getLogMsg") {
+                inputs << [name: "logmsg.3", type: "text"]
+            }
+            inputs << [name: "cancelBtn", type: "button"]
+            ruleConfigJson(100, "r", inputs)
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, stored.collect { k, v -> [name: k, type: "enum", value: v] })
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            def key = body.keySet().collect { _settingKeyOf(it) }.find { it != null }
+            if (key != null) stored[key] = body["settings[${key}]".toString()]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "each progressive write uses the slot returned by the earlier navigate response"
+        def typeResult = script.toolSetRule([
+            appId: 100,
+            walkStep: [page: "doActPage", operation: "write", write: ["actType.2": "messageActs"]],
+            confirm: true
+        ])
+        def subtypeResult = script.toolSetRule([
+            appId: 100,
+            walkStep: [page: "doActPage", operation: "write", write: ["actSubType.2": "getLogMsg"]],
+            confirm: true
+        ])
+        def messageResult = script.toolSetRule([
+            appId: 100,
+            walkStep: [page: "doActPage", operation: "write", write: ["logmsg.2": "after-RE"]],
+            confirm: true
+        ])
+
+        then: "all three fresh-schema fields are written, never their stale counterparts"
+        posts.any { it.path == "/installedapp/update/json" && it.body?.get("settings[actType.3]") == "messageActs" }
+        posts.any { it.path == "/installedapp/update/json" && it.body?.get("settings[actSubType.3]") == "getLogMsg" }
+        posts.any { it.path == "/installedapp/update/json" && it.body?.get("settings[logmsg.3]") == "after-RE" }
+        !posts.any { post -> post.body?.keySet()?.any { it in [
+            "settings[actType.2]", "settings[actSubType.2]", "settings[logmsg.2]"
+        ] } }
+
+        and: "every response reports its resolved key and successful round trip"
+        typeResult.success == true
+        subtypeResult.success == true
+        messageResult.success == true
+        typeResult.opResult?.rebound == [requestedKey: "actType.2", resolvedKey: "actType.3"]
+        subtypeResult.opResult?.rebound == [requestedKey: "actSubType.2", resolvedKey: "actSubType.3"]
+        messageResult.opResult?.rebound == [requestedKey: "logmsg.2", resolvedKey: "logmsg.3"]
+        typeResult.valueEcho?.match == true
+        subtypeResult.valueEcho?.match == true
+        messageResult.valueEcho?.match == true
+        typeResult.silentRejection == false
+        subtypeResult.silentRejection == false
+        messageResult.silentRejection == false
+    }
+
+    def "walkStep write does not guess when a stale doActPage slot has multiple live counterparts"() {
+        // Automatic rebinding is safe only for a sole same-stem field.  If firmware
+        // exposes multiple actType slots, choosing either one could mutate the wrong
+        // action.  Keep the existing fail-loud behavior: attempt only the caller's
+        // exact key, retain the schema warning, and report the silent rejection.
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.3", type: "enum", options: ["messageActs"]],
+                [name: "actType.4", type: "enum", options: ["messageActs"]]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            walkStep: [page: "doActPage", operation: "write", write: ["actType.2": "messageActs"]],
+            confirm: true
+        ])
+
+        then: "neither live candidate is guessed; the exact requested key follows the legacy path"
+        posts.any { it.path == "/installedapp/update/json" && it.body?.containsKey("settings[actType.2]") }
+        !posts.any { it.body?.containsKey("settings[actType.3]") || it.body?.containsKey("settings[actType.4]") }
+        result.opResult?.wrote == ["actType.2": "messageActs"]
+        result.opResult?.rebound == null
+        result.opResult?.warning?.toString()?.contains("not in current schema")
+        result.success == false
+        result.silentRejection == true
+    }
+
     def "walkStep click fires a /installedapp/btn POST with the requested button name + stateAttribute"() {
         // Direct unit cover for walkStep operation='click' — the dispatcher
         // routes through _rmClickAppButton which POSTs to /installedapp/btn
