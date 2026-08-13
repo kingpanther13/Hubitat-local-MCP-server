@@ -224,8 +224,12 @@ class RequestTrace:
         Legs before this boundary may honestly carry relay 504s or unanswered
         requests caused by the hub's per-app load limiter; the served-status
         contract restarts at the boundary while the header contract stays global.
+        Counted in POST-space because consumers index into posts(), which filters
+        non-POST legs out.
         """
-        self.capacity_recovery_boundary = len(self.legs)
+        self.capacity_recovery_boundary = sum(
+            1 for leg in self.legs if leg["method"] == "POST"
+        )
         return self.capacity_recovery_boundary
 
     def tool_call_legs(self, since: int, name: str) -> list[dict[str, Any]]:

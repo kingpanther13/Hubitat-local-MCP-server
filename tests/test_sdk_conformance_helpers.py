@@ -332,16 +332,21 @@ def test_modern_post_summary_excuses_only_pre_boundary_served_failures() -> None
         summarize_modern_posts([ok], served_since=2)
 
 
-def test_request_trace_capacity_recovery_boundary_marks_current_leg_count() -> None:
+def test_request_trace_capacity_recovery_boundary_counts_posts_only() -> None:
     trace = RequestTrace()
     assert trace.capacity_recovery_boundary == 0
+    # The boundary indexes into posts(), so non-POST legs (SSE GETs, session
+    # DELETEs) recorded before the bounce must not shift it.
     trace.legs = [
         {"method": "POST", "mcp_protocol_version": "2026-07-28", "status": 504},
+        {"method": "GET", "mcp_protocol_version": None, "status": 405},
         {"method": "POST", "mcp_protocol_version": "2026-07-28", "status": 200},
+        {"method": "DELETE", "mcp_protocol_version": None, "status": 200},
     ]
 
     assert trace.mark_capacity_recovery() == 2
     assert trace.capacity_recovery_boundary == 2
+    assert trace.capacity_recovery_boundary == len(trace.posts())
 
 
 def test_exact_fixture_lookup_settles_until_a_delayed_rule_appears() -> None:
