@@ -139,7 +139,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         inner.appId == 777
         inner.error.toLowerCase().contains(errorNeedle)
         inner.wizardStuck == false
-        inner.backup == null
+        !inner.containsKey('backup')
         inner.restoreHint == script._rmPreflightRestoreHint()
 
         and: 'round zero created no durable work and touched no backup or wizard surface'
@@ -211,6 +211,10 @@ class MrtrContinuationSpec extends ToolSpecBase {
     def "round-zero native validation cannot outrank the #gateName gate"() {
         given:
         settingsMap.enableWrite = enableWrite
+        // This feature exercises the owning gateway's access gates explicitly.
+        // Pin it on so the flat CI matrix default cannot turn the request into
+        // the distinct disabled-gateway routing case covered above.
+        settingsMap.useGateways = true
         settingsMap.enableMandatoryBPS = mandatoryBps
         stateMap.lastBackupTimestamp = backupEpoch
         def leafArgs = [appId: 778,

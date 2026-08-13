@@ -820,6 +820,7 @@ class TestRunner:
         # Cleanup tracking
         self.created_device_dnis: list[str] = []
         self.virtual_switch_label = f"{PREFIX}Switch_Test_{_run_artifact_suffix()}"
+        self._native_rule_fixture_seq = 0
         self.virtual_switch_dni: str | None = None
         self.created_rule_ids: list[str] = []
         self.created_native_app_ids: list[str] = []
@@ -4891,8 +4892,11 @@ class TestRunner:
 
         Verify-after-504: writes are never transport-replayed (duplicate-commit risk), so a
         relay 504 here means the CREATE may or may not have committed. Look the rule up by
-        its unique label: found -> adopt it; not found -> the create truly failed."""
-        label = f"{PREFIX}{suffix}_{_run_artifact_suffix()}"
+        its invocation-unique label: found -> adopt it; unresolved -> fail closed so the
+        whole-test retry uses a different label and never reissues the uncertain write."""
+        self._native_rule_fixture_seq = getattr(self, "_native_rule_fixture_seq", 0) + 1
+        label = (f"{PREFIX}{suffix}_{_run_artifact_suffix()}_"
+                 f"{self._native_rule_fixture_seq}")
         args = {"name": label, "confirm": True}
         if extra:
             args.update(extra)
@@ -4923,13 +4927,14 @@ class TestRunner:
                 if lookup_attempt < 3:
                     time.sleep(1.0)
             if not app_id:
-                # Verified NON-commit: re-issuing is duplicate-safe (the only point a write
-                # retry is allowed -- after evidence the first attempt never landed).
-                print(f"    create '{label}' verified NOT committed -- one safe retry")
-                created = self.client.call_tool("hub_manage_rule_machine", {
-                    "tool": "hub_set_rule", "args": dict({"name": label, "confirm": True}, **(extra or {})),
-                })
-                app_id = created.get("appId")
+                # Absence after a bounded settle is not proof of non-commit: the detached
+                # worker may still publish the rule later. Never reissue this write. The
+                # runner's one whole-test retry gets a fresh sequence-suffixed label, and
+                # the prefix cleanup reaps a late first commit.
+                raise RelayLostResponseError(
+                    f"504 create response for {label!r} remained unresolved after bounded settle; "
+                    "refusing an unsafe same-label reissue"
+                ) from exc
         assert app_id, f"hub_set_rule create did not yield an appId for '{label}'"
         # When a create BUNDLES an authoring shortcut (rank-2 fold), the create arm computes
         # success = health.ok && !partial; a degraded-but-ok trigger/action reports partial:true. Without

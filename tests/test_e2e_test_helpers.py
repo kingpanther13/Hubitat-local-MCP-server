@@ -719,6 +719,7 @@ def _native_rule_runner(client):
     runner = object.__new__(et.TestRunner)
     runner.client = client
     runner.created_native_app_ids = []
+    runner._native_rule_fixture_seq = 0
     return runner
 
 
@@ -728,7 +729,7 @@ def test_create_native_rule_defaults_to_scalar_app_id(monkeypatch):
             assert name == "hub_manage_rule_machine"
             assert arguments == {
                 "tool": "hub_set_rule",
-                "args": {"name": "BAT_E2E_ScalarCreate_run_1", "confirm": True},
+                "args": {"name": "BAT_E2E_ScalarCreate_run_1_1", "confirm": True},
             }
             return {"success": True, "appId": 41, "ruleId": 41}
 
@@ -834,7 +835,7 @@ def test_create_native_rule_relay_lost_adoption_marks_bundled_fixture_for_readba
                 raise et.RelayLostResponseError("504 Gateway Timeout")
             if len(calls) == 2:
                 assert name == "hub_manage_native_rules_and_apps"
-                return {"rules": [{"id": 43, "label": "BAT_E2E_AdoptedCreate_run_1"}]}
+                return {"rules": [{"id": 43, "label": "BAT_E2E_AdoptedCreate_run_1_1"}]}
             assert name == "hub_read_apps_code"
             return {
                 "page": {"paragraphs": ["Required Expression: Test Switch is on"]},
@@ -857,7 +858,7 @@ def test_create_native_rule_relay_lost_adoption_marks_bundled_fixture_for_readba
 
     assert result == (43, None)
     attempted_args = calls[0][1]["args"]
-    assert attempted_args["name"] == "BAT_E2E_AdoptedCreate_run_1"
+    assert attempted_args["name"] == "BAT_E2E_AdoptedCreate_run_1_1"
     assert attempted_args["addRequiredExpression"] == fixture
     runner._assert_switch_required_expression(43, 88)
     assert runner.created_native_app_ids == ["43"]
@@ -870,8 +871,8 @@ def test_create_native_rule_relay_lost_refuses_ambiguous_exact_label(monkeypatch
                 self.called = True
                 raise et.RelayLostResponseError("504 Gateway Timeout")
             return {"rules": [
-                {"id": 43, "label": "BAT_E2E_Ambiguous_run_1"},
-                {"id": 44, "name": "BAT_E2E_Ambiguous_run_1"},
+                {"id": 43, "label": "BAT_E2E_Ambiguous_run_1_1"},
+                {"id": 44, "name": "BAT_E2E_Ambiguous_run_1_1"},
             ]}
 
     runner = _native_rule_runner(FakeClient())
@@ -895,7 +896,7 @@ def test_create_native_rule_relay_lost_waits_for_delayed_exact_match(monkeypatch
             if len(calls) == 2:
                 return {"rules": [{"id": 99, "label": "some other rule"}]}
             assert name == "hub_manage_native_rules_and_apps"
-            return {"rules": [{"id": 43, "label": "BAT_E2E_Delayed_run_1"}]}
+            return {"rules": [{"id": 43, "label": "BAT_E2E_Delayed_run_1_1"}]}
 
     runner = _native_rule_runner(FakeClient())
     monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)
@@ -909,6 +910,41 @@ def test_create_native_rule_relay_lost_waits_for_delayed_exact_match(monkeypatch
         "hub_manage_native_rules_and_apps",
         "hub_manage_native_rules_and_apps",
     ]
+
+
+def test_create_native_rule_never_reissues_after_bounded_absence(monkeypatch):
+    calls = []
+    create_calls = 0
+
+    class FakeClient:
+        def call_tool(self, name, arguments):
+            nonlocal create_calls
+            calls.append((name, arguments))
+            if name == "hub_manage_rule_machine":
+                create_calls += 1
+                if create_calls == 1:
+                    raise et.RelayLostResponseError("504 Gateway Timeout")
+                return {"success": True, "appId": 44, "ruleId": 44}
+            assert name == "hub_manage_native_rules_and_apps"
+            return {"rules": []}
+
+    runner = _native_rule_runner(FakeClient())
+    monkeypatch.setattr(et.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(et, "_run_artifact_suffix", lambda: "run_1")
+
+    with pytest.raises(et.RelayLostResponseError, match="unsafe same-label reissue"):
+        runner._create_native_rule("LateCommit", return_result=True)
+
+    result = runner._create_native_rule("LateCommit", return_result=True)
+
+    assert result == (44, {"success": True, "appId": 44, "ruleId": 44})
+    attempted_creates = [arguments["args"]["name"] for name, arguments in calls
+                         if name == "hub_manage_rule_machine"]
+    assert attempted_creates == [
+        "BAT_E2E_LateCommit_run_1_1",
+        "BAT_E2E_LateCommit_run_1_2",
+    ]
+    assert runner.created_native_app_ids == ["44"]
 
 
 def test_get_persisted_rule_config_requires_exact_target_app():

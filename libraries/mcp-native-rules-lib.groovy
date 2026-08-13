@@ -13269,13 +13269,8 @@ private Map _rmRoundZeroNativeEditRefusal(Map args) {
     // argument refusal outrank the existing multi-operation-family error.
     if (candidates.size() != 1) return null
     String candidate = candidates.first()
-    def competingEditKeys = [
-        "settings", "button", "addTrigger", "addTriggers", "addAction",
-        "addActions", "addRequiredExpression", "replaceRequiredExpression",
-        "addLocalVariable", "removeLocalVariable", "patches", "removeAction",
-        "clearActions", "replaceActions", "moveAction", "walkStep",
-        "removeTrigger", "modifyTrigger", "modifyAction", "guide"
-    ].findAll { it != candidate }
+    def competingEditKeys = _setRuleOperations() -
+        ["create", "buttonRule", "discover", candidate]
     if (competingEditKeys.any { args.containsKey(it) }) return null
 
     try {
@@ -13299,7 +13294,6 @@ private Map _rmRoundZeroNativeEditRefusal(Map args) {
             appId: (args.appId as Number).intValue(),
             error: refusal.message,
             wizardStuck: false,
-            backup: null,
             restoreHint: _rmPreflightRestoreHint()
         ]
     }
