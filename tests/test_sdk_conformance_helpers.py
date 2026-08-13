@@ -281,7 +281,9 @@ def test_modern_post_summary_requires_complete_modern_routing_and_responses() ->
          "mcp_name": "hub_get_info", "status": 200},
     ]
 
-    assert summarize_modern_posts(posts) == {"posts": 3, "statuses": [200]}
+    assert summarize_modern_posts(posts) == {
+        "posts": 3, "statuses": [200], "capacity_excused": [],
+    }
 
     invalid = [
         ({**posts[0], "mcp_protocol_version": "2025-06-18"}, "2026-07-28"),
@@ -293,6 +295,53 @@ def test_modern_post_summary_requires_complete_modern_routing_and_responses() ->
     for bad_post, message in invalid:
         with pytest.raises(AssertionError, match=message):
             summarize_modern_posts([bad_post])
+
+
+def test_modern_post_summary_excuses_only_pre_boundary_served_failures() -> None:
+    ok = {"mcp_protocol_version": "2026-07-28", "mcp_method": "tools/call",
+          "mcp_name": "hub_get_info", "status": 200}
+    relay_504 = {**ok, "status": 504}
+    unanswered = {**ok, "status": None}
+
+    # Without a boundary, a 504 or a lost response fails the served contract.
+    with pytest.raises(AssertionError, match="serve every"):
+        summarize_modern_posts([relay_504, ok])
+    with pytest.raises(AssertionError, match="came back"):
+        summarize_modern_posts([unanswered, ok])
+
+    # A capacity-recovery boundary excuses exactly the legs before it, and the
+    # excused statuses are reported rather than dropped.
+    summary = summarize_modern_posts([relay_504, unanswered, ok, ok], served_since=2)
+    assert summary == {"posts": 4, "statuses": [200], "capacity_excused": [504, None]}
+
+    # A post-boundary failure still fails: the recovered hub must serve every leg.
+    with pytest.raises(AssertionError, match="serve every"):
+        summarize_modern_posts([relay_504, ok, relay_504], served_since=1)
+
+    # The header contract stays global -- a pre-boundary leg on a legacy protocol
+    # version is a client-side fact no capacity event can excuse.
+    with pytest.raises(AssertionError, match="2026-07-28"):
+        summarize_modern_posts(
+            [{**relay_504, "mcp_protocol_version": "2025-06-18"}, ok], served_since=1,
+        )
+
+    # The boundary must leave at least one served leg and index into the trace.
+    with pytest.raises(AssertionError, match="after the capacity-recovery boundary"):
+        summarize_modern_posts([relay_504], served_since=1)
+    with pytest.raises(AssertionError, match="must index"):
+        summarize_modern_posts([ok], served_since=2)
+
+
+def test_request_trace_capacity_recovery_boundary_marks_current_leg_count() -> None:
+    trace = RequestTrace()
+    assert trace.capacity_recovery_boundary == 0
+    trace.legs = [
+        {"method": "POST", "mcp_protocol_version": "2026-07-28", "status": 504},
+        {"method": "POST", "mcp_protocol_version": "2026-07-28", "status": 200},
+    ]
+
+    assert trace.mark_capacity_recovery() == 2
+    assert trace.capacity_recovery_boundary == 2
 
 
 def test_exact_fixture_lookup_settles_until_a_delayed_rule_appears() -> None:

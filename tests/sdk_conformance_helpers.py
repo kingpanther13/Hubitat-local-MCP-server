@@ -162,6 +162,7 @@ class RequestTrace:
         self._next_trace_id = 1
         self._pending: dict[int, int] = {}
         self.legs: list[dict[str, Any]] = []
+        self.capacity_recovery_boundary = 0
 
     @staticmethod
     def _fields(request: Any) -> dict[str, Any]:
@@ -217,6 +218,16 @@ class RequestTrace:
     def mark(self) -> int:
         return len(self.legs)
 
+    def mark_capacity_recovery(self) -> int:
+        """Record that a platform-capacity recovery (app bounce) happened here.
+
+        Legs before this boundary may honestly carry relay 504s or unanswered
+        requests caused by the hub's per-app load limiter; the served-status
+        contract restarts at the boundary while the header contract stays global.
+        """
+        self.capacity_recovery_boundary = len(self.legs)
+        return self.capacity_recovery_boundary
+
     def tool_call_legs(self, since: int, name: str) -> list[dict[str, Any]]:
         return [dict(leg) for leg in self.legs[since:]
                 if leg["method"] == "POST"
@@ -227,8 +238,18 @@ class RequestTrace:
         return [dict(leg) for leg in self.legs if leg["method"] == "POST"]
 
 
-def summarize_modern_posts(posts: list[dict[str, Any]]) -> dict[str, Any]:
-    """Validate that every observed SDK POST stayed on the modern HTTP path."""
+def summarize_modern_posts(
+    posts: list[dict[str, Any]], *, served_since: int = 0,
+) -> dict[str, Any]:
+    """Validate that every observed SDK POST stayed on the modern HTTP path.
+
+    The header contract (protocol version + mirrored Mcp-* headers) is a client-side
+    fact and always holds for EVERY post. The served contract (answered with 2xx) is
+    hub-capacity-sensitive: `served_since` (a RequestTrace capacity-recovery boundary)
+    excuses legs before a verified platform-limiter bounce, whose 504s/aborts are a
+    capacity event, not a protocol verdict. Excused non-2xx legs are still counted
+    and returned so the caller can report them loudly.
+    """
     assert posts, "the observer recorded no SDK POST"
     wrong_versions = [post for post in posts
                       if post.get("mcp_protocol_version") != MODERN_PROTOCOL_VERSION]
@@ -247,15 +268,23 @@ def summarize_modern_posts(posts: list[dict[str, Any]]) -> dict[str, Any]:
         "modern tools/call and resources/read POSTs must carry Mcp-Name; "
         f"missing on {len(missing_names)} leg(s)"
     )
-    answered = [post for post in posts if post.get("status") is not None]
-    assert len(answered) == len(posts), (
-        f"{len(posts)} modern POST(s) went out but only {len(answered)} came back"
+    assert 0 <= served_since <= len(posts), (
+        f"served_since must index into the recorded posts; saw {served_since} of {len(posts)}"
+    )
+    served = posts[served_since:]
+    assert served, "no SDK POST was observed after the capacity-recovery boundary"
+    answered = [post for post in served if post.get("status") is not None]
+    assert len(answered) == len(served), (
+        f"{len(served)} modern POST(s) went out but only {len(answered)} came back"
     )
     statuses = sorted({post["status"] for post in answered})
     rejected = [status for status in statuses
                 if not isinstance(status, int) or status not in {200, 202}]
     assert not rejected, f"the server did not serve every modern SDK POST: saw status {rejected}"
-    return {"posts": len(posts), "statuses": statuses}
+    excused = sorted({post.get("status") for post in posts[:served_since]
+                      if not isinstance(post.get("status"), int)
+                      or post.get("status") not in {200, 202}}, key=str)
+    return {"posts": len(posts), "statuses": statuses, "capacity_excused": excused}
 
 
 def summarize_mrtr_proof(

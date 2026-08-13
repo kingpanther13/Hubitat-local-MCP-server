@@ -185,6 +185,10 @@ def _load_hub_config() -> dict:
         "endpoint": endpoint,
         "safe_endpoint": safe_endpoint,
         "supported_versions": e2e_test.SUPPORTED_PROTOCOL_VERSIONS,
+        # The e2e suite's platform-limiter recovery (watchdog app bounce), shared so the
+        # MRTR proof can recover from the same capacity condition the suite already
+        # handles. Bound method; a no-op returning False when WATCHDOG_URL is unset.
+        "clear_load_throttle": client._clear_load_throttle,
     }
 
 
@@ -337,9 +341,15 @@ class ModernScenarios:
         return await self._run(name, self._modern_header_contract)
 
     async def _modern_header_contract(self) -> None:
-        summary = summarize_modern_posts(self.trace.posts())
+        summary = summarize_modern_posts(
+            self.trace.posts(),
+            served_since=self.trace.capacity_recovery_boundary,
+        )
         print(f"         {summary['posts']} modern SDK POST(s) carried mirrored routing "
               f"headers, all answered {summary['statuses']}")
+        if summary["capacity_excused"]:
+            print("         [CAPACITY] statuses before the verified limiter bounce, excused "
+                  f"from the served contract: {summary['capacity_excused']}")
 
 
 def _tool_payload(result: CallToolResult, operation: str) -> dict[str, Any]:
@@ -398,13 +408,40 @@ class ModernMrtrScenario:
             f"{self.GATEWAY} is absent from the modern tools/list catalog"
         )
 
-        fixture_name = f"BAT_E2E_SDK_MRTR_{uuid.uuid4().hex[:12]}"
-        fixture_id: str | None = None
         guide_result = await client.call_tool(
             "hub_get_tool_guide", {"section": "best_practice_reference"},
         )
         guide_payload = _tool_payload(guide_result, "best-practice guide read")
         bps_key = extract_bps_acknowledgment_key(guide_payload.get("content"))
+        try:
+            await self._prove_once(client, bps_key)
+            return
+        except Exception as first_error:
+            # The proof runs right after the full e2e suite, whose accumulated load can
+            # trip the hub's per-app limiter: every write then errors (and relay legs can
+            # 504) regardless of protocol conformance. Recover exactly the way the suite
+            # does -- one verified watchdog bounce -- and re-prove once on a fresh
+            # fixture. A deterministic nonconformance fails attempt 2 identically, so
+            # nothing real is masked; without bounce infrastructure, fail as-is.
+            detail = _failure_detail(first_error, self.config["safe_endpoint"])
+            bounce = self.config.get("clear_load_throttle")
+            if bounce is None:
+                raise
+            print(f"         [CAPACITY] MRTR proof attempt 1 failed: {detail}")
+            bounced = await anyio.to_thread.run_sync(
+                bounce, "SDK MRTR proof attempt 1 failed; clearing a suspected limiter block",
+            )
+            if not bounced:
+                raise
+            self.trace.mark_capacity_recovery()
+            print("         [CAPACITY] bounce verified -- retrying the MRTR proof once "
+                  "on a fresh fixture")
+        await self._prove_once(client, bps_key)
+
+    async def _prove_once(self, client: Client, bps_key: str) -> None:
+        """One full pass: fixture create -> slow MRTR edit -> readback -> exact cleanup."""
+        fixture_name = f"BAT_E2E_SDK_MRTR_{uuid.uuid4().hex[:12]}"
+        fixture_id: str | None = None
         primary_error: BaseException | None = None
         try:
             created = await client.call_tool(self.GATEWAY, {
