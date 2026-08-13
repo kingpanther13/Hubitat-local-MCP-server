@@ -788,7 +788,7 @@ def test_patch_rule_returns_all_checkpointed_entries_from_one_logical_call():
         {"addAction": {"capability": "switch", "state": "on"}},
     ]
 
-    entries = runner._patch_rule(42, patches)
+    entries = runner._patch_rule(42, patches, expected_refusals=1)
 
     assert entries == [
         {"op": "addAction", "success": True, "actionIndex": 3},
@@ -799,6 +799,23 @@ def test_patch_rule_returns_all_checkpointed_entries_from_one_logical_call():
         "args": {"appId": 42, "patches": patches, "confirm": True},
     })]
     assert runner._last_write_health == ("42", {"ok": True})
+
+
+def test_patch_rule_rejects_terminal_activation_failure():
+    class FakeClient:
+        def call_tool(self, _name, _arguments):
+            return {
+                "success": False,
+                "partial": True,
+                "patches": [{"op": "addAction", "success": True}],
+                "updateRuleFailed": True,
+                "patchesNotLive": True,
+            }
+
+    runner = _native_rule_runner(FakeClient())
+
+    with pytest.raises(AssertionError, match="terminal activation"):
+        runner._patch_rule(42, [{"addAction": {"capability": "log", "message": "x"}}])
 
 
 def test_create_native_rule_relay_lost_adoption_marks_bundled_fixture_for_readback(
@@ -843,6 +860,36 @@ def test_create_native_rule_relay_lost_adoption_marks_bundled_fixture_for_readba
     assert runner.created_native_app_ids == ["43"]
 
 
+def test_get_persisted_rule_config_requires_exact_target_app():
+    calls = []
+
+    class FakeClient:
+        def call_tool(self, name, arguments):
+            calls.append((name, arguments))
+            return {"success": True, "app": {"id": 43}, "settings": {"state_1": "on"}}
+
+    runner = _native_rule_runner(FakeClient())
+
+    cfg = runner._get_persisted_rule_config(43)
+
+    assert cfg["settings"] == {"state_1": "on"}
+    assert calls == [("hub_read_apps_code", {
+        "tool": "hub_get_app_config",
+        "args": {"appId": 43, "includeSettings": True},
+    })]
+
+
+def test_get_persisted_rule_config_rejects_wrong_app():
+    class FakeClient:
+        def call_tool(self, _name, _arguments):
+            return {"success": True, "app": {"id": 44}, "settings": {}}
+
+    runner = _native_rule_runner(FakeClient())
+
+    with pytest.raises(AssertionError, match="wrong app"):
+        runner._get_persisted_rule_config(43)
+
+
 def test_assert_switch_required_expression_accepts_exact_persisted_fixture():
     class FakeClient:
         def call_tool(self, name, arguments):
@@ -875,6 +922,16 @@ def test_assert_switch_required_expression_rejects_shell_without_expression():
     with pytest.raises(AssertionError, match=r"relay 504.*did not persist the Required Expression"):
         runner._assert_switch_required_expression(43, 88, "on")
 
+
+
+@pytest.mark.parametrize("value,wanted,expected", [
+    ({"88": "Switch"}, 88, True),
+    ([{"id": 88}], 88, True),
+    (188, 88, False),
+    ({"188": "Switch"}, 88, False),
+])
+def test_setting_holds_exact_avoids_substring_device_matches(value, wanted, expected):
+    assert et.TestRunner._setting_holds_exact(value, wanted) is expected
 
 def test_driver_lifecycle_uses_logical_write_helper_for_create():
     direct_calls = []

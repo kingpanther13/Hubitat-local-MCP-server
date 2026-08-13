@@ -3627,13 +3627,17 @@ class TestRunner:
                 "tool": "hub_update_mcp_settings",
                 "args": {"settings": {"backupEveryRuleWrite": True}, "confirm": True},
             })
-            # updateRule is the smallest real edit leaf: it proves the backup policy
-            # without paying for two more action-wizard walks.
-            strict_write = self._rm_call_soft({"appId": app_id,
+            strict_first = self._rm_call_soft({"appId": app_id,
                 "button": "updateRule", "confirm": True}, strict=True)
-            strict_key = (strict_write.get("backup") or {}).get("backupKey")
-            assert strict_key and strict_key != default_first_key, \
-                f"backupEveryRuleWrite should force a fresh baseline: default={res}, strict={strict_write}"
+            strict_second = self._rm_call_soft({"appId": app_id,
+                "button": "updateRule", "confirm": True}, strict=True)
+            strict_first_key = (strict_first.get("backup") or {}).get("backupKey")
+            strict_second_key = (strict_second.get("backup") or {}).get("backupKey")
+            assert strict_first_key and strict_second_key \
+                and strict_first_key != strict_second_key \
+                and strict_first_key != default_first_key \
+                and strict_second_key != default_first_key, \
+                f"backupEveryRuleWrite should produce distinct baselines: first={strict_first}, second={strict_second}"
         finally:
             unwinding = sys.exc_info()[0] is not None
             cleanup_errors: list[Exception] = []
@@ -4111,7 +4115,7 @@ class TestRunner:
                     "deviceIds": [int(self.get_test_switch_id())], "state": "on"}]}},
                  ("addrequiredexpression",)),
             ]
-            refusal_entries = self._patch_rule(app_id, [spec for spec, _ in refusal_specs])
+            refusal_entries = self._patch_rule(app_id, [spec for spec, _ in refusal_specs], expected_refusals=len(refusal_specs))
             assert len(refusal_entries) == len(refusal_specs), \
                 f"batched refusal results were incomplete: {refusal_entries}"
             for entry, (_, needles) in zip(refusal_entries, refusal_specs, strict=True):
@@ -4385,6 +4389,7 @@ class TestRunner:
             # RMUtils. Do not converge or resume here -- pause/resume behavior is covered by the
             # dedicated lifecycle test, and extra recovery writes overwhelmed this unrelated test.
             batch_ids = [target_a, target_b]
+            batch_committed = False
             try:
                 batch = self.client.call_tool("hub_manage_rule_machine", {
                     "tool": "hub_set_rule_paused",
@@ -4393,15 +4398,27 @@ class TestRunner:
             except McpToolError as exc:
                 assert "excessive hub load" in str(exc), \
                     f"two-id pause request failed before the recognized platform limiter path: {exc}"
+                batch_committed = False
             else:
                 if batch.get("success") is False:
                     assert "excessive hub load" in str(batch.get("error", "")), \
                         f"two-id pause returned an unexpected failure: {batch}"
+                    batch_committed = False
                 else:
                     assert "rmAction" in batch, f"two-id batch envelope is missing rmAction: {batch}"
                     assert sorted(str(x) for x in batch.get("ruleIds", [])) == \
                         sorted(str(x) for x in batch_ids), \
                         f"two-id batch should echo both ruleIds, got: {batch}"
+                    batch_committed = True
+            # The envelope/limiter text alone is not mutation proof. Read both rules:
+            # success must pause both; a pre-write limiter must leave both active.
+            expected_paused = batch_committed
+            observed = [self._rm_rule_status_when(
+                rule_id, lambda state: state.get("paused") is expected_paused)
+                for rule_id in batch_ids]
+            assert all(state.get("paused") is expected_paused for state in observed), \
+                f"two-id pause did not persist atomically for both rules " \
+                f"(expected paused={expected_paused}): {observed}"
         finally:
             if caller_id:
                 self._delete_native(caller_id)
@@ -4526,14 +4543,17 @@ class TestRunner:
                 self._assert_switch_required_expression(app_id, switch_id)
 
             # THE fix: the second bundled action must use the offset slot (tCapab-2),
-            # rather than hardcoding tCapab-1. Keep its response-field proof binding.
-            assert created is not None, \
-                "WaitEvtOffset create response was lost; retry to retain response-field proof"
-            created_actions = created.get("actions") or []
-            assert len(created_actions) == 2, f"create did not return both bundled actions: {created}"
-            we_res = created_actions[1]
-            assert we_res.get("success") is True, \
-                f"waitEvents add on an offset action slot should commit, got: {we_res}"
+            # rather than hardcoding tCapab-1. Retain response-field proof when the relay
+            # delivered it; a 504-adopted create is proved by exact persisted settings below.
+            if created is not None:
+                created_actions = created.get("actions") or []
+                assert len(created_actions) == 2, f"create did not return both bundled actions: {created}"
+                we_res = created_actions[1]
+                assert we_res.get("success") is True, \
+                    f"waitEvents add on an offset action slot should commit, got: {we_res}"
+                applied_blob = json.dumps(we_res)
+                assert "tstate-2" in applied_blob and "tstate-1" not in applied_blob, \
+                    f"the wait event response should bind to offset slot tstate-2: {we_res}"
 
             # The committed rule is structurally sound (no broken markers from a half-written event row).
             health = self.client.call_tool("hub_manage_rule_machine", {
@@ -4541,20 +4561,12 @@ class TestRunner:
             assert health.get("ok") is True and not health.get("structuralIssues"), \
                 f"waitEvents offset-slot rule should be healthy, got: {health}"
 
-            # Confirm the event actually wrote its OFFSET state slot: a regression that
-            # writes tCapab but drops tstate on the offset slot (or writes to the wrong
-            # slot number) would leave a healthy-looking but empty/misplaced event. The
-            # add response's settingsApplied lists the exact field keys written -- assert
-            # the offset state slot (tstate-2) is among them, not tstate-1.
-            applied_blob = json.dumps(we_res)
-            assert "tstate-2" in applied_blob, \
-                f"the wait event should have written its state to the offset slot tstate-2, got: {we_res}"
-            assert "tstate-1" not in applied_blob, \
-                f"the wait event must NOT have written the non-offset slot tstate-1, got: {we_res}"
-
-            # Independent read-back: the committed rule config shows a Wait-for-events action.
-            cfg = self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config", "args": {"appId": app_id}})
+            cfg = self._get_persisted_rule_config(app_id)
+            settings = cfg.get("settings") or {}
+            assert str(settings.get("tstate-2")).lower() == "on", \
+                f"the offset wait-event state did not persist at tstate-2: {settings}"
+            assert str(settings.get("tstate-1")).lower() != "on", \
+                f"the event was miswritten to non-offset tstate-1: {settings}"
             assert "wait" in json.dumps(cfg).lower(), \
                 f"the committed rule config should show the Wait-for-events action, got: {cfg}"
         finally:
@@ -4913,6 +4925,31 @@ class TestRunner:
             return app_id, created
         return app_id
 
+    def _get_persisted_rule_config(self, app_id: Any) -> dict:
+        """Fetch config/settings and bind the readback to the exact rule."""
+        cfg = self.client.call_tool("hub_read_apps_code", {
+            "tool": "hub_get_app_config",
+            "args": {"appId": app_id, "includeSettings": True},
+        })
+        returned_id = (cfg.get("app") or {}).get("id")
+        assert cfg.get("success") is True, \
+            f"hub_get_app_config failed for appId {app_id}: {cfg}"
+        assert str(returned_id) == str(app_id), \
+            f"hub_get_app_config returned the wrong app (wanted {app_id}, got {returned_id}): {cfg}"
+        return cfg
+
+    @staticmethod
+    def _setting_holds_exact(value: Any, wanted: Any) -> bool:
+        """Match an exact persisted picker value across Hubitat serializations."""
+        wanted_text = str(wanted)
+        if isinstance(value, dict):
+            return any(str(key) == wanted_text
+                       or TestRunner._setting_holds_exact(item, wanted_text)
+                       for key, item in value.items())
+        if isinstance(value, (list, tuple, set)):
+            return any(TestRunner._setting_holds_exact(item, wanted_text) for item in value)
+        return str(value) == wanted_text
+
     def _assert_switch_required_expression(self, app_id: Any, switch_id: Any,
                                            state: str = "on") -> None:
         """Prove a relay-adopted create persisted its bundled Switch RE fixture."""
@@ -4967,7 +5004,8 @@ class TestRunner:
         self._cache_write_health(app_id, result)
         return result
 
-    def _patch_rule(self, app_id: Any, patches: list[dict]) -> list[dict]:
+    def _patch_rule(self, app_id: Any, patches: list[dict],
+                    expected_refusals: int = 0) -> list[dict]:
         """Apply ordered RM edits in one logical MRTR call and return every op result.
 
         A continued patches call exposes completed slices as patchResults and the terminal
@@ -4979,8 +5017,26 @@ class TestRunner:
             "args": {"appId": app_id, "patches": patches, "confirm": True},
         })
         self._cache_write_health(app_id, result)
-        return [entry for key in ("patchResults", "patches")
-                for entry in (result.get(key) or []) if isinstance(entry, dict)]
+        entries = [entry for key in ("patchResults", "patches")
+                   for entry in (result.get(key) or []) if isinstance(entry, dict)]
+        assert len(entries) == len(patches), \
+            f"patch response omitted operation results: expected {len(patches)}, got {entries}; outer={result}"
+        assert result.get("updateRuleFailed") is not True \
+            and result.get("patchesNotLive") is not True, \
+            f"patch terminal activation failed; mutations are not safely live: {result}"
+        refused = [entry for entry in entries if entry.get("success") is False]
+        assert result.get("error") is None, \
+            f"patch batch had an outer application error unrelated to per-op results: {result}"
+        assert len(refused) == expected_refusals, \
+            f"patch refusal count mismatch (expected {expected_refusals}): entries={entries}; outer={result}"
+        if expected_refusals:
+            assert result.get("success") is False and result.get("partial") is True \
+                and all(entry.get("error") for entry in refused), \
+                f"outer patch failure was not attributable to explicit refused entries: {result}"
+        else:
+            assert result.get("success") is True and not result.get("partial"), \
+                f"patch batch did not fully activate: {result}"
+        return entries
 
     def _rm_call_soft(self, args: dict, strict: bool = False, recover_504: bool = False) -> Any:
         """Direct hub_set_rule call preserving its full response contract."""
@@ -5439,11 +5495,31 @@ class TestRunner:
         sw = int(self.get_test_switch_id())
         # Fold the first (non-index) addTrigger into the create -- one fewer round-trip; the
         # index-returning addTrigger below still gets its own call so its triggerIndex is read.
-        app_id = self._create_native_rule("TrigMut", extra={
+        app_id, created = self._create_native_rule("TrigMut", extra={
             "addTrigger": {"capability": "Switch", "deviceIds": [sw], "state": "on"},
             "addActions": [{"capability": "switch", "action": "on", "deviceIds": [sw]}],
-        })
+        }, return_result=True)
         try:
+            if created is not None:
+                assert len(created.get("triggers") or []) == 1 \
+                    and len(created.get("actions") or []) == 1, \
+                    f"TrigMut create did not return both bundled mutations: {created}"
+            fixture_cfg = self._get_persisted_rule_config(app_id)
+            fixture_settings = fixture_cfg.get("settings") or {}
+            trigger_slots = [str(key)[4:] for key, value in fixture_settings.items()
+                             if str(key).startswith("tDev")
+                             and self._setting_holds_exact(value, sw)]
+            assert trigger_slots and any(
+                str(fixture_settings.get(f"tstate{slot}")).lower() == "on"
+                for slot in trigger_slots), \
+                f"bundled trigger did not persist with exact switch/state: {fixture_settings}"
+            action_slots = [str(key).split(".", 1)[1] for key, value in fixture_settings.items()
+                            if str(key).startswith("onOffSwitch.")
+                            and self._setting_holds_exact(value, sw)]
+            assert action_slots and any(
+                str(fixture_settings.get(f"onOff.{slot}")).lower() in ("true", "on")
+                for slot in action_slots), \
+                f"bundled switch action did not persist exact device/state: {fixture_settings}"
             self._assert_rule_healthy(app_id)
 
             added = self._set_rule(app_id, {"addTrigger": {"capability": "Switch", "deviceIds": [sw], "state": "on"}}, strict=True)
@@ -5529,6 +5605,19 @@ class TestRunner:
                 f"unexpected RelrDev_<N> not_in_schema skip on the condition path: {cond_bad}"
             assert not cond_result.get("partial"), \
                 f"conditional trigger falsely flagged partial: {cond_result}"
+            persisted = self._get_persisted_rule_config(app_id).get("settings") or {}
+            enum_trigger_slots = [str(key)[11:] for key, value in persisted.items()
+                                  if str(key).startswith("tCustomAttr") and value == "switch"]
+            assert any(str(persisted.get(f"tstate{slot}")) == "on"
+                       and self._setting_holds_exact(persisted.get(f"tDev{slot}"), sw)
+                       for slot in enum_trigger_slots), \
+                f"enum trigger attribute/device/value did not persist together: {persisted}"
+            enum_cond_slots = [str(key).split("_", 1)[1] for key, value in persisted.items()
+                               if str(key).startswith("rCustomAttr_") and value == "switch"]
+            assert any(str(persisted.get(f"state_{slot}")) == "on"
+                       and self._setting_holds_exact(persisted.get(f"rDev_{slot}"), sw)
+                       for slot in enum_cond_slots), \
+                f"conditional enum attribute/device/value did not persist together: {persisted}"
             self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
@@ -5550,34 +5639,26 @@ class TestRunner:
                 {"capability": "Switch", "deviceIds": [sw], "comparator": "*changed*"}],
         }, return_result=True)
         try:
-            assert created is not None, \
-                "ChangedTrig create response was lost; retry to retain response-field proof"
-            created_triggers = created.get("triggers") or []
-            assert len(created_triggers) == 1, \
-                f"create did not return the bundled trigger: {created}"
-            result = created_triggers[0]
-            # This path expects a clean, non-partial success (asserted below), so require
-            # success is True exactly -- is not False would let an absent/None success slip past.
-            assert result.get("success") is True, \
-                f"device-state *changed* addTrigger did not cleanly succeed: {result}"
-            # The change token landed in the value picker (tstate<N>) ...
-            applied = result.get("settingsApplied") or []
-            assert any(str(k).startswith("tstate") for k in applied), \
-                f"the *changed* token did not land in a tstate value picker; settingsApplied={applied}"
-            # ... and the absent comparator field was NOT written, so no ReltDev skip was produced
-            # -- the "turns null" render this guards writes ReltDev<N> and never tstate<N>.
-            skipped = result.get("settingsSkipped") or []
-            bad = [s for s in skipped if isinstance(s, dict) and (s.get("key") or "").startswith("ReltDev")]
-            assert not bad, \
-                f"unexpected ReltDev skip on the device-state *changed* path (the turns-null bug): {bad}"
-            assert not result.get("partial"), \
-                f"device-state *changed* trigger falsely flagged partial: {result}"
+            if created is not None:
+                created_triggers = created.get("triggers") or []
+                assert len(created_triggers) == 1, \
+                    f"create did not return the bundled trigger: {created}"
+                result = created_triggers[0]
+                assert result.get("success") is True, \
+                    f"device-state *changed* addTrigger did not cleanly succeed: {result}"
+                applied = result.get("settingsApplied") or []
+                assert any(str(k).startswith("tstate") for k in applied), \
+                    f"the *changed* token did not land in a tstate value picker: {applied}"
+                skipped = result.get("settingsSkipped") or []
+                bad = [s for s in skipped if isinstance(s, dict)
+                       and (s.get("key") or "").startswith("ReltDev")]
+                assert not bad and not result.get("partial"), \
+                    f"device-state *changed* trigger was partial or wrote ReltDev: {result}"
 
             # Read the PERSISTED settings back via the read-only hub_get_app_config: the change
             # token is stored in tstate<N> (asterisk-wrapped live), the behavioural proof it
             # renders as a change trigger rather than the "turns null" orphan.
-            cfg = self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}})
+            cfg = self._get_persisted_rule_config(app_id)
             settings = cfg.get("settings") or {}
             change_tstate = {k: v for k, v in settings.items()
                              if str(k).startswith("tstate") and "changed" in str(v).lower()}
@@ -5606,6 +5687,18 @@ class TestRunner:
             set_local_idx = built[1].get("actionIndex")
             assert set_local_idx is not None, \
                 f"patch addAction setLocalVariable did not return an actionIndex: {built[1]}"
+
+            persisted = self._get_persisted_rule_config(app_id).get("settings") or {}
+            assert persisted.get(f"xVarV.{set_local_idx}") == "batCounter" \
+                and str(persisted.get(f"valNumber.{set_local_idx}")) == "5", \
+                f"setLocalVariable target/value did not persist: {persisted}"
+            re_slots = [str(key).split("_", 1)[1] for key, value in persisted.items()
+                        if str(key).startswith("rCapab_")
+                        and str(value).lower() == "switch"]
+            assert any(str(persisted.get(f"state_{slot}")).lower() == "on"
+                       and self._setting_holds_exact(persisted.get(f"rDev_{slot}"), sw)
+                       for slot in re_slots), \
+                f"initial Required Expression did not persist exact switch/state: {persisted}"
 
             # hub_list_rule_local_variables (read, via the pure-read hub_read_rules gateway)
             # sees the freshly created local with its type/value.
@@ -5730,15 +5823,13 @@ class TestRunner:
                 {"capability": "switch", "action": "off", "deviceIds": [sw], "onlyOn": True}],
         }, return_result=True)
         try:
-            assert created is not None, \
-                "SwitchOnlyOn create response was lost; retry to retain response-field proof"
-            actions = created.get("actions") or []
-            assert len(actions) == 1, f"create did not return the bundled switch action: {created}"
-            res = actions[0]
-            assert res.get("success") is not False, f"switch onlyOn addAction reported failure: {res}"
+            if created is not None:
+                actions = created.get("actions") or []
+                assert len(actions) == 1, f"create did not return the bundled switch action: {created}"
+                assert actions[0].get("success") is not False, \
+                    f"switch onlyOn addAction reported failure: {actions[0]}"
 
-            cfg = self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}})
+            cfg = self._get_persisted_rule_config(app_id)
             settings = cfg.get("settings") or {}
             # optSwitch.<N> landed true.
             opt_keys = [k for k in settings if str(k).startswith("optSwitch.")]
@@ -5764,22 +5855,28 @@ class TestRunner:
                 {"capability": "shade", "action": "close", "deviceIds": [shade_id]}],
         }, return_result=True)
         try:
-            assert shade_created is not None, \
-                "ShadeDeviceList create response was lost; retry to retain response-field proof"
-            shade_actions = shade_created.get("actions") or []
-            assert len(shade_actions) == 1, \
-                f"create did not return the bundled shade action: {shade_created}"
-            sres = shade_actions[0]
-            assert sres.get("success") is not False, f"shade close addAction reported failure: {sres}"
-            assert not sres.get("partial"), \
-                f"shade action falsely flagged partial (device-list re-tag regression): {sres}"
-            # If the firmware surfaced a shadeOpenClose skip at all, it must be the informational
-            # re-tag reason, NOT silent_rejection (which would flip partial).
-            shade_skips = [s for s in (sres.get("settingsSkipped") or [])
-                           if isinstance(s, dict) and str(s.get("key", "")).startswith("shadeOpenClose")]
-            for s in shade_skips:
-                assert s.get("reason") == "device_list_committed_schema_unchanged", \
-                    f"shadeOpenClose skip not re-tagged (still silent_rejection?): {s}"
+            if shade_created is not None:
+                shade_actions = shade_created.get("actions") or []
+                assert len(shade_actions) == 1, \
+                    f"create did not return the bundled shade action: {shade_created}"
+                sres = shade_actions[0]
+                assert sres.get("success") is not False and not sres.get("partial"), \
+                    f"shade close action failed or falsely reported partial: {sres}"
+                shade_skips = [s for s in (sres.get("settingsSkipped") or [])
+                               if isinstance(s, dict)
+                               and str(s.get("key", "")).startswith("shadeOpenClose")]
+                assert all(s.get("reason") == "device_list_committed_schema_unchanged"
+                           for s in shade_skips), \
+                    f"shadeOpenClose skip not re-tagged: {shade_skips}"
+            shade_cfg = self._get_persisted_rule_config(shade_app)
+            shade_settings = shade_cfg.get("settings") or {}
+            shade_slots = [str(key).split(".", 1)[1] for key, value in shade_settings.items()
+                           if str(key).startswith("shadeOpenClose.")
+                           and self._setting_holds_exact(value, shade_id)]
+            assert shade_slots and any(
+                str(shade_settings.get(f"shadeRL.{slot}")).lower() in ("true", "on")
+                for slot in shade_slots), \
+                f"shade close device/action did not persist together: {shade_settings}"
             self._assert_rule_healthy(shade_app)
         finally:
             self._delete_native(shade_app)
@@ -5996,28 +6093,22 @@ class TestRunner:
                  "attribute": "switch", "comparator": "*changed*"}],
         }, return_result=True)
         try:
-            assert created is not None, \
-                "CustEnumChangedTrig create response was lost; retry to retain response proof"
-            created_triggers = created.get("triggers") or []
-            assert len(created_triggers) == 1, \
-                f"create did not return the bundled trigger: {created}"
-            result = created_triggers[0]
-            assert result.get("success") is not False, f"addTrigger reported failure: {result}"
-            # The route branch: the change token lands in the value picker (tstate<N>) ...
-            applied = result.get("settingsApplied") or []
-            assert any(str(k).startswith("tstate") for k in applied), \
-                f"change token did not land in a tstate field (route branch): settingsApplied={applied}"
-            # ... NOT a not-representable skip, and partial stays falsy (healthy trigger).
-            skipped = result.get("settingsSkipped") or []
-            not_repr = [s for s in skipped if isinstance(s, dict)
-                        and s.get("reason") == "comparator_not_representable_for_enum_attribute"]
-            assert not not_repr, \
-                f"trigger surface should ROUTE, not skip; unexpected not-representable skip: {not_repr}"
-            assert not result.get("partial"), \
-                f"trigger falsely flagged partial despite routing the change token: {result}"
-            # Independent verification: the persisted tstate<N> carries the change token.
-            cfg = self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config", "args": {"appId": app_id, "includeSettings": True}})
+            if created is not None:
+                created_triggers = created.get("triggers") or []
+                assert len(created_triggers) == 1, \
+                    f"create did not return the bundled trigger: {created}"
+                result = created_triggers[0]
+                assert result.get("success") is not False, f"addTrigger reported failure: {result}"
+                applied = result.get("settingsApplied") or []
+                assert any(str(k).startswith("tstate") for k in applied), \
+                    f"change token did not land in a tstate field: {applied}"
+                skipped = result.get("settingsSkipped") or []
+                not_repr = [s for s in skipped if isinstance(s, dict)
+                            and s.get("reason") == "comparator_not_representable_for_enum_attribute"]
+                assert not not_repr and not result.get("partial"), \
+                    f"trigger surface did not cleanly route the change token: {result}"
+            # Persisted settings are authoritative both normally and after create-response loss.
+            cfg = self._get_persisted_rule_config(app_id)
             settings = cfg.get("settings") or {}
             tstate_vals = [v for k, v in settings.items() if str(k).startswith("tstate")]
             assert any(str(v) == "*changed*" for v in tstate_vals), \
@@ -6083,13 +6174,12 @@ class TestRunner:
                 {"capability": "Switch", "deviceIds": [sw], "state": "on"}]},
         }, return_result=True)
         try:
-            # Retain the initial RE response contract. A dropped create response retries
-            # the whole pristine fixture instead of silently skipping conditionIndices.
-            assert created is not None, \
-                "ReplRE create response was lost; retry to retain initial-RE response proof"
-            add = created.get("requiredExpression") or {}
-            assert add.get("conditionIndices"), \
-                f"initial addRequiredExpression produced no conditionIndices: {add}"
+            if created is not None:
+                add = created.get("requiredExpression") or {}
+                assert add.get("conditionIndices"), \
+                    f"initial addRequiredExpression produced no conditionIndices: {add}"
+            else:
+                self._assert_switch_required_expression(app_id, sw)
             # Replace it in place with a DIFFERENT condition: Switch is off.
             # This edit sits at the relay ceiling and exercises bounded MRTR slices.
             result = self._call_slow_rule({
@@ -6322,7 +6412,7 @@ class TestRunner:
                                    "fromDevice": {"deviceId": switch_id, "attribute": "switch"}}},
                     {"addAction": {"capability": "setVariable", "variable": bool_var_name,
                                    "fromDevice": {"deviceId": switch_id, "attribute": "switch"}}},
-                ])
+                ], expected_refusals=2)
                 assert len(c_entries) == 3, f"unary/rejection patches were incomplete: {c_entries}"
                 mu, str_reject, bool_reject = c_entries
                 assert mu.get("success") is not False, f"setVariable math unary hard-errored: {mu}"
@@ -6333,6 +6423,16 @@ class TestRunner:
                                for k in mu_applied), \
                     f"math unary wrongly wrote a second operand; settingsApplied={mu_applied}"
                 assert not mu.get("partial"), f"math unary action falsely flagged partial: {mu}"
+
+                mu_idx = mu.get("actionIndex")
+                assert mu_idx is not None, f"math unary returned no actionIndex: {mu}"
+                unary_settings = self._get_persisted_rule_config(app_c).get("settings") or {}
+                assert unary_settings.get(f"xVarV.{mu_idx}") == var_name \
+                    and unary_settings.get(f"valMathOp.{mu_idx}") == "absolute", \
+                    f"math unary target/operator did not persist: {unary_settings}"
+                assert f"xVar4.{mu_idx}" not in unary_settings \
+                    and f"valConst2.{mu_idx}" not in unary_settings, \
+                    f"math unary persisted an illegal second operand: {unary_settings}"
 
                 # String-TARGET rejection: the device-attribute (fromDevice) and variable-math (math)
                 # source modes are Number/Decimal-target-only -- RM renders the numOp source-mode
@@ -6451,32 +6551,34 @@ class TestRunner:
                                      "attribute": "temperature", "offset": -2}}]},
         }, return_result=True)
         try:
-            assert created is not None, \
-                "CtdLand create response was lost; retry to retain response-field proof"
-            result = created.get("requiredExpression") or {}
-            # (1) The device-relative condition committed cleanly.
-            assert result.get("success") is not False, \
-                f"compareToDevice addRequiredExpression reported failure: {result}"
-            assert not result.get("partial"), \
-                f"compareToDevice condition falsely flagged partial (the live-wrong false-partial): {result}"
-            applied = result.get("settingsApplied") or []
-            assert any(str(k).startswith("isDev_") for k in applied), \
-                f"isDev_<N> toggle did not land -- the device-relative RHS was not wired: {applied}"
-            assert any(str(k).startswith("relDevice_") for k in applied), \
-                f"relDevice_<N> reference picker did not land: {applied}"
+            if created is not None:
+                result = created.get("requiredExpression") or {}
+                assert result.get("success") is not False and not result.get("partial"), \
+                    f"compareToDevice addRequiredExpression did not cleanly commit: {result}"
+                applied = result.get("settingsApplied") or []
+                assert any(str(k).startswith("isDev_") for k in applied), \
+                    f"isDev_<N> toggle did not land: {applied}"
+                assert any(str(k).startswith("relDevice_") for k in applied), \
+                    f"relDevice_<N> reference picker did not land: {applied}"
+                skipped = result.get("settingsSkipped") or []
+                bad = [s for s in skipped if isinstance(s, dict)
+                       and s.get("key") == "compareToDevice-validation"]
+                assert not bad, f"unexpected compareToDevice validation skip: {bad}"
             # The rule renders device-relative text, NOT a literal threshold / "A > 0".
-            cfg = self.client.call_tool("hub_read_apps_code", {
-                "tool": "hub_get_app_config", "args": {"appId": ctd_app_id},
-            })
+            cfg = self._get_persisted_rule_config(ctd_app_id)
+            settings = cfg.get("settings") or {}
+            slots = [str(key).split("_", 1)[1] for key, value in settings.items()
+                     if str(key).startswith("relDevice_")
+                     and self._setting_holds_exact(value, dev_b)]
+            assert slots and any(
+                str(settings.get(f"isDev_{slot}")).lower() in ("true", "on")
+                and self._setting_holds_exact(settings.get(f"rDev_{slot}"), dev_a)
+                and str(settings.get(f"state_{slot}")) in ("-2", "-2.0")
+                for slot in slots), \
+                f"device-relative RHS/offset did not persist together: {settings}"
             blob = str(cfg)
             assert ("Temperature of" in blob) or ("temperature of" in blob.lower()), \
                 f"rule paragraph does not render a device-relative Temperature comparison: {blob[:600]}"
-            # No degradation skip for the empty device-picker option list (normal case).
-            skipped = result.get("settingsSkipped") or []
-            bad = [s for s in skipped if isinstance(s, dict)
-                   and s.get("key") == "compareToDevice-validation"]
-            assert not bad, \
-                f"unexpected compareToDevice-validation skip (empty device-picker options are normal): {bad}"
         finally:
             self._delete_native(ctd_app_id)
 
@@ -6845,28 +6947,31 @@ class TestRunner:
             ],
         }, return_result=True)
         try:
-            assert created is not None, \
-                "DoActEnum create response was lost; retry to retain response-field proof"
-            entries = created.get("actions") or []
-            assert len(entries) == 3 and all(entry.get("success") is not False for entry in entries), \
-                f"balanced enum IF patches did not all commit: {entries}"
-            result = entries[0]
-            # The whole point: the doActPage walker no longer hard-errors on the enum attr.
-            assert result.get("success") is not False, \
-                f"addAction ifThen hard-errored on an enum Custom Attribute (the walker bug): {result}"
-            applied = result.get("settingsApplied") or []
-            assert any(str(k).startswith("state_") for k in applied), \
-                f"doActPage walker enum value did not land in a state_<N> field; settingsApplied={applied}"
-            skipped = result.get("settingsSkipped") or []
-            bad = [s for s in skipped if isinstance(s, dict)
-                   and (s.get("key") or "").startswith("RelrDev_")
-                   and s.get("reason") == "not_in_schema"]
-            assert not bad, \
-                f"unexpected RelrDev_<N> not_in_schema skip on the doActPage walker enum path: {bad}"
-            assert not result.get("partial"), \
-                f"doActPage walker enum condition falsely flagged partial: {result}"
-            # The same patches call closes the IF before its single trailing updateRule,
-            # so the authoritative whole-rule health check observes a balanced rule.
+            if created is not None:
+                entries = created.get("actions") or []
+                assert len(entries) == 3 and all(entry.get("success") is not False for entry in entries), \
+                    f"balanced enum IF actions did not all commit: {entries}"
+                result = entries[0]
+                applied = result.get("settingsApplied") or []
+                assert any(str(k).startswith("state_") for k in applied), \
+                    f"doActPage enum value did not land in state_<N>: {applied}"
+                skipped = result.get("settingsSkipped") or []
+                bad = [s for s in skipped if isinstance(s, dict)
+                       and (s.get("key") or "").startswith("RelrDev_")
+                       and s.get("reason") == "not_in_schema"]
+                assert not bad and not result.get("partial"), \
+                    f"doActPage enum condition was partial or wrote hidden comparator: {result}"
+            cfg = self._get_persisted_rule_config(app_id)
+            settings = cfg.get("settings") or {}
+            enum_slots = [str(key).split("_", 1)[1] for key, value in settings.items()
+                          if str(key).startswith("rCustomAttr_") and value == "switch"]
+            assert any(str(settings.get(f"state_{slot}")) == "on"
+                       and self._setting_holds_exact(settings.get(f"rDev_{slot}"), sw)
+                       for slot in enum_slots), \
+                f"doActPage enum attribute/device/value did not persist together: {settings}"
+            page_blob = json.dumps(cfg.get("page") or {}).lower()
+            assert "fired" in page_blob and "broken condition" not in page_blob, \
+                f"balanced IF/log/END-IF did not persist cleanly: {cfg}"
             self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
