@@ -2803,7 +2803,6 @@ A transport drop can lose the response while the hub still commits this write; v
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the install/instantiation succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     appId: [description: "New app code ID (code-install mode)"],
@@ -2860,7 +2859,6 @@ MCP 2026-07-28 clients automatically continue this slow write and can replay its
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the install (or all bulk installs) succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     driverId: [description: "New driver code ID (single-driver mode)"],
@@ -2915,7 +2913,6 @@ A transport drop can lose the response while the hub still commits this write; v
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the update succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     appId: [description: "App ID updated"],
@@ -2979,7 +2976,6 @@ MCP 2026-07-28 clients automatically continue this slow write and can replay its
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the update (or all bulk updates) succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     driverId: [description: "Driver ID updated (single-driver mode)"],
@@ -3031,7 +3027,6 @@ For type=driver, MCP 2026-07-28 clients automatically continue this slow write a
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the deletion succeeded"],
                     message: [type: "string", description: "Human-readable result, including backup status"],
                     appId: [description: "Deleted app ID (type='app')"],
@@ -3070,7 +3065,6 @@ A transport drop can lose the response while the hub still commits this write; v
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the library installed"],
                     message: [type: "string", description: "Human-readable result"],
                     libraryId: [description: "New library ID"],
@@ -3111,7 +3105,6 @@ A transport drop can lose the response while the hub still commits this write; v
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the update succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     libraryId: [description: "Library ID updated"],

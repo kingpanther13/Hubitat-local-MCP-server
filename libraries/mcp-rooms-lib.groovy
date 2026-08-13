@@ -338,7 +338,6 @@ def _getAllToolDefinitions_partRooms() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether creation succeeded"],
                     room: [type: "object", description: "Created room", properties: [
                         id: [type: "string", description: "New room ID"],
@@ -366,7 +365,6 @@ PRE-FLIGHT: 1) Backup <24h 2) Verify correct room 3) List affected devices to us
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether deletion succeeded"],
                     deletedRoom: [type: "object", description: "Deleted room", properties: [
                         id: [type: "string", description: "Room ID"],
@@ -393,7 +391,6 @@ PRE-FLIGHT: 1) Backup <24h 2) Verify correct room 3) List affected devices to us
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether rename succeeded"],
                     room: [type: "object", description: "Renamed room", properties: [
                         id: [type: "string", description: "Room ID"],

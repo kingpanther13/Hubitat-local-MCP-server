@@ -395,7 +395,6 @@ def _getAllToolDefinitions_partBundles() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the bundle installed"],
                     message: [type: "string", description: "Human-readable result"],
                     endpoint: [type: "string", description: "Hub endpoint used (/bundle2/uploadZipFromUrl or /bundle/uploadZipFromUrl)"],
@@ -444,7 +443,6 @@ def _getAllToolDefinitions_partBundles() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the bundle was deleted"],
                     message: [type: "string", description: "Human-readable result"],
                     bundleId: [type: "string", description: "The targeted bundle id"],
@@ -471,7 +469,6 @@ def _getAllToolDefinitions_partBundles() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the bundle zip was saved"],
                     message: [type: "string", description: "Human-readable result"],
                     bundleId: [type: "string", description: "The exported bundle id"],

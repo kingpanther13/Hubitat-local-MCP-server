@@ -246,6 +246,32 @@ class HandleToolsCallSpec extends ToolSpecBase {
         inner.count == 0
     }
 
+    def "tool result rendering keeps nested brokenBefore metadata internal without mutating cached results"() {
+        given:
+        def canonicalBackup = [backupKey: 'rm-rule_7_baseline', brokenBefore: true,
+                               baselineReused: true]
+        def nestedBackup = [backupKey: 'rm-rule_7_required', brokenBefore: false]
+        def canonicalResult = [success: true, backup: canonicalBackup,
+                               patches: [[success: true, backup: nestedBackup]]]
+        settingsMap.useGateways = true
+        settingsMap.publishOutputSchemas = true
+        script.metaClass.toolGetHubInfo = { a -> canonicalResult }
+
+        when:
+        def response = mcpDriver.callTool('hub_get_info', [:])
+        def inner = mcpDriver.parseInner(response)
+
+        then: 'the internal diagnostic is absent from the public text payload'
+        inner.backup == [backupKey: 'rm-rule_7_baseline', baselineReused: true]
+        inner.patches[0].backup == [backupKey: 'rm-rule_7_required']
+        response.result.structuredContent == inner
+
+        and: 'recursive path copies leave internal consumers and terminal replay untouched'
+        canonicalBackup.brokenBefore == true
+        nestedBackup.brokenBefore == false
+        canonicalResult.patches[0].backup.is(nestedBackup)
+    }
+
     def "handleToolsCall returns a __preserialized sentinel on the under-cap success path (serialize-once)"() {
         // The sentinel is the mechanism that lets handleMcpRequest render verbatim without a
         // second JsonOutput.toJson. Pinning the sentinel shape here guards the serialize-once

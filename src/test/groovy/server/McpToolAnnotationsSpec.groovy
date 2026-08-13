@@ -572,6 +572,19 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         }
     }
 
+    def "eliminated opToken protocol leaves no stale output-schema fields"() {
+        when:
+        def defs = script.getAllToolDefinitions()
+        def stale = defs.findAll { tool ->
+            def properties = tool.outputSchema?.properties
+            properties instanceof Map && (properties.containsKey('opToken') ||
+                properties.containsKey('recentOps') || properties.containsKey('recentOpsTotal'))
+        }*.name
+
+        then:
+        stale == []
+    }
+
     def "getAllToolDefinitions() concatenates its chunk methods with no dropped or duplicated tools"() {
         // getAllToolDefinitions() concatenates one per-domain chunk method
         // (_getAllToolDefinitions_part<Name>(), each contributed by its #include

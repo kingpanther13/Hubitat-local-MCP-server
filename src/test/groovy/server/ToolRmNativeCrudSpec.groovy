@@ -4,6 +4,7 @@ import support.RMUtilsMock
 import support.TestLocation
 import support.ToolSpecBase
 import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
 import spock.lang.Shared
 import spock.lang.Unroll
 
@@ -1198,6 +1199,65 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.backupKey != "rm-rule_506_wrong"
         uploads.size() == 1
         result.fileName == uploads[0]
+    }
+
+    def "ordinary edit refuses a same-rule backup file with no restorable payload"() {
+        given:
+        enableWrite()
+        def clock = [1234567890000L]
+        NOW_OVERRIDE.set({ -> clock[0] })
+        hubGet.register('/installedapp/configure/json/508') { params -> ruleConfigJson(508, "truncated-backup") }
+        hubGet.register('/installedapp/statusJson/508') { params -> statusJson(508) }
+        byte[] truncated = JsonOutput.toJson([schemaVersion: 1, appId: 508, ruleId: 508]).getBytes("UTF-8")
+        atomicStateMap.itemBackupManifest = [
+            "rm-rule_508_truncated": [type: "rm-rule", id: 508, ruleId: 508,
+                                       fileName: "mcp-rm-backup-508-truncated.json",
+                                       timestamp: clock[0] - 60_000L, sourceLength: truncated.length]
+        ]
+        def uploads = []
+        script.metaClass.downloadHubFile = { String fn -> truncated }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
+
+        when:
+        def result = script._rmBackupBeforeEdit(508, "pre-update")
+
+        then: 'the unusable handle is discarded instead of advertised as a rollback baseline'
+        !atomicStateMap.itemBackupManifest.containsKey("rm-rule_508_truncated")
+        result.backupKey != "rm-rule_508_truncated"
+        result.baselineReused == false
+        uploads.size() == 1
+    }
+
+    def "ordinary edit reuses a valid backup when current-config diagnostics fail transiently"() {
+        given:
+        enableWrite()
+        def clock = [1234567890000L]
+        NOW_OVERRIDE.set({ -> clock[0] })
+        def savedConfig = new JsonSlurper().parseText(ruleConfigJson(507, "transient-diagnostic"))
+        byte[] snapshot = JsonOutput.toJson([schemaVersion: 1, appId: 507, ruleId: 507,
+                                             appType: "rule_machine", configJson: savedConfig]).getBytes("UTF-8")
+        atomicStateMap.itemBackupManifest = [
+            "rm-rule_507_recent": [type: "rm-rule", id: 507, ruleId: 507,
+                                   fileName: "mcp-rm-backup-507-recent.json",
+                                   timestamp: clock[0] - 60_000L, sourceLength: snapshot.length]
+        ]
+        script.metaClass.downloadHubFile = { String fn -> snapshot }
+        hubGet.register('/installedapp/configure/json/507') { params ->
+            throw new RuntimeException('HTTP 500: hub temporarily busy')
+        }
+        hubGet.register('/app/ruleBuilder20Json/507') { params -> '{"success":false}' }
+        hubGet.register('/app/ruleBuilderJson/507') { params -> '{}' }
+        def uploads = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
+
+        when:
+        def result = script._rmBackupBeforeEdit(507, "pre-update")
+
+        then: 'the runtime read failure only suppresses the internal wording diagnostic'
+        result.backupKey == "rm-rule_507_recent"
+        result.baselineReused == true
+        result.brokenBefore == null
+        uploads.isEmpty()
     }
 
     def "ordinary edit takes a fresh backup after the one-hour reuse window expires"() {

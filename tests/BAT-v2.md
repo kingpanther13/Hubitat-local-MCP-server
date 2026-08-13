@@ -3025,12 +3025,12 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 ```json
 {
   "setup_prompt": "Developer Mode and the Write master are enabled, a recent hub backup exists, and backupEveryRuleWrite is false. Create a small Rule Machine rule named 'BAT Backup Reuse'.",
-  "test_prompt": "Make two small edits to that same rule and compare response backup.backupKey. Then enable backupEveryRuleWrite with hub_update_mcp_settings, make two more small edits, and compare their backup keys.",
-  "teardown_prompt": "Set backupEveryRuleWrite back to false and delete 'BAT Backup Reuse'."
+  "test_prompt": "Append four uniquely messaged Log Message actions to that same rule one at a time as four separate edits, recording each returned backup key. After the first two, enable the setting that creates a fresh backup for every native-app edit; then perform the final two separate edits and compare all four keys.",
+  "teardown_prompt": "Always use hub_update_mcp_settings to set backupEveryRuleWrite back to false, even if an edit failed, then delete 'BAT Backup Reuse'."
 }
 ```
 
-**Expected**: with the default OFF policy, the first two edits return the same non-empty `backup.backupKey`, proving the recent same-rule baseline was reused. After `hub_manage_mcp(tool='hub_update_mcp_settings', args={settings:{backupEveryRuleWrite:true}, confirm:true})`, the next two edits return different non-empty backup keys, proving strict per-write snapshots. Different rules never share a key. Teardown restores OFF even if an edit fails. Deletes and destructive Required Expression replacement still take fresh snapshots; this setting does not weaken those paths.
+**Expected**: the four requested writes append four distinctly messaged Log Message actions. With the default OFF policy, the first two edits return the same non-empty `backup.backupKey`, proving the recent same-rule baseline was reused. After `hub_manage_mcp(tool='hub_update_mcp_settings', args={settings:{backupEveryRuleWrite:true}, confirm:true})`, the next two edits return different non-empty backup keys, proving strict per-write snapshots. Teardown restores OFF even if an edit fails.
 
 ### T224 — hub_delete_variable removes a stale rule_engine variable
 

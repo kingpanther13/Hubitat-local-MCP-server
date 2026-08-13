@@ -1179,7 +1179,7 @@ The advanced `relayBudgetMs` setting (default 8000 ms, 0 disables) controls clou
 
 ### Package deployment
 
-`hub_update_package` is intentionally asynchronous instead of MRTR because a full repair can take minutes and recompiles this app. A real call validates and schedules the repair, then immediately returns `status: "in_progress"` with `requestId`. Do not submit it again: the server retains the reservation until that exact worker clears it or a matching terminal `lastSelfDeploy.requestId` proves it finished; elapsed time alone never admits a second deploy. Poll `hub_get_info.lastSelfDeploy` until its `requestId` matches; its `success` and `error` fields are the terminal outcome. `dryRun: true` remains synchronous.
+`hub_update_package` is intentionally asynchronous instead of MRTR because a full repair can take minutes and recompiles this app. A real call validates and schedules the repair, then immediately returns `status: "in_progress"` with `requestId`. Do not submit it again: the server retains the reservation until that exact worker clears it or a matching terminal `lastSelfDeploy.requestId` proves it finished. Poll `hub_get_info.lastSelfDeploy` until its `requestId` matches; its `success` and `error` fields are the terminal outcome. During normal execution, keep polling rather than retrying the write. If a worker is abandoned, the next write may remove its marker only after the 10-minute recovery lease has expired and no live worker owns it; retry the deploy only after that recovery condition. `dryRun: true` remains synchronous.
 
 ### Other writes
 

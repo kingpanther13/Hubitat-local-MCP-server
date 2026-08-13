@@ -852,7 +852,6 @@ A transport drop can lose the response while the hub still commits this write; v
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the operation succeeded"],
                     confirmed: [type: "boolean", description: "Whether backup completion was confirmed via the hub's backup status or a new entry in its backup list (false = best-effort trigger)"],
                     mocked: [type: "boolean", description: "true when mock=true stamped the gate record without a real backup"],
@@ -882,7 +881,6 @@ A transport drop can lose the response while the hub still commits this write; v
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the delete succeeded"],
                     location: [type: "string", description: "local or cloud"],
                     message: [type: "string", description: "Human-readable result"],
@@ -998,7 +996,6 @@ A transport drop can lose the response while the hub still commits this write; v
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the restore succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     type: [type: "string", description: "Item type restored (app/driver/rm-rule/visual-rule)"],

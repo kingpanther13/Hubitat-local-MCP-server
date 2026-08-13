@@ -2297,7 +2297,6 @@ def _getAllToolDefinitions_partDiagnostics() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     beforeFreeMemoryKB: [type: "integer", description: "Free memory before GC (KB), or null"],
                     afterFreeMemoryKB: [type: "integer", description: "Free memory after GC (KB), or null"],
                     timestamp: [type: "string", description: "When GC ran"],
@@ -2323,7 +2322,6 @@ def _getAllToolDefinitions_partDiagnostics() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the change applied"],
                     radio: [type: "string", description: "Always 'zwave'"],
                     enabled: [type: "boolean", description: "Resulting enabled state; present for enable/disable"],
@@ -2355,7 +2353,6 @@ def _getAllToolDefinitions_partDiagnostics() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the change applied"],
                     radio: [type: "string", description: "Always 'zigbee'"],
                     enabled: [type: "boolean", description: "Resulting enabled state; present for enable/disable"],
@@ -2390,7 +2387,6 @@ def _getAllToolDefinitions_partDiagnostics() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the operation was accepted"],
                     action: [type: "string", description: "Echo of the requested action"],
                     nodeId: [type: "string", description: "Echo of node_id; present for per-node actions"],
@@ -2417,7 +2413,6 @@ def _getAllToolDefinitions_partDiagnostics() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the operation was accepted"],
                     action: [type: "string", description: "Echo of the requested action"],
                     message: [type: "string", description: "Human-readable result"],
@@ -2445,7 +2440,6 @@ def _getAllToolDefinitions_partDiagnostics() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the operation was accepted"],
                     action: [type: "string", description: "Echo of the requested action"],
                     nodeId: [type: "string", description: "Echo of node_id; present for open_pairing_window"],
@@ -2479,7 +2473,6 @@ Requires Write master.""",
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the operation was accepted"],
                     target: [type: "string", description: "Echo of the requested target"],
                     action: [type: "string", description: "Echo of the requested action"],
@@ -2528,7 +2521,6 @@ Requires Write master.""",
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the delete succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     remaining: [type: "integer", description: "States remaining; present on single delete"],

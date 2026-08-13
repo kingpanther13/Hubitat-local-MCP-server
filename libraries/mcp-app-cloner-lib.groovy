@@ -863,7 +863,6 @@ def _getAllToolDefinitions_partAppCloner() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "True when a new child app was created AND (if stageDisabled was requested) staging fully landed. success:false can still carry a committed newAppId when staging failed -- do NOT retry the call (that would duplicate the app); disable the apps named in stageFailures instead."],
                     sourceAppId: [type: "integer", description: "Source app ID"],
                     clonerAppId: [type: "integer", description: "Temporary cloner app ID (auto-deleted after the operation)"],
@@ -893,7 +892,6 @@ def _getAllToolDefinitions_partAppCloner() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether export succeeded"],
                     sourceAppId: [type: "integer", description: "Source app ID"],
                     sourceLabel: [type: "string", description: "Source app label"],
@@ -934,7 +932,6 @@ def _getAllToolDefinitions_partAppCloner() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "True when a new child app was created AND (if stageDisabled was requested) staging fully landed. success:false can still carry a committed newAppId when staging failed -- do NOT retry the call (that would duplicate the app); disable the apps named in stageFailures instead."],
                     clonerAppId: [type: "integer", description: "Temporary cloner app ID (auto-deleted after the operation)"],
                     newAppId: [type: "integer", description: "New imported app ID, or null on soft failure"],

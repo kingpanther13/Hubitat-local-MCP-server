@@ -3016,13 +3016,32 @@ private Map _mrtrAppClonerStageSlice(Map cp, String operationLabel) {
     return result
 }
 
+// Copy tool results without JSON round-tripping so serializer failures remain
+// observable at the guarded boundary below. Any Map stored under a `backup` key
+// is public backup metadata; strip its internal brokenBefore wording signal at
+// every nesting depth (bulk/patch results contain per-item backup maps too).
+private def _publicToolResultValue(value, boolean backupMetadata = false) {
+    if (value instanceof Map) {
+        def copy = new LinkedHashMap()
+        (value as Map).each { key, child ->
+            if (backupMetadata && key?.toString() == "brokenBefore") return
+            copy[key] = _publicToolResultValue(child, key?.toString() == "backup")
+        }
+        return copy
+    }
+    if (value instanceof List) {
+        return (value as List).collect { child -> _publicToolResultValue(child, false) }
+    }
+    return value
+}
+
 private def _renderToolResult(id, toolName, reactiveToolName, args, result, boolean isErrorOverride = false) {
     // Reactive hints mutate their result map. Terminal MRTR responses are retained
-    // for replay, so render from a top-level copy and keep the cached canonical
+    // for replay, so render from a non-mutating structural copy and keep the cached canonical
     // result immutable across clients and retries. Do not use _mrtrCopyMap here:
     // its JSON round-trip would throw on a non-serializable tool result before the
     // guarded serialization below can turn that tool bug into a valid MCP error.
-    def rendered = (result instanceof Map) ? new LinkedHashMap(result as Map) : result
+    def rendered = _publicToolResultValue(result)
     if (rendered instanceof Map && (rendered.isError == true || rendered.success == false)) {
         try { _applyReactiveBpsWarning(reactiveToolName, args, rendered) }
         catch (Exception bpErr) {
@@ -9111,7 +9130,7 @@ The advanced `relayBudgetMs` setting (default 8000 ms, 0 disables) controls clou
 
 ### Package deployment
 
-`hub_update_package` is intentionally asynchronous instead of MRTR because a full repair can take minutes and recompiles this app. A real call validates and schedules the repair, then immediately returns `status: "in_progress"` with `requestId`. Do not submit it again: the server retains the reservation until that exact worker clears it or a matching terminal `lastSelfDeploy.requestId` proves it finished; elapsed time alone never admits a second deploy. Poll `hub_get_info.lastSelfDeploy` until its `requestId` matches; its `success` and `error` fields are the terminal outcome. `dryRun: true` remains synchronous.
+`hub_update_package` is intentionally asynchronous instead of MRTR because a full repair can take minutes and recompiles this app. A real call validates and schedules the repair, then immediately returns `status: "in_progress"` with `requestId`. Do not submit it again: the server retains the reservation until that exact worker clears it or a matching terminal `lastSelfDeploy.requestId` proves it finished. Poll `hub_get_info.lastSelfDeploy` until its `requestId` matches; its `success` and `error` fields are the terminal outcome. During normal execution, keep polling rather than retrying the write. If a worker is abandoned, the next write may remove its marker only after the 10-minute recovery lease has expired and no live worker owns it; retry the deploy only after that recovery condition. `dryRun: true` remains synchronous.
 
 ### Other writes
 

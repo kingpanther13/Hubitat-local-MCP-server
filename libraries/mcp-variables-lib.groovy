@@ -946,7 +946,6 @@ def _getAllToolDefinitions_partVariables() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the set succeeded"],
                     name: [type: "string", description: "Variable name"],
                     value: [description: "Value that was set"],
@@ -980,7 +979,6 @@ def _getAllToolDefinitions_partVariables() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Single form: whether creation succeeded. Bulk form: true only when every item was created."],
                     name: [type: "string", description: "Single form: variable name"],
                     type: [type: "string", description: "Single form: variable type"],
@@ -1015,7 +1013,6 @@ def _getAllToolDefinitions_partVariables() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether deletion succeeded"],
                     name: [type: "string", description: "Variable name"],
                     deleted: [type: "boolean", description: "True when the variable was removed"],
@@ -1046,7 +1043,6 @@ def _getAllToolDefinitions_partVariables() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the connector exists/was created"],
                     name: [type: "string", description: "Variable name"],
                     deviceId: [type: "string", description: "Connector device id"],
@@ -1072,7 +1068,6 @@ def _getAllToolDefinitions_partVariables() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the removal succeeded"],
                     name: [type: "string", description: "Variable name"],
                     deviceId: [type: "string", description: "Removed connector device id (when one existed)"],

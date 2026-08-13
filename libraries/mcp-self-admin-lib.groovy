@@ -868,7 +868,6 @@ def _getAllToolDefinitions_partSelfAdmin() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the operation succeeded"],
                     updated: [type: "object", description: "Map of applied scalar setting key → coerced new value (excludes selectedDevices, reported under its own key). Present on success; absent when `success: false` (a device-scope runtime fetch failure)"],
                     selectedDevices: [
@@ -910,7 +909,6 @@ A real deploy is accepted quickly with `status: "in_progress"`, then runs in Hub
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "True when the deploy (or dry-run plan) completed; false on abort or app-update failure"],
                     ref: [type: "string", description: "The git ref deployed"],
                     dryRun: [type: "boolean", description: "True when this was a plan-only run (no writes)"],

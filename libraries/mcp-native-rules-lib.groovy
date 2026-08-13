@@ -53,7 +53,6 @@ def _getAllToolDefinitions_partNativeRM() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the action succeeded (multi-rule: all succeeded)"],
                     ruleId: [type: "integer", description: "Rule app ID acted on (present when exactly one)"],
                     ruleIds: [type: "array", items: [type: "integer"], description: "All rule app IDs REQUESTED (on a budget-paused batch, remainingRuleIds were not yet acted on). Present on every stop/start call and on all array-form calls."],
@@ -83,7 +82,6 @@ def _getAllToolDefinitions_partNativeRM() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the pause/resume succeeded"],
                     ruleId: [type: "integer", description: "Rule app ID (present when exactly one)"],
                     ruleIds: [type: "array", items: [type: "integer"], description: "All rule app IDs acted on"],
@@ -111,7 +109,6 @@ def _getAllToolDefinitions_partNativeRM() {
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the set succeeded"],
                     ruleId: [type: "integer", description: "Rule app ID (present when exactly one)"],
                     ruleIds: [type: "array", items: [type: "integer"], description: "All rule app IDs acted on"],
@@ -155,7 +152,6 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the create/edit succeeded"],
                     appId: [type: "integer", description: "App ID created or edited"],
                     ruleId: [type: ["integer", "null"], description: "on create: the same value as appId, surfaced under the name the ruleId-taking downstream tools use (hub_call_rule, hub_set_rule_paused, hub_set_rule_private_boolean) so a create can be chained directly. Null for a non-RM app type; absent on edit."],
@@ -285,7 +281,6 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the update succeeded (absent in discover mode)"],
                     appId: [type: "integer", description: "App ID updated"],
                     ruleId: [type: ["integer", "null"], description: "create: the same value as appId (a hub_set_rule create is always a rule_machine rule), surfaced under the name the ruleId-taking downstream tools use (hub_call_rule, hub_set_rule_paused, hub_set_rule_private_boolean) so a create can be chained directly. Absent on edit."],
@@ -458,7 +453,6 @@ Requires Write master + confirm=true + recent hub backup.""",
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the delete succeeded"],
                     appId: [type: "integer", description: "App ID"],
                     mode: [type: "string", description: "delete or forcedelete"],
@@ -484,7 +478,6 @@ Requires Write master + confirm=true + recent hub backup.""",
             outputSchema: [
                 type: "object",
                 properties: [
-                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the disabled flag now matches the requested value (read-back verified)"],
                     appId: [type: "integer", description: "App ID"],
                     disabled: [type: "boolean", description: "The app's disabled flag after the call"],
@@ -9095,7 +9088,24 @@ private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
         def snapshot = new groovy.json.JsonSlurper().parseText(new String(bytes, "UTF-8"))
         if (!(snapshot instanceof Map)) return false
         def snapshotId = snapshot.appId != null ? snapshot.appId : snapshot.ruleId
-        return snapshotId?.toString() == ruleId?.toString()
+        if (snapshotId?.toString() != ruleId?.toString()) return false
+        if (snapshot.schemaVersion != 1) return false
+        def appType = snapshot.appType?.toString() ?: "rule_machine"
+        if (appType == "visual_rule") {
+            if (snapshot.vrbFormat == "classic") return snapshot.vrbDefinition instanceof Map
+            if (snapshot.vrbFormat == "graph" && snapshot.vrbRuleJson) {
+                try {
+                    return new groovy.json.JsonSlurper().parseText(snapshot.vrbRuleJson.toString()) instanceof Map
+                } catch (Exception ignored) {
+                    return false
+                }
+            }
+            return false
+        }
+        // Classic restore replays configJson.settings. Requiring the explicit
+        // Map distinguishes a legitimately empty rule from a truncated JSON
+        // object that restore would otherwise treat as an empty successful replay.
+        return snapshot.configJson instanceof Map && snapshot.configJson.settings instanceof Map
     } catch (Exception ignored) {
         return false
     }
@@ -9140,7 +9150,11 @@ Map _rmBackupBeforeEdit(Integer ruleId, String reason) {
                 if (e.message?.contains("404")) {
                     throw new IllegalArgumentException("No rule/app with id ${ruleId} exists on this hub (configure/json returned 404). Nothing was changed. Use hub_list_rules for valid ids. See hub_get_tool_guide(section='set_rule_reference').")
                 }
-                throw new IllegalArgumentException("Cannot verify rule ${ruleId} before reusing backup '${recent.key}': configure/json failed -- ${e.message}")
+                // The persisted snapshot above is already identity-checked and is
+                // sufficient for rollback. A transient configure/json failure only
+                // makes the brokenBefore wording diagnostic unavailable; it must not
+                // turn a valid edit into an invalid-params refusal.
+                mcpLog("warn", "rm-native", "Could not read rule ${ruleId} before reusing backup '${recent.key}' (${e.message ?: e}); continuing without the internal brokenBefore diagnostic")
             }
         }
         mcpLog("info", "rm-native", "Reusing recent backup ${recent.key} for rule ${ruleId} (${reason}); restoring it reverts every edit since ${formatTimestamp(recent.value.timestamp as Long)}")
