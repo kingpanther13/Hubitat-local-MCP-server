@@ -1,10 +1,16 @@
 library(name: "McpFilesLib", namespace: "mcp", author: "kingpanther13", description: "File Manager tool implementations (hub_list_files/hub_read_file/hub_write_file/hub_delete_file) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
+// Hubitat's sandbox does not expose java.util.Locale. File Manager names are
+// ASCII-only, so use a deterministic ASCII fold instead of the process locale.
+private String _filesFoldCase(value) {
+    return value?.toString()?.tr('ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')
+}
+
 // Keep the name filter in one place so JSON and HTML firmware response shapes agree.
 private List _filesApplyListFilters(List fileList, String filterLower) {
     def out = fileList
     if (filterLower) {
-        out = out.findAll { it?.name?.toString()?.toLowerCase()?.contains(filterLower) }
+        out = out.findAll { _filesFoldCase(it?.name)?.contains(filterLower) }
     }
     return out
 }
@@ -13,7 +19,7 @@ def toolListFiles(args = null) {
     mcpLog("debug", "file-manager", "Listing files in File Manager")
     def cursor = args?.cursor
     def filterText = args?.filter?.toString()?.trim()
-    def filterLower = filterText?.toLowerCase()
+    def filterLower = _filesFoldCase(filterText)
     // Try known File Manager API endpoints (varies by firmware version)
     def endpoints = ["/hub/fileManager/json", "/hub/fileManager"]
     def responseText = null
@@ -326,6 +332,8 @@ def toolDeleteFile(args) {
         mcpLogError("file-manager", "Failed to delete file '${args.fileName}'", e)
         return [
             success: false,
+            message: "Failed to delete file '${args.fileName}': ${e.message}",
+            fileName: args.fileName,
             error: "Failed to delete '${args.fileName}': ${e.message}",
             suggestion: "Check that the file exists. Use 'hub_list_files' to see available files."
         ]

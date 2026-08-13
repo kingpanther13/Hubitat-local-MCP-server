@@ -383,8 +383,11 @@ private Map _toolSetVisualRuleImpl(args) {
         }
         try {
             def result = _vrbApplySave(appId, detected.format, name ?: detected.data.name?.toString(), normalized.map, hasPaused ? paused : null, detected.data.rulePaused == true, false)
-            result.previousDefinition = detected.format == "graph" ? detected.data.definition :
+            def previousDefinition = detected.format == "graph" ? detected.data.definition :
                     [whenNodes: detected.data.whenNodes, thenNodes: detected.data.thenNodes, elseNodes: detected.data.elseNodes]
+            // A never-saved graph has no prior definition. Omit the optional recovery aid
+            // instead of emitting null against its object-shaped wire contract.
+            if (previousDefinition instanceof Map) result.previousDefinition = previousDefinition
             return result
         } catch (Exception e) {
             mcpLog("error", "vrb", "hub_set_visual_rule edit failed for ${appId}: ${e.message}")
@@ -540,8 +543,10 @@ def toolDeleteVisualRule(args) {
                                    "This rule had no readable definition (never saved), so there is nothing to recreate."
     }
     mcpLog("info", "vrb", "Deleted Visual Rule ${appId} ('${detected.data.name}') verified=${verified}")
-    return [success: verified, appId: appId, name: detected.data.name, format: detected.format,
-            verified: verified, predeleteDefinition: predelete, note: note]
+    def result = [success: verified, appId: appId, name: detected.data.name, format: detected.format,
+                  verified: verified, note: note]
+    if (predelete instanceof Map) result.predeleteDefinition = predelete
+    return result
 }
 
 private Map _vrbRestoreFromSnapshot(Map snapshot, String fileName) {

@@ -52,6 +52,19 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
         stateMap.lastBackupTimestamp = 1234567890000L   // matches the harness fixed now()
     }
 
+    def "hub_set_hsm returns a non-null previousStatus when HSM has never reported"() {
+        given:
+        sharedLocation.hsmStatus = null
+
+        when:
+        def result = script.toolSetHsm('armHome')
+
+        then:
+        result.success == true
+        result.previousStatus == 'unknown'
+        result.newMode == 'armHome'
+    }
+
     // ---------- no-args validation ----------
 
     def "no settable field provided throws IllegalArgumentException listing the fields"() {

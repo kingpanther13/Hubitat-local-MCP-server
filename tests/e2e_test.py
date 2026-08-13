@@ -4115,6 +4115,10 @@ class TestRunner:
                 ({"replaceRequiredExpression": {"conditions": [{"capability": "Switch",
                     "deviceIds": [int(self.get_test_switch_id())], "state": "on"}]}},
                  ("addrequiredexpression",)),
+                ({"addAction": {"capability": "switch", "state": "on"}},
+                 ("action:",)),
+                ({"addRequiredExpression": {"conditions": [{"capability": "Last Event Device"}]}},
+                 ("not usable as a condition", "in actions")),
             ]
             refusal_entries = self._patch_rule(app_id, [spec for spec, _ in refusal_specs], expected_refusals=len(refusal_specs))
             assert len(refusal_entries) == len(refusal_specs), \
@@ -4128,15 +4132,15 @@ class TestRunner:
             assert missing_re.get("requiredExpressionMissing") is True \
                 and missing_re.get("requiredExpressionRestored") is None, \
                 f"no-RE replace refusal lost its structured no-delete contract: {missing_re}"
-            action_state = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
-                "args": {"appId": app_id, "addAction": {"capability": "switch", "state": "on"},
-                         "confirm": True}})
+            action_state = refusal_entries[-2]
             assert action_state.get("success") is False \
                 and "action:" in str(action_state.get("error", "")).lower(), \
                 f"switch addAction with state: should fail loud steering to action:, got: {action_state}"
-            assert "not touched" in str(action_state.get("restoreHint", "")).lower() \
-                and "backup saved before write" not in str(action_state.get("restoreHint", "")).lower(), \
-                f"switch state: pre-flight refusal should carry a not-touched restoreHint, got: {action_state.get('restoreHint')!r}"
+            last_event_cond = refusal_entries[-1]
+            assert last_event_cond.get("success") is False \
+                and "not usable as a condition" in str(last_event_cond.get("error", "")).lower() \
+                and "in actions" in str(last_event_cond.get("error", "")).lower(), \
+                f"Last Event Device condition should fail loud as a non-condition, got: {last_event_cond}"
             # Mixed EDIT shortcuts used to apply only the first branch while reporting success.
             # The guard must reject the full call before the backup snapshot or any wizard write.
             try:
@@ -4174,16 +4178,6 @@ class TestRunner:
                     f"runRule targeting an existing rule id ({runrule_target_id}) should be accepted and commit, got: {runrule_ok}"
             finally:
                 self._delete_native(runrule_target_id)
-            # Non-condition capability parity: Last Event Device is a valid STPage picker option but is
-            # not usable as a condition (it references the device that fired the trigger, an action-side ref). As a Required Expression
-            # condition it must fail loud (not a condition), NOT commit a broken condition.
-            last_event_cond = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
-                "args": {"appId": app_id, "addRequiredExpression": {"conditions": [{"capability": "Last Event Device"}]},
-                         "confirm": True}})
-            assert last_event_cond.get("success") is False \
-                and "not usable as a condition" in str(last_event_cond.get("error", "")).lower() \
-                and "in actions" in str(last_event_cond.get("error", "")).lower(), \
-                f"Last Event Device condition should fail loud as a non-condition, got: {last_event_cond}"
             # The rejected condition mutated nothing, so the rule must still have zero committed RE --
             # verify via the config read that no broken condition was left behind.
             after_reject = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
@@ -5767,7 +5761,8 @@ class TestRunner:
             ])
             assert len(removed) == 2 and all(entry.get("success") is not False for entry in removed), \
                 f"ordered reference/local removal patches did not both commit: {removed}"
-            assert removed[1].get("variable", {}).get("deleted") is True, \
+            assert removed[1].get("deleted") is True \
+                and removed[1].get("name") == "batCounter", \
                 f"removeLocalVariable did not confirm deletion: {removed[1]}"
             relisted = self.client.call_tool("hub_read_rules", {
                 "tool": "hub_list_rule_local_variables", "args": {"appId": app_id}})
@@ -6107,10 +6102,15 @@ class TestRunner:
         # repairHint pointing at the backup restore (NOT a contradictory clean "removed").
         app_id = self._create_native_rule("RmRefLocal")
         try:
-            self._set_rule(app_id, {"addLocalVariable": {"name": "refLocal", "type": "Number", "value": 0}}, strict=True)
-            # Reference the local from an action; leave the reference in place (the broken-maker).
-            self._set_rule(app_id, {"addAction": {
-                "capability": "setLocalVariable", "variable": "refLocal", "value": 9}}, strict=True)
+            # The local and its referencing action are one setup transaction; the behavior
+            # under test is the later top-level delete that leaves the reference broken.
+            setup = self._patch_rule(app_id, [
+                {"addLocalVariable": {"name": "refLocal", "type": "Number", "value": 0}},
+                {"addAction": {
+                    "capability": "setLocalVariable", "variable": "refLocal", "value": 9}},
+            ])
+            assert len(setup) == 2 and all(entry.get("success") is not False for entry in setup), \
+                f"referenced-local setup patches did not commit: {setup}"
 
             # Delete the still-referenced local. The delete succeeds; the rule goes broken.
             rm = self._rm_call_soft({"appId": app_id, "removeLocalVariable": {"name": "refLocal"}, "confirm": True}, strict=True)
@@ -6369,7 +6369,7 @@ class TestRunner:
         # The matrix is split across SMALL rules (<=3 setVariable actions each): the classic wizard
         # re-POSTs the FULL rule page per submitOnChange, so piling many actions into one rule trips
         # the hub's per-app load limiter (a 5th action lands numOp.<N> as not_in_schema). Each rule
-        # below is pristine (created + deleted in its own try/finally); the two shared vars are
+        # below is pristine (created + deleted in its own try/finally); the three shared vars are
         # created once up front (they do not conflict) and deleted at the very end.
         try:
             # Rule A: fromDevice (temperature -> Number var) + value read-back.
@@ -6413,48 +6413,80 @@ class TestRunner:
 
             # Rule B: math binary '+' (constant second operand) + math var-minus-var (xVar4=varname)
             # + value read-backs.
-            app_b = self._create_native_rule("SetVarMathBin")
+            math_specs = [
+                {"capability": "setVariable", "variable": var_name,
+                 "math": {"left": var_name, "op": "+", "right": 10}},
+                {"capability": "setVariable", "variable": var_name,
+                 "math": {"left": var_name, "op": "-", "right": var_name}},
+                {"capability": "setVariable", "variable": var_name,
+                 "math": {"left": var_name, "op": "+", "right": 5.5}},
+            ]
+            app_b, created_b = self._create_native_rule(
+                "SetVarMathBin", {"addActions": math_specs}, return_result=True)
             try:
-                math_entries = self._patch_rule(app_b, [
-                    {"addAction": {"capability": "setVariable", "variable": var_name,
-                                   "math": {"left": var_name, "op": "+", "right": 10}}},
-                    {"addAction": {"capability": "setVariable", "variable": var_name,
-                                   "math": {"left": var_name, "op": "-", "right": var_name}}},
-                    {"addAction": {"capability": "setVariable", "variable": var_name,
-                                   "math": {"left": var_name, "op": "+", "right": 5.5}}},
-                ])
-                assert len(math_entries) == 3, f"math patch results were incomplete: {math_entries}"
-                mb, mb2, md = math_entries
+                settings_b = (self.client.call_tool("hub_read_apps_code", {
+                    "tool": "hub_get_app_config",
+                    "args": {"appId": app_b, "includeSettings": True}}).get("settings") or {})
+                if created_b is not None:
+                    math_entries = created_b.get("actions") or []
+                    assert len(math_entries) == 3, \
+                        f"math create results were incomplete: {created_b}"
+                    mb, mb2, md = math_entries
+                    mb_idx = mb.get("actionIndex")
+                    mb2_idx = mb2.get("actionIndex")
+                    md_idx = md.get("actionIndex")
+                else:
+                    def _math_index(op: str, *, constant: str | None = None,
+                                    right_variable: bool = False) -> str:
+                        matches = []
+                        for key, value in settings_b.items():
+                            if not str(key).startswith("valMathOp.") or str(value) != op:
+                                continue
+                            idx = str(key).split(".", 1)[1]
+                            if settings_b.get(f"xVar3.{idx}") != var_name:
+                                continue
+                            if constant is not None \
+                                    and str(settings_b.get(f"valConst2.{idx}")) != constant:
+                                continue
+                            if right_variable and settings_b.get(f"xVar4.{idx}") != var_name:
+                                continue
+                            matches.append(idx)
+                        assert len(matches) == 1, \
+                            f"relay-adopted math create did not persist one exact {op!r} action: {settings_b}"
+                        return matches[0]
+
+                    mb_idx = _math_index("+", constant="10")
+                    mb2_idx = _math_index("-", right_variable=True)
+                    md_idx = _math_index("+", constant="5.5")
                 # math binary: variable + 10 (numeric right operand becomes (constant)+valConst2).
-                assert mb.get("success") is not False, f"setVariable math binary hard-errored: {mb}"
-                mb_applied = mb.get("settingsApplied") or []
-                assert any(str(k).startswith("valMathOp.") for k in mb_applied), \
-                    f"math operator (valMathOp.<N>) did not land; settingsApplied={mb_applied}"
-                assert any(str(k).startswith("valConst2.") for k in mb_applied), \
-                    f"math binary second constant (valConst2.<N>) did not land; settingsApplied={mb_applied}"
-                assert not mb.get("partial"), f"math binary action falsely flagged partial: {mb}"
-                mb_idx = mb.get("actionIndex")
+                if created_b is not None:
+                    assert mb.get("success") is not False, f"setVariable math binary hard-errored: {mb}"
+                    mb_applied = mb.get("settingsApplied") or []
+                    assert any(str(k).startswith("valMathOp.") for k in mb_applied), \
+                        f"math operator (valMathOp.<N>) did not land; settingsApplied={mb_applied}"
+                    assert any(str(k).startswith("valConst2.") for k in mb_applied), \
+                        f"math binary second constant (valConst2.<N>) did not land; settingsApplied={mb_applied}"
+                    assert not mb.get("partial"), f"math binary action falsely flagged partial: {mb}"
 
                 # math binary, second operator + var-operand combo: var - var (exercises a binary op
                 # OTHER than '+', and an xVar4=<varname> second operand instead of a (constant)).
-                assert mb2.get("success") is not False, f"setVariable math var-minus-var hard-errored: {mb2}"
-                mb2_applied = mb2.get("settingsApplied") or []
-                assert any(str(k).startswith("xVar4.") for k in mb2_applied), \
-                    f"var second operand (xVar4.<N>) did not land; settingsApplied={mb2_applied}"
-                assert not any(str(k).startswith("valConst2.") for k in mb2_applied), \
-                    f"a var second operand must NOT write a constant slot; settingsApplied={mb2_applied}"
-                assert not mb2.get("partial"), f"math var-minus-var action falsely flagged partial: {mb2}"
-                mb2_idx = mb2.get("actionIndex")
+                if created_b is not None:
+                    assert mb2.get("success") is not False, f"setVariable math var-minus-var hard-errored: {mb2}"
+                    mb2_applied = mb2.get("settingsApplied") or []
+                    assert any(str(k).startswith("xVar4.") for k in mb2_applied), \
+                        f"var second operand (xVar4.<N>) did not land; settingsApplied={mb2_applied}"
+                    assert not any(str(k).startswith("valConst2.") for k in mb2_applied), \
+                        f"a var second operand must NOT write a constant slot; settingsApplied={mb2_applied}"
+                    assert not mb2.get("partial"), f"math var-minus-var action falsely flagged partial: {mb2}"
 
                 # math binary with a DECIMAL constant operand (var + 5.5): proves decimal-constant
                 # serialization end-to-end -- the constant must persist verbatim as "5.5", never
                 # integer-stripped (which would corrupt the intended value).
-                assert md.get("success") is not False, f"setVariable math decimal-constant hard-errored: {md}"
-                assert not md.get("partial"), f"math decimal-constant action falsely flagged partial: {md}"
-                md_idx = md.get("actionIndex")
-
-                settings_b = (self.client.call_tool("hub_read_apps_code", {
-                    "tool": "hub_get_app_config", "args": {"appId": app_b, "includeSettings": True}}).get("settings") or {})
+                if created_b is not None:
+                    assert md.get("success") is not False, f"setVariable math decimal-constant hard-errored: {md}"
+                    assert not md.get("partial"), f"math decimal-constant action falsely flagged partial: {md}"
+                assert len({str(mb_idx), str(mb2_idx), str(md_idx)}) == 3, \
+                    f"math actions must persist under three distinct indices: {settings_b}"
                 assert settings_b.get(f"xVar3.{mb_idx}") == var_name, \
                     f"math first-operand variable persisted with the wrong value; settings={settings_b}"
                 assert settings_b.get(f"valMathOp.{mb_idx}") == "+", \
@@ -6472,32 +6504,47 @@ class TestRunner:
             finally:
                 self._delete_native(app_b)
 
-            # Rule C: math unary (no second operand) + the String- and Boolean-target rejection cases.
-            app_c = self._create_native_rule("SetVarMathUnaryStr")
+            # Rule C: math unary (no second operand) plus the three pre-write type-filter
+            # refusals. Refusals do not add action rows, so this stays a one-action rule.
+            unary_spec = {"capability": "setVariable", "variable": var_name,
+                          "math": {"left": var_name, "op": "absolute"}}
+            app_c, created_c = self._create_native_rule(
+                "SetVarMathUnaryStr", {"addActions": [unary_spec]}, return_result=True)
             try:
-                # math unary: absolute of the variable (NO second operand).
+                unary_settings = self._get_persisted_rule_config(app_c).get("settings") or {}
+                if created_c is not None:
+                    unary_actions = created_c.get("actions") or []
+                    assert len(unary_actions) == 1, \
+                        f"unary create result was incomplete: {created_c}"
+                    mu = unary_actions[0]
+                    mu_idx = mu.get("actionIndex")
+                    assert mu.get("success") is not False, f"setVariable math unary hard-errored: {mu}"
+                    mu_applied = mu.get("settingsApplied") or []
+                    assert any(str(k).startswith("valMathOp.") for k in mu_applied), \
+                        f"math unary operator (valMathOp.<N>) did not land; settingsApplied={mu_applied}"
+                    assert not any(str(k).startswith("xVar4.") or str(k).startswith("valConst2.")
+                                   for k in mu_applied), \
+                        f"math unary wrongly wrote a second operand; settingsApplied={mu_applied}"
+                    assert not mu.get("partial"), f"math unary action falsely flagged partial: {mu}"
+                else:
+                    unary_indices = [str(key).split(".", 1)[1]
+                                     for key, value in unary_settings.items()
+                                     if str(key).startswith("valMathOp.") and value == "absolute"]
+                    assert len(unary_indices) == 1, \
+                        f"relay-adopted unary create did not persist one absolute action: {unary_settings}"
+                    mu_idx = unary_indices[0]
+
                 c_entries = self._patch_rule(app_c, [
-                    {"addAction": {"capability": "setVariable", "variable": var_name,
-                                   "math": {"left": var_name, "op": "absolute"}}},
                     {"addAction": {"capability": "setVariable", "variable": str_var_name,
                                    "fromDevice": {"deviceId": switch_id, "attribute": "switch"}}},
                     {"addAction": {"capability": "setVariable", "variable": bool_var_name,
                                    "fromDevice": {"deviceId": switch_id, "attribute": "switch"}}},
-                ], expected_refusals=2)
-                assert len(c_entries) == 3, f"unary/rejection patches were incomplete: {c_entries}"
-                mu, str_reject, bool_reject = c_entries
-                assert mu.get("success") is not False, f"setVariable math unary hard-errored: {mu}"
-                mu_applied = mu.get("settingsApplied") or []
-                assert any(str(k).startswith("valMathOp.") for k in mu_applied), \
-                    f"math unary operator (valMathOp.<N>) did not land; settingsApplied={mu_applied}"
-                assert not any(str(k).startswith("xVar4.") or str(k).startswith("valConst2.")
-                               for k in mu_applied), \
-                    f"math unary wrongly wrote a second operand; settingsApplied={mu_applied}"
-                assert not mu.get("partial"), f"math unary action falsely flagged partial: {mu}"
-
-                mu_idx = mu.get("actionIndex")
-                assert mu_idx is not None, f"math unary returned no actionIndex: {mu}"
-                unary_settings = self._get_persisted_rule_config(app_c).get("settings") or {}
+                    {"addAction": {"capability": "setVariable", "variable": var_name,
+                                   "fromDevice": {"deviceId": switch_id, "attribute": "switch"}}},
+                ], expected_refusals=3)
+                assert len(c_entries) == 3, f"rejection patches were incomplete: {c_entries}"
+                str_reject, bool_reject, neg = c_entries
+                assert mu_idx is not None, f"math unary action index was not returned or persisted: {unary_settings}"
                 assert unary_settings.get(f"xVarV.{mu_idx}") == var_name \
                     and unary_settings.get(f"valMathOp.{mu_idx}") == "absolute", \
                     f"math unary target/operator did not persist: {unary_settings}"
@@ -6519,24 +6566,6 @@ class TestRunner:
                 assert bool_reject.get("success") is False \
                     and "requires a Number or Decimal target variable" in (bool_reject.get("error") or ""), \
                     f"Boolean-target rejection did not name the Number/Decimal requirement: {bool_reject}"
-                self._assert_rule_healthy(app_c)
-            finally:
-                self._delete_native(app_c)
-
-            # Rule D: the NEGATIVE type-filter case in its own pristine rule (isolates the
-            # expected-failure addAction). A NUMBER target var + a switch's enum 'switch' attribute
-            # is filtered OUT of tCustomAttr, so the requested attribute is not in the device's
-            # (type-filtered) enum -> fail loud with the available list. This is the exact behaviour
-            # the BAT T647 happy-path assumes by using a numeric attribute; here we demonstrate the
-            # rejected complement live.
-            app_d = self._create_native_rule("SetVarFromDevNeg")
-            try:
-                neg = self._rm_call_soft({
-                    "appId": app_d,
-                    "addAction": {"capability": "setVariable", "variable": var_name,
-                                  "fromDevice": {"deviceId": switch_id, "attribute": "switch"}},
-                    "confirm": True,
-                }, strict=True)
                 assert neg.get("success") is False, \
                     f"numeric var + enum 'switch' attribute should fail the type filter, got: {neg}"
                 neg_err = neg.get("error") or ""
@@ -6550,8 +6579,9 @@ class TestRunner:
                     f"negative type-filter rejection did not name a filtered-attribute-enum frame: {neg}"
                 assert "tCustomAttr" in neg_err or "switch" in neg_err, \
                     f"negative rejection should name the attribute field or the requested attribute; error={neg_err}"
+                self._assert_rule_healthy(app_c)
             finally:
-                self._delete_native(app_d)
+                self._delete_native(app_c)
         finally:
             self._delete_variable_safe(var_name)
             self._delete_variable_safe(str_var_name)

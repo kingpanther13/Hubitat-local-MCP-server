@@ -676,7 +676,7 @@ def toolSetHsm(armCommand) {
     }
 
     // Capture current status BEFORE sending the change event
-    def previousStatus = location.hsmStatus
+    def previousStatus = location.hsmStatus ?: "unknown"
     sendLocationEvent(name: "hsmSetArm", value: armCommand)
 
     return [

@@ -72,6 +72,27 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.files*.name == ['ALPINE.csv', 'alpha.txt']
     }
 
+    def "hub_list_files case folding is locale-independent"() {
+        given:
+        def prior = Locale.default
+        Locale.default = new Locale('tr', 'TR')
+        hubGet.register('/hub/fileManager/json') { params ->
+            JsonOutput.toJson([
+                [name: 'TITLE.txt', size: 10],
+                [name: 'other.txt', size: 20]
+            ])
+        }
+
+        when:
+        def result = script.toolListFiles([filter: 'title'])
+
+        then:
+        result.files*.name == ['TITLE.txt']
+
+        cleanup:
+        Locale.default = prior
+    }
+
     @spock.lang.Unroll
     def "hub_list_files filter survives the dispatch envelope in both gateway modes (useGateways=#useGateways)"() {
         given:
@@ -791,6 +812,8 @@ class ToolManageFilesSpec extends ToolSpecBase {
 
         then:
         result.success == false
+        result.fileName == 'notes.txt'
+        result.message.contains('permission denied')
         result.error.contains('permission denied')
         result.suggestion.contains('hub_list_files')
     }
