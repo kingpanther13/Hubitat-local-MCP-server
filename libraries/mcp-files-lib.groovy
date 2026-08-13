@@ -260,7 +260,8 @@ def toolDeleteFile(args) {
     if (!args.fileName) throw new IllegalArgumentException("fileName is required")
 
     // Skip auto-backup for files that are already backups (prevent infinite backup chains)
-    def isBackupFile = args.fileName.contains("_backup_") || args.fileName.startsWith("mcp-backup-") || args.fileName.startsWith("mcp-prerestore-")
+    def isBackupFile = args.fileName.contains("_backup_") || args.fileName.startsWith("mcp-backup-") ||
+        args.fileName.startsWith("mcp-rm-backup-") || args.fileName.startsWith("mcp-prerestore-")
 
     // Back up the file before deleting (unless it's already a backup file)
     def backedUp = false
@@ -288,6 +289,15 @@ def toolDeleteFile(args) {
     try {
         deleteHubFile(args.fileName)
         mcpLog("info", "file-manager", "Deleted file '${args.fileName}'")
+        try {
+            def unlinked = unlinkItemBackupManifestFile(args.fileName.toString())
+            if (unlinked) mcpLog("debug", "file-manager", "Unlinked deleted backup file '${args.fileName}' from manifest keys ${unlinked}")
+        } catch (Exception manifestErr) {
+            // The file is already gone. A later backup-reuse check validates the file and
+            // repairs a dangling manifest entry, so bookkeeping failure must not turn a
+            // successful File Manager deletion into a false failure.
+            mcpLog("warn", "file-manager", "Deleted '${args.fileName}' but could not unlink its backup manifest entry: ${manifestErr.message}")
+        }
 
         def result = [
             success: true,

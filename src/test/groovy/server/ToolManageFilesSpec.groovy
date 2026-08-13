@@ -751,7 +751,30 @@ class ToolManageFilesSpec extends ToolSpecBase {
         fileName                              | _
         'notes_backup_20260419-100000.txt'    | _   // substring _backup_
         'mcp-backup-app-42.groovy'            | _   // prefix mcp-backup-
+        'mcp-rm-backup-42-20260419.json'       | _   // native-rule backup prefix
         'mcp-prerestore-driver-9.groovy'      | _   // prefix mcp-prerestore-
+    }
+
+    def "hub_delete_file unlinks every manifest entry for the deleted backup file"() {
+        given:
+        enableWrite()
+        atomicStateMap.itemBackupManifest = [
+            "rm-rule_42_old": [type: "rm-rule", ruleId: 42, fileName: "mcp-rm-backup-42-old.json", timestamp: 1L],
+            "rm-rule_42_alias": [type: "rm-rule", ruleId: 42, fileName: "mcp-rm-backup-42-old.json", timestamp: 2L],
+            "rm-rule_43_keep": [type: "rm-rule", ruleId: 43, fileName: "mcp-rm-backup-43-keep.json", timestamp: 3L]
+        ]
+        def deleted = []
+        script.metaClass.downloadHubFile = { String name -> throw new AssertionError("backup files must not be backed up again") }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> throw new AssertionError("backup files must not be uploaded again") }
+        script.metaClass.deleteHubFile = { String name -> deleted << name }
+
+        when:
+        def result = script.toolDeleteFile([fileName: "mcp-rm-backup-42-old.json", confirm: true])
+
+        then:
+        result.success == true
+        deleted == ["mcp-rm-backup-42-old.json"]
+        atomicStateMap.itemBackupManifest.keySet() == ["rm-rule_43_keep"] as Set
     }
 
     def "hub_delete_file reports failure without throwing when deleteHubFile errors"() {

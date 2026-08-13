@@ -48,7 +48,8 @@ def toolUpdateMcpSettings(args) {
         "publishOutputSchemas":   "bool",
         "enableMandatoryBPS":     "bool",
         "bypassDeviceAllowlist":  "bool",
-        "maxConcurrentWrites":    "number"
+        "maxConcurrentWrites":    "number",
+        "backupEveryRuleWrite":   "bool"
     ]
     // Allowed keys for the not-allowed error message = scalar allowlist + the special selectedDevices key.
     def allowedKeyNames = ((allowedSettings.keySet() + ["selectedDevices"]) as List).sort()
@@ -859,7 +860,7 @@ def _getAllToolDefinitions_partSelfAdmin() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    settings: [type: "object", description: "Map of setting key → new value (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true}). Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON the per-device tools reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, publishOutputSchemas, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, selectedDevices — any other key is rejected. mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100 (default 2; 0 disables the server-side all-write concurrency cap). publishOutputSchemas (bool, default OFF): leave OFF if using Claude Desktop — spec-validating clients reject every call to a schema-advertising tool when any schema detail is inaccurate; never required, do not enable it to fix a connection. bypassDeviceAllowlist is independent of Developer Mode; see hub_get_tool_guide(section='hub_admin_write'). selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write') for per-mode semantics."],
+                    settings: [type: "object", description: "Map of setting key → new value (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true}). Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON the per-device tools reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, publishOutputSchemas, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupEveryRuleWrite, selectedDevices — any other key is rejected. mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100 (default 2; 0 disables the server-side all-write concurrency cap). backupEveryRuleWrite (bool, default OFF): ON takes a fresh File Manager backup before every native-app edit instead of reusing a same-app baseline for one hour. publishOutputSchemas (bool, default OFF): leave OFF if using Claude Desktop — spec-validating clients reject every call to a schema-advertising tool when any schema detail is inaccurate; never required, do not enable it to fix a connection. bypassDeviceAllowlist is independent of Developer Mode; see hub_get_tool_guide(section='hub_admin_write'). selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write') for per-mode semantics."],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the operation"]
                 ],
                 required: ["settings", "confirm"]

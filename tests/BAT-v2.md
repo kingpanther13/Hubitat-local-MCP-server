@@ -829,7 +829,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected v0.8.0**: Calls `hub_create_backup` directly (promoted to core in v0.8.0).
+**Expected v0.8.0**: Calls `hub_create_backup` directly with `confirm=true` (promoted to core in v0.8.0). This immediate-backup request is distinct from `scheduleOnly=true` with a schedule, which creates no backup and needs no confirm.
 
 ### T41 — Discover hub_list_apps (hub_read_apps_code)
 
@@ -2660,7 +2660,7 @@ All 117 distinct tools are covered by at least one test, excluding the destructi
 
 Sections 1-9 each target a specific tool — named in the test's title and **Expected** criteria while the `test_prompt` stays goal-first (see Prompt style above). Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 266 test scenarios** (123 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 3 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 device-state state-change / fail-loud authoring parity + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 5 read-side convergence + 1 multi-device convergence + 3 MCP device-access scope + 1 official-SDK MRTR proof) plus 13 excluded destructive operations documented for manual testing
+**Total: 267 test scenarios** (123 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 3 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 device-state state-change / fail-loud authoring parity + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 5 read-side convergence + 1 multi-device convergence + 3 MCP device-access scope + 1 official-SDK MRTR proof + 1 rule-backup policy proof) plus 13 excluded destructive operations documented for manual testing
 
 ---
 
@@ -3019,6 +3019,18 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 ```
 
 **Expected**: AI calls `hub_manage_mcp(tool='hub_update_mcp_settings', args={settings:{useGateways:<flipped>}, confirm:true})`. The key is **accepted** (NOT rejected as outside the allowlist — this is the regression guard for the dev-mode gateway self-switch), result `{success:true, updated:{useGateways:<flipped>}, message:"...may need to reconnect to refresh cached tool schemas..."}`. The WARN `[developer-mode]` audit line fires. AI explains the client must reconnect (`/mcp refresh`) before tools/list reflects the new gateway-vs-flat surface. Teardown restores the original value.
+
+### T223c — Recent rule baseline reuse and strict per-write opt-in
+
+```json
+{
+  "setup_prompt": "Developer Mode and the Write master are enabled, a recent hub backup exists, and backupEveryRuleWrite is false. Create a small Rule Machine rule named 'BAT Backup Reuse'.",
+  "test_prompt": "Make two small edits to that same rule and compare response backup.backupKey. Then enable backupEveryRuleWrite with hub_update_mcp_settings, make two more small edits, and compare their backup keys.",
+  "teardown_prompt": "Set backupEveryRuleWrite back to false and delete 'BAT Backup Reuse'."
+}
+```
+
+**Expected**: with the default OFF policy, the first two edits return the same non-empty `backup.backupKey`, proving the recent same-rule baseline was reused. After `hub_manage_mcp(tool='hub_update_mcp_settings', args={settings:{backupEveryRuleWrite:true}, confirm:true})`, the next two edits return different non-empty backup keys, proving strict per-write snapshots. Different rules never share a key. Teardown restores OFF even if an edit fails. Deletes and destructive Required Expression replacement still take fresh snapshots; this setting does not weaken those paths.
 
 ### T224 — hub_delete_variable removes a stale rule_engine variable
 

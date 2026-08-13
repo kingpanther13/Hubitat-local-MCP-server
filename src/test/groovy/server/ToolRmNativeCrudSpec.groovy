@@ -1110,6 +1110,137 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.backup != null
     }
 
+    // ---------- recent edit-baseline reuse ----------
+
+    def "ordinary edits reuse one same-rule backup for an hour but never share across rules"() {
+        given:
+        enableWrite()
+        def clock = [1234567890000L]
+        NOW_OVERRIDE.set({ -> clock[0] })
+        hubGet.register('/installedapp/configure/json/501') { params -> ruleConfigJson(501, "reuse-a") }
+        hubGet.register('/installedapp/statusJson/501') { params -> statusJson(501) }
+        hubGet.register('/installedapp/configure/json/502') { params -> ruleConfigJson(502, "reuse-b") }
+        hubGet.register('/installedapp/statusJson/502') { params -> statusJson(502) }
+        def uploads = []
+        def files = [:]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn; files[fn] = b }
+        script.metaClass.downloadHubFile = { String fn -> files[fn] }
+
+        when: "two logical edits target the same rule inside the reuse window"
+        def first = script._rmBackupBeforeEdit(501, "pre-addAction")
+        clock[0] += 5 * 60 * 1000L
+        def second = script._rmBackupBeforeEdit(501, "pre-walkStep")
+
+        and: "another rule is edited inside that same window"
+        def other = script._rmBackupBeforeEdit(502, "pre-update")
+
+        then:
+        first.backupKey == second.backupKey
+        first.baselineReused == false
+        second.baselineReused == true
+        second.rollbackScope?.contains("reverts every edit")
+        other.backupKey != first.backupKey
+        uploads.size() == 2
+    }
+
+    def "ordinary edit discards a recent manifest entry whose backup file is missing"() {
+        given:
+        enableWrite()
+        def clock = [1234567890000L]
+        NOW_OVERRIDE.set({ -> clock[0] })
+        hubGet.register('/installedapp/configure/json/505') { params -> ruleConfigJson(505, "missing-backup") }
+        hubGet.register('/installedapp/statusJson/505') { params -> statusJson(505) }
+        atomicStateMap.itemBackupManifest = [
+            "rm-rule_505_missing": [type: "rm-rule", id: 505, ruleId: 505,
+                                    fileName: "mcp-rm-backup-505-missing.json",
+                                    reason: "pre-addAction", appLabel: "missing-backup",
+                                    timestamp: clock[0] - 60_000L, sourceLength: 123]
+        ]
+        def downloads = []
+        def uploads = []
+        script.metaClass.downloadHubFile = { String fn -> downloads << fn; null }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
+
+        when:
+        def result = script._rmBackupBeforeEdit(505, "pre-walkStep")
+
+        then: "the dangling handle is removed and a restorable fresh baseline replaces it"
+        downloads == ["mcp-rm-backup-505-missing.json"]
+        !atomicStateMap.itemBackupManifest.containsKey("rm-rule_505_missing")
+        result.backupKey != "rm-rule_505_missing"
+        uploads.size() == 1
+        result.fileName == uploads[0]
+        atomicStateMap.itemBackupManifest[result.backupKey]?.fileName == result.fileName
+    }
+
+    def "ordinary edit refuses to reuse a backup file that belongs to another rule"() {
+        given:
+        enableWrite()
+        def clock = [1234567890000L]
+        NOW_OVERRIDE.set({ -> clock[0] })
+        hubGet.register('/installedapp/configure/json/506') { params -> ruleConfigJson(506, "identity-check") }
+        hubGet.register('/installedapp/statusJson/506') { params -> statusJson(506) }
+        byte[] wrongSnapshot = JsonOutput.toJson([schemaVersion: 1, appId: 999, ruleId: 999]).getBytes("UTF-8")
+        atomicStateMap.itemBackupManifest = [
+            "rm-rule_506_wrong": [type: "rm-rule", id: 506, ruleId: 506,
+                                  fileName: "mcp-rm-backup-506-wrong.json",
+                                  timestamp: clock[0] - 60_000L, sourceLength: wrongSnapshot.length]
+        ]
+        def uploads = []
+        script.metaClass.downloadHubFile = { String fn -> wrongSnapshot }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
+
+        when:
+        def result = script._rmBackupBeforeEdit(506, "pre-update")
+
+        then:
+        !atomicStateMap.itemBackupManifest.containsKey("rm-rule_506_wrong")
+        result.backupKey != "rm-rule_506_wrong"
+        uploads.size() == 1
+        result.fileName == uploads[0]
+    }
+
+    def "ordinary edit takes a fresh backup after the one-hour reuse window expires"() {
+        given:
+        enableWrite()
+        def clock = [1234567890000L]
+        NOW_OVERRIDE.set({ -> clock[0] })
+        hubGet.register('/installedapp/configure/json/503') { params -> ruleConfigJson(503, "expiry") }
+        hubGet.register('/installedapp/statusJson/503') { params -> statusJson(503) }
+        def uploads = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
+
+        when:
+        def first = script._rmBackupBeforeEdit(503, "pre-addAction")
+        clock[0] += 60 * 60 * 1000L
+        def expired = script._rmBackupBeforeEdit(503, "pre-addAction")
+
+        then:
+        first.backupKey != expired.backupKey
+        uploads.size() == 2
+    }
+
+    def "backupEveryRuleWrite bypasses recent edit backup reuse"() {
+        given:
+        enableWrite()
+        settingsMap.backupEveryRuleWrite = true
+        def clock = [1234567890000L]
+        NOW_OVERRIDE.set({ -> clock[0] })
+        hubGet.register('/installedapp/configure/json/504') { params -> ruleConfigJson(504, "strict") }
+        hubGet.register('/installedapp/statusJson/504') { params -> statusJson(504) }
+        def uploads = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
+
+        when:
+        def first = script._rmBackupBeforeEdit(504, "pre-addAction")
+        clock[0] += 1L
+        def second = script._rmBackupBeforeEdit(504, "pre-walkStep")
+
+        then:
+        first.backupKey != second.backupKey
+        uploads.size() == 2
+    }
+
     // ---------- unified backup integration: hub_list_backups + hub_restore_backup ----------
 
     def "hub_list_backups surfaces rm-rule entries with rule-specific metadata alongside app/driver entries"() {
@@ -3963,7 +4094,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error.contains("re-add leg failed")
 
         and: "restoreHint is the roll-back form, NOT the pre-flight not-touched form"
-        result.restoreHint.contains("Backup saved before write")
+        result.restoreHint.contains("Backup baseline available")
         !result.restoreHint.contains("Pre-flight refusal")
     }
 
@@ -3983,7 +4114,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == false
         result.partial == true
         result.error.contains("re-add failed")
-        result.restoreHint.contains("Backup saved before write")
+        result.restoreHint.contains("Backup baseline available")
 
         and: "the trailing updateRule was SKIPPED, so the rule mutated without a re-init"
         result.subscriptionsNotLive == true

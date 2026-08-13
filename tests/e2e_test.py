@@ -47,6 +47,13 @@ PREFIX = "BAT_E2E_"
 # no watchdog change is needed -- the devices are simply named to dodge the sweep.)
 SCAFFOLD_PREFIX = f"{PREFIX}KEEP_"  # "BAT_E2E_KEEP_"
 
+
+def _run_artifact_suffix(env: dict[str, str] | os._Environ[str] = os.environ) -> str:
+    """Stable per-process identity that changes for every GitHub Actions attempt."""
+    run_id = str(env.get("GITHUB_RUN_ID") or os.getpid())
+    attempt = str(env.get("GITHUB_RUN_ATTEMPT") or int(time.time()))
+    return re.sub(r"[^A-Za-z0-9_-]", "_", f"{run_id}_{attempt}")
+
 # Mirror of supportedProtocolVersions() in hubitat-mcp-server.groovy, newest first.
 # The protocol group pins the live list against this, so a version added or removed
 # server-side without updating the e2e expectation fails loudly instead of silently
@@ -732,6 +739,8 @@ class TestRunner:
 
         # Cleanup tracking
         self.created_device_dnis: list[str] = []
+        self.virtual_switch_label = f"{PREFIX}Switch_Test_{_run_artifact_suffix()}"
+        self.virtual_switch_dni: str | None = None
         self.created_rule_ids: list[str] = []
         self.created_native_app_ids: list[str] = []
         # Permanent non-child fixture devices (see _ensure_perm_fixture) and the driver-name -> type-id
@@ -1526,7 +1535,7 @@ class TestRunner:
             return {"relayDropped": True, "committed": committed, "evidence": evidence}
 
     # -----------------------------------------------------------------------
-    # GROUP 1: infrastructure (7 tests)
+    # GROUP 1: infrastructure
     # -----------------------------------------------------------------------
 
     @test("infrastructure")
@@ -1601,6 +1610,20 @@ class TestRunner:
             "diagnostics gateway must roll up open-world (hub_get_device_health pingHosts)"
         assert by_name["hub_read_diagnostics"]["idempotentHint"] is True, \
             "pure-read diagnostics gateway must roll up idempotent"
+
+    @test("infrastructure")
+    def test_create_backup_schedule_only_catalog_shape(self) -> None:
+        # Read-only contract check: inspect tools/list only. Do not call the backup
+        # tool here—the live hub's automatic-backup schedule must remain untouched.
+        tools = self.client.list_tools().get("tools", [])
+        backup = next((t for t in tools if t.get("name") == "hub_create_backup"), None)
+        assert backup is not None, "hub_create_backup missing from tools/list"
+        schema = backup.get("inputSchema") or {}
+        props = schema.get("properties") or {}
+        assert {"confirm", "schedule", "scheduleOnly"} <= set(props), \
+            f"hub_create_backup schedule contract missing from inputSchema: {schema}"
+        assert "confirm" not in (schema.get("required") or []), \
+            "confirm must be runtime-conditional so scheduleOnly+schedule can omit it"
 
     def _get_rooms_catalog(self) -> dict:
         """The hub_read_rooms({}) gateway-catalog disclosure -- a deterministic static enumeration.
@@ -2634,24 +2657,37 @@ class TestRunner:
                 f"includeInstructions row missing instruction fields: {row}"
 
     # -----------------------------------------------------------------------
-    # GROUP 3: virtual_device_lifecycle (5 tests)
+    # GROUP 3: virtual_device_lifecycle
     # -----------------------------------------------------------------------
 
-    def _find_device_dni_by_label(self, label_substr: str) -> str | None:
-        """Look up a virtual device's DNI by label substring (create-verify on 504)."""
+    def _find_device_dni_by_label(self, label: str) -> str | None:
+        """Look up a virtual device's DNI by exact run-unique label."""
         try:
             vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
         except (McpError, McpToolError, requests.HTTPError) as exc:
-            print(f"    [WARN] hub_list_devices lookup for {label_substr!r} failed: {exc}")
+            print(f"    [WARN] hub_list_devices lookup for {label!r} failed: {exc}")
             return None
         dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
         for d in dev_list:
             lbl = d.get("label") or d.get("name") or ""
-            if label_substr in lbl:
+            if label == lbl:
                 found = str(d.get("deviceNetworkId", d.get("dni", "")))
                 if found:
                     return found
         return None
+
+    def _device_dni_present(self, dni: str) -> bool:
+        listed = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
+        devices = listed if isinstance(listed, list) else listed.get("devices", [])
+        return any(
+            str(d.get("deviceNetworkId", d.get("dni", ""))) == str(dni)
+            for d in devices
+        )
+
+    @test("virtual_device_lifecycle")
+    def test_virtual_switch_fixture_identity_is_run_unique(self) -> None:
+        assert self.virtual_switch_label.startswith(f"{PREFIX}Switch_Test_")
+        assert self.virtual_switch_label != f"{PREFIX}Switch_Test"
 
     @test("virtual_device_lifecycle")
     def test_create_virtual_switch(self) -> None:
@@ -2659,16 +2695,17 @@ class TestRunner:
             lambda: self.client.call_tool("hub_manage_virtual_device", {
                 "action": "create",
                 "deviceType": "Virtual Switch",
-                "deviceLabel": f"{PREFIX}Switch_Test",
+                "deviceLabel": self.virtual_switch_label,
                 "confirm": True}),
-            lambda: self._find_device_dni_by_label(f"{PREFIX}Switch_Test"),
+            lambda: self._find_device_dni_by_label(self.virtual_switch_label),
             "create virtual switch",
         )
         if cw["relayDropped"]:
             # The response (success/id/dni) is gone; the labelFilter lookup is the
             # evidence the create committed. Track the recovered DNI for cleanup.
             assert cw["committed"], "create virtual switch lost to relay 504 and never committed"
-            self.created_device_dnis.append(str(cw["evidence"]))
+            self.virtual_switch_dni = str(cw["evidence"])
+            self.created_device_dnis.append(self.virtual_switch_dni)
             print(f"    create virtual switch: response-field assertions skipped (relay 504); "
                   f"verified by labelFilter (DNI {cw['evidence']})")
             return
@@ -2677,11 +2714,13 @@ class TestRunner:
         # Track DNI if available, otherwise look it up via hub_list_devices (labelFilter)
         dni = result.get("deviceNetworkId", result.get("dni", ""))
         if dni:
-            self.created_device_dnis.append(str(dni))
+            self.virtual_switch_dni = str(dni)
+            self.created_device_dnis.append(self.virtual_switch_dni)
         elif result.get("success"):
             # Look up the created device to get its DNI for cleanup
-            found_dni = self._find_device_dni_by_label(f"{PREFIX}Switch_Test")
+            found_dni = self._find_device_dni_by_label(self.virtual_switch_label)
             if found_dni:
+                self.virtual_switch_dni = found_dni
                 self.created_device_dnis.append(found_dni)
         assert result.get("success") or result.get("id") or result.get("deviceId") or dni, \
             f"create virtual device failed: {result}"
@@ -3047,24 +3086,26 @@ class TestRunner:
         result = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
         dev_list = result if isinstance(result, list) else result.get("devices", [])
         found = any(
-            f"{PREFIX}Switch_Test" in (d.get("label") or d.get("name") or "")
+            self.virtual_switch_label == (d.get("label") or d.get("name") or "")
             for d in dev_list
         )
-        assert found, f"{PREFIX}Switch_Test not found in virtual device list"
+        assert found, f"{self.virtual_switch_label} not found in virtual device list"
 
     @test("virtual_device_lifecycle")
     def test_delete_virtual_switch(self) -> None:
-        # Find DNI of our test device
+        # Prefer the exact identity captured from create. The label fallback is only
+        # for a response shape that carried no DNI; it is exact + run-unique.
         vdevs = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
         dev_list = vdevs if isinstance(vdevs, list) else vdevs.get("devices", [])
-        target_dni = None
-        for d in dev_list:
-            lbl = d.get("label") or d.get("name") or ""
-            if f"{PREFIX}Switch_Test" in lbl:
-                target_dni = str(d.get("deviceNetworkId", d.get("dni", "")))
-                break
+        target_dni = self.virtual_switch_dni
         if not target_dni:
-            raise AssertionError(f"{PREFIX}Switch_Test not found for deletion -- the upstream create test must have failed")
+            for d in dev_list:
+                lbl = d.get("label") or d.get("name") or ""
+                if self.virtual_switch_label == lbl:
+                    target_dni = str(d.get("deviceNetworkId", d.get("dni", "")))
+                    break
+        if not target_dni:
+            raise AssertionError(f"{self.virtual_switch_label} not found for deletion -- the upstream create test must have failed")
 
         # On a relay 504 the response is lost but the delete may still have committed;
         # the gone-by-listing check below is the verification either way.
@@ -3073,22 +3114,23 @@ class TestRunner:
                 "action": "delete",
                 "deviceNetworkId": target_dni,
                 "confirm": True}),
-            lambda: self._find_device_dni_by_label(f"{PREFIX}Switch_Test") is None,
+            lambda: not self._device_dni_present(target_dni),
             "delete virtual switch",
         )
         if dw["relayDropped"]:
-            assert dw["committed"], f"{PREFIX}Switch_Test still present after a relay-504 delete (did not commit)"
+            assert dw["committed"], f"{self.virtual_switch_label} still present after a relay-504 delete (did not commit)"
         if target_dni in self.created_device_dnis:
             self.created_device_dnis.remove(target_dni)
+        self.virtual_switch_dni = None
 
         # Verify it is gone
         vdevs2 = self.client.call_tool("hub_list_devices", {"labelFilter": PREFIX})
         dev_list2 = vdevs2 if isinstance(vdevs2, list) else vdevs2.get("devices", [])
         still_there = any(
-            f"{PREFIX}Switch_Test" in (d.get("label") or d.get("name") or "")
+            str(d.get("deviceNetworkId", d.get("dni", ""))) == str(target_dni)
             for d in dev_list2
         )
-        assert not still_there, f"{PREFIX}Switch_Test still present after deletion"
+        assert not still_there, f"{self.virtual_switch_label} ({target_dni}) still present after deletion"
 
     # -----------------------------------------------------------------------
     # GROUP: dashboards -- Easy Dashboard CRUD (issue #259 item #9)
@@ -3433,7 +3475,16 @@ class TestRunner:
         # confirm-less probe in the middle must NOT mutate.
         app_id = self._create_native_rule("SelfGwEnv", {
             "addActions": [{"capability": "log", "message": "first"}]})
+        backup_policy_touched = False
         try:
+            # The normal E2E policy is recent-baseline reuse. Set it explicitly so a
+            # prior interrupted strict-policy proof cannot make this run needlessly
+            # upload a new rule backup before every edit.
+            backup_policy_touched = True
+            self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings",
+                "args": {"settings": {"backupEveryRuleWrite": False}, "confirm": True},
+            })
             probe = self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_set_rule", "args": {"operation": "addAction", "appId": app_id}})
             assert "no rule was changed" in str(probe), \
@@ -3450,8 +3501,50 @@ class TestRunner:
                                           "confirm": True}, strict=True)
             assert wrapped.get("success") is not False, f"wrapped-array addActions (list-op unwrap) failed: {wrapped}"
             self._assert_rule_healthy(app_id)
+
+            default_first_key = (res.get("backup") or {}).get("backupKey")
+            default_second_key = (wrapped.get("backup") or {}).get("backupKey")
+            assert default_first_key and default_second_key == default_first_key, \
+                f"same-rule edits should reuse one recent baseline by default: first={res}, second={wrapped}"
+
+            # One live rule proves the opt-in strict mode without making the rest of
+            # E2E pay the per-write File Manager cost. Restore OFF in finally.
+            self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings",
+                "args": {"settings": {"backupEveryRuleWrite": True}, "confirm": True},
+            })
+            # updateRule is the smallest real edit leaf: it proves the backup policy
+            # without paying for two more action-wizard walks.
+            strict_first = self._rm_call_soft({"appId": app_id,
+                "button": "updateRule", "confirm": True}, strict=True)
+            strict_second = self._rm_call_soft({"appId": app_id,
+                "button": "updateRule", "confirm": True}, strict=True)
+            strict_first_key = (strict_first.get("backup") or {}).get("backupKey")
+            strict_second_key = (strict_second.get("backup") or {}).get("backupKey")
+            assert strict_first_key and strict_second_key and strict_first_key != strict_second_key \
+                and strict_first_key != default_first_key and strict_second_key != default_first_key, \
+                f"backupEveryRuleWrite should produce distinct baselines: first={strict_first}, second={strict_second}"
         finally:
-            self._delete_native(app_id)
+            unwinding = sys.exc_info()[0] is not None
+            cleanup_errors: list[Exception] = []
+            if backup_policy_touched:
+                try:
+                    self.client.call_tool("hub_manage_mcp", {
+                        "tool": "hub_update_mcp_settings",
+                        "args": {"settings": {"backupEveryRuleWrite": False}, "confirm": True},
+                    })
+                except Exception as exc:
+                    cleanup_errors.append(exc)
+            try:
+                self._delete_native(app_id)
+            except Exception as exc:
+                cleanup_errors.append(exc)
+            if cleanup_errors:
+                if unwinding:
+                    print("  [WARN] cleanup failed while preserving the primary test error: " +
+                          " | ".join(str(exc) for exc in cleanup_errors))
+                else:
+                    raise cleanup_errors[0]
 
     @test("native_apps")
     def test_set_rule_self_gateway_envelope_create(self) -> None:
@@ -11388,13 +11481,13 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         #     watchdog) and hub_write_file snapshots the previous copy first. Matching on the
         #     "_backup_" marker rather than on named stems covers every such file including
         #     ones added later, and can never match a LIVE e2e-*.json, which has no marker.
-        #   mcp-rm-backup-<ruleId>-*.json  -- hub_set_rule snapshots every rule before it
-        #     edits it. The suite edits BAT_E2E_ rules hundreds of times per run and deletes
-        #     the rules afterwards, so their snapshots reference ids that no longer exist.
+        #   mcp-rm-backup-<ruleId>-*.json  -- hub_set_rule keeps a per-rule edit baseline
+        #     (reused for one hour by default). The suite deletes its BAT_E2E_ rules afterward,
+        #     so those baseline files eventually reference ids that no longer exist.
         # Measured on the test hub 2026-08-10, of 767 files: 398 deferred-rule backups, 58
         # deadman backups, 184 rm snapshots. This matters for SPEED, not just tidiness --
-        # every one is carried by each File Manager listing, and hub_set_rule performs one
-        # upload per edit.
+        # every one is carried by each File Manager listing. Deleting these backup files must
+        # not create backup-of-backup copies.
         litter_stems = ("e2e-", "mcp-rm-backup-")
         # Steady state is a few dozen per run, so this budget rarely binds; it exists so that
         # inheriting a large backlog (or a stretch of runs that skipped the sweep) cannot

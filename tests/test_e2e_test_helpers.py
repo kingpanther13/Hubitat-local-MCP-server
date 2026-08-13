@@ -29,6 +29,15 @@ def _raw_tool_body(body, *, is_error=False):
     }
 
 
+def test_run_artifact_suffix_is_stable_and_unique_per_github_attempt():
+    first_attempt = {"GITHUB_RUN_ID": "31680286237", "GITHUB_RUN_ATTEMPT": "1"}
+    second_attempt = {"GITHUB_RUN_ID": "31680286237", "GITHUB_RUN_ATTEMPT": "2"}
+
+    assert et._run_artifact_suffix(first_attempt) == "31680286237_1"
+    assert et._run_artifact_suffix(second_attempt) == "31680286237_2"
+    assert et._run_artifact_suffix(second_attempt) == "31680286237_2"
+
+
 @pytest.fixture
 def send_client(monkeypatch):
     """Build a fully seeded transport-isolated client for `_send` tests."""

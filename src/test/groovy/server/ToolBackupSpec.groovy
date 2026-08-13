@@ -96,6 +96,34 @@ class ToolBackupSpec extends ToolSpecBase {
 
     // ---------- hub_create_backup + folded schedule ----------
 
+    def "hub_create_backup catalog leaves confirm conditional for schedule-only calls"() {
+        when:
+        def toolDef = script.getAllToolDefinitions().find {
+            it.name == 'hub_create_backup'
+        }
+        def required = script.requiredParamsByTool()
+
+        then: 'the catalog and its derived prevalidation memo permit the documented shape'
+        toolDef != null
+        !(toolDef.inputSchema.required ?: []).contains('confirm')
+        !required.containsKey('hub_create_backup')
+    }
+
+    def "scheduleOnly without confirm succeeds through the MCP dispatch surface"() {
+        when:
+        def response = mcpDriver.callTool('hub_create_backup', [
+            schedule: [hour: 1, minute: 0], scheduleOnly: true
+        ])
+        def inner = mcpDriver.parseInner(response)
+
+        then:
+        response.error == null
+        response.result?.isError != true
+        inner.success == true
+        inner.scheduleUpdated == true
+        posted.path == '/hub2/updateBackupSchedule'
+    }
+
     def "create with a schedule POSTs /hub2/updateBackupSchedule and reports scheduleUpdated"() {
         given:
         enableWrite()

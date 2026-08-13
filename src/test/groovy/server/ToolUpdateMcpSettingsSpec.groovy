@@ -592,6 +592,26 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         sharedAppStub.settingsStore['maxConcurrentWrites'].value instanceof Integer
     }
 
+    @spock.lang.Unroll
+    def "writes backupEveryRuleWrite=#value as the strict rule-backup policy toggle"() {
+        given:
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        def result = script.toolUpdateMcpSettings([
+            settings: [backupEveryRuleWrite: value],
+            confirm: true
+        ])
+
+        then:
+        result.success == true
+        result.updated == [backupEveryRuleWrite: value]
+        sharedAppStub.settingsStore['backupEveryRuleWrite'] == [type: 'bool', value: value]
+
+        where:
+        value << [true, false]
+    }
+
     def "mixed batch with bad mcpLogLevel rejects ALL keys (atomic validation)"() {
         // The critical safety property — without per-key validation, debugLogging would
         // have landed before mcpLogLevel's enum check fired inside toolSetLogLevel.

@@ -185,7 +185,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
         ],
         [
             name: "hub_set_rule",
-            description: """Create OR edit a Hubitat Rule Machine rule (RM 5.1) — one upsert tool. Omit appId to CREATE (name required; optionally bundle addTriggers/addActions/addRequiredExpression to populate in the same call). Provide appId to EDIT. In trigger/action/condition specs use `capability` NOT `type`. RM-only — for NON-RM classic apps (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule) use hub_set_native_app; not the legacy custom engine (hub_*_custom_rule). Requires the Write master + confirm=true + recent backup; every edit-write snapshots first (backup.backupKey for hub_restore_backup in hub_manage_backup).
+            description: """Create OR edit a Hubitat Rule Machine rule (RM 5.1) — one upsert tool. Omit appId to CREATE (name required; optionally bundle addTriggers/addActions/addRequiredExpression to populate in the same call). Provide appId to EDIT. In trigger/action/condition specs use `capability` NOT `type`. RM-only — for NON-RM classic apps (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule) use hub_set_native_app; not the legacy custom engine (hub_*_custom_rule). Requires the Write master + confirm=true + recent backup; each edit ensures a File Manager baseline exists (same-rule baselines are reused for one hour by default; backup.backupKey restores it through hub_manage_backup).
 
 Shortcuts, each orchestrating the full RM 5.1 wizard in one call: addTrigger, addAction, addRequiredExpression/replaceRequiredExpression, bulk addTriggers/addActions/replaceActions, removeAction/clearActions/moveAction/removeTrigger/modifyTrigger/modifyAction, addLocalVariable/removeLocalVariable, patches (atomic multi-op). ALWAYS prefer these one-call shortcuts; walkStep (one wizard page per call) and raw settings+button are LAST RESORTS for capabilities no shortcut can represent.
 
@@ -8282,9 +8282,9 @@ private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, S
         // pageName tells the caller which wizard page the cancelCapab recovery click belongs on
         // (doActPage for addAction, STPage for addRequiredExpression). The wizardStuck markers
         // themselves carry no page info, so callers thread it in.
-        restoreHint = "Backup saved before write -- restore via hub_restore_backup with backupKey='${backup.backupKey}'. Or, before your next write, call hub_set_rule(button='cancelCapab', pageName='${pageName}', confirm=true) to manually close the in-flight wizard."
+        restoreHint = "Backup baseline available -- restore via hub_restore_backup with backupKey='${backup.backupKey}'. Restoring returns the app to that snapshot and may undo every later edit in the baseline's one-hour chain. Or, before your next write, call hub_set_rule(button='cancelCapab', pageName='${pageName}', confirm=true) to manually close the in-flight wizard."
     } else {
-        restoreHint = "Backup saved before write. Call hub_restore_backup with backupKey='${backup.backupKey}' to roll back."
+        restoreHint = "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain."
     }
     def result = [
         success: false,
@@ -9082,13 +9082,85 @@ private Map _rmSubmitFullPageForm(Integer appId, String pageName, Map cfg, Map s
     return resp
 }
 
+// Verify that a manifest handle still points to the same rule snapshot before reuse.
+// File Manager files can be deleted outside MCP, so manifest age alone is not proof
+// that the advertised rollback handle is usable.
+private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
+    def fileName = entry?.fileName?.toString()
+    if (!fileName) return false
+    try {
+        def bytes = downloadHubFile(fileName)
+        if (bytes == null || bytes.length == 0) return false
+        if (entry.sourceLength != null && (entry.sourceLength as Long) != bytes.length) return false
+        def snapshot = new groovy.json.JsonSlurper().parseText(new String(bytes, "UTF-8"))
+        if (!(snapshot instanceof Map)) return false
+        def snapshotId = snapshot.appId != null ? snapshot.appId : snapshot.ruleId
+        return snapshotId?.toString() == ruleId?.toString()
+    } catch (Exception ignored) {
+        return false
+    }
+}
+
+// Reuse the newest same-rule edit baseline for one hour unless strict per-write
+// backups are enabled. Destructive delete and Required Expression restore callers
+// continue to call _rmBackupRuleSnapshot directly, so they always get a fresh image.
+Map _rmBackupBeforeEdit(Integer ruleId, String reason) {
+    if (settings?.backupEveryRuleWrite == true || reason == "pre-replaceRequiredExpression") {
+        return _rmBackupRuleSnapshot(ruleId, reason)
+    }
+
+    long nowMs = now()
+    def mfst = atomicState.itemBackupManifest ?: [:]
+    def recent = mfst.findAll { key, value ->
+        if (!(value instanceof Map) || value.type?.toString() != "rm-rule") return false
+        def savedRuleId = value.ruleId != null ? value.ruleId : value.id
+        if (savedRuleId?.toString() != ruleId?.toString()) return false
+        Long savedAt = null
+        try { savedAt = value.timestamp as Long } catch (Exception ignored) { }
+        if (savedAt == null) return false
+        long age = nowMs - savedAt
+        return age >= 0L && age < 60L * 60L * 1000L
+    }.max { a, b -> (a.value.timestamp as Long) <=> (b.value.timestamp as Long) }
+
+    if (recent != null && !_rmReusableBackupFileMatches(recent.value as Map, ruleId)) {
+        def staleFile = recent.value?.fileName?.toString()
+        mcpLog("warn", "rm-native", "Recent backup ${recent.key} for rule ${ruleId} is missing or does not match its manifest; discarding the stale handle and taking a fresh baseline")
+        try { unlinkItemBackupManifestFile(staleFile, recent.key?.toString()) } catch (Exception ignored) { }
+        recent = null
+    }
+
+    if (recent != null) {
+        def config = null
+        try {
+            config = _rmFetchConfigJson(ruleId)
+        } catch (Exception e) {
+            def vrbFallback = null
+            try { vrbFallback = _vrbDetect(ruleId) } catch (Exception ignored) { }
+            if (vrbFallback == null) {
+                if (e.message?.contains("404")) {
+                    throw new IllegalArgumentException("No rule/app with id ${ruleId} exists on this hub (configure/json returned 404). Nothing was changed. Use hub_list_rules for valid ids. See hub_get_tool_guide(section='set_rule_reference').")
+                }
+                throw new IllegalArgumentException("Cannot verify rule ${ruleId} before reusing backup '${recent.key}': configure/json failed -- ${e.message}")
+            }
+        }
+        mcpLog("info", "rm-native", "Reusing recent backup ${recent.key} for rule ${ruleId} (${reason}); restoring it reverts every edit since ${formatTimestamp(recent.value.timestamp as Long)}")
+        return [backupKey: recent.key,
+                brokenBefore: (config == null ? null : _rmConfigHasBrokenMarkers(config)),
+                baselineReused: true,
+                rollbackScope: "Restoring this baseline reverts every edit to rule ${ruleId} since ${formatTimestamp(recent.value.timestamp as Long)}."] +
+            new LinkedHashMap(recent.value as Map)
+    }
+
+    return _rmBackupRuleSnapshot(ruleId, reason)
+}
+
 // Snapshot the current state of an RM rule into the hub's File Manager
 // as a single JSON file (configure/json + statusJson combined), recorded
 // in the unified atomicState.itemBackupManifest alongside app/driver backups.
 //
 // Entries get type="rm-rule" so hub_list_backups + hub_restore_backup
 // (the existing tools) handle them too — no separate RM-only backup
-// tools. Backup key pattern: rm-rule_<ruleId>_<yyyyMMdd-HHmmss>.
+// tools. Backup key pattern: rm-rule_<ruleId>_<yyyyMMdd-HHmmss-SSS>.
 Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
     def config
     def status
@@ -9173,7 +9245,7 @@ Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
         }
     }
 
-    def ts = new Date(now()).format("yyyyMMdd-HHmmss")
+    def ts = new Date(now()).format("yyyyMMdd-HHmmss-SSS")
     def fileName = "mcp-rm-backup-${ruleId}-${ts}.json"
 
     def jsonBytes
@@ -9223,7 +9295,10 @@ Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
     // steer its error wording, then STRIPS it -- it is a transient internal signal, never surfaced
     // to the caller and deliberately kept off the persisted manifest `entry` (not part of the
     // durable backup record). null when no config was readable (VRB-only snapshot).
-    return [backupKey: backupKey, brokenBefore: (config == null ? null : _rmConfigHasBrokenMarkers(config))] + entry
+    return [backupKey: backupKey,
+            brokenBefore: (config == null ? null : _rmConfigHasBrokenMarkers(config)),
+            baselineReused: false,
+            rollbackScope: "Restoring this baseline returns rule ${ruleId} to its state at ${formatTimestamp(snapshot.timestamp as Long)}."] + entry
 }
 
 // Soft delete via /installedapp/delete/<id>. Refuses if the app has
@@ -13114,7 +13189,7 @@ private Map _rmReplaceRequiredExpression(Integer appId, Map exprSpec, Object bac
 // one (settings OR button):
 //
 // settings: apply a settings map with the multi-device 3-field contract
-// enforced automatically. Always backs up first, always
+// enforced automatically. Ensures a recent baseline first, always
 // verifies the multiple flags post-write with one retry on
 // divergence, then runs the updateRule button so the change
 // takes effect on the running rule instance.
@@ -13340,7 +13415,7 @@ def _applyNativeAppEdit(args) {
         return _rmBuildUpdateErrorResponse(appId, preflightExc.message, null)
     }
 
-    // Always snapshot before WRITING -- the restore channel if anything downstream goes wrong. The
+    // Ensure a recent baseline before WRITING -- the restore channel if anything downstream goes wrong. The
     // one carve-out is a decidable-from-name pre-flight reject (above): it writes nothing, so it
     // needs no snapshot and has already returned its refusal envelope before this point.
     def backupReason = button ? "pre-button-${button}" :
@@ -13360,7 +13435,7 @@ def _applyNativeAppEdit(args) {
         (modifyTriggerSpec ? "pre-modifyTrigger" :
         (modifyActionSpec ? "pre-modifyAction" :
         (walkStepSpec ? "pre-walkStep" : "pre-update"))))))))))))))))
-    def backup = _rmBackupRuleSnapshot(appId, backupReason)
+    def backup = _rmBackupBeforeEdit(appId, backupReason)
 
     // walkStep — schema-aware single-step wizard walker. Lets a caller
     // (typically an LLM) drive any RM wizard page dynamically: introspect
@@ -13421,7 +13496,7 @@ def _applyNativeAppEdit(args) {
                 appId: appId,
                 error: e.message ?: e.toString(),
                 backup: backup,
-                restoreHint: "Backup saved before write. Call hub_restore_backup with backupKey='${backup.backupKey}' to roll back."
+                restoreHint: "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain."
             ]
         }
     }
@@ -13525,7 +13600,7 @@ def _applyNativeAppEdit(args) {
             addResult: maResult?.addResult,
             moveResults: maResult?.moveResults,
             error: maError,
-            restoreHint: maOk ? null : "Backup saved before write. Call hub_restore_backup with backupKey='${backup?.backupKey}' to roll back.",
+            restoreHint: maOk ? null : "Backup baseline available. Call hub_restore_backup with backupKey='${backup?.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain.",
             updateRuleFailed: updateRuleFailed,
             // TRUE whenever the rule mutated without a successful re-init: a
             // rejected click, or a skipped click after the delete committed
@@ -13894,7 +13969,7 @@ def _applyNativeAppEdit(args) {
             // A pre-flight refusal (a shape/structural guard that throws before
             // any hub round-trip, carrying the "RM is not touched" sentinel --
             // e.g. modifyTrigger's state-change-token guard) never mutated the
-            // rule, so the plain "Backup saved before write" restore prompt is
+            // rule, so the plain backup-baseline restore prompt is
             // misleading. Detect the sentinel and emit the not-touched wording
             // instead, sharing the single owner with the structured path. This
             // is mutually exclusive with retry-exhaustion (a refused write never
@@ -13910,7 +13985,7 @@ def _applyNativeAppEdit(args) {
                     _rmPreflightRestoreHint() :
                     (isRetryExhaustion ?
                         "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}')." :
-                        "Backup saved before write. Call hub_restore_backup with backupKey='${backup.backupKey}' to roll back.")
+                        "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain.")
             ]
             if (isRetryExhaustion) {
                 trigResult.verifyHint = "Call hub_get_app_config(appId=${appId}) and inspect the triggers list -- if the operation actually committed despite the false-fail, do NOT call hub_restore_backup."
