@@ -23,6 +23,7 @@
 // reservations below one short JVM critical section without serializing tool work.
 @groovy.transform.Field static final Object WRITE_RESERVATION_LOCK = new Object()
 @groovy.transform.Field static final Set LIVE_WRITE_EXECUTIONS = new java.util.HashSet()
+@groovy.transform.Field static final Map MRTR_WORK_ITEMS = new java.util.HashMap()
 
 definition(
     name: "MCP Rule Server",
@@ -1530,7 +1531,7 @@ def handleToolsCall(msg) {
         def binding = _mrtrBinding(toolName, reactiveToolName, args)
         if (stateId != null) {
             claim = _mrtrClaimWithWait(stateId, toolName, reactiveToolName,
-                binding, reqT0)
+                binding, reqT0, reactiveToolName?.toString())
             rec = claim.record as Map
             if (claim.outcome == "terminal") {
                 return _renderToolResult(msg.id, toolName, reactiveToolName, args,
@@ -1557,43 +1558,33 @@ def handleToolsCall(msg) {
         Map executionArgs = (rec.nextArguments instanceof Map)
             ? _mrtrCopyMap(rec.nextArguments as Map)
             : _mrtrCopyMap(args as Map)
-        if (_budgetAwareTools().contains(reactiveToolName?.toString())) executionArgs.__reqT0 = reqT0
+        boolean detached = _mrtrDetachedWorkerTools().contains(reactiveToolName?.toString())
+        if (detached) {
+            executionArgs.remove("__reqT0")
+            def leafExecutionArgs = _mrtrLeafArguments(toolName?.toString(),
+                reactiveToolName?.toString(), executionArgs)
+            if (leafExecutionArgs instanceof Map) leafExecutionArgs.remove("__reqT0")
+        } else if (_budgetAwareTools().contains(reactiveToolName?.toString())) {
+            executionArgs.__reqT0 = reqT0
+        }
 
         _mrtrValidateAccess(toolName, reactiveToolName, executionArgs)
-        def result = _mrtrExecuteSlice(stateId, rec, executionArgs)
-        if (result == null) {
-            result = [isError: true, error: "Tool ${reactiveToolName} returned no result", tool: reactiveToolName]
+        if (detached) {
+            Map scheduled = _mrtrScheduleSlice(stateId, rec, claim, executionArgs)
+            if (scheduled.accepted == true) {
+                return jsonRpcResult(msg.id,
+                    [resultType: "input_required", requestState: stateId])
+            }
+            return _renderToolResult(msg.id, toolName, reactiveToolName, executionArgs,
+                scheduled.failure, true)
         }
-
-        def continuation = _mrtrContinuation(reactiveToolName?.toString(), executionArgs, result, rec)
-        if (continuation instanceof Map) {
-            // The official Python SDK stops after ten request-to-request rounds.
-            // Finish with a protocol-level terminal result before a conforming client
-            // can hit that ceiling and surface its own opaque retry-limit exception.
-            if (((rec.rounds ?: 0) as Integer) >= (_mrtrMaxContinuationSlices() - 1)) {
-                def capped = [
-                    success: false, isError: true, status: "continuation_limit",
-                    tool: reactiveToolName,
-                    error: "The operation did not finish within ${_mrtrMaxContinuationSlices()} bounded continuation slices.",
-                    note: "The completed slices remain committed. Inspect the current hub state before deciding whether to submit a smaller follow-up operation."
-                ]
-                _mrtrCleanupRecord(rec)
-                _mrtrStoreTerminal(stateId, rec, claim, capped, true)
-                return _renderToolResult(msg.id, toolName, reactiveToolName,
-                    executionArgs, capped, true)
-            }
-            rec = _mrtrRecordSlice(stateId, rec, claim, result as Map, continuation)
-            if (rec == null) {
-                throw new IllegalStateException("requestState ownership was lost before its continuation checkpoint could be stored")
-            }
+        def result = _mrtrExecuteSlice(stateId, rec, executionArgs)
+        Map completion = _mrtrCommitSlice(stateId, rec, claim, executionArgs, result)
+        if (completion.outcome == "continued") {
             return jsonRpcResult(msg.id, [resultType: "input_required", requestState: stateId])
         }
-
-        def terminal = _mrtrAggregateTerminal(rec, result)
-        _mrtrStoreTerminal(stateId, rec, claim, terminal,
-            terminal instanceof Map && terminal.isError == true)
         return _renderToolResult(msg.id, toolName, reactiveToolName, executionArgs,
-            terminal, terminal instanceof Map && terminal.isError == true)
+            completion.result, completion.isError == true)
     } catch (IllegalArgumentException e) {
         if (rec instanceof Map && claim?.outcome == "claimed") {
             _mrtrAbandon(stateId, rec, claim, "validation_error")
@@ -1749,6 +1740,10 @@ def _budgetAwareTools() {
 def _mrtrEligibleTools() {
     return ["hub_set_rule", "hub_set_native_app", "hub_call_rule",
             "hub_clone_native_app", "hub_import_native_app"] as Set
+}
+
+private Set _mrtrDetachedWorkerTools() {
+    return ["hub_set_rule", "hub_set_native_app"] as Set
 }
 
 def _mrtrEligibleCall(outerToolName, leafToolName, args) {
@@ -2015,13 +2010,16 @@ def _mrtrMaxContinuationSlices() { 8 }
 
 // The official SDK's state-only retry delay caps at 250 ms, so a response-only
 // contention loop could spend all ten rounds before an ordinary slow slice
-// finishes. Wait within this HTTP leg instead, while preserving at least half
-// of a configured transport budget for a newly reclaimed slice.
-def _mrtrContentionWaitMs() {
+// finishes. Wait within this HTTP leg instead. Synchronous slices preserve at
+// least half of a configured transport budget for reclaimed leaf work; detached
+// native writes need only enough headroom to render the observed worker state.
+def _mrtrContentionWaitMs(String leafTool = null) {
     boolean cloud = _isCloudRequest()
-    long cap = cloud ? 4000L : 6000L
+    boolean detached = _mrtrDetachedWorkerTools().contains(leafTool)
+    long cap = cloud ? (detached ? 6000L : 4000L) : 6000L
     long budget = cloud ? _relayBudgetMs() : _lanBudgetMs()
     if (budget <= 0L) return cap
+    if (detached) return Math.max(1L, Math.min(cap, budget - 1500L))
     return Math.max(1L, Math.min(cap, (budget / 2L) as Long))
 }
 
@@ -2208,11 +2206,11 @@ def _mrtrClaim(String stateId, outerTool, leafTool, Map binding) {
 }
 
 private Map _mrtrClaimWithWait(String stateId, outerTool, leafTool, Map binding,
-                               long requestStartedAt) {
+                               long requestStartedAt, String waitClass = null) {
     Map claim = _mrtrClaim(stateId, outerTool, leafTool, binding)
     if (claim.outcome != "in_progress") return claim
 
-    long deadline = requestStartedAt + _mrtrContentionWaitMs()
+    long deadline = requestStartedAt + _mrtrContentionWaitMs(waitClass)
     long remainingBudget = Math.max(0L, deadline - now())
     while (claim.outcome == "in_progress") {
         long remaining = Math.min(remainingBudget, Math.max(0L, deadline - now()))
@@ -2354,6 +2352,42 @@ private Map _mrtrRecordSlice(String stateId, Map originalRec, Map claim, Map res
     return rec
 }
 
+private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionArgs, result) {
+    String leaf = rec.leafTool?.toString()
+    if (result == null) {
+        result = [isError: true, error: "Tool ${leaf} returned no result", tool: leaf]
+    }
+    def continuation = _mrtrContinuation(leaf, executionArgs, result, rec)
+    if (continuation instanceof Map) {
+        // The official Python SDK stops after ten request-to-request rounds.
+        // Finish with a protocol-level terminal result before a conforming client
+        // can hit that ceiling and surface its own opaque retry-limit exception.
+        if (((rec.rounds ?: 0) as Integer) >= (_mrtrMaxContinuationSlices() - 1)) {
+            def capped = [
+                success: false, isError: true, status: "continuation_limit",
+                tool: leaf,
+                error: "The operation did not finish within ${_mrtrMaxContinuationSlices()} bounded continuation slices.",
+                note: "The completed slices remain committed. Inspect the current hub state before deciding whether to submit a smaller follow-up operation."
+            ]
+            _mrtrCleanupRecord(rec)
+            _mrtrStoreTerminal(stateId, rec, claim, capped, true)
+            return [outcome: "terminal", result: capped, isError: true]
+        }
+        Map stored = _mrtrRecordSlice(stateId, rec, claim, result as Map, continuation)
+        if (stored == null) {
+            throw new IllegalStateException("requestState ownership was lost before its continuation checkpoint could be stored")
+        }
+        return [outcome: "continued"]
+    }
+
+    def terminal = _mrtrAggregateTerminal(rec, result)
+    boolean isError = terminal instanceof Map && terminal.isError == true
+    if (!_mrtrStoreTerminal(stateId, rec, claim, terminal, isError)) {
+        throw new IllegalStateException("requestState ownership was lost before its terminal result could be stored")
+    }
+    return [outcome: "terminal", result: terminal, isError: isError]
+}
+
 private def _mrtrAggregateTerminal(Map rec, result) {
     if (!(result instanceof Map)) return result
     def out = [:] + (result as Map)
@@ -2432,6 +2466,101 @@ private boolean _mrtrStoreTerminal(String stateId, Map originalRec, Map claim, r
     }
 }
 
+private Map _mrtrScheduleSlice(String stateId, Map rec, Map claim, Map executionArgs) {
+    String claimId = claim?.claimId?.toString()
+    Integer generation = claim?.generation as Integer
+    synchronized (WRITE_RESERVATION_LOCK) {
+        if (_mrtrOwnedRecordLocked(stateId, claim) == null) {
+            throw new IllegalStateException("requestState ownership was lost before its worker could be scheduled")
+        }
+        MRTR_WORK_ITEMS[claimId] = [
+            stateId: stateId, claimId: claimId, generation: generation,
+            arguments: _mrtrCopyMap(executionArgs), started: false
+        ]
+    }
+    try {
+        runIn(1, "runMrtrSlice", [overwrite: false,
+            data: [stateId: stateId, claimId: claimId, generation: generation]])
+        // Queued work is protected by the persisted claim + TTL. Mark it JVM-live
+        // only while the worker is actually executing, so a scheduler/JVM loss can
+        // expire safely instead of pinning the global write slot forever.
+        synchronized (WRITE_RESERVATION_LOCK) {
+            def queued = MRTR_WORK_ITEMS[claimId]
+            if (queued instanceof Map && queued.started != true) {
+                LIVE_WRITE_EXECUTIONS.remove(claimId)
+            }
+        }
+        return [accepted: true]
+    } catch (Exception scheduleErr) {
+        synchronized (WRITE_RESERVATION_LOCK) {
+            def current = MRTR_WORK_ITEMS[claimId]
+            if (current instanceof Map && current.stateId?.toString() == stateId) {
+                MRTR_WORK_ITEMS.remove(claimId)
+            }
+        }
+        def failure = [
+            success: false, isError: true, status: "schedule_failed",
+            tool: rec.leafTool,
+            error: "The Hubitat write worker could not be scheduled: ${scheduleErr.message}. Nothing was run."
+        ]
+        _mrtrStoreTerminal(stateId, rec, claim, failure, true)
+        return [accepted: false, failure: failure]
+    }
+}
+
+// The mapped HTTP request only schedules this ephemeral worker. The worker owns
+// the already-claimed generation and stores the ordinary MRTR continuation or
+// terminal result for the next requestState round; it exposes no second protocol.
+def runMrtrSlice(Map job = [:]) {
+    String stateId = job?.stateId?.toString()
+    String claimId = job?.claimId?.toString()
+    Integer generation = null
+    try { generation = job?.generation as Integer } catch (Exception ignored) { }
+    Map work = null
+    Map rec = null
+    Map claim = [outcome: "claimed", claimId: claimId, generation: generation]
+    synchronized (WRITE_RESERVATION_LOCK) {
+        def current = MRTR_WORK_ITEMS[claimId]
+        if (current instanceof Map && current.started != true
+                && current.stateId?.toString() == stateId
+                && current.generation == generation) {
+            rec = _mrtrOwnedRecordLocked(stateId, claim)
+            if (rec != null && rec.expiresAt != null && (rec.expiresAt as Long) > now()) {
+                LIVE_WRITE_EXECUTIONS.add(claimId)
+                current = [:] + (current as Map)
+                current.started = true
+                MRTR_WORK_ITEMS[claimId] = current
+                work = current
+                claim.record = rec
+            } else {
+                MRTR_WORK_ITEMS.remove(claimId)
+                LIVE_WRITE_EXECUTIONS.remove(claimId)
+            }
+        }
+    }
+    if (work == null || rec == null) return
+
+    try {
+        Map executionArgs = _mrtrCopyMap(work.arguments as Map)
+        def result = _mrtrExecuteSlice(stateId, rec, executionArgs)
+        _mrtrCommitSlice(stateId, rec, claim, executionArgs, result)
+    } catch (Exception workerErr) {
+        mcpLog("error", "mrtr", "Detached write worker failed for ${rec.leafTool}: ${workerErr.message}")
+        def failure = [success: false, isError: true, tool: rec.leafTool,
+                       error: "Tool error: ${workerErr.message}"]
+        _mrtrCleanupRecord(rec)
+        _mrtrStoreTerminal(stateId, rec, claim, failure, true)
+    } finally {
+        synchronized (WRITE_RESERVATION_LOCK) {
+            def current = MRTR_WORK_ITEMS[claimId]
+            if (current instanceof Map && current.stateId?.toString() == stateId
+                    && current.generation == generation) {
+                MRTR_WORK_ITEMS.remove(claimId)
+            }
+        }
+    }
+}
+
 private void _mrtrAbandon(String stateId, Map originalRec, Map claim, String reason) {
     Map cleanup = null
     synchronized (WRITE_RESERVATION_LOCK) {
@@ -2471,6 +2600,10 @@ private Map _mrtrControl(String kind, Map checkpoint) {
 }
 
 private void _mrtrCleanupRecord(Map rec) {
+    String claimId = rec?.claimId?.toString()
+    if (claimId != null) {
+        synchronized (WRITE_RESERVATION_LOCK) { MRTR_WORK_ITEMS.remove(claimId) }
+    }
     def clonerId = rec?.checkpoint?.clonerAppId
     if (clonerId == null) return
     try { _appClonerCleanup(clonerId as Integer) }

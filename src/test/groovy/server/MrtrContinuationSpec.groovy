@@ -135,6 +135,95 @@ class MrtrContinuationSpec extends ToolSpecBase {
         ranWith.size() == 2
     }
 
+    def "a resumed native write returns requestState before its blocked worker leaf finishes"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.maxConcurrentWrites = 1
+        def args = [appId: 321, confirm: true, settings: [description: 'slow edit']]
+        def preflight = modernCall('hub_set_rule', args)
+        String stateId = preflight.result.requestState
+        def entered = new CountDownLatch(1)
+        def release = new CountDownLatch(1)
+        def workerDone = new CountDownLatch(1)
+        def leafCalls = new AtomicInteger(0)
+        def failure = new AtomicReference()
+        def virtualNow = new AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        PAUSE_EXECUTION_OVERRIDE.set({ Long delayMs -> virtualNow.addAndGet(delayMs) })
+        script.metaClass.toolSetRule = { Map actual ->
+            leafCalls.incrementAndGet()
+            entered.countDown()
+            release.await(5, TimeUnit.SECONDS)
+            [success: true, appId: actual.appId, settingsApplied: true]
+        }
+
+        when: 'the first resumed HTTP leg claims and schedules the generation'
+        def scheduled = modernCall('hub_set_rule', args, stateId)
+
+        then: 'the mapped request is already free and the Hubitat leaf has not run inline'
+        scheduled.error == null
+        scheduled.result.resultType == 'input_required'
+        scheduled.result.requestState == stateId
+        leafCalls.get() == 0
+        runInCalls.size() == 1
+        runInCalls[0][0..1] == [1, 'runMrtrSlice']
+        runInCalls[0][2].overwrite == false
+        runInCalls[0][2].data.stateId == stateId
+        runInCalls[0][2].data.claimId instanceof String
+        !runInCalls[0][2].data.containsKey('arguments')
+
+        when: 'another write arrives while the claimed worker is only queued'
+        def capped = modernCall('hub_call_rule', [ruleId: [401, 402], action: 'stop'])
+        def cappedInner = mcpDriver.parseInner(capped)
+
+        then: 'queued work still occupies the all-write concurrency slot'
+        capped.result.isError == true
+        cappedInner.status == 'too_many_writes_in_flight'
+        cappedInner.active == [[tool: 'hub_set_rule', startedAt: 1234567890000L, transport: 'mrtr']]
+
+        when: 'Hubitat invokes the scheduled worker and its real leaf remains blocked'
+        Map workerData = new LinkedHashMap(runInCalls[0][2].data as Map)
+        Thread worker = Thread.start {
+            try {
+                script.runMrtrSlice(workerData)
+            } catch (Throwable t) {
+                failure.set(t)
+            } finally {
+                workerDone.countDown()
+            }
+        }
+        assert entered.await(5, TimeUnit.SECONDS)
+        def whileRunning = modernCall('hub_set_rule', args, stateId)
+
+        then: 'the same logical request stays automatic and does not dispatch twice'
+        whileRunning.error == null
+        whileRunning.result.resultType == 'input_required'
+        whileRunning.result.requestState == stateId
+        leafCalls.get() == 1
+
+        when: 'the worker finishes and the client advances once more'
+        release.countDown()
+        assert workerDone.await(5, TimeUnit.SECONDS)
+        worker.join(5000)
+        def complete = modernCall('hub_set_rule', args, stateId)
+        def inner = mcpDriver.parseInner(complete)
+        script.runMrtrSlice(workerData)
+
+        then: 'the retained terminal result replays and a stale worker cannot repeat the write'
+        !worker.alive
+        failure.get() == null
+        complete.error == null
+        complete.result.resultType == 'complete'
+        complete.result.isError != true
+        inner.success == true
+        inner.appId == 321
+        leafCalls.get() == 1
+
+        cleanup:
+        release.countDown()
+        worker?.join(5000)
+    }
+
     def "fresh duplicate is refused while an MRTR operation is active without disclosing its state"() {
         given:
         settingsMap.enableWrite = true
@@ -480,6 +569,87 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         then:
         script._mrtrContentionWaitMs() == 1500L
+    }
+
+    def "cloud worker contention uses the safe budget headroom instead of exhausting SDK rounds"() {
+        given:
+        script.metaClass._isCloudRequest = { -> true }
+
+        expect: 'detached writes spend more of the leg waiting because they only schedule after reclaim'
+        script._mrtrContentionWaitMs('hub_set_rule') == 6000L
+        script._mrtrContentionWaitMs('hub_set_native_app') == 6000L
+
+        and: 'synchronous slices retain half their request budget for actual leaf work'
+        script._mrtrContentionWaitMs('hub_call_rule') == 4000L
+
+        when: 'an operator configures a smaller cloud leg budget'
+        settingsMap.relayBudgetMs = 5000
+
+        then: 'the worker path keeps 1500ms for parsing, scheduling, and rendering'
+        script._mrtrContentionWaitMs('hub_set_rule') == 3500L
+        script._mrtrContentionWaitMs('hub_call_rule') == 2500L
+    }
+
+    def "gateway native-app resume schedules the resolved leaf and its worker returns the terminal result"() {
+        given:
+        settingsMap.enableWrite = true
+        def gateway = 'hub_manage_native_rules_and_apps'
+        def args = [tool: 'hub_set_native_app', args: [appId: 654, confirm: true,
+            settings: [description: 'gateway worker']]]
+        def preflight = modernCall(gateway, args)
+        String stateId = preflight.result.requestState
+        def seen = []
+        script.metaClass.toolSetNativeApp = { Map actual ->
+            seen << new LinkedHashMap(actual)
+            [success: true, appId: actual.appId, settingsApplied: true]
+        }
+
+        when:
+        def scheduled = modernCall(gateway, args, stateId)
+        assert runInCalls.size() == 1
+        Map workerData = new LinkedHashMap(runInCalls[0][2].data as Map)
+        script.runMrtrSlice(workerData)
+        def complete = modernCall(gateway, args, stateId)
+        def inner = mcpDriver.parseInner(complete)
+
+        then:
+        scheduled.result.resultType == 'input_required'
+        seen == [[appId: 654, confirm: true, settings: [description: 'gateway worker']]]
+        complete.result.resultType == 'complete'
+        complete.result.isError != true
+        inner.appId == 654
+        inner.success == true
+    }
+
+    def "detached worker schedule failure becomes a retained terminal error without running the leaf"() {
+        given:
+        settingsMap.enableWrite = true
+        def args = [appId: 777, confirm: true, settings: [description: 'no scheduler']]
+        def preflight = modernCall('hub_set_rule', args)
+        String stateId = preflight.result.requestState
+        def leafCalls = new AtomicInteger(0)
+        script.metaClass.toolSetRule = { Map actual ->
+            leafCalls.incrementAndGet()
+            [success: true, appId: actual.appId]
+        }
+        RUN_IN_OVERRIDE.set({ List call -> throw new IllegalStateException('scheduler unavailable') })
+
+        when:
+        def failed = modernCall('hub_set_rule', args, stateId)
+        def failedInner = mcpDriver.parseInner(failed)
+        def replay = modernCall('hub_set_rule', args, stateId)
+        def replayInner = mcpDriver.parseInner(replay)
+
+        then:
+        failed.result.resultType == 'complete'
+        failed.result.isError == true
+        failedInner.status == 'schedule_failed'
+        failedInner.error.contains('scheduler unavailable')
+        replay.result.resultType == 'complete'
+        replay.result.isError == true
+        replayInner.status == 'schedule_failed'
+        leafCalls.get() == 0
+        script._activeWrites().isEmpty()
     }
 
     def "maxConcurrentWrites zero disables the write cap"() {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -124,11 +125,24 @@ class RequestTrace:
 
     @staticmethod
     def _fields(request: Any) -> dict[str, Any]:
+        has_request_state = False
+        if request.headers.get("mcp-method") == "tools/call":
+            try:
+                body = json.loads(request.content)
+                params = body.get("params") if isinstance(body, dict) else None
+                has_request_state = (
+                    isinstance(params, dict)
+                    and isinstance(params.get("requestState"), str)
+                    and bool(params["requestState"])
+                )
+            except (AttributeError, TypeError, ValueError):
+                pass
         return {
             "method": request.method,
             "mcp_protocol_version": request.headers.get("mcp-protocol-version"),
             "mcp_method": request.headers.get("mcp-method"),
             "mcp_name": request.headers.get("mcp-name"),
+            "has_request_state": has_request_state,
         }
 
     async def record_request(self, request: Any) -> None:
@@ -217,6 +231,11 @@ def summarize_mrtr_proof(
         f"one tools/call leg reached the {RELAY_LEG_CEILING_SECONDS:.1f}s relay ceiling guard: "
         f"{max_duration:.3f}s"
     )
+    state_flags = [leg.get("has_request_state") for leg in legs]
+    assert state_flags[0] is False and all(flag is True for flag in state_flags[1:]), (
+        "the measured call must begin without requestState and every automatic "
+        f"continuation must carry it; saw {state_flags}"
+    )
     return {
         "legs": len(legs),
         "continuation_rounds": len(legs) - 1,
@@ -224,3 +243,12 @@ def summarize_mrtr_proof(
         "max_leg_elapsed": max_duration,
         "sdk_round_limit": DEFAULT_SDK_INPUT_REQUIRED_MAX_ROUNDS,
     }
+
+
+def assert_mrtr_owner_rounds(server_rounds: Any, continuation_rounds: int) -> int:
+    """Validate completed worker slices and return coordination-only rounds."""
+    assert isinstance(server_rounds, int) and 1 <= server_rounds < continuation_rounds, (
+        "MRTR owner slices must be positive and fewer than client "
+        f"continuations: client={continuation_rounds}, server={server_rounds!r}"
+    )
+    return continuation_rounds - server_rounds

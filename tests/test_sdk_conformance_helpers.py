@@ -8,6 +8,7 @@ import sdk_conformance_helpers as helpers
 from sdk_conformance_helpers import (
     RELAY_LEG_CEILING_SECONDS,
     RequestTrace,
+    assert_mrtr_owner_rounds,
     summarize_modern_posts,
     summarize_mrtr_proof,
 )
@@ -28,7 +29,7 @@ def _request(name: str = "hub_manage_rule_machine") -> SimpleNamespace:
             "authorization": "Bearer must-not-be-recorded",
         }),
         url="https://example.invalid/mcp?access_token=must-not-be-recorded",
-        content=b'{"requestState":"must-not-be-recorded"}',
+        content=b'{"jsonrpc":"2.0","method":"tools/call","params":{"requestState":"must-not-be-recorded"}}',
     )
 
 
@@ -49,6 +50,7 @@ def test_request_trace_times_tool_legs_without_secret_bearing_fields() -> None:
         "mcp_protocol_version": "2026-07-28",
         "mcp_method": "tools/call",
         "mcp_name": "hub_manage_rule_machine",
+        "has_request_state": True,
         "status": 200,
         "started": 100.0,
         "ended": 108.0,
@@ -60,11 +62,28 @@ def test_request_trace_times_tool_legs_without_secret_bearing_fields() -> None:
     assert "requestState" not in serialized
 
 
+def test_request_trace_marks_an_initial_tool_leg_without_retaining_its_body() -> None:
+    request = _request()
+    request.content = b'{"jsonrpc":"2.0","method":"tools/call","params":{"arguments":{"secret":"value"}}}'
+
+    assert RequestTrace._fields(request) == {
+        "method": "POST",
+        "mcp_protocol_version": "2026-07-28",
+        "mcp_method": "tools/call",
+        "mcp_name": "hub_manage_rule_machine",
+        "has_request_state": False,
+    }
+    assert "secret" not in repr(RequestTrace._fields(request))
+
+
 def test_mrtr_summary_counts_continuations_and_enforces_timing_contract() -> None:
     legs = [
-        {"status": 200, "mcp_protocol_version": "2026-07-28", "duration": 8.1},
-        {"status": 200, "mcp_protocol_version": "2026-07-28", "duration": 8.0},
-        {"status": 200, "mcp_protocol_version": "2026-07-28", "duration": 4.2},
+        {"status": 200, "mcp_protocol_version": "2026-07-28", "duration": 8.1,
+         "has_request_state": False},
+        {"status": 200, "mcp_protocol_version": "2026-07-28", "duration": 8.0,
+         "has_request_state": True},
+        {"status": 200, "mcp_protocol_version": "2026-07-28", "duration": 4.2,
+         "has_request_state": True},
     ]
 
     summary = summarize_mrtr_proof(legs, logical_elapsed=20.7)
@@ -76,6 +95,17 @@ def test_mrtr_summary_counts_continuations_and_enforces_timing_contract() -> Non
         "max_leg_elapsed": 8.1,
         "sdk_round_limit": 10,
     }
+
+
+def test_owner_rounds_allow_detached_worker_coordination_responses() -> None:
+    assert assert_mrtr_owner_rounds(1, 3) == 2
+
+    with pytest.raises(AssertionError, match="owner slices"):
+        assert_mrtr_owner_rounds(0, 3)
+    with pytest.raises(AssertionError, match="owner slices"):
+        assert_mrtr_owner_rounds(3, 3)
+    with pytest.raises(AssertionError, match="owner slices"):
+        assert_mrtr_owner_rounds(4, 3)
 
 
 @pytest.mark.parametrize(
@@ -94,6 +124,13 @@ def test_mrtr_summary_counts_continuations_and_enforces_timing_contract() -> Non
          11.0, "2026-07-28"),
         ([{"status": 504, "mcp_protocol_version": "2026-07-28", "duration": 3.0}] * 3,
          11.0, "2xx"),
+        ([{"status": 200, "mcp_protocol_version": "2026-07-28", "duration": 3.0,
+           "has_request_state": False},
+          {"status": 200, "mcp_protocol_version": "2026-07-28", "duration": 3.0,
+           "has_request_state": False},
+          {"status": 200, "mcp_protocol_version": "2026-07-28", "duration": 3.0,
+           "has_request_state": True}],
+         11.0, "requestState"),
     ],
 )
 def test_mrtr_summary_rejects_an_invalid_proof(legs, elapsed, message) -> None:

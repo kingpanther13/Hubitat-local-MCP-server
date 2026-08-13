@@ -95,10 +95,17 @@ expired, and is bound to:
 - the same canonical original arguments; and
 - the same active operation record.
 
-The first resumed request executes the original first slice; later resumed
-requests execute only the stored continuation, never an already-completed slice.
-Another resumable result updates the record and returns `input_required` again.
-A concurrent repeat while that exact generation is executing first waits a
+For clone/import and bounded multi-rule calls, the first resumed request executes
+the original first slice; later resumed requests execute only the stored
+continuation, never an already-completed slice. For `hub_set_rule` and
+`hub_set_native_app`, whose individual Hubitat wizard helpers can themselves
+outlive the relay, the resumed request claims the generation, queues a private
+ephemeral Hubitat worker, and returns `input_required` before entering the leaf.
+The worker stores the same continuation or terminal record the synchronous path
+would have stored. It exposes no job id, status tool, tool argument, or second
+client protocol. Another resumable result updates the record and returns
+`input_required` again.
+A concurrent repeat while that exact generation is queued or executing first waits a
 bounded, transport-budget-aware interval for the owner to checkpoint or finish,
 then atomically reclaims/replays within the same HTTP leg when possible. If the
 owner remains live, it returns the same state-only `input_required` shape
@@ -203,10 +210,15 @@ no client plugin or user-provided token.
   TTL/cap cleanup, active locks, resume validation, and terminal cleanup.
 - `handleToolsCall` owns MCP request/result routing and extracts
   `params.requestState`.
+- A class-static, non-persistent work-item map holds only the claimed native-write
+  arguments until Hubitat invokes `runMrtrSlice`; the scheduled callback carries
+  only state/claim/generation identity. A class reload intentionally drops the
+  ephemeral payload and the persisted request record expires without replay.
 - Leaf-specific adapters recognize current resumable envelopes and produce their
   next arguments/checkpoints.
-- Tool handlers remain responsible for safe bounded slices; protocol framing is
-  not scattered through them.
+- Clone/import and batch handlers remain responsible for safe bounded slices.
+  Native-rule/app wizard helpers may run beyond one relay leg only behind the
+  internal worker boundary; protocol framing is not scattered through them.
 - Library include markers, test `LIBS`, and include-resolution fixtures stay in
   lockstep.
 

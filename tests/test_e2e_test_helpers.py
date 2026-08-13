@@ -148,7 +148,7 @@ def test_regular_e2e_mrtr_summary_requires_a_long_multi_leg_terminal_call():
         result_type="complete",
         logical_elapsed=20.8,
         leg_seconds=[0.2, 8.1, 8.0, 4.1],
-        server_rounds=3,
+        server_rounds=1,
     )
 
     assert summary == {
@@ -167,7 +167,9 @@ def test_regular_e2e_mrtr_summary_requires_a_long_multi_leg_terminal_call():
         (2, "complete", 10.0, [0.2, 8.0, 4.0], 2, "exceed 10"),
         (2, "complete", 12.0, [0.2, 8.0], 2, "HTTP leg"),
         (2, "complete", 12.0, [0.2, 9.5, 4.0], 2, "relay ceiling"),
-        (2, "complete", 12.0, [0.2, 8.0, 4.0], 1, "owner slices"),
+        (2, "complete", 12.0, [0.2, 8.0, 4.0], 0, "owner slices"),
+        (2, "complete", 12.0, [0.2, 8.0, 4.0], 2, "owner slices"),
+        (2, "complete", 12.0, [0.2, 8.0, 4.0], 3, "owner slices"),
     ],
 )
 def test_regular_e2e_mrtr_summary_rejects_an_invalid_proof(

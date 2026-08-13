@@ -61,6 +61,7 @@ from sdk_conformance_helpers import (  # noqa: E402  (import guard above supplie
     MODERN_PROTOCOL_VERSION,
     RequestTrace,
     assert_exact_rule_log_messages,
+    assert_mrtr_owner_rounds,
     find_exact_fixture_id_with_settle,
     summarize_modern_posts,
     summarize_mrtr_proof,
@@ -512,15 +513,13 @@ class ModernMrtrScenario:
             legs = self.trace.tool_call_legs(trace_mark, self.GATEWAY)
             summary = summarize_mrtr_proof(legs, logical_elapsed)
             server_rounds = (payload.get("mrtr") or {}).get("rounds")
-            assert server_rounds == summary["continuation_rounds"], (
-                "HTTP continuation count does not match owner execution slices; "
-                f"http={summary['continuation_rounds']} server={server_rounds}. "
-                "A contention wait must not be mistaken for an ordinary ~8-second owner slice."
-            )
+            coordination_rounds = assert_mrtr_owner_rounds(
+                server_rounds, summary["continuation_rounds"])
             durations = ", ".join(f"{leg['duration']:.3f}s" for leg in legs)
             print(
                 "         modern MRTR: "
                 f"legs={summary['legs']} continuation_rounds={summary['continuation_rounds']} "
+                f"owner_rounds={server_rounds} coordination_rounds={coordination_rounds} "
                 f"sdk_round_limit={summary['sdk_round_limit']} "
                 f"logical={summary['logical_elapsed']:.3f}s max_leg={summary['max_leg_elapsed']:.3f}s "
                 f"leg_durations=[{durations}]"
