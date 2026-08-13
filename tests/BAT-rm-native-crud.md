@@ -32,6 +32,8 @@ Each test is a JSON scenario with optional `setup_prompt`, required `test_prompt
 }
 ```
 
+**Runner contract:** The COMPLETE message to the agent under test is exactly `On my Hubitat, using the mcp connector: <test_prompt>` — no additional framing, no MCP server or tool names, no tool-loading hints, no report-format instructions. `setup_prompt`/`teardown_prompt` are orchestrator-only; **Expected** blocks are grading reference only and are never shown to the agent.
+
 ### Prompt style — goal-first
 
 Same rule as [BAT-v2.md](./BAT-v2.md): the `test_prompt` fed to the sub-agent under test states the scenario + goal in plain language and does **not** name any MCP tool, gateway, or call arg — tool names belong in the test title, **Expected**, and failure-mode grading text. `setup_prompt` / `teardown_prompt` are orchestrator scaffolding and MAY name tools directly. Per-test edge case: a test whose *subject is* the MCP surface itself (wire-shape regressions, deliberately malformed calls, gateway-override visibility) may still name that surface in its `test_prompt`.
@@ -226,12 +228,12 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a scratch rule via hub_set_rule with name='BAT-RM-Stop Start' and at least one trivial trigger (e.g., a virtual switch trigger on 'BAT-RM Switch 1'). Remember the rule id.",
-  "test_prompt": "Stop the rule (stopRuleAct). Verify by reading it back that statusJson.eventSubscriptions drops to zero / the rule's delays and repeats are cancelled. Then Start the rule again. Verify eventSubscriptions.length > 0 afterwards (Start also resets Private Boolean to true).",
+  "test_prompt": "Stop the rule and verify through the rule's health that it is stopped and holds no live event subscriptions. Then Start it again and verify it is no longer stopped and its subscriptions are live (Start also resets Private Boolean to true).",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
 
-**Expected**: AI calls `hub_call_rule(ruleId=ruleId, action='stop')` then `hub_call_rule(ruleId=ruleId, action='start')`. Post-test invariants: after stop, `statusJson.eventSubscriptions` is empty; after start, `eventSubscriptions.length > 0` (matches invariant #2).
+**Expected**: AI calls `hub_call_rule(ruleId=ruleId, action='stop')`, then `hub_get_rule_health(appId=ruleId)` and verifies `stopped == true` with `eventSubscriptionCount == 0` (0 = read fine, nothing live; null appears only when the runtime status itself was unreadable); it calls `hub_call_rule(ruleId=ruleId, action='start')`, reads health again, and verifies `stopped == false` and `eventSubscriptionCount > 0` (the rule's trigger is device-event-based).
 
 ### T312 — Update Rule button (re-initialize)
 
@@ -1561,29 +1563,29 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 **Expected**: `hub_set_rule` with Local End Point + verb `stopRuleAct`. Round-trip via `hub_get_app_config` confirms the URL contains `/stopRuleAct=<id>`. [INV-1] `configPage.error == null`. Clean teardown.
 
-### T432 — Local End Point pauseRule and resumeRule verbs (paired)
+### T432 — Local End Point triggers with pauseRule and resumeRule actions (paired)
 
 ```json
 {
   "setup_prompt": "Create helper rule BAT-RM-T432-Target. Note its ruleId.",
-  "test_prompt": "Create two rules: 'BAT-RM-T432-Pauser' with a Local End Point trigger that calls /pauseRule=<target_id>, and 'BAT-RM-T432-Resumer' with a Local End Point trigger that calls /resumeRule=<target_id>. After creating both, read them back and show me the two generated URLs.",
+  "test_prompt": "Create two rules: 'BAT-RM-T432-Pauser' with a Local End Point trigger and an action that pauses the helper rule, and 'BAT-RM-T432-Resumer' with a Local End Point trigger and an action that resumes the helper rule. Read both configurations back and verify the trigger and targeted action rows.",
   "teardown_prompt": "Force-delete all three BAT-RM-T432-* rules. Confirm hub_list_rules no longer lists them."
 }
 ```
 
-**Expected**: Two `hub_set_rule` calls, one per verb. `hub_get_app_config` on each shows correct `/pauseRule=` and `/resumeRule=` endpoint paths. Both [INV-1] `configPage.error == null`; both `eventSubscriptions.length > 0`. Teardown force-deletes all three.
+**Expected**: Two `hub_set_rule` creates. Each has a pure Local End Point trigger (`tCapab1="Local End Point"`, with no verb/target field) plus a `pauseRule` action targeting the helper: Pauser renders pause and persists `pR.<N>="false"`; Resumer renders resume and persists `pR.<N>="true"`. Verify both through `hub_get_app_config`; [INV-1] `configPage.error == null`. The endpoint URL, including its access token, is deliberately NOT exposed through MCP reads, so grading must not require URL retrieval. Teardown force-deletes all three.
 
-### T433 — Local End Point setRuleBooleanTrue / setRuleBooleanFalse (paired)
+### T433 — Local End Point triggers with Private Boolean actions (paired)
 
 ```json
 {
   "setup_prompt": "Create helper rule BAT-RM-T433-Target that uses Private Boolean in a condition. Note its ruleId.",
-  "test_prompt": "Create 'BAT-RM-T433-PBTrue' with Local End Point trigger /setRuleBooleanTrue=<target_id> and 'BAT-RM-T433-PBFalse' with /setRuleBooleanFalse=<target_id>. Confirm both endpoint URLs by reading the rules back.",
+  "test_prompt": "Create 'BAT-RM-T433-PBTrue' with a Local End Point trigger and an action that sets the helper rule's Private Boolean true, and 'BAT-RM-T433-PBFalse' with the same trigger and an action that sets the helper rule's Private Boolean false. Read both configurations back and verify the trigger and targeted action rows.",
   "teardown_prompt": "Force-delete all three BAT-RM-T433-* rules. Verify cleanup."
 }
 ```
 
-**Expected**: Two `hub_set_rule` creates, each with the respective PB verb. Round-trip URLs contain the expected path segments. [INV-1] `configPage.error == null`. Clean teardown.
+**Expected**: Two `hub_set_rule` creates. Each has a pure Local End Point trigger (`tCapab1="Local End Point"`) plus a `privateBoolean` action targeting the helper: PBTrue renders True and persists inverse raw `pvTF.<N>="false"`; PBFalse renders False and persists `pvTF.<N>="true"`. Verify through `hub_get_app_config`; [INV-1] `configPage.error == null`. The endpoint URL, including its access token, is deliberately NOT exposed through MCP reads, so grading must not require URL retrieval. Clean teardown.
 
 ### T434 — Local End Point legacy /runRule verb
 

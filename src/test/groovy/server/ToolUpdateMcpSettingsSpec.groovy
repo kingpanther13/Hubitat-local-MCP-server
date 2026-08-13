@@ -545,6 +545,53 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         sharedAppStub.settingsStore.isEmpty()
     }
 
+    @spock.lang.Unroll
+    def "rejects maxConcurrentWrites=#badValue naming both bounds"() {
+        given:
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        script.toolUpdateMcpSettings([settings: [maxConcurrentWrites: badValue], confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('maxConcurrentWrites')
+        ex.message.contains('between 0 and 100')
+        sharedAppStub.settingsStore.isEmpty()
+
+        where:
+        badValue << [-1, 101, 2.5]
+    }
+
+    @spock.lang.Unroll
+    def "accepts maxConcurrentWrites=#okValue at the range boundaries"() {
+        given:
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        def result = script.toolUpdateMcpSettings([settings: [maxConcurrentWrites: okValue], confirm: true])
+
+        then:
+        result.success == true
+        sharedAppStub.settingsStore['maxConcurrentWrites'] == [type: 'number', value: okValue]
+
+        where:
+        okValue << [0, 100]
+    }
+
+    def "coerces a string-encoded maxConcurrentWrites to a native Integer"() {
+        given:
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        def result = script.toolUpdateMcpSettings([settings: [maxConcurrentWrites: '2'], confirm: true])
+
+        then:
+        result.success == true
+        sharedAppStub.settingsStore['maxConcurrentWrites'] == [type: 'number', value: 2]
+        sharedAppStub.settingsStore['maxConcurrentWrites'].value instanceof Integer
+    }
+
     def "mixed batch with bad mcpLogLevel rejects ALL keys (atomic validation)"() {
         // The critical safety property — without per-key validation, debugLogging would
         // have landed before mcpLogLevel's enum check fired inside toolSetLogLevel.

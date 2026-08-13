@@ -118,6 +118,7 @@ abstract class HarnessSpec extends Specification {
     private static final List SHARED_CHILD_APPS_LIST = []
     private static final HubInternalGetMock SHARED_HUB_GET = new HubInternalGetMock()
     private static final McpRequestDriver SHARED_MCP_DRIVER = new McpRequestDriver()
+    private static final List SHARED_RUN_IN_CALLS = java.util.Collections.synchronizedList([])
 
     // Records parent-app unsubscribe() calls. A `1 * appExecutor.unsubscribe()`
     // cardinality check from a then-block doesn't fire reliably on the @Shared
@@ -135,8 +136,22 @@ abstract class HarnessSpec extends Specification {
     // A single static holder is safe under the current single-fork test config
     // (maxParallelForks=1); if specs ever run in parallel this would need to be a ThreadLocal.
     protected static final java.util.concurrent.atomic.AtomicReference NOW_OVERRIDE = new java.util.concurrent.atomic.AtomicReference(null)
+    // Optional per-feature pause seam. HubitatAppScript.pauseExecution delegates
+    // directly to AppExecutor, so a script metaClass override does not reliably
+    // intercept compiled peer instances.
+    protected static final java.util.concurrent.atomic.AtomicReference PAUSE_EXECUTION_OVERRIDE = new java.util.concurrent.atomic.AtomicReference(null)
+    // Optional per-feature runIn seam. Kept beside NOW_OVERRIDE because both are
+    // execution-boundary controls used by concurrency specs; null preserves the
+    // normal recorder behavior for every other feature.
+    protected static final java.util.concurrent.atomic.AtomicReference RUN_IN_OVERRIDE = new java.util.concurrent.atomic.AtomicReference(null)
 
     @Shared protected AppExecutor appExecutor
+    // Every runIn(delay, handler[, opts]) the script scheduled this test, newest last.
+    // Static-backed like the other fixtures so the stub closure built in setupSpec and the
+    // spec reading it always reach the same list. The ci/groovy2x-spock lane overrides this
+    // file with its own scaffold copy, so a recorder added to one is invisible to the other --
+    // keep the two in lockstep.
+    @Shared protected final List<List<Object>> runInCalls = SHARED_RUN_IN_CALLS
     @Shared protected script
     @Shared protected final Map stateMap = SHARED_STATE_MAP
     @Shared protected final Map atomicStateMap = SHARED_ATOMIC_STATE_MAP
@@ -237,6 +252,18 @@ abstract class HarnessSpec extends Specification {
         }
         // Record unsubscribe() so lifecycle specs (e.g. initialize) can assert it.
         mock.unsubscribe() >> { UNSUBSCRIBE_CALL_COUNT.incrementAndGet() }
+        mock.pauseExecution(_) >> { args ->
+            def ov = PAUSE_EXECUTION_OVERRIDE.get()
+            if (ov != null) ov.call(args[0] as Long)
+        }
+        // Attached HERE with the other permanent stubs: one added from a later setupSpec does
+        // not reliably take, and runIn is an AppExecutor method, so a script.metaClass override
+        // never intercepts it.
+        mock.runIn(*_) >> { args ->
+            def ov = RUN_IN_OVERRIDE.get()
+            if (ov != null) return ov.call(args as List)
+            SHARED_RUN_IN_CALLS << (args as List)
+        }
         return mock
     }
 
@@ -273,6 +300,7 @@ abstract class HarnessSpec extends Specification {
         // keep their identity (the AppExecutor mock's stubs captured
         // references in setupSpec), so clear-and-repopulate rather than
         // reassign.
+        runInCalls.clear()
         stateMap.clear()
         atomicStateMap.clear()
         settingsMap.clear()
@@ -296,6 +324,8 @@ abstract class HarnessSpec extends Specification {
         // Drop any per-test virtual-clock override so now() returns the fixed default
         // for every spec that doesn't opt in (prevents clock leakage across features).
         NOW_OVERRIDE.set(null)
+        PAUSE_EXECUTION_OVERRIDE.set(null)
+        RUN_IN_OVERRIDE.set(null)
         // Drop any per-test metaClass writes installed on the shared
         // script by previous features (e.g. individual specs' given:
         // blocks that do `script.metaClass.getRooms = { ... }`).
@@ -320,6 +350,19 @@ abstract class HarnessSpec extends Specification {
         // reference non-@Shared spec fields (e.g. per-feature stubs) and
         // still see their own test's values.
         wireScriptOverrides()
+    }
+
+    /**
+     * Create another execution instance of the already compiled app class.
+     * Hubitat gives concurrent executions distinct script instances; the
+     * inherited initializer copies the same AppExecutor and therefore the same
+     * atomicState backing while class-static fields remain genuinely shared.
+     */
+    protected Object newCompiledScriptInstance() {
+        HubitatAppScript peer = script.getClass().getDeclaredConstructor().newInstance() as HubitatAppScript
+        peer.initializeFromParent(script as HubitatAppScript)
+        wireRequestProxy(peer)
+        return peer
     }
 
     /**
@@ -399,15 +442,7 @@ abstract class HarnessSpec extends Specification {
         // setupSpec()) because setup() wipes the script's metaClass;
         // the reflective write here survives that wipe and is idempotent
         // against the stable proxy instance.
-        def injectedField = me.biocomp.hubitat_ci.app.HubitatAppScript
-            .getDeclaredField('injectedMappingHandlerData')
-        injectedField.accessible = true
-        Map injectedMap = injectedField.get(script) as Map
-        if (injectedMap == null) {
-            injectedMap = [:]
-            injectedField.set(script, injectedMap)
-        }
-        injectedMap['request'] = mcpDriver.scriptRequest
+        wireRequestProxy(script)
         // hubInternalGet has no declaration on HubitatAppScript — it's
         // pure dynamic Groovy resolved through metaClass, so the
         // per-instance metaClass write here intercepts cleanly. The
@@ -456,5 +491,18 @@ abstract class HarnessSpec extends Specification {
                         "mock needs a new case; see src/test/groovy/support/HarnessSpec.groovy")
             }
         } as Closure)
+    }
+
+    /** Install the live request/header proxy on any compiled app instance. */
+    private void wireRequestProxy(Object target) {
+        def injectedField = me.biocomp.hubitat_ci.app.HubitatAppScript
+            .getDeclaredField('injectedMappingHandlerData')
+        injectedField.accessible = true
+        Map injectedMap = injectedField.get(target) as Map
+        if (injectedMap == null) {
+            injectedMap = [:]
+            injectedField.set(target, injectedMap)
+        }
+        injectedMap['request'] = mcpDriver.scriptRequest
     }
 }

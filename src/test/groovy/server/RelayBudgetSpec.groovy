@@ -71,6 +71,38 @@ class RelayBudgetSpec extends ToolSpecBase {
         script._lanBudgetMs() == 45000L
     }
 
+    def "_maxConcurrentWrites defaults to 2 and honours zero as unlimited"() {
+        expect:
+        script._maxConcurrentWrites() == 2
+
+        when:
+        settingsMap.maxConcurrentWrites = 0
+
+        then:
+        script._maxConcurrentWrites() == 0
+    }
+
+    def "hub_call_device_replace(list_options) answers the READ master, not the write gates"() {
+        given: 'writes disabled and the best-practice gate ON -- the read mode must still run'
+        settingsMap.enableWrite = false
+        settingsMap.enableMandatoryBPS = true
+        def ran = 0
+        script.metaClass.toolCallDeviceReplace = { Map a -> ran++; [success: true, listOptions: true, options: []] }
+
+        when:
+        def result = script.executeTool('hub_call_device_replace', [old_device_id: '12', list_options: true])
+
+        then: 'it executed: no Write-master block, no bestPracticeKey demanded'
+        ran == 1
+        result.success == true
+
+        when: 'the same tool WITHOUT the read mode is still gated as the write it is'
+        script.executeTool('hub_call_device_replace', [old_device_id: '12', new_device_id: '13', confirm: true])
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
     @Unroll
     def "_timeBudgetExceeded fires only past the live budget for the request's source (#desc)"() {
         given:

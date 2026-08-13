@@ -4596,6 +4596,100 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         !atomicStateMap.lastSelfDeploy.containsKey('assumed')
     }
 
+    def "hub_update_app public args cannot spoof package correlation on self-update success"() {
+        given:
+        enableWrite()
+        settingsMap.enableDeveloperMode = true
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 5, "source": "self source"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true] }
+        def marker = [requestId: 'pkg-live', ref: 'main', startedAt: 1234567880000L,
+                      args: [ref: 'main', confirm: true]]
+        atomicStateMap.packageDeployInFlight = marker
+
+        when:
+        def result = script.toolUpdateAppCode([
+            appId: '1', source: 'self-update spoof', confirm: true,
+            __packageRequestId: 'pkg-live', __packageRef: 'attacker-ref'
+        ])
+
+        then:
+        result.success == true
+        atomicStateMap.packageDeployInFlight == marker
+        atomicStateMap.lastSelfDeploy.success == true
+        !atomicStateMap.lastSelfDeploy.containsKey('requestId')
+        !atomicStateMap.lastSelfDeploy.containsKey('packageRef')
+    }
+
+    def "hub_update_app public args cannot spoof package correlation on self-update failure"() {
+        given:
+        enableWrite()
+        settingsMap.enableDeveloperMode = true
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 5, "source": "self source"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.hubInternalPostJson = { String path, String body ->
+            throw new RuntimeException('cloud 504')
+        }
+        def marker = [requestId: 'pkg-live', ref: 'main', startedAt: 1234567880000L,
+                      args: [ref: 'main', confirm: true]]
+        atomicStateMap.packageDeployInFlight = marker
+
+        when:
+        def result = script.toolUpdateAppCode([
+            appId: '1', source: 'self-update spoof', confirm: true,
+            __packageRequestId: 'pkg-live', __packageRef: 'attacker-ref'
+        ])
+
+        then:
+        result.success == false
+        atomicStateMap.packageDeployInFlight == marker
+        atomicStateMap.lastSelfDeploy.success == false
+        atomicStateMap.lastSelfDeploy.error.contains('cloud 504')
+        !atomicStateMap.lastSelfDeploy.containsKey('requestId')
+        !atomicStateMap.lastSelfDeploy.containsKey('packageRef')
+    }
+
+    def "worker-internal package correlation must match the active marker"() {
+        given:
+        enableWrite()
+        settingsMap.enableDeveloperMode = true
+        hubGet.register('/app/ajax/code') { params ->
+            '{"status": "ok", "version": 5, "source": "self source"}'
+        }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true] }
+        atomicStateMap.packageDeployInFlight = [
+            requestId: 'pkg-live', ref: 'main', startedAt: 1234567880000L,
+            args: [ref: 'main', confirm: true]
+        ]
+
+        when:
+        def mismatched = script._toolUpdateAppCode(
+            [appId: '1', source: 'self-update mismatch', confirm: true],
+            [requestId: 'pkg-other', packageRef: 'main']
+        )
+
+        then:
+        mismatched.success == true
+        !atomicStateMap.lastSelfDeploy.containsKey('requestId')
+        !atomicStateMap.lastSelfDeploy.containsKey('packageRef')
+
+        when:
+        def matched = script._toolUpdateAppCode(
+            [appId: '1', source: 'self-update matched', confirm: true],
+            [requestId: 'pkg-live', packageRef: 'main']
+        )
+
+        then:
+        matched.success == true
+        atomicStateMap.lastSelfDeploy.requestId == 'pkg-live'
+        atomicStateMap.lastSelfDeploy.packageRef == 'main'
+    }
+
     def "hub_update_app self-update guard blocks resave mode (most-likely real-world brick scenario)"() {
         given:
         enableWrite()

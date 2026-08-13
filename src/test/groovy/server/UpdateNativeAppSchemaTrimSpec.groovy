@@ -83,6 +83,12 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         def catalogJson = JsonOutput.toJson(script.getToolDefinitions())
 
         then: 'neither opening nor closing marker appears in the wire payload'
+        // Named, not just counted: on a 116-tool catalog a bare contains() failure prints the
+        // whole payload and never says which tool leaked.
+        script.getToolDefinitions().findAll {
+            def j = JsonOutput.toJson(it)
+            j.contains(OPEN_MARKER) || j.contains(CLOSE_MARKER)
+        }*.name == []
         !catalogJson.contains(OPEN_MARKER)
         !catalogJson.contains(CLOSE_MARKER)
     }

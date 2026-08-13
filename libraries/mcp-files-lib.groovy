@@ -1,9 +1,19 @@
 library(name: "McpFilesLib", namespace: "mcp", author: "kingpanther13", description: "File Manager tool implementations (hub_list_files/hub_read_file/hub_write_file/hub_delete_file) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
+// Keep the name filter in one place so JSON and HTML firmware response shapes agree.
+private List _filesApplyListFilters(List fileList, String filterLower) {
+    def out = fileList
+    if (filterLower) {
+        out = out.findAll { it?.name?.toString()?.toLowerCase()?.contains(filterLower) }
+    }
+    return out
+}
+
 def toolListFiles(args = null) {
     mcpLog("debug", "file-manager", "Listing files in File Manager")
     def cursor = args?.cursor
-
+    def filterText = args?.filter?.toString()?.trim()
+    def filterLower = filterText?.toLowerCase()
     // Try known File Manager API endpoints (varies by firmware version)
     def endpoints = ["/hub/fileManager/json", "/hub/fileManager"]
     def responseText = null
@@ -74,7 +84,8 @@ def toolListFiles(args = null) {
             mcpLog("warn", "file-manager", "hub_list_files: parsed response yielded zero files (${shapeHint}) -- shape may not be recognized", null, [details: [endpoint: endpointUsed, shape: shapeHint]])
         }
 
-        mcpLog("info", "file-manager", "Listed ${fileList.size()} files in File Manager (via ${endpointUsed})")
+        fileList = _filesApplyListFilters(fileList, filterLower)
+        mcpLog("info", "file-manager", "Listed ${fileList.size()}${filterLower ? ' matching' : ''} files in File Manager (via ${endpointUsed})")
         def pagedFM = _paginateList(fileList, cursor, 100, "hub_list_files")
         def res = [
             files: pagedFM.page,
@@ -103,7 +114,8 @@ def toolListFiles(args = null) {
 
         if (fileList) {
             fileList = fileList.sort { a, b -> (a.name <=> b.name) }
-            mcpLog("info", "file-manager", "Listed ${fileList.size()} files from File Manager HTML page")
+            fileList = _filesApplyListFilters(fileList, filterLower)
+            mcpLog("info", "file-manager", "Listed ${fileList.size()}${filterLower ? ' matching' : ''} files from File Manager HTML page")
             def pagedHtml = _paginateList(fileList, cursor, 100, "hub_list_files")
             def res = [
                 files: pagedHtml.page,
@@ -315,10 +327,11 @@ def _getAllToolDefinitions_partFiles() {
         // File Manager Tools
         [
             name: "hub_list_files",
-            description: "List files stored in the hub's File Manager[[FLAT_TRIM]] (the local web-accessible file store)[[/FLAT_TRIM]], returning each file's name, size, last-modified date, and direct download URL.[[FLAT_TRIM]] Use this to discover available files before reading one with hub_read_file, or to confirm a write/backup landed.[[/FLAT_TRIM]] Read-only.",
+            description: "List files stored in the hub's File Manager (the local web-accessible file store), returning each file's name, size, last-modified date, and direct download URL. Optionally filter by a case-insensitive substring of the file name. Use this to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. Read-only.",
             inputSchema: [
                 type: "object",
                 properties: [
+                    filter: [type: "string", description: "Optional case-insensitive substring to match against file names, e.g. \"backup\" or \"mcp-rm-backup\"."],
                     cursor: [type: "string", description: "Opt-in pagination cursor.[[FLAT_TRIM]] Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
                 ]
             ],
@@ -384,6 +397,7 @@ def _getAllToolDefinitions_partFiles() {
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the write succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     fileName: [type: "string", description: "File written"],
@@ -409,6 +423,7 @@ def _getAllToolDefinitions_partFiles() {
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the deletion succeeded"],
                     message: [type: "string", description: "Human-readable result, including backup status"],
                     fileName: [type: "string", description: "Name of the file that was deleted"],

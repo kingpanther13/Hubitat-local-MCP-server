@@ -27,6 +27,8 @@ Each test is a JSON scenario with optional `setup_prompt`, required `test_prompt
 }
 ```
 
+**Runner contract:** The COMPLETE message to the agent under test is exactly `On my Hubitat, using the mcp connector: <test_prompt>` — no additional framing, no MCP server or tool names, no tool-loading hints, no report-format instructions. `setup_prompt`/`teardown_prompt` are orchestrator-only; **Expected** blocks are grading reference only and are never shown to the agent.
+
 ### Prompt style — goal-first
 
 BAT tests are run by an orchestrating/grading agent: it reads the entry, sets it up, feeds the `test_prompt` to a **sub-agent under test**, then grades whether that sub-agent found and used the right tool. The whole point is *discovery*, so:
@@ -2658,7 +2660,7 @@ All 117 distinct tools are covered by at least one test, excluding the destructi
 
 Sections 1-9 each target a specific tool — named in the test's title and **Expected** criteria while the `test_prompt` stays goal-first (see Prompt style above). Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 266 test scenarios** (124 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 3 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 device-state state-change / fail-loud authoring parity + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 5 read-side convergence + 1 multi-device convergence + 3 MCP device-access scope) plus 13 excluded destructive operations documented for manual testing
+**Total: 266 test scenarios** (123 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 3 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 device-state state-change / fail-loud authoring parity + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 5 read-side convergence + 1 multi-device convergence + 3 MCP device-access scope + 1 official-SDK MRTR proof) plus 13 excluded destructive operations documented for manual testing
 
 ---
 
@@ -3016,19 +3018,7 @@ These tests exercise the Developer Mode self-administration surface — the `hub
 }
 ```
 
-**Expected**: AI calls `hub_manage_mcp(tool='hub_update_mcp_settings', args={settings:{useGateways:<flipped>}, confirm:true})`. The key is **accepted** (NOT rejected as outside the allowlist — this is the regression guard for the dev-mode gateway self-switch), result `{success:true, updated:{useGateways:<flipped>}, message:"...may need to reconnect to refresh cached tool schemas if you toggled an enable* flag, useGateways, or publishOutputSchemas."}`. The WARN `[developer-mode]` audit line fires. AI explains the client must reconnect (`/mcp refresh`) before tools/list reflects the new gateway-vs-flat surface. Teardown restores the original value.
-
-### T223c — hub_update_mcp_settings flips publishOutputSchemas (outputSchema opt-in, #290)
-
-```json
-{
-  "setup_prompt": "Developer Mode is enabled, the Write master is enabled, recent backup exists, and the server is in gateway mode (useGateways ON). publishOutputSchemas is OFF (its default).",
-  "test_prompt": "Turn on the MCP server app's publishOutputSchemas setting. Report the response message, then explain what changes about the advertised tool list and why a strict client like Claude Desktop could be affected.",
-  "teardown_prompt": "Use hub_update_mcp_settings to set publishOutputSchemas back to false, then reconnect (/mcp refresh) so the advertised tool schema matches the server again."
-}
-```
-
-**Expected**: AI calls `hub_manage_mcp(tool='hub_update_mcp_settings', args={settings:{publishOutputSchemas:true}, confirm:true})`. The key is **accepted** (NOT rejected as outside the allowlist — the regression guard for the #290 opt-in toggle), result `{success:true, updated:{publishOutputSchemas:true}, message:"...may need to reconnect to refresh cached tool schemas if you toggled an enable* flag, useGateways, or publishOutputSchemas."}`. The WARN `[developer-mode]` audit line fires. AI explains that with the toggle ON, gateway-mode base tools and the gateway catalog advertise `outputSchema` in wire form (`required` arrays stripped), and the server then attaches `structuredContent` to every successful result of those tools per the MCP spec (issue #342) — so spec-validating clients like Claude Desktop accept the calls; the setting still defaults OFF because responses roughly double in size and any schema inaccuracy surfaces as a failed tool call on validating clients. Teardown restores publishOutputSchemas=false.
+**Expected**: AI calls `hub_manage_mcp(tool='hub_update_mcp_settings', args={settings:{useGateways:<flipped>}, confirm:true})`. The key is **accepted** (NOT rejected as outside the allowlist — this is the regression guard for the dev-mode gateway self-switch), result `{success:true, updated:{useGateways:<flipped>}, message:"...may need to reconnect to refresh cached tool schemas..."}`. The WARN `[developer-mode]` audit line fires. AI explains the client must reconnect (`/mcp refresh`) before tools/list reflects the new gateway-vs-flat surface. Teardown restores the original value.
 
 ### T224 — hub_delete_variable removes a stale rule_engine variable
 
@@ -4418,6 +4408,24 @@ Tools in this section require **the Read master** and HPM itself must be install
 
 **Failure modes**: `Last Event Device` committing a *BROKEN* condition (the pre-fix behavior); `Lock codes` committing a health-ok-but-incomplete "on null: null" condition the health guard does not catch (the pre-fix behavior); either reject surfacing an opaque exception mid-walk instead of the uniform steer; a leftover in-flight condition slot (`wizardStuck=true`) after the reject.
 
+### T665 — Official Python SDK v2 automatically completes a long MRTR Rule Machine write
+
+> **Automated live-relay scenario**: `tests/sdk_conformance_test.py` runs this after the branch is deployed by `hub-e2e.yml`. It is not a conversational agent prompt: the official SDK is the independent client under test.
+
+```json
+{
+  "setup_prompt": "Create one uniquely named BAT_E2E_SDK_MRTR_<random> Rule Machine rule through the official mcp==2.0.0 high-level client and retain its returned appId.",
+  "test_prompt": "Make one high-level Client.call_tool Rule Machine edit that adds six deterministic log actions, allowing the SDK's standard Streamable HTTP client to complete every state-only continuation automatically.",
+  "teardown_prompt": "In a finally block, delete only the exact appId created for this run. If creation lost its response, use a bounded settle/retry to adopt at most one exact random-name match before deleting it. Refuse ambiguous matches. Never sweep existing apps or delete backup artifacts."
+}
+```
+
+**Expected**: the test invokes `mcp.client.Client.call_tool()` exactly once for the measured edit, without supplying continuation state or raising the SDK's default 10-round limit. The returned object is a successful `CallToolResult` with `result_type='complete'`. Observer-only `httpx2` hooks retain no URL, token, state value, arguments, or body; they retain only a derived `has_request_state` boolean and safe routing/timing fields. The first measured leg has no state and every later leg carries it automatically. The trace shows at least three modern `tools/call` POST legs for the gateway (at least two continuation rounds), all 2xx, with each leg under the 9.5-second cloud-ceiling guard. The aggregate logical call is over 10 seconds. The terminal payload reports at least one completed owner slice and fewer owner slices than observed continuation rounds; the positive difference proves at least one state-only coordination handoff while the internal Hubitat worker was still running. The log reports leg count, continuation rounds, owner and coordination rounds, the unchanged SDK limit, aggregate duration, max-leg duration, and every leg duration so clients with lower round limits can be assessed. After the measured window, a separate high-level `hub_get_app_config(includeSettings=true)` call must show exactly six numeric action rows, all `actType.<N>=messageActs` + `actSubType.<N>=getLogMsg`, with `logmsg.<N>` values exactly equal to the six requested distinct messages in order and no extra action/log row.
+
+**Failure modes**: using `ClientSession.call_tool()` or a project-owned state loop instead of the high-level SDK driver; requesting a task/extension or passing a custom token; only one continuation round; aggregate time at or below 10 seconds; any leg at or above 9.5 seconds or non-2xx; final `result_type` not `complete`; tool-level `success=false`; missing, wrong, duplicate, non-log, or extra persisted action values; zero owner slices or owner slices greater than or equal to HTTP continuation rounds; increasing `input_required_max_rounds`; logging a credentialed URL/body; an immediate no-settle cleanup lookup after a lost create response; or cleanup touching anything except this run's random BAT fixture.
+
+**Independent regular-E2E companion**: the existing `mrtr`-category `test_mrtr_rule_edit_uses_standard_continuation` creates its own throwaway Rule Machine app and performs its own six-action edit through the repository's normal `HubitatMcpClient`. It separately requires automatic request-state following, terminal `complete`, all six successful mutation results, multiple continuation rounds/HTTP legs, aggregate duration over 10 seconds, every actual POST below 9.5 seconds, and a positive owner-slice count strictly below the continuation count. It then performs its own raw-settings config read outside the timing window and requires the same exact six distinct persisted log rows/values. Success, readback, or telemetry from either client cannot satisfy the other client's assertions.
+
 ---
 
 ## Section 16: Visual Rules Builder Tests (hub_get_visual_rule / hub_set_visual_rule / hub_delete_visual_rule)
@@ -4590,63 +4598,6 @@ Key differences from the original BAT.md (which targets the pre-v0.8.0 architect
 
 ---
 
-## Section 18: opToken Response Replay & Slow-Op Recovery (issues #348 / #351)
-
-A slow write can commit on the hub while the transport (cloud-relay ceiling or the
-client's own timeout) drops the response, so the client sees an opaque gateway/transport
-error and is tempted to re-issue — double-committing. Recovery is always a POLL: re-issue
-the write with the SAME `opToken` (the token alone is enough); the separate poll tool was
-retired in #351. These scenarios grade whether the AI recovers the committed result
-instead of blindly retrying. Goal-framed: the `test_prompt` describes the situation,
-never the tool.
-
-### T660 — Recover a slow rule edit whose response was lost (no double-commit)
-
-```json
-{
-  "setup_prompt": "Create a BAT-prefixed native Rule Machine rule and note its appId. Tell the AI it is about to make a slow edit to that rule over a flaky cloud connection.",
-  "test_prompt": "Add a switch action to my BAT test rule. If the response gets dropped or you see a gateway/transport error, make sure the edit actually committed and recover the result — do NOT just re-run the edit, since that could add the action twice.",
-  "teardown_prompt": "Delete the BAT test rule."
-}
-```
-
-**Expected**: AI attaches an `opToken` it invents to the `hub_set_rule` edit. On a dropped response it polls by re-issuing the call with the SAME token (the token alone is enough): while the edit still runs it gets the `status:running` refusal, and once it finishes the server replays the buffered result with `replayed:true` — the action count is unchanged (no double-commit). **Fail** if the AI blind-retries the edit with a fresh token (or none) and the rule ends up with the action added twice.
-
-### T661 — Continue a self-budgeted rule edit that returned `in_progress`
-
-```json
-{
-  "setup_prompt": "Create a BAT-prefixed native Rule Machine rule and note its appId.",
-  "test_prompt": "Apply several changes to my BAT test rule in one batch. If the hub tells you it paused partway to stay within its time budget, finish the remaining work so all the changes land.",
-  "teardown_prompt": "Delete the BAT test rule."
-}
-```
-
-**Expected**: On a `status:in_progress` result the AI re-issues with the returned `patchesRemaining` (or `stepsRemaining`, inheriting the reported page) to continue, per the `resume` note — attaching a fresh token, not the paused op's token. All committed steps persist; the finalize/updateRule runs when the remainder completes. **Fail** if the AI treats the `in_progress` pause as an error, or replays the paused op's token and stalls on its buffered partial.
-
-### T662 — A never-issued operation reports unknown
-
-```json
-{
-  "test_prompt": "I think an earlier command to the hub may never have gone through. Check whether an operation with a token I never used ever ran, and tell me if it's safe to retry."
-}
-```
-
-**Expected**: AI polls by issuing a token-only write call with that token (e.g. `hub_set_rule` with nothing but `opToken`); it returns `status:unknown` with a note that the original call never arrived and the original call should be re-issued in full. AI relays that it is safe to retry. **Fail** if the AI claims the operation ran or fabricates a result.
-
-### T663 — A package deploy that outlives the client timeout lands exactly once (issue #351)
-
-```json
-{
-  "setup_prompt": "Developer Mode is enabled and a recent hub backup exists. The AI will repair-deploy the CURRENT main ref (a same-version repair) over a connection whose client timeout is shorter than the multi-minute deploy.",
-  "test_prompt": "Redeploy the MCP package at ref 'main' on my hub. Your connection tends to time out before slow operations finish — make sure the deploy lands exactly once and report its final outcome.",
-  "teardown_prompt": "Confirm the hub is on ref main and healthy."
-}
-```
-
-**Expected**: AI attaches an `opToken` to `hub_update_package`. On the client timeout it does NOT re-run the deploy: it polls by re-issuing token-only (getting the `status:running` refusal while the repair runs, then the `replayed:true` buffered result), and/or watches `hub_get_info`'s `lastSelfDeploy` for a fresh `at`/`ageMs` as the done-signal. If it does attempt a second full deploy while the first is running, the hub's in-flight guard refuses it (`error` naming the running deploy, zero writes). **Fail** if a second full bundle+apps repair executes.
-
----
 
 ## Appendix: RM Wizard-State Leak Probe (wizard_probe.py)
 

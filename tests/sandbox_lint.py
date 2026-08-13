@@ -1770,7 +1770,7 @@ def check_tool_guide_pointers(src_override: str | None = None,
         "dashboards": "Dashboards",
         "bundles": "Bundles",
         "rooms": "Rooms",
-        "slow_ops": "Slow ops (opToken recovery",
+        "slow_ops": "Slow writes over Streamable HTTP",
     }
     for key in section_keys:
         hint = key_to_heading_hint.get(key)

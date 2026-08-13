@@ -209,7 +209,6 @@ def toolGetHubInfo(args = null) {
         def ha = _healthAlertsFromHub2(hub2)
         if (ha != null) info.healthAlerts = ha
     }
-
     // Opt-in MCP Rule Server APP version check on GitHub (distinct from platformUpdate, the hub's
     // own firmware). Off by default: it is asynchronous (the first call may return latestVersion
     // 'unknown (check in progress)' -- call again in a few seconds) AND reaches the open internet,
@@ -959,7 +958,9 @@ def _getAllToolDefinitions_partSystem() {
                     platformUpdate: [type: "object", description: "Pending HUB FIRMWARE/platform update from /hub2/hubData: {available (bool or null), currentVersion, availableVersion (when available), note (only when available=null)}. Distinct from the appUpdate MCP-server-app check; available=null means /hub2/hubData was unreadable/unrecognized and the note explains why. Install a pending update with hub_update_firmware."],
                     appUpdate: [type: "object", description: "MCP Rule Server APP version check; present only when includeAppUpdate=true. {installedVersion, latestVersion ('unknown (check in progress)' while the async GitHub check is pending), updateAvailable, lastChecked}. Separate from platformUpdate (the hub's own firmware)."],
                     safeMode: [type: "boolean", description: "Whether the hub is running in Safe Mode (from /hub2/hubData). Absent if /hub2/hubData was unreadable."],
-                    healthAlerts: [type: "object", description: "Present only when includeHealthAlerts=true: the hub's health alerts from /hub2/hubData -- {safeMode, active (list of currently-firing alert flags), details (full alert map + message strings)}."]
+                    healthAlerts: [type: "object", description: "Present only when includeHealthAlerts=true: the hub's health alerts from /hub2/hubData -- {safeMode, active (list of currently-firing alert flags), details (full alert map + message strings)}."],
+                    recentOps: [type: "array", description: "Present only when includeRecentOps=true: recent op records, newest first -- {opToken, tool, state, startedAt, startedAtText, finishedAt, isError, auto}.", items: [type: "object"]],
+                    recentOpsTotal: [type: "integer", description: "Present only when includeRecentOps=true: how many records matched THIS call (write-master filtering applied), before recentOpsLimit caps the returned rows -- not the size of the whole stored journal."]
                 ]
             ]
         ],
@@ -1003,6 +1004,7 @@ def _getAllToolDefinitions_partSystem() {
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the action succeeded"],
                     action: [type: "string", description: "The action performed"],
                     modes: [type: "array", description: "Resulting mode list (create/rename/delete)", items: [type: "object"]],
@@ -1028,6 +1030,7 @@ def _getAllToolDefinitions_partSystem() {
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the change succeeded"],
                     manager: [type: "string", description: "The manager that was selected"],
                     conditionsUpdated: [type: "boolean", description: "True if conditions were applied"],
@@ -1069,6 +1072,7 @@ def _getAllToolDefinitions_partSystem() {
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the HSM arm event was sent"],
                     previousStatus: [type: "string", description: "HSM status before the change"],
                     newMode: [type: "string", description: "Requested HSM mode"]
@@ -1106,6 +1110,7 @@ def _getAllToolDefinitions_partSystem() {
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the settings were applied"],
                     applied: [type: "array", description: "The fields that were changed; may include darkMode and the network legs (network.staticIp / network.dhcp / network.ethernetAutoneg / network.wifi)", items: [type: "string"]],
                     error: [type: "string", description: "Failure reason (success=false)"],
@@ -1129,6 +1134,7 @@ PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the reboot was initiated"],
                     message: [type: "string", description: "Human-readable result"],
                     lastBackup: [type: "string", description: "Formatted timestamp of last backup"],
@@ -1153,6 +1159,7 @@ PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user it won't restart automaticall
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the shutdown was initiated"],
                     message: [type: "string", description: "Human-readable result"],
                     lastBackup: [type: "string", description: "Formatted timestamp of last backup"],
@@ -1177,6 +1184,7 @@ PRE-FLIGHT (apply): 1) Ensure backup <24h old 2) Confirm an update is actually p
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the install was initiated (or the status poll ran)"],
                     statusOnly: [type: "boolean", description: "True when this was a status poll (no install)"],
                     status: [description: "The /hub/cloud/checkUpdateStatus payload; present for statusOnly. Usually a parsed object (e.g. {status:'IDLE'}) but can be a plain string if the hub returns a non-JSON body (e.g. during the reboot)."],

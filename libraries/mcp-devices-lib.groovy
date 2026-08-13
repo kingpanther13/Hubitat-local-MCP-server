@@ -4248,6 +4248,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the command was sent"],
                     device: [type: "string", description: "Device label"],
                     command: [type: "string", description: "Command sent"],
@@ -4348,6 +4349,7 @@ Only modify devices user explicitly requested. Writes require Write master. Call
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "True when all requested changes applied without error"],
                     device: [type: "string", description: "Device label"],
                     deviceId: [type: "string", description: "Device ID"],
@@ -4383,6 +4385,7 @@ Device + history lost, automations break. Requires Write master.""",
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether deletion was verified"],
                     deviceId: [type: "string", description: "Deleted device ID"],
                     deviceName: [type: "string", description: "Device label/name"],
@@ -4416,6 +4419,7 @@ Pre-flight (mandatory): 1) hub backup <24h (hub_create_backup); 2) preview the b
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the swap completed"],
                     swapped: [type: "object", description: "The committed swap", properties: [
                         from: [type: "string", description: "Replaced device ID"],
@@ -4457,6 +4461,7 @@ Pre-flight: backup <24h (hub_create_backup) + user OK.""",
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token for an untokened write; absent for list_options=true. Poll token-only to replay the write result."],
                     success: [type: "boolean", description: "Whether the replace (or options read) succeeded"],
                     listOptions: [type: "boolean", description: "True when this was a read-only list_options call"],
                     options: [type: "array", description: "Compatible replacement candidates (list_options); each {id, name, deviceTypes}", items: [type: "object", properties: [
@@ -4492,6 +4497,7 @@ Pre-flight: backup <24h (hub_create_backup) + user OK.""",
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the device was created"],
                     deviceId: [type: "string", description: "New device id"],
                     label: [type: "string", description: "Applied/current label"],

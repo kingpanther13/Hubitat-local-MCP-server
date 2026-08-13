@@ -946,6 +946,7 @@ def _getAllToolDefinitions_partVariables() {
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the set succeeded"],
                     name: [type: "string", description: "Variable name"],
                     value: [description: "Value that was set"],
@@ -979,6 +980,7 @@ def _getAllToolDefinitions_partVariables() {
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Single form: whether creation succeeded. Bulk form: true only when every item was created."],
                     name: [type: "string", description: "Single form: variable name"],
                     type: [type: "string", description: "Single form: variable type"],
@@ -1000,20 +1002,20 @@ def _getAllToolDefinitions_partVariables() {
         ],
         [
             name: "hub_delete_variable",
-            description: "Permanently delete a variable (DESTRUCTIVE — no undo). Auto-detects whether the target is a hub variable (also deletes its connector device when one exists) or a rule_engine variable. Gated on the Write master + confirm=true + a recent backup.[[FLAT_TRIM]]\n\n**Reference safety:** the tool scans every child rule app for serialized references to this variable name (in triggers/conditions/actions) and refuses by default if any are found. To proceed anyway, pass `force=true` after acknowledging the breakage. The response includes a `brokenConsumers` field listing the affected rules when force=true.\n\nThe consumer scan makes this call slow; over a cloud relay the transport may drop with a gateway error while the hub still commits -- see hub_get_tool_guide(section='slow_ops') for the opToken recovery protocol.[[/FLAT_TRIM]]",
+            description: "Permanently delete a variable (DESTRUCTIVE — no undo). Auto-detects whether the target is a hub variable (also deletes its connector device when one exists) or a rule_engine variable. Gated on the Write master + confirm=true + a recent backup.[[FLAT_TRIM]]\n\n**Reference safety:** the tool scans every child rule app for serialized references to this variable name (in triggers/conditions/actions) and refuses by default if any are found. To proceed anyway, pass `force=true` after acknowledging the breakage. The response includes a `brokenConsumers` field listing the affected rules when force=true.\n\nThe consumer scan makes this call slow; if the transport drops, verify whether the variable still exists before retrying.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     name: [type: "string", description: "Variable name to delete"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the deletion"],
                     force: [type: "boolean", description: "OPTIONAL: must be true to proceed when one or more child rule apps reference this variable. Without force, the tool refuses and lists the consumers."],
-                    opToken: [type: "string", description: "Optional idempotency token you invent (8-128 chars, A-Za-z0-9._-). If the transport drops the response, re-issue this call with the SAME token to poll/replay the committed result instead of re-running the edit."]
                 ],
                 required: ["name", "confirm"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether deletion succeeded"],
                     name: [type: "string", description: "Variable name"],
                     deleted: [type: "boolean", description: "True when the variable was removed"],
@@ -1044,6 +1046,7 @@ def _getAllToolDefinitions_partVariables() {
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the connector exists/was created"],
                     name: [type: "string", description: "Variable name"],
                     deviceId: [type: "string", description: "Connector device id"],
@@ -1069,6 +1072,7 @@ def _getAllToolDefinitions_partVariables() {
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the removal succeeded"],
                     name: [type: "string", description: "Variable name"],
                     deviceId: [type: "string", description: "Removed connector device id (when one existed)"],

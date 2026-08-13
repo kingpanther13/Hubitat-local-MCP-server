@@ -382,20 +382,20 @@ def _getAllToolDefinitions_partBundles() {
     return [
         [
             name: "hub_install_bundle",
-            description: "Install a Hubitat code bundle (.zip) from a URL the way Hubitat Package Manager does -- the hub fetches the zip and unpacks it into Libraries/Apps/Drivers Code (how a package delivers the libraries an app #includes). Use it to prove on the real hub that a package installs the HPM way before users update. Requires Write master + confirm=true + a recent backup; the hub does not deep-validate the zip.[[FLAT_TRIM]] Verify the result with hub_list_libraries / hub_get_source. Uses /bundle2/uploadZipFromUrl on firmware >= 2.3.8.108, else legacy /bundle/uploadZipFromUrl.[[/FLAT_TRIM]][[FLAT_TRIM]] A transport drop (relay ceiling / client timeout) can lose the response while the hub still commits this install; pass opToken, and on a drop re-issue the call with the SAME opToken to poll/replay the committed result instead of re-running it -- see hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]",
+            description: "Install a Hubitat code bundle (.zip) from a URL the way Hubitat Package Manager does -- the hub fetches the zip and unpacks it into Libraries/Apps/Drivers Code (how a package delivers the libraries an app #includes). Use it to prove on the real hub that a package installs the HPM way before users update. Requires Write master + confirm=true + a recent backup; the hub does not deep-validate the zip.[[FLAT_TRIM]] Verify the result with hub_list_libraries / hub_get_source. Uses /bundle2/uploadZipFromUrl on firmware >= 2.3.8.108, else legacy /bundle/uploadZipFromUrl.[[/FLAT_TRIM]][[FLAT_TRIM]] A transport drop can lose the response while the hub still commits this install; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     importUrl: [type: "string", description: "URL of the bundle .zip the hub fetches and installs (http:// or https://)."],
                     installer: [type: "boolean", description: "OPTIONAL. Mark the bundle's contents as installed-by-this-package (HPM's installer/private flag). Default false."],
                     confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms a recent backup exists and the user approved installing this bundle."],
-                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If the transport drops the response, re-issue this call with the SAME token (the token alone is enough) to poll/replay the committed result instead of re-running the operation. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["importUrl", "confirm"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the bundle installed"],
                     message: [type: "string", description: "Human-readable result"],
                     endpoint: [type: "string", description: "Hub endpoint used (/bundle2/uploadZipFromUrl or /bundle/uploadZipFromUrl)"],
@@ -444,6 +444,7 @@ def _getAllToolDefinitions_partBundles() {
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the bundle was deleted"],
                     message: [type: "string", description: "Human-readable result"],
                     bundleId: [type: "string", description: "The targeted bundle id"],
@@ -463,13 +464,14 @@ def _getAllToolDefinitions_partBundles() {
                 type: "object",
                 properties: [
                     bundleId: [type: "string", description: "The numeric bundle id from hub_list_bundles (e.g. \"4\")."],
-                    saveAs: [type: "string", description: "OPTIONAL File Manager filename for the exported .zip. Defaults to the bundle's name.[[FLAT_TRIM]] '.zip' is appended if missing; non-filename characters are replaced with '_'.[[/FLAT_TRIM]]"]
+                    saveAs: [type: "string", description: "OPTIONAL File Manager filename for the exported .zip. Defaults to the bundle's name.[[FLAT_TRIM]] '.zip' is appended if missing; non-filename characters are replaced with '_'.[[/FLAT_TRIM]]"],
                 ],
                 required: ["bundleId"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the bundle zip was saved"],
                     message: [type: "string", description: "Human-readable result"],
                     bundleId: [type: "string", description: "The exported bundle id"],

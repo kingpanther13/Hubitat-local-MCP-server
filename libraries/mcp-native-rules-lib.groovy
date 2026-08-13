@@ -5,7 +5,7 @@ def _getAllToolDefinitions_partNativeRM() {
         // Rule Machine Integration (read + trigger + pause/resume only — platform blocks CRUD)
         [
             name: "hub_list_rules",
-            description: "List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id). Each rule carries its id, label, and live `status`: `active`, `paused`, or `disabled` (red-X) — `unknown` when the hub's app list is momentarily unreadable. Requires the Read master. For the enabled/disabled state of NON-RM classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use `hub_list_apps` (scope='instances'). Call `hub_get_tool_guide(section='builtin_app_tools')` for the status-detection semantics and platform limitations on RM rule internals.",
+            description: "List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id). Each rule carries its id, label, and live `status`: `active`, `paused`, `stopped`, or `disabled` (red-X) — `unknown` when the hub's app list is momentarily unreadable. CAVEAT: the runtime-STOPPED state is only visible here when the hub's list source decorates the label (many firmwares don't) — the authoritative stopped check is hub_get_rule_health's `stopped` field. For ONE rule's state, call hub_get_rule_health(appId) instead of listing every rule — it returns that rule's paused/disabled/stopped/broken directly. Requires the Read master. For the enabled/disabled state of NON-RM classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use `hub_list_apps` (scope='instances'). Call `hub_get_tool_guide(section='builtin_app_tools')` for the status-detection semantics and platform limitations on RM rule internals.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -21,7 +21,7 @@ def _getAllToolDefinitions_partNativeRM() {
                         name: [type: "string", description: "Rule name"],
                         type: [type: "string", description: "Rule type, or null"],
                         rmVersion: [type: "string", description: "RM version, 4.x or 5.x"],
-                        status: [type: "string", enum: ["active", "paused", "disabled", "unknown"], description: "Live status; 'unknown' when the app list was unreadable"],
+                        status: [type: "string", enum: ["active", "paused", "stopped", "disabled", "unknown"], description: "Live status; 'unknown' when the app list was unreadable"],
                         disabled: [type: "boolean", description: "Rule is disabled (red-X); omitted when status is 'unknown'"],
                         paused: [type: "boolean", description: "Rule is paused; omitted when status is 'unknown'"],
                         requiredExpressionFalse: [type: "boolean", description: "Present (true) only when the rule's required expression is currently false, so it won't trigger"]
@@ -47,13 +47,13 @@ def _getAllToolDefinitions_partNativeRM() {
                 properties: [
                     ruleId: [type: ["integer", "array"], items: [type: "integer"], description: "Rule ID from hub_list_rules, or an array of rule IDs to act on in one call"],
                     action: [type: "string", enum: ["rule", "actions", "stop", "start"], description: "Which RM action to invoke. Default: rule."],
-                    opToken: [type: "string", description: "Recommended idempotency token you invent (8-128 chars, A-Za-z0-9._-), especially on multi-rule batches: after a dropped response, re-issue with the SAME token to replay the result instead of re-running the batch."]
                 ],
                 required: ["ruleId"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the action succeeded (multi-rule: all succeeded)"],
                     ruleId: [type: "integer", description: "Rule app ID acted on (present when exactly one)"],
                     ruleIds: [type: "array", items: [type: "integer"], description: "All rule app IDs REQUESTED (on a budget-paused batch, remainingRuleIds were not yet acted on). Present on every stop/start call and on all array-form calls."],
@@ -83,6 +83,7 @@ def _getAllToolDefinitions_partNativeRM() {
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the pause/resume succeeded"],
                     ruleId: [type: "integer", description: "Rule app ID (present when exactly one)"],
                     ruleIds: [type: "array", items: [type: "integer"], description: "All rule app IDs acted on"],
@@ -110,6 +111,7 @@ def _getAllToolDefinitions_partNativeRM() {
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the set succeeded"],
                     ruleId: [type: "integer", description: "Rule app ID (present when exactly one)"],
                     ruleIds: [type: "array", items: [type: "integer"], description: "All rule app IDs acted on"],
@@ -133,7 +135,7 @@ def _getAllToolDefinitions_partNativeRM() {
 
 Requires the Write master + confirm=true + recent hub backup.
 
-Slow multi-step calls may return status:'in_progress' with resume instructions once the transport time budget is reached (cloud relay by default; LAN via the lanBudgetMs setting), or the transport may drop with a gateway error while the hub still commits — see hub_get_tool_guide(section='slow_ops') for the recovery protocol. ALWAYS pass an opToken: it is the only handle that can replay a dropped response.""",
+On MCP 2026-07-28, eligible slow writes continue automatically across bounded Streamable HTTP requests and eventually return one final result; no custom token or client extension is needed. Older clients retain the existing status:'in_progress' remainder envelope. See hub_get_tool_guide(section='slow_ops').""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -145,8 +147,7 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
                     pageName: [type: "string", description: "Optional sub-page for schema introspection + settings POST."],
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click."],
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
-                    walkStep: [type: "object", description: "LAST-RESORT multi-page classic-app walker — EDIT-only (requires appId; rejected on create). One call per wizard step is the expensive path: for RM rules use hub_set_rule's structured shortcuts instead; here, use it only when settings/button cannot represent the change.[[FLAT_TRIM]] Generic classic-dynamicPage walker for stateful apps: introspect/write/click/navigate/done one step per call, or operation='drive' with steps=[...] to run the whole sequence in one call. Same shape as hub_set_rule's walkStep.[[/FLAT_TRIM]]"],
-                    opToken: [type: "string", description: "STRONGLY RECOMMENDED on every call: idempotency token you invent (8-128 chars, A-Za-z0-9._-). If the transport drops the response (~10s cloud-relay ceiling), re-issue this call with the SAME token to poll/replay the committed result instead of re-running the edit. Without a token, a dropped response cannot be recovered."],
+                    walkStep: [type: "object", description: "LAST-RESORT multi-page classic-app walker — EDIT-only (requires appId; rejected on create). Use only when settings/button cannot represent the change.[[FLAT_TRIM]] One call per wizard step is the expensive path: for RM rules use hub_set_rule's structured shortcuts instead. Generic classic-dynamicPage walker for stateful apps: introspect/write/click/navigate/done one step per call, or operation='drive' with steps=[...] to run the whole sequence in one call. Same shape as hub_set_rule's walkStep.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "Must be true. Safety gate for Write master operations."]
                 ],
                 required: ["confirm"]
@@ -154,6 +155,7 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the create/edit succeeded"],
                     appId: [type: "integer", description: "App ID created or edited"],
                     ruleId: [type: ["integer", "null"], description: "on create: the same value as appId, surfaced under the name the ruleId-taking downstream tools use (hub_call_rule, hub_set_rule_paused, hub_set_rule_private_boolean) so a create can be chained directly. Null for a non-RM app type; absent on edit."],
@@ -191,7 +193,7 @@ Partial-success (every shortcut): success:true can pair with partial:true — in
 
 Deep reference (per-capability field specs, extended condition shapes, periodic schedules, the raw settings/button flow, worked examples): pass guide:true to get it inline, or hub_get_tool_guide(section='set_rule_reference'); full create + repair protocol: hub_get_tool_guide(section='set_rule_create_reference'). Pass {discover:true} on addTrigger/addAction for the live machine-readable schema.
 
-Slow multi-step calls may return status:'in_progress' with resume instructions once the transport time budget is reached (cloud relay by default; LAN via the lanBudgetMs setting), or the transport may drop with a gateway error while the hub still commits — see hub_get_tool_guide(section='slow_ops') for the recovery protocol. ALWAYS pass an opToken: it is the only handle that can replay a dropped response.""",
+On MCP 2026-07-28, eligible slow writes continue automatically across bounded Streamable HTTP requests and return one final result. Older clients retain the status:'in_progress' remainder envelope. See hub_get_tool_guide(section='slow_ops').""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -203,7 +205,7 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click (e.g. trigger/action index for RM editCond/editAct)."],
                     addTrigger: [
                         type: "object",
-                        description: """Add an RM TRIGGER (structured). DISCRIMINATOR: use `capability` NOT `type` (`{type:'switch'}` is rejected); returns triggerIndex. Capability families (use these display names): Device-state — Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source; Numeric — Temperature / Humidity / Battery / Illuminance / Power / Energy / CO2 / Dimmer / Thermostat setpoints; Button; Custom Attribute; Certain Time / Sunrise / Sunset; Mode; Periodic Schedule. Modifiers: andStays, allOfThese. Optional per spec: conditional (sets the conditional-trigger gate — pair with `condition` to bind it in one call), condition {capability, deviceIds?, state? | comparator?+value?, attribute?, not?, rawSettings?} (a NARROWER set than addRequiredExpression), rawSettings {field:value} with @N = the auto-assigned index (e.g. {'xVar@N':'myVar'}). addTriggers[] = bulk, updateRule once at the end. Per-field specs, the periodic shape, and extended condition shapes: pass {discover: true}, guide:true, or hub_get_tool_guide(section='set_rule_reference')."""
+                        description: """Add an RM TRIGGER (structured). DISCRIMINATOR: use `capability` NOT `type` (`{type:'switch'}` is rejected); returns triggerIndex. Capability families (use these display names): Device-state — Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source; Numeric — Temperature / Humidity / Battery / Illuminance / Power / Energy / CO2 / Dimmer / Thermostat setpoints; Button; Custom Attribute; Certain Time (and optional date) / Sunrise / Sunset (the picker value is the full 'Certain Time (and optional date)' string); Mode; Periodic Schedule. Modifiers: andStays, allOfThese. Optional per spec: conditional (sets the conditional-trigger gate — pair with `condition` to bind it in one call), condition {capability, deviceIds?, state? | comparator?+value?, attribute?, not?, rawSettings?} (a NARROWER set than addRequiredExpression), rawSettings {field:value} with @N = the auto-assigned index (e.g. {'xVar@N':'myVar'}). addTriggers[] = bulk, updateRule once at the end. Per-field specs, the periodic shape, and extended condition shapes: pass {discover: true}, guide:true, or hub_get_tool_guide(section='set_rule_reference')."""
                     ],
                     addTriggers: [
                         type: "array",
@@ -276,7 +278,6 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
                     ],
                     guide: [type: "boolean", description: "Set true to return the full hub_set_rule capability reference inline (same content as hub_get_tool_guide(section='set_rule_reference')), without a separate call. Makes NO change to any rule."],
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller: {controllerId, buttonNumber, event}. Returns buttonRuleId with the Button trigger auto-seeded — then author actions via addAction on that appId. The controller must already have a button device.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
-                    opToken: [type: "string", description: "STRONGLY RECOMMENDED on every call: idempotency token you invent (8-128 chars, A-Za-z0-9._-). If the transport drops the response (~10s cloud-relay ceiling), re-issue this call with the SAME token to poll/replay the committed result instead of re-running the edit. Without a token, a dropped response cannot be recovered."],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
                 required: ["confirm"]
@@ -284,6 +285,7 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the update succeeded (absent in discover mode)"],
                     appId: [type: "integer", description: "App ID updated"],
                     ruleId: [type: ["integer", "null"], description: "create: the same value as appId (a hub_set_rule create is always a rule_machine rule), surfaced under the name the ruleId-taking downstream tools use (hub_call_rule, hub_set_rule_paused, hub_set_rule_private_boolean) so a create can be chained directly. Absent on edit."],
@@ -377,7 +379,7 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
         ],
         [
             name: "hub_get_rule_health",
-            description: """Inspect a rule's current state and return a structured health report.[[FLAT_TRIM]] Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule).[[/FLAT_TRIM]] Run after every mutation; hub_set_rule attaches it as `health` on every response. ok=false with unreadable=false means at least one issue was found (the issues list explains what); ok=false with unreadable=true means NEITHER source could be read (a transient fetch failure, or the app does not exist) -- a couldn't-check verdict, not evidence of breakage.""",
+            description: """Inspect a rule's current state and return a structured health report.[[FLAT_TRIM]] Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule).[[/FLAT_TRIM]] This STANDALONE read is the only one that adds the live eventSubscriptionCount/scheduledJobCount and the runtime `stopped` flag; the `health` block hub_set_rule / hub_set_native_app attach to their own responses is the structural verdict ONLY and carries neither, so call this tool when you need them. Run after every mutation. ok=false with unreadable=false means at least one issue was found (the issues list explains what); ok=false with unreadable=true means NEITHER source could be read (a transient fetch failure, or the app does not exist) -- a couldn't-check verdict, not evidence of breakage.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -403,6 +405,11 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
                     structuralIssues: [type: "array", description: "Structural issues; always present, empty when none", items: [type: "string"]],
                     validationErrors: [type: "array", description: "Graph Visual Rule validation errors; always present, empty when none", items: [type: "string"]],
                     predicate: [type: "object", description: "Compiled required-expression summary from ruleBuilderJson: {hasPredicate, predCapabs}. Present only when the compiled RM state carried the predicate fields (hasPredicate may be false)."],
+                    paused: [type: ["boolean", "null"], description: "Rule is paused (the label's (Paused) decoration); null when the label was unreadable."],
+                    disabled: [type: ["boolean", "null"], description: "Rule is disabled (red-X); null when the app config was unreadable."],
+                    stopped: [type: ["boolean", "null"], description: "True when the rule is runtime-STOPPED (hub_call_rule action='stop'). The AUTHORITATIVE stopped check -- hub_list_rules' cheap sources cannot see this state. Null only when BOTH sources are unreadable: the label carries no stop markup AND the runtime status could not be read."],
+                    eventSubscriptionCount: [type: ["integer", "null"], description: "Live event subscription count from statusJson; 0 when the rule has none live (schedule-only and STOPPED rules read 0), null only when the runtime status could not be read."],
+                    scheduledJobCount: [type: ["integer", "null"], description: "Live scheduled job count from statusJson; 0 when none live, null only when the runtime status could not be read."],
                     issues: [type: "array", description: "All issues; ok is false iff non-empty", items: [type: "string"]]
                 ],
                 required: ["ok"]
@@ -451,6 +458,7 @@ Requires Write master + confirm=true + recent hub backup.""",
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the delete succeeded"],
                     appId: [type: "integer", description: "App ID"],
                     mode: [type: "string", description: "delete or forcedelete"],
@@ -476,6 +484,7 @@ Requires Write master + confirm=true + recent hub backup.""",
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the disabled flag now matches the requested value (read-back verified)"],
                     appId: [type: "integer", description: "App ID"],
                     disabled: [type: "boolean", description: "The app's disabled flag after the call"],
@@ -657,7 +666,7 @@ def toolListRmRules(args) {
     def treeReadable = collected.treeReadable
     def liveApps = collected.liveApps
 
-    // Enrich each rule with its live enabled/paused/disabled status from the
+    // Enrich each rule with its live enabled/paused/stopped/disabled status from the
     // /hub2/appsList tree (issue #359). When the tree was unreadable the rules are
     // returned unfiltered and carry no node data, so status is "unknown".
     combined.values().each { entry -> _rmAnnotateRuleStatus(entry, treeReadable, liveApps) }
@@ -681,7 +690,7 @@ def toolListRmRules(args) {
         result.ghostNote = "RMUtils reported ${ghostIds.size()} rule id(s) that no longer exist in /hub2/appsList — these are post-delete RMUtils-cache ghosts (rule is already gone, the cache just hasn't caught up). Filtered out of the rules list."
     }
     if (!treeReadable && !rules.isEmpty()) {
-        result.statusNote = "/hub2/appsList was unreadable, so each rule's status is \"unknown\" (enabled/paused/disabled could not be determined). Retry; if it persists the hub's internal API may need Hub Security credentials."
+        result.statusNote = "/hub2/appsList was unreadable, so each rule's status is \"unknown\" (enabled/paused/stopped/disabled could not be determined). Retry; if it persists the hub's internal API may need Hub Security credentials."
     }
     // Classify the failures. A "missing class" error (RM not installed) is quiet whether
     // the other version succeeded OR both versions failed the same way (both-absent path).
@@ -797,11 +806,17 @@ private void registerRmRule(Map combined, def r, String version) {
 
 // Annotate an RM rule entry (in place) with disabled/paused booleans, a status summary,
 // and requiredExpressionFalse. WHY decoration-detection (full algorithm in the
-// builtin_app_tools guide): RMUtils exposes no paused boolean, so a paused rule is found
-// only by the "(Paused)" suffix its appsList name carries but its RMUtils label doesn't
-// (live-verified; diffing the stripped strings also protects a rule literally NAMED
-// "... (Paused)" — its label carries the same suffix, so the remainder is empty).
-// status is a precedence SUMMARY (disabled > paused > active); the booleans stay
+// builtin_app_tools guide): RMUtils exposes no paused or stopped boolean, so both are found
+// only by diffing the app's /hub2/appsList name against its RMUtils label. A stopped rule
+// reaches this function through EITHER of two channels and both are read here: the
+// "(Stopped)" suffix can sit on the RMUtils LABEL while the appsList name stays clean, or it
+// can sit in the appsList-name REMAINDER the "(Paused)" diff already computes. The diff is
+// what proves a suffix is a runtime decoration rather than the rule's real name — a rule
+// literally NAMED "... (Paused)"/"... (Stopped)" carries the suffix in BOTH strings, so
+// neither channel fires. The suffix is stripped from the returned label/name in the SAME
+// encoding the undecorated path returns (RMUtils entity-escaping preserved), never swapped
+// for the HTML-stripped/decoded form the comparison uses. status is a precedence SUMMARY
+// (disabled > stopped > paused > active); the booleans stay
 // independent — a rule paused first then disabled keeps its decoration, so
 // {disabled:true, paused:true, status:"disabled"} is truthful. "unknown" (booleans then
 // omitted, never asserted false) covers both a null liveApps (whole tree unreadable) and
@@ -829,14 +844,39 @@ private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps
     }
     def disabled = disabledRaw == true
     def paused = false
+    // The literal-name test is "appsList still starts with the WHOLE RMUtils label" -- the
+    // same evidence channel B uses to tell decoration from name. Testing only that appsList
+    // does not END with " (Stopped)" got case three wrong: a rule literally named
+    // "X (Stopped)" that is ALSO paused has appsList "X (Stopped) (Paused)", which ends
+    // with "(Paused)", so the suffix in its real name read as a runtime decoration. It was
+    // then reported status:"stopped" AND had "(Stopped)" stripped from both label and name,
+    // so a name-to-id lookup could no longer find the rule.
+    boolean stopped = (cleanRm.endsWith(" (Stopped)") && !cleanApps.startsWith(cleanRm))
     if (cleanApps != cleanRm && cleanApps.startsWith(cleanRm)) {
         def remainder = cleanApps.substring(cleanRm.length())
         if (remainder.contains("(Paused)")) paused = true
+        if (remainder.contains("(Stopped)")) stopped = true
         if (remainder.contains("(Required Expression false)")) entry.requiredExpressionFalse = true
+    }
+    if (stopped) {
+        entry.label = _rmStripTrailingDecoration(entry.label, "(Stopped)")
+        entry.name = _rmStripTrailingDecoration(entry.name, "(Stopped)")
     }
     entry.disabled = disabled
     entry.paused = paused
-    entry.status = disabled ? "disabled" : (paused ? "paused" : "active")
+    entry.status = disabled ? "disabled" : (stopped ? "stopped" : (paused ? "paused" : "active"))
+}
+
+// Drop a trailing runtime decoration from a label WITHOUT re-encoding it: the caller's
+// string keeps whatever escaping its source used, so a decorated and an undecorated rule
+// come back in the same encoding. Returns the input unchanged when the suffix is absent.
+private String _rmStripTrailingDecoration(Object raw, String suffix) {
+    def s = raw?.toString()
+    if (s == null) return null
+    // RMUtils labels can carry trailing spaces, so match past them.
+    def trimmed = s.replaceAll(/\s+$/, "")
+    if (!trimmed.endsWith(suffix)) return s
+    return trimmed.substring(0, trimmed.length() - suffix.length()).replaceAll(/\s+$/, "")
 }
 
 // Normalize a ruleId argument that may be a single id or a list of ids into a
@@ -4569,8 +4609,7 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
         // Relay-budget checkpoint: delete + add already consumed real time, and
         // each move is another wizard round-trip. Stop before the response gets
         // severed mid-flight -- a severed composite invites a naive retry that
-        // re-runs the destructive delete (the opToken replay protects a SAME-
-        // token retry, but not a fresh call).
+        // re-runs the destructive delete.
         if (_timeBudgetExceeded(reqT0)) {
             budgetPaused = true
             break
@@ -7723,6 +7762,8 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     // caller checks success for "did anything happen" then partial for "is more
     // work needed" -- avoiding the false success=false when the row exists but
     // is incomplete.
+    def uniqueApplied = []
+    applied.each { key -> if (!uniqueApplied.contains(key)) uniqueApplied << key }
     return [
         success: !err && !applied.isEmpty(),
         partial: partial,
@@ -7732,7 +7773,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         action: action,
         actType: actType,
         actSubType: actSubType,
-        settingsApplied: applied,
+        settingsApplied: uniqueApplied,
         settingsSkipped: skipped,
         configPageError: err,
         repairHints: repairHints,
@@ -8889,7 +8930,7 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
             steps: stepResults,
             health: finalHealth,
             resume: [
-                note: "Time budget reached; all completed steps are committed. Re-issue walkStep operation='drive' with steps = stepsRemaining (page inheritance: set page = this result's page) to continue. Attach the same opToken ONLY if the original call carried none; otherwise use a fresh token."
+                note: "Time budget reached; all completed steps are committed. Re-issue walkStep operation='drive' with steps = stepsRemaining (page inheritance: set page = this result's page) to continue."
             ]
         ]
     }
@@ -9035,6 +9076,9 @@ Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
         def vrbFallback = null
         try { vrbFallback = _vrbDetect(ruleId) } catch (Exception ignored) { }
         if (vrbFallback == null) {
+            if (e.message?.contains("404")) {
+                throw new IllegalArgumentException("No rule/app with id ${ruleId} exists on this hub (configure/json returned 404). Nothing was changed. Use hub_list_rules for valid ids. See hub_get_tool_guide(section='set_rule_reference').")
+            }
             throw new IllegalArgumentException("Cannot back up rule ${ruleId}: configure/json failed -- ${e.message}")
         }
         config = null
@@ -9207,16 +9251,15 @@ def _setRuleOperations() { (['create'] + _setRuleCreateHonored() + _setRuleEditO
 // in getToolDefinitions()'s useGateways==false branch.
 def _setRuleFlatTool() {
     return [
-        description: """Create or edit a Hubitat Rule Machine rule (RM 5.1) — one self-describing tool. Set `operation` and call WITHOUT confirm to get that operation's argument schema back (no change is made); then call again with `args` filled and confirm:true to apply it (args is opaque — probe it first). operation='create' makes a new rule (omit appId; put name + any bundled triggers/actions/required-expression in args); every other operation EDITs an existing rule (provide appId). RM-only — for non-RM classic apps (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule) use hub_set_native_app. Any write needs the Write master + confirm=true + a recent backup. Keywords: create edit rule machine RM trigger action condition required expression local variable walkStep authoring automation.""",
+        description: """Create or edit a Hubitat Rule Machine rule (RM 5.1) — one self-describing tool. Set `operation` and call WITHOUT confirm to get that operation's argument schema back (no change is made); then call again with `args` filled and confirm:true to apply it (args is opaque — probe it first). operation='create' makes a new rule (omit appId; put name + any bundled triggers/actions/required-expression in args); every other operation EDITs an existing rule (provide appId). RM-only — for non-RM classic apps (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule) use hub_set_native_app. Any write needs the Write master + confirm=true + a recent backup. Eligible slow writes use automatic MCP 2026-07-28 request-to-request continuation. Keywords: create edit rule machine RM trigger action condition required expression local variable walkStep authoring automation.""",
         inputSchema: [
             type: "object",
             properties: [
-                operation: [type: "string", enum: _setRuleOperations(), description: "What to do. Call WITHOUT confirm to get this operation's argument schema back (returned as argsSchema + usage; no mutation), then call again with args filled + confirm:true. 'create' = new rule (omit appId; name + bundle in args) — on a create, partial bakes are reported via partial/repairHints; full create+repair protocol: hub_get_tool_guide(section='set_rule_create_reference'). All others edit an existing rule (need appId) except guide/discover/buttonRule, which omit it. 'guide' returns the full capability reference; 'discover' returns the live per-capability field schema (args={kind:'trigger'|'action'})."],
+                operation: [type: "string", enum: _setRuleOperations(), description: "What to do. Call WITHOUT confirm to get this operation's argument schema back (argsSchema + usage; no mutation), then call again with args + confirm:true. 'create' = new rule (omit appId); all others edit an existing rule (need appId) except guide/discover/buttonRule, which omit it. On a create, partial bakes are reported via partial/repairHints; full create+repair protocol: hub_get_tool_guide(section='set_rule_create_reference'). 'guide' returns the full capability reference; 'discover' returns the live per-capability field schema (args={kind:'trigger'|'action'})."],
                 appId: [type: "integer", description: "RM rule ID. OMIT for create/guide/discover/buttonRule; PROVIDE for every other (edit) operation (appId is the create-vs-edit switch)."],
                 args: [type: ["object", "array", "boolean"], description: "Arguments for the chosen operation — the exact shape comes from the schema probe (call without confirm first). Most ops take an object; the list ops (addTriggers/addActions/replaceActions/patches) take a bare array and clearActions takes true. For 'create' args holds name + optional addTriggers/addActions/addRequiredExpression. Pass the bare operation payload (e.g. {capability:'switch',...}), not wrapped under the operation name."],
                 confirm: [type: "boolean", description: "Set true to APPLY the operation (any write). Omit (or false) to get the schema back instead (a no-mutation probe). Writes also need the Write master + a recent backup."]
-            ],
-            required: ["operation"]
+            ]
         ]
     ]
 }
@@ -13103,7 +13146,7 @@ private Map _bulkPauseResult(Integer appId, Map backup, List triggerResults, Lis
         addActionsRemaining: addActionsRemaining.collect { _stripInternalClock(it) },
         repairHints: repairHints,
         resume: [
-            note: "Time budget reached; committed items are written at the settings level (the trailing updateRule is deferred to the resume call). Re-issue the edit (hub_set_rule or hub_set_native_app) with addActions/addTriggers = the remaining items to continue. Attach the same opToken ONLY if the original call carried none; otherwise use a fresh token."
+            note: "Time budget reached; committed items are written at the settings level (the trailing updateRule is deferred to the resume call). Re-issue the edit (hub_set_rule or hub_set_native_app) with addActions/addTriggers = the remaining items to continue."
         ]
     ]
 }
@@ -13126,7 +13169,7 @@ private Map _patchesPauseResult(Integer appId, Map backup, List patchResults, Li
         patchResults: patchResults,
         patchesRemaining: patchesRemaining,
         resume: [
-            note: "Time budget reached; completed patch ops are committed at the settings level but NOT yet baked into the running rule. Re-issue the edit (hub_set_rule or hub_set_native_app) with patches = patchesRemaining to continue; the rule finalize/updateRule runs when the remaining patches complete. Attach the same opToken ONLY if the original call carried none; otherwise use a fresh token."
+            note: "Time budget reached; completed patch ops are committed at the settings level but NOT yet baked into the running rule. Re-issue the edit (hub_set_rule or hub_set_native_app) with patches = patchesRemaining to continue; the rule finalize/updateRule runs when the remaining patches complete."
         ]
     ]
 }
@@ -13164,14 +13207,6 @@ def _applyNativeAppEdit(args) {
     // keys for known device-list field-name patterns and validate any
     // List values against the hub. Same RM 5.1 `{<bogusId>: null}` silent-
     // storage bug applies here as in the structured paths.
-    if (settingsMap) {
-        def devKeyPattern = ~/^([tr]Dev[_-]?\d+|switch[A-Z]\w*|onOffSwitch\.\d+|lockLockUnlock\.\d+|shadeOpenClose\.\d+|fanRL\.\d+|tDev-\d+|deviceList|dimmerLevel\.\d+|ButtontDev_?\d+|pushButton\d+)$/
-        settingsMap.each { k, v ->
-            if (v instanceof List && k?.toString()?.matches(devKeyPattern)) {
-                _rmValidateDeviceIdsExist("settings.${k}", v)
-            }
-        }
-    }
     def button = args?.button?.toString()?.trim() ?: null
     def addTriggerSpec = args?.addTrigger instanceof Map ? args.addTrigger : null
     def addActionSpec = args?.addAction instanceof Map ? args.addAction : null
@@ -13199,6 +13234,67 @@ def _applyNativeAppEdit(args) {
     def removeTriggerSpec = args?.removeTrigger instanceof Map ? args.removeTrigger : null
     def modifyTriggerSpec = args?.modifyTrigger instanceof Map ? args.modifyTrigger : null
     def modifyActionSpec = args?.modifyAction instanceof Map ? args.modifyAction : null
+
+    // EDIT dispatch is intentionally one-operation-at-a-time except for the documented
+    // plural addTriggers+addActions bulk pair. Reject any other cross-family combination
+    // BEFORE the backup snapshot or wizard write. Two distinct hazards, one refusal: for
+    // most pairs the dispatcher returns from the first matching branch and silently drops
+    // the rest, while removeAction/clearActions/replaceActions/moveAction share ONE branch
+    // and all execute -- in a fixed internal order the caller never chose.
+    def triggerOpNames = []
+    if (addTriggerSpec) triggerOpNames << "addTrigger"
+    if (addTriggersList) triggerOpNames << "addTriggers"
+    def actionOpNames = []
+    if (addActionSpec) actionOpNames << "addAction"
+    if (addActionsList) actionOpNames << "addActions"
+    def rawOpNames = []
+    if (settingsMap) rawOpNames << "settings"
+    if (button) rawOpNames << "button"
+    if (rawOpNames) {
+        if (args?.pageName != null) rawOpNames << "pageName"
+        if (args?.stateAttribute != null) rawOpNames << "stateAttribute"
+    }
+    def editOpGroups = [
+        triggerOpNames,
+        actionOpNames,
+        addRequiredExpressionSpec ? ["addRequiredExpression"] : [],
+        replaceRequiredExpressionSpec ? ["replaceRequiredExpression"] : [],
+        removeActionSpec ? ["removeAction"] : [],
+        clearActionsFlag ? ["clearActions"] : [],
+        // replaceActions:[] is normalized to clearActionsFlag above (and replaceActionsList
+        // to null), so the null test ALONE already prevents a double count. Also gating on
+        // !clearActionsFlag did nothing there and one harmful thing elsewhere: an explicit
+        // clearActions:true alongside a NON-empty replaceActions collapsed to a single
+        // group, so the multi-op guard stayed silent and both the clear and the replace's
+        // re-add ran -- a two-family call the contract says must be refused.
+        (replaceActionsList != null) ? ["replaceActions"] : [],
+        moveActionSpec ? ["moveAction"] : [],
+        removeTriggerSpec ? ["removeTrigger"] : [],
+        modifyTriggerSpec ? ["modifyTrigger"] : [],
+        modifyActionSpec ? ["modifyAction"] : [],
+        addLocalVariableSpec ? ["addLocalVariable"] : [],
+        removeLocalVariableSpec ? ["removeLocalVariable"] : [],
+        patchesList ? ["patches"] : [],
+        walkStepSpec ? ["walkStep"] : [],
+        rawOpNames
+    ].findAll { !it.isEmpty() }
+    boolean allowedBulkPair = (editOpGroups.size() == 2 &&
+        triggerOpNames == ["addTriggers"] && actionOpNames == ["addActions"])
+    // The singular+plural pair of one family collapses into a single group, so the
+    // group count alone would miss addTrigger+addTriggers (and addAction+addActions).
+    if ((editOpGroups.size() >= 2 && !allowedBulkPair) || triggerOpNames.size() > 1 || actionOpNames.size() > 1) {
+        def opNames = editOpGroups.collectMany { it }
+        throw new IllegalArgumentException("hub_set_rule / hub_set_native_app received multiple operations in one call (${opNames.join(', ')}). Multi-op calls are refused: depending on the combination the extras would either be silently dropped or run in a fixed internal order you did not choose. Use patches:[...] for an ordered atomic edit, or issue one call per operation. See hub_get_tool_guide(section='set_rule_reference').")
+    }
+
+    if (settingsMap) {
+        def devKeyPattern = ~/^([tr]Dev[_-]?\d+|switch[A-Z]\w*|onOffSwitch\.\d+|lockLockUnlock\.\d+|shadeOpenClose\.\d+|fanRL\.\d+|tDev-\d+|deviceList|dimmerLevel\.\d+|ButtontDev_?\d+|pushButton\d+)$/
+        settingsMap.each { k, v ->
+            if (v instanceof List && k?.toString()?.matches(devKeyPattern)) {
+                _rmValidateDeviceIdsExist("settings.${k}", v)
+            }
+        }
+    }
     if (!settingsMap && !button && !addTriggerSpec && !addActionSpec && !addActionsList && !addTriggersList
             && !addRequiredExpressionSpec && !replaceRequiredExpressionSpec && !addLocalVariableSpec && !removeLocalVariableSpec && !patchesList && !removeActionSpec && !clearActionsFlag && replaceActionsList == null && !moveActionSpec && !walkStepSpec && !removeTriggerSpec && !modifyTriggerSpec && !modifyActionSpec) {
         throw new IllegalArgumentException("Editing an app requires one of: 'settings' (Map) or 'button' (String) for any classic app; or, for Rule Machine rules via hub_set_rule, a structured shortcut -- 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), 'addActions' (List), 'addRequiredExpression' (Map), 'replaceRequiredExpression' (Map), 'addLocalVariable' (Map), 'removeLocalVariable' ({name}), 'patches' (List of sub-specs), 'removeAction' ({index:N}), 'clearActions' (true), 'replaceActions' (List), 'moveAction' ({index:N, direction:up|down}), 'removeTrigger' ({index:N}), 'modifyTrigger' ({index:N, mods:{state:...}}), 'modifyAction' ({index:N, mods:{ruleIds:[...]}}), or 'walkStep' ({page, operation, write?, click?, navigate?, validateEnum?}) -- none provided.")
@@ -14946,7 +15042,54 @@ def toolCheckRuleHealth(args) {
     if (!(source in ["auto", "ruleBuilderJson", "configPage"])) {
         throw new IllegalArgumentException("source must be one of: auto (default), ruleBuilderJson, configPage")
     }
-    return _rmCheckRuleHealth(appId, source)
+    def result = _rmCheckRuleHealth(appId, source)
+    def status = null
+    try {
+        status = _rmFetchStatusJson(appId)
+        // A readable statusJson with an ABSENT section means zero live entries -- a
+        // schedule-only rule carries no eventSubscriptions list at all (and a stopped
+        // rule drops both). null is reserved for the fetch itself failing.
+        result.eventSubscriptionCount = (status?.eventSubscriptions instanceof List) ? status.eventSubscriptions.size() : 0
+        result.scheduledJobCount = (status?.scheduledJobs instanceof List) ? status.scheduledJobs.size() : 0
+    } catch (Exception statusErr) {
+        result.eventSubscriptionCount = null
+        result.scheduledJobCount = null
+        // Half-checked marker, same contract as the two source reads: null counts with no
+        // recorded reason read as "this rule has none", which is a different fact.
+        def checkErrors = (result.checkErrors instanceof List) ? result.checkErrors : []
+        checkErrors << "statusJson: ${statusErr.message ?: statusErr.toString()}".toString()
+        result.checkErrors = checkErrors
+    }
+    // stopped, by precedence: (1) a "(Stopped)" inside real markup is a hub-rendered
+    // runtime decoration beyond doubt (the hub entity-escapes a user-typed '<'), and a
+    // stopped rule's statusJson is often UNREADABLE, so markup decides first; (2) a
+    // readable statusJson answers from its own state.stopped -- the SAME field the
+    // hub_call_rule stop/start toggle reads for its no-op detection (absent means
+    // never-stopped, i.e. false); (3) neither available -> null, never a guess -- a
+    // plain unmarked suffix reads the same as a rule literally NAMED "... (Stopped)".
+    // The trailing "(Paused)" is the SAME decoration hub_list_rules reads for its paused
+    // flag, so report it here too rather than making a caller fetch every rule on the hub to
+    // learn one rule's pause state. Null when the label was unreadable -- never a guess.
+    def rawLabel = result.label?.toString()
+    boolean markedUp = rawLabel != null && (rawLabel =~ /<[^>]+>\s*\(Stopped\)\s*(?:<\/[^>]+>\s*)*$/).find()
+    Boolean stoppedVerdict
+    if (markedUp) {
+        stoppedVerdict = true
+    } else if (status != null) {
+        stoppedVerdict = _readAppStateBoolean(status, "stopped", false)
+    } else {
+        stoppedVerdict = null
+    }
+    result.stopped = stoppedVerdict
+    if (rawLabel != null) {
+        def plain = rawLabel.replaceAll(/<[^>]+>/, "").trim()
+        result.paused = (plain =~ /\(Paused\)\s*$/).find()
+        def tidy = plain.replaceAll(/\s*\(Paused\)\s*$/, "").trim()
+        result.label = (stoppedVerdict == true) ? tidy.replaceAll(/\s*\(Stopped\)\s*$/, "").trim() : tidy
+    } else {
+        result.paused = null
+    }
+    return result
 }
 
 // hub_list_rule_local_variables -- read a rule's local-variable namespace

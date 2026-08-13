@@ -1288,7 +1288,8 @@ def toolUpdateItemCode(String type, String idParam, args) {
 }
 
 // Caller must have already invoked requireDestructiveConfirm -- gate fires once per call, not per bulk item.
-private Map toolUpdateItemCodeInner(String type, String idParam, args) {
+// packageWorkerContext is supplied only by the scheduled package worker; public tool args never reach it.
+private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packageWorkerContext = null) {
     def itemId = args[idParam]
     if (!itemId) throw new IllegalArgumentException("${idParam} is required")
 
@@ -1508,6 +1509,11 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
                     sourceLength: sourceCode.length(),
                     at: now()
                 ]
+                def packageCorrelation = _validatedPackageWorkerContext(packageWorkerContext)
+                if (packageCorrelation != null) {
+                    stash.requestId = packageCorrelation.requestId
+                    stash.packageRef = packageCorrelation.packageRef
+                }
                 // A dropped (empty) response is the expected self-update signature, but the success
                 // is inferred, not hub-confirmed -- mark it so consumers can choose to re-verify.
                 if (success && parsed == null) stash.assumed = true
@@ -1610,7 +1616,7 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
         mcpLogError("hub-admin", "${type} update failed", e)
         if (isSelfUpdate) {
             try {
-                atomicState.lastSelfDeploy = [
+                def stash = [
                     success: false,
                     error: "${type.capitalize()} update failed: ${e.message}",
                     sourceMode: sourceMode,
@@ -1618,6 +1624,12 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
                     sourceLength: (sourceCode != null ? sourceCode.length() : 0),
                     at: now()
                 ]
+                def packageCorrelation = _validatedPackageWorkerContext(packageWorkerContext)
+                if (packageCorrelation != null) {
+                    stash.requestId = packageCorrelation.requestId
+                    stash.packageRef = packageCorrelation.packageRef
+                }
+                atomicState.lastSelfDeploy = stash
             } catch (Exception stashErr) {
                 mcpLog("error", "hub-admin", "lastSelfDeploy stash write failed -- self-deploy outcome record lost: ${stashErr}")
             }
@@ -1630,12 +1642,36 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args) {
     }
 }
 
+// Validate the scheduled worker's private correlation against the live marker at
+// the moment lastSelfDeploy is written. A stale worker or mismatched context is
+// treated as an ordinary direct self-update and cannot bind another deploy.
+private Map _validatedPackageWorkerContext(packageWorkerContext) {
+    if (!(packageWorkerContext instanceof Map) || packageWorkerContext.requestId == null ||
+            packageWorkerContext.packageRef == null) return null
+    synchronized (WRITE_RESERVATION_LOCK) {
+        def marker = atomicState.packageDeployInFlight
+        if (marker instanceof Map && marker.requestId != null && marker.ref != null &&
+                marker.requestId.toString() == packageWorkerContext.requestId.toString() &&
+                marker.ref.toString() == packageWorkerContext.packageRef.toString()) {
+            return [requestId: marker.requestId.toString(), packageRef: marker.ref.toString()]
+        }
+    }
+    return null
+}
+
 def toolUpdateAppCode(args) {
+    return _toolUpdateAppCode(args, null)
+}
+
+// Worker-only overload: package identity is an out-of-band execution context,
+// never a field accepted from hub_update_app's public argument map.
+def _toolUpdateAppCode(args, Map packageWorkerContext) {
     if (args.updates != null) {
         throw new IllegalArgumentException("Bulk mode ('updates' array) is not supported for hub_update_app. Apps do not cluster the way drivers do; update each app individually.")
     }
     if (args.oauth == null) {
-        return toolUpdateItemCode("app", "appId", args)
+        requireDestructiveConfirm(args.confirm)
+        return toolUpdateItemCodeInner("app", "appId", args, packageWorkerContext)
     }
 
     // OAuth fold: enable/configure OAuth on the app CODE definition (apps only), optionally alongside
@@ -1647,7 +1683,7 @@ def toolUpdateAppCode(args) {
     def hasSourceMode = [args.resave, args.sourceFile, args.source, args.importUrl].count { it } > 0
     def result
     if (hasSourceMode) {
-        result = toolUpdateItemCodeInner("app", "appId", args)   // gate already fired above
+        result = toolUpdateItemCodeInner("app", "appId", args, packageWorkerContext)   // gate already fired above
         if (result?.success != true) return result               // source update failed -- leave OAuth untouched
     } else {
         result = [success: true, appId: args.appId.toString(), message: "OAuth settings updated (no source change)."]
@@ -2750,7 +2786,7 @@ After the code installs, create a running instance with a SECOND call: hub_creat
 
 Verifies the install compiled -- returns success=false with the error if it didn't. Requires Write master + confirm + backup <24h. Returns the new app ID.
 [[FLAT_TRIM]]
-A transport drop (relay ceiling / client timeout) can lose the response while the hub still commits this write; pass opToken, and on a drop re-issue the call with the SAME opToken to poll/replay the committed result instead of re-running it -- see hub_get_tool_guide(section='slow_ops').
+A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
 [[/FLAT_TRIM]]
 """,
             inputSchema: [
@@ -2761,13 +2797,13 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
                     codeAppId: [type: "integer", description: "Second-step mode: instantiate already-installed code (codeAppId from a prior call) and commit the install; not combinable with source/sourceFile/importUrl."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If the transport drops the response, re-issue this call with the SAME token (the token alone is enough) to poll/replay the committed result instead of re-running the operation. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["confirm"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the install/instantiation succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     appId: [description: "New app code ID (code-install mode)"],
@@ -2796,7 +2832,7 @@ Supply the code via exactly one of source / sourceFile / importUrl (mutually exc
 
 Verifies the install compiled: returns success=false with the error if the hub accepted the request but the driver failed to compile. Requires Write master + confirm + backup <24h. Returns new driver ID(s).
 [[FLAT_TRIM]]
-A transport drop (relay ceiling / client timeout) can lose the response while the hub still commits this write; pass opToken, and on a drop re-issue the call with the SAME opToken to poll/replay the committed result instead of re-running it -- see hub_get_tool_guide(section='slow_ops').
+A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
 [[/FLAT_TRIM]]
 """,
             inputSchema: [
@@ -2818,13 +2854,13 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
                         ]
                     ],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If the transport drops the response, re-issue this call with the SAME token (the token alone is enough) to poll/replay the committed result instead of re-running the operation. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["confirm"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the install (or all bulk installs) succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     driverId: [description: "New driver code ID (single-driver mode)"],
@@ -2858,7 +2894,7 @@ Auto-backs up before modifying. Requires Write master + confirm + backup <24h.[[
 
 Self-update guard: refuses to overwrite the MCP server's own app source or OAuth unless Developer Mode is on.[[/FLAT_TRIM]]
 [[FLAT_TRIM]]
-A transport drop (relay ceiling / client timeout) can lose the response while the hub still commits this write; pass opToken, and on a drop re-issue the call with the SAME opToken to poll/replay the committed result instead of re-running it -- see hub_get_tool_guide(section='slow_ops').
+A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
 [[/FLAT_TRIM]]
 """,
             inputSchema: [
@@ -2873,13 +2909,13 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
                     triggerUpdated: [type: "integer", description: "OPTIONAL: running instance appId to fire updated() on after the code save, so its subscriptions/schedules/atomicState re-initialize against the new code. Mechanically this submits the app's mainPage 'Done' form, which RE-SENDS EVERY input on that page -- the tool rebuilds them from the instance's live settings so nothing is blanked, and REFUSES to submit (updatedFired:false, partial:true) if it cannot read them, rather than risk clearing device selections. On failure the code save still stands: success stays true with partial:true, updatedFired:false and repairHints. Omit it to match what the hub's own editor Save does (no lifecycle call)."],
                     oauth: [type: "object", description: "OPTIONAL: enable/configure OAuth on this app (apps only); e.g. {enabled:true}. Full shape: hub_get_tool_guide(section='hub_admin_write')."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If the transport drops the response, re-issue this call with the SAME token (the token alone is enough) to poll/replay the committed result instead of re-running the operation. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["appId", "confirm"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the update succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     appId: [description: "App ID updated"],
@@ -2908,7 +2944,7 @@ Supply the new code via exactly one of source / sourceFile / importUrl, or resav
 
 Auto-backs up before modifying. Requires Write master + confirm + backup <24h.
 [[FLAT_TRIM]]
-A transport drop (relay ceiling / client timeout) can lose the response while the hub still commits this write; pass opToken, and on a drop re-issue the call with the SAME opToken to poll/replay the committed result instead of re-running it -- see hub_get_tool_guide(section='slow_ops').
+A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
 [[/FLAT_TRIM]]
 """,
             inputSchema: [
@@ -2937,13 +2973,13 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
                         ]
                     ],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If the transport drops the response, re-issue this call with the SAME token (the token alone is enough) to poll/replay the committed result instead of re-running the operation. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["confirm"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the update (or all bulk updates) succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     driverId: [description: "Driver ID updated (single-driver mode)"],
@@ -2991,6 +3027,7 @@ Tell the user the item name/ID, warn it's permanent, get confirmation. Requires 
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the deletion succeeded"],
                     message: [type: "string", description: "Human-readable result, including backup status"],
                     appId: [description: "Deleted app ID (type='app')"],
@@ -3013,7 +3050,7 @@ Provide exactly one of source / sourceFile / importUrl (see each param).
 
 Source must include a library() block with name/namespace/author/description (all required). The hub does NOT compile-check libraries at install -- syntax errors surface only when an app/driver #includes it. Requires Write master + confirm + backup <24h. Returns new libraryId.
 [[FLAT_TRIM]]
-A transport drop (relay ceiling / client timeout) can lose the response while the hub still commits this write; pass opToken, and on a drop re-issue the call with the SAME opToken to poll/replay the committed result instead of re-running it -- see hub_get_tool_guide(section='slow_ops').
+A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
 [[/FLAT_TRIM]]
 """,
             inputSchema: [
@@ -3023,13 +3060,13 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
                     sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If the transport drops the response, re-issue this call with the SAME token (the token alone is enough) to poll/replay the committed result instead of re-running the operation. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["confirm"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the library installed"],
                     message: [type: "string", description: "Human-readable result"],
                     libraryId: [description: "New library ID"],
@@ -3052,7 +3089,7 @@ Supply the new code via exactly one of source / sourceFile / importUrl, or resav
 
 Auto-backs up before modifying. Requires Write master + confirm + backup <24h.
 [[FLAT_TRIM]]
-A transport drop (relay ceiling / client timeout) can lose the response while the hub still commits this write; pass opToken, and on a drop re-issue the call with the SAME opToken to poll/replay the committed result instead of re-running it -- see hub_get_tool_guide(section='slow_ops').
+A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
 [[/FLAT_TRIM]]
 """,
             inputSchema: [
@@ -3064,13 +3101,13 @@ A transport drop (relay ceiling / client timeout) can lose the response while th
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
                     resave: [type: "boolean", description: "Re-save the current source without changes. Runs entirely on-hub."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If the transport drops the response, re-issue this call with the SAME token (the token alone is enough) to poll/replay the committed result instead of re-running the operation. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
                 ],
                 required: ["libraryId", "confirm"]
             ],
             outputSchema: [
                 type: "object",
                 properties: [
+                    opToken: [type: "string", description: "Server-assigned auto-token (present when the call carried no client opToken); poll token-only to replay this result."],
                     success: [type: "boolean", description: "Whether the update succeeded"],
                     message: [type: "string", description: "Human-readable result"],
                     libraryId: [description: "Library ID updated"],

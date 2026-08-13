@@ -1,6 +1,10 @@
 package server
 
 import spock.lang.Shared
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import support.ToolSpecBase
 
 /**
@@ -92,6 +96,13 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         nextManifestStatus = 200
         nextManifestBody = MANIFEST_FULL
         nextManifestThrow = null
+        // Package orchestration now uses a worker-only overload so public args
+        // cannot carry correlation identity. Preserve this spec's per-feature
+        // public app-update stubs while the code-update specs exercise the real
+        // overload and correlation validation.
+        script.metaClass._toolUpdateAppCode = { a, Map packageWorkerContext ->
+            script.toolUpdateAppCode(a)
+        }
     }
 
     private void enableDev() {
@@ -110,6 +121,15 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
                 [id: '999', name: 'Some Other App', namespace: 'other']
             ])
         }
+    }
+
+    // The public boundary is intentionally asynchronous for real writes. Most of
+    // this spec exercises the deterministic repair body (ordering, fail-closed
+    // behavior, and artifact selection); focused features below exercise the
+    // scheduling boundary and worker lifecycle themselves.
+    private Map runDeployBody(Map args) {
+        String ref = args.ref.toString().trim()
+        return script._updatePackageBody(args, ref, false) as Map
     }
 
     // -------- Developer-Mode gate --------
@@ -255,7 +275,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         def fullSha = 'a' * 40   // 40 hex chars -> keyPath shas/<sha>
 
         when:
-        def result = script.toolUpdatePackage([ref: fullSha, confirm: true])
+        def result = runDeployBody([ref: fullSha, confirm: true])
 
         then: 'the SHA is NOT rejected -- the bundle resolves to its per-SHA artifact, not manifest-current'
         result.success == true
@@ -292,7 +312,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
 
         when:
-        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+        def result = runDeployBody([ref: 'main', confirm: true])
 
         then:
         result.success == false
@@ -311,7 +331,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
 
         when:
-        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+        def result = runDeployBody([ref: 'main', confirm: true])
 
         then:
         result.success == false
@@ -330,7 +350,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
 
         when:
-        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+        def result = runDeployBody([ref: 'main', confirm: true])
 
         then:
         result.success == false
@@ -349,7 +369,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
 
         when:
-        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+        def result = runDeployBody([ref: 'main', confirm: true])
 
         then:
         result.success == false
@@ -369,7 +389,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
 
         when:
-        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+        def result = runDeployBody([ref: 'main', confirm: true])
 
         then:
         result.success == false
@@ -394,7 +414,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
 
         when:
-        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+        def result = runDeployBody([ref: 'main', confirm: true])
 
         then:
         result.success == false
@@ -414,7 +434,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
 
         when:
-        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+        def result = runDeployBody([ref: 'main', confirm: true])
 
         then:
         result.success == false
@@ -435,7 +455,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         script.metaClass.toolUpdateAppCode = { a -> calls << "app:${a.appId}".toString(); [success: true, appId: a.appId] }
 
         when:
-        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+        def result = runDeployBody([ref: 'main', confirm: true])
 
         then: 'bundle -> child (230) -> self (228) last'
         calls == ['bundle', 'app:230', 'app:228']
@@ -477,7 +497,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         script.metaClass.toolUpdateAppCode = { a -> calls << "app:${a.appId}".toString(); [success: true, appId: a.appId] }
 
         when:
-        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+        def result = runDeployBody([ref: 'main', confirm: true])
 
         then: 'bundle -> child (230) -> extra (231) -> self (228) LAST'
         calls == ['bundle', 'app:230', 'app:231', 'app:228']
@@ -498,7 +518,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         script.metaClass.toolUpdateAppCode = { a -> calls << "app:${a.appId}".toString(); [success: true, appId: a.appId] }
 
         when:
-        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+        def result = runDeployBody([ref: 'main', confirm: true])
 
         then:
         calls == ['app:230', 'app:228']
@@ -518,7 +538,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
 
         when:
-        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+        def result = runDeployBody([ref: 'main', confirm: true])
 
         then: 'no app leg is ever called'
         calls == ['bundle']
@@ -537,7 +557,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
 
         when:
-        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+        def result = runDeployBody([ref: 'main', confirm: true])
 
         then:
         calls == ['bundle']
@@ -558,7 +578,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+        def result = runDeployBody([ref: 'main', confirm: true])
 
         then: 'child (230) attempted, self (228) NEVER reached'
         calls == ['bundle', 'app:230']
@@ -578,7 +598,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         script.metaClass.toolUpdateAppCode = { a -> (a.appId == '228') ? [success: false, error: 'self compile error'] : [success: true, appId: a.appId] }
 
         when:
-        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+        def result = runDeployBody([ref: 'main', confirm: true])
 
         then:
         result.success == false
@@ -602,7 +622,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+        def result = runDeployBody([ref: 'main', confirm: true])
 
         then: 'caught and reported, not thrown'
         noExceptionThrown()
@@ -611,8 +631,8 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         result.abortReason == 'app_update_threw'
         result.error.contains('Verify with hub_get_source')
 
-        and: 'the in-flight guard is released on this partial path too (the finally clears every return)'
-        atomicStateMap.packageDeployInFlight == null
+        and: 'the deterministic body reports the lost self-update response as partial'
+        result.apps.find { it.isSelf } == null || result.apps.find { it.isSelf }.success != true
     }
 
     // -------- issue #351: in-flight deploy guard --------
@@ -642,8 +662,8 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         result.inFlight.ref == 'feat/other'
         result.inFlight.elapsedMs == 60000L
 
-        and: 'recovery guidance points at polling, never re-running'
-        result.note.contains('opToken')
+        and: 'recovery guidance points at the durable completion record, never re-running'
+        !result.note.contains('opToken')
         result.note.contains('lastSelfDeploy')
 
         and: 'nothing was written'
@@ -675,43 +695,131 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         atomicStateMap.packageDeployInFlight == [ref: 'feat/other', startedAt: GUARD_NOW - 60000L]
     }
 
-    def "the guard stands down when lastSelfDeploy postdates it -- the deploy finished, only its response was lost"() {
+    def "an unrelated newer lastSelfDeploy does not stand the package guard down"() {
         given:
         enableDev()
         registerAppTypes()
         def calls = []
         script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true, appId: a.appId] }
-        atomicStateMap.packageDeployInFlight = [ref: 'feat/other', startedAt: GUARD_NOW - 120000L]
-        atomicStateMap.lastSelfDeploy = [success: true, at: GUARD_NOW - 10000L]
+        atomicStateMap.packageDeployInFlight = [requestId: 'pkg-live', ref: 'feat/other', startedAt: GUARD_NOW - 120000L]
+        atomicStateMap.lastSelfDeploy = [success: true, sourceMode: 'importUrl', at: GUARD_NOW - 10000L]
 
         when:
         def result = script.toolUpdatePackage([ref: 'main', confirm: true])
 
         then:
-        result.success == true
-        calls.size() == 3   // bundle + child app + self app
-
-        and: 'the fresh deploy owns and then clears the marker'
-        atomicStateMap.packageDeployInFlight == null
+        result.success == false
+        result.status == 'duplicate_in_flight'
+        calls == []
+        atomicStateMap.packageDeployInFlight.requestId == 'pkg-live'
+        runInCalls.isEmpty()
     }
 
-    def "the guard expires after its TTL (a wedged marker cannot block deploys forever)"() {
+    def "two compiled app instances admit one package leaf through the complete dispatcher"() {
+        given:
+        enableDev()
+        settingsMap.enableWrite = true
+        settingsMap.maxConcurrentWrites = 1
+        def peer = newCompiledScriptInstance()
+        def entered = new CountDownLatch(1)
+        def release = new CountDownLatch(1)
+        def leafEntries = new AtomicInteger(0)
+        // runIn is reached only after the real package leaf has passed its
+        // Developer Mode, confirm/backup, and package-marker admission gates.
+        // Count that concrete boundary; an internal compiled self-call such as
+        // requireDestructiveConfirm cannot be observed through metaClass.
+        RUN_IN_OVERRIDE.set({ List call ->
+            leafEntries.incrementAndGet()
+            runInCalls << call
+            entered.countDown()
+            release.await(5, TimeUnit.SECONDS)
+        })
+        def winner = new AtomicReference()
+        def failure = new AtomicReference()
+        Thread first = Thread.start {
+            try {
+                Map response = script.handleToolsCall([jsonrpc: '2.0', id: 7401,
+                    method: 'tools/call', params: [name: 'hub_update_package',
+                        arguments: [ref: 'main', confirm: true]]]) as Map
+                winner.set(mcpDriver.decodeToolCallResponse(response))
+            } catch (Throwable t) {
+                failure.set(t)
+            }
+        }
+
+        when:
+        assert entered.await(5, TimeUnit.SECONDS)
+        Map contenderResponse = peer.handleToolsCall([jsonrpc: '2.0', id: 7402,
+            method: 'tools/call', params: [name: 'hub_update_package',
+                arguments: [ref: 'other', confirm: true]]]) as Map
+        def contender = mcpDriver.decodeToolCallResponse(contenderResponse)
+        def contenderInner = mcpDriver.parseInner(contender)
+        release.countDown()
+        first.join(5000)
+
+        then:
+        !first.alive
+        failure.get() == null
+        leafEntries.get() == 1
+        contender.result.isError == true
+        contenderInner.status == 'too_many_writes_in_flight'
+        mcpDriver.parseInner(winner.get()).status == 'in_progress'
+        runInCalls.size() == 1
+        atomicStateMap.packageDeployInFlight.requestId == runInCalls[0][2].data.requestId
+
+        cleanup:
+        release.countDown()
+        first?.join(5000)
+    }
+
+    def "an aged preterminal marker still refuses a duplicate deploy"() {
         given:
         enableDev()
         registerAppTypes()
         script.metaClass.toolInstallBundle = { a -> [success: true] }
         script.metaClass.toolUpdateAppCode = { a -> [success: true, appId: a.appId] }
-        atomicStateMap.packageDeployInFlight = [ref: 'feat/other', startedAt: GUARD_NOW - (11L * 60L * 1000L)]
+        def marker = [requestId: 'pkg-live', ref: 'feat/other',
+                      startedAt: GUARD_NOW - (11L * 60L * 1000L),
+                      args: [ref: 'feat/other', confirm: true]]
+        atomicStateMap.packageDeployInFlight = marker
+
+        when:
+        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+
+        then:
+        result.success == false
+        result.status == 'duplicate_in_flight'
+        atomicStateMap.packageDeployInFlight == marker
+        runInCalls.isEmpty()
+    }
+
+    def "matching terminal evidence clears an orphaned marker before admitting a deploy"() {
+        given:
+        enableDev()
+        registerAppTypes()
+        atomicStateMap.packageDeployInFlight = [
+            requestId: 'pkg-finished', ref: 'feat/finished', startedAt: GUARD_NOW - 60000L,
+            args: [ref: 'feat/finished', confirm: true]
+        ]
+        atomicStateMap.lastSelfDeploy = [
+            success: true, sourceMode: 'package', requestId: 'pkg-finished',
+            ref: 'feat/finished', at: GUARD_NOW - 1000L
+        ]
 
         when:
         def result = script.toolUpdatePackage([ref: 'main', confirm: true])
 
         then:
         result.success == true
+        result.status == 'in_progress'
+        result.requestId != 'pkg-finished'
+        atomicStateMap.packageDeployInFlight.requestId == result.requestId
+        atomicStateMap.packageDeployInFlight.ref == 'main'
+        runInCalls.last()[2].data.requestId == result.requestId
     }
 
-    def "the guard is cleared on a clean finish"() {
+    def "a real deploy returns in_progress before any write and the worker records a clean finish"() {
         given:
         enableDev()
         registerAppTypes()
@@ -719,11 +827,27 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         script.metaClass.toolUpdateAppCode = { a -> [success: true, appId: a.appId] }
 
         when:
-        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+        def accepted = script.toolUpdatePackage([ref: 'main', confirm: true])
 
         then:
-        result.success == true
+        accepted.success == true
+        accepted.status == 'in_progress'
+        accepted.startedAt == GUARD_NOW
+        accepted.requestId == atomicStateMap.packageDeployInFlight.requestId
+        atomicStateMap.packageDeployInFlight.ref == 'main'
+        runInCalls.last()[0..1] == [1, 'runPackageDeploy']
+        runInCalls.last()[2].data.requestId == accepted.requestId
+
+        when: 'Hubitat invokes the scheduled worker after the HTTP response is free'
+        script.runPackageDeploy([requestId: accepted.requestId])
+
+        then:
         atomicStateMap.packageDeployInFlight == null
+        atomicStateMap.lastSelfDeploy.success == true
+        atomicStateMap.lastSelfDeploy.sourceMode == 'package'
+        atomicStateMap.lastSelfDeploy.ref == 'main'
+        atomicStateMap.lastSelfDeploy.requestId == accepted.requestId
+        atomicStateMap.lastSelfDeploy.packageResult.success == true
     }
 
     def "the guard is cleared when the deploy aborts before the self app"() {
@@ -734,40 +858,42 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         script.metaClass.toolUpdateAppCode = { a -> [success: true, appId: a.appId] }
 
         when:
-        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+        def accepted = script.toolUpdatePackage([ref: 'main', confirm: true])
 
         then:
-        result.success == false
-        result.aborted == true
+        accepted.status == 'in_progress'
+
+        when:
+        script.runPackageDeploy([requestId: accepted.requestId])
+
+        then:
         atomicStateMap.packageDeployInFlight == null
+        atomicStateMap.lastSelfDeploy.success == false
+        atomicStateMap.lastSelfDeploy.packageResult.aborted == true
+        atomicStateMap.lastSelfDeploy.packageResult.abortReason == 'bundle_install_failed'
     }
 
-    def "a tokened deploy refused by the guard spends the token on the refusal, which then replays token-only"() {
-        given: 'the integration seam between the guard and the universal token machinery (both #351)'
+    def "a stale worker invocation cannot execute or clear a newer package marker"() {
+        given:
         enableDev()
         registerAppTypes()
-        Map store = [:]
-        script.metaClass.uploadHubFile = { String n, byte[] b -> store[n] = b }
-        script.metaClass.downloadHubFile = { String n -> store[n] }
-        script.metaClass.deleteHubFile = { String n -> store.remove(n) }
-        atomicStateMap.packageDeployInFlight = [ref: 'feat/other', startedAt: GUARD_NOW - 60000L]
+        def calls = []
+        script.metaClass._updatePackageBody = { Map a, String ref, boolean dryRun ->
+            calls << ref
+            [success: true]
+        }
+        atomicStateMap.packageDeployInFlight = [
+            requestId: 'pkg-new', ref: 'new-ref', startedAt: GUARD_NOW,
+            args: [ref: 'new-ref', confirm: true, __packageRequestId: 'pkg-new']
+        ]
 
-        when: 'the full tokened call arrives through dispatch while a deploy is in flight'
-        def first = mcpDriver.callTool('hub_update_package', [ref: 'main', confirm: true, opToken: 'guardtok1234'])
+        when:
+        script.runPackageDeploy([requestId: 'pkg-old'])
 
-        and: 'the caller polls token-only afterwards'
-        def second = mcpDriver.callTool('hub_update_package', [opToken: 'guardtok1234'])
-
-        then: 'the refusal rode the isError envelope and was buffered under the token'
-        first.result.isError == true
-        mcpDriver.parseInner(first).inFlight.ref == 'feat/other'
-        atomicStateMap.opTokens['guardtok1234'].state == 'complete'
-        atomicStateMap.opTokens['guardtok1234'].isError == true
-
-        and: 'the token-only poll replays the refusal deterministically (spent token, no re-run)'
-        def replay = mcpDriver.parseInner(second)
-        replay.replayed == true
-        replay.inFlight.ref == 'feat/other'
+        then:
+        calls.isEmpty()
+        atomicStateMap.packageDeployInFlight.requestId == 'pkg-new'
+        atomicStateMap.packageDeployInFlight.ref == 'new-ref'
     }
 
     def "dryRun neither checks nor sets the guard"() {
@@ -797,7 +923,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         script.metaClass.toolUpdateAppCode = { a -> [success: true, appId: a.appId] }
 
         when:
-        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+        def result = runDeployBody([ref: 'main', confirm: true])
 
         then:
         result.includes == ['mcp.McpRoomsLib']
@@ -909,7 +1035,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         script.metaClass._bundleArtifactExists = { String u -> true }
 
         when:
-        def result = script.toolUpdatePackage([ref: 'feat/x', confirm: true])
+        def result = runDeployBody([ref: 'feat/x', confirm: true])
 
         then:
         result.success == true
@@ -928,7 +1054,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         script.metaClass._bundleArtifactExists = { String u -> false }
 
         when:
-        def result = script.toolUpdatePackage([ref: 'feat/x', confirm: true])
+        def result = runDeployBody([ref: 'feat/x', confirm: true])
 
         then:
         result.success == true
@@ -947,7 +1073,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         script.metaClass._bundleArtifactExists = { String u -> false }
 
         when:
-        def result = script.toolUpdatePackage([ref: 'feat/x', confirm: true])
+        def result = runDeployBody([ref: 'feat/x', confirm: true])
 
         then: 'old refs keep the old behaviour: zip committed AT the ref, reanchored'
         result.success == true
@@ -968,7 +1094,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         script.metaClass._bundleArtifactExists = { String u -> false }
 
         when:
-        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+        def result = runDeployBody([ref: 'main', confirm: true])
 
         then:
         result.success == true
