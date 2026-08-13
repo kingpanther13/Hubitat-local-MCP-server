@@ -60,6 +60,7 @@ abstract class HarnessSpec extends Specification {
     private static final HubInternalGetMock SHARED_HUB_GET = new HubInternalGetMock()
     private static final McpRequestDriver SHARED_MCP_DRIVER = new McpRequestDriver()
     private static final List SHARED_RUN_IN_CALLS = java.util.Collections.synchronizedList([])
+    private static final List SHARED_RUN_IN_MILLIS_CALLS = java.util.Collections.synchronizedList([])
 
     // The currently-running feature instance. The @Shared AppExecutor mock's
     // addChildApp stub (built once in setupSpec) reads mockChildAppForCreate
@@ -92,6 +93,7 @@ abstract class HarnessSpec extends Specification {
     // file with its own scaffold copy, so a recorder added to one is invisible to the other --
     // keep the two in lockstep.
     @Shared protected final List<List<Object>> runInCalls = SHARED_RUN_IN_CALLS
+    @Shared protected final List<List<Object>> runInMillisCalls = SHARED_RUN_IN_MILLIS_CALLS
     @Shared protected script
     @Shared protected final Map stateMap = SHARED_STATE_MAP
     @Shared protected final Map atomicStateMap = SHARED_ATOMIC_STATE_MAP
@@ -163,6 +165,11 @@ abstract class HarnessSpec extends Specification {
             if (ov != null) return ov.call(args as List)
             SHARED_RUN_IN_CALLS << (args as List)
         }
+        mock.runInMillis(*_) >> { args ->
+            def ov = RUN_IN_OVERRIDE.get()
+            if (ov != null) return ov.call(args as List)
+            SHARED_RUN_IN_MILLIS_CALLS << (args as List)
+        }
         // addChildApp routes via @Delegate to AppExecutor under joelwetzel. *_
         // covers the 3-arg and 4-arg(props) overloads production code uses.
         // Read the running feature's fixture so the value set in a spec's
@@ -218,6 +225,7 @@ abstract class HarnessSpec extends Specification {
     def setup() {
         CURRENT_FEATURE = this
         runInCalls.clear()
+        runInMillisCalls.clear()
         stateMap.clear()
         atomicStateMap.clear()
         // The production app deliberately keeps exact terminal-generation

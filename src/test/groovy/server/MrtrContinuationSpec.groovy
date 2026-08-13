@@ -186,10 +186,19 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def release = new CountDownLatch(1)
         def workerDone = new CountDownLatch(1)
         def leafCalls = new AtomicInteger(0)
+        def observedWaitMs = new AtomicLong(0L)
         def failure = new AtomicReference()
         def virtualNow = new AtomicLong(1234567890000L)
+        long schedulerElapsedMs = 1000L
         NOW_OVERRIDE.set({ -> virtualNow.get() })
-        PAUSE_EXECUTION_OVERRIDE.set({ Long delayMs -> virtualNow.addAndGet(delayMs) })
+        PAUSE_EXECUTION_OVERRIDE.set({ Long delayMs ->
+            observedWaitMs.addAndGet(delayMs)
+            virtualNow.addAndGet(delayMs)
+        })
+        RUN_IN_OVERRIDE.set({ List call ->
+            runInMillisCalls << call
+            virtualNow.addAndGet(schedulerElapsedMs)
+        })
         script.metaClass.toolSetRule = { Map actual ->
             leafCalls.incrementAndGet()
             entered.countDown()
@@ -205,12 +214,14 @@ class MrtrContinuationSpec extends ToolSpecBase {
         scheduled.result.resultType == 'input_required'
         scheduled.result.requestState == stateId
         leafCalls.get() == 0
-        runInCalls.size() == 1
-        runInCalls[0][0..1] == [1, 'runMrtrSlice']
-        runInCalls[0][2].overwrite == false
-        runInCalls[0][2].data.stateId == stateId
-        runInCalls[0][2].data.claimId instanceof String
-        !runInCalls[0][2].data.containsKey('arguments')
+        observedWaitMs.get() ==
+            (script._mrtrContentionWaitMs('hub_set_rule') as Long) - schedulerElapsedMs
+        runInMillisCalls.size() == 1
+        runInMillisCalls[0][0..1] == [200, 'runMrtrSlice']
+        runInMillisCalls[0][2].overwrite == false
+        runInMillisCalls[0][2].data.stateId == stateId
+        runInMillisCalls[0][2].data.claimId instanceof String
+        !runInMillisCalls[0][2].data.containsKey('arguments')
 
         when: 'another write arrives while the claimed worker is only queued'
         def capped = modernCall('hub_call_rule', [ruleId: [401, 402], action: 'stop'])
@@ -222,7 +233,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         cappedInner.active == [[tool: 'hub_set_rule', startedAt: 1234567890000L, transport: 'mrtr']]
 
         when: 'Hubitat invokes the scheduled worker and its real leaf remains blocked'
-        Map workerData = new LinkedHashMap(runInCalls[0][2].data as Map)
+        Map workerData = new LinkedHashMap(runInMillisCalls[0][2].data as Map)
         Thread worker = Thread.start {
             try {
                 script.runMrtrSlice(workerData)
@@ -262,6 +273,103 @@ class MrtrContinuationSpec extends ToolSpecBase {
         cleanup:
         release.countDown()
         worker?.join(5000)
+    }
+
+    def "the scheduling request observes a fast detached terminal result and replays it exactly once"() {
+        given:
+        settingsMap.enableWrite = true
+        def args = [appId: 322, confirm: true, settings: [description: 'fast edit']]
+        def preflight = modernCall('hub_set_rule', args)
+        String stateId = preflight.result.requestState
+        def leafCalls = new AtomicInteger(0)
+        script.metaClass.toolSetRule = { Map actual ->
+            leafCalls.incrementAndGet()
+            [success: true, appId: actual.appId, settingsApplied: true]
+        }
+        RUN_IN_OVERRIDE.set({ List call ->
+            runInMillisCalls << call
+            script.runMrtrSlice(new LinkedHashMap(call[2].data as Map))
+        })
+
+        when:
+        def complete = modernCall('hub_set_rule', args, stateId)
+        def replay = modernCall('hub_set_rule', args, stateId)
+
+        then:
+        complete.result.resultType == 'complete'
+        complete.result.isError != true
+        mcpDriver.parseInner(complete).appId == 322
+        replay.result.resultType == 'complete'
+        mcpDriver.parseInner(replay).settingsApplied == true
+        leafCalls.get() == 1
+        runInMillisCalls.size() == 1
+        runInMillisCalls[0][0..1] == [200, 'runMrtrSlice']
+        runInMillisCalls[0][2].overwrite == false
+        runInMillisCalls[0][2].data.keySet() == ['stateId', 'claimId', 'generation'] as Set
+    }
+
+    def "the scheduling request observes generation advancement without claiming the next generation"() {
+        given:
+        settingsMap.enableWrite = true
+        def args = [appId: 323, confirm: true, settings: [description: 'two slices']]
+        def preflight = modernCall('hub_set_rule', args)
+        String stateId = preflight.result.requestState
+        def leafCalls = new AtomicInteger(0)
+        script.metaClass.toolSetRule = { Map actual ->
+            leafCalls.incrementAndGet()
+            [success: false, partial: true, status: 'in_progress',
+             stepsRemaining: [[name: 'finish']], appId: actual.appId]
+        }
+        RUN_IN_OVERRIDE.set({ List call ->
+            runInMillisCalls << call
+            script.runMrtrSlice(new LinkedHashMap(call[2].data as Map))
+        })
+
+        when:
+        def advanced = modernCall('hub_set_rule', args, stateId)
+        Map stored = atomicStateMap.mrtrRequests[stateId] as Map
+
+        then:
+        advanced.result.resultType == 'input_required'
+        advanced.result.requestState == stateId
+        leafCalls.get() == 1
+        runInMillisCalls.size() == 1
+        stored.status == 'active'
+        stored.generation == 1
+        stored.rounds == 1
+        !stored.containsKey('claimId')
+        !stored.containsKey('claimedGeneration')
+    }
+
+    def "the scheduling request observes and replays a fast detached worker error"() {
+        given:
+        settingsMap.enableWrite = true
+        def args = [appId: 324, confirm: true, settings: [description: 'worker error']]
+        def preflight = modernCall('hub_set_rule', args)
+        String stateId = preflight.result.requestState
+        def leafCalls = new AtomicInteger(0)
+        script.metaClass.toolSetRule = { Map actual ->
+            leafCalls.incrementAndGet()
+            throw new IllegalStateException('detached leaf failed')
+        }
+        RUN_IN_OVERRIDE.set({ List call ->
+            runInMillisCalls << call
+            script.runMrtrSlice(new LinkedHashMap(call[2].data as Map))
+        })
+
+        when:
+        def failed = modernCall('hub_set_rule', args, stateId)
+        def replay = modernCall('hub_set_rule', args, stateId)
+
+        then:
+        failed.result.resultType == 'complete'
+        failed.result.isError == true
+        mcpDriver.parseInner(failed).error.contains('detached leaf failed')
+        replay.result.resultType == 'complete'
+        replay.result.isError == true
+        mcpDriver.parseInner(replay).error.contains('detached leaf failed')
+        leafCalls.get() == 1
+        runInMillisCalls.size() == 1
     }
 
     def "an exact round-zero replay rejoins the active MRTR operation without running a second write"() {
@@ -633,7 +741,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         script._mrtrContentionWaitMs('hub_set_rule') == 3500L
     }
 
-    def "gateway native-app resume schedules the resolved leaf and its worker returns the terminal result"() {
+    def "a gateway scheduling request observes the resolved leaf terminal result"() {
         given:
         settingsMap.enableWrite = true
         settingsMap.useGateways = true
@@ -647,17 +755,18 @@ class MrtrContinuationSpec extends ToolSpecBase {
             seen << new LinkedHashMap(actual)
             [success: true, appId: actual.appId, settingsApplied: true]
         }
+        RUN_IN_OVERRIDE.set({ List call ->
+            runInMillisCalls << call
+            script.runMrtrSlice(new LinkedHashMap(call[2].data as Map))
+        })
 
         when:
-        def scheduled = modernCall(gateway, args, stateId)
-        assert runInCalls.size() == 1
-        Map workerData = new LinkedHashMap(runInCalls[0][2].data as Map)
-        script.runMrtrSlice(workerData)
         def complete = modernCall(gateway, args, stateId)
         def inner = mcpDriver.parseInner(complete)
 
         then:
-        scheduled.result.resultType == 'input_required'
+        runInMillisCalls.size() == 1
+        runInMillisCalls[0][0..1] == [200, 'runMrtrSlice']
         seen == [[appId: 654, confirm: true, settings: [description: 'gateway worker']]]
         complete.result.resultType == 'complete'
         complete.result.isError != true
@@ -721,7 +830,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         response.result.resultType == 'complete'
         mcpDriver.parseInner(response).success == true
         dispatched == [args.args]
-        runInCalls.isEmpty()
+        runInMillisCalls.isEmpty()
 
         where:
         itemType << ['app', 'library']
@@ -753,8 +862,8 @@ class MrtrContinuationSpec extends ToolSpecBase {
         scheduled.result.resultType == 'input_required'
         scheduled.result.requestState == stateId
         dispatched.isEmpty()
-        runInCalls.size() == 1
-        runInCalls[0][0..1] == [1, 'runMrtrSlice']
+        runInMillisCalls.size() == 1
+        runInMillisCalls[0][0..1] == [200, 'runMrtrSlice']
 
         when: 'another slow code write arrives while the worker is queued'
         def capped = modernCall(gateway, [tool: 'hub_create_driver', args: [
@@ -770,7 +879,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         cappedInner.active*.transport == ['mrtr']
 
         when: 'the worker executes once and later calls observe its retained terminal result'
-        Map workerData = new LinkedHashMap(runInCalls[0][2].data as Map)
+        Map workerData = new LinkedHashMap(runInMillisCalls[0][2].data as Map)
         script.runMrtrSlice(workerData)
         def complete = modernCall(gateway, args, stateId)
         def replay = modernCall(gateway, args, stateId)
@@ -809,7 +918,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def scheduled = modernCall('hub_set_rule', args, stateId)
         Map activeSnapshot = script._mrtrCopyMap(
             atomicStateMap.mrtrRequests[stateId] as Map) as Map
-        Map workerData = new LinkedHashMap(runInCalls[0][2].data as Map)
+        Map workerData = new LinkedHashMap(runInMillisCalls[0][2].data as Map)
         script.runMrtrSlice(workerData)
         def complete = modernCall('hub_set_rule', args, stateId)
 
@@ -853,7 +962,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         modernCall('hub_set_rule', args, stateId)
         Map activeSnapshot = script._mrtrCopyMap(
             atomicStateMap.mrtrRequests[stateId] as Map) as Map
-        Map workerData = new LinkedHashMap(runInCalls[0][2].data as Map)
+        Map workerData = new LinkedHashMap(runInMillisCalls[0][2].data as Map)
         script.runMrtrSlice(workerData)
         def complete = modernCall('hub_set_rule', args, stateId)
 

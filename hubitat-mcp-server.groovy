@@ -1579,6 +1579,13 @@ def handleToolsCall(msg) {
         if (detached) {
             Map scheduled = _mrtrScheduleSlice(stateId, rec, claim, executionArgs)
             if (scheduled.accepted == true) {
+                Map observed = _mrtrObserveScheduled(stateId, claim, reqT0,
+                    reactiveToolName?.toString())
+                if (observed.outcome == "terminal") {
+                    Map terminalRec = observed.record as Map
+                    return _renderToolResult(msg.id, toolName, reactiveToolName, executionArgs,
+                        terminalRec.terminalResult, terminalRec.terminalIsError == true)
+                }
                 return jsonRpcResult(msg.id,
                     [resultType: "input_required", requestState: stateId])
             }
@@ -2335,6 +2342,51 @@ private Map _mrtrClaimWithWait(String stateId, outerTool, leafTool, Map binding,
     return claim
 }
 
+// Observe only the generation this request scheduled. Advancement is left for
+// the next requestState leg so this wait can never claim or start another slice.
+private Map _mrtrObserveScheduled(String stateId, Map claim, long requestStartedAt,
+                                  String waitClass = null) {
+    String claimId = claim?.claimId?.toString()
+    Integer generation = claim?.generation as Integer
+    long deadline = requestStartedAt + _mrtrContentionWaitMs(waitClass)
+    Map observed = [outcome: "in_progress"]
+    long remainingBudget = Math.max(0L, deadline - now())
+    while (true) {
+        synchronized (WRITE_RESERVATION_LOCK) {
+            def stored = atomicState.mrtrRequests
+            def rec = (stored instanceof Map && stored[stateId] instanceof Map)
+                ? ([:] + (stored[stateId] as Map)) : null
+            def evidence = MRTR_TERMINAL_EVIDENCE[stateId]
+            boolean exactTerminal = evidence instanceof Map &&
+                evidence.claimId?.toString() == claimId &&
+                evidence.generation == generation &&
+                evidence.record instanceof Map && evidence.record.status == "terminal"
+            boolean exactInProgress = rec?.status == "active" &&
+                rec.claimId?.toString() == claimId &&
+                rec.claimedGeneration == generation &&
+                (rec.generation ?: 0) == generation
+            if (exactTerminal) {
+                observed = [outcome: "terminal", record: [:] + (evidence.record as Map)]
+            } else if (exactInProgress) {
+                observed = [outcome: "in_progress", record: rec]
+            } else {
+                observed = [outcome: "advanced", record: rec]
+            }
+        }
+        if (observed.outcome != "in_progress") return observed
+        long remaining = Math.min(remainingBudget, Math.max(0L, deadline - now()))
+        if (remaining <= 0L) return observed
+        long sleepMs = Math.min(250L, remaining)
+        try {
+            pauseExecution(sleepMs as Long)
+            remainingBudget -= sleepMs
+        } catch (Exception waitErr) {
+            mcpLog("debug", "mrtr", "Scheduled worker observation interrupted: ${waitErr.message}")
+            return observed
+        }
+    }
+}
+
 private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map rec) {
     if (!(result instanceof Map)) return null
     if (result.__mrtrContinue instanceof Map) {
@@ -2595,7 +2647,7 @@ private Map _mrtrScheduleSlice(String stateId, Map rec, Map claim, Map execution
         ]
     }
     try {
-        runIn(1, "runMrtrSlice", [overwrite: false,
+        runInMillis(200, "runMrtrSlice", [overwrite: false,
             data: [stateId: stateId, claimId: claimId, generation: generation]])
         // Queued work is protected by the persisted claim + TTL. Mark it JVM-live
         // only while the worker is actually executing, so a scheduler/JVM loss can
