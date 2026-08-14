@@ -1591,3 +1591,24 @@ def test_delete_bundle_uses_logical_write_helper(monkeypatch):
         {"bundleId": "44", "confirm": True},
         "throwaway bundle delete",
     )]
+
+
+def test_clear_load_throttle_is_the_conformance_bounce_seam(monkeypatch):
+    """sdk_conformance_test._load_hub_config hands the SDK MRTR proof
+    TestRunner._clear_load_throttle as its capacity-recovery callable; pin the
+    interface (a rename or move breaks the conformance step only at hub time)
+    and its no-watchdog behavior: decline deterministically, no network I/O."""
+    monkeypatch.delenv("WATCHDOG_URL", raising=False)
+    monkeypatch.delenv("HUBITAT_APP_ID", raising=False)
+    client = et.HubitatMcpClient(
+        hub_url="https://cloud.hubitat.com/api/00000000-0000-0000-0000-000000000000",
+        app_id="38", access_token="dummy",
+    )
+    runner = et.TestRunner(client)
+
+    def _no_network(*args, **kwargs):
+        raise AssertionError("bounce without WATCHDOG_URL must not touch the network")
+
+    monkeypatch.setattr(et.requests, "post", _no_network)
+    assert callable(runner._clear_load_throttle)
+    assert runner._clear_load_throttle("interface pin") is False

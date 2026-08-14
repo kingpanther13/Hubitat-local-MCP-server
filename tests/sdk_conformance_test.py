@@ -187,8 +187,9 @@ def _load_hub_config() -> dict:
         "supported_versions": e2e_test.SUPPORTED_PROTOCOL_VERSIONS,
         # The e2e suite's platform-limiter recovery (watchdog app bounce), shared so the
         # MRTR proof can recover from the same capacity condition the suite already
-        # handles. Bound method; a no-op returning False when WATCHDOG_URL is unset.
-        "clear_load_throttle": client._clear_load_throttle,
+        # handles. Lives on TestRunner (construction is plain attribute assignment, no
+        # hub I/O); returns False without side effects when WATCHDOG_URL is unset.
+        "clear_load_throttle": e2e_test.TestRunner(client)._clear_load_throttle,
     }
 
 
