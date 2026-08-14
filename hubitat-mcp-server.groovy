@@ -31,6 +31,14 @@
 @groovy.transform.Field static final Map WRITE_REQUEST_LEASES = new java.util.HashMap()
 @groovy.transform.Field static final Map MRTR_WORK_ITEMS = new java.util.HashMap()
 @groovy.transform.Field static final Map MRTR_TERMINAL_EVIDENCE = new java.util.HashMap()
+// Newest same-rule edit baseline per ruleId ([key:, entry:]), mirrored at snapshot
+// time. The reuse decision consults this beside the atomicState manifest because a
+// freshly scheduled worker execution can read an atomicState snapshot that predates
+// another execution's manifest write (the same visibility gap MRTR_TERMINAL_EVIDENCE
+// exists for) -- without the mirror, a same-rule edit seconds after the last one
+// takes a redundant fresh baseline and its rollbackScope promise silently narrows.
+// Guarded by synchronized(RM_BASELINE_HANDLES); cleared by recompile like any static.
+@groovy.transform.Field static final Map RM_BASELINE_HANDLES = new java.util.HashMap()
 // Snapshots of the two atomicState keys the reservation/MRTR machinery below reads:
 // every atomicState property access is a hub DB round trip, and one tool call reads
 // these keys many times over (the scheduled-worker observation re-reads mrtrRequests
@@ -6187,6 +6195,12 @@ List unlinkItemBackupManifestFile(String fileName, String exactKey = null) {
     }
     removed.each { manifest.remove(it) }
     if (removed) atomicState.itemBackupManifest = manifest
+    synchronized (RM_BASELINE_HANDLES) {
+        RM_BASELINE_HANDLES.entrySet().removeAll { mirror ->
+            mirror.value instanceof Map &&
+                (mirror.value.entry as Map)?.fileName?.toString() == fileName
+        }
+    }
     return removed.collect { it?.toString() }
 }
 

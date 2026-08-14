@@ -9049,7 +9049,14 @@ private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
     def fileName = entry?.fileName?.toString()
     if (!fileName) return false
     try {
-        def bytes = downloadHubFile(fileName)
+        def bytes = null
+        // One retry: a transient File Manager read hiccup must not be mistaken for a
+        // deleted backup -- the discard path unlinks the manifest handle for good.
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try { bytes = downloadHubFile(fileName) } catch (Exception readErr) { bytes = null }
+            if (bytes != null && bytes.length > 0) break
+            if (attempt == 0) pauseExecution(300L)
+        }
         if (bytes == null || bytes.length == 0) return false
         if (entry.sourceLength != null && (entry.sourceLength as Long) != bytes.length) return false
         def snapshot = new groovy.json.JsonSlurper().parseText(new String(bytes, "UTF-8"))
@@ -9098,6 +9105,24 @@ Map _rmBackupBeforeEdit(Integer ruleId, String reason) {
         long age = nowMs - savedAt
         return age >= 0L && age < 60L * 60L * 1000L
     }.max { a, b -> (a.value.timestamp as Long) <=> (b.value.timestamp as Long) }
+
+    // The JVM mirror is authoritative when it is newer than the manifest scan: a
+    // worker execution can read an atomicState snapshot that predates the previous
+    // worker's manifest write, and that gap must not cost a redundant baseline.
+    synchronized (RM_BASELINE_HANDLES) {
+        def mirrored = RM_BASELINE_HANDLES[ruleId?.toString()]
+        if (mirrored instanceof Map && mirrored.entry instanceof Map) {
+            Long mirroredAt = null
+            try { mirroredAt = (mirrored.entry as Map).timestamp as Long } catch (Exception ignored) { }
+            long mirroredAge = mirroredAt == null ? -1L : nowMs - mirroredAt
+            boolean inWindow = mirroredAt != null && mirroredAge >= 0L && mirroredAge < 60L * 60L * 1000L
+            boolean newerThanScan = recent == null ||
+                mirroredAt > ((recent.value.timestamp as Long) ?: 0L)
+            if (inWindow && newerThanScan) {
+                recent = [key: mirrored.key?.toString(), value: new LinkedHashMap(mirrored.entry as Map)]
+            }
+        }
+    }
 
     if (recent != null && !_rmReusableBackupFileMatches(recent.value as Map, ruleId)) {
         def staleFile = recent.value?.fileName?.toString()
@@ -9268,6 +9293,13 @@ Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
         }
     }
     atomicState.itemBackupManifest = mfst
+    // Mirror the newest per-rule handle in JVM statics: another worker execution
+    // scheduled seconds from now may read an atomicState snapshot that predates
+    // this write, and reuse must not depend on that visibility (see
+    // RM_BASELINE_HANDLES in the host app).
+    synchronized (RM_BASELINE_HANDLES) {
+        RM_BASELINE_HANDLES[ruleId.toString()] = [key: backupKey.toString(), entry: new LinkedHashMap(entry)]
+    }
 
     mcpLog("info", "rm-native", "Backed up rule ${ruleId} (${reason}) to ${fileName} (${jsonBytes.length} bytes)")
     // brokenBefore: the rule's pre-write broken state, derived from the config this snapshot

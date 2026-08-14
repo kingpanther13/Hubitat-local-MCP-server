@@ -1144,6 +1144,52 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         uploads.size() == 2
     }
 
+    def "baseline reuse survives a worker execution reading a stale manifest snapshot"() {
+        given:
+        def clock = [1234567890000L]
+        NOW_OVERRIDE.set({ -> clock[0] })
+        hubGet.register('/installedapp/configure/json/503') { params -> ruleConfigJson(503, "reuse-stale") }
+        hubGet.register('/installedapp/statusJson/503') { params -> statusJson(503) }
+        def files = [:]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> files[fn] = b }
+        script.metaClass.downloadHubFile = { String fn -> files[fn] }
+
+        when: 'a baseline is taken, then the next execution reads atomicState from before that write'
+        def first = script._rmBackupBeforeEdit(503, "pre-addAction")
+        atomicStateMap.itemBackupManifest = [:]   // the stale snapshot has no entry for it
+        clock[0] += 30 * 1000L
+        def second = script._rmBackupBeforeEdit(503, "pre-addActions-bulk")
+
+        then: 'the JVM mirror carries the handle across the visibility gap'
+        second.baselineReused == true
+        second.backupKey == first.backupKey
+    }
+
+    def "a transient backup-file read hiccup is retried instead of discarding the baseline"() {
+        given:
+        def clock = [1234567890000L]
+        NOW_OVERRIDE.set({ -> clock[0] })
+        hubGet.register('/installedapp/configure/json/504') { params -> ruleConfigJson(504, "reuse-retry") }
+        hubGet.register('/installedapp/statusJson/504') { params -> statusJson(504) }
+        def files = [:]
+        def failures = [1]   // fail the FIRST post-baseline read only
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> files[fn] = b }
+        script.metaClass.downloadHubFile = { String fn ->
+            if (failures[0] > 0) { failures[0]--; return null }
+            files[fn]
+        }
+
+        when:
+        def first = script._rmBackupBeforeEdit(504, "pre-addAction")
+        clock[0] += 30 * 1000L
+        def second = script._rmBackupBeforeEdit(504, "pre-walkStep")
+
+        then: 'the retry sees the file and the manifest handle is not unlinked'
+        second.baselineReused == true
+        second.backupKey == first.backupKey
+        atomicStateMap.itemBackupManifest.containsKey(first.backupKey.toString())
+    }
+
     def "ordinary edit discards a recent manifest entry whose backup file is missing"() {
         given:
         enableWrite()
@@ -1166,7 +1212,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def result = script._rmBackupBeforeEdit(505, "pre-walkStep")
 
         then: "the dangling handle is removed and a restorable fresh baseline replaces it"
-        downloads == ["mcp-rm-backup-505-missing.json"]
+        // Two reads: the probe retries a missing file once before declaring it dead,
+        // so a transient hiccup cannot trigger the permanent unlink below.
+        downloads == ["mcp-rm-backup-505-missing.json", "mcp-rm-backup-505-missing.json"]
         !atomicStateMap.itemBackupManifest.containsKey("rm-rule_505_missing")
         result.backupKey != "rm-rule_505_missing"
         uploads.size() == 1

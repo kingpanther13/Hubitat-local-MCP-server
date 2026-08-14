@@ -324,6 +324,9 @@ abstract class HarnessSpec extends Specification {
         // them, so a feature that reserves without releasing would otherwise hand the
         // next feature a write slot that is already spent.
         (scriptStaticField('WRITE_REQUEST_LEASES') as Map).clear()
+        // The per-rule baseline mirror is JVM truth beside the manifest; a leftover
+        // handle would satisfy reuse for a rule id a later feature reuses.
+        (scriptStaticField('RM_BASELINE_HANDLES') as Map).clear()
         // The write-reservation machinery serves mrtrRequests / packageDeployInFlight
         // from a class-static snapshot of atomicState. Clearing atomicStateMap above
         // without this would leave the previous feature's snapshot as the read path --
