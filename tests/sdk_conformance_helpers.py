@@ -316,14 +316,17 @@ def summarize_mrtr_proof(
     assert logical_elapsed > MINIMUM_LOGICAL_SECONDS, (
         f"logical call must exceed 10 seconds; saw {logical_elapsed:.3f}s"
     )
+    # key=str on both: an absent header and an unanswered leg both land as None, so the
+    # set mixes None with str/int and a bare sorted() would TypeError while building the
+    # message instead of reporting the contract failure.
     wrong_versions = sorted({leg["mcp_protocol_version"] for leg in legs
-                             if leg["mcp_protocol_version"] != MODERN_PROTOCOL_VERSION})
+                             if leg["mcp_protocol_version"] != MODERN_PROTOCOL_VERSION}, key=str)
     assert not wrong_versions, (
         f"every tools/call leg must use {MODERN_PROTOCOL_VERSION}; saw {wrong_versions}"
     )
     bad_statuses = sorted({leg["status"] for leg in legs
                            if not isinstance(leg["status"], int)
-                           or not 200 <= leg["status"] < 300})
+                           or not 200 <= leg["status"] < 300}, key=str)
     assert not bad_statuses, f"every tools/call leg must return 2xx; saw {bad_statuses}"
     durations = [leg["duration"] for leg in legs]
     assert all(isinstance(duration, int | float) for duration in durations), (

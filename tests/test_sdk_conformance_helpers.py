@@ -194,6 +194,16 @@ def test_owner_rounds_allow_detached_worker_coordination_responses() -> None:
          11.0, "2026-07-28"),
         ([{"status": 504, "mcp_protocol_version": "2026-07-28", "duration": 3.0}] * 3,
          11.0, "2xx"),
+        # Mixed None/str and None/int diagnostic sets: an absent header and an unanswered
+        # leg must still report the contract failure, not a sort TypeError.
+        ([{"status": None, "mcp_protocol_version": None, "duration": 3.0},
+          {"status": 504, "mcp_protocol_version": "2025-06-18", "duration": 3.0},
+          {"status": 200, "mcp_protocol_version": "2026-07-28", "duration": 3.0}],
+         11.0, "2026-07-28"),
+        ([{"status": None, "mcp_protocol_version": "2026-07-28", "duration": 3.0},
+          {"status": 504, "mcp_protocol_version": "2026-07-28", "duration": 3.0},
+          {"status": 200, "mcp_protocol_version": "2026-07-28", "duration": 3.0}],
+         11.0, "2xx"),
         ([{"status": 200, "mcp_protocol_version": "2026-07-28", "duration": 3.0,
            "has_request_state": False},
           {"status": 200, "mcp_protocol_version": "2026-07-28", "duration": 3.0,

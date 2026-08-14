@@ -386,7 +386,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
             observedWaitMs.addAndGet(delayMs)
             virtualNow.addAndGet(delayMs)
         })
-        RUN_IN_OVERRIDE.set({ List call ->
+        RUN_IN_MILLIS_OVERRIDE.set({ List call ->
             runInMillisCalls << call
             virtualNow.addAndGet(schedulerElapsedMs)
         })
@@ -477,7 +477,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
             leafCalls.incrementAndGet()
             [success: true, appId: actual.appId, settingsApplied: true]
         }
-        RUN_IN_OVERRIDE.set({ List call ->
+        RUN_IN_MILLIS_OVERRIDE.set({ List call ->
             runInMillisCalls << call
             script.runMrtrSlice(new LinkedHashMap(call[2].data as Map))
         })
@@ -511,7 +511,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
             [success: false, partial: true, status: 'in_progress',
              stepsRemaining: [[name: 'finish']], appId: actual.appId]
         }
-        RUN_IN_OVERRIDE.set({ List call ->
+        RUN_IN_MILLIS_OVERRIDE.set({ List call ->
             runInMillisCalls << call
             script.runMrtrSlice(new LinkedHashMap(call[2].data as Map))
         })
@@ -543,7 +543,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
             leafCalls.incrementAndGet()
             throw new IllegalStateException('detached leaf failed')
         }
-        RUN_IN_OVERRIDE.set({ List call ->
+        RUN_IN_MILLIS_OVERRIDE.set({ List call ->
             runInMillisCalls << call
             script.runMrtrSlice(new LinkedHashMap(call[2].data as Map))
         })
@@ -952,7 +952,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
             seen << new LinkedHashMap(actual)
             [success: true, appId: actual.appId, settingsApplied: true]
         }
-        RUN_IN_OVERRIDE.set({ List call ->
+        RUN_IN_MILLIS_OVERRIDE.set({ List call ->
             runInMillisCalls << call
             script.runMrtrSlice(new LinkedHashMap(call[2].data as Map))
         })
@@ -1382,7 +1382,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
             leafCalls.incrementAndGet()
             [success: true, appId: actual.appId]
         }
-        RUN_IN_OVERRIDE.set({ List call -> throw new IllegalStateException('scheduler unavailable') })
+        RUN_IN_MILLIS_OVERRIDE.set({ List call -> throw new IllegalStateException('scheduler unavailable') })
 
         when:
         def failed = modernCall('hub_set_rule', args, stateId)

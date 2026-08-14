@@ -539,8 +539,10 @@ def toolDeleteVisualRule(args) {
     } else if (existence.state == "unknown") {
         note = "The delete request was accepted but the verification read-back failed (${existence.error}) -- re-check with hub_get_visual_rule(appId=${appId})."
     } else {
-        note = predelete != null ? "To recreate this rule, call hub_set_visual_rule with the predeleteDefinition." :
-                                   "This rule had no readable definition (never saved), so there is nothing to recreate."
+        // Same predicate as the field guard below -- _vrbFetchGraph parses ruleJson without a
+        // Map check, so a stored array yields a non-null List that is never attached.
+        note = predelete instanceof Map ? "To recreate this rule, call hub_set_visual_rule with the predeleteDefinition." :
+                                          "This rule had no readable definition (never saved, or not a rule object), so there is nothing to recreate."
     }
     mcpLog("info", "vrb", "Deleted Visual Rule ${appId} ('${detected.data.name}') verified=${verified}")
     def result = [success: verified, appId: appId, name: detected.data.name, format: detected.format,

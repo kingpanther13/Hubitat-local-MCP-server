@@ -987,6 +987,29 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.note.contains('nothing to recreate')
     }
 
+    def "delete of a graph whose ruleJson is an array never advertises a predeleteDefinition it omits"() {
+        // _vrbFetchGraph parses ruleJson with no Map check, so an array-encoded graph reaches
+        // the delete tail as a non-null List. The field guard drops it; the note must agree.
+        given:
+        enableWrite()
+        def deleted = false
+        hubGet.register('/app/ruleBuilder20Json/33') { params ->
+            json([name: 'Array graph', rulePaused: false, ruleJson: '[{"id":1}]', validationErrors: []])
+        }
+        hubGet.register('/installedapp/json/33') { params ->
+            deleted ? '' : json([id: 33, name: 'Array graph', type: 'Visual Rule Builder', user: true])
+        }
+        stubRawDelete { path -> deleted = true }
+
+        when:
+        def result = script.toolDeleteVisualRule([appId: 33, confirm: true])
+
+        then:
+        result.verified == true
+        !result.containsKey('predeleteDefinition')
+        result.note.contains('nothing to recreate')
+    }
+
     def "delete reports success=false verified=false when the hub still answers for the app afterwards"() {
         given:
         enableWrite()

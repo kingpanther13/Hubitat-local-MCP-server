@@ -526,7 +526,8 @@ def toolUpdatePackage(args) {
             }
         }
         return [success: false, isError: true, status: "schedule_failed", ref: ref,
-                error: "Package deploy could not be scheduled: ${scheduleErr.message}. Nothing was changed."]
+                error: "Package deploy could not be scheduled: ${scheduleErr.message}. Nothing was changed.",
+                note: "The in-flight marker was released, so this call is safe to retry with the same ref. If it keeps failing, the hub's scheduler is refusing jobs -- check hub_get_logs, then deploy each app with hub_update_app instead."]
     }
     return [
         success: true,

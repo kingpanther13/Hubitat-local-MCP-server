@@ -2761,7 +2761,8 @@ private Map _mrtrScheduleSlice(String stateId, Map rec, Map claim, Map execution
         def failure = [
             success: false, isError: true, status: "schedule_failed",
             tool: rec.leafTool,
-            error: "The Hubitat write worker could not be scheduled: ${scheduleErr.message}. Nothing was run."
+            error: "The Hubitat write worker could not be scheduled: ${scheduleErr.message}. Nothing was run.",
+            note: "This request state is terminal -- continuing it just replays this failure. Start a fresh call instead; if scheduling keeps failing the hub's job scheduler is saturated, so check hub_get_logs first."
         ]
         _mrtrStoreTerminal(stateId, rec, claim, failure, true)
         return [accepted: false, failure: failure]

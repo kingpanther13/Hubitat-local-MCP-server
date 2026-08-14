@@ -269,6 +269,7 @@ class HandleToolsCallSpec extends ToolSpecBase {
         and: 'recursive path copies leave internal consumers and terminal replay untouched'
         canonicalBackup.brokenBefore == true
         nestedBackup.brokenBefore == false
+        canonicalResult.backup.is(canonicalBackup)
         canonicalResult.patches[0].backup.is(nestedBackup)
     }
 

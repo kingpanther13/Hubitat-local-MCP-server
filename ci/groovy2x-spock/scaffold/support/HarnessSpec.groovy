@@ -84,7 +84,11 @@ abstract class HarnessSpec extends Specification {
     // directly to AppExecutor, so a script metaClass override does not reliably
     // intercept compiled peer instances.
     protected static final java.util.concurrent.atomic.AtomicReference PAUSE_EXECUTION_OVERRIDE = new java.util.concurrent.atomic.AtomicReference(null)
+    // One holder per scheduling API: the closure sees only the argument list, so a
+    // single shared holder would let a runIn override swallow runInMillis schedules
+    // (and vice versa) and a delay-unit regression would pass unnoticed.
     protected static final java.util.concurrent.atomic.AtomicReference RUN_IN_OVERRIDE = new java.util.concurrent.atomic.AtomicReference(null)
+    protected static final java.util.concurrent.atomic.AtomicReference RUN_IN_MILLIS_OVERRIDE = new java.util.concurrent.atomic.AtomicReference(null)
 
     @Shared protected AppExecutor appExecutor
     // Every runIn(delay, handler[, opts]) the script scheduled this test, newest last.
@@ -166,7 +170,7 @@ abstract class HarnessSpec extends Specification {
             SHARED_RUN_IN_CALLS << (args as List)
         }
         mock.runInMillis(*_) >> { args ->
-            def ov = RUN_IN_OVERRIDE.get()
+            def ov = RUN_IN_MILLIS_OVERRIDE.get()
             if (ov != null) return ov.call(args as List)
             SHARED_RUN_IN_MILLIS_CALLS << (args as List)
         }
@@ -262,6 +266,7 @@ abstract class HarnessSpec extends Specification {
         NOW_OVERRIDE.set(null)
         PAUSE_EXECUTION_OVERRIDE.set(null)
         RUN_IN_OVERRIDE.set(null)
+        RUN_IN_MILLIS_OVERRIDE.set(null)
         // Drop per-test metaClass writes from previous features before
         // re-installing the standard hooks. Both wipes matter when
         // SHARED_SCRIPT is reused across spec classes: removeMetaClass(class)
@@ -287,6 +292,11 @@ abstract class HarnessSpec extends Specification {
     /**
      * Create a peer execution of the compiled app with the same AppExecutor
      * and atomicState backing. Class-static production fields remain shared.
+     *
+     * The peer gets only the standard harness wires, NOT a subclass's
+     * {@code wireScriptOverrides()} additions — those land on {@code script}
+     * alone, so a spec that stubs a surface there must stub it on the peer too
+     * rather than assume parity.
      */
     protected Object newCompiledScriptInstance() {
         HubitatAppScript peer = script.getClass().getDeclaredConstructor().newInstance() as HubitatAppScript
@@ -303,6 +313,7 @@ abstract class HarnessSpec extends Specification {
         NOW_OVERRIDE.set(null)
         PAUSE_EXECUTION_OVERRIDE.set(null)
         RUN_IN_OVERRIDE.set(null)
+        RUN_IN_MILLIS_OVERRIDE.set(null)
     }
 
     /**

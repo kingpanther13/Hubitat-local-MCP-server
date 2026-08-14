@@ -31,6 +31,11 @@ import support.ToolSpecBase
  * #351): a cloud request reads relayBudgetMs (default 8000), a LAN request reads
  * lanBudgetMs (default 0 = off) -- so with the LAN knob unset, LAN loops keep
  * their pre-#348 shape byte-for-byte, covered by the not-exceeded cases below.
+ *
+ * Two features here are master-gate coverage rather than budget coverage: they sit
+ * beside the #351 write-concurrency knob because they share its issue. They pin that
+ * hub_call_device_replace's list_options mode answers the READ master while every
+ * other call stays a Write-master write.
  */
 class RelayBudgetSpec extends ToolSpecBase {
 
@@ -99,8 +104,10 @@ class RelayBudgetSpec extends ToolSpecBase {
         when: 'the same tool WITHOUT the read mode is still gated as the write it is'
         script.executeTool('hub_call_device_replace', [old_device_id: '12', new_device_id: '13', confirm: true])
 
-        then:
-        thrown(IllegalArgumentException)
+        then: 'refused by the Write master -- named, so the best-practice gate cannot stand in for it'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('Write tools are disabled')
+        ex.message.contains('hub_call_device_replace')
     }
 
     @Unroll

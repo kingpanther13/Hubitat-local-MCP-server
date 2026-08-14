@@ -632,8 +632,10 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         result.abortReason == 'app_update_threw'
         result.error.contains('Verify with hub_get_source')
 
-        and: 'the deterministic body reports the lost self-update response as partial'
-        result.apps.find { it.isSelf } == null || result.apps.find { it.isSelf }.success != true
+        and: 'the deterministic body reports the lost self-update response as a failed self entry'
+        def selfApp = result.apps.find { it.isSelf }
+        selfApp.success == false
+        selfApp.error.contains('self-update recompile lost response')
     }
 
     // -------- issue #351: in-flight deploy guard --------
@@ -988,12 +990,35 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         atomicStateMap.packageDeployInFlight == null
     }
 
+    def "a scheduling failure releases the marker and answers with recovery guidance"() {
+        // Nothing was deployed, so the caller must be told the retry is safe -- otherwise
+        // the only actionable reading of a bare error is "something may have half-landed".
+        given:
+        enableDev()
+        RUN_IN_OVERRIDE.set({ List call -> throw new IllegalStateException('scheduler unavailable') })
+
+        when:
+        def result = script.toolUpdatePackage([ref: 'main', confirm: true])
+
+        then:
+        result.success == false
+        result.isError == true
+        result.status == 'schedule_failed'
+        result.error.contains('scheduler unavailable')
+        result.note.contains('retry')
+
+        and: 'the reservation is released, so the retry is not refused as a duplicate'
+        atomicStateMap.packageDeployInFlight == null
+    }
+
     def "a stale worker invocation cannot execute or clear a newer package marker"() {
         given:
         enableDev()
         registerAppTypes()
         def calls = []
-        script.metaClass._updatePackageBody = { Map a, String ref, boolean dryRun ->
+        // Four params: the worker calls _updatePackageBody(args, ref, false, workerContext).
+        // A three-param stub would never intercept, so calls.isEmpty() would prove nothing.
+        script.metaClass._updatePackageBody = { Map a, String ref, boolean dryRun, Map ctx ->
             calls << ref
             [success: true]
         }
@@ -1003,13 +1028,20 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         ]
         script._writeStateCacheInvalidate()
 
-        when:
+        when: 'the stale invocation fires'
         script.runPackageDeploy([requestId: 'pkg-old'])
 
         then:
         calls.isEmpty()
         atomicStateMap.packageDeployInFlight.requestId == 'pkg-new'
         atomicStateMap.packageDeployInFlight.ref == 'new-ref'
+
+        when: 'the matching invocation fires -- positive control that the stub does intercept'
+        script.runPackageDeploy([requestId: 'pkg-new'])
+
+        then: 'exactly one body call, for the newer marker'
+        calls == ['new-ref']
+        atomicStateMap.packageDeployInFlight == null
     }
 
     def "dryRun neither checks nor sets the guard"() {
