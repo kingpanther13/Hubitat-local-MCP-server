@@ -23,6 +23,21 @@ MODERN_PROTOCOL_VERSION = "2026-07-28"
 DEFAULT_SDK_INPUT_REQUIRED_MAX_ROUNDS = 10
 RELAY_LEG_CEILING_SECONDS = 9.5
 MINIMUM_LOGICAL_SECONDS = 10.0
+# One name for the capacity-recovery callable in the shared hub config: the loader
+# writes it and the MRTR proof reads it through this constant, so a key typo is a
+# NameError in the fast lane instead of silently disabled recovery at hub time.
+CAPACITY_RECOVERY_CONFIG_KEY = "clear_load_throttle"
+
+
+def build_capacity_recovery(e2e_test_module: Any, client: Any) -> Callable[[str], bool]:
+    """Build the platform-limiter recovery callable from the e2e suite's machinery.
+
+    Lives here (importable without the SDK closure) so the fast-lane unit tests can
+    exercise the real construction path: TestRunner construction is plain attribute
+    assignment with no hub I/O, and _clear_load_throttle declines deterministically
+    when WATCHDOG_URL is unset.
+    """
+    return e2e_test_module.TestRunner(client)._clear_load_throttle
 
 
 def extract_bps_acknowledgment_key(guide: Any) -> str:

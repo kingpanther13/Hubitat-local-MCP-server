@@ -56,11 +56,13 @@ except ImportError as exc:
 REQUIREMENTS = Path(__file__).resolve().parent / "sdk-conformance-requirements.txt"
 
 from sdk_conformance_helpers import (  # noqa: E402  (import guard above supplies its remediation)
+    CAPACITY_RECOVERY_CONFIG_KEY,
     DEFAULT_SDK_INPUT_REQUIRED_MAX_ROUNDS,
     MODERN_PROTOCOL_VERSION,
     RequestTrace,
     assert_exact_rule_log_messages,
     assert_mrtr_owner_rounds,
+    build_capacity_recovery,
     cleanup_preserving_primary,
     extract_bps_acknowledgment_key,
     find_exact_fixture_id_with_settle,
@@ -187,9 +189,9 @@ def _load_hub_config() -> dict:
         "supported_versions": e2e_test.SUPPORTED_PROTOCOL_VERSIONS,
         # The e2e suite's platform-limiter recovery (watchdog app bounce), shared so the
         # MRTR proof can recover from the same capacity condition the suite already
-        # handles. Lives on TestRunner (construction is plain attribute assignment, no
-        # hub I/O); returns False without side effects when WATCHDOG_URL is unset.
-        "clear_load_throttle": e2e_test.TestRunner(client)._clear_load_throttle,
+        # handles. Construction and the no-watchdog decline are pinned by fast-lane
+        # unit tests through build_capacity_recovery.
+        CAPACITY_RECOVERY_CONFIG_KEY: build_capacity_recovery(e2e_test, client),
     }
 
 
@@ -425,7 +427,7 @@ class ModernMrtrScenario:
             # fixture. A deterministic nonconformance fails attempt 2 identically, so
             # nothing real is masked; without bounce infrastructure, fail as-is.
             detail = _failure_detail(first_error, self.config["safe_endpoint"])
-            bounce = self.config.get("clear_load_throttle")
+            bounce = self.config.get(CAPACITY_RECOVERY_CONFIG_KEY)
             if bounce is None:
                 raise
             print(f"         [CAPACITY] MRTR proof attempt 1 failed: {detail}")

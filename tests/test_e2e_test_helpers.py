@@ -1593,22 +1593,28 @@ def test_delete_bundle_uses_logical_write_helper(monkeypatch):
     )]
 
 
-def test_clear_load_throttle_is_the_conformance_bounce_seam(monkeypatch):
-    """sdk_conformance_test._load_hub_config hands the SDK MRTR proof
-    TestRunner._clear_load_throttle as its capacity-recovery callable; pin the
-    interface (a rename or move breaks the conformance step only at hub time)
-    and its no-watchdog behavior: decline deterministically, no network I/O."""
+def test_build_capacity_recovery_is_the_conformance_bounce_seam(monkeypatch):
+    """sdk_conformance_test._load_hub_config wires the SDK MRTR proof's
+    capacity-recovery callable through sdk_conformance_helpers.build_capacity_recovery
+    under CAPACITY_RECOVERY_CONFIG_KEY. Exercise that construction path here (the
+    helpers module is importable without the SDK closure; the conformance script is
+    not): the builder must hand back TestRunner's bounce, TestRunner construction
+    must do no hub I/O, and with WATCHDOG_URL unset the bounce must decline
+    deterministically without touching the network."""
+    import sdk_conformance_helpers as sch
+
     monkeypatch.delenv("WATCHDOG_URL", raising=False)
     monkeypatch.delenv("HUBITAT_APP_ID", raising=False)
     client = et.HubitatMcpClient(
         hub_url="https://cloud.hubitat.com/api/00000000-0000-0000-0000-000000000000",
         app_id="38", access_token="dummy",
     )
-    runner = et.TestRunner(client)
 
     def _no_network(*args, **kwargs):
         raise AssertionError("bounce without WATCHDOG_URL must not touch the network")
 
     monkeypatch.setattr(et.requests, "post", _no_network)
-    assert callable(runner._clear_load_throttle)
-    assert runner._clear_load_throttle("interface pin") is False
+    bounce = sch.build_capacity_recovery(et, client)
+    assert bounce.__func__ is et.TestRunner._clear_load_throttle
+    assert sch.CAPACITY_RECOVERY_CONFIG_KEY == "clear_load_throttle"
+    assert bounce("interface pin") is False
