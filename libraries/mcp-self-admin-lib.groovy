@@ -491,7 +491,7 @@ def toolUpdatePackage(args) {
     Map refusal = null
     synchronized (WRITE_RESERVATION_LOCK) {
         _packageSweepMarkerLocked()
-        def inFlight = atomicState.packageDeployInFlight
+        def inFlight = _writeStateValueLocked("packageDeployInFlight")
         if (inFlight instanceof Map) {
             def summary = [ref: inFlight.ref, requestId: inFlight.requestId,
                            startedAt: inFlight.startedAt]
@@ -507,11 +507,11 @@ def toolUpdatePackage(args) {
             ]
         }
         if (refusal == null) {
-            atomicState.packageDeployInFlight = [
+            _writeStateSetLocked("packageDeployInFlight", [
                 requestId: requestId, ref: ref, startedAt: startedAt,
                 phase: "queued", expiresAt: startedAt + _packageDeployRecoveryMs(),
                 args: storedArgs
-            ]
+            ])
         }
     }
     if (refusal != null) return refusal
@@ -519,9 +519,9 @@ def toolUpdatePackage(args) {
         runIn(1, "runPackageDeploy", [data: [requestId: requestId]])
     } catch (Exception scheduleErr) {
         synchronized (WRITE_RESERVATION_LOCK) {
-            def current = atomicState.packageDeployInFlight
+            def current = _writeStateValueLocked("packageDeployInFlight")
             if (current instanceof Map && current.requestId?.toString() == requestId) {
-                atomicState.packageDeployInFlight = null
+                _writeStateSetLocked("packageDeployInFlight", null)
                 try { atomicState.remove("packageDeployInFlight") } catch (Exception ignored) { }
             }
         }
@@ -545,14 +545,14 @@ def runPackageDeploy(Map job = [:]) {
     String requestId = job?.requestId?.toString()
     Map marker = null
     synchronized (WRITE_RESERVATION_LOCK) {
-        def current = atomicState.packageDeployInFlight
+        def current = _writeStateValueLocked("packageDeployInFlight")
         if (current instanceof Map && current.requestId?.toString() == requestId
                 && current.args instanceof Map && current.ref
                 && !_writeExecutionLiveLocked(requestId)) {
             marker = [:] + (current as Map)
             marker.phase = "running"
             marker.expiresAt = now() + _packageDeployRecoveryMs()
-            atomicState.packageDeployInFlight = marker
+            _writeStateSetLocked("packageDeployInFlight", marker)
             LIVE_WRITE_EXECUTIONS.add(requestId)
         }
     }
@@ -581,9 +581,9 @@ def runPackageDeploy(Map job = [:]) {
     } finally {
         synchronized (WRITE_RESERVATION_LOCK) {
             try {
-                def current = atomicState.packageDeployInFlight
+                def current = _writeStateValueLocked("packageDeployInFlight")
                 if (current instanceof Map && current.requestId?.toString() == requestId) {
-                    atomicState.packageDeployInFlight = null
+                    _writeStateSetLocked("packageDeployInFlight", null)
                     atomicState.remove("packageDeployInFlight")
                 }
             } catch (Exception ignored) {

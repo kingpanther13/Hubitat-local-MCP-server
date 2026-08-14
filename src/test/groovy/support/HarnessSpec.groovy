@@ -319,6 +319,11 @@ abstract class HarnessSpec extends Specification {
             'MRTR_TERMINAL_EVIDENCE')
         terminalEvidenceField.accessible = true
         (terminalEvidenceField.get(null) as Map).clear()
+        // The write-reservation machinery serves mrtrRequests / writeRequestLeases /
+        // packageDeployInFlight from a class-static snapshot of atomicState. Clearing
+        // atomicStateMap above without this would leave the previous feature's snapshot
+        // as the read path -- the same reload the hub gets from a recompile/restart.
+        script._writeStateCacheInvalidate()
         settingsMap.clear()
         settingsMap.selectedDevices = []
         // The issue #299 best-practice gate ships ON (settings.enableMandatoryBPS != false), which

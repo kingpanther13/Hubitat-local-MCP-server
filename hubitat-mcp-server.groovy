@@ -25,6 +25,16 @@
 @groovy.transform.Field static final Set LIVE_WRITE_EXECUTIONS = new java.util.HashSet()
 @groovy.transform.Field static final Map MRTR_WORK_ITEMS = new java.util.HashMap()
 @groovy.transform.Field static final Map MRTR_TERMINAL_EVIDENCE = new java.util.HashMap()
+// Snapshots of the three atomicState keys the reservation/MRTR machinery below reads:
+// every atomicState property access is a hub DB round trip, and one tool call reads
+// these keys many times over (the scheduled-worker observation re-reads mrtrRequests
+// every 250ms). They are read once and served from here; every writer persists
+// write-through, so the snapshot and atomicState cannot diverge. Touched only while
+// holding WRITE_RESERVATION_LOCK.
+@groovy.transform.Field static final Map WRITE_STATE_CACHE = new java.util.HashMap()
+// Keys already proven to hold a durable Map. atomicState.updateMapValue requires one
+// to be there, which every per-entry write path used to re-check with its own read.
+@groovy.transform.Field static final Set WRITE_STATE_DURABLE_MAPS = new java.util.HashSet()
 
 definition(
     name: "MCP Rule Server",
@@ -526,6 +536,9 @@ def getChildAppById(appId) {
 
 def installed() {
     log.info "MCP Rule Server installed"
+    // A reinstall on an already-loaded class starts from an empty atomicState, so
+    // drop any write-reservation snapshot the removed instance left in the statics.
+    synchronized (WRITE_RESERVATION_LOCK) { _writeStateCacheInvalidate() }
     initialize()
 }
 
@@ -1822,6 +1835,82 @@ private boolean _isActualWriteCall(outerToolName, leafToolName, args) {
 private long _writeLeaseMs() { 3L * 60L * 1000L }
 private long _packageDeployRecoveryMs() { 10L * 60L * 1000L }
 
+// Caller holds WRITE_RESERVATION_LOCK for every helper down to
+// _writeStateCacheInvalidate. The three keys are named literally rather than read
+// dynamically so the durable surface of this cache stays greppable.
+private def _writeStateDurableRead(String stateKey) {
+    if (stateKey == "mrtrRequests") return atomicState.mrtrRequests
+    if (stateKey == "writeRequestLeases") return atomicState.writeRequestLeases
+    return atomicState.packageDeployInFlight
+}
+
+private void _writeStateDurableWrite(String stateKey, value) {
+    if (stateKey == "mrtrRequests") atomicState.mrtrRequests = value
+    else if (stateKey == "writeRequestLeases") atomicState.writeRequestLeases = value
+    else atomicState.packageDeployInFlight = value
+}
+
+// Map-shaped keys, snapshotted detached from the durable value the way a fresh
+// atomicState read returns one. The returned map is the live snapshot: read it
+// freely, but route every mutation through the put/set helpers below so
+// atomicState follows.
+private Map _writeStateMapLocked(String stateKey) {
+    def cached = WRITE_STATE_CACHE[stateKey]
+    if (cached instanceof Map) return cached
+    def stored = _writeStateDurableRead(stateKey)
+    Map loaded = [:]
+    if (stored instanceof Map) {
+        loaded = _mrtrCopyMap(stored as Map)
+        WRITE_STATE_DURABLE_MAPS.add(stateKey)
+    }
+    WRITE_STATE_CACHE[stateKey] = loaded
+    return loaded
+}
+
+// Whole-value keys, where a null stored value is meaningful and distinct from
+// "not yet snapshotted".
+private def _writeStateValueLocked(String stateKey) {
+    if (WRITE_STATE_CACHE.containsKey(stateKey)) return WRITE_STATE_CACHE[stateKey]
+    def stored = _writeStateDurableRead(stateKey)
+    def snapshot = (stored instanceof Map) ? _mrtrCopyMap(stored as Map) : stored
+    WRITE_STATE_CACHE[stateKey] = snapshot
+    return snapshot
+}
+
+private void _writeStateSetLocked(String stateKey, value) {
+    WRITE_STATE_CACHE[stateKey] = value
+    if (value instanceof Map) WRITE_STATE_DURABLE_MAPS.add(stateKey)
+    _writeStateDurableWrite(stateKey, value)
+}
+
+// One entry of a map-shaped key. A null record clears the entry the way the
+// per-entry durable write does — as a null value, not a removal, so the sweeps
+// that keep only Map values still see the size change that rewrites the map and
+// drops it. That shortcut needs a Map already at the key, so the first entry —
+// and any hub that rejects the shortcut — persists the snapshot itself instead.
+// The record is stored by reference: a caller must not mutate it after handing
+// it over, the same contract the durable write already implied.
+private void _writeStatePutLocked(String stateKey, String entryId, Map rec) {
+    Map cached = _writeStateMapLocked(stateKey)
+    cached[entryId] = rec
+    if (!WRITE_STATE_DURABLE_MAPS.contains(stateKey)) {
+        _writeStateSetLocked(stateKey, cached)
+        return
+    }
+    try {
+        atomicState.updateMapValue(stateKey, entryId, rec)
+    } catch (Exception ignored) {
+        _writeStateDurableWrite(stateKey, cached)
+    }
+}
+
+// Next access reloads from atomicState. A recompile/restart empties the statics the
+// same way; this is the seam that models that boundary without one.
+private void _writeStateCacheInvalidate() {
+    WRITE_STATE_CACHE.clear()
+    WRITE_STATE_DURABLE_MAPS.clear()
+}
+
 // Caller holds WRITE_RESERVATION_LOCK. A package marker is terminal only when
 // the durable outcome names that exact request; timestamps and age cannot prove
 // that a scheduled worker stopped.
@@ -1837,7 +1926,7 @@ private boolean _packageMarkerHasTerminalEvidenceLocked(marker) {
 // loaded app class owns it. Removing it here is atomic with admission/capacity:
 // a delayed old runIn callback then fails its requestId check before any write.
 private boolean _packageSweepMarkerLocked() {
-    def marker = atomicState.packageDeployInFlight
+    def marker = _writeStateValueLocked("packageDeployInFlight")
     if (!(marker instanceof Map)) return false
     String requestId = marker.requestId?.toString()
     boolean terminal = _packageMarkerHasTerminalEvidenceLocked(marker)
@@ -1851,7 +1940,7 @@ private boolean _packageSweepMarkerLocked() {
     boolean expiredAndInactive = !structurallyInvalid && expiresAt <= now() &&
         !_writeExecutionLiveLocked(requestId)
     if (!(terminal || structurallyInvalid || expiredAndInactive)) return false
-    atomicState.packageDeployInFlight = null
+    _writeStateSetLocked("packageDeployInFlight", null)
     try { atomicState.remove("packageDeployInFlight") } catch (Exception ignored) { }
     return true
 }
@@ -1864,44 +1953,37 @@ private boolean _writeExecutionLiveLocked(executionId) {
 }
 
 private void _writeSweepRequestsLocked() {
-    def stored = atomicState.writeRequestLeases
-    if (!(stored instanceof Map)) return
+    def stored = _writeStateMapLocked("writeRequestLeases")
     long at = now()
     def kept = stored.findAll { k, v ->
         v instanceof Map && ((_writeExecutionLiveLocked(k)) ||
             (v.expiresAt != null && (v.expiresAt as Long) > at))
     }
-    if (kept.size() != stored.size()) atomicState.writeRequestLeases = kept
+    if (kept.size() != stored.size()) _writeStateSetLocked("writeRequestLeases", kept)
 }
 
 private List _activeWritesLocked() {
     _packageSweepMarkerLocked()
     long at = now()
     def active = []
-    def mrtr = atomicState.mrtrRequests
-    if (mrtr instanceof Map) {
-        mrtr.values().each { rec ->
-            if (rec instanceof Map && rec.status == "active" &&
-                    (_writeExecutionLiveLocked(rec.claimId) ||
-                     (rec.expiresAt != null && (rec.expiresAt as Long) > at))) {
-                active << [tool: rec.leafTool, startedAt: rec.startedAt, transport: "mrtr"]
-            }
+    _writeStateMapLocked("mrtrRequests").values().each { rec ->
+        if (rec instanceof Map && rec.status == "active" &&
+                (_writeExecutionLiveLocked(rec.claimId) ||
+                 (rec.expiresAt != null && (rec.expiresAt as Long) > at))) {
+            active << [tool: rec.leafTool, startedAt: rec.startedAt, transport: "mrtr"]
         }
     }
-    def requests = atomicState.writeRequestLeases
-    if (requests instanceof Map) {
-        requests.each { leaseId, rec ->
-            if (rec instanceof Map && (_writeExecutionLiveLocked(leaseId) ||
-                    (rec.expiresAt != null && (rec.expiresAt as Long) > at))) {
-                active << [tool: rec.tool, startedAt: rec.startedAt, transport: rec.transport]
-            }
+    _writeStateMapLocked("writeRequestLeases").each { leaseId, rec ->
+        if (rec instanceof Map && (_writeExecutionLiveLocked(leaseId) ||
+                (rec.expiresAt != null && (rec.expiresAt as Long) > at))) {
+            active << [tool: rec.tool, startedAt: rec.startedAt, transport: rec.transport]
         }
     }
     // hub_update_package deliberately returns before its scheduled worker finishes.
     // Keep that background write in the same global cap until its worker clears
     // the marker, exact terminal evidence exists, or the locked sweep proves its
     // recovery lease expired with no live owner. Age never evicts a live worker.
-    def packageMarker = atomicState.packageDeployInFlight
+    def packageMarker = _writeStateValueLocked("packageDeployInFlight")
     if (packageMarker instanceof Map && packageMarker.startedAt != null &&
             !_packageMarkerHasTerminalEvidenceLocked(packageMarker)) {
         long startedAt = packageMarker.startedAt as Long
@@ -1954,15 +2036,7 @@ def _writeReserveRequest(toolName, String transport) {
             long at = now()
             def rec = [tool: toolName?.toString(), startedAt: at,
                        transport: transport ?: "legacy", expiresAt: at + _writeLeaseMs()]
-            if (!(atomicState.writeRequestLeases instanceof Map)) atomicState.writeRequestLeases = [:]
-            try {
-                atomicState.updateMapValue("writeRequestLeases", leaseId, rec)
-            } catch (Exception ignored) {
-                def all = [:]
-                if (atomicState.writeRequestLeases instanceof Map) all.putAll(atomicState.writeRequestLeases)
-                all[leaseId] = rec
-                atomicState.writeRequestLeases = all
-            }
+            _writeStatePutLocked("writeRequestLeases", leaseId, rec)
             LIVE_WRITE_EXECUTIONS.add(leaseId)
             outcome = [accepted: true, leaseId: leaseId]
         }
@@ -1975,12 +2049,7 @@ private void _writeReleaseRequest(String leaseId) {
     if (leaseId == null) return
     synchronized (WRITE_RESERVATION_LOCK) {
         try {
-            atomicState.updateMapValue("writeRequestLeases", leaseId, null)
-        } catch (Exception ignored) {
-            def all = [:]
-            if (atomicState.writeRequestLeases instanceof Map) all.putAll(atomicState.writeRequestLeases)
-            all.remove(leaseId)
-            atomicState.writeRequestLeases = all
+            _writeStatePutLocked("writeRequestLeases", leaseId, null)
         } finally {
             LIVE_WRITE_EXECUTIONS.remove(leaseId)
         }
@@ -2113,15 +2182,7 @@ def _mrtrScheduleObserveWaitMs(String leafTool = null) {
 }
 
 private void _mrtrPutLocked(String stateId, Map rec) {
-    if (!(atomicState.mrtrRequests instanceof Map)) atomicState.mrtrRequests = [:]
-    try {
-        atomicState.updateMapValue("mrtrRequests", stateId, rec)
-    } catch (Exception e) {
-        def all = [:]
-        if (atomicState.mrtrRequests instanceof Map) all.putAll(atomicState.mrtrRequests)
-        all[stateId] = rec
-        atomicState.mrtrRequests = all
-    }
+    _writeStatePutLocked("mrtrRequests", stateId, rec)
 }
 
 // Hubitat can expose an older atomicState snapshot after the app is disabled and
@@ -2159,8 +2220,7 @@ private void _mrtrSweepTerminalEvidenceLocked() {
             (entry.value.expiresAt as Long) <= at
     }.collect { it.key }.each { MRTR_TERMINAL_EVIDENCE.remove(it) }
     if (MRTR_TERMINAL_EVIDENCE.size() <= _mrtrMaxRecords()) return
-    def stored = atomicState.mrtrRequests
-    def durableIds = (stored instanceof Map) ? (stored.keySet() as Set) : ([] as Set)
+    def durableIds = _writeStateMapLocked("mrtrRequests").keySet() as Set
     def removable = MRTR_TERMINAL_EVIDENCE.entrySet().findAll {
         !durableIds.contains(it.key)
     }.sort { a, b ->
@@ -2179,8 +2239,7 @@ private void _mrtrSweepTerminalEvidenceLocked() {
 // trimmed for storage pressure; live requestState records are never evicted.
 private List _mrtrSweepLocked() {
     _mrtrSweepTerminalEvidenceLocked()
-    def stored = atomicState.mrtrRequests
-    if (!(stored instanceof Map)) return []
+    def stored = _writeStateMapLocked("mrtrRequests")
     long at = now()
     def kept = [:]
     def cleanup = []
@@ -2207,7 +2266,7 @@ private List _mrtrSweepLocked() {
             kept.remove(it.key)
         }
     }
-    if (kept.size() != stored.size()) atomicState.mrtrRequests = kept
+    if (kept.size() != stored.size()) _writeStateSetLocked("mrtrRequests", kept)
     return cleanup
 }
 
@@ -2220,8 +2279,7 @@ private void _mrtrSweep() {
 }
 
 private Map _mrtrFindActiveLocked(leafTool, Map binding) {
-    def stored = atomicState.mrtrRequests
-    if (!(stored instanceof Map)) return null
+    def stored = _writeStateMapLocked("mrtrRequests")
     long at = now()
     for (def entry : stored.entrySet()) {
         def rec = entry.value
@@ -2237,8 +2295,8 @@ private Map _mrtrFindActiveLocked(leafTool, Map binding) {
 }
 
 private boolean _mrtrMakeRoomLocked() {
-    def stored = atomicState.mrtrRequests
-    if (!(stored instanceof Map) || stored.size() < _mrtrMaxRecords()) return true
+    def stored = _writeStateMapLocked("mrtrRequests")
+    if (stored.size() < _mrtrMaxRecords()) return true
     def removable = stored.entrySet().findAll { it.value?.status != "active" }.sort { a, b ->
         long av = (a.value?.updatedAt ?: a.value?.startedAt ?: 0L) as Long
         long bv = (b.value?.updatedAt ?: b.value?.startedAt ?: 0L) as Long
@@ -2249,7 +2307,7 @@ private boolean _mrtrMakeRoomLocked() {
     kept.putAll(stored)
     int removeCount = Math.max(1, kept.size() - _mrtrMaxRecords() + 1)
     removable.take(Math.min(removeCount, removable.size())).each { kept.remove(it.key) }
-    atomicState.mrtrRequests = kept
+    _writeStateSetLocked("mrtrRequests", kept)
     return kept.size() < _mrtrMaxRecords()
 }
 
@@ -2309,9 +2367,8 @@ def _mrtrClaim(String stateId, outerTool, leafTool, Map binding) {
     String validationError = null
     synchronized (WRITE_RESERVATION_LOCK) {
         cleanup = _mrtrSweepLocked()
-        def stored = atomicState.mrtrRequests
-        def rec = (stored instanceof Map && stored[stateId] instanceof Map)
-            ? ([:] + (stored[stateId] as Map)) : null
+        def stored = _writeStateMapLocked("mrtrRequests")
+        def rec = (stored[stateId] instanceof Map) ? ([:] + (stored[stateId] as Map)) : null
         boolean executing = rec != null && _writeExecutionLiveLocked(rec.claimId)
         if (rec == null || (!executing &&
                 (rec.expiresAt == null || (rec.expiresAt as Long) <= now()))) {
@@ -2382,9 +2439,8 @@ private Map _mrtrObserveScheduled(String stateId, Map claim, long requestStarted
     long remainingBudget = Math.max(0L, deadline - now())
     while (true) {
         synchronized (WRITE_RESERVATION_LOCK) {
-            def stored = atomicState.mrtrRequests
-            def rec = (stored instanceof Map && stored[stateId] instanceof Map)
-                ? ([:] + (stored[stateId] as Map)) : null
+            def stored = _writeStateMapLocked("mrtrRequests")
+            def rec = (stored[stateId] instanceof Map) ? ([:] + (stored[stateId] as Map)) : null
             def evidence = MRTR_TERMINAL_EVIDENCE[stateId]
             boolean exactTerminal = evidence instanceof Map &&
                 evidence.claimId?.toString() == claimId &&
@@ -2474,9 +2530,8 @@ private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map re
 }
 
 private Map _mrtrOwnedRecordLocked(String stateId, Map claim) {
-    def stored = atomicState.mrtrRequests
-    def rec = (stored instanceof Map && stored[stateId] instanceof Map)
-        ? ([:] + (stored[stateId] as Map)) : null
+    def stored = _writeStateMapLocked("mrtrRequests")
+    def rec = (stored[stateId] instanceof Map) ? ([:] + (stored[stateId] as Map)) : null
     if (rec == null || rec.status != "active") return null
     if (rec.claimId?.toString() != claim?.claimId?.toString()) return null
     if (rec.claimedGeneration != claim?.generation) return null
@@ -2811,7 +2866,10 @@ private void _mrtrCleanupRecord(Map rec) {
 
 private Map _mrtrCloneNativeAppSlice(Map rec, Map outerArgs) {
     Map args = _mrtrLeafArguments(rec.outerTool?.toString(), rec.leafTool?.toString(), outerArgs) as Map
-    Map cp = (rec.checkpoint instanceof Map) ? ([:] + rec.checkpoint) : null
+    // Deep copy: the staging phases append to the checkpoint's own lists, and a
+    // shallow copy would land those appends in the shared requestState record
+    // before the slice decides what to store.
+    Map cp = (rec.checkpoint instanceof Map) ? _mrtrCopyMap(rec.checkpoint as Map) : null
     if (cp == null) {
         requireDestructiveConfirm(args?.confirm as Boolean)
         def rawSource = (args?.sourceAppId != null) ? args.sourceAppId : args?.appId
@@ -2904,7 +2962,10 @@ private Map _mrtrCloneNativeAppSlice(Map rec, Map outerArgs) {
 
 private Map _mrtrImportNativeAppSlice(Map rec, Map outerArgs) {
     Map args = _mrtrLeafArguments(rec.outerTool?.toString(), rec.leafTool?.toString(), outerArgs) as Map
-    Map cp = (rec.checkpoint instanceof Map) ? ([:] + rec.checkpoint) : null
+    // Deep copy: the staging phases append to the checkpoint's own lists, and a
+    // shallow copy would land those appends in the shared requestState record
+    // before the slice decides what to store.
+    Map cp = (rec.checkpoint instanceof Map) ? _mrtrCopyMap(rec.checkpoint as Map) : null
     if (cp == null) {
         requireDestructiveConfirm(args?.confirm as Boolean)
         if (args?.parentHintAppId == null) {

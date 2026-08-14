@@ -4608,6 +4608,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def marker = [requestId: 'pkg-live', ref: 'main', startedAt: 1234567880000L,
                       args: [ref: 'main', confirm: true]]
         atomicStateMap.packageDeployInFlight = marker
+        script._writeStateCacheInvalidate()
         def expectedMarker = new LinkedHashMap(marker)
 
         when:
@@ -4636,6 +4637,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def marker = [requestId: 'pkg-live', ref: 'main', startedAt: 1234567880000L,
                       args: [ref: 'main', confirm: true]]
         atomicStateMap.packageDeployInFlight = marker
+        script._writeStateCacheInvalidate()
         def expectedMarker = new LinkedHashMap(marker)
 
         when:
@@ -4666,6 +4668,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def marker = [requestId: 'pkg-live', ref: 'main', startedAt: 1234567880000L,
                       args: [ref: 'main', confirm: true]]
         atomicStateMap.packageDeployInFlight = marker
+        script._writeStateCacheInvalidate()
         def expectedMarker = new LinkedHashMap(marker)
 
         when:
@@ -4696,6 +4699,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             requestId: 'pkg-live', ref: 'main', startedAt: 1234567880000L,
             args: [ref: 'main', confirm: true]
         ]
+        script._writeStateCacheInvalidate()
 
         when:
         def mismatched = script._toolUpdateAppCode(

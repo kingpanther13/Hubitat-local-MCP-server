@@ -1649,7 +1649,7 @@ private Map _validatedPackageWorkerContext(packageWorkerContext) {
     if (!(packageWorkerContext instanceof Map) || packageWorkerContext.requestId == null ||
             packageWorkerContext.packageRef == null) return null
     synchronized (WRITE_RESERVATION_LOCK) {
-        def marker = atomicState.packageDeployInFlight
+        def marker = _writeStateValueLocked("packageDeployInFlight")
         if (marker instanceof Map && marker.requestId != null && marker.ref != null &&
                 marker.requestId.toString() == packageWorkerContext.requestId.toString() &&
                 marker.ref.toString() == packageWorkerContext.packageRef.toString()) {

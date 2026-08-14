@@ -658,6 +658,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         ]
         def expectedMarker = new LinkedHashMap(marker)
         atomicStateMap.packageDeployInFlight = marker
+        script._writeStateCacheInvalidate()
 
         when:
         def result = script.toolUpdatePackage([ref: 'main', confirm: true])
@@ -694,6 +695,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         ]
         def expectedMarker = new LinkedHashMap(marker)
         atomicStateMap.packageDeployInFlight = marker
+        script._writeStateCacheInvalidate()
         atomicStateMap.lastSelfDeploy = [success: true, at: GUARD_NOW - 300000L]   // predates the marker
 
         when:
@@ -716,6 +718,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
         script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true, appId: a.appId] }
         atomicStateMap.packageDeployInFlight = [requestId: 'pkg-live', ref: 'feat/other', startedAt: GUARD_NOW - 120000L]
+        script._writeStateCacheInvalidate()
         atomicStateMap.lastSelfDeploy = [success: true, sourceMode: 'importUrl', at: GUARD_NOW - 10000L]
 
         when:
@@ -798,6 +801,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
                       args: [ref: 'feat/other', confirm: true]]
         def expectedMarker = new LinkedHashMap(marker)
         atomicStateMap.packageDeployInFlight = marker
+        script._writeStateCacheInvalidate()
 
         when:
         def result = script.toolUpdatePackage([ref: 'main', confirm: true])
@@ -820,6 +824,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
             phase: 'queued', expiresAt: GUARD_NOW - 1L,
             args: [ref: 'old-ref', confirm: true]
         ]
+        script._writeStateCacheInvalidate()
 
         when:
         def accepted = script.toolUpdatePackage([ref: 'main', confirm: true])
@@ -889,6 +894,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
             requestId: 'pkg-finished', ref: 'feat/finished', startedAt: GUARD_NOW - 60000L,
             args: [ref: 'feat/finished', confirm: true]
         ]
+        script._writeStateCacheInvalidate()
         atomicStateMap.lastSelfDeploy = [
             success: true, sourceMode: 'package', requestId: 'pkg-finished',
             ref: 'feat/finished', at: GUARD_NOW - 1000L
@@ -973,6 +979,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
             requestId: 'pkg-new', ref: 'new-ref', startedAt: GUARD_NOW,
             args: [ref: 'new-ref', confirm: true, __packageRequestId: 'pkg-new']
         ]
+        script._writeStateCacheInvalidate()
 
         when:
         script.runPackageDeploy([requestId: 'pkg-old'])
@@ -989,6 +996,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         registerAppTypes()
         def seeded = [ref: 'feat/other', startedAt: GUARD_NOW - 60000L]
         atomicStateMap.packageDeployInFlight = seeded
+        script._writeStateCacheInvalidate()
 
         when: 'a plan-only run while a deploy is in flight'
         def result = script.toolUpdatePackage([ref: 'main', dryRun: true])

@@ -1125,6 +1125,9 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         when: 'disable/enable exposes the older claimed-active snapshot'
         atomicStateMap.mrtrRequests[stateId] = activeSnapshot
+        // Reloading atomicState is what makes the older snapshot the read path again;
+        // MRTR_TERMINAL_EVIDENCE deliberately survives, and is the only repair proof.
+        script._writeStateCacheInvalidate()
         def recovered = script._mrtrClaim(stateId, 'hub_set_rule', 'hub_set_rule', binding) as Map
 
         then: 'the exact terminal generation is recovered, never treated as still running'
@@ -1169,6 +1172,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         when: 'the exposed active snapshot does not identify that exact execution'
         activeSnapshot[field] = mismatch
         atomicStateMap.mrtrRequests[stateId] = activeSnapshot
+        script._writeStateCacheInvalidate()
         script._mrtrSweep()
         Map afterSweep = atomicStateMap.mrtrRequests[stateId] as Map
         def replay = script._mrtrReserve(
@@ -1446,6 +1450,37 @@ class MrtrContinuationSpec extends ToolSpecBase {
         !(atomicStateMap.writeRequestLeases ?: [:]).values().any { it instanceof Map }
     }
 
+    def "write-reservation state is served from a write-through snapshot of atomicState"() {
+        given:
+        settingsMap.maxConcurrentWrites = 1
+
+        when: 'a lease is taken through the ordinary reservation path'
+        Map reservation = script._writeReserveRequest('hub_call_device_command', 'legacy') as Map
+
+        then: 'atomicState carries it, so nothing in flight is lost to a reload'
+        reservation.accepted == true
+        (atomicStateMap.writeRequestLeases as Map)[reservation.leaseId as String].tool ==
+            'hub_call_device_command'
+
+        when: 'atomicState is rewritten behind the snapshot, as only another JVM could'
+        atomicStateMap.writeRequestLeases = [seeded: [
+            tool: 'hub_set_variable', transport: 'modern',
+            startedAt: 1234567889000L, expiresAt: 1234567990000L
+        ]]
+
+        then: 'the loaded class keeps reading its own snapshot'
+        script._activeWrites()*.tool == ['hub_call_device_command']
+
+        when: 'a recompile/restart drops the snapshot'
+        script._writeStateCacheInvalidate()
+
+        then: 'atomicState is the read path again'
+        script._activeWrites()*.tool == ['hub_set_variable']
+
+        cleanup:
+        if (reservation?.leaseId) script._writeReleaseRequest(reservation.leaseId as String)
+    }
+
     def "an active write lease refuses a parallel device command before dispatch"() {
         given:
         settingsMap.enableWrite = true
@@ -1455,6 +1490,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
             tool: 'hub_set_variable', transport: 'modern',
             startedAt: 1234567889000L, expiresAt: 1234567990000L
         ]]
+        script._writeStateCacheInvalidate()
         def ran = 0
         script.metaClass.toolCallDeviceCommand = { Map a -> ran++; [success: true] }
 
@@ -1478,6 +1514,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
             tool: 'hub_call_device_command', transport: 'legacy',
             startedAt: 1234567889000L, expiresAt: 1234567990000L
         ]]
+        script._writeStateCacheInvalidate()
         def seen = null
         script.metaClass.toolGetHubInfo = { Map a -> seen = new LinkedHashMap(a); [identifyHubTriggered: true] }
 
@@ -1501,6 +1538,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
             tool: 'hub_call_device_command', transport: 'legacy',
             startedAt: 1234567889000L, expiresAt: 1234567990000L
         ]]
+        script._writeStateCacheInvalidate()
         def metricsArgs = []
         def firmwareArgs = []
         script.metaClass.toolGetHubPerformance = { Map a -> metricsArgs << new LinkedHashMap(a); [success: true] }
@@ -1528,6 +1566,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
             requestId: 'pkg-live', ref: 'feat/live', startedAt: 1234567800000L,
             phase: 'queued', expiresAt: 1234567920000L, args: [ref: 'feat/live']
         ]
+        script._writeStateCacheInvalidate()
         atomicStateMap.lastSelfDeploy = [
             success: true, sourceMode: 'importUrl', at: 1234567889000L
         ]
@@ -1550,6 +1589,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
             requestId: 'pkg-dead', ref: 'feat/dead', startedAt: 1234567200000L,
             phase: 'queued', expiresAt: 1234567889999L, args: [ref: 'feat/dead']
         ]
+        script._writeStateCacheInvalidate()
 
         when:
         Map reservation = script._writeReserveRequest('hub_call_device_command', 'legacy') as Map
@@ -1570,6 +1610,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
             requestId: 'pkg-finished', ref: 'feat/finished',
             startedAt: 1234567880000L, args: [ref: 'feat/finished']
         ]
+        script._writeStateCacheInvalidate()
         atomicStateMap.lastSelfDeploy = [
             success: true, sourceMode: 'package', requestId: 'pkg-finished',
             ref: 'feat/finished', at: 1234567889000L
@@ -1598,6 +1639,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
                 expiresAt: 1234567990000L, rounds: 0, generation: 0
             ]]
         }
+        script._writeStateCacheInvalidate()
         def before = atomicStateMap.mrtrRequests.keySet() as Set
 
         when:
@@ -1629,6 +1671,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
             startedAt: 1234567800000L, updatedAt: 1234567800000L,
             expiresAt: 1234567990000L, terminalResult: [success: true]
         ]
+        script._writeStateCacheInvalidate()
 
         when:
         Map result = script._mrtrReserve('hub_call_rule', 'hub_call_rule', targetBinding) as Map
@@ -1653,6 +1696,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
             leafTool: 'hub_clone_native_app', startedAt: 1L, updatedAt: 1L, expiresAt: 2L,
             rounds: 0, generation: 0, checkpoint: [clonerAppId: 77]
         ]]
+        script._writeStateCacheInvalidate()
         Map binding = script._mrtrBinding('hub_call_rule', 'hub_call_rule',
             [ruleId: [941, 942], action: 'stop']) as Map
 
@@ -1771,6 +1815,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def first = modernCall('hub_call_rule', original)
         String stateId = first.result.requestState
         atomicStateMap.mrtrRequests[stateId].expiresAt = 1L
+        script._writeStateCacheInvalidate()
         def expired = modernCall('hub_call_rule', original, stateId)
 
         then:
