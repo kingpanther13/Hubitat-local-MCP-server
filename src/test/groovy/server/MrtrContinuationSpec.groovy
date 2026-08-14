@@ -1437,7 +1437,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         settingsMap.maxConcurrentWrites = 1
         def activeDuring = []
         script.metaClass.toolRunRmRule = { Map a ->
-            activeDuring.addAll((atomicStateMap.writeRequestLeases ?: [:]).values().findAll { it instanceof Map })
+            activeDuring.addAll(script._activeWrites())
             [success: true, ruleIds: a.ruleId, results: []]
         }
 
@@ -1447,38 +1447,32 @@ class MrtrContinuationSpec extends ToolSpecBase {
         then:
         response.error == null
         activeDuring*.tool == ['hub_call_rule']
-        !(atomicStateMap.writeRequestLeases ?: [:]).values().any { it instanceof Map }
+        script._activeWrites().isEmpty()
     }
 
-    def "write-reservation state is served from a write-through snapshot of atomicState"() {
-        given:
+    def "an ordinary write lease is memory-only and ages out when its execution is gone"() {
+        given: 'a lease left behind by an execution that never reached its finally'
         settingsMap.maxConcurrentWrites = 1
+        (scriptStaticField('WRITE_REQUEST_LEASES') as Map)['write-abandoned'] = [
+            tool: 'hub_set_variable', transport: 'modern',
+            startedAt: 1234567700000L, expiresAt: 1234567889999L
+        ]
 
         when: 'a lease is taken through the ordinary reservation path'
         Map reservation = script._writeReserveRequest('hub_call_device_command', 'legacy') as Map
 
-        then: 'atomicState carries it, so nothing in flight is lost to a reload'
+        then: 'the expired one is swept, so a hard-killed execution cannot jam the cap'
         reservation.accepted == true
-        (atomicStateMap.writeRequestLeases as Map)[reservation.leaseId as String].tool ==
-            'hub_call_device_command'
-
-        when: 'atomicState is rewritten behind the snapshot, as only another JVM could'
-        atomicStateMap.writeRequestLeases = [seeded: [
-            tool: 'hub_set_variable', transport: 'modern',
-            startedAt: 1234567889000L, expiresAt: 1234567990000L
-        ]]
-
-        then: 'the loaded class keeps reading its own snapshot'
         script._activeWrites()*.tool == ['hub_call_device_command']
 
-        when: 'a recompile/restart drops the snapshot'
-        script._writeStateCacheInvalidate()
+        and: 'the cap costs no hub DB round trips -- nothing about it reaches atomicState'
+        atomicStateMap.writeRequestLeases == null
 
-        then: 'atomicState is the read path again'
-        script._activeWrites()*.tool == ['hub_set_variable']
+        when:
+        script._writeReleaseRequest(reservation.leaseId as String)
 
-        cleanup:
-        if (reservation?.leaseId) script._writeReleaseRequest(reservation.leaseId as String)
+        then:
+        script._activeWrites().isEmpty()
     }
 
     def "an active write lease refuses a parallel device command before dispatch"() {
@@ -1486,11 +1480,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         settingsMap.enableWrite = true
         settingsMap.enableMandatoryBPS = false
         settingsMap.maxConcurrentWrites = 1
-        atomicStateMap.writeRequestLeases = [busy: [
-            tool: 'hub_set_variable', transport: 'modern',
-            startedAt: 1234567889000L, expiresAt: 1234567990000L
-        ]]
-        script._writeStateCacheInvalidate()
+        script._writeReserveRequest('hub_set_variable', 'modern')
         def ran = 0
         script.metaClass.toolCallDeviceCommand = { Map a -> ran++; [success: true] }
 
@@ -1510,11 +1500,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         given:
         settingsMap.enableRead = true
         settingsMap.maxConcurrentWrites = 1
-        atomicStateMap.writeRequestLeases = [busy: [
-            tool: 'hub_call_device_command', transport: 'legacy',
-            startedAt: 1234567889000L, expiresAt: 1234567990000L
-        ]]
-        script._writeStateCacheInvalidate()
+        script._writeReserveRequest('hub_call_device_command', 'legacy')
         def seen = null
         script.metaClass.toolGetHubInfo = { Map a -> seen = new LinkedHashMap(a); [identifyHubTriggered: true] }
 
@@ -1534,11 +1520,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         settingsMap.enableRead = true
         settingsMap.enableWrite = true
         settingsMap.maxConcurrentWrites = 1
-        atomicStateMap.writeRequestLeases = [busy: [
-            tool: 'hub_call_device_command', transport: 'legacy',
-            startedAt: 1234567889000L, expiresAt: 1234567990000L
-        ]]
-        script._writeStateCacheInvalidate()
+        script._writeReserveRequest('hub_call_device_command', 'legacy')
         def metricsArgs = []
         def firmwareArgs = []
         script.metaClass.toolGetHubPerformance = { Map a -> metricsArgs << new LinkedHashMap(a); [success: true] }

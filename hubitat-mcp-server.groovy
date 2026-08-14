@@ -19,13 +19,19 @@
 
 // Hubitat creates a fresh script instance for each concurrent app execution, so
 // locking on `this` does not serialize them. A static @Field is shared by every
-// execution of this single-instance app and gives the compound persistent-state
-// reservations below one short JVM critical section without serializing tool work.
+// execution of this single-instance app and gives the compound reservations below
+// one short JVM critical section without serializing tool work.
 @groovy.transform.Field static final Object WRITE_RESERVATION_LOCK = new Object()
 @groovy.transform.Field static final Set LIVE_WRITE_EXECUTIONS = new java.util.HashSet()
+// Ordinary-write leases, keyed by leaseId. The global write cap is overload
+// protection, not crash safety: nothing here has to survive a recompile, and a
+// durable lease would cost two hub DB round trips on EVERY write call. A killed
+// execution that skipped its finally is aged out by the TTL sweep instead.
+// Touched only while holding WRITE_RESERVATION_LOCK.
+@groovy.transform.Field static final Map WRITE_REQUEST_LEASES = new java.util.HashMap()
 @groovy.transform.Field static final Map MRTR_WORK_ITEMS = new java.util.HashMap()
 @groovy.transform.Field static final Map MRTR_TERMINAL_EVIDENCE = new java.util.HashMap()
-// Snapshots of the three atomicState keys the reservation/MRTR machinery below reads:
+// Snapshots of the two atomicState keys the reservation/MRTR machinery below reads:
 // every atomicState property access is a hub DB round trip, and one tool call reads
 // these keys many times over (the scheduled-worker observation re-reads mrtrRequests
 // every 250ms). They are read once and served from here; every writer persists
@@ -537,8 +543,12 @@ def getChildAppById(appId) {
 def installed() {
     log.info "MCP Rule Server installed"
     // A reinstall on an already-loaded class starts from an empty atomicState, so
-    // drop any write-reservation snapshot the removed instance left in the statics.
-    synchronized (WRITE_RESERVATION_LOCK) { _writeStateCacheInvalidate() }
+    // drop the write-reservation leases and snapshot the removed instance left in
+    // the statics.
+    synchronized (WRITE_RESERVATION_LOCK) {
+        WRITE_REQUEST_LEASES.clear()
+        _writeStateCacheInvalidate()
+    }
     initialize()
 }
 
@@ -1836,17 +1846,15 @@ private long _writeLeaseMs() { 3L * 60L * 1000L }
 private long _packageDeployRecoveryMs() { 10L * 60L * 1000L }
 
 // Caller holds WRITE_RESERVATION_LOCK for every helper down to
-// _writeStateCacheInvalidate. The three keys are named literally rather than read
+// _writeStateCacheInvalidate. The two keys are named literally rather than read
 // dynamically so the durable surface of this cache stays greppable.
 private def _writeStateDurableRead(String stateKey) {
     if (stateKey == "mrtrRequests") return atomicState.mrtrRequests
-    if (stateKey == "writeRequestLeases") return atomicState.writeRequestLeases
     return atomicState.packageDeployInFlight
 }
 
 private void _writeStateDurableWrite(String stateKey, value) {
     if (stateKey == "mrtrRequests") atomicState.mrtrRequests = value
-    else if (stateKey == "writeRequestLeases") atomicState.writeRequestLeases = value
     else atomicState.packageDeployInFlight = value
 }
 
@@ -1883,13 +1891,11 @@ private void _writeStateSetLocked(String stateKey, value) {
     _writeStateDurableWrite(stateKey, value)
 }
 
-// One entry of a map-shaped key. A null record clears the entry the way the
-// per-entry durable write does — as a null value, not a removal, so the sweeps
-// that keep only Map values still see the size change that rewrites the map and
-// drops it. That shortcut needs a Map already at the key, so the first entry —
-// and any hub that rejects the shortcut — persists the snapshot itself instead.
-// The record is stored by reference: a caller must not mutate it after handing
-// it over, the same contract the durable write already implied.
+// One entry of a map-shaped key. atomicState.updateMapValue needs a Map already at
+// the key, so the first entry — and any hub that rejects the shortcut — persists the
+// snapshot itself instead. The record is stored by reference: a caller must not
+// mutate it after handing it over, the same contract the durable write already
+// implied.
 private void _writeStatePutLocked(String stateKey, String entryId, Map rec) {
     Map cached = _writeStateMapLocked(stateKey)
     cached[entryId] = rec
@@ -1945,21 +1951,23 @@ private boolean _packageSweepMarkerLocked() {
     return true
 }
 
-// Persistent TTLs recover abandoned state after a JVM/class reload. Until
-// then, only the owning execution's terminal/finally path clears this ID;
-// elapsed wall time alone can never prove a handler stopped running.
+// TTL sweeps recover what an abandoned execution never released — durably for the
+// MRTR and package records, in memory for write leases (a class reload drops those
+// outright). Until one fires, only the owning execution's terminal/finally path
+// clears this ID; elapsed wall time alone can never prove a handler stopped running.
 private boolean _writeExecutionLiveLocked(executionId) {
     return executionId != null && LIVE_WRITE_EXECUTIONS.contains(executionId.toString())
 }
 
+// An execution hard-killed before its finally leaves its lease behind. Age it out
+// so a stale entry cannot jam the cap for the rest of the JVM's life.
 private void _writeSweepRequestsLocked() {
-    def stored = _writeStateMapLocked("writeRequestLeases")
     long at = now()
-    def kept = stored.findAll { k, v ->
-        v instanceof Map && ((_writeExecutionLiveLocked(k)) ||
+    def expired = WRITE_REQUEST_LEASES.findAll { k, v ->
+        !(v instanceof Map) || !(_writeExecutionLiveLocked(k) ||
             (v.expiresAt != null && (v.expiresAt as Long) > at))
-    }
-    if (kept.size() != stored.size()) _writeStateSetLocked("writeRequestLeases", kept)
+    }.collect { it.key }
+    expired.each { WRITE_REQUEST_LEASES.remove(it) }
 }
 
 private List _activeWritesLocked() {
@@ -1973,7 +1981,7 @@ private List _activeWritesLocked() {
             active << [tool: rec.leafTool, startedAt: rec.startedAt, transport: "mrtr"]
         }
     }
-    _writeStateMapLocked("writeRequestLeases").each { leaseId, rec ->
+    WRITE_REQUEST_LEASES.each { leaseId, rec ->
         if (rec instanceof Map && (_writeExecutionLiveLocked(leaseId) ||
                 (rec.expiresAt != null && (rec.expiresAt as Long) > at))) {
             active << [tool: rec.tool, startedAt: rec.startedAt, transport: rec.transport]
@@ -2036,7 +2044,7 @@ def _writeReserveRequest(toolName, String transport) {
             long at = now()
             def rec = [tool: toolName?.toString(), startedAt: at,
                        transport: transport ?: "legacy", expiresAt: at + _writeLeaseMs()]
-            _writeStatePutLocked("writeRequestLeases", leaseId, rec)
+            WRITE_REQUEST_LEASES[leaseId] = rec
             LIVE_WRITE_EXECUTIONS.add(leaseId)
             outcome = [accepted: true, leaseId: leaseId]
         }
@@ -2049,7 +2057,7 @@ private void _writeReleaseRequest(String leaseId) {
     if (leaseId == null) return
     synchronized (WRITE_RESERVATION_LOCK) {
         try {
-            _writeStatePutLocked("writeRequestLeases", leaseId, null)
+            WRITE_REQUEST_LEASES.remove(leaseId)
         } finally {
             LIVE_WRITE_EXECUTIONS.remove(leaseId)
         }

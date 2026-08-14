@@ -120,6 +120,23 @@ def test_run_artifact_suffix_is_stable_and_unique_per_github_attempt():
     assert et._run_artifact_suffix(second_attempt) == "31680286237_2"
 
 
+def test_tool_error_payload_recovers_a_structured_refusal_and_tolerates_prose():
+    refusal = {
+        "success": False, "isError": True, "status": "too_many_writes_in_flight",
+        "limit": 1,
+        "active": [{"tool": "hub_create_variable", "startedAt": 1, "transport": "modern"}],
+        "note": "1 write operation(s) are already active (cap 1, the maxConcurrentWrites setting).",
+    }
+    raised = et.McpToolError("hub_set_variable", json.dumps(refusal))
+
+    assert et._tool_error_payload(raised) == refusal
+    # A plain-prose tool error carries no envelope, so a caller can test .get("status")
+    # without first proving the message was JSON.
+    assert et._tool_error_payload(et.McpToolError("hub_get_variable", "not found")) == {}
+    # A JSON scalar/array is not an envelope either.
+    assert et._tool_error_payload(et.McpToolError("hub_get_variable", "[1, 2]")) == {}
+
+
 @pytest.fixture
 def send_client(monkeypatch):
     """Build a fully seeded transport-isolated client for `_send` tests."""

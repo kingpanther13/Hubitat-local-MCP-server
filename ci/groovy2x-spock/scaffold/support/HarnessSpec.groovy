@@ -232,14 +232,15 @@ abstract class HarnessSpec extends Specification {
         // evidence in a class-static map so a Hubitat disable/enable bounce can
         // repair an older atomicState snapshot.  The shared compiled script and
         // fixed test clock would otherwise retain that evidence across features.
-        def terminalEvidenceField = script.getClass().getDeclaredField(
-            'MRTR_TERMINAL_EVIDENCE')
-        terminalEvidenceField.accessible = true
-        (terminalEvidenceField.get(null) as Map).clear()
-        // The write-reservation machinery serves mrtrRequests / writeRequestLeases /
-        // packageDeployInFlight from a class-static snapshot of atomicState. Clearing
-        // atomicStateMap above without this would leave the previous feature's snapshot
-        // as the read path -- the same reload the hub gets from a recompile/restart.
+        (scriptStaticField('MRTR_TERMINAL_EVIDENCE') as Map).clear()
+        // Ordinary-write leases are class-static only -- nothing in atomicState mirrors
+        // them, so a feature that reserves without releasing would otherwise hand the
+        // next feature a write slot that is already spent.
+        (scriptStaticField('WRITE_REQUEST_LEASES') as Map).clear()
+        // The write-reservation machinery serves mrtrRequests / packageDeployInFlight
+        // from a class-static snapshot of atomicState. Clearing atomicStateMap above
+        // without this would leave the previous feature's snapshot as the read path --
+        // the same reload the hub gets from a recompile/restart.
         script._writeStateCacheInvalidate()
         settingsMap.clear()
         settingsMap.selectedDevices = []
@@ -270,6 +271,17 @@ abstract class HarnessSpec extends Specification {
         script.setMetaClass(null)
         checkMetaClassClean(script, 'HarnessSpec')
         wireScriptOverrides()
+    }
+
+    /**
+     * The app's class-static fields, which no public method exposes. A recompile is the
+     * only thing that clears them on a hub, so setup() stands in for that boundary — and
+     * a spec needs the same reach to model an execution that died before its finally.
+     */
+    protected Object scriptStaticField(String fieldName) {
+        def f = script.getClass().getDeclaredField(fieldName)
+        f.accessible = true
+        return f.get(null)
     }
 
     /**

@@ -24,6 +24,11 @@
 #   - enableDeveloperMode — lockout protection. Must be on in the UI before this
 #     script can call update_mcp_settings at all (script aborts with a focused
 #     error if it isn't).
+#   - maxConcurrentWrites — the run pins the global write cap OFF (0), but POST-deploy, in
+#     tests/e2e_test.py main(). Not here: this step talks to the PRE-deploy baseline app,
+#     whose update_mcp_settings allowlist need not carry the key at all, and mcp_restore_env.sh
+#     replays whatever it captured AFTER the watchdog has restored main — at that same app.
+#     A key that is new in the PR under test cannot survive that round trip.
 
 set -euo pipefail
 

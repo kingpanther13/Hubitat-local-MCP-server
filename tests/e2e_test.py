@@ -25,6 +25,7 @@ import os
 import random
 import re
 import sys
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -162,6 +163,21 @@ class McpToolError(McpError):
     def __init__(self, tool_name: str, message: str):
         self.tool_name = tool_name
         super().__init__(f"Tool '{tool_name}' error: {message}")
+
+
+def _tool_error_payload(exc: McpError) -> dict:
+    """The tool's structured envelope recovered from a raised isError.
+
+    call_tool raises McpToolError when isError lands top-level, so a refusal that IS a
+    structured map (the write cap's too_many_writes_in_flight) is only reachable through
+    the exception text. Returns {} for any non-JSON message, so a caller can test a field
+    without first proving the shape."""
+    _, _, text = str(exc).partition("error: ")
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 # ---------------------------------------------------------------------------
@@ -9944,6 +9960,128 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             # /hub2/userLibraries endpoint returns EVERY library WITH full source (~2MB), so it
             # was the single most expensive read in the suite -- and doubled on a 504 retry.
 
+    def _set_write_cap(self, limit: int) -> None:
+        """Set maxConcurrentWrites. Never call this while a write holds a slot: the settings
+        tool is itself a capped write, so the cap would refuse its own restore."""
+        res = self.client.call_tool("hub_manage_mcp", {
+            "tool": "hub_update_mcp_settings",
+            "args": {"settings": {"maxConcurrentWrites": limit}, "confirm": True},
+        })
+        assert res.get("success") is True, f"could not set maxConcurrentWrites={limit}: {res}"
+
+    @test("system_tools")
+    def test_write_cap_refuses_a_second_concurrent_write(self) -> None:
+        """The global write cap refuses a second write while one is in flight, with the
+        structured too_many_writes_in_flight envelope naming what holds the slot.
+
+        The suite runs with the cap OFF (main() pins maxConcurrentWrites=0), so this is the
+        ONLY place it is exercised live. Cap 1 + one slow bulk variable create saturates it,
+        and the second write must be refused BEFORE dispatch -- the refusal is what proves
+        the lease was taken, since nothing else on the wire reports an in-flight write."""
+        suffix = _run_artifact_suffix()
+        slow_names = [f"{PREFIX}WriteCap_{i}_{suffix}" for i in range(4)]
+        probe_name = f"{PREFIX}WriteCapProbe_{suffix}"
+        items = [{"name": n, "type": "String", "value": "held"} for n in slow_names]
+
+        # A second client instance, not a second caller on self.client: the client keeps
+        # per-call mutable state (JSON-RPC id counter, last-op timings), so two threads
+        # sharing one would corrupt both. Its own requests.Session is the point.
+        bg = HubitatMcpClient(self.client.hub_url, self.client.app_id,
+                              self.client.access_token, verbose=self.verbose)
+        # Hand it the catalog maps rather than letting it fetch its own: they are identical
+        # per hub, and a second tools/list is one of the largest reads in the suite.
+        self.client._ensure_catalog_maps()
+        bg._gateway_members = self.client._gateway_members
+        bg._gateway_route = self.client._gateway_route
+        bg._read_only_catalog_tools = self.client._read_only_catalog_tools
+        bg._active_test = self.client._active_test
+
+        # Track before creating -- there is no prefix sweep for variables, so a crash between
+        # a create landing and a later append would strand them on the hub.
+        self.created_variable_names.extend(slow_names)
+
+        slow: dict[str, Any] = {}
+
+        def _hold_the_slot() -> None:
+            try:
+                slow["response"] = bg.call_tool("hub_manage_variables", {
+                    "tool": "hub_create_variable",
+                    "args": {"variables": items, "confirm": True}})
+            except Exception as exc:      # re-raised on the main thread after the join
+                slow["error"] = exc
+
+        worker = threading.Thread(target=_hold_the_slot, name="e2e-write-cap-slow", daemon=True)
+        refusal = None
+        probes = 0
+        try:
+            self._create_variable(probe_name, "String", "idle")
+            self._set_write_cap(1)
+            worker.start()
+            try:
+                time.sleep(0.8)   # let the slow write reach the hub and take the lease
+                deadline = time.monotonic() + 60
+                while worker.is_alive() and time.monotonic() < deadline:
+                    probes += 1
+                    try:
+                        self.client.call_tool("hub_manage_variables", {
+                            "tool": "hub_set_variable",
+                            "args": {"name": probe_name, "value": f"probe-{probes}"},
+                        })
+                    except McpToolError as exc:
+                        payload = _tool_error_payload(exc)
+                        if payload.get("status") != "too_many_writes_in_flight":
+                            raise
+                        refusal = payload
+                        break
+                    except RelayLostResponseError as exc:
+                        # A dropped probe response says nothing about the cap either way.
+                        print(f"    write-cap probe {probes} lost to a relay 504 ({exc}); re-probing")
+            finally:
+                # The cap restore below is itself a capped write, so it cannot run while the
+                # slow write still owns the only slot.
+                worker.join(timeout=180)
+                # Fold the background call into the run's per-op wall-clock summary; the
+                # near-ceiling detector is what would flag this bulk create drifting toward
+                # the relay's ~10s limit, and it only reads the main client's timings.
+                self.client.op_timings.extend(bg.op_timings)
+            assert not worker.is_alive(), \
+                "the in-flight write never finished; the cap state is unknown"
+            assert refusal is not None, (
+                f"no write was refused in {probes} probe(s) while a bulk create of "
+                f"{len(slow_names)} variables was in flight -- the cap did not hold the slot")
+            assert refusal.get("success") is False, f"refusal is not a structured failure: {refusal}"
+            assert refusal.get("limit") == 1, f"refusal did not report the active cap: {refusal}"
+            active = refusal.get("active") or []
+            assert [a.get("tool") for a in active] == ["hub_create_variable"], \
+                f"refusal did not name the in-flight tool: {refusal}"
+            # transport is stamped from the request era, so this also proves the refused call
+            # was accounted to the modern transport the suite speaks -- not to a default.
+            assert active[0].get("transport") == "modern", f"refusal transport mismatch: {refusal}"
+            assert isinstance(active[0].get("startedAt"), int), \
+                f"refusal did not carry the in-flight write's start time: {refusal}"
+            assert "maxConcurrentWrites" in (refusal.get("note") or ""), \
+                f"refusal note does not name the setting to change: {refusal}"
+
+            if "error" in slow:
+                exc = slow["error"]
+                if not isinstance(exc, requests.HTTPError) or "504" not in str(exc):
+                    raise exc
+                print("    slow write: response lost to relay 504 -- verifying committed-or-not")
+                time.sleep(3.0)
+                assert all(self._hub_variable_visible_in_bulk(n) for n in slow_names), \
+                    f"the write that held the slot was lost to a relay 504 and never committed: {slow_names}"
+            else:
+                created = slow.get("response") or {}
+                assert created.get("success") is True, f"the write holding the slot failed: {created}"
+                assert created.get("createdCount") == len(slow_names), \
+                    f"the write holding the slot did not create every variable: {created}"
+            print(f"    WRITE_CAP ok -- refused after {probes} probe(s) "
+                  "while hub_create_variable held the slot")
+        finally:
+            self._set_write_cap(0)
+            for name in [probe_name, *slow_names]:
+                self._delete_variable_safe(name)
+
     # -----------------------------------------------------------------------
     # GROUP 10: developer_mode (14 tests — Section 12 of BAT-v2.md + review-fix coverage + #250 dry-run + selectedDevices scope)
     # -----------------------------------------------------------------------
@@ -12331,6 +12469,22 @@ def main() -> None:
     assert _bypass_res.get("success") is True, \
         f"could not pin bypassDeviceAllowlist ON; every permanent-fixture test would fail: {_bypass_res}"
     print("Device allowlist: bypass ON for the suite (permanent non-child fixtures are reachable)\n")
+
+    # The global write cap (maxConcurrentWrites, default 2) is overload protection for hubs driven
+    # by several agents at once. This suite is single-threaded, so the cap can only cost the run:
+    # a lease left behind by a relay-dropped write would refuse the NEXT test's write for a
+    # concurrency that never existed. Pin it OFF (0 = no cap) for the whole run. The one test that
+    # proves it live -- test_write_cap_refuses_a_second_concurrent_write -- sets the cap to 1
+    # around its own assertions and restores 0 in a finally. Deliberately left at 0 at the end of
+    # the run, like bypassDeviceAllowlist above: this hub is dedicated to e2e, and the watchdog
+    # restores main's CODE, not its settings. This is post-deploy on purpose -- mcp_setup_env.sh
+    # runs against the PRE-deploy baseline app, which need not know the key at all.
+    _cap_res = client.call_tool("hub_manage_mcp", {
+        "tool": "hub_update_mcp_settings",
+        "args": {"settings": {"maxConcurrentWrites": 0}, "confirm": True}})
+    assert _cap_res.get("success") is True, \
+        f"could not disable the global write cap for the run: {_cap_res}"
+    print("Write cap: maxConcurrentWrites=0 for the suite (the cap test sets and restores its own)\n")
 
     _grps = [s.strip() for s in args.groups.split(",") if s.strip()] if args.groups else None
     _tsts = [s.strip() for s in args.tests.split(",") if s.strip()] if args.tests else None
