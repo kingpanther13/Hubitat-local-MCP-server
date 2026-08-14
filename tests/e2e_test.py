@@ -12331,14 +12331,36 @@ def main() -> None:
             # the overshoot past completion), backing off to 10s for the long failed-restore tail -- same
             # ~8-min worst-case ceiling, just more attempts at the shorter early intervals.
             _restore_backoff = (3, 3, 3, 3, 5, 5, 5, 7, 7, 10)
-            for attempt in range(1, 60):
-                try:
+
+            def _read_restore_marker() -> str:
+                # The main app is MID-RECOMPILE for most of this window and cannot answer
+                # anything -- polling it just manufactures relay 504s (four per run, the
+                # last 504s anywhere in the logs). The watchdog is a separate app the
+                # recompile never touches, so it answers throughout; the main-app read is
+                # only the no-watchdog local fallback.
+                if getattr(runner, "watchdog_url", ""):
+                    response = requests.post(url=runner.watchdog_url, json={
+                        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                        "params": {
+                            "name": "hub_read_file",
+                            "arguments": {"fileName": "mcp-main-deployed-sha.txt"},
+                        },
+                    }, timeout=30)
+                    response.raise_for_status()
+                    result = response.json().get("result", {})
+                    content = result.get("content") if isinstance(result, dict) else None
+                    text = content[0].get("text", "") if isinstance(content, list) and content else ""
+                    marker = json.loads(text) if text else {}
+                else:
                     marker = runner.client.call_tool("hub_manage_files", {
                         "tool": "hub_read_file",
                         "args": {"fileName": "mcp-main-deployed-sha.txt"},
                     })
-                    content = (marker.get("content") or "").strip() if isinstance(marker, dict) else ""
-                    if content == main_sha:
+                return (marker.get("content") or "").strip() if isinstance(marker, dict) else ""
+
+            for attempt in range(1, 60):
+                try:
+                    if _read_restore_marker() == main_sha:
                         print(f"  Restore complete: marker matches main SHA (attempt {attempt}).")
                         break
                 except Exception:
