@@ -459,7 +459,6 @@ abstract class HarnessSpec extends Specification {
         wireInstanceOverrides(script)
     }
 
-    /** Apply every per-instance harness seam to a compiled execution instance. */
     private void wireInstanceOverrides(Object target) {
         def hubGetRef = hubGet
         def childAppsRef = childAppsList
@@ -531,7 +530,6 @@ abstract class HarnessSpec extends Specification {
         } as Closure)
     }
 
-    /** Install the live request/header proxy on any compiled app instance. */
     private void wireRequestProxy(Object target) {
         def injectedField = me.biocomp.hubitat_ci.app.HubitatAppScript
             .getDeclaredField('injectedMappingHandlerData')

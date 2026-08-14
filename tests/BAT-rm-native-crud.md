@@ -1573,7 +1573,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: Two `hub_set_rule` creates. Each has a pure Local End Point trigger (`tCapab1="Local End Point"`, with no verb/target field) plus a `pauseRule` action targeting the helper: Pauser renders pause and persists `pR.<N>="false"`; Resumer renders resume and persists `pR.<N>="true"`. Verify both through `hub_get_app_config`; [INV-1] `configPage.error == null`. The endpoint URL, including its access token, is deliberately NOT exposed through MCP reads, so grading must not require URL retrieval. Teardown force-deletes all three.
+**Expected**: Two `hub_set_rule` creates. Each has a pure Local End Point trigger (`tCapab1="Local End Point"`, with no verb/target field) plus a `pauseRule` action targeting the helper: Pauser renders pause and persists inverse raw `pR.<N>="false"`; Resumer renders resume and persists inverse raw `pR.<N>="true"` (the flag stores the inverse of the shown verb, as in T433). Verify both through `hub_get_app_config`; [INV-1] `configPage.error == null`. The endpoint URL, including its access token, is deliberately NOT exposed through MCP reads, so grading must not require URL retrieval. Teardown force-deletes all three.
 
 ### T433 — Local End Point triggers with Private Boolean actions (paired)
 

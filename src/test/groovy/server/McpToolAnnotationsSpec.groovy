@@ -780,7 +780,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
 
         and: 'flat-mode strips every marker -- the wrapped content is gone from the flat wire'
         // Name the offenders: a bare count dumps the whole catalog into the failure output and
-        // says nothing about WHICH tool leaked, which is a long hunt on a 116-tool catalog.
+        // says nothing about WHICH tool leaked, which is a long hunt on a catalog of 100+ tools.
         script.getToolDefinitions().findAll {
             groovy.json.JsonOutput.toJson(it).contains('[[FLAT_TRIM]]')
         }*.name == []

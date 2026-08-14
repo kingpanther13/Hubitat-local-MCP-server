@@ -72,6 +72,16 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.files*.name == ['ALPINE.csv', 'alpha.txt']
     }
 
+    def "hub_list_files refuses a non-string filter before any hub read"() {
+        when:
+        script.toolListFiles([filter: 123])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('filter must be a string')
+        hubGet.calls.isEmpty()
+    }
+
     def "hub_list_files case folding is locale-independent"() {
         given:
         def prior = Locale.default

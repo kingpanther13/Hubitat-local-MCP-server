@@ -966,6 +966,28 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         atomicStateMap.lastSelfDeploy.packageResult.abortReason == 'bundle_install_failed'
     }
 
+    def "a worker throw cannot flip a lastSelfDeploy record the self-app leg already stamped"() {
+        given:
+        enableDev()
+        registerAppTypes()
+        script.metaClass._updatePackageBody = { Map a, String ref, boolean dryRun, Map ctx ->
+            // The self-app leg persisted its outcome for this request, then a later
+            // statement in the worker threw.
+            atomicStateMap.lastSelfDeploy = [success: true, sourceMode: 'package', ref: ref,
+                                             requestId: ctx.requestId, at: 1234567890000L]
+            throw new IllegalStateException('post-stamp failure')
+        }
+
+        when:
+        def accepted = script.toolUpdatePackage([ref: 'main', confirm: true])
+        script.runPackageDeploy([requestId: accepted.requestId])
+
+        then: 'the persisted success survives; only the marker is cleared'
+        atomicStateMap.lastSelfDeploy.success == true
+        atomicStateMap.lastSelfDeploy.requestId == accepted.requestId
+        atomicStateMap.packageDeployInFlight == null
+    }
+
     def "a stale worker invocation cannot execute or clear a newer package marker"() {
         given:
         enableDev()

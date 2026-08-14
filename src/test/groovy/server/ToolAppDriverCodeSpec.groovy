@@ -4609,7 +4609,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
                       args: [ref: 'main', confirm: true]]
         atomicStateMap.packageDeployInFlight = marker
         script._writeStateCacheInvalidate()
-        def expectedMarker = new LinkedHashMap(marker)
+        def expectedMarker = new groovy.json.JsonSlurper().parseText(
+            groovy.json.JsonOutput.toJson(marker)) as Map  // deep: nested args must not alias the live marker
 
         when:
         def result = script.toolUpdateAppCode([
@@ -4638,7 +4639,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
                       args: [ref: 'main', confirm: true]]
         atomicStateMap.packageDeployInFlight = marker
         script._writeStateCacheInvalidate()
-        def expectedMarker = new LinkedHashMap(marker)
+        def expectedMarker = new groovy.json.JsonSlurper().parseText(
+            groovy.json.JsonOutput.toJson(marker)) as Map  // deep: nested args must not alias the live marker
 
         when:
         def response = mcpDriver.callTool('hub_update_app', [
@@ -4669,7 +4671,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
                       args: [ref: 'main', confirm: true]]
         atomicStateMap.packageDeployInFlight = marker
         script._writeStateCacheInvalidate()
-        def expectedMarker = new LinkedHashMap(marker)
+        def expectedMarker = new groovy.json.JsonSlurper().parseText(
+            groovy.json.JsonOutput.toJson(marker)) as Map  // deep: nested args must not alias the live marker
 
         when:
         def result = script.toolUpdateAppCode([

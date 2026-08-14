@@ -13259,8 +13259,17 @@ private Map _patchesPauseResult(Integer appId, Map backup, List patchResults, Li
 // fully determined by argument maps. This method must remain free of hub reads,
 // writes, state mutation, backup creation, and wizard calls.
 private Map _rmRoundZeroNativeEditRefusal(Map args) {
-    if (!(args instanceof Map) || !(args.appId instanceof Number) ||
-            args.operation != null) return null
+    if (!(args instanceof Map) || args.appId == null || args.operation != null) return null
+    // EDIT dispatch accepts numeric-string ids via normalizeRuleId, so the
+    // pre-reservation seam must too -- a "123" appId otherwise skips it and only
+    // refuses after claiming the write slot. Garbage ids still fall through: the
+    // full path owns their richer error.
+    Integer refusalAppId
+    try {
+        refusalAppId = normalizeRuleId(args.appId)
+    } catch (IllegalArgumentException ignored) {
+        return null
+    }
 
     def candidates = []
     if (args.addTrigger instanceof Map) candidates << "addTrigger"
@@ -13291,7 +13300,7 @@ private Map _rmRoundZeroNativeEditRefusal(Map args) {
     } catch (IllegalArgumentException refusal) {
         return [
             success: false,
-            appId: (args.appId as Number).intValue(),
+            appId: refusalAppId,
             error: refusal.message,
             wizardStuck: false,
             restoreHint: _rmPreflightRestoreHint()

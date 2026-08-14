@@ -575,9 +575,15 @@ def runPackageDeploy(Map job = [:]) {
         }
     } catch (Exception e) {
         mcpLog("error", "developer-mode", "Background package deploy for ref ${marker.ref} failed: ${e.message}")
-        atomicState.lastSelfDeploy = [success: false, error: e.message ?: e.toString(),
-                                      sourceMode: "package", ref: marker.ref,
-                                      requestId: requestId, at: now()]
+        // Same guard as the success path: when the self-app leg already stamped this
+        // requestId, a throw from a LATER statement must not flip that persisted
+        // success into a failure the client would then re-deploy.
+        def last = atomicState.lastSelfDeploy
+        if (!(last instanceof Map) || last.requestId?.toString() != requestId) {
+            atomicState.lastSelfDeploy = [success: false, error: e.message ?: e.toString(),
+                                          sourceMode: "package", ref: marker.ref,
+                                          requestId: requestId, at: now()]
+        }
     } finally {
         synchronized (WRITE_RESERVATION_LOCK) {
             try {

@@ -16,6 +16,9 @@ private List _filesApplyListFilters(List fileList, String filterLower) {
 }
 
 def toolListFiles(args = null) {
+    if (args?.filter != null && !(args.filter instanceof CharSequence)) {
+        throw new IllegalArgumentException("filter must be a string (a case-insensitive substring of the file name), not ${args.filter instanceof Number ? 'a number' : args.filter instanceof Map ? 'an object' : args.filter instanceof List ? 'an array' : 'a non-string value'}")
+    }
     mcpLog("debug", "file-manager", "Listing files in File Manager")
     def cursor = args?.cursor
     def filterText = args?.filter?.toString()?.trim()

@@ -155,6 +155,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         'state token in state'      | 'hub_set_rule'                     | 'hub_set_rule'       | [appId: 777, addTrigger: [capability: 'Temperature', state: 'changed'], confirm: true]                      | 'comparator'
         'periodic field missing'    | 'hub_manage_rule_machine'          | 'hub_set_rule'       | [appId: 777, addTrigger: [capability: 'Periodic Schedule', periodic: [frequency: 'Hourly']], confirm: true] | 'everyn'
         'action verb in state'      | 'hub_manage_native_rules_and_apps' | 'hub_set_native_app' | [appId: 777, addAction: [capability: 'switch', state: 'on'], confirm: true]                                 | 'action:'
+        'numeric-string appId'      | 'hub_manage_rule_machine'          | 'hub_set_rule'       | [appId: '777', addAction: [capability: 'switch', state: 'on'], confirm: true]                               | 'action:'
     }
 
     def "direct flat-mode native preflight still returns a terminal refusal"() {

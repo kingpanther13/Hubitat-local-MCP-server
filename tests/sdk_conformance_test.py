@@ -42,6 +42,7 @@ _INSTALL_HINT = "pip install -r tests/sdk-conformance-requirements.txt"
 
 try:
     import anyio
+    import anyio.to_thread  # not re-exported by anyio/__init__; the run_sync call needs the submodule bound
     import httpx2
     from mcp.client import Client
     from mcp.client.streamable_http import streamable_http_client
