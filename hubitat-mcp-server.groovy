@@ -564,7 +564,8 @@ def updated() {
     log.info "MCP Rule Server updated"
     atomicState.remove("toolSearchCorpus")        // Invalidate BM25 corpus cache on app update
     atomicState.remove("toolSearchTokens")        // ...and the paired BM25 token cache in lockstep
-    atomicState.remove("toolSearchCorpusVersion")  // ...and the corpus version stamp
+    atomicState.remove("toolSearchCorpusVersion")  // ...and the retired version stamp, so an upgraded hub sheds it
+    atomicState.remove("toolSearchCorpusFingerprint")  // ...and the corpus content fingerprint in lockstep
     atomicState.remove("requiredParamsByTool")    // ...and the gateway required-param memo
     atomicState.remove("requiredParamsByToolFingerprint")  // ...and its content fingerprint in lockstep
     initialize()
@@ -2275,6 +2276,35 @@ private void _mrtrSweepTerminalEvidenceLocked() {
     }
 }
 
+// MRTR_WORK_ITEMS hands a claimed slice's arguments to its scheduled worker, and was
+// the one MRTR structure with no sweep: an item whose runMrtrSlice never fired (the
+// scheduler dropped the job, or the hub restarted mid-flight) retained a full copy of
+// the call arguments -- driver source, a whole patch list -- for the life of the class.
+// Sweep by the OWNING CLAIM's fate rather than a private TTL: the item feeds exactly one
+// claim, so it is garbage the moment its record is gone, no longer active, or has moved
+// on to a later claim. Runs AFTER the record loop so the marker it consults is already
+// ceiling-checked. No size cap is needed -- items are 1:1 with claims, which
+// _mrtrMaxRecords already bounds.
+private void _mrtrSweepWorkItemsLocked() {
+    if (MRTR_WORK_ITEMS.isEmpty()) return
+    def stored = _writeStateMapLocked("mrtrRequests")
+    def dead = MRTR_WORK_ITEMS.findAll { k, v ->
+        if (!(v instanceof Map)) return true
+        // An executing worker owns its item; never reap under it. Safe to consult the marker
+        // here because the record loop has already run and dropped any marker stranded past
+        // the hard ceiling, so a "live" answer at this point means genuinely live.
+        if (v.started == true && _writeExecutionLiveLocked(k)) return false
+        def rec = stored[v.stateId?.toString()]
+        if (!(rec instanceof Map) || rec.status != "active") return true
+        // Match on claim IDENTITY, not just the record: the item exists to feed ONE claim, so
+        // once the record has moved on to a later claim this item is garbage no matter how
+        // young it looks. An age ceiling can't see that -- it would hold a full copy of the
+        // call arguments for the whole window on every superseded claim.
+        return rec.claimId?.toString() != k?.toString()
+    }.collect { it.key }
+    dead.each { MRTR_WORK_ITEMS.remove(it) }
+}
+
 // Returns expired active records whose external helper resources must be
 // cleaned after the mutex is released. Only terminal/abandoned records may be
 // trimmed for storage pressure; live requestState records are never evicted.
@@ -2282,6 +2312,12 @@ private List _mrtrSweepLocked() {
     _mrtrSweepTerminalEvidenceLocked()
     def stored = _writeStateMapLocked("mrtrRequests")
     long at = now()
+    // Same two horizons the lease sweep uses, for the same reason: a liveness disjunct with
+    // no ceiling exempts precisely the records this sweep exists to reap, because a hard kill
+    // strands its claimId in LIVE_WRITE_EXECUTIONS looking live forever and _activeWritesLocked
+    // keeps counting it against the write cap. Past the ceiling the record goes, and its
+    // stranded marker goes with it.
+    long ceiling = _mrtrActiveTtlMs()
     def kept = [:]
     def cleanup = []
     stored.each { k, v ->
@@ -2289,11 +2325,13 @@ private List _mrtrSweepLocked() {
             v instanceof Map ? v as Map : null)
         if (recovered instanceof Map) v = recovered
         boolean executing = v instanceof Map && v.status == "active" &&
-            _writeExecutionLiveLocked(v.claimId)
+            _writeExecutionLiveLocked(v.claimId) &&
+            (v.expiresAt == null || at < (v.expiresAt as Long) + ceiling)
         if (v instanceof Map && (executing ||
                 (v.expiresAt != null && (v.expiresAt as Long) > at))) {
             kept[k] = v
         } else if (v instanceof Map && v.status == "active") {
+            LIVE_WRITE_EXECUTIONS.remove(v.claimId?.toString())
             cleanup << ([:] + (v as Map))
         }
     }
@@ -2308,15 +2346,8 @@ private List _mrtrSweepLocked() {
         }
     }
     if (kept.size() != stored.size()) _writeStateSetLocked("mrtrRequests", kept)
+    _mrtrSweepWorkItemsLocked()
     return cleanup
-}
-
-private void _mrtrSweep() {
-    List cleanup
-    synchronized (WRITE_RESERVATION_LOCK) {
-        cleanup = _mrtrSweepLocked()
-    }
-    cleanup.each { _mrtrCleanupRecord(it as Map) }
 }
 
 private Map _mrtrFindActiveLocked(leafTool, Map binding) {
@@ -2598,8 +2629,12 @@ private Map _mrtrRecordSlice(String stateId, Map originalRec, Map claim, Map res
             aggregate.kind = kind
             switch (kind) {
                 case "call_rule":
-                    aggregate.results = ((aggregate.results instanceof List) ? aggregate.results : []) +
-                        ((result.results instanceof List) ? result.results : [])
+                    // Collapse at BANK time, matching the .unique() on the sibling line: the
+                    // durable record then holds one entry per rule instead of one per attempt,
+                    // which is what _mrtrPutLocked re-serializes on every slice.
+                    aggregate.results = _mrtrCollapseRuleResults(
+                        ((aggregate.results instanceof List) ? aggregate.results : []) +
+                        ((result.results instanceof List) ? result.results : []))
                     aggregate.ruleIds = (((aggregate.ruleIds instanceof List) ? aggregate.ruleIds : []) +
                         ((result.ruleIds instanceof List) ? result.ruleIds : [])).unique()
                     break
@@ -2657,6 +2692,22 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                 error: "The operation did not finish within ${_mrtrMaxContinuationSlices()} bounded continuation slices.",
                 note: "The completed slices remain committed. Inspect the current hub state before deciding whether to submit a smaller follow-up operation."
             ]
+            // Hand back the per-item ledger the record is already holding. Telling a caller to
+            // inspect hub state by hand while discarding the outcomes we know is the worst
+            // answer on the one path where the batch was large enough to hit the cap.
+            def cappedAgg = (rec.aggregate instanceof Map) ? rec.aggregate as Map : [:]
+            if (cappedAgg.kind?.toString() == "call_rule") {
+                def banked = _mrtrCollapseRuleResults(
+                    ((cappedAgg.results instanceof List) ? cappedAgg.results : []) +
+                    ((result instanceof Map && result.results instanceof List) ? result.results : []))
+                capped.results = banked
+                capped.ruleIds = (((cappedAgg.ruleIds instanceof List) ? cappedAgg.ruleIds : []) +
+                    ((result instanceof Map && result.ruleIds instanceof List) ? result.ruleIds : [])).unique()
+                def cappedFailed = banked.findAll { it instanceof Map && it.success != true }
+                if (!cappedFailed.isEmpty()) {
+                    capped.failedRuleIds = cappedFailed.collect { it.ruleId }.findAll { it != null }.unique()
+                }
+            }
             _mrtrCleanupRecord(rec)
             _mrtrStoreTerminal(stateId, rec, claim, capped, true)
             return [outcome: "terminal", result: capped, isError: true]
@@ -2682,12 +2733,19 @@ private def _mrtrAggregateTerminal(Map rec, result) {
     def aggregate = (rec.aggregate instanceof Map) ? rec.aggregate as Map : [:]
     switch (aggregate.kind?.toString()) {
         case "call_rule":
-            out.results = ((aggregate.results instanceof List) ? aggregate.results : []) +
-                ((out.results instanceof List) ? out.results : [])
+            out.results = _mrtrCollapseRuleResults(
+                ((aggregate.results instanceof List) ? aggregate.results : []) +
+                ((out.results instanceof List) ? out.results : []))
             out.ruleIds = (((aggregate.ruleIds instanceof List) ? aggregate.ruleIds : []) +
                 ((out.ruleIds instanceof List) ? out.ruleIds : [])).unique()
             def failed = out.results.findAll { it instanceof Map && it.success != true }
             out.success = out.success == true && failed.isEmpty()
+            // Deliberately NOT OR-ing aggregate.anyPartial here, unlike the sibling arms: a
+            // call_rule slice sets partial on a bare budget pause (mcp-native-rules-lib
+            // partial: budgetPaused || ...), and remainingRuleIds -- the only thing that makes
+            // this kind continue -- is written only when paused. So anyPartial is true for
+            // EVERY continued call_rule, and OR-ing it would report partial on a batch where
+            // every rule succeeded. The siblings compute partial from real per-item outcomes.
             out.partial = !failed.isEmpty()
             if (!failed.isEmpty()) {
                 out.failedRuleIds = failed.collect { it.ruleId }.findAll { it != null }.unique()
@@ -2772,7 +2830,7 @@ private Map _mrtrScheduleSlice(String stateId, Map rec, Map claim, Map execution
         }
         MRTR_WORK_ITEMS[claimId] = [
             stateId: stateId, claimId: claimId, generation: generation,
-            arguments: _mrtrCopyMap(executionArgs), started: false
+            arguments: _mrtrCopyMap(executionArgs), started: false, queuedAt: now()
         ]
     }
     try {
@@ -2882,6 +2940,8 @@ private void _mrtrAbandon(String stateId, Map originalRec, Map claim, String rea
             rec.remove("claimId")
             rec.remove("claimedGeneration")
             rec.remove("claimedAt")
+            // Snapshot BEFORE the checkpoint is dropped -- _mrtrCleanupRecord needs
+            // checkpoint.clonerAppId to delete an in-progress clone's temporary app.
             cleanup = [:] + rec
             rec.remove("checkpoint")
             _mrtrPutLocked(stateId, rec)
@@ -2903,11 +2963,32 @@ private Map _mrtrControl(String kind, Map checkpoint) {
     return [__mrtrContinue: [kind: kind, checkpoint: checkpoint]]
 }
 
-private void _mrtrCleanupRecord(Map rec) {
-    String claimId = rec?.claimId?.toString()
-    if (claimId != null) {
-        synchronized (WRITE_RESERVATION_LOCK) { MRTR_WORK_ITEMS.remove(claimId) }
+// A rule that failed in an earlier slice is RE-QUEUED for retry alongside the remaining
+// ids, so it lands in results[] twice: the banked failure and the retry's outcome. Keep
+// the LAST entry per ruleId -- a rule's final attempt is its actual state -- otherwise a
+// rule that succeeded on retry still poisons success/partial/failedRuleIds. First-appearance
+// order is preserved; entries carrying no ruleId are never collapsed and keep their order
+// after the keyed ones.
+private List _mrtrCollapseRuleResults(List entries) {
+    def lastByRule = [:]
+    def unkeyed = []
+    (entries ?: []).each { entry ->
+        def rid = (entry instanceof Map) ? entry.ruleId : null
+        if (rid == null) {
+            unkeyed << entry
+        } else {
+            lastByRule[rid.toString()] = entry
+        }
     }
+    return lastByRule.values().toList() + unkeyed
+}
+
+// Work items are NOT removed here. Keying that on rec.claimId made it a silent no-op
+// wherever the snapshot came from a between-slices record (_mrtrRecordSlice strips the
+// field), which is most of this method's callers. _mrtrSweepWorkItemsLocked is the single
+// owner: it reaps by claim identity against the live record map, so a record removed or
+// re-claimed anywhere frees its item on the next sweep -- and every write path sweeps.
+private void _mrtrCleanupRecord(Map rec) {
     def clonerId = rec?.checkpoint?.clonerAppId
     if (clonerId == null) return
     try { _appClonerCleanup(clonerId as Integer) }
@@ -3624,13 +3705,13 @@ def getGatewayConfig() {
             description: "Manage hub File Manager: list, read, write, and delete files stored on the hub.",
             tools: ["hub_list_files", "hub_read_file", "hub_write_file", "hub_delete_file"],
             summaries: [
-                hub_list_files: "List files in File Manager (names, sizes, URLs)",
+                hub_list_files: "List files in File Manager (names, sizes, URLs). Args: filter, cursor",
                 hub_read_file: "Read file content. Args: fileName, offset, length",
                 hub_write_file: "Write file to File Manager. Args: fileName, content, confirm=true",
                 hub_delete_file: "Delete file from File Manager (auto-backs up first to <name>_backup_<ts>, unless it's already a backup). Args: fileName, confirm=true"
             ],
             searchHints: [
-                hub_list_files: "show uploaded stored csv json text data",
+                hub_list_files: "show uploaded stored csv json text data filter search name substring backup",
                 hub_read_file: "view open contents download stored data",
                 hub_write_file: "upload save store create csv json text data",
                 hub_delete_file: "remove clean up stored data"
@@ -3756,11 +3837,11 @@ def getGatewayConfig() {
             description: "Read-only hub File Manager access: list files and read file content. All operations are read-only; write/delete live in hub_manage_files.",
             tools: ["hub_list_files", "hub_read_file"],
             summaries: [
-                hub_list_files: "List files in File Manager (names, sizes, URLs)",
+                hub_list_files: "List files in File Manager (names, sizes, URLs). Args: filter, cursor",
                 hub_read_file: "Read file content. Args: fileName, offset, length"
             ],
             searchHints: [
-                hub_list_files: "show uploaded stored csv json text data files",
+                hub_list_files: "show uploaded stored csv json text data files filter search name substring backup",
                 hub_read_file: "view open contents download stored data file"
             ]
         ],
@@ -8438,7 +8519,7 @@ Files stored at http://<HUB_IP>/local/<filename>
 
 ### hub_list_files
 
-Use to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. **Cursor pagination:** page size 100 -- omit the cursor for an unbounded list; pass "" for the first page and iterate `nextCursor`.
+Use to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. **`filter`:** case-insensitive substring match on the file name -- pass `filter: "backup"` to find backups instead of paging the whole listing and matching client-side. **Cursor pagination:** page size 100 -- omit the cursor for an unbounded list; pass "" for the first page and iterate `nextCursor`.
 
 ### hub_read_file
 

@@ -162,6 +162,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         atomicStateMap.toolSearchCorpus = [[name: 'x', description: 'd']]
         atomicStateMap.toolSearchTokens = [['x']]
         atomicStateMap.toolSearchCorpusVersion = 'v-test'
+        atomicStateMap.toolSearchCorpusFingerprint = 'fp-corpus-test'
         atomicStateMap.requiredParamsByTool = [hub_get_room: ['room']]
         atomicStateMap.requiredParamsByToolFingerprint = 'fp-test'
         script.metaClass.initialize = { -> }
@@ -175,10 +176,75 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         atomicStateMap.toolSearchCorpusVersion == null
         atomicStateMap.requiredParamsByTool == null
 
-        and: 'the memo fingerprint is cleared in lockstep -- a stranded fingerprint would let the next rebuild miscompare'
+        and: 'both content fingerprints are cleared in lockstep -- a stranded fingerprint would let the next rebuild miscompare'
+        atomicStateMap.toolSearchCorpusFingerprint == null
         atomicStateMap.requiredParamsByToolFingerprint == null
 
         and: 'the legacy state entry is never reintroduced'
         !stateMap.containsKey('toolSearchCorpus')
+    }
+
+    def "hub_list_files advertises its filter argument on both discovery surfaces"() {
+        given: 'the summary is the only description riding tools/list every turn -- the full inputSchema IS reachable, but only by spending a catalog call on the gateway first, so an arg named nowhere in the summary costs a round trip to discover'
+        searchEnabled()
+
+        when: 'each gateway carrying hub_list_files is checked for the filter arg in its summary'
+        int checked = 0
+        script.getGatewayConfig().each { gwName, gw ->
+            if (gw?.summaries?.containsKey('hub_list_files')) {
+                checked++
+                assert gw.summaries.hub_list_files.contains('filter'),
+                    "${gwName} summary hides the filter arg: ${gw.summaries.hub_list_files}"
+            }
+        }
+
+        then: 'BOTH carrying gateways were actually reached -- a guarded loop that never enters passes vacuously, so the count is what makes this a guard'
+        checked == 2
+
+        and: 'a hints-ONLY term retrieves the tool. Querying "filter" would prove nothing: the corpus derives params from inputSchema.properties, so that token was already indexed before any summary or hint changed. "substring" appears in no name, title, summary, param key or gateway description -- only in searchHints -- so it is the token that actually pins the hint corpus'
+        !script.getGatewayConfig().any { _, gw ->
+            (gw?.summaries?.hub_list_files ?: '').toLowerCase().contains('substring')
+        }
+        script.toolSearchTools([query: 'substring', maxResults: 10])
+            .results*.tool.contains('hub_list_files')
+    }
+
+    def "a plain comma-separated Args: list names only real inputSchema properties"() {
+        given: 'the Args: tail hand-restates a schema the summary cannot see, and nothing else stops the two drifting -- an invented argument sends the model to call it, surfacing as a rejected tool call rather than a red build'
+        searchEnabled()
+        def schemaProps = script.getAllToolDefinitions().collectEntries {
+            [(it.name as String): (it.inputSchema?.properties?.keySet() ?: [] as Set)]
+        }
+        // Scoped DELIBERATELY to the plain "Args: a, b, c" form. Across the gateways the tail
+        // is not one convention: it also carries alternatives (source|sourceFile|importUrl),
+        // slash groups (since/until) and action VALUES (repair_node, pair), none of which are
+        // property names. Those forms need a convention decision, not a regex; this guard
+        // covers the unambiguous subset and must not be widened by loosening the match.
+        def plainList = ~/^[A-Za-z_][A-Za-z0-9_]*(\s*,\s*[A-Za-z_][A-Za-z0-9_]*)+$/
+
+        when: 'every plain comma-separated Args: tail is parsed back into argument names'
+        def phantom = []
+        int summariesChecked = 0
+        script.getGatewayConfig().each { gwName, gw ->
+            (gw?.summaries ?: [:]).each { toolName, summary ->
+                def m = (summary as String) =~ /Args:\s*([^.]*)/
+                if (!m.find()) return
+                String tail = m.group(1).trim()
+                if (!plainList.matcher(tail).matches()) return
+                summariesChecked++
+                tail.split(',').each { raw ->
+                    String arg = raw.trim()
+                    if (!(schemaProps[toolName as String]?.contains(arg))) {
+                        phantom << "${gwName}/${toolName}: '${arg}' is not in inputSchema.properties"
+                    }
+                }
+            }
+        }
+
+        then: 'no such summary advertises an argument its tool does not accept'
+        phantom == []
+
+        and: 'the scan reached real summaries -- an empty sweep would pass vacuously, and both hub_list_files rows are in scope'
+        summariesChecked >= 2
     }
 }

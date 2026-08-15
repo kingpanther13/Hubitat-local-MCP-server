@@ -16,13 +16,17 @@ def toolSearchTools(args) {
     // display meta), so app-update invalidation is sufficient.
     def corpus = atomicState.toolSearchCorpus
     def docTokensAll = atomicState.toolSearchTokens
-    // Version + shape checks self-heal a cache written by an older build: a code
-    // deploy does NOT fire updated() (that takes a settings save), so without them
-    // a stale corpus -- old titles/summaries/search hints, or the pre-title shape --
-    // would be served until the next settings save. The version stamp catches every
-    // released content change; the shape check additionally covers pre-stamp caches.
+    // Content fingerprint + shape checks self-heal a cache written by an older build: a code
+    // deploy does NOT fire updated() (that takes a settings save), so without them a stale
+    // corpus -- old titles/summaries/search hints, or the pre-title shape -- would be served
+    // until the next settings save. A version stamp is NOT sufficient: contributors cannot
+    // bump currentVersion() (it is bot-only), so every pre-release change to a description,
+    // title, or search hint carries the SAME version as the cache it needs to invalidate --
+    // which made a discovery change unverifiable on a test hub. The fingerprint is the same
+    // remedy requiredParamsByTool() already uses for its own same-version deploy problem.
+    String corpusFp = toolSearchCorpusFingerprint()
     if (!corpus || !docTokensAll || docTokensAll.size() != corpus.size() ||
-        !(corpus[0]?.containsKey('title')) || atomicState.toolSearchCorpusVersion != currentVersion()) {
+        !(corpus[0]?.containsKey('title')) || atomicState.toolSearchCorpusFingerprint != corpusFp) {
         corpus = buildToolSearchCorpus()
         // Tokenize every corpus entry once, in corpus order, so docTokensAll[i] is the
         // tokenization of corpus[i] (a pure function of that entry). Plain List<List<String>>
@@ -30,7 +34,7 @@ def toolSearchTools(args) {
         docTokensAll = corpus.collect { bm25Tokenize("${it.name} ${it.title ?: ''} ${it.description} ${it.params ?: ''} ${it.hints ?: ''}") }
         atomicState.toolSearchCorpus = corpus
         atomicState.toolSearchTokens = docTokensAll
-        atomicState.toolSearchCorpusVersion = currentVersion()
+        atomicState.toolSearchCorpusFingerprint = corpusFp
     }
 
     // Apply the SAME visibility filter that getToolDefinitions() uses so that
@@ -115,6 +119,33 @@ def toolSearchTools(args) {
         totalToolsSearched: visibleCorpus*.name.toSet().size(),
         results: results
     ]
+}
+
+// Content fingerprint of everything the BM25 corpus tokenizes -- tool names, descriptions,
+// param keys, friendly titles, gateway summaries and search hints. Walks the same three
+// sources buildToolSearchCorpus does, but only concatenates them: it skips the per-entry
+// regex tokenize and the corpus map allocation, which are the expensive half. Kept as the
+// raw string (no sandbox digest API assumed, String equality is cheap) exactly like
+// requiredParamsCatalogFingerprint.
+def toolSearchCorpusFingerprint() {
+    def sb = new StringBuilder()
+    def displayMeta = getToolDisplayMeta()
+    applyDescriptionTransform(getAllToolDefinitions(), false).each { toolDef ->
+        sb.append(toolDef.name as String).append('|')
+          .append(displayMeta[toolDef.name]?.title ?: '').append('|')
+          .append(toolDef.description ?: '').append('|')
+          .append(toolDef.inputSchema?.properties?.keySet()?.join(',') ?: '').append(';')
+    }
+    getGatewayConfig().each { gwName, config ->
+        sb.append(gwName as String).append('|').append(config.description ?: '').append('|')
+        config.tools.each { toolName ->
+            sb.append(toolName as String).append('=')
+              .append(config.summaries?."${toolName}" ?: '').append('~')
+              .append(config.searchHints?."${toolName}" ?: '').append(',')
+        }
+        sb.append(';')
+    }
+    return sb.toString()
 }
 
 // Build a flat list of all tools (core + proxied) with gateway attribution

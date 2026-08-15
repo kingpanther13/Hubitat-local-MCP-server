@@ -4712,6 +4712,63 @@ class TestRunner:
             self._delete_native(app_id)
 
     @test("native_apps")
+    def test_call_rule_multi_id_aggregates_per_rule(self) -> None:
+        # A multi-ruleId hub_call_rule is MRTR-eligible from round zero (see the
+        # round_zero_mrtr gate), so its terminal envelope is assembled by the
+        # continuation aggregator rather than returned by the leaf. The Spock guards
+        # drive that aggregator with hand-built literals; only a real hub proves the
+        # envelope a client actually receives after the slices are stitched back
+        # together. Two tiny rules, no triggers or actions -- the subject is the
+        # envelope, not rule behaviour -- each deleted in the finally.
+        rule_a = self._create_native_rule("CallRuleAggA")
+        rule_b = None
+        try:
+            rule_b = self._create_native_rule("CallRuleAggB")
+            ids = [int(rule_a), int(rule_b)]
+            res = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_call_rule", "args": {"ruleId": ids, "action": "stop"}})
+            assert isinstance(res, dict), f"multi-id hub_call_rule should return an envelope: {res}"
+            # Whether this took one slice or several, the client sees ONE terminal
+            # envelope with no continuation bookkeeping left in it.
+            assert res.get("status") != "in_progress", \
+                f"the client should receive a terminal envelope, not a pause: {res}"
+            assert "remainingRuleIds" not in res, \
+                f"continuation bookkeeping leaked into the terminal envelope: {res}"
+            # Exactly one result row per rule -- a rule re-queued across slices must not
+            # appear twice, which is what the per-rule collapse exists to guarantee.
+            results = res.get("results") or []
+            seen = [str(r.get("ruleId")) for r in results if isinstance(r, dict) and r.get("ruleId") is not None]
+            assert sorted(seen) == sorted(str(i) for i in ids), \
+                f"expected exactly one result row per requested rule, got {seen}: {res}"
+            assert len(seen) == len(set(seen)), f"a rule appears twice in results[]: {res}"
+            assert sorted(str(i) for i in (res.get("ruleIds") or [])) == sorted(str(i) for i in ids), \
+                f"ruleIds should echo the requested set exactly once each: {res}"
+            # success/partial/failedRuleIds must agree with the collapsed rows rather
+            # than with any single slice's view of them.
+            failed = [r for r in results if isinstance(r, dict) and r.get("success") is not True]
+            if failed:
+                assert res.get("success") is False and res.get("partial") is True, \
+                    f"a failed row must make the envelope unsuccessful and partial: {res}"
+                assert sorted(str(x) for x in (res.get("failedRuleIds") or [])) == \
+                    sorted(str(r.get("ruleId")) for r in failed), \
+                    f"failedRuleIds must match the failing rows: {res}"
+            else:
+                assert res.get("success") is True, f"all rows succeeded but envelope did not: {res}"
+                assert not res.get("partial"), \
+                    f"an all-success batch must not report partial -- a budget pause is not a partial result: {res}"
+                assert not res.get("failedRuleIds"), f"no rows failed but failedRuleIds is set: {res}"
+            # The action really landed on BOTH rules, not just the first slice's.
+            for rid in ids:
+                health = self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_get_rule_health", "args": {"appId": rid}})
+                assert health.get("stopped") is True, \
+                    f"rule {rid} reported success but is not stopped: {health}"
+        finally:
+            if rule_b is not None:
+                self._delete_native(rule_b)
+            self._delete_native(rule_a)
+
+    @test("native_apps")
     def test_set_rule_waitevents_on_offset_action_slot(self) -> None:
         # The first Wait-Event capability field does NOT reliably render at tCapab-1, and its
         # slot number is NOT the action index -- a Required Expression (and/or prior actions)
@@ -4754,8 +4811,14 @@ class TestRunner:
                 we_res = created_actions[1]
                 assert we_res.get("success") is True, \
                     f"waitEvents add on an offset action slot should commit, got: {we_res}"
-                applied_blob = json.dumps(we_res)
-                assert "tstate-2" in applied_blob and "tstate-1" not in applied_blob, \
+                # Exact membership in settingsApplied, not substring-in-JSON. The old
+                # positive half searched the whole serialized envelope, where "tstate-2"
+                # also matches "tstate-20".."tstate-29" and appears in the schema key
+                # lists and hint strings the response carries -- so it could pass on a
+                # response that never wrote the slot at all. A false GREEN on exactly the
+                # offset-slot contract this test exists to pin.
+                applied_keys = we_res.get("settingsApplied") or []
+                assert "tstate-2" in applied_keys and "tstate-1" not in applied_keys, \
                     f"the wait event response should bind to offset slot tstate-2: {we_res}"
 
             # The committed rule is structurally sound (no broken markers from a half-written event row).
@@ -4770,7 +4833,11 @@ class TestRunner:
                 f"the offset wait-event state did not persist at tstate-2: {settings}"
             assert str(settings.get("tstate-1")).lower() != "on", \
                 f"the event was miswritten to non-offset tstate-1: {settings}"
-            assert "wait" in json.dumps(cfg).lower(), \
+            # Prove the Wait-for-events ACTION committed, by its persisted subtype. The
+            # old check ("wait" in the config JSON) was vacuous: the seed log action's
+            # message is "E2E waitEvents offset base", so it matched whether or not the
+            # wait action landed.
+            assert any(self._setting_holds_exact(v, "getWaitEvents") for v in settings.values()), \
                 f"the committed rule config should show the Wait-for-events action, got: {cfg}"
         finally:
             self._delete_native(app_id)

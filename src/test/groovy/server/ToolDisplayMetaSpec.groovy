@@ -189,25 +189,25 @@ class ToolDisplayMetaSpec extends ToolSpecBase {
         result.results.find { it.tool == 'hub_list_rooms' }?.title == 'List Rooms'
     }
 
-    def "a same-shape cached corpus from an older build is rebuilt on the first search (version stamp)"() {
+    def "a same-shape cached corpus whose content drifted is rebuilt on the first search (content fingerprint)"() {
         // Shape-identical caches from an older release (same keys, stale titles or
         // search hints) are invisible to the shape check; the version stamp written
         // alongside the cache forces a rebuild on the first search after a deploy.
-        given: 'a title-bearing, token-aligned cache stamped by an older version'
+        given: 'a title-bearing, token-aligned cache whose content no longer matches the catalog -- the SAME-VERSION drift a version stamp could not see, and the only shape a contributor can produce since version bumps are bot-only'
         settingsMap.useGateways = true
         settingsMap.enableCustomRuleEngine = true
         atomicStateMap.toolSearchCorpus = [
             [name: 'hub_list_rooms', title: 'Old Title', description: 'List all rooms', params: 'cursor', gateway: 'hub_read_rooms']
         ]
         atomicStateMap.toolSearchTokens = [['hub', 'list', 'rooms', 'old', 'title', 'cursor']]
-        atomicStateMap.toolSearchCorpusVersion = 'v0.0.0-stale'
+        atomicStateMap.toolSearchCorpusFingerprint = 'stale-content-fingerprint'
 
         when:
         def result = script.toolSearchTools([query: 'list rooms', maxResults: 5])
 
-        then: 'the cache was rebuilt and re-stamped with the current version'
+        then: 'the cache was rebuilt and re-stamped with the live catalog fingerprint'
         atomicStateMap.toolSearchCorpus.size() > 1
-        atomicStateMap.toolSearchCorpusVersion == script.currentVersion()
+        atomicStateMap.toolSearchCorpusFingerprint == script.toolSearchCorpusFingerprint()
         result.results.find { it.tool == 'hub_list_rooms' }?.title == 'List Rooms'
     }
 

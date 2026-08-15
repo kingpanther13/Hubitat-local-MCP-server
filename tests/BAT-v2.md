@@ -2660,7 +2660,7 @@ All 117 distinct tools are covered by at least one test, excluding the destructi
 
 Sections 1-9 each target a specific tool — named in the test's title and **Expected** criteria while the `test_prompt` stays goal-first (see Prompt style above). Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 267 test scenarios** (123 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 3 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 device-state state-change / fail-loud authoring parity + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 5 read-side convergence + 1 multi-device convergence + 3 MCP device-access scope + 1 official-SDK MRTR proof + 1 rule-backup policy proof) plus 13 excluded destructive operations documented for manual testing
+**Total: 268 test scenarios** (123 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 3 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 device-state state-change / fail-loud authoring parity + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 5 read-side convergence + 1 multi-device convergence + 3 MCP device-access scope + 1 official-SDK MRTR proof + 1 multi-rule call_rule aggregation + 1 rule-backup policy proof) plus 13 excluded destructive operations documented for manual testing
 
 ---
 
@@ -4437,6 +4437,24 @@ Tools in this section require **the Read master** and HPM itself must be install
 **Failure modes**: using `ClientSession.call_tool()` or a project-owned state loop instead of the high-level SDK driver; requesting a task/extension or passing a custom token; only one continuation round; aggregate time at or below 10 seconds; any leg at or above 9.5 seconds or non-2xx; final `result_type` not `complete`; tool-level `success=false`; missing, wrong, duplicate, non-log, or extra persisted action values; zero owner slices or owner slices greater than or equal to HTTP continuation rounds; increasing `input_required_max_rounds`; logging a credentialed URL/body; an immediate no-settle cleanup lookup after a lost create response; or cleanup touching anything except this run's random BAT fixture.
 
 **Independent regular-E2E companion**: the existing `mrtr`-category `test_mrtr_rule_edit_uses_standard_continuation` creates its own throwaway Rule Machine app and performs its own six-action edit through the repository's normal `HubitatMcpClient`. It separately requires automatic request-state following, terminal `complete`, all six successful mutation results, multiple continuation rounds/HTTP legs, aggregate duration over 10 seconds, every actual POST below 9.5 seconds, and a positive owner-slice count strictly below the continuation count. It then performs its own raw-settings config read outside the timing window and requires the same exact six distinct persisted log rows/values. Success, readback, or telemetry from either client cannot satisfy the other client's assertions.
+
+---
+
+### T666 — Multi-rule hub_call_rule reports each rule exactly once across continuation slices
+
+> **Automated live scenario**: `tests/e2e_test.py` `test_call_rule_multi_id_aggregates_per_rule`. A multi-`ruleId` call is MRTR-eligible from round zero, so the envelope the client reads is assembled by the continuation aggregator, not returned by the leaf.
+
+```json
+{
+  "setup_prompt": "Create two uniquely named BAT_E2E_ Rule Machine rules with no triggers or actions and retain both appIds.",
+  "test_prompt": "Stop BOTH rules in a single hub_call_rule call by passing both ids as a list, then report the returned envelope and each rule's stopped state.",
+  "teardown_prompt": "In a finally block, delete only the exact appIds created for this run. Never sweep existing rules."
+}
+```
+
+**Expected**: one terminal envelope, never a `status: "in_progress"` pause and never a residual `remainingRuleIds`. `results[]` holds exactly one row per requested rule with no ruleId appearing twice, and `ruleIds` echoes the requested set once each — a rule re-queued for retry across slices must be reported by its FINAL attempt, not once per attempt. `success`, `partial` and `failedRuleIds` agree with those collapsed rows: an all-success batch reports `success: true` with `partial` falsy and no `failedRuleIds` (a mid-batch budget pause is not a partial RESULT), while any failed row makes the envelope `success: false` + `partial: true` with `failedRuleIds` matching exactly the failing rows. Both rules then read `stopped: true` from `hub_get_rule_health`.
+
+**Failure modes**: a rule appearing twice in `results[]`; a rule that failed early and succeeded on retry still counted in `failedRuleIds`; `partial: true` on a batch where every rule succeeded; `remainingRuleIds` surviving into the terminal envelope; the envelope reporting success while a rule is not actually stopped; or teardown touching a rule this run did not create.
 
 ---
 

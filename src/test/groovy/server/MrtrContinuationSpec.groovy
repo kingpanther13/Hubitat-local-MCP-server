@@ -1237,7 +1237,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         activeSnapshot[field] = mismatch
         atomicStateMap.mrtrRequests[stateId] = activeSnapshot
         script._writeStateCacheInvalidate()
-        script._mrtrSweep()
+        script._activeWrites()
         Map afterSweep = atomicStateMap.mrtrRequests[stateId] as Map
         def replay = script._mrtrReserve(
             'hub_set_rule', 'hub_set_rule', binding) as Map
@@ -1895,4 +1895,126 @@ class MrtrContinuationSpec extends ToolSpecBase {
         ran == 1
         !(atomicStateMap.mrtrRequests instanceof Map) || atomicStateMap.mrtrRequests.isEmpty()
     }
+
+
+    def "a call_rule rule that failed in an earlier slice and then succeeded on retry does not poison the terminal verdict"() {
+        given: 'slice 1 banked a failure for rule 12; the continuation re-queued it and the retry succeeded'
+        Map rec = [aggregate: [kind: 'call_rule',
+                               results: [[ruleId: 11, success: true], [ruleId: 12, success: false]],
+                               ruleIds: [11, 12]]]
+        Map lastSlice = [success: true, ruleIds: [12, 13, 14],
+                         results: [[ruleId: 12, success: true], [ruleId: 13, success: true],
+                                   [ruleId: 14, success: true]]]
+
+        when:
+        def out = script._mrtrAggregateTerminal(rec, lastSlice)
+
+        then: 'the retry outcome replaces the banked failure -- one row per rule, none failed'
+        out.results.size() == 4
+        out.results.count { it.ruleId == 12 } == 1
+        out.results.every { it.success == true }
+
+        and: 'so the operation reports the truth: every rule was actioned'
+        out.success == true
+        out.partial == false
+        out.failedRuleIds == null
+    }
+
+    def "a call_rule rule still failing after its retry keeps the terminal verdict failed"() {
+        given: 'the negative pin -- collapsing to the LAST outcome must not hide a real failure'
+        Map rec = [aggregate: [kind: 'call_rule', results: [[ruleId: 12, success: false]], ruleIds: [12]]]
+        Map lastSlice = [success: true, ruleIds: [12], results: [[ruleId: 12, success: false]]]
+
+        when:
+        def out = script._mrtrAggregateTerminal(rec, lastSlice)
+
+        then:
+        out.results.size() == 1
+        out.success == false
+        out.partial == true
+        out.failedRuleIds == [12]
+    }
+
+    def "the work-item sweep reaps by claim identity and never under a live worker"() {
+        given: 'three items: no record, a record that has moved on to a LATER claim, and a genuinely executing one'
+        Map workItems = scriptStaticField('MRTR_WORK_ITEMS') as Map
+        Set live = scriptStaticField('LIVE_WRITE_EXECUTIONS') as Set
+        workItems['orphan'] = [stateId: 'gone', claimId: 'orphan', started: false,
+                               arguments: [driverSource: 'x' * 64], queuedAt: script.now()]
+        // Freshly queued AND its record is active, so nothing about its age marks it dead --
+        // only the claimId mismatch does. This is the item an age ceiling would have held for
+        // a full window while its record was already serving a different claim.
+        workItems['superseded'] = [stateId: 'moved', claimId: 'superseded', started: true,
+                                   arguments: [driverSource: 'z' * 64], queuedAt: script.now()]
+        workItems['running'] = [stateId: 'alive', claimId: 'running', started: true,
+                                arguments: [driverSource: 'y' * 64], queuedAt: script.now()]
+        live.add('running')
+        atomicStateMap.mrtrRequests = [
+            'moved': [status: 'active', claimId: 'claim-2', generation: 2, claimedGeneration: 2,
+                      expiresAt: script.now() + 60000L],
+            'alive': [status: 'active', claimId: 'running', generation: 1, claimedGeneration: 1,
+                      expiresAt: script.now() + 60000L]
+        ]
+        script._writeStateCacheInvalidate()
+
+        when: 'a real production write path sweeps -- _activeWrites is one of the four entries that reach _mrtrSweepLocked'
+        script._activeWrites()
+
+        then: 'the orphan (a full copy of its call arguments) is released'
+        workItems['orphan'] == null
+
+        and: 'so is the superseded one, which no age ceiling could have seen'
+        workItems['superseded'] == null
+
+        and: 'the executing worker still owns its item -- reaping under it would break the slice'
+        workItems['running'] != null
+    }
+
+    def "a liveness marker stranded past the hard ceiling stops pinning its record and its write slot"() {
+        given: 'an expired active record whose claimId is still in the live set -- the shape a hard kill outside the catch leaves behind'
+        Map workItems = scriptStaticField('MRTR_WORK_ITEMS') as Map
+        Set live = scriptStaticField('LIVE_WRITE_EXECUTIONS') as Set
+        long past = script.now() - (script._mrtrActiveTtlMs() * 2L + 1000L)
+        live.add('stranded')
+        atomicStateMap.mrtrRequests = ['zombie': [status: 'active', claimId: 'stranded',
+                                                  generation: 1, claimedGeneration: 1,
+                                                  startedAt: past, expiresAt: past]]
+        workItems['stranded'] = [stateId: 'zombie', claimId: 'stranded', started: true,
+                                 arguments: [driverSource: 'q' * 64], queuedAt: past]
+        script._writeStateCacheInvalidate()
+
+        when:
+        def active = script._activeWrites()
+
+        then: 'the record is gone -- an uncapped liveness disjunct would have exempted it forever'
+        (atomicStateMap.mrtrRequests ?: [:])['zombie'] == null
+
+        and: 'its stranded marker is dropped with it, so it stops counting against the write cap'
+        !live.contains('stranded')
+        !active.any { (it instanceof Map ? it.claimId : null)?.toString() == 'stranded' }
+
+        and: 'and the work item it was pinning is released in the same pass'
+        workItems['stranded'] == null
+    }
+
+    def "abandoning a claimed request releases its queued work item on the next sweep"() {
+        given: 'a claimed active record with a queued slice payload'
+        Map workItems = scriptStaticField('MRTR_WORK_ITEMS') as Map
+        Map claim = [claimId: 'c1', generation: 1]
+        Map rec = [status: 'active', claimId: 'c1', claimedGeneration: 1, generation: 1,
+                   outerTool: 'hub_set_rule', leafTool: 'hub_set_rule',
+                   startedAt: script.now(), expiresAt: script.now() + 60000L]
+        atomicStateMap.mrtrRequests = ['s1': rec]
+        script._writeStateCacheInvalidate()
+        workItems['c1'] = [stateId: 's1', claimId: 'c1', started: false,
+                           arguments: [patches: [1, 2, 3]], queuedAt: script.now()]
+
+        when: 'the request is abandoned and any later write sweeps'
+        script._mrtrAbandon('s1', rec, claim, 'test-abandon')
+        script._activeWrites()
+
+        then: 'the abandoned record no longer claims the item, so the sweep releases it'
+        workItems['c1'] == null
+    }
+
 }
