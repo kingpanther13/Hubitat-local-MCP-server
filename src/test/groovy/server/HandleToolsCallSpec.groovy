@@ -50,6 +50,8 @@ class HandleToolsCallSpec extends ToolSpecBase {
     def "a call still carrying the removed opToken is refused loudly with the requestState pointer"() {
         given: 'a client running the removed idempotent-replay protocol'
         settingsMap.enableWrite = true
+        def ran = 0
+        script.metaClass.toolCreateVariable = { Map a -> ran++; [success: true] }
 
         when:
         def response = mcpDriver.callTool('hub_create_variable',
@@ -59,6 +61,9 @@ class HandleToolsCallSpec extends ToolSpecBase {
         response.error.code == -32602
         response.error.message.contains('opToken was removed')
         response.error.message.contains('requestState')
+
+        and: 'the refusal fired before any side effect -- the write never ran'
+        ran == 0
     }
 
     def "generic Exception from a tool returns isError success envelope (MCP spec)"() {
