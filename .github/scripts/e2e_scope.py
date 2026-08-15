@@ -44,7 +44,7 @@ FILE_GROUP_MAP = {
     "libraries/mcp-discovery-lib.groovy":       ["infrastructure", "protocol"],
     "libraries/mcp-app-cloner-lib.groovy":      ["native_apps", "rule_crud", "mrtr"],
     "libraries/mcp-dashboards-lib.groovy":      ["dashboards"],
-    "hubitat-mcp-server.groovy":                ["mrtr", "protocol"],
+    "hubitat-mcp-server.groovy":                ["mrtr", "protocol", "legacy_protocol"],
 }
 
 

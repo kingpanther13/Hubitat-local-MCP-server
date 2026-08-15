@@ -64,6 +64,17 @@ def _run_artifact_suffix(env: dict[str, str] | os._Environ[str] = os.environ) ->
 MODERN_PROTOCOL_VERSION = "2026-07-28"
 SUPPORTED_PROTOCOL_VERSIONS = [MODERN_PROTOCOL_VERSION, "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
 
+# Mirrors initializeProtocolVersions() / defaultProtocolVersion(): the handshake negotiates
+# every supported revision EXCEPT the modern one. 2026-07-28 deleted `initialize`, so a client
+# that reaches it is legacy-era by construction and must never be handed a version it cannot
+# speak. Derived from the transport list above so the two cannot drift.
+INITIALIZE_PROTOCOL_VERSIONS = [v for v in SUPPORTED_PROTOCOL_VERSIONS if v != MODERN_PROTOCOL_VERSION]
+DEFAULT_PROTOCOL_VERSION = INITIALIZE_PROTOCOL_VERSIONS[0]
+# The revision the legacy_protocol group speaks on the wire. 2025-06-18 is the one that made
+# MCP-Protocol-Version REQUIRED on every POST, and it is what the shipping production clients
+# negotiate -- so it is the era gate's real-world case, not merely a supported one.
+LEGACY_PROTOCOL_VERSION = "2025-06-18"
+
 MRTR_MIN_LOGICAL_SECONDS = 10.0
 MRTR_RELAY_LEG_CEILING_SECONDS = 9.5
 
@@ -788,6 +799,168 @@ class HubitatMcpClient:
         resp = requests.get(url, params={"access_token": self.access_token}, timeout=15)
         resp.raise_for_status()
         return resp.json()
+
+
+class LegacyEraClient:
+    """A 2025-era MCP client: plain JSON-RPC POSTs with no 2026-07-28 machinery.
+
+    Deliberately NOT a HubitatMcpClient subclass, and deliberately without any of its
+    conveniences (gateway auto-routing, MRTR continuation, op timings, catalog maps).
+    The endpoint serves two eras and every currently shipping production client speaks
+    the legacy one, so the only way to keep proving that half of the contract is to put
+    the 2025 wire shape on the wire verbatim. Use it ONLY inside the legacy_protocol
+    group -- the rest of the suite rides 2026-07-28 by contract (HubitatMcpClient._send
+    asserts its own headers to keep it that way).
+
+    Every difference from the modern client is a deliberate part of the era:
+
+      - No Mcp-Method / Mcp-Name headers. 2026-07-28 invented them; a legacy client that
+        sent them would not be a legacy client, and the server must never require them
+        of one.
+      - MCP-Protocol-Version carries what `initialize` negotiated (REQUIRED on every POST
+        since 2025-06-18), which is never the modern revision. Before the handshake the
+        requests are headerless, which is what a pre-2025-06-18 client sends.
+      - No params._meta protocol stamping.
+      - Results are read VERBATIM and never expected to carry resultType: jsonRpcResult
+        stamps it only on modern-era requests, because a legacy client parses an empty
+        result with a strict schema (the TypeScript SDK's EmptyResultSchema rejects
+        unknown keys), so a stray stamp turns a keepalive into a protocol error.
+    """
+
+    def __init__(self, client: HubitatMcpClient, verbose: bool = False):
+        # Borrow only the connection identity -- endpoint, token, and the keep-alive
+        # session (a second TCP+TLS handshake over the cloud relay costs ~300-500ms).
+        # Every header and every parse below is this class's own.
+        self.endpoint = client.endpoint
+        self.access_token = client.access_token
+        self.session = client.session
+        self.verbose = verbose
+        self.protocol_version: str | None = None
+        self._request_id = 0
+
+    def _log(self, msg: str) -> None:
+        if self.verbose:
+            print(f"    [DEBUG][legacy] {msg}")
+
+    def _headers(self) -> dict[str, str]:
+        """Exactly what a 2025-era client sends, and nothing else."""
+        if self.protocol_version is None:
+            return {}
+        return {"MCP-Protocol-Version": self.protocol_version}
+
+    def _post(self, payload: dict, *, replay_safe: bool) -> requests.Response:
+        """One physical POST, retried only when the caller says replay is safe.
+
+        A relay 504 can lose the response of a write the hub already committed, so a
+        write gets exactly one delivery and a typed RelayLostResponseError -- the same
+        contract HubitatMcpClient._send holds, for the same reason.
+        """
+        method = payload.get("method")
+        self._log(f">> {method} {json.dumps(payload.get('params') or {})[:300]}")
+        # Same 0.2s pre-send gap as _send: the pacing caps the server app's short-window
+        # duty cycle, which is what the platform's per-app load limiter measures.
+        time.sleep(0.2)
+        attempts = 3 if replay_safe else 1
+        last_exc: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                resp = self.session.post(
+                    self.endpoint,
+                    params={"access_token": self.access_token},
+                    json=payload,
+                    headers=self._headers(),
+                    timeout=60,
+                )
+            except (requests.ConnectionError, requests.Timeout,
+                    requests.exceptions.ChunkedEncodingError) as exc:
+                if not replay_safe:
+                    raise RelayLostResponseError(
+                        f"504-class: response lost on legacy {method} "
+                        f"({type(exc).__name__})") from exc
+                last_exc = exc
+                self._log(f"<< network error (attempt {attempt + 1}/{attempts}): {exc} -- retrying")
+            else:
+                if not 500 <= resp.status_code < 600:
+                    self._log(f"<< HTTP {resp.status_code} {resp.text[:300]}")
+                    return resp
+                if not replay_safe:
+                    raise RelayLostResponseError(
+                        f"{resp.status_code} {resp.reason} on legacy {method} "
+                        "(504-class: response lost)")
+                last_exc = requests.HTTPError(
+                    f"{resp.status_code} {resp.reason} on legacy {method}")
+                self._log(f"<< HTTP {resp.status_code} (attempt {attempt + 1}/{attempts}) -- retrying")
+            if attempt < attempts - 1:
+                time.sleep((2 ** attempt) + random.uniform(0, 1))
+        raise last_exc if last_exc else McpError(f"transport failure on legacy {method}")
+
+    def rpc(self, method: str, params: dict | None = None, *,
+            replay_safe: bool = True) -> dict:
+        """Send one legacy JSON-RPC request and return its `result` object VERBATIM.
+
+        Verbatim is the point: the era assertions are about what a legacy result does
+        and does not carry, so nothing here may normalize or unwrap it.
+        """
+        self._request_id += 1
+        payload: dict[str, Any] = {"jsonrpc": "2.0", "id": self._request_id, "method": method}
+        if params is not None:
+            payload["params"] = params
+        resp = self._post(payload, replay_safe=replay_safe)
+        # A legacy-era request is served, never header-validated: the mirrored headers it
+        # omits are undefined in its revision. A 400 here IS the regression this group
+        # exists to catch (presence-based era detection rejects every 2025 client), so
+        # bind it at the transport, before any body-shape assertion can mask it.
+        assert resp.status_code == 200, (
+            f"a legacy {method} must ride HTTP 200, got {resp.status_code}: {resp.text[:300]!r}")
+        try:
+            data = resp.json()
+        except json.JSONDecodeError as exc:
+            raise McpError(
+                f"legacy {method} returned an undecodable body: {resp.text[:200]!r}") from exc
+        if "error" in data:
+            raise McpError(f"JSON-RPC error on legacy {method}: {data['error']}")
+        return data.get("result", {})
+
+    def initialize(self, requested: str) -> dict:
+        """Run the legacy handshake and ADOPT whatever it negotiates.
+
+        Returns the raw result so the caller can assert on the whole envelope. The
+        adopted version rides MCP-Protocol-Version on every later request, which is
+        exactly what a real 2025-era client does with it.
+        """
+        result = self.rpc("initialize", {
+            "protocolVersion": requested,
+            "capabilities": {},
+            "clientInfo": {"name": "hubitat-e2e-legacy-probe", "version": "1.0"},
+        })
+        negotiated = result.get("protocolVersion")
+        assert isinstance(negotiated, str) and negotiated, \
+            f"initialize negotiated no protocol version: {str(result)[:300]}"
+        self.protocol_version = negotiated
+        return result
+
+    def call_tool(self, name: str, arguments: dict | None = None, *,
+                  replay_safe: bool = False) -> Any:
+        """Legacy tools/call -> parsed text content, matching HubitatMcpClient.call_tool's
+        return contract (parsed JSON, else the raw text) so assertions read the same.
+
+        No gateway auto-routing: a legacy caller passes the wire name it means, so a
+        gateway call is written out as {tool, args} at the call site. replay_safe
+        defaults to FALSE -- callers opt in for reads only.
+        """
+        result = self.rpc("tools/call", {"name": name, "arguments": arguments or {}},
+                          replay_safe=replay_safe)
+        if result.get("isError"):
+            text = next((c.get("text", "") for c in result.get("content", [])
+                         if c.get("type") == "text"), "")
+            raise McpToolError(name, text)
+        for content in result.get("content", []):
+            if content.get("type") == "text":
+                try:
+                    return json.loads(content["text"])
+                except (json.JSONDecodeError, TypeError):
+                    return content["text"]
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -11494,6 +11667,204 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         )
         assert bad.status_code != 200, \
             f"a WRONG bearer token was served HTTP 200 -- the endpoint is not authenticating: {bad.text[:200]!r}"
+
+    # -----------------------------------------------------------------------
+    # GROUP 14: legacy_protocol (the OTHER era, over the live relay).
+    #
+    # Every test above rides 2026-07-28, but every currently shipping production client
+    # speaks the LEGACY era: it negotiates 2025-06-18 / 2025-11-25 through `initialize`
+    # and sends MCP-Protocol-Version with NO Mcp-Method / Mcp-Name. The endpoint splits
+    # the eras on that header's VALUE, never its presence -- reading presence as "modern"
+    # would 400 every one of those clients -- and the legacy branch has its own dispatcher
+    # (handleToolsCallLegacy) with its own write-lease accounting. None of it is reachable
+    # through HubitatMcpClient, which asserts modern headers on every call by design.
+    #
+    # So this group drives the same live hub through LegacyEraClient instead. It is
+    # deliberately small (three tests): the point is that the legacy wire still works
+    # end to end -- handshake, catalog, read, write -- not to re-prove tool behaviour the
+    # modern groups already cover on the same code.
+    # -----------------------------------------------------------------------
+
+    @test("legacy_protocol")
+    def test_legacy_initialize_and_tools_list(self) -> None:
+        """A 2025-era client completes the handshake and is served the whole catalog.
+
+        Two contracts meet here. `initialize` is legacy-capped: it echoes a supported
+        legacy revision, and negotiates 2026-07-28 DOWN to the default rather than
+        handing back a version whose transport the caller has just proven it does not
+        speak. And the era gate: neither result carries resultType (a legacy client
+        parses results with a strict schema that rejects unknown keys), while the
+        serverInfo _meta stamp and the tools/list cache hints ride BOTH eras -- both are
+        modeled or passthrough in the legacy result schemas, so they are safe there.
+        """
+        legacy = LegacyEraClient(self.client, verbose=self.verbose)
+
+        handshake = legacy.initialize(LEGACY_PROTOCOL_VERSION)
+        assert handshake.get("protocolVersion") == LEGACY_PROTOCOL_VERSION, \
+            (f"initialize did not echo the requested legacy revision "
+             f"{LEGACY_PROTOCOL_VERSION}: {handshake.get('protocolVersion')!r}")
+        assert "tools" in (handshake.get("capabilities") or {}), \
+            f"initialize must advertise the tools capability: {handshake.get('capabilities')!r}"
+        assert handshake.get("serverInfo", {}).get("name") == "hubitat-mcp-rule-server", \
+            f"initialize serverInfo missing/wrong: {handshake.get('serverInfo')!r}"
+        assert "resultType" not in handshake, \
+            f"a legacy-era result must NOT be stamped with resultType: {sorted(handshake)}"
+        meta_info = (handshake.get("_meta") or {}).get("io.modelcontextprotocol/serverInfo") or {}
+        assert meta_info.get("name") == "hubitat-mcp-rule-server", \
+            f"the serverInfo _meta stamp is unconditional and must reach a legacy result: {handshake.get('_meta')!r}"
+
+        listed = legacy.rpc("tools/list", {})
+        tools = listed.get("tools", [])
+        assert tools, f"legacy tools/list served no catalog: {str(listed)[:300]}"
+        assert "resultType" not in listed, \
+            f"a legacy tools/list must NOT be stamped with resultType: {sorted(listed)}"
+        assert isinstance(listed.get("ttlMs"), int) and listed["ttlMs"] > 0, \
+            f"the tools/list cache hints ride both eras; ttlMs is missing: {listed.get('ttlMs')!r}"
+        assert listed.get("cacheScope") == "private", \
+            f"legacy tools/list cacheScope wrong: {listed.get('cacheScope')!r}"
+        malformed = [t.get("name") for t in tools
+                     if not isinstance(t.get("name"), str) or not isinstance(t.get("inputSchema"), dict)]
+        assert not malformed, \
+            f"legacy catalog entries missing the spec-required name/inputSchema pair: {malformed}"
+        # publishOutputSchemas is OFF for the run, so nothing advertises an outputSchema --
+        # and an advertised one would OBLIGE the server to return structuredContent on every
+        # result of that tool, which spec-validating legacy clients enforce (issue #342).
+        with_schema = [t.get("name") for t in tools if "outputSchema" in t]
+        assert not with_schema, f"legacy catalog advertises outputSchema on: {with_schema}"
+        # One catalog, both eras. Pinned against the live modern list rather than a count so
+        # a tool added, renamed, or hidden cannot drift the two surfaces apart unnoticed.
+        legacy_names = {t.get("name") for t in tools}
+        modern_names = {t.get("name") for t in self.client.list_tools().get("tools", [])}
+        assert legacy_names == modern_names, \
+            ("the legacy and modern catalogs disagree: "
+             f"legacy-only={sorted(legacy_names - modern_names)}, "
+             f"modern-only={sorted(modern_names - legacy_names)}")
+
+        capped = legacy.initialize(MODERN_PROTOCOL_VERSION)
+        assert capped.get("protocolVersion") == DEFAULT_PROTOCOL_VERSION, \
+            (f"initialize must negotiate {MODERN_PROTOCOL_VERSION} DOWN to "
+             f"{DEFAULT_PROTOCOL_VERSION}, got {capped.get('protocolVersion')!r}")
+
+    @test("legacy_protocol")
+    def test_legacy_read_carries_no_result_type(self) -> None:
+        """A legacy READ is served a plain tools/call envelope with no resultType.
+
+        tools/call is the era gate's hardest case: its response is PRESERIALIZED --
+        handleToolsCall hands back a ready-made JSON string -- so the stamping decision
+        is baked into that string rather than applied to a map on the way out. That is a
+        different code path from the tools/list result above, and it is the one every
+        legacy client hits on every call.
+        """
+        legacy = LegacyEraClient(self.client, verbose=self.verbose)
+        legacy.initialize(LEGACY_PROTOCOL_VERSION)
+
+        result = legacy.rpc("tools/call", {"name": "hub_get_info", "arguments": {}},
+                            replay_safe=True)
+        assert "resultType" not in result, \
+            f"a legacy tools/call result must NOT be stamped with resultType: {sorted(result)}"
+        assert result.get("isError") is not True, \
+            f"legacy hub_get_info returned an error envelope: {str(result)[:300]}"
+        text = next((c.get("text") for c in result.get("content", [])
+                     if c.get("type") == "text"), None)
+        assert text, f"legacy tools/call returned no text content: {str(result)[:300]}"
+        # Parse it the way the strict legacy SDKs do -- the envelope has to be a real
+        # result, not merely an un-stamped one.
+        info = json.loads(text)
+        assert isinstance(info, dict) and "platformUpdate" in info and "safeMode" in info, \
+            f"legacy hub_get_info payload is not the hub-info shape: {sorted(info) if isinstance(info, dict) else type(info)}"
+
+    @test("legacy_protocol")
+    def test_legacy_write_round_trip(self) -> None:
+        """A legacy WRITE completes end to end: create a hub variable, read it back, delete it.
+
+        This is the only live exercise of the in-memory write lease handleToolsCallLegacy
+        takes. The lease brackets executeTool in a try/finally and is classified from the
+        LEAF tool (hence the gateway envelope here, which is what a real gateway-mode
+        client sends), so a mis-classification or a lease that is never released surfaces
+        here as a refused, failed, or hung write. Every write a shipping client makes
+        today goes down this path -- the modern MRTR dispatcher never runs for them.
+
+        What it does NOT reach: the lease's `transport: "legacy"` stamp. That value is
+        only observable in a too_many_writes_in_flight refusal, which needs the cap at 1
+        and two writes genuinely in flight -- the machinery
+        test_write_cap_refuses_a_second_concurrent_write already carries, at a cost this
+        smoke group is deliberately kept under.
+        """
+        legacy = LegacyEraClient(self.client, verbose=self.verbose)
+        legacy.initialize(LEGACY_PROTOCOL_VERSION)
+        var_name = f"{PREFIX}LegacyVar_{_run_artifact_suffix()}"
+
+        def _legacy_value() -> str | None:
+            """The variable's value over the legacy wire, or None when it is gone.
+
+            Doubles as the relay-504 verify: hub_get_variable raises 'not found' when the
+            write never committed, so the raise IS the evidence of absence.
+            """
+            try:
+                got = legacy.call_tool("hub_manage_variables",
+                                       {"tool": "hub_get_variable", "args": {"name": var_name}},
+                                       replay_safe=True)
+            except (McpToolError, McpError):
+                return None
+            return got.get("value") if isinstance(got, dict) else None
+
+        # Track BEFORE creating: there is no prefix sweep for variables, so a crash between
+        # the write landing and a later append would strand it on the hub.
+        self.created_variable_names.append(var_name)
+        try:
+            created = self._soft_write(
+                lambda: legacy.call_tool("hub_manage_variables", {
+                    "tool": "hub_create_variable",
+                    "args": {"name": var_name, "type": "String",
+                             "value": "legacy-era-v1", "confirm": True}}),
+                _legacy_value,
+                "legacy hub_create_variable",
+            )
+            if created["relayDropped"]:
+                assert created["committed"], \
+                    f"the legacy create lost its response to a relay 504 and never committed: {var_name}"
+                print("    legacy hub_create_variable: response assertions skipped (relay 504); verified by read-back")
+            else:
+                create_response = created["response"]
+                assert create_response.get("success") is True, \
+                    f"legacy hub_create_variable did not report success: {create_response}"
+                assert create_response.get("source") == "hub", \
+                    f"the legacy create resolved the wrong namespace: {create_response}"
+
+            got = legacy.call_tool("hub_manage_variables",
+                                   {"tool": "hub_get_variable", "args": {"name": var_name}},
+                                   replay_safe=True)
+            assert got.get("value") == "legacy-era-v1", \
+                f"legacy read-back value mismatch: {got}"
+            assert got.get("source") == "hub", \
+                f"the legacy create landed outside the hub namespace: {got}"
+
+            # The delete is the second write, and the second lease: a lease that was taken
+            # but never released would refuse it once the cap is on.
+            deleted = self._soft_write(
+                lambda: legacy.call_tool("hub_manage_variables", {
+                    "tool": "hub_delete_variable",
+                    "args": {"name": var_name, "confirm": True}}),
+                lambda: _legacy_value() is None,
+                "legacy hub_delete_variable",
+            )
+            if deleted["relayDropped"]:
+                assert deleted["committed"], \
+                    f"the legacy delete lost its response to a relay 504 and never committed: {var_name}"
+                print("    legacy hub_delete_variable: response assertions skipped (relay 504); verified gone")
+            else:
+                delete_response = deleted["response"]
+                assert delete_response.get("success") is True and delete_response.get("deleted") is True, \
+                    f"legacy hub_delete_variable failed: {delete_response}"
+                assert delete_response.get("previousValue") == "legacy-era-v1", \
+                    f"the legacy delete did not report the value it removed: {delete_response}"
+            self.created_variable_names.remove(var_name)
+        finally:
+            # Safety net only. It runs over the MODERN client on purpose: cleanup is not the
+            # contract under test, so a bug in the legacy path must not also strand the
+            # fixture. Deliberately no assertion here -- one would mask the real failure.
+            if var_name in self.created_variable_names:
+                self._delete_variable_safe(var_name)
 
     # -----------------------------------------------------------------------
     # Cleanup

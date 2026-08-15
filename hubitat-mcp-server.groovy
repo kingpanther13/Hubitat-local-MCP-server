@@ -1607,7 +1607,13 @@ def handleToolsCall(msg) {
                     reservation.refusal, true)
             }
             stateId = reservation.stateId?.toString()
-            return jsonRpcResult(msg.id, [resultType: "input_required", requestState: stateId])
+            // rejoined tells the caller its byte-identical call coalesced onto an
+            // already-reserved request: a retry sees expected behavior, and an
+            // INTENTIONAL identical repeat learns it must vary its arguments (or
+            // wait out the record TTL) to execute again.
+            def roundZero = [resultType: "input_required", requestState: stateId]
+            if (reservation.rejoined == true) roundZero.rejoined = true
+            return jsonRpcResult(msg.id, roundZero)
         }
 
         Map executionArgs = (rec.nextArguments instanceof Map)
@@ -1813,6 +1819,13 @@ private Set _mrtrDetachedWorkerTools() {
 def _mrtrEligibleCall(outerToolName, leafToolName, args) {
     String leaf = leafToolName?.toString()
     if (!_mrtrEligibleTools().contains(leaf) || !(args instanceof Map)) return false
+    // A mis-routed gateway call (a leaf outside this gateway's tool set) must refuse
+    // through ordinary dispatch, never enter the MRTR path: round zero would reserve
+    // an active record that pins a cap slot for its full TTL before the route is
+    // ever checked.
+    String outer = outerToolName?.toString()
+    if (outer != leaf && (settings.useGateways == false ||
+            !(getGatewayConfig()[outer]?.tools?.contains(leaf)))) return false
     def leafArgs = _mrtrLeafArguments(outerToolName?.toString(), leaf, args as Map)
     if (!(leafArgs instanceof Map)) return false
     if (leaf == "hub_set_rule" && _isSetRuleSchemaOnlyCall(leafArgs)) return false
@@ -1967,15 +1980,27 @@ private boolean _writeExecutionLiveLocked(executionId) {
     return executionId != null && LIVE_WRITE_EXECUTIONS.contains(executionId.toString())
 }
 
-// An execution hard-killed before its finally leaves its lease behind. Age it out
-// so a stale entry cannot jam the cap for the rest of the JVM's life.
+// Two horizons. Inside the lease TTL every lease counts. Between TTL and a hard
+// ceiling of one further TTL, only a JVM-live execution keeps its slot -- a
+// genuinely long-running write stays counted. At the hard ceiling eviction is
+// unconditional: a hard kill strands its id in LIVE_WRITE_EXECUTIONS looking
+// forever "live", and a liveness disjunct with no ceiling would exempt exactly
+// the leases this sweep exists to reap -- two strandings at the default cap
+// would then refuse every write until recompile. The stranded live-set id is
+// dropped with its lease.
 private void _writeSweepRequestsLocked() {
     long at = now()
+    long graceMs = _writeLeaseMs()
     def expired = WRITE_REQUEST_LEASES.findAll { k, v ->
-        !(v instanceof Map) || !(_writeExecutionLiveLocked(k) ||
-            (v.expiresAt != null && (v.expiresAt as Long) > at))
+        if (!(v instanceof Map) || v.expiresAt == null) return true
+        long exp = v.expiresAt as Long
+        if (exp > at) return false
+        return !(_writeExecutionLiveLocked(k) && at < exp + graceMs)
     }.collect { it.key }
-    expired.each { WRITE_REQUEST_LEASES.remove(it) }
+    expired.each { k ->
+        WRITE_REQUEST_LEASES.remove(k)
+        LIVE_WRITE_EXECUTIONS.remove(k?.toString())
+    }
 }
 
 private List _activeWritesLocked() {
@@ -2502,6 +2527,10 @@ private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map re
     def leafArgs = _mrtrLeafArguments(rec.outerTool?.toString(), rec.leafTool?.toString(), executionArgs)
     if (!(leafArgs instanceof Map)) return null
     def nextLeaf = _mrtrCopyMap(leafArgs as Map)
+    // Never persist this round's budget clock: the gateway's __reqT0 injection is
+    // present-value-preserving, so a stale stamp here would make every later round
+    // evaluate round 1's exhausted budget and pause after minimal progress.
+    nextLeaf.remove("__reqT0")
     String kind = null
 
     if (leafTool == "hub_call_rule" && result.remainingRuleIds instanceof List
@@ -2826,6 +2855,12 @@ def runMrtrSlice(Map job = [:]) {
                     && current.generation == generation) {
                 MRTR_WORK_ITEMS.remove(claimId)
             }
+            // A worker dying outside catch(Exception) -- an Error, or a platform
+            // kill during unwind -- must not stay "live": that pins its cap slot
+            // and keeps its requestState record unsweepable until recompile. Only
+            // when no successor work item exists; a rescheduled slice manages its
+            // own liveness marker.
+            if (MRTR_WORK_ITEMS[claimId] == null) LIVE_WRITE_EXECUTIONS.remove(claimId)
         }
     }
 }
@@ -4602,6 +4637,12 @@ def _isDeviceReplaceOptionsOnlyCall(toolName, args) {
 }
 
 def executeTool(toolName, args) {
+    // opToken is GONE (replaced by standard MCP requestState continuation). A client
+    // still sending one is running the removed idempotent-replay protocol and would
+    // otherwise lose its duplicate-commit protection silently -- fail loud instead.
+    if (args instanceof Map && args.containsKey("opToken")) {
+        throw new IllegalArgumentException("opToken was removed: slow writes now continue automatically via standard MCP requestState, which also provides the idempotent replay opToken used to. Remove the opToken argument and update your client's tool catalog. See hub_get_tool_guide(section='slow_ops').")
+    }
     // ---- Universal Read/Write master gate (issue #113) ----
     // Gateway NAMES are not leaf tools: they route to handleGateway (see switch
     // below) which re-enters executeTool per sub-tool, so the sub-tool is gated on

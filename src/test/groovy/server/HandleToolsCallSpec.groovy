@@ -47,6 +47,20 @@ class HandleToolsCallSpec extends ToolSpecBase {
         response.error.message.contains('Read tools are disabled')
     }
 
+    def "a call still carrying the removed opToken is refused loudly with the requestState pointer"() {
+        given: 'a client running the removed idempotent-replay protocol'
+        settingsMap.enableWrite = true
+
+        when:
+        def response = mcpDriver.callTool('hub_create_variable',
+            [name: 'legacyTokenVar', type: 'String', value: 'x', confirm: true, opToken: 'tok-12345678'])
+
+        then: 'silence would cost the client its duplicate-commit protection unnoticed'
+        response.error.code == -32602
+        response.error.message.contains('opToken was removed')
+        response.error.message.contains('requestState')
+    }
+
     def "generic Exception from a tool returns isError success envelope (MCP spec)"() {
         given: 'getRooms() throws a non-IAE so hub_list_rooms hits the generic catch'
         script.metaClass.getRooms = { throw new RuntimeException('boom') }

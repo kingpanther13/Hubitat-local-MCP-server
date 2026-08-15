@@ -847,7 +847,8 @@ A transport drop can lose the response while the hub still commits this write; v
                         cloudBackupPassword: [type: "string", description: "Cloud-backup encryption password. Required when cloud backup is/stays enabled."]
                     ]],
                     scheduleOnly: [type: "boolean", description: "With schedule: set schedule only, no backup now."],
-                ]
+                ],
+                required: ["confirm"]
             ],
             outputSchema: [
                 type: "object",

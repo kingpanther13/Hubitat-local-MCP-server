@@ -205,8 +205,6 @@ class MrtrContinuationSpec extends ToolSpecBase {
         caseName                  | useGateways | outer                     | leaf           | editShape
         'plural trigger envelope' | true        | 'hub_set_rule'            | 'hub_set_rule' | [addTriggers: [[capability: 'Switch', state: 'changed']]]
         'plural action envelope'  | true        | 'hub_set_rule'            | 'hub_set_rule' | [addActions: [[capability: 'switch', state: 'on']]]
-        'disabled gateway route'  | false       | 'hub_manage_rule_machine' | 'hub_set_rule' | [addAction: [capability: 'switch', state: 'on']]
-        'wrong gateway route'     | true        | 'hub_manage_devices'      | 'hub_set_rule' | [addAction: [capability: 'switch', state: 'on']]
     }
 
     def "round-zero native validation cannot outrank the #gateName gate"() {
@@ -364,6 +362,69 @@ class MrtrContinuationSpec extends ToolSpecBase {
         replay.result.resultType == 'complete'
         mcpDriver.parseInner(replay).results*.ruleId == [11, 12]
         ranWith.size() == 2
+    }
+
+    def "an invalid gateway route (#caseName) refuses through ordinary dispatch without reserving state"() {
+        given: 'an MRTR-eligible leaf on a route the canonical dispatcher will refuse'
+        settingsMap.enableWrite = true
+        settingsMap.useGateways = useGateways
+
+        when:
+        def response = modernCall(outer,
+            [tool: 'hub_set_rule', args: [appId: 777, addAction: [capability: 'switch', command: 'on'], confirm: true]])
+
+        then: 'the canonical route error arrives at round zero, and no requestState record pins a cap slot'
+        response.result?.resultType != 'input_required'
+        !(response.result?.containsKey('requestState'))
+        !(atomicStateMap.mrtrRequests instanceof Map) || atomicStateMap.mrtrRequests.isEmpty()
+
+        where:
+        caseName           | useGateways | outer
+        'wrong gateway'    | true        | 'hub_manage_devices'
+        'gateways disabled'| false       | 'hub_manage_rule_machine'
+    }
+
+    def "a gateway-routed continuation round runs on its own fresh budget clock"() {
+        given: 'a paused bulk call routed through the gateway, with real time passing between rounds'
+        settingsMap.enableWrite = true
+        settingsMap.useGateways = true
+        def virtualNow = new AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        def ranWith = []
+        script.metaClass.toolRunRmRule = { Map a ->
+            ranWith << new LinkedHashMap(a)
+            if (ranWith.size() == 1) {
+                return [success: false, partial: true, ruleIds: [31, 32],
+                        rmAction: 'stopRule toggle x1',
+                        results: [[success: true, ruleId: 31]], remainingRuleIds: [32]]
+            }
+            return [success: true, partial: false, ruleIds: [32],
+                    rmAction: 'stopRule toggle x1', results: [[success: true, ruleId: 32]]]
+        }
+        def wire = [tool: 'hub_call_rule', args: [ruleId: [31, 32], action: 'stop']]
+
+        when: 'round zero and the first executing round pause with a remainder'
+        def first = modernCall('hub_manage_rule_machine', wire)
+        String requestState = first.result.requestState
+        def second = modernCall('hub_manage_rule_machine', wire, requestState)
+
+        then: 'the persisted next-round arguments carry no budget stamp'
+        second.result.resultType == 'input_required'
+        ranWith.size() == 1
+        atomicStateMap.mrtrRequests[requestState].nextArguments.args.__reqT0 == null
+
+        when: 'a later round arrives after round 1\'s budget would be long exhausted'
+        virtualNow.addAndGet(60_000L)
+        def third = modernCall('hub_manage_rule_machine', wire, requestState)
+
+        then: 'the remainder executes against the NEW round\'s clock, not round 1\'s'
+        third.result.resultType == 'complete'
+        ranWith.size() == 2
+        ranWith[1].ruleId == [32]
+        ranWith[1].__reqT0 == 1234567890000L + 60_000L
+
+        cleanup:
+        NOW_OVERRIDE.set(null)
     }
 
     def "a resumed native write returns requestState before its blocked worker leaf finishes"() {
@@ -576,8 +637,10 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         then:
         first.result.resultType == 'input_required'
+        !first.result.containsKey('rejoined')
         duplicate.result.resultType == 'input_required'
         duplicate.result.requestState == first.result.requestState
+        duplicate.result.rejoined == true
         !duplicate.result.containsKey('opToken')
         ran == 0
     }
@@ -1452,19 +1515,25 @@ class MrtrContinuationSpec extends ToolSpecBase {
     }
 
     def "an ordinary write lease is memory-only and ages out when its execution is gone"() {
-        given: 'a lease left behind by an execution that never reached its finally'
+        given: 'a lease from a hard-killed execution, past the TTL AND the live-grace ceiling'
         settingsMap.maxConcurrentWrites = 1
         (scriptStaticField('WRITE_REQUEST_LEASES') as Map)['write-abandoned'] = [
             tool: 'hub_set_variable', transport: 'modern',
-            startedAt: 1234567700000L, expiresAt: 1234567889999L
+            startedAt: 1234567500000L,
+            expiresAt: 1234567890000L - (script._writeLeaseMs() as Long) - 1L
         ]
+        // A hard kill strands the id in the live set too, looking forever "live".
+        // Past the hard ceiling (expiry + one further TTL) eviction must be
+        // unconditional or two strandings wedge the cap until recompile.
+        (scriptStaticField('LIVE_WRITE_EXECUTIONS') as Set).add('write-abandoned')
 
         when: 'a lease is taken through the ordinary reservation path'
         Map reservation = script._writeReserveRequest('hub_call_device_command', 'legacy') as Map
 
-        then: 'the expired one is swept, so a hard-killed execution cannot jam the cap'
+        then: 'the expired one is swept, live-set entry included, so a hard-killed execution cannot jam the cap'
         reservation.accepted == true
         script._activeWrites()*.tool == ['hub_call_device_command']
+        !(scriptStaticField('LIVE_WRITE_EXECUTIONS') as Set).contains('write-abandoned')
 
         and: 'the cap costs no hub DB round trips -- nothing about it reaches atomicState'
         atomicStateMap.writeRequestLeases == null

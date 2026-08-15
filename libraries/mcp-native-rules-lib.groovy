@@ -9372,7 +9372,8 @@ def _setRuleFlatTool() {
                 appId: [type: "integer", description: "RM rule ID. OMIT for create/guide/discover/buttonRule; PROVIDE for every other (edit) operation (appId is the create-vs-edit switch)."],
                 args: [type: ["object", "array", "boolean"], description: "Arguments for the chosen operation — the exact shape comes from the schema probe (call without confirm first). Most ops take an object; the list ops (addTriggers/addActions/replaceActions/patches) take a bare array and clearActions takes true. For 'create' args holds name + optional addTriggers/addActions/addRequiredExpression. Pass the bare operation payload (e.g. {capability:'switch',...}), not wrapped under the operation name."],
                 confirm: [type: "boolean", description: "Set true to APPLY the operation (any write). Omit (or false) to get the schema back instead (a no-mutation probe). Writes also need the Write master + a recent backup."]
-            ]
+            ],
+            required: ["operation"]
         ]
     ]
 }
