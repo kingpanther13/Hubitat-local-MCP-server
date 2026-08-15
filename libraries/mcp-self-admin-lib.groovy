@@ -47,7 +47,9 @@ def toolUpdateMcpSettings(args) {
         "useGateways":            "bool",
         "publishOutputSchemas":   "bool",
         "enableMandatoryBPS":     "bool",
-        "bypassDeviceAllowlist":  "bool"
+        "bypassDeviceAllowlist":  "bool",
+        "maxConcurrentWrites":    "number",
+        "backupEveryRuleWrite":   "bool"
     ]
     // Allowed keys for the not-allowed error message = scalar allowlist + the special selectedDevices key.
     def allowedKeyNames = ((allowedSettings.keySet() + ["selectedDevices"]) as List).sort()
@@ -89,6 +91,13 @@ def toolUpdateMcpSettings(args) {
         // app.updateSetting() calls in the same batch would have already landed.
         if (keyStr == "mcpLogLevel" && !getLogLevels().contains(coerced)) {
             throw new IllegalArgumentException("Setting 'mcpLogLevel' must be one of ${getLogLevels()}, got: ${coerced}")
+        }
+        if (keyStr == "maxConcurrentWrites") {
+            BigDecimal numeric = coerced as BigDecimal
+            if (numeric < 0 || numeric > 100 || numeric.remainder(BigDecimal.ONE) != BigDecimal.ZERO) {
+                throw new IllegalArgumentException("Setting 'maxConcurrentWrites' must be an integer between 0 and 100 (0 disables the cap), got: ${coerced}")
+            }
+            coerced = numeric.intValue()
         }
         updates[keyStr] = coerced
     }
@@ -459,85 +468,141 @@ def _resolveSelfAppClassId() {
     }
 }
 
+// Public package-deploy boundary. A real repair is scheduled and acknowledged
+// immediately so the MCP/Hubitat cloud request never has to remain open for the
+// minutes-long bundle + app repair. dryRun stays synchronous because it performs
+// no writes and is expected to return the complete plan.
 def toolUpdatePackage(args) {
-    // Developer-Mode gate (mirrors toolUpdateMcpSettings): IllegalArgumentException so
-    // the dispatcher routes a toggle-off refusal through the clean -32602 Invalid params
-    // branch rather than a 500. The tool is ALSO catalog-hidden when dev mode is off
-    // (getDeveloperModeOnlyToolNames) -- this is belt-and-suspenders for a direct call.
     if (!settings.enableDeveloperMode) {
         throw new IllegalArgumentException("Developer Mode tools are disabled. Enable 'Developer Mode Tools' in MCP rule app settings to use hub_update_package.")
     }
-
     def ref = args?.ref
     if (!(ref instanceof String) || !ref.trim()) {
         throw new IllegalArgumentException("ref is required: a branch, tag, or commit SHA to deploy (e.g. 'main' or a PR head SHA).")
     }
     ref = ref.trim()
-    def dryRun = (args?.dryRun == true)
+    if (args?.dryRun == true) return _updatePackageBody(args as Map, ref, true)
 
-    // In-flight guard (issue #351): a package deploy takes minutes, so a client-side
-    // timeout routinely outlives it -- and a re-run repeats the WHOLE bundle+apps
-    // repair on a hub already mid-deploy (the double-deploy the issue documents).
-    // Refuse a concurrent second real deploy outright; recovery is polling (opToken
-    // replay / lastSelfDeploy), never a re-run. The marker is best-effort like the
-    // opToken map (read and write are not compare-and-set) -- it targets the
-    // sequential timeout-then-retry pattern, not a true simultaneous race. dryRun
-    // is read-only planning: it neither checks nor sets the guard. The marker
-    // stands down when hub_get_info's lastSelfDeploy postdates it (the deploy
-    // reached its final act; only the response was lost) or after the TTL, so a
-    // wedged marker can never block deploys for long. lastSelfDeploy is also
-    // stamped by a hub_update_app self-update and the self-app restore path --
-    // deliberately honoured here too: every writer means the self app just
-    // recompiled, which kills any in-flight deploy thread, so standing down on
-    // their stamp is coherent, not a bypass.
-    final long guardTtlMs = 10L * 60L * 1000L
-    if (!dryRun) {
-        def inFlight = atomicState.packageDeployInFlight
-        if (inFlight instanceof Map && inFlight.startedAt != null) {
-            long startedAt = inFlight.startedAt as Long
-            long elapsed = now() - startedAt
-            def lsd = atomicState.lastSelfDeploy
-            boolean finished = (lsd instanceof Map && lsd.at != null && (lsd.at as Long) > startedAt)
-            if (!finished && elapsed < guardTtlMs) {
-                return [
-                    success: false, isError: true,
-                    inFlight: [ref: inFlight.ref, startedAt: startedAt, elapsedMs: elapsed],
-                    error: "A package deploy (ref '${inFlight.ref}') is already running on this hub -- it started ${elapsed.intdiv(1000L)}s ago and a full repair takes minutes. Nothing was changed.",
-                    note: "Do NOT re-run the deploy. If your original call carried an opToken, poll by re-issuing it with the same opToken (the token alone is enough). Watch hub_get_info's lastSelfDeploy for the done-signal (a fresh `at`/`ageMs` means the self-app leg ran). See hub_get_tool_guide(section='slow_ops')."
-                ]
+    requireDestructiveConfirm(args?.confirm)
+    long startedAt = now()
+    String requestId = "pkg-${java.util.UUID.randomUUID()}".toString()
+    def storedArgs = [ref: ref, confirm: true]
+    if (args?.baseUrl instanceof String && args.baseUrl.trim()) storedArgs.baseUrl = args.baseUrl.trim()
+    Map refusal = null
+    synchronized (WRITE_RESERVATION_LOCK) {
+        _packageSweepMarkerLocked()
+        def inFlight = _writeStateValueLocked("packageDeployInFlight")
+        if (inFlight instanceof Map) {
+            def summary = [ref: inFlight.ref, requestId: inFlight.requestId,
+                           startedAt: inFlight.startedAt]
+            if (inFlight.startedAt != null) {
+                try { summary.elapsedMs = now() - (inFlight.startedAt as Long) }
+                catch (Exception ignored) { }
             }
+            refusal = [
+                success: false, isError: true, status: "duplicate_in_flight",
+                inFlight: summary,
+                error: "A package deploy (ref '${inFlight.ref}') is already running on this hub. Nothing was changed.",
+                note: "Do not re-run the deploy. Watch hub_get_info.lastSelfDeploy for a record whose requestId matches the original acceptance response."
+            ]
+        }
+        if (refusal == null) {
+            _writeStateSetLocked("packageDeployInFlight", [
+                requestId: requestId, ref: ref, startedAt: startedAt,
+                phase: "queued", expiresAt: startedAt + _packageDeployRecoveryMs(),
+                args: storedArgs
+            ])
         }
     }
-
-    // Non-dry-run = a real write: enforce confirm + a <24h backup ONCE here (fail fast,
-    // before any network I/O). The inner library/app calls re-check the same gate and
-    // pass cleanly since the timestamp is already fresh. Dry run writes nothing, so it
-    // skips the gate -- it only fetches + parses + plans.
-    if (!dryRun) {
-        requireDestructiveConfirm(args?.confirm)
-        atomicState.packageDeployInFlight = [ref: ref, startedAt: now()]
-    }
+    if (refusal != null) return refusal
     try {
-        return _updatePackageBody(args, ref, dryRun)
+        runIn(1, "runPackageDeploy", [data: [requestId: requestId]])
+    } catch (Exception scheduleErr) {
+        synchronized (WRITE_RESERVATION_LOCK) {
+            def current = _writeStateValueLocked("packageDeployInFlight")
+            if (current instanceof Map && current.requestId?.toString() == requestId) {
+                _writeStateSetLocked("packageDeployInFlight", null)
+                try { atomicState.remove("packageDeployInFlight") } catch (Exception ignored) { }
+            }
+        }
+        return [success: false, isError: true, status: "schedule_failed", ref: ref,
+                error: "Package deploy could not be scheduled: ${scheduleErr.message}. Nothing was changed.",
+                note: "The in-flight marker was released, so this call is safe to retry with the same ref. If it keeps failing, the hub's scheduler is refusing jobs -- check hub_get_logs, then deploy each app with hub_update_app instead."]
+    }
+    return [
+        success: true,
+        status: "in_progress",
+        ref: ref,
+        requestId: requestId,
+        startedAt: startedAt,
+        message: "Package deploy accepted and is running in the background.",
+        note: "Do not submit it again. Read hub_get_info.lastSelfDeploy until its requestId matches this response; success/error then carries the final outcome."
+    ]
+}
+
+// Scheduled worker for the real repair. The scheduled requestId prevents an old
+// delayed invocation from running or clearing a newer deploy marker.
+def runPackageDeploy(Map job = [:]) {
+    String requestId = job?.requestId?.toString()
+    Map marker = null
+    synchronized (WRITE_RESERVATION_LOCK) {
+        def current = _writeStateValueLocked("packageDeployInFlight")
+        if (current instanceof Map && current.requestId?.toString() == requestId
+                && current.args instanceof Map && current.ref
+                && !_writeExecutionLiveLocked(requestId)) {
+            marker = [:] + (current as Map)
+            marker.phase = "running"
+            marker.expiresAt = now() + _packageDeployRecoveryMs()
+            _writeStateSetLocked("packageDeployInFlight", marker)
+            LIVE_WRITE_EXECUTIONS.add(requestId)
+        }
+    }
+    if (marker == null) return
+    def result = null
+    try {
+        Map workerContext = [requestId: requestId, packageRef: marker.ref.toString()]
+        result = _updatePackageBody(marker.args as Map, marker.ref.toString(), false, workerContext)
+        def last = atomicState.lastSelfDeploy
+        if (!(last instanceof Map) || last.requestId?.toString() != requestId) {
+            atomicState.lastSelfDeploy = [
+                success: result?.success == true,
+                error: result?.success == true ? null : (result?.error ?: result?.message ?: "Package deploy failed"),
+                sourceMode: "package",
+                ref: marker.ref,
+                requestId: requestId,
+                packageResult: result,
+                at: now()
+            ]
+        }
+    } catch (Exception e) {
+        mcpLog("error", "developer-mode", "Background package deploy for ref ${marker.ref} failed: ${e.message}")
+        // Same guard as the success path: when the self-app leg already stamped this
+        // requestId, a throw from a LATER statement must not flip that persisted
+        // success into a failure the client would then re-deploy.
+        def last = atomicState.lastSelfDeploy
+        if (!(last instanceof Map) || last.requestId?.toString() != requestId) {
+            atomicState.lastSelfDeploy = [success: false, error: e.message ?: e.toString(),
+                                          sourceMode: "package", ref: marker.ref,
+                                          requestId: requestId, at: now()]
+        }
     } finally {
-        // Clear the guard on EVERY return path of a real deploy -- aborts included.
-        // Null-assign FIRST (universally supported; a null marker already fails the
-        // guard's instanceof Map check), then remove the key outright -- so even a
-        // platform where remove misbehaves cannot leave the guard wedged. The one
-        // path that can strand it is the runtime killing this thread at the
-        // self-app recompile; the lastSelfDeploy stand-down + TTL above cover that.
-        if (!dryRun) {
+        synchronized (WRITE_RESERVATION_LOCK) {
             try {
-                atomicState.packageDeployInFlight = null
-                atomicState.remove("packageDeployInFlight")
-            } catch (Exception ignored) { }
+                def current = _writeStateValueLocked("packageDeployInFlight")
+                if (current instanceof Map && current.requestId?.toString() == requestId) {
+                    _writeStateSetLocked("packageDeployInFlight", null)
+                    atomicState.remove("packageDeployInFlight")
+                }
+            } catch (Exception ignored) {
+            } finally {
+                LIVE_WRITE_EXECUTIONS.remove(requestId)
+            }
         }
     }
 }
 
-// The deploy body, extracted so toolUpdatePackage can guard it with a try/finally
-// that always releases the in-flight marker. Same contract as before the split.
-def _updatePackageBody(Map args, String ref, boolean dryRun) {
+// Deterministic deploy body used by the scheduled worker and synchronous dry-run.
+def _updatePackageBody(Map args, String ref, boolean dryRun, Map packageWorkerContext = null) {
 
     def base = (args?.baseUrl instanceof String && args.baseUrl.trim())
         ? args.baseUrl.trim().replaceAll('/+$', '')
@@ -727,7 +792,8 @@ def _updatePackageBody(Map args, String ref, boolean dryRun) {
     for (a in orderedApps) {
         def r
         try {
-            r = toolUpdateAppCode([appId: a.classId, importUrl: a.url, confirm: true])
+            def updateArgs = [appId: a.classId, importUrl: a.url, confirm: true]
+            r = _toolUpdateAppCode(updateArgs, a.isSelf ? packageWorkerContext : null)
         } catch (Exception e) {
             if (a.isSelf) {
                 // A self-update recompiles the running server mid-call, so the response can
@@ -801,7 +867,7 @@ def _getAllToolDefinitions_partSelfAdmin() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    settings: [type: "object", description: "Map of setting key → new value (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true}). Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, publishOutputSchemas, enableMandatoryBPS, bypassDeviceAllowlist, selectedDevices — any other key is rejected. mcpLogLevel: debug|info|warn|error. publishOutputSchemas (bool, default OFF): leave OFF if using Claude Desktop — spec-validating clients reject every call to a schema-advertising tool when any schema detail is inaccurate; never required, do not enable it to fix a connection. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON the per-device tools reach ANY hub device by id, IGNORING selectedDevices; independent of Developer Mode; see hub_get_tool_guide(section='hub_admin_write'). selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write') for per-mode semantics."],
+                    settings: [type: "object", description: "Map of setting key → new value (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true}). Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON the per-device tools reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, publishOutputSchemas, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupEveryRuleWrite, selectedDevices — any other key is rejected. mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100 (default 2; 0 disables the server-side all-write concurrency cap). backupEveryRuleWrite (bool, default OFF): ON takes a fresh File Manager backup before every native-app edit instead of reusing a same-app baseline for one hour. publishOutputSchemas (bool, default OFF): leave OFF if using Claude Desktop — spec-validating clients reject every call to a schema-advertising tool when any schema detail is inaccurate; never required, do not enable it to fix a connection. bypassDeviceAllowlist is independent of Developer Mode; see hub_get_tool_guide(section='hub_admin_write'). selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write') for per-mode semantics."],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the operation"]
                 ],
                 required: ["settings", "confirm"]
@@ -835,7 +901,7 @@ def _getAllToolDefinitions_partSelfAdmin() {
 
 Gated on enableDeveloperMode[[FLAT_TRIM]] (the tool is hidden from tools/list when Developer Mode is off)[[/FLAT_TRIM]] + the Write master + confirm=true + a recent backup. Use dryRun=true to fetch + parse + plan with ZERO writes (no confirm/backup needed)[[FLAT_TRIM]] and see exactly which bundles and apps would deploy[[/FLAT_TRIM]].
 
-A deploy takes MINUTES and routinely outlives client timeouts while the hub keeps committing. On a timeout or transport error do NOT re-run this tool -- pass opToken on the call and poll by re-issuing with the SAME opToken alone; a concurrent second deploy is refused while one is in flight.[[FLAT_TRIM]] hub_get_info's lastSelfDeploy is the done-signal (a fresh `at`/`ageMs` means the self-app leg ran; `success`/`error` carry the outcome). See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]
+A real deploy is accepted quickly with `status: "in_progress"`, then runs in Hubitat's background scheduler so neither the cloud relay nor the MCP client's request timeout has to stay open for the minutes-long repair. Do NOT submit it again: a concurrent second deploy is refused while one is in flight.[[FLAT_TRIM]] Poll hub_get_info.lastSelfDeploy until its `requestId` matches the acceptance response; that bound record's `success`/`error` fields carry the outcome. No client extension or custom token is required.[[/FLAT_TRIM]]
 """,
             inputSchema: [
                 type: "object",
@@ -843,8 +909,7 @@ A deploy takes MINUTES and routinely outlives client timeouts while the hub keep
                     ref: [type: "string", description: "Branch, tag, or commit SHA to deploy (e.g. 'main' or a PR head SHA)."],
                     dryRun: [type: "boolean", description: "OPTIONAL. When true, report the deploy plan with NO writes (skips the confirm/backup gate). Default false."],
                     baseUrl: [type: "string", description: "OPTIONAL raw-source base override (no trailing slash); defaults to the canonical repo.[[FLAT_TRIM]] Per-call URLs are built as <baseUrl>/<ref>/<path>. Use for forks / CI branches on a different remote.[[/FLAT_TRIM]]"],
-                    confirm: [type: "boolean", description: "REQUIRED for a real deploy (omit for dryRun). Must be true; confirms a recent backup exists and the user approved the self-deploy."],
-                    opToken: [type: "string", description: "Optional idempotency token.[[FLAT_TRIM]] You invent it (8-128 chars, A-Za-z0-9._-). If the transport drops the response, re-issue this call with the SAME token (the token alone is enough) to poll/replay the committed result instead of re-running the operation. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]"]
+                    confirm: [type: "boolean", description: "REQUIRED for a real deploy (omit for dryRun). Must be true; confirms a recent backup exists and the user approved the self-deploy."]
                 ],
                 required: ["ref"]
             ],
@@ -881,8 +946,8 @@ def _idempotentWriteToolNames_partSelfAdmin() {
         // settings batch, is idempotent too -- re-delivery converges on the same authorized set
         // for all three modes)
         "hub_update_mcp_settings",
-        // Developer Mode self-deploy (full repair to a ref converges; retrying
-        // after a dropped response is its designed recovery path)
+        // Developer Mode self-deploy (full repair to a ref converges, while the
+        // public boundary refuses a duplicate that is already in flight)
         "hub_update_package"
     ]
 }

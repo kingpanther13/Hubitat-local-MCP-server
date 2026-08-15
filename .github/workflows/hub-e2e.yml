@@ -411,7 +411,7 @@ jobs:
           while IFS= read -r f; do
             [ -z "$f" ] && continue
             case "$f" in
-              hubitat-mcp-server.groovy|hubitat-mcp-rule.groovy|e2e-deadman-watchdog.groovy|e2e-deadman-watchdog-v2.groovy|tests/e2e_test.py|tests/sdk_conformance_test.py|tests/sdk-conformance-requirements.txt|.github/workflows/hub-e2e.yml|.github/scripts/lease_acquire.sh|.github/scripts/lease_release.sh|.github/scripts/mcp_setup_env.sh|.github/scripts/mcp_restore_env.sh|.github/scripts/mcp_validate_package_tool.sh|.github/scripts/mcp_watchdog_lib.sh|.github/scripts/mcp_watchdog_deploy.sh|.github/scripts/mcp_arm_watchdog.sh|.github/scripts/mcp_disarm_watchdog.sh|.github/scripts/e2e_scope.py|libraries/*|bundles/*)
+              hubitat-mcp-server.groovy|hubitat-mcp-rule.groovy|e2e-deadman-watchdog.groovy|e2e-deadman-watchdog-v2.groovy|tests/e2e_test.py|tests/sdk_conformance_test.py|tests/sdk_conformance_helpers.py|tests/sdk-conformance-requirements.txt|.github/workflows/hub-e2e.yml|.github/scripts/lease_acquire.sh|.github/scripts/lease_release.sh|.github/scripts/mcp_setup_env.sh|.github/scripts/mcp_restore_env.sh|.github/scripts/mcp_validate_package_tool.sh|.github/scripts/mcp_watchdog_lib.sh|.github/scripts/mcp_watchdog_deploy.sh|.github/scripts/mcp_arm_watchdog.sh|.github/scripts/mcp_disarm_watchdog.sh|.github/scripts/e2e_scope.py|libraries/*|bundles/*)
                 relevant=true ;;
             esac
           done <<< "$files"
@@ -711,11 +711,12 @@ jobs:
           fi
 
       # Conformance leg: the official MCP Python SDK's client + validators judge the deployed
-      # PR's negotiation path (sibling: McpWireSchemaConformanceSpec; docs/testing.md).
+      # PR's pinned 2026-07-28 client path (sibling: McpWireSchemaConformanceSpec; docs/testing.md).
       #
-      # Skipped under skip_install, like pkg_validate: it WRITES (one scenario flips
-      # publishOutputSchemas ON and restores it in a finally), and on a skip_install dispatch it
-      # would judge already-deployed code while its outcome fed the gate as the PR's verdict.
+      # Skipped under skip_install, like pkg_validate: the MRTR proof WRITES one uniquely named
+      # temporary Rule Machine fixture and deletes that exact fixture in a finally. More importantly,
+      # a skip_install dispatch would judge already-deployed code while its outcome fed the gate as
+      # the PR's verdict, so an excluded run can never count as protocol proof.
       #
       # Editing this STEP is a workflow-FILE change, and pull_request_target takes the workflow
       # file from main -- so the PR's own auto run executes main's version of the step, not the

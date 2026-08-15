@@ -637,6 +637,29 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.previousDefinition.nodes*.id == ['n1', 'n2']
     }
 
+    def "edit of a never-saved graph omits the unavailable previousDefinition"() {
+        given:
+        enableWrite()
+        def state = [name: 'Blank graph', rulePaused: false, ruleJson: '', validationErrors: []]
+        hubGet.register('/app/ruleBuilder20Json/901') { params -> json(state) }
+        stubPostJson { path, body ->
+            def parsed = new JsonSlurper().parseText(body)
+            state.name = parsed.name
+            state.ruleJson = parsed.ruleJson
+            [name: parsed.name, ruleJson: parsed.ruleJson, validationErrors: []]
+        }
+
+        when:
+        def result = script.toolSetVisualRule([
+            appId: 901, definition: graphDefinition(), confirm: true
+        ])
+
+        then:
+        result.success == true
+        result.verified == true
+        !result.containsKey('previousDefinition')
+    }
+
     def "edit full replacement reports success=false when the read-back does not confirm the rename"() {
         given: 'rule 42 answers every read with its OLD state -- the save never sticks'
         enableWrite()
@@ -940,6 +963,51 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.format == 'classic'
         result.predeleteDefinition.whenNodes[0].triggerType == 'switch'
         result.note.contains('predeleteDefinition')
+    }
+
+    def "delete of a never-saved graph omits the unavailable predeleteDefinition"() {
+        given:
+        enableWrite()
+        def deleted = false
+        hubGet.register('/app/ruleBuilder20Json/32') { params ->
+            json([name: 'Blank graph', rulePaused: false, ruleJson: '', validationErrors: []])
+        }
+        hubGet.register('/installedapp/json/32') { params ->
+            deleted ? '' : json([id: 32, name: 'Blank graph', type: 'Visual Rule Builder', user: true])
+        }
+        stubRawDelete { path -> deleted = true }
+
+        when:
+        def result = script.toolDeleteVisualRule([appId: 32, confirm: true])
+
+        then:
+        result.success == true
+        result.verified == true
+        !result.containsKey('predeleteDefinition')
+        result.note.contains('nothing to recreate')
+    }
+
+    def "delete of a graph whose ruleJson is an array never advertises a predeleteDefinition it omits"() {
+        // _vrbFetchGraph parses ruleJson with no Map check, so an array-encoded graph reaches
+        // the delete tail as a non-null List. The field guard drops it; the note must agree.
+        given:
+        enableWrite()
+        def deleted = false
+        hubGet.register('/app/ruleBuilder20Json/33') { params ->
+            json([name: 'Array graph', rulePaused: false, ruleJson: '[{"id":1}]', validationErrors: []])
+        }
+        hubGet.register('/installedapp/json/33') { params ->
+            deleted ? '' : json([id: 33, name: 'Array graph', type: 'Visual Rule Builder', user: true])
+        }
+        stubRawDelete { path -> deleted = true }
+
+        when:
+        def result = script.toolDeleteVisualRule([appId: 33, confirm: true])
+
+        then:
+        result.verified == true
+        !result.containsKey('predeleteDefinition')
+        result.note.contains('nothing to recreate')
     }
 
     def "delete reports success=false verified=false when the hub still answers for the app afterwards"() {

@@ -5,7 +5,7 @@ def _getAllToolDefinitions_partNativeRM() {
         // Rule Machine Integration (read + trigger + pause/resume only — platform blocks CRUD)
         [
             name: "hub_list_rules",
-            description: "List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id). Each rule carries its id, label, and live `status`: `active`, `paused`, or `disabled` (red-X) — `unknown` when the hub's app list is momentarily unreadable. Requires the Read master. For the enabled/disabled state of NON-RM classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use `hub_list_apps` (scope='instances'). Call `hub_get_tool_guide(section='builtin_app_tools')` for the status-detection semantics and platform limitations on RM rule internals.",
+            description: "List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id). Each rule carries its id, label, and live `status`: `active`, `paused`, `stopped`, or `disabled` (red-X) — `unknown` when the hub's app list is momentarily unreadable. CAVEAT: the runtime-STOPPED state is only visible here when the hub's list source decorates the label (many firmwares don't) — the authoritative stopped check is hub_get_rule_health's `stopped` field. For ONE rule's state, call hub_get_rule_health(appId) instead of listing every rule — it returns that rule's paused/disabled/stopped/broken directly. Requires the Read master. For the enabled/disabled state of NON-RM classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use `hub_list_apps` (scope='instances'). Call `hub_get_tool_guide(section='builtin_app_tools')` for the status-detection semantics and platform limitations on RM rule internals.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -21,7 +21,7 @@ def _getAllToolDefinitions_partNativeRM() {
                         name: [type: "string", description: "Rule name"],
                         type: [type: "string", description: "Rule type, or null"],
                         rmVersion: [type: "string", description: "RM version, 4.x or 5.x"],
-                        status: [type: "string", enum: ["active", "paused", "disabled", "unknown"], description: "Live status; 'unknown' when the app list was unreadable"],
+                        status: [type: "string", enum: ["active", "paused", "stopped", "disabled", "unknown"], description: "Live status; 'unknown' when the app list was unreadable"],
                         disabled: [type: "boolean", description: "Rule is disabled (red-X); omitted when status is 'unknown'"],
                         paused: [type: "boolean", description: "Rule is paused; omitted when status is 'unknown'"],
                         requiredExpressionFalse: [type: "boolean", description: "Present (true) only when the rule's required expression is currently false, so it won't trigger"]
@@ -47,7 +47,6 @@ def _getAllToolDefinitions_partNativeRM() {
                 properties: [
                     ruleId: [type: ["integer", "array"], items: [type: "integer"], description: "Rule ID from hub_list_rules, or an array of rule IDs to act on in one call"],
                     action: [type: "string", enum: ["rule", "actions", "stop", "start"], description: "Which RM action to invoke. Default: rule."],
-                    opToken: [type: "string", description: "Recommended idempotency token you invent (8-128 chars, A-Za-z0-9._-), especially on multi-rule batches: after a dropped response, re-issue with the SAME token to replay the result instead of re-running the batch."]
                 ],
                 required: ["ruleId"]
             ],
@@ -133,7 +132,7 @@ def _getAllToolDefinitions_partNativeRM() {
 
 Requires the Write master + confirm=true + recent hub backup.
 
-Slow multi-step calls may return status:'in_progress' with resume instructions once the transport time budget is reached (cloud relay by default; LAN via the lanBudgetMs setting), or the transport may drop with a gateway error while the hub still commits — see hub_get_tool_guide(section='slow_ops') for the recovery protocol. ALWAYS pass an opToken: it is the only handle that can replay a dropped response.""",
+On MCP 2026-07-28, eligible slow writes continue automatically across bounded Streamable HTTP requests and eventually return one final result; no custom token or client extension is needed. Older clients retain the existing status:'in_progress' remainder envelope. See hub_get_tool_guide(section='slow_ops').""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -145,8 +144,7 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
                     pageName: [type: "string", description: "Optional sub-page for schema introspection + settings POST."],
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click."],
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
-                    walkStep: [type: "object", description: "LAST-RESORT multi-page classic-app walker — EDIT-only (requires appId; rejected on create). One call per wizard step is the expensive path: for RM rules use hub_set_rule's structured shortcuts instead; here, use it only when settings/button cannot represent the change.[[FLAT_TRIM]] Generic classic-dynamicPage walker for stateful apps: introspect/write/click/navigate/done one step per call, or operation='drive' with steps=[...] to run the whole sequence in one call. Same shape as hub_set_rule's walkStep.[[/FLAT_TRIM]]"],
-                    opToken: [type: "string", description: "STRONGLY RECOMMENDED on every call: idempotency token you invent (8-128 chars, A-Za-z0-9._-). If the transport drops the response (~10s cloud-relay ceiling), re-issue this call with the SAME token to poll/replay the committed result instead of re-running the edit. Without a token, a dropped response cannot be recovered."],
+                    walkStep: [type: "object", description: "LAST-RESORT multi-page classic-app walker — EDIT-only (requires appId; rejected on create). Use only when settings/button cannot represent the change.[[FLAT_TRIM]] One call per wizard step is the expensive path: for RM rules use hub_set_rule's structured shortcuts instead. Generic classic-dynamicPage walker for stateful apps: introspect/write/click/navigate/done one step per call, or operation='drive' with steps=[...] to run the whole sequence in one call. Same shape as hub_set_rule's walkStep.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "Must be true. Safety gate for Write master operations."]
                 ],
                 required: ["confirm"]
@@ -183,7 +181,7 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
         ],
         [
             name: "hub_set_rule",
-            description: """Create OR edit a Hubitat Rule Machine rule (RM 5.1) — one upsert tool. Omit appId to CREATE (name required; optionally bundle addTriggers/addActions/addRequiredExpression to populate in the same call). Provide appId to EDIT. In trigger/action/condition specs use `capability` NOT `type`. RM-only — for NON-RM classic apps (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule) use hub_set_native_app; not the legacy custom engine (hub_*_custom_rule). Requires the Write master + confirm=true + recent backup; every edit-write snapshots first (backup.backupKey for hub_restore_backup in hub_manage_backup).
+            description: """Create OR edit a Hubitat Rule Machine rule (RM 5.1) — one upsert tool. Omit appId to CREATE (name required; optionally bundle addTriggers/addActions/addRequiredExpression to populate in the same call). Provide appId to EDIT. In trigger/action/condition specs use `capability` NOT `type`. RM-only — for NON-RM classic apps (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule) use hub_set_native_app; not the legacy custom engine (hub_*_custom_rule). Requires the Write master + confirm=true + recent backup; each edit ensures a File Manager baseline exists (same-rule baselines are reused for one hour by default; backup.backupKey restores it through hub_manage_backup).
 
 Shortcuts, each orchestrating the full RM 5.1 wizard in one call: addTrigger, addAction, addRequiredExpression/replaceRequiredExpression, bulk addTriggers/addActions/replaceActions, removeAction/clearActions/moveAction/removeTrigger/modifyTrigger/modifyAction, addLocalVariable/removeLocalVariable, patches (atomic multi-op). ALWAYS prefer these one-call shortcuts; walkStep (one wizard page per call) and raw settings+button are LAST RESORTS for capabilities no shortcut can represent.
 
@@ -191,7 +189,7 @@ Partial-success (every shortcut): success:true can pair with partial:true — in
 
 Deep reference (per-capability field specs, extended condition shapes, periodic schedules, the raw settings/button flow, worked examples): pass guide:true to get it inline, or hub_get_tool_guide(section='set_rule_reference'); full create + repair protocol: hub_get_tool_guide(section='set_rule_create_reference'). Pass {discover:true} on addTrigger/addAction for the live machine-readable schema.
 
-Slow multi-step calls may return status:'in_progress' with resume instructions once the transport time budget is reached (cloud relay by default; LAN via the lanBudgetMs setting), or the transport may drop with a gateway error while the hub still commits — see hub_get_tool_guide(section='slow_ops') for the recovery protocol. ALWAYS pass an opToken: it is the only handle that can replay a dropped response.""",
+On MCP 2026-07-28, eligible slow writes continue automatically across bounded Streamable HTTP requests and return one final result. Older clients retain the status:'in_progress' remainder envelope. See hub_get_tool_guide(section='slow_ops').""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -203,7 +201,7 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click (e.g. trigger/action index for RM editCond/editAct)."],
                     addTrigger: [
                         type: "object",
-                        description: """Add an RM TRIGGER (structured). DISCRIMINATOR: use `capability` NOT `type` (`{type:'switch'}` is rejected); returns triggerIndex. Capability families (use these display names): Device-state — Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source; Numeric — Temperature / Humidity / Battery / Illuminance / Power / Energy / CO2 / Dimmer / Thermostat setpoints; Button; Custom Attribute; Certain Time / Sunrise / Sunset; Mode; Periodic Schedule. Modifiers: andStays, allOfThese. Optional per spec: conditional (sets the conditional-trigger gate — pair with `condition` to bind it in one call), condition {capability, deviceIds?, state? | comparator?+value?, attribute?, not?, rawSettings?} (a NARROWER set than addRequiredExpression), rawSettings {field:value} with @N = the auto-assigned index (e.g. {'xVar@N':'myVar'}). addTriggers[] = bulk, updateRule once at the end. Per-field specs, the periodic shape, and extended condition shapes: pass {discover: true}, guide:true, or hub_get_tool_guide(section='set_rule_reference')."""
+                        description: """Add an RM TRIGGER (structured). DISCRIMINATOR: use `capability` NOT `type` (`{type:'switch'}` is rejected); returns triggerIndex. Capability families (use these display names): Device-state — Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source; Numeric — Temperature / Humidity / Battery / Illuminance / Power / Energy / CO2 / Dimmer / Thermostat setpoints; Button; Custom Attribute; Certain Time (and optional date) / Sunrise / Sunset (the picker value is the full 'Certain Time (and optional date)' string); Mode; Periodic Schedule. Modifiers: andStays, allOfThese. Optional per spec: conditional (sets the conditional-trigger gate — pair with `condition` to bind it in one call), condition {capability, deviceIds?, state? | comparator?+value?, attribute?, not?, rawSettings?} (a NARROWER set than addRequiredExpression), rawSettings {field:value} with @N = the auto-assigned index (e.g. {'xVar@N':'myVar'}). addTriggers[] = bulk, updateRule once at the end. Per-field specs, the periodic shape, and extended condition shapes: pass {discover: true}, guide:true, or hub_get_tool_guide(section='set_rule_reference')."""
                     ],
                     addTriggers: [
                         type: "array",
@@ -276,7 +274,6 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
                     ],
                     guide: [type: "boolean", description: "Set true to return the full hub_set_rule capability reference inline (same content as hub_get_tool_guide(section='set_rule_reference')), without a separate call. Makes NO change to any rule."],
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller: {controllerId, buttonNumber, event}. Returns buttonRuleId with the Button trigger auto-seeded — then author actions via addAction on that appId. The controller must already have a button device.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
-                    opToken: [type: "string", description: "STRONGLY RECOMMENDED on every call: idempotency token you invent (8-128 chars, A-Za-z0-9._-). If the transport drops the response (~10s cloud-relay ceiling), re-issue this call with the SAME token to poll/replay the committed result instead of re-running the edit. Without a token, a dropped response cannot be recovered."],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
                 required: ["confirm"]
@@ -377,7 +374,7 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
         ],
         [
             name: "hub_get_rule_health",
-            description: """Inspect a rule's current state and return a structured health report.[[FLAT_TRIM]] Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule).[[/FLAT_TRIM]] Run after every mutation; hub_set_rule attaches it as `health` on every response. ok=false with unreadable=false means at least one issue was found (the issues list explains what); ok=false with unreadable=true means NEITHER source could be read (a transient fetch failure, or the app does not exist) -- a couldn't-check verdict, not evidence of breakage.""",
+            description: """Inspect a rule's current state and return a structured health report.[[FLAT_TRIM]] Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule).[[/FLAT_TRIM]] This STANDALONE read is the only one that adds the live eventSubscriptionCount/scheduledJobCount and the runtime `stopped` flag; the `health` block hub_set_rule / hub_set_native_app attach to their own responses is the structural verdict ONLY and carries neither, so call this tool when you need them. Run after every mutation. ok=false with unreadable=false means at least one issue was found (the issues list explains what); ok=false with unreadable=true means NEITHER source could be read (a transient fetch failure, or the app does not exist) -- a couldn't-check verdict, not evidence of breakage.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -403,6 +400,11 @@ Slow multi-step calls may return status:'in_progress' with resume instructions o
                     structuralIssues: [type: "array", description: "Structural issues; always present, empty when none", items: [type: "string"]],
                     validationErrors: [type: "array", description: "Graph Visual Rule validation errors; always present, empty when none", items: [type: "string"]],
                     predicate: [type: "object", description: "Compiled required-expression summary from ruleBuilderJson: {hasPredicate, predCapabs}. Present only when the compiled RM state carried the predicate fields (hasPredicate may be false)."],
+                    paused: [type: ["boolean", "null"], description: "Rule is paused (the label's (Paused) decoration); null when the label was unreadable."],
+                    disabled: [type: ["boolean", "null"], description: "Rule is disabled (red-X); null when the app config was unreadable."],
+                    stopped: [type: ["boolean", "null"], description: "True when the rule is runtime-STOPPED (hub_call_rule action='stop'). The AUTHORITATIVE stopped check -- hub_list_rules' cheap sources cannot see this state. Null only when BOTH sources are unreadable: the label carries no stop markup AND the runtime status could not be read."],
+                    eventSubscriptionCount: [type: ["integer", "null"], description: "Live event subscription count from statusJson; 0 when the rule has none live (schedule-only and STOPPED rules read 0), null only when the runtime status could not be read."],
+                    scheduledJobCount: [type: ["integer", "null"], description: "Live scheduled job count from statusJson; 0 when none live, null only when the runtime status could not be read."],
                     issues: [type: "array", description: "All issues; ok is false iff non-empty", items: [type: "string"]]
                 ],
                 required: ["ok"]
@@ -657,7 +659,7 @@ def toolListRmRules(args) {
     def treeReadable = collected.treeReadable
     def liveApps = collected.liveApps
 
-    // Enrich each rule with its live enabled/paused/disabled status from the
+    // Enrich each rule with its live enabled/paused/stopped/disabled status from the
     // /hub2/appsList tree (issue #359). When the tree was unreadable the rules are
     // returned unfiltered and carry no node data, so status is "unknown".
     combined.values().each { entry -> _rmAnnotateRuleStatus(entry, treeReadable, liveApps) }
@@ -681,7 +683,7 @@ def toolListRmRules(args) {
         result.ghostNote = "RMUtils reported ${ghostIds.size()} rule id(s) that no longer exist in /hub2/appsList — these are post-delete RMUtils-cache ghosts (rule is already gone, the cache just hasn't caught up). Filtered out of the rules list."
     }
     if (!treeReadable && !rules.isEmpty()) {
-        result.statusNote = "/hub2/appsList was unreadable, so each rule's status is \"unknown\" (enabled/paused/disabled could not be determined). Retry; if it persists the hub's internal API may need Hub Security credentials."
+        result.statusNote = "/hub2/appsList was unreadable, so each rule's status is \"unknown\" (enabled/paused/stopped/disabled could not be determined). Retry; if it persists the hub's internal API may need Hub Security credentials."
     }
     // Classify the failures. A "missing class" error (RM not installed) is quiet whether
     // the other version succeeded OR both versions failed the same way (both-absent path).
@@ -797,11 +799,17 @@ private void registerRmRule(Map combined, def r, String version) {
 
 // Annotate an RM rule entry (in place) with disabled/paused booleans, a status summary,
 // and requiredExpressionFalse. WHY decoration-detection (full algorithm in the
-// builtin_app_tools guide): RMUtils exposes no paused boolean, so a paused rule is found
-// only by the "(Paused)" suffix its appsList name carries but its RMUtils label doesn't
-// (live-verified; diffing the stripped strings also protects a rule literally NAMED
-// "... (Paused)" — its label carries the same suffix, so the remainder is empty).
-// status is a precedence SUMMARY (disabled > paused > active); the booleans stay
+// builtin_app_tools guide): RMUtils exposes no paused or stopped boolean, so both are found
+// only by diffing the app's /hub2/appsList name against its RMUtils label. A stopped rule
+// reaches this function through EITHER of two channels and both are read here: the
+// "(Stopped)" suffix can sit on the RMUtils LABEL while the appsList name stays clean, or it
+// can sit in the appsList-name REMAINDER the "(Paused)" diff already computes. The diff is
+// what proves a suffix is a runtime decoration rather than the rule's real name — a rule
+// literally NAMED "... (Paused)"/"... (Stopped)" carries the suffix in BOTH strings, so
+// neither channel fires. The suffix is stripped from the returned label/name in the SAME
+// encoding the undecorated path returns (RMUtils entity-escaping preserved), never swapped
+// for the HTML-stripped/decoded form the comparison uses. status is a precedence SUMMARY
+// (disabled > stopped > paused > active); the booleans stay
 // independent — a rule paused first then disabled keeps its decoration, so
 // {disabled:true, paused:true, status:"disabled"} is truthful. "unknown" (booleans then
 // omitted, never asserted false) covers both a null liveApps (whole tree unreadable) and
@@ -829,14 +837,39 @@ private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps
     }
     def disabled = disabledRaw == true
     def paused = false
+    // The literal-name test is "appsList still starts with the WHOLE RMUtils label" -- the
+    // same evidence channel B uses to tell decoration from name. Testing only that appsList
+    // does not END with " (Stopped)" got case three wrong: a rule literally named
+    // "X (Stopped)" that is ALSO paused has appsList "X (Stopped) (Paused)", which ends
+    // with "(Paused)", so the suffix in its real name read as a runtime decoration. It was
+    // then reported status:"stopped" AND had "(Stopped)" stripped from both label and name,
+    // so a name-to-id lookup could no longer find the rule.
+    boolean stopped = (cleanRm.endsWith(" (Stopped)") && !cleanApps.startsWith(cleanRm))
     if (cleanApps != cleanRm && cleanApps.startsWith(cleanRm)) {
         def remainder = cleanApps.substring(cleanRm.length())
         if (remainder.contains("(Paused)")) paused = true
+        if (remainder.contains("(Stopped)")) stopped = true
         if (remainder.contains("(Required Expression false)")) entry.requiredExpressionFalse = true
+    }
+    if (stopped) {
+        entry.label = _rmStripTrailingDecoration(entry.label, "(Stopped)")
+        entry.name = _rmStripTrailingDecoration(entry.name, "(Stopped)")
     }
     entry.disabled = disabled
     entry.paused = paused
-    entry.status = disabled ? "disabled" : (paused ? "paused" : "active")
+    entry.status = disabled ? "disabled" : (stopped ? "stopped" : (paused ? "paused" : "active"))
+}
+
+// Drop a trailing runtime decoration from a label WITHOUT re-encoding it: the caller's
+// string keeps whatever escaping its source used, so a decorated and an undecorated rule
+// come back in the same encoding. Returns the input unchanged when the suffix is absent.
+private String _rmStripTrailingDecoration(Object raw, String suffix) {
+    def s = raw?.toString()
+    if (s == null) return null
+    // RMUtils labels can carry trailing spaces, so match past them.
+    def trimmed = s.replaceAll(/\s+$/, "")
+    if (!trimmed.endsWith(suffix)) return s
+    return trimmed.substring(0, trimmed.length() - suffix.length()).replaceAll(/\s+$/, "")
 }
 
 // Normalize a ruleId argument that may be a single id or a list of ids into a
@@ -2010,46 +2043,25 @@ private String _rmPeriodicShapeError(String freq, Map per) {
     return null
 }
 
-private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
-    if (!(triggerSpec instanceof Map)) throw new IllegalArgumentException("addTrigger requires a Map spec. RM is not touched.")
-    // Discover mode -- return static schema without touching the hub.
-    // No capability field required; no Write master gate; no backup.
-    if (triggerSpec.discover == true) {
-        return _rmTriggerSchemaForDiscover()
-    }
+// Argument-only refusal seam used before MRTR allocates requestState. Keep this
+// allowlist narrower than the full leaf validation: every check here is decided
+// solely from the supplied trigger map and must not read or mutate hub state.
+private void _rmValidateRoundZeroTriggerSpec(Map triggerSpec) {
+    if (!(triggerSpec instanceof Map) || triggerSpec.discover == true) return
     def cap = triggerSpec.capability?.toString()?.trim()
-    if (!cap) throw new IllegalArgumentException("addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema. RM is not touched.")
+    if (!cap) return
 
-    // Fail loud on the two plausible-but-wrong shapes the wizard would otherwise commit
-    // as a broken trigger with success:true. Both checks run before any hub round-trip, so
-    // a rejected spec never leaves a half-written trigger editor open.
-    //
-    // A state-change token belongs in `comparator`, not `state`/`value`. Supplied as either on a
-    // numeric or device-state trigger it falls through to the generic tstate path, which the hub
-    // rejects (tstate not_in_schema) and leaves a partial trigger with no hint. Guard the
-    // EFFECTIVE value -- state, else value, matching the generic sink below (state != null ?
-    // state : value) -- so the numeric-idiomatic `value:'increased'` bypass is caught too. Fires
-    // only when no comparator was given (an explicit comparator is the correct channel and takes
-    // precedence) and only for the families the guard applies to (device-state / numeric); the
-    // family scope leaves Mode / Variable / Custom Attribute and the time family untouched,
-    // because their state/value legitimately carries names, enum values, or nothing.
     def effState = triggerSpec.state != null ? triggerSpec.state : triggerSpec.value
     def offendingField = triggerSpec.state != null ? "state" : "value"
-    if (triggerSpec.comparator == null && _rmLooksLikeStateChangeToken(effState) && _rmStateChangeGuardApplies(cap)) {
+    if (triggerSpec.comparator == null && _rmLooksLikeStateChangeToken(effState) &&
+            _rmStateChangeGuardApplies(cap)) {
         throw new IllegalArgumentException("${offendingField}:'${effState}' is not a valid state value -- for a state-change trigger use comparator:'*changed*' (or '*became*'/'*increased*'/'*decreased*'), not ${offendingField}. Pass {discover:true} for this capability's field schema. RM is not touched.")
     }
 
-    // A Periodic Schedule trigger's schedule lives entirely in the periodic map; without it
-    // only tCapab is written, the trigger renders as "?" (the parent renderer cannot reach the
-    // unwritten sub-page state), and the response is success:true.
-    // Reject early and name the concrete mistake: a present-but-non-Map `periodic`, else any
-    // stray top-level keys the caller passed (e.g. a bare `minutes`). Match on the raw
-    // capability string -- the canonical enum value is not resolved until the wizard opens.
     if (cap.equalsIgnoreCase("Periodic Schedule") && !(triggerSpec.periodic instanceof Map)) {
-        def strayKeys = triggerSpec.keySet().findAll { !(it?.toString() in _rmRecognizedTriggerKeys()) }
-        // Only name a clause when there is something concrete to name -- "Received keys: []"
-        // (bare capability, or a wrong-typed `periodic` which is itself a recognized key) told
-        // the caller nothing.
+        def strayKeys = triggerSpec.keySet().findAll {
+            !(it?.toString() in _rmRecognizedTriggerKeys())
+        }
         def detail
         if (triggerSpec.containsKey("periodic")) {
             detail = " periodic was supplied but is not a Map of schedule fields."
@@ -2060,6 +2072,71 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         }
         throw new IllegalArgumentException("Periodic Schedule trigger requires periodic:{frequency:'Seconds'|'Minutes'|'Hourly'|'Daily'|'Weekly'|'Monthly'|'Yearly'|'Cron String', everyN:<n>, ...}.${detail} Pass {discover:true} for the full periodic field schema. RM is not touched.")
     }
+}
+
+// Pure periodic fields that historically run after device-ID prevalidation.
+// Round zero invokes these only when no earlier dynamic validator can apply.
+private void _rmValidateRoundZeroPeriodicSpec(Map triggerSpec) {
+    def cap = triggerSpec?.capability?.toString()?.trim()
+    if (!cap) return
+    if (cap.equalsIgnoreCase("Periodic Schedule") && triggerSpec.periodic instanceof Map) {
+        def periodic = triggerSpec.periodic as Map
+        def frequency = periodic.frequency?.toString()
+        if (!frequency) {
+            throw new IllegalArgumentException("Periodic Schedule trigger requires periodic.frequency (one of: Seconds, Minutes, Hourly, Daily, Weekly, Monthly, Yearly, 'Cron String'). Pass {discover:true} for the full periodic field schema. RM is not touched.")
+        }
+        if ((frequency == "Seconds" || frequency == "Minutes") && periodic.everyN != null) {
+            def allowedCounts = [1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30]
+            def requestedCount = null
+            try { requestedCount = periodic.everyN as Integer }
+            catch (Exception ignored) { requestedCount = null }
+            if (requestedCount == null || !(requestedCount in allowedCounts)) {
+                throw new IllegalArgumentException("Periodic ${frequency} everyN must be one of ${allowedCounts} (RM restricts the count to this enum); got '${periodic.everyN}'. RM is not touched.")
+            }
+        }
+        if (frequency == "Monthly" && periodic.dayOfMonth != null &&
+                periodic.weekOfMonth != null) {
+            throw new IllegalArgumentException("Periodic Monthly: dayOfMonth and weekOfMonth are mutually exclusive -- dayOfMonth selects a calendar day (e.g. the 15th), weekOfMonth selects the Nth weekday (e.g. the Second Monday). Pass one mode's fields, not both. RM is not touched.")
+        }
+        def shapeErr = _rmPeriodicShapeError(frequency, periodic)
+        if (shapeErr) {
+            throw new IllegalArgumentException("${shapeErr} Pass {discover:true} for the full periodic field schema. RM is not touched.")
+        }
+    }
+}
+
+// Pure action checks in their established order. Structural checks and
+// picker/existence checks need live rule state and remain inside the worker.
+private void _rmValidateRoundZeroActionSpec(Map actionSpec) {
+    if (!(actionSpec instanceof Map) || actionSpec.discover == true) return
+    def cap = actionSpec.capability?.toString()?.trim()
+    if (!cap) return
+    _rmRejectUnwalkableExpressionConditions(actionSpec)
+
+    def capLc = cap.toLowerCase()
+    def expressionBearingCaps = ["ifthen", "elseif", "repeatwhile", "waitexpression"]
+    if (capLc in expressionBearingCaps && actionSpec.conditions != null &&
+            !(actionSpec.expression instanceof Map)) {
+        throw new IllegalArgumentException("${cap} action takes expression:{conditions:[...], operator|operators}, not a top-level conditions array. Wrap them: expression:{conditions:[...], operator:'AND'}. Pass {discover:true} for the expression shape. RM is not touched.")
+    }
+
+    def action = actionSpec.action?.toString()?.trim()
+    if (action == null && actionSpec.state != null &&
+            _rmActionCapUsesActionVerb(cap)) {
+        throw new IllegalArgumentException("${cap} action uses action: (not state:) to select the operation -- e.g. addAction(capability:'${cap}', action:'${actionSpec.state}', ...). Pass {discover:true} for this capability's action list. RM is not touched.")
+    }
+}
+
+private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
+    if (!(triggerSpec instanceof Map)) throw new IllegalArgumentException("addTrigger requires a Map spec. RM is not touched.")
+    // Discover mode -- return static schema without touching the hub.
+    // No capability field required; no Write master gate; no backup.
+    if (triggerSpec.discover == true) {
+        return _rmTriggerSchemaForDiscover()
+    }
+    _rmValidateRoundZeroTriggerSpec(triggerSpec)
+    def cap = triggerSpec.capability?.toString()?.trim()
+    if (!cap) throw new IllegalArgumentException("addTrigger.capability is required. Common values: Switch, Motion, Contact, Time, Periodic Schedule, Mode, Custom Attribute. Pass {discover: true} to get the full structured schema. RM is not touched.")
 
     // Pre-validate device IDs exist — RM 5.1 silently stores
     // {<bogusId>: null} in tDev_<N> if the ID doesn't resolve, and the
@@ -2078,55 +2155,14 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         _rmValidateDeviceIdsExist("addTrigger.condition.deviceIds", cm.deviceIds)
     }
 
-    // Periodic argument validation, run before the moreCond click opens the
-    // wizard so a bad spec surfaces a structured failure without leaving an
-    // in-flight trigger editor half-open. NOTE: this half-open guarantee is
-    // PER-SPEC -- it protects the single trigger being added here. The bulk
-    // addTriggers/patches paths share one pre-batch backup, so a mid-batch reject
-    // leaves earlier triggers in the batch already committed; batch callers should
-    // verify rule state and restore from the batch backup if needed. The full
-    // per-frequency field map lives in the periodic block further down; these are
-    // just the arg guards.
+    _rmValidateRoundZeroPeriodicSpec(triggerSpec)
+    // Preserve the legacy valid-path normalization without making the pure
+    // round-zero validator mutate caller arguments.
     if (cap.equalsIgnoreCase("Periodic Schedule") && triggerSpec.periodic instanceof Map) {
-        def perEarly = triggerSpec.periodic as Map
-        def freqEarly = perEarly.frequency?.toString()
-        // frequency is the periodic mode selector -- without it the sub-page never opens and
-        // the row renders as "?". Reject up front (pre-write) instead of the later post-write
-        // throw in the periodic write block (which fires after the trigger editor has opened).
-        if (!freqEarly) {
-            throw new IllegalArgumentException("Periodic Schedule trigger requires periodic.frequency (one of: Seconds, Minutes, Hourly, Daily, Weekly, Monthly, Yearly, 'Cron String'). Pass {discover:true} for the full periodic field schema. RM is not touched.")
-        }
-        // Seconds/Minutes count is a restricted RM enum, not a free integer.
-        // Fractional values truncate toward zero (5.5 -> 5) and are then
-        // range-checked against the enum. Normalize everyN to the truncated
-        // integer in place so the downstream write sends the enum-valid value,
-        // not the raw fractional (RM's enum field would silent-reject "5.5").
-        if ((freqEarly == "Seconds" || freqEarly == "Minutes") && perEarly.everyN != null) {
-            def allowedCounts = [1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30]
-            def reqCount = null
-            // Broad catch: everyN may arrive as a non-numeric String
-            // (NumberFormatException) or a Map/List (GroovyCastException);
-            // both mean "not a usable count" and route to the throw below.
-            try { reqCount = perEarly.everyN as Integer } catch (Exception ignored) { reqCount = null }
-            if (reqCount == null || !(reqCount in allowedCounts)) {
-                throw new IllegalArgumentException("Periodic ${freqEarly} everyN must be one of ${allowedCounts} (RM restricts the count to this enum); got '${perEarly.everyN}'. RM is not touched.")
-            }
-            perEarly.everyN = reqCount
-        }
-        // Monthly has two mutually-exclusive modes whose field sets hide each
-        // other: by-day (dayOfMonth) and nth-weekday (weekOfMonth). Reject a
-        // spec that mixes them so the caller gets a clear error instead of an
-        // unrenderable half-written sub-page.
-        if (freqEarly == "Monthly" && perEarly.dayOfMonth != null && perEarly.weekOfMonth != null) {
-            throw new IllegalArgumentException("Periodic Monthly: dayOfMonth and weekOfMonth are mutually exclusive -- dayOfMonth selects a calendar day (e.g. the 15th), weekOfMonth selects the Nth weekday (e.g. the Second Monday). Pass one mode's fields, not both. RM is not touched.")
-        }
-        // Each frequency needs its mode-defining field(s) or only whichPeriod is written and
-        // the row renders unusable (a phantom "?"/"null"). Fail loud on an under-specified
-        // shape so the family, not just the missing-map case, is covered by the fail-loud
-        // contract. Pre-write, so it carries the not-touched sentinel.
-        def shapeErr = _rmPeriodicShapeError(freqEarly, perEarly)
-        if (shapeErr) {
-            throw new IllegalArgumentException("${shapeErr} Pass {discover:true} for the full periodic field schema. RM is not touched.")
+        def periodic = triggerSpec.periodic as Map
+        def frequency = periodic.frequency?.toString()
+        if ((frequency == "Seconds" || frequency == "Minutes") && periodic.everyN != null) {
+            periodic.everyN = periodic.everyN as Integer
         }
     }
 
@@ -4569,8 +4605,7 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
         // Relay-budget checkpoint: delete + add already consumed real time, and
         // each move is another wizard round-trip. Stop before the response gets
         // severed mid-flight -- a severed composite invites a naive retry that
-        // re-runs the destructive delete (the opToken replay protects a SAME-
-        // token retry, but not a fresh call).
+        // re-runs the destructive delete.
         if (_timeBudgetExceeded(reqT0)) {
             budgetPaused = true
             break
@@ -5470,49 +5505,13 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     def action = actionSpec.action?.toString()?.trim()
     if (!cap) throw new IllegalArgumentException("addAction.capability is required (e.g. 'switch'). Common values: switch, dimmer, color, log, notification, mode, setVariable, runCommand, delay, repeat, ifThen. Pass {discover: true} to get the full structured schema.")
 
-    // Pre-flight, zero hub round-trips: for an expression-bearing action, reject an unwalkable
-    // condition capability (Last Event Device / Lock codes / date-day pickers) from the RAW
-    // requested name BEFORE any wizard write or opener commit. These caps are decidable from the
-    // requested name alone -- no hub state -- so refusing here keeps the reject atomic by
-    // construction: it never commits the IF-block opener that the expression-block rollback path
-    // (below) would then have to unwind. That open -> reject -> rollback sequence is enough
-    // sequential wizard round-trips (each POST re-renders the full rule page) to cross the cloud
-    // relay's per-call timeout, so hoisting the decidable-from-name reject up front is the cheap
-    // path. The rollback wrapper stays for the OTHER mid-expression throws that genuinely commit an
-    // opener before failing (device-not-found, operators-length mismatch, live-picker misses).
-    // Mirrors the pre-write reject already applied on the addRequiredExpression and static
-    // addTrigger.condition surfaces. This top-of-function hoist is the catch-all for the
-    // intra-batch and patch paths that do not pass through the dispatcher's single/bulk pre-flight.
-    _rmRejectUnwalkableExpressionConditions(actionSpec)
-
     // 'action' is required only for capabilities that have multiple action
     // variants (e.g. switch needs on/off/toggle/flash). Single-action
     // capabilities (log, mode, delay, comment, exitRule, capture, restore,
     // refresh, poll, runRule, cancelTimers, etc.) accept a null/missing
     // action — each capability's branch validates as needed.
 
-    // Fail loud on two plausible-but-wrong action shapes before any hub round-trip, so a rejected
-    // spec never opens the action editor (both are pre-write, hence "RM is not touched"). First:
-    // the condition-bearing action subtypes take their conditions INSIDE an expression wrapper
-    // (expression:{conditions:[...], operator|operators}); a flat top-level conditions array is
-    // never read, so name that mistake rather than surfacing only the generic "requires
-    // expression=..." from the capability branch further down. Compare case-insensitively so a
-    // caller carrying the addTrigger title-case convention (capability:'Switch') still trips it.
-    def capLc = cap?.toLowerCase()
-    def expressionBearingCaps = ["ifthen", "elseif", "repeatwhile", "waitexpression"]
-    if (capLc in expressionBearingCaps && actionSpec.conditions != null && !(actionSpec.expression instanceof Map)) {
-        throw new IllegalArgumentException("${cap} action takes expression:{conditions:[...], operator|operators}, not a top-level conditions array. Wrap them: expression:{conditions:[...], operator:'AND'}. Pass {discover:true} for the expression shape. RM is not touched.")
-    }
-
-    // Second: an action-driven capability selects its operation via action: (on/off/toggle;
-    // setSpeed/cycle; open/close/...), not the trigger-style state:. Passing state: leaves action
-    // null and the capability branch rejects with an opaque "Unknown <cap> action 'null'"; name
-    // the real mistake so the caller moves the value to action:. The action-driven set is derived
-    // from the action schema (every capability with an action enum), so the steer covers all of
-    // them -- not just a hardcoded few.
-    if (action == null && actionSpec.state != null && _rmActionCapUsesActionVerb(cap)) {
-        throw new IllegalArgumentException("${cap} action uses action: (not state:) to select the operation -- e.g. addAction(capability:'${cap}', action:'${actionSpec.state}', ...). Pass {discover:true} for this capability's action list. RM is not touched.")
-    }
+    _rmValidateRoundZeroActionSpec(actionSpec)
 
     // Pre-flight: refuse closers (endIf / stopRepeat) and orphan branch
     // keywords (elseIf / else) that would render as orphaned because they
@@ -7723,6 +7722,8 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     // caller checks success for "did anything happen" then partial for "is more
     // work needed" -- avoiding the false success=false when the row exists but
     // is incomplete.
+    def uniqueApplied = []
+    applied.each { key -> if (!uniqueApplied.contains(key)) uniqueApplied << key }
     return [
         success: !err && !applied.isEmpty(),
         partial: partial,
@@ -7732,7 +7733,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         action: action,
         actType: actType,
         actSubType: actSubType,
-        settingsApplied: applied,
+        settingsApplied: uniqueApplied,
         settingsSkipped: skipped,
         configPageError: err,
         repairHints: repairHints,
@@ -8241,9 +8242,9 @@ private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, S
         // pageName tells the caller which wizard page the cancelCapab recovery click belongs on
         // (doActPage for addAction, STPage for addRequiredExpression). The wizardStuck markers
         // themselves carry no page info, so callers thread it in.
-        restoreHint = "Backup saved before write -- restore via hub_restore_backup with backupKey='${backup.backupKey}'. Or, before your next write, call hub_set_rule(button='cancelCapab', pageName='${pageName}', confirm=true) to manually close the in-flight wizard."
+        restoreHint = "Backup baseline available -- restore via hub_restore_backup with backupKey='${backup.backupKey}'. Restoring returns the app to that snapshot and may undo every later edit in the baseline's one-hour chain. Or, before your next write, call hub_set_rule(button='cancelCapab', pageName='${pageName}', confirm=true) to manually close the in-flight wizard."
     } else {
-        restoreHint = "Backup saved before write. Call hub_restore_backup with backupKey='${backup.backupKey}' to roll back."
+        restoreHint = "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain."
     }
     def result = [
         success: false,
@@ -8496,8 +8497,33 @@ Map _rmWalkStep(Integer appId, Map spec) {
         if (writeMap.size() != 1) throw new IllegalArgumentException("walkStep.write should contain exactly one key -- call once per field for clean schema-diff signals")
         writtenKey = writeMap.keySet().iterator().next().toString()
         writtenValue = writeMap[writtenKey]
-        // Validate against schema if asked.
+        // A doActPage navigation response can expose an indexed field (actType.N,
+        // actSubType.N, logmsg.N, etc.) and then advance RM's internal wizard slot
+        // before the caller's next request.  Resolve that correctly-derived-but-stale
+        // key against THIS request's fresh schema.  Rebinding is deliberately narrow:
+        // doActPage only, the exact requested key must be absent, both names must end
+        // in a numeric index with the same stem/delimiter, and there must be exactly
+        // one live candidate.  With zero or multiple candidates we retain the legacy
+        // warning + exact-key attempt rather than risk mutating the wrong action.
         def schemaInput = beforeSchema.inputs.find { it.name == writtenKey }
+        if (!schemaInput && page == "doActPage") {
+            def requestedMatcher = (writtenKey =~ /^(.+[._-])(\d+)$/)
+            if (requestedMatcher.matches()) {
+                def requestedStem = requestedMatcher.group(1)
+                def liveCandidates = beforeSchema.inputs.findAll { input ->
+                    def candidateName = input?.name?.toString() ?: ""
+                    def candidateMatcher = (candidateName =~ /^(.+[._-])(\d+)$/)
+                    candidateMatcher.matches() && candidateMatcher.group(1) == requestedStem
+                }
+                if (liveCandidates.size() == 1) {
+                    def requestedKey = writtenKey
+                    schemaInput = liveCandidates[0]
+                    writtenKey = schemaInput.name.toString()
+                    opResult.rebound = [requestedKey: requestedKey, resolvedKey: writtenKey]
+                }
+            }
+        }
+        // Validate against schema if asked.
         if (!schemaInput) {
             opResult.warning = "Field '${writtenKey}' not in current schema for page '${page}'. Available: ${beforeSchema.inputs.collect { it.name }}. The write will be attempted but the hub may silently drop it."
         }
@@ -8889,7 +8915,7 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
             steps: stepResults,
             health: finalHealth,
             resume: [
-                note: "Time budget reached; all completed steps are committed. Re-issue walkStep operation='drive' with steps = stepsRemaining (page inheritance: set page = this result's page) to continue. Attach the same opToken ONLY if the original call carried none; otherwise use a fresh token."
+                note: "Time budget reached; all completed steps are committed. Re-issue walkStep operation='drive' with steps = stepsRemaining (page inheritance: set page = this result's page) to continue."
             ]
         ]
     }
@@ -9016,13 +9042,131 @@ private Map _rmSubmitFullPageForm(Integer appId, String pageName, Map cfg, Map s
     return resp
 }
 
+// Verify that a manifest handle still points to the same rule snapshot before reuse.
+// File Manager files can be deleted outside MCP, so manifest age alone is not proof
+// that the advertised rollback handle is usable.
+private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
+    def fileName = entry?.fileName?.toString()
+    if (!fileName) return false
+    try {
+        def bytes = null
+        // One retry: a transient File Manager read hiccup must not be mistaken for a
+        // deleted backup -- the discard path unlinks the manifest handle for good.
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try { bytes = downloadHubFile(fileName) } catch (Exception readErr) { bytes = null }
+            if (bytes != null && bytes.length > 0) break
+            if (attempt == 0) pauseExecution(300L)
+        }
+        if (bytes == null || bytes.length == 0) return false
+        if (entry.sourceLength != null && (entry.sourceLength as Long) != bytes.length) return false
+        def snapshot = new groovy.json.JsonSlurper().parseText(new String(bytes, "UTF-8"))
+        if (!(snapshot instanceof Map)) return false
+        def snapshotId = snapshot.appId != null ? snapshot.appId : snapshot.ruleId
+        if (snapshotId?.toString() != ruleId?.toString()) return false
+        if (snapshot.schemaVersion != 1) return false
+        def appType = snapshot.appType?.toString() ?: "rule_machine"
+        if (appType == "visual_rule") {
+            if (snapshot.vrbFormat == "classic") return snapshot.vrbDefinition instanceof Map
+            if (snapshot.vrbFormat == "graph" && snapshot.vrbRuleJson) {
+                try {
+                    return new groovy.json.JsonSlurper().parseText(snapshot.vrbRuleJson.toString()) instanceof Map
+                } catch (Exception ignored) {
+                    return false
+                }
+            }
+            return false
+        }
+        // Classic restore replays configJson.settings. Requiring the explicit
+        // Map distinguishes a legitimately empty rule from a truncated JSON
+        // object that restore would otherwise treat as an empty successful replay.
+        return snapshot.configJson instanceof Map && snapshot.configJson.settings instanceof Map
+    } catch (Exception ignored) {
+        return false
+    }
+}
+
+// Reuse the newest same-rule edit baseline for one hour unless strict per-write
+// backups are enabled. Destructive delete and Required Expression restore callers
+// continue to call _rmBackupRuleSnapshot directly, so they always get a fresh image.
+Map _rmBackupBeforeEdit(Integer ruleId, String reason) {
+    if (settings?.backupEveryRuleWrite == true || reason == "pre-replaceRequiredExpression") {
+        return _rmBackupRuleSnapshot(ruleId, reason)
+    }
+
+    long nowMs = now()
+    def mfst = atomicState.itemBackupManifest ?: [:]
+    def recent = mfst.findAll { key, value ->
+        if (!(value instanceof Map) || value.type?.toString() != "rm-rule") return false
+        def savedRuleId = value.ruleId != null ? value.ruleId : value.id
+        if (savedRuleId?.toString() != ruleId?.toString()) return false
+        Long savedAt = null
+        try { savedAt = value.timestamp as Long } catch (Exception ignored) { }
+        if (savedAt == null) return false
+        long age = nowMs - savedAt
+        return age >= 0L && age < 60L * 60L * 1000L
+    }.max { a, b -> (a.value.timestamp as Long) <=> (b.value.timestamp as Long) }
+
+    // The JVM mirror is authoritative when it is newer than the manifest scan: a
+    // worker execution can read an atomicState snapshot that predates the previous
+    // worker's manifest write, and that gap must not cost a redundant baseline.
+    synchronized (RM_BASELINE_HANDLES) {
+        def mirrored = RM_BASELINE_HANDLES[ruleId?.toString()]
+        if (mirrored instanceof Map && mirrored.entry instanceof Map) {
+            Long mirroredAt = null
+            try { mirroredAt = (mirrored.entry as Map).timestamp as Long } catch (Exception ignored) { }
+            long mirroredAge = mirroredAt == null ? -1L : nowMs - mirroredAt
+            boolean inWindow = mirroredAt != null && mirroredAge >= 0L && mirroredAge < 60L * 60L * 1000L
+            boolean newerThanScan = recent == null ||
+                mirroredAt > ((recent.value.timestamp as Long) ?: 0L)
+            if (inWindow && newerThanScan) {
+                recent = [key: mirrored.key?.toString(), value: new LinkedHashMap(mirrored.entry as Map)]
+            }
+        }
+    }
+
+    if (recent != null && !_rmReusableBackupFileMatches(recent.value as Map, ruleId)) {
+        def staleFile = recent.value?.fileName?.toString()
+        mcpLog("warn", "rm-native", "Recent backup ${recent.key} for rule ${ruleId} is missing or does not match its manifest; discarding the stale handle and taking a fresh baseline")
+        try { unlinkItemBackupManifestFile(staleFile, recent.key?.toString()) } catch (Exception ignored) { }
+        recent = null
+    }
+
+    if (recent != null) {
+        def config = null
+        try {
+            config = _rmFetchConfigJson(ruleId)
+        } catch (Exception e) {
+            def vrbFallback = null
+            try { vrbFallback = _vrbDetect(ruleId) } catch (Exception ignored) { }
+            if (vrbFallback == null) {
+                if (e.message?.contains("404")) {
+                    throw new IllegalArgumentException("No rule/app with id ${ruleId} exists on this hub (configure/json returned 404). Nothing was changed. Use hub_list_rules for valid ids. See hub_get_tool_guide(section='set_rule_reference').")
+                }
+                // The persisted snapshot above is already identity-checked and is
+                // sufficient for rollback. A transient configure/json failure only
+                // makes the brokenBefore wording diagnostic unavailable; it must not
+                // turn a valid edit into an invalid-params refusal.
+                mcpLog("warn", "rm-native", "Could not read rule ${ruleId} before reusing backup '${recent.key}' (${e.message ?: e}); continuing without the internal brokenBefore diagnostic")
+            }
+        }
+        mcpLog("info", "rm-native", "Reusing recent backup ${recent.key} for rule ${ruleId} (${reason}); restoring it reverts every edit since ${formatTimestamp(recent.value.timestamp as Long)}")
+        return [backupKey: recent.key,
+                brokenBefore: (config == null ? null : _rmConfigHasBrokenMarkers(config)),
+                baselineReused: true,
+                rollbackScope: "Restoring this baseline reverts every edit to rule ${ruleId} since ${formatTimestamp(recent.value.timestamp as Long)}."] +
+            new LinkedHashMap(recent.value as Map)
+    }
+
+    return _rmBackupRuleSnapshot(ruleId, reason)
+}
+
 // Snapshot the current state of an RM rule into the hub's File Manager
 // as a single JSON file (configure/json + statusJson combined), recorded
 // in the unified atomicState.itemBackupManifest alongside app/driver backups.
 //
 // Entries get type="rm-rule" so hub_list_backups + hub_restore_backup
 // (the existing tools) handle them too — no separate RM-only backup
-// tools. Backup key pattern: rm-rule_<ruleId>_<yyyyMMdd-HHmmss>.
+// tools. Backup key pattern: rm-rule_<ruleId>_<yyyyMMdd-HHmmss-SSS>.
 Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
     def config
     def status
@@ -9035,6 +9179,9 @@ Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
         def vrbFallback = null
         try { vrbFallback = _vrbDetect(ruleId) } catch (Exception ignored) { }
         if (vrbFallback == null) {
+            if (e.message?.contains("404")) {
+                throw new IllegalArgumentException("No rule/app with id ${ruleId} exists on this hub (configure/json returned 404). Nothing was changed. Use hub_list_rules for valid ids. See hub_get_tool_guide(section='set_rule_reference').")
+            }
             throw new IllegalArgumentException("Cannot back up rule ${ruleId}: configure/json failed -- ${e.message}")
         }
         config = null
@@ -9104,7 +9251,7 @@ Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
         }
     }
 
-    def ts = new Date(now()).format("yyyyMMdd-HHmmss")
+    def ts = new Date(now()).format("yyyyMMdd-HHmmss-SSS")
     def fileName = "mcp-rm-backup-${ruleId}-${ts}.json"
 
     def jsonBytes
@@ -9146,6 +9293,13 @@ Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
         }
     }
     atomicState.itemBackupManifest = mfst
+    // Mirror the newest per-rule handle in JVM statics: another worker execution
+    // scheduled seconds from now may read an atomicState snapshot that predates
+    // this write, and reuse must not depend on that visibility (see
+    // RM_BASELINE_HANDLES in the host app).
+    synchronized (RM_BASELINE_HANDLES) {
+        RM_BASELINE_HANDLES[ruleId.toString()] = [key: backupKey.toString(), entry: new LinkedHashMap(entry)]
+    }
 
     mcpLog("info", "rm-native", "Backed up rule ${ruleId} (${reason}) to ${fileName} (${jsonBytes.length} bytes)")
     // brokenBefore: the rule's pre-write broken state, derived from the config this snapshot
@@ -9154,7 +9308,10 @@ Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
     // steer its error wording, then STRIPS it -- it is a transient internal signal, never surfaced
     // to the caller and deliberately kept off the persisted manifest `entry` (not part of the
     // durable backup record). null when no config was readable (VRB-only snapshot).
-    return [backupKey: backupKey, brokenBefore: (config == null ? null : _rmConfigHasBrokenMarkers(config))] + entry
+    return [backupKey: backupKey,
+            brokenBefore: (config == null ? null : _rmConfigHasBrokenMarkers(config)),
+            baselineReused: false,
+            rollbackScope: "Restoring this baseline returns rule ${ruleId} to its state at ${formatTimestamp(snapshot.timestamp as Long)}."] + entry
 }
 
 // Soft delete via /installedapp/delete/<id>. Refuses if the app has
@@ -9207,11 +9364,11 @@ def _setRuleOperations() { (['create'] + _setRuleCreateHonored() + _setRuleEditO
 // in getToolDefinitions()'s useGateways==false branch.
 def _setRuleFlatTool() {
     return [
-        description: """Create or edit a Hubitat Rule Machine rule (RM 5.1) — one self-describing tool. Set `operation` and call WITHOUT confirm to get that operation's argument schema back (no change is made); then call again with `args` filled and confirm:true to apply it (args is opaque — probe it first). operation='create' makes a new rule (omit appId; put name + any bundled triggers/actions/required-expression in args); every other operation EDITs an existing rule (provide appId). RM-only — for non-RM classic apps (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule) use hub_set_native_app. Any write needs the Write master + confirm=true + a recent backup. Keywords: create edit rule machine RM trigger action condition required expression local variable walkStep authoring automation.""",
+        description: """Create or edit a Hubitat Rule Machine rule (RM 5.1) — one self-describing tool. Set `operation` and call WITHOUT confirm to get that operation's argument schema back (no change is made); then call again with `args` filled and confirm:true to apply it (args is opaque — probe it first). operation='create' makes a new rule (omit appId; put name + any bundled triggers/actions/required-expression in args); every other operation EDITs an existing rule (provide appId). RM-only — for non-RM classic apps (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule) use hub_set_native_app. Any write needs the Write master + confirm=true + a recent backup. Eligible slow writes use automatic MCP 2026-07-28 request-to-request continuation. Keywords: create edit rule machine RM trigger action condition required expression local variable walkStep authoring automation.""",
         inputSchema: [
             type: "object",
             properties: [
-                operation: [type: "string", enum: _setRuleOperations(), description: "What to do. Call WITHOUT confirm to get this operation's argument schema back (returned as argsSchema + usage; no mutation), then call again with args filled + confirm:true. 'create' = new rule (omit appId; name + bundle in args) — on a create, partial bakes are reported via partial/repairHints; full create+repair protocol: hub_get_tool_guide(section='set_rule_create_reference'). All others edit an existing rule (need appId) except guide/discover/buttonRule, which omit it. 'guide' returns the full capability reference; 'discover' returns the live per-capability field schema (args={kind:'trigger'|'action'})."],
+                operation: [type: "string", enum: _setRuleOperations(), description: "What to do. Call WITHOUT confirm to get this operation's argument schema back (argsSchema + usage; no mutation), then call again with args + confirm:true. 'create' = new rule (omit appId); all others edit an existing rule (need appId) except guide/discover/buttonRule, which omit it. On a create, partial bakes are reported via partial/repairHints; full create+repair protocol: hub_get_tool_guide(section='set_rule_create_reference'). 'guide' returns the full capability reference; 'discover' returns the live per-capability field schema (args={kind:'trigger'|'action'})."],
                 appId: [type: "integer", description: "RM rule ID. OMIT for create/guide/discover/buttonRule; PROVIDE for every other (edit) operation (appId is the create-vs-edit switch)."],
                 args: [type: ["object", "array", "boolean"], description: "Arguments for the chosen operation — the exact shape comes from the schema probe (call without confirm first). Most ops take an object; the list ops (addTriggers/addActions/replaceActions/patches) take a bare array and clearActions takes true. For 'create' args holds name + optional addTriggers/addActions/addRequiredExpression. Pass the bare operation payload (e.g. {capability:'switch',...}), not wrapped under the operation name."],
                 confirm: [type: "boolean", description: "Set true to APPLY the operation (any write). Omit (or false) to get the schema back instead (a no-mutation probe). Writes also need the Write master + a recent backup."]
@@ -13046,7 +13203,7 @@ private Map _rmReplaceRequiredExpression(Integer appId, Map exprSpec, Object bac
 // one (settings OR button):
 //
 // settings: apply a settings map with the multi-device 3-field contract
-// enforced automatically. Always backs up first, always
+// enforced automatically. Ensures a recent baseline first, always
 // verifies the multiple flags post-write with one retry on
 // divergence, then runs the updateRule button so the change
 // takes effect on the running rule instance.
@@ -13103,7 +13260,7 @@ private Map _bulkPauseResult(Integer appId, Map backup, List triggerResults, Lis
         addActionsRemaining: addActionsRemaining.collect { _stripInternalClock(it) },
         repairHints: repairHints,
         resume: [
-            note: "Time budget reached; committed items are written at the settings level (the trailing updateRule is deferred to the resume call). Re-issue the edit (hub_set_rule or hub_set_native_app) with addActions/addTriggers = the remaining items to continue. Attach the same opToken ONLY if the original call carried none; otherwise use a fresh token."
+            note: "Time budget reached; committed items are written at the settings level (the trailing updateRule is deferred to the resume call). Re-issue the edit (hub_set_rule or hub_set_native_app) with addActions/addTriggers = the remaining items to continue."
         ]
     ]
 }
@@ -13126,9 +13283,62 @@ private Map _patchesPauseResult(Integer appId, Map backup, List patchResults, Li
         patchResults: patchResults,
         patchesRemaining: patchesRemaining,
         resume: [
-            note: "Time budget reached; completed patch ops are committed at the settings level but NOT yet baked into the running rule. Re-issue the edit (hub_set_rule or hub_set_native_app) with patches = patchesRemaining to continue; the rule finalize/updateRule runs when the remaining patches complete. Attach the same opToken ONLY if the original call carried none; otherwise use a fresh token."
+            note: "Time budget reached; completed patch ops are committed at the settings level but NOT yet baked into the running rule. Re-issue the edit (hub_set_rule or hub_set_native_app) with patches = patchesRemaining to continue; the rule finalize/updateRule runs when the remaining patches complete."
         ]
     ]
+}
+
+// Return a terminal structured refusal only for edit shapes whose rejection is
+// fully determined by argument maps. This method must remain free of hub reads,
+// writes, state mutation, backup creation, and wizard calls.
+private Map _rmRoundZeroNativeEditRefusal(Map args) {
+    if (!(args instanceof Map) || args.appId == null || args.operation != null) return null
+    // EDIT dispatch accepts numeric-string ids via normalizeRuleId, so the
+    // pre-reservation seam must too -- a "123" appId otherwise skips it and only
+    // refuses after claiming the write slot. Garbage ids still fall through: the
+    // full path owns their richer error.
+    Integer refusalAppId
+    try {
+        refusalAppId = normalizeRuleId(args.appId)
+    } catch (IllegalArgumentException ignored) {
+        return null
+    }
+
+    def candidates = []
+    if (args.addTrigger instanceof Map) candidates << "addTrigger"
+    if (args.addAction instanceof Map) candidates << "addAction"
+    // Keep the seam narrower than EDIT dispatch. In particular, never let an
+    // argument refusal outrank the existing multi-operation-family error.
+    if (candidates.size() != 1) return null
+    String candidate = candidates.first()
+    def competingEditKeys = _setRuleOperations() -
+        ["create", "buttonRule", "discover", candidate]
+    if (competingEditKeys.any { args.containsKey(it) }) return null
+
+    try {
+        switch (candidate) {
+            case "addTrigger":
+                def triggerSpec = args.addTrigger as Map
+                _rmValidateRoundZeroTriggerSpec(triggerSpec)
+                if (triggerSpec.deviceIds == null &&
+                        !(triggerSpec.condition instanceof Map)) {
+                    _rmValidateRoundZeroPeriodicSpec(triggerSpec)
+                }
+                break
+            case "addAction":
+                _rmValidateRoundZeroActionSpec(args.addAction as Map)
+                break
+        }
+        return null
+    } catch (IllegalArgumentException refusal) {
+        return [
+            success: false,
+            appId: refusalAppId,
+            error: refusal.message,
+            wizardStuck: false,
+            restoreHint: _rmPreflightRestoreHint()
+        ]
+    }
 }
 
 // pageName lets callers target a specific sub-page (e.g. ruleActions,
@@ -13164,14 +13374,6 @@ def _applyNativeAppEdit(args) {
     // keys for known device-list field-name patterns and validate any
     // List values against the hub. Same RM 5.1 `{<bogusId>: null}` silent-
     // storage bug applies here as in the structured paths.
-    if (settingsMap) {
-        def devKeyPattern = ~/^([tr]Dev[_-]?\d+|switch[A-Z]\w*|onOffSwitch\.\d+|lockLockUnlock\.\d+|shadeOpenClose\.\d+|fanRL\.\d+|tDev-\d+|deviceList|dimmerLevel\.\d+|ButtontDev_?\d+|pushButton\d+)$/
-        settingsMap.each { k, v ->
-            if (v instanceof List && k?.toString()?.matches(devKeyPattern)) {
-                _rmValidateDeviceIdsExist("settings.${k}", v)
-            }
-        }
-    }
     def button = args?.button?.toString()?.trim() ?: null
     def addTriggerSpec = args?.addTrigger instanceof Map ? args.addTrigger : null
     def addActionSpec = args?.addAction instanceof Map ? args.addAction : null
@@ -13199,6 +13401,67 @@ def _applyNativeAppEdit(args) {
     def removeTriggerSpec = args?.removeTrigger instanceof Map ? args.removeTrigger : null
     def modifyTriggerSpec = args?.modifyTrigger instanceof Map ? args.modifyTrigger : null
     def modifyActionSpec = args?.modifyAction instanceof Map ? args.modifyAction : null
+
+    // EDIT dispatch is intentionally one-operation-at-a-time except for the documented
+    // plural addTriggers+addActions bulk pair. Reject any other cross-family combination
+    // BEFORE the backup snapshot or wizard write. Two distinct hazards, one refusal: for
+    // most pairs the dispatcher returns from the first matching branch and silently drops
+    // the rest, while removeAction/clearActions/replaceActions/moveAction share ONE branch
+    // and all execute -- in a fixed internal order the caller never chose.
+    def triggerOpNames = []
+    if (addTriggerSpec) triggerOpNames << "addTrigger"
+    if (addTriggersList) triggerOpNames << "addTriggers"
+    def actionOpNames = []
+    if (addActionSpec) actionOpNames << "addAction"
+    if (addActionsList) actionOpNames << "addActions"
+    def rawOpNames = []
+    if (settingsMap) rawOpNames << "settings"
+    if (button) rawOpNames << "button"
+    if (rawOpNames) {
+        if (args?.pageName != null) rawOpNames << "pageName"
+        if (args?.stateAttribute != null) rawOpNames << "stateAttribute"
+    }
+    def editOpGroups = [
+        triggerOpNames,
+        actionOpNames,
+        addRequiredExpressionSpec ? ["addRequiredExpression"] : [],
+        replaceRequiredExpressionSpec ? ["replaceRequiredExpression"] : [],
+        removeActionSpec ? ["removeAction"] : [],
+        clearActionsFlag ? ["clearActions"] : [],
+        // replaceActions:[] is normalized to clearActionsFlag above (and replaceActionsList
+        // to null), so the null test ALONE already prevents a double count. Also gating on
+        // !clearActionsFlag did nothing there and one harmful thing elsewhere: an explicit
+        // clearActions:true alongside a NON-empty replaceActions collapsed to a single
+        // group, so the multi-op guard stayed silent and both the clear and the replace's
+        // re-add ran -- a two-family call the contract says must be refused.
+        (replaceActionsList != null) ? ["replaceActions"] : [],
+        moveActionSpec ? ["moveAction"] : [],
+        removeTriggerSpec ? ["removeTrigger"] : [],
+        modifyTriggerSpec ? ["modifyTrigger"] : [],
+        modifyActionSpec ? ["modifyAction"] : [],
+        addLocalVariableSpec ? ["addLocalVariable"] : [],
+        removeLocalVariableSpec ? ["removeLocalVariable"] : [],
+        patchesList ? ["patches"] : [],
+        walkStepSpec ? ["walkStep"] : [],
+        rawOpNames
+    ].findAll { !it.isEmpty() }
+    boolean allowedBulkPair = (editOpGroups.size() == 2 &&
+        triggerOpNames == ["addTriggers"] && actionOpNames == ["addActions"])
+    // The singular+plural pair of one family collapses into a single group, so the
+    // group count alone would miss addTrigger+addTriggers (and addAction+addActions).
+    if ((editOpGroups.size() >= 2 && !allowedBulkPair) || triggerOpNames.size() > 1 || actionOpNames.size() > 1) {
+        def opNames = editOpGroups.collectMany { it }
+        throw new IllegalArgumentException("hub_set_rule / hub_set_native_app received multiple operations in one call (${opNames.join(', ')}). Multi-op calls are refused: depending on the combination the extras would either be silently dropped or run in a fixed internal order you did not choose. Use patches:[...] for an ordered atomic edit, or issue one call per operation. See hub_get_tool_guide(section='set_rule_reference').")
+    }
+
+    if (settingsMap) {
+        def devKeyPattern = ~/^([tr]Dev[_-]?\d+|switch[A-Z]\w*|onOffSwitch\.\d+|lockLockUnlock\.\d+|shadeOpenClose\.\d+|fanRL\.\d+|tDev-\d+|deviceList|dimmerLevel\.\d+|ButtontDev_?\d+|pushButton\d+)$/
+        settingsMap.each { k, v ->
+            if (v instanceof List && k?.toString()?.matches(devKeyPattern)) {
+                _rmValidateDeviceIdsExist("settings.${k}", v)
+            }
+        }
+    }
     if (!settingsMap && !button && !addTriggerSpec && !addActionSpec && !addActionsList && !addTriggersList
             && !addRequiredExpressionSpec && !replaceRequiredExpressionSpec && !addLocalVariableSpec && !removeLocalVariableSpec && !patchesList && !removeActionSpec && !clearActionsFlag && replaceActionsList == null && !moveActionSpec && !walkStepSpec && !removeTriggerSpec && !modifyTriggerSpec && !modifyActionSpec) {
         throw new IllegalArgumentException("Editing an app requires one of: 'settings' (Map) or 'button' (String) for any classic app; or, for Rule Machine rules via hub_set_rule, a structured shortcut -- 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), 'addActions' (List), 'addRequiredExpression' (Map), 'replaceRequiredExpression' (Map), 'addLocalVariable' (Map), 'removeLocalVariable' ({name}), 'patches' (List of sub-specs), 'removeAction' ({index:N}), 'clearActions' (true), 'replaceActions' (List), 'moveAction' ({index:N, direction:up|down}), 'removeTrigger' ({index:N}), 'modifyTrigger' ({index:N, mods:{state:...}}), 'modifyAction' ({index:N, mods:{ruleIds:[...]}}), or 'walkStep' ({page, operation, write?, click?, navigate?, validateEnum?}) -- none provided.")
@@ -13219,7 +13482,7 @@ def _applyNativeAppEdit(args) {
         return _rmBuildUpdateErrorResponse(appId, preflightExc.message, null)
     }
 
-    // Always snapshot before WRITING -- the restore channel if anything downstream goes wrong. The
+    // Ensure a recent baseline before WRITING -- the restore channel if anything downstream goes wrong. The
     // one carve-out is a decidable-from-name pre-flight reject (above): it writes nothing, so it
     // needs no snapshot and has already returned its refusal envelope before this point.
     def backupReason = button ? "pre-button-${button}" :
@@ -13239,7 +13502,7 @@ def _applyNativeAppEdit(args) {
         (modifyTriggerSpec ? "pre-modifyTrigger" :
         (modifyActionSpec ? "pre-modifyAction" :
         (walkStepSpec ? "pre-walkStep" : "pre-update"))))))))))))))))
-    def backup = _rmBackupRuleSnapshot(appId, backupReason)
+    def backup = _rmBackupBeforeEdit(appId, backupReason)
 
     // walkStep — schema-aware single-step wizard walker. Lets a caller
     // (typically an LLM) drive any RM wizard page dynamically: introspect
@@ -13300,7 +13563,7 @@ def _applyNativeAppEdit(args) {
                 appId: appId,
                 error: e.message ?: e.toString(),
                 backup: backup,
-                restoreHint: "Backup saved before write. Call hub_restore_backup with backupKey='${backup.backupKey}' to roll back."
+                restoreHint: "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain."
             ]
         }
     }
@@ -13404,7 +13667,7 @@ def _applyNativeAppEdit(args) {
             addResult: maResult?.addResult,
             moveResults: maResult?.moveResults,
             error: maError,
-            restoreHint: maOk ? null : "Backup saved before write. Call hub_restore_backup with backupKey='${backup?.backupKey}' to roll back.",
+            restoreHint: maOk ? null : "Backup baseline available. Call hub_restore_backup with backupKey='${backup?.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain.",
             updateRuleFailed: updateRuleFailed,
             // TRUE whenever the rule mutated without a successful re-init: a
             // rejected click, or a skipped click after the delete committed
@@ -13773,7 +14036,7 @@ def _applyNativeAppEdit(args) {
             // A pre-flight refusal (a shape/structural guard that throws before
             // any hub round-trip, carrying the "RM is not touched" sentinel --
             // e.g. modifyTrigger's state-change-token guard) never mutated the
-            // rule, so the plain "Backup saved before write" restore prompt is
+            // rule, so the plain backup-baseline restore prompt is
             // misleading. Detect the sentinel and emit the not-touched wording
             // instead, sharing the single owner with the structured path. This
             // is mutually exclusive with retry-exhaustion (a refused write never
@@ -13789,7 +14052,7 @@ def _applyNativeAppEdit(args) {
                     _rmPreflightRestoreHint() :
                     (isRetryExhaustion ?
                         "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}')." :
-                        "Backup saved before write. Call hub_restore_backup with backupKey='${backup.backupKey}' to roll back.")
+                        "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain.")
             ]
             if (isRetryExhaustion) {
                 trigResult.verifyHint = "Call hub_get_app_config(appId=${appId}) and inspect the triggers list -- if the operation actually committed despite the false-fail, do NOT call hub_restore_backup."
@@ -14946,7 +15209,54 @@ def toolCheckRuleHealth(args) {
     if (!(source in ["auto", "ruleBuilderJson", "configPage"])) {
         throw new IllegalArgumentException("source must be one of: auto (default), ruleBuilderJson, configPage")
     }
-    return _rmCheckRuleHealth(appId, source)
+    def result = _rmCheckRuleHealth(appId, source)
+    def status = null
+    try {
+        status = _rmFetchStatusJson(appId)
+        // A readable statusJson with an ABSENT section means zero live entries -- a
+        // schedule-only rule carries no eventSubscriptions list at all (and a stopped
+        // rule drops both). null is reserved for the fetch itself failing.
+        result.eventSubscriptionCount = (status?.eventSubscriptions instanceof List) ? status.eventSubscriptions.size() : 0
+        result.scheduledJobCount = (status?.scheduledJobs instanceof List) ? status.scheduledJobs.size() : 0
+    } catch (Exception statusErr) {
+        result.eventSubscriptionCount = null
+        result.scheduledJobCount = null
+        // Half-checked marker, same contract as the two source reads: null counts with no
+        // recorded reason read as "this rule has none", which is a different fact.
+        def checkErrors = (result.checkErrors instanceof List) ? result.checkErrors : []
+        checkErrors << "statusJson: ${statusErr.message ?: statusErr.toString()}".toString()
+        result.checkErrors = checkErrors
+    }
+    // stopped, by precedence: (1) a "(Stopped)" inside real markup is a hub-rendered
+    // runtime decoration beyond doubt (the hub entity-escapes a user-typed '<'), and a
+    // stopped rule's statusJson is often UNREADABLE, so markup decides first; (2) a
+    // readable statusJson answers from its own state.stopped -- the SAME field the
+    // hub_call_rule stop/start toggle reads for its no-op detection (absent means
+    // never-stopped, i.e. false); (3) neither available -> null, never a guess -- a
+    // plain unmarked suffix reads the same as a rule literally NAMED "... (Stopped)".
+    // The trailing "(Paused)" is the SAME decoration hub_list_rules reads for its paused
+    // flag, so report it here too rather than making a caller fetch every rule on the hub to
+    // learn one rule's pause state. Null when the label was unreadable -- never a guess.
+    def rawLabel = result.label?.toString()
+    boolean markedUp = rawLabel != null && (rawLabel =~ /<[^>]+>\s*\(Stopped\)\s*(?:<\/[^>]+>\s*)*$/).find()
+    Boolean stoppedVerdict
+    if (markedUp) {
+        stoppedVerdict = true
+    } else if (status != null) {
+        stoppedVerdict = _readAppStateBoolean(status, "stopped", false)
+    } else {
+        stoppedVerdict = null
+    }
+    result.stopped = stoppedVerdict
+    if (rawLabel != null) {
+        def plain = rawLabel.replaceAll(/<[^>]+>/, "").trim()
+        result.paused = (plain =~ /\(Paused\)\s*$/).find()
+        def tidy = plain.replaceAll(/\s*\(Paused\)\s*$/, "").trim()
+        result.label = (stoppedVerdict == true) ? tidy.replaceAll(/\s*\(Stopped\)\s*$/, "").trim() : tidy
+    } else {
+        result.paused = null
+    }
+    return result
 }
 
 // hub_list_rule_local_variables -- read a rule's local-variable namespace

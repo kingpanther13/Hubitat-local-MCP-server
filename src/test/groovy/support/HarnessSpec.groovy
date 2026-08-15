@@ -118,6 +118,8 @@ abstract class HarnessSpec extends Specification {
     private static final List SHARED_CHILD_APPS_LIST = []
     private static final HubInternalGetMock SHARED_HUB_GET = new HubInternalGetMock()
     private static final McpRequestDriver SHARED_MCP_DRIVER = new McpRequestDriver()
+    private static final List SHARED_RUN_IN_CALLS = java.util.Collections.synchronizedList([])
+    private static final List SHARED_RUN_IN_MILLIS_CALLS = java.util.Collections.synchronizedList([])
 
     // Records parent-app unsubscribe() calls. A `1 * appExecutor.unsubscribe()`
     // cardinality check from a then-block doesn't fire reliably on the @Shared
@@ -135,8 +137,27 @@ abstract class HarnessSpec extends Specification {
     // A single static holder is safe under the current single-fork test config
     // (maxParallelForks=1); if specs ever run in parallel this would need to be a ThreadLocal.
     protected static final java.util.concurrent.atomic.AtomicReference NOW_OVERRIDE = new java.util.concurrent.atomic.AtomicReference(null)
+    // Optional per-feature pause seam. HubitatAppScript.pauseExecution delegates
+    // directly to AppExecutor, so a script metaClass override does not reliably
+    // intercept compiled peer instances.
+    protected static final java.util.concurrent.atomic.AtomicReference PAUSE_EXECUTION_OVERRIDE = new java.util.concurrent.atomic.AtomicReference(null)
+    // Optional per-feature runIn seam. Kept beside NOW_OVERRIDE because both are
+    // execution-boundary controls used by concurrency specs; null preserves the
+    // normal recorder behavior for every other feature.
+    // One holder per scheduling API: the closure sees only the argument list, so a
+    // single shared holder would let a runIn override swallow runInMillis schedules
+    // (and vice versa) and a delay-unit regression would pass unnoticed.
+    protected static final java.util.concurrent.atomic.AtomicReference RUN_IN_OVERRIDE = new java.util.concurrent.atomic.AtomicReference(null)
+    protected static final java.util.concurrent.atomic.AtomicReference RUN_IN_MILLIS_OVERRIDE = new java.util.concurrent.atomic.AtomicReference(null)
 
     @Shared protected AppExecutor appExecutor
+    // Every runIn(delay, handler[, opts]) the script scheduled this test, newest last.
+    // Static-backed like the other fixtures so the stub closure built in setupSpec and the
+    // spec reading it always reach the same list. The ci/groovy2x-spock lane overrides this
+    // file with its own scaffold copy, so a recorder added to one is invisible to the other --
+    // keep the two in lockstep.
+    @Shared protected final List<List<Object>> runInCalls = SHARED_RUN_IN_CALLS
+    @Shared protected final List<List<Object>> runInMillisCalls = SHARED_RUN_IN_MILLIS_CALLS
     @Shared protected script
     @Shared protected final Map stateMap = SHARED_STATE_MAP
     @Shared protected final Map atomicStateMap = SHARED_ATOMIC_STATE_MAP
@@ -237,6 +258,23 @@ abstract class HarnessSpec extends Specification {
         }
         // Record unsubscribe() so lifecycle specs (e.g. initialize) can assert it.
         mock.unsubscribe() >> { UNSUBSCRIBE_CALL_COUNT.incrementAndGet() }
+        mock.pauseExecution(_) >> { args ->
+            def ov = PAUSE_EXECUTION_OVERRIDE.get()
+            if (ov != null) ov.call(args[0] as Long)
+        }
+        // Attached HERE with the other permanent stubs: one added from a later setupSpec does
+        // not reliably take, and runIn is an AppExecutor method, so a script.metaClass override
+        // never intercepts it.
+        mock.runIn(*_) >> { args ->
+            def ov = RUN_IN_OVERRIDE.get()
+            if (ov != null) return ov.call(args as List)
+            SHARED_RUN_IN_CALLS << (args as List)
+        }
+        mock.runInMillis(*_) >> { args ->
+            def ov = RUN_IN_MILLIS_OVERRIDE.get()
+            if (ov != null) return ov.call(args as List)
+            SHARED_RUN_IN_MILLIS_CALLS << (args as List)
+        }
         return mock
     }
 
@@ -273,8 +311,27 @@ abstract class HarnessSpec extends Specification {
         // keep their identity (the AppExecutor mock's stubs captured
         // references in setupSpec), so clear-and-repopulate rather than
         // reassign.
+        runInCalls.clear()
+        runInMillisCalls.clear()
         stateMap.clear()
         atomicStateMap.clear()
+        // The production app deliberately keeps exact terminal-generation
+        // evidence in a class-static map so a Hubitat disable/enable bounce can
+        // repair an older atomicState snapshot.  The shared compiled script and
+        // fixed test clock would otherwise retain that evidence across features.
+        (scriptStaticField('MRTR_TERMINAL_EVIDENCE') as Map).clear()
+        // Ordinary-write leases are class-static only -- nothing in atomicState mirrors
+        // them, so a feature that reserves without releasing would otherwise hand the
+        // next feature a write slot that is already spent.
+        (scriptStaticField('WRITE_REQUEST_LEASES') as Map).clear()
+        // The per-rule baseline mirror is JVM truth beside the manifest; a leftover
+        // handle would satisfy reuse for a rule id a later feature reuses.
+        (scriptStaticField('RM_BASELINE_HANDLES') as Map).clear()
+        // The write-reservation machinery serves mrtrRequests / packageDeployInFlight
+        // from a class-static snapshot of atomicState. Clearing atomicStateMap above
+        // without this would leave the previous feature's snapshot as the read path --
+        // the same reload the hub gets from a recompile/restart.
+        script._writeStateCacheInvalidate()
         settingsMap.clear()
         settingsMap.selectedDevices = []
         // The issue #299 best-practice gate ships ON (settings.enableMandatoryBPS != false), which
@@ -296,6 +353,9 @@ abstract class HarnessSpec extends Specification {
         // Drop any per-test virtual-clock override so now() returns the fixed default
         // for every spec that doesn't opt in (prevents clock leakage across features).
         NOW_OVERRIDE.set(null)
+        PAUSE_EXECUTION_OVERRIDE.set(null)
+        RUN_IN_OVERRIDE.set(null)
+        RUN_IN_MILLIS_OVERRIDE.set(null)
         // Drop any per-test metaClass writes installed on the shared
         // script by previous features (e.g. individual specs' given:
         // blocks that do `script.metaClass.getRooms = { ... }`).
@@ -320,6 +380,35 @@ abstract class HarnessSpec extends Specification {
         // reference non-@Shared spec fields (e.g. per-feature stubs) and
         // still see their own test's values.
         wireScriptOverrides()
+    }
+
+    /**
+     * The app's class-static fields, which no public method exposes. A recompile is the
+     * only thing that clears them on a hub, so setup() stands in for that boundary — and
+     * a spec needs the same reach to model an execution that died before its finally.
+     */
+    protected Object scriptStaticField(String fieldName) {
+        def f = script.getClass().getDeclaredField(fieldName)
+        f.accessible = true
+        return f.get(null)
+    }
+
+    /**
+     * Create another execution instance of the already compiled app class.
+     * Hubitat gives concurrent executions distinct script instances; the
+     * inherited initializer copies the same AppExecutor and therefore the same
+     * atomicState backing while class-static fields remain genuinely shared.
+     *
+     * The peer gets only the standard harness wires, NOT a subclass's
+     * {@code wireScriptOverrides()} additions — those land on {@code script}
+     * alone, so a spec that stubs a surface there must stub it on the peer too
+     * rather than assume parity.
+     */
+    protected Object newCompiledScriptInstance() {
+        HubitatAppScript peer = script.getClass().getDeclaredConstructor().newInstance() as HubitatAppScript
+        peer.initializeFromParent(script as HubitatAppScript)
+        wireInstanceOverrides(peer)
+        return peer
     }
 
     /**
@@ -380,6 +469,10 @@ abstract class HarnessSpec extends Specification {
     }
 
     protected void wireScriptOverrides() {
+        wireInstanceOverrides(script)
+    }
+
+    private void wireInstanceOverrides(Object target) {
         def hubGetRef = hubGet
         def childAppsRef = childAppsList
         def self = this
@@ -399,22 +492,14 @@ abstract class HarnessSpec extends Specification {
         // setupSpec()) because setup() wipes the script's metaClass;
         // the reflective write here survives that wipe and is idempotent
         // against the stable proxy instance.
-        def injectedField = me.biocomp.hubitat_ci.app.HubitatAppScript
-            .getDeclaredField('injectedMappingHandlerData')
-        injectedField.accessible = true
-        Map injectedMap = injectedField.get(script) as Map
-        if (injectedMap == null) {
-            injectedMap = [:]
-            injectedField.set(script, injectedMap)
-        }
-        injectedMap['request'] = mcpDriver.scriptRequest
+        wireRequestProxy(target)
         // hubInternalGet has no declaration on HubitatAppScript — it's
         // pure dynamic Groovy resolved through metaClass, so the
         // per-instance metaClass write here intercepts cleanly. The
         // captured hubGetRef is the @Shared HubInternalGetMock whose
         // internal maps get reset() between tests, so a single wire-up
         // in setupSpec routes all tests to a fresh-feeling stub.
-        script.metaClass.hubInternalGet = { String p, Map pp = [:], Integer t = 30 ->
+        target.metaClass.hubInternalGet = { String p, Map pp = [:], Integer t = 30 ->
             hubGetRef.call(p, pp)
         }
         // Replace HubitatAppScript's private factory closures so the
@@ -425,7 +510,7 @@ abstract class HarnessSpec extends Specification {
         // test's fixture content is visible without re-wiring.
         def factoryField = HubitatAppScript.getDeclaredField('childAppFactory')
         factoryField.accessible = true
-        factoryField.set(script, { String ns, String name, String label, Map props = [:] ->
+        factoryField.set(target, { String ns, String name, String label, Map props = [:] ->
             if (self.mockChildAppForCreate == null) {
                 throw new IllegalStateException(
                     "Spec invoked addChildApp(${ns}, ${name}, ${label}) but " +
@@ -437,7 +522,7 @@ abstract class HarnessSpec extends Specification {
 
         def accessorField = HubitatAppScript.getDeclaredField('childAppAccessor')
         accessorField.accessible = true
-        accessorField.set(script, { String op, Object arg = null ->
+        accessorField.set(target, { String op, Object arg = null ->
             switch (op) {
                 case 'list':
                     return childAppsRef
@@ -456,5 +541,17 @@ abstract class HarnessSpec extends Specification {
                         "mock needs a new case; see src/test/groovy/support/HarnessSpec.groovy")
             }
         } as Closure)
+    }
+
+    private void wireRequestProxy(Object target) {
+        def injectedField = me.biocomp.hubitat_ci.app.HubitatAppScript
+            .getDeclaredField('injectedMappingHandlerData')
+        injectedField.accessible = true
+        Map injectedMap = injectedField.get(target) as Map
+        if (injectedMap == null) {
+            injectedMap = [:]
+            injectedField.set(target, injectedMap)
+        }
+        injectedMap['request'] = mcpDriver.scriptRequest
     }
 }

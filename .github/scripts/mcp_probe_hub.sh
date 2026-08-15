@@ -91,6 +91,9 @@ section "hub_list_rules (RM rules via RMUtils)" "$MCP_URL" "$(gw_rpc hub_manage_
 section "hub_get_visual_rule (Visual Rules list)" "$MCP_URL" "$(gw_rpc hub_read_rules hub_get_visual_rule '{}')"
 section "hub_list_variables (hub + rule-engine)" "$MCP_URL" "$(gw_rpc hub_manage_variables hub_list_variables '{}')"
 section "hub_list_files (File Manager)" "$MCP_URL" "$(gw_rpc hub_read_files hub_list_files '{}')"
+# Targeted count: the unfiltered listing routinely exceeds the 120KB response cap on a
+# hub with many files. `total` is the count after filtering, even when the page is truncated.
+section "hub_list_files filter=mcp-rm-backup (per-rule snapshots)" "$MCP_URL" "$(gw_rpc hub_read_files hub_list_files '{"filter":"mcp-rm-backup"}')"
 section "location events (lowMemory / systemStart / mode / HSM, last 24h)" "$MCP_URL" "$(tool_rpc hub_list_device_events '{"limit":50}')"
 
 echo "######## BAT_E2E_ device deep-dive (events + subscribers) ########"

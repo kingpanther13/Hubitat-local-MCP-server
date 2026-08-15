@@ -24,11 +24,11 @@ TEST_FILE = "tests/e2e_test.py"
 
 # Changed file -> e2e @test group(s) it exercises. Best-effort; refine as the suite evolves.
 FILE_GROUP_MAP = {
-    "libraries/mcp-native-rules-lib.groovy":    ["native_apps", "op_replay"],
+    "libraries/mcp-native-rules-lib.groovy":    ["native_apps", "mrtr"],
     "libraries/mcp-visual-rules-lib.groovy":    ["visual_rules"],
     "libraries/mcp-custom-rules-lib.groovy":    ["rule_crud", "trigger_types", "condition_types", "action_types", "complex_patterns"],
     "hubitat-mcp-rule.groovy":                  ["rule_crud", "trigger_types", "condition_types", "action_types", "complex_patterns"],
-    "libraries/mcp-diagnostics-lib.groovy":     ["diagnostics", "system_tools", "op_replay"],
+    "libraries/mcp-diagnostics-lib.groovy":     ["diagnostics", "system_tools"],
     "libraries/mcp-debug-logging-lib.groovy":   ["developer_mode", "diagnostics"],
     "libraries/mcp-system-lib.groovy":          ["system_tools", "infrastructure"],
     "libraries/mcp-self-admin-lib.groovy":      ["developer_mode", "best_practice_gating"],
@@ -42,8 +42,9 @@ FILE_GROUP_MAP = {
     "libraries/mcp-item-backups-lib.groovy":    ["system_tools"],
     "libraries/mcp-rooms-lib.groovy":           ["infrastructure"],
     "libraries/mcp-discovery-lib.groovy":       ["infrastructure", "protocol"],
-    "libraries/mcp-app-cloner-lib.groovy":      ["native_apps", "rule_crud"],
+    "libraries/mcp-app-cloner-lib.groovy":      ["native_apps", "rule_crud", "mrtr"],
     "libraries/mcp-dashboards-lib.groovy":      ["dashboards"],
+    "hubitat-mcp-server.groovy":                ["mrtr", "protocol", "legacy_protocol"],
 }
 
 

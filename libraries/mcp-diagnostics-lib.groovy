@@ -2406,7 +2406,7 @@ def _getAllToolDefinitions_partDiagnostics() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    action: [type: "string", enum: ["radio_reboot", "rebuild_network", "channel_scan"], description: "radio_reboot (restart the Zigbee chip), rebuild_network (rebuild the mesh), or channel_scan (trigger an energy scan)."]
+                    action: [type: "string", enum: ["radio_reboot", "rebuild_network", "channel_scan"], description: "radio_reboot (restart the Zigbee chip), rebuild_network (rebuild the mesh), or channel_scan (trigger an energy scan)."],
                 ],
                 required: ["action"]
             ],
@@ -2515,7 +2515,7 @@ Requires Write master.""",
             inputSchema: [
                 type: "object",
                 properties: [
-                    stateId: [type: "string", description: "The ID of the captured state to delete. Omit to delete ALL captured states."]
+                    stateId: [type: "string", description: "The ID of the captured state to delete. Omit to delete ALL captured states."],
                 ]
             ],
             outputSchema: [

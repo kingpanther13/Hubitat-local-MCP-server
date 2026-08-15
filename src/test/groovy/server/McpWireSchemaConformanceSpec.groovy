@@ -186,6 +186,63 @@ class McpWireSchemaConformanceSpec extends ToolSpecBase {
         McpSchemaValidator.modernErrors('CallToolResult', response.result) == []
     }
 
+    def "a state-only modern tools/call continuation conforms to InputRequiredResult"() {
+        given:
+        settingsMap.enableWrite = true
+        def ran = 0
+        script.metaClass.toolRunRmRule = { Map a -> ran++; [success: true] }
+
+        when:
+        def response = dispatch(
+            [jsonrpc: '2.0', id: 71, method: 'tools/call',
+             params: [name: 'hub_call_rule', arguments: [ruleId: [71, 72], action: 'stop']]],
+            ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'tools/call',
+             'Mcp-Name': 'hub_call_rule'])
+
+        then: 'the preflight performs no write and asks only for automatic state echo'
+        ran == 0
+        response.result.resultType == 'input_required'
+        response.result.requestState instanceof String
+        !response.result.containsKey('inputRequests')
+
+        and:
+        McpSchemaValidator.modernErrors('InputRequiredResult', response.result) == []
+    }
+
+    def "same-generation contention stays a schema-valid state-only continuation"() {
+        given:
+        settingsMap.enableWrite = true
+        def args = [ruleId: [73, 74], action: 'stop']
+        def preflight = dispatch(
+            [jsonrpc: '2.0', id: 72, method: 'tools/call',
+             params: [name: 'hub_call_rule', arguments: args]],
+            ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'tools/call',
+             'Mcp-Name': 'hub_call_rule'])
+        String stateId = preflight.result.requestState
+        Map binding = script._mrtrBinding('hub_call_rule', 'hub_call_rule', args) as Map
+        Map claimed = script._mrtrClaim(stateId, 'hub_call_rule', 'hub_call_rule', binding) as Map
+        assert claimed.outcome == 'claimed'
+
+        when:
+        def response = dispatch(
+            [jsonrpc: '2.0', id: 73, method: 'tools/call',
+             params: [name: 'hub_call_rule', arguments: args, requestState: stateId]],
+            ['MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'tools/call',
+             'Mcp-Name': 'hub_call_rule'])
+
+        then:
+        response.error == null
+        response.result == response.result.findAll { it.key in ['resultType', 'requestState', '_meta'] }
+        response.result.resultType == 'input_required'
+        response.result.requestState == stateId
+        McpSchemaValidator.modernErrors('InputRequiredResult', response.result) == []
+
+        cleanup:
+        if (claimed != null) {
+            script._mrtrAbandon(stateId, claimed.record as Map, claimed, 'test_cleanup')
+        }
+    }
+
     def "a server/discover result conforms to the 2026-07-28 DiscoverResult"() {
         // DiscoverResult requires supportedVersions, capabilities, ttlMs, cacheScope AND
         // resultType. Driven HEADERLESS on purpose: discover is the compat probe a stateless

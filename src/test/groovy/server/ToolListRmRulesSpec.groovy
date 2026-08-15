@@ -754,6 +754,75 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         r450.status == 'active'
     }
 
+    def "flags a genuinely stopped rule from the RMUtils-label channel"() {
+        given: 'the "(Stopped)" suffix sits on the RMUtils LABEL while the appsList name stays clean'
+        rmUtils.stubRuleList5 = [[470: 'Porch timer (Stopped)']]
+        registerRmAppsList([ruleNode(470, 'Porch timer')])
+
+        when:
+        def result = script.toolListRmRules([:])
+
+        then: 'channel A fires and the decoration is stripped from the reported name'
+        def r470 = result.rules.find { it.id == 470 }
+        r470.status == 'stopped'
+        r470.label == 'Porch timer'
+    }
+
+    def "hub_list_rules over DISPATCH serializes the stopped status and the stripped name"() {
+        given: 'the same channel-A shape, driven through the wire path a client actually uses'
+        settingsMap.enableRead = true
+        rmUtils.stubRuleList5 = [[470: 'Porch timer (Stopped)']]
+        registerRmAppsList([ruleNode(470, 'Porch timer')])
+
+        when:
+        def response = mcpDriver.callTool('hub_list_rules', [:])
+        def inner = mcpDriver.parseInner(response)
+
+        then: 'status survives serialization, and BOTH name fields lose the decoration'
+        // Stripping only `label` would leave `name` carrying "(Stopped)", so a caller
+        // resolving a rule by name could no longer find it.
+        response.error == null
+        def r470 = inner.rules.find { it.id == 470 }
+        r470.status == 'stopped'
+        r470.label == 'Porch timer'
+        r470.name == 'Porch timer'
+    }
+
+    def "does not false-flag a rule the user literally named ending in (Stopped)"() {
+        given: 'both strings carry the literal suffix, so nothing distinguishes it as decoration'
+        rmUtils.stubRuleList5 = [[471: 'Movie mode (Stopped)']]
+        registerRmAppsList([ruleNode(471, 'Movie mode (Stopped)')])
+
+        when:
+        def result = script.toolListRmRules([:])
+
+        then:
+        def r471 = result.rules.find { it.id == 471 }
+        r471.status == 'active'
+        r471.label == 'Movie mode (Stopped)'
+    }
+
+    def "does not false-flag a literally-named (Stopped) rule that is ALSO paused"() {
+        // The case the old channel-A test got wrong. It asked only whether the appsList name
+        // ENDS with " (Stopped)"; here it ends with "(Paused)", so the suffix in the rule's
+        // REAL name read as a runtime decoration. The rule was reported stopped and had
+        // "(Stopped)" stripped from both label and name, so a name-to-id lookup lost it.
+        given:
+        rmUtils.stubRuleList5 = [[472: 'Movie mode (Stopped)']]
+        registerRmAppsList([ruleNode(472, 'Movie mode (Stopped) (Paused)')])
+
+        when:
+        def result = script.toolListRmRules([:])
+
+        then: 'the appsList name still STARTS WITH the whole RMUtils label -- so the suffix is name, not decoration'
+        def r472 = result.rules.find { it.id == 472 }
+        r472.paused == true
+        r472.status == 'paused'
+
+        and: 'and the real name survives intact for a name lookup'
+        r472.label == 'Movie mode (Stopped)'
+    }
+
     def "returns status unknown and a statusNote when /hub2/appsList is unreadable"() {
         given: '/hub2/appsList deliberately left unstubbed so _collectLiveApps returns null'
         rmUtils.stubRuleList5 = [[460: 'Some rule'], [461: 'Another rule']]
@@ -885,8 +954,8 @@ class ToolListRmRulesSpec extends ToolSpecBase {
         def def_ = script.getAllToolDefinitions().find { it.name == 'hub_list_rules' }
         def itemProps = def_.outputSchema.properties.rules.items.properties
 
-        then: 'the per-rule status fields are declared, with a status enum covering all four states'
-        itemProps.status.enum == ['active', 'paused', 'disabled', 'unknown']
+        then: 'the per-rule status fields are declared, with a status enum covering all five states'
+        itemProps.status.enum == ['active', 'paused', 'stopped', 'disabled', 'unknown']
         itemProps.disabled.type == 'boolean'
         itemProps.paused.type == 'boolean'
         itemProps.containsKey('requiredExpressionFalse')

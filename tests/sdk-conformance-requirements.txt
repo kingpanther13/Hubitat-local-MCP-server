@@ -4,32 +4,26 @@
 # between runs, so the script reads `mcp==` from this file and refuses to run against any other
 # version. It is deliberately NOT Dependabot-tracked -- a bump changes what the harness asserts.
 #
-# On a bump, read the SDK's release notes for protocol-version changes: a release that adds
-# 2026-07-28 to its SUPPORTED_PROTOCOL_VERSIONS changes which ERA this leg exercises, which is a
-# real change in what it proves. Procedure: docs/testing.md § Conformance harness.
+# This v2 pin is the independent referee for the modern 2026-07-28 catalog, resource,
+# result-model, and automatic request-to-request continuation scenarios. The live E2E harness
+# deliberately does not exercise the server's retained legacy fallback. Procedure for any later
+# bump: docs/testing.md § Conformance harness.
 #
-# Pinned here are ONLY the packages whose behaviour can move a verdict: pydantic/pydantic-core
-# (`model_extra` semantics the ping scenario reads), typing-extensions (the `__deprecated__`
-# markers the preflight reads), jsonschema (the SDK's structuredContent validator), httpx + anyio
-# (the transport and the exception-group shapes `_failure_detail` unwraps), and httpx-sse -- pinned
-# not because its SSE branch runs (it does not; this server answers application/json and issues no
-# session id) but because mcp.client.streamable_http imports it at MODULE scope, so a breaking
-# rename there kills the harness on import. The rest of the closure is left to the resolver ON
-# PURPOSE: it is ASGI/auth-server plumbing which mcp's package init does IMPORT but which never
-# EXECUTES on this client-only path, so its version cannot change a verdict. This file is not
-# Dependabot-tracked, so every extra pin rots silently, and each one is another way for the e2e
-# step to fail on `pip install` for a reason that has nothing to do with conformance (a
-# cryptography pin needing a wheel for whatever `python-version: '3.x'` resolves to being the
-# sharpest example).
+# Pinned here are ONLY the packages whose behaviour can move a verdict: mcp-types (the v2 result
+# models), pydantic/pydantic-core (their parsing), typing-extensions (the `__deprecated__` markers
+# the preflight reads), and httpx2 + anyio
+# (the transport/timing hooks and exception-group shapes `_failure_detail` unwraps). The rest of
+# the closure is left to the resolver on purpose: it is server/auth plumbing imported by the
+# package but not executed on this client-only path. Extra transitive pins can fail a future
+# `python-version: '3.x'` install for platform-wheel reasons unrelated to conformance.
 #
 # `requests` is deliberately NOT here -- this file stays single-purpose -- but a clean venv needs
 # it too: the script imports tests/e2e_test.py for the shared hub config, and that module imports
 # requests at module scope. hub-e2e.yml installs it on its own line.
-mcp==1.28.1
-anyio==4.12.1
-httpx==0.28.1
-httpx-sse==0.4.3
-jsonschema==4.26.0
-pydantic==2.12.5
-pydantic-core==2.41.5
-typing-extensions==4.15.0
+mcp==2.0.0
+mcp-types==2.0.0
+anyio==4.14.2
+httpx2==2.10.0
+pydantic==2.13.4
+pydantic-core==2.46.4
+typing-extensions==4.16.0

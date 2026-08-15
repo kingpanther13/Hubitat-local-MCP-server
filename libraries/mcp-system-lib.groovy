@@ -209,7 +209,6 @@ def toolGetHubInfo(args = null) {
         def ha = _healthAlertsFromHub2(hub2)
         if (ha != null) info.healthAlerts = ha
     }
-
     // Opt-in MCP Rule Server APP version check on GitHub (distinct from platformUpdate, the hub's
     // own firmware). Off by default: it is asynchronous (the first call may return latestVersion
     // 'unknown (check in progress)' -- call again in a few seconds) AND reaches the open internet,
@@ -677,7 +676,7 @@ def toolSetHsm(armCommand) {
     }
 
     // Capture current status BEFORE sending the change event
-    def previousStatus = location.hsmStatus
+    def previousStatus = location.hsmStatus ?: "unknown"
     sendLocationEvent(name: "hsmSetArm", value: armCommand)
 
     return [

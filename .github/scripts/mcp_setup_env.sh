@@ -24,6 +24,11 @@
 #   - enableDeveloperMode — lockout protection. Must be on in the UI before this
 #     script can call update_mcp_settings at all (script aborts with a focused
 #     error if it isn't).
+#   - maxConcurrentWrites — the run pins the global write cap OFF (0), but POST-deploy, in
+#     tests/e2e_test.py main(). Not here: this step talks to the PRE-deploy baseline app,
+#     whose update_mcp_settings allowlist need not carry the key at all, and mcp_restore_env.sh
+#     replays whatever it captured AFTER the watchdog has restored main — at that same app.
+#     A key that is new in the PR under test cannot survive that round trip.
 
 set -euo pipefail
 
@@ -31,15 +36,19 @@ set -euo pipefail
 PRE_STATE_FILE="${RUNNER_TEMP:-/tmp}/mcp_pre_state.json"
 
 mcp_call() {
+  local tool_name="$2"
   curl -sS --fail --max-time 30 -X POST "$MCP_URL" \
     -H "Content-Type: application/json" \
+    -H "MCP-Protocol-Version: 2026-07-28" \
+    -H "Mcp-Method: tools/call" \
+    -H "Mcp-Name: ${tool_name}" \
     -d "$1"
 }
 
 # Pull the toggle state from hub_get_info. The settings-visibility block on
 # lines 3026+ of hubitat-mcp-server.groovy exposes these fields without
 # requiring Hub Admin Read.
-PRE_INFO_JSON="$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}' \
+PRE_INFO_JSON="$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}' hub_get_info \
   | jq -r '.result.content[0].text')"
 
 DEV_MODE="$(echo "$PRE_INFO_JSON" | jq -r '.developerModeEnabled // false')"
@@ -75,14 +84,27 @@ cat "$PRE_STATE_FILE"
 # self-sufficient regardless of the gap. Prefer the MOCK backup (stamps only the 24h gate record, no
 # real backupDB write); fall back to a real backup on an older server that lacks mock support.
 echo "Stamping a backup to satisfy the destructive-confirm 24h gate before enabling toggles..."
-BACKUP_RESP="$(mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true,"mock":true}}}' 2>/dev/null || true)"
+# bestPracticeKey on both: hub_create_backup is a WRITE, and the #299 gate ships ON. The runner
+# pins it off, but only AFTER this step -- so a run that died between the test that re-enables the
+# gate and its restore leaves it on, and every backup here is refused. A refusal is -32602 on
+# HTTP 200, which surfaced as a bare `jq: null (null)` and read as "the hub can't back up".
+BACKUP_RESP="$(mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true,"mock":true,"bestPracticeKey":"bps-ack-299"}}}' hub_create_backup 2>/dev/null || true)"
 if printf '%s' "$BACKUP_RESP" | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null 2>&1; then
   echo "  Backup gate stamped (MOCK -- no real backupDB write)."
 else
   echo "::notice::Mock backup unsupported/failed on the baseline app -- falling back to a real backup."
-  mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true}}}' \
-    | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null || {
-    echo "::error::Could not create a hub backup (mock AND real failed). hub_update_mcp_settings below needs one (destructive-confirm 24h gate). Check the test hub."; exit 1; }
+  REAL_BACKUP_RESP="$(mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true,"bestPracticeKey":"bps-ack-299"}}}' hub_create_backup 2>/dev/null || true)"
+  if ! printf '%s' "$REAL_BACKUP_RESP" | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null 2>&1; then
+    RB_ERR="$(printf '%s' "$REAL_BACKUP_RESP" | jq -r '
+      .error.message //
+      (.result.content[0].text | fromjson? | .error) //
+      (.result.content[0].text | fromjson? | .message) //
+      empty
+    ' 2>/dev/null || echo "")"
+    [ -n "$RB_ERR" ] && echo "::error::Backup call refused by the hub: ${RB_ERR}"
+    echo "::error::Could not create a hub backup (mock AND real failed). hub_update_mcp_settings below needs one (destructive-confirm 24h gate). Check the test hub."
+    exit 1
+  fi
   echo "  Backup gate stamped (REAL backup)."
 fi
 
@@ -93,7 +115,7 @@ fi
 # run left it off. Both keys are long-standing and persist through the source swap into the PR app.
 # (The issue #299 best-practice gate ships ON by default; it is pinned OFF POST-deploy by the e2e
 # runner -- this pre-deploy step runs against main, which does not know that key.)
-mcp_call '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"hub_manage_mcp","arguments":{"tool":"hub_update_mcp_settings","args":{"settings":{"enableCustomRuleEngine":true,"useGateways":true},"confirm":true}}}}' \
+mcp_call '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"hub_manage_mcp","arguments":{"tool":"hub_update_mcp_settings","args":{"settings":{"enableCustomRuleEngine":true,"useGateways":true},"confirm":true}}}}' hub_manage_mcp \
   | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null
 
 echo "Test environment configured: enableCustomRuleEngine=true, useGateways=true (gateway mode ON; Read/Write masters default ON)"

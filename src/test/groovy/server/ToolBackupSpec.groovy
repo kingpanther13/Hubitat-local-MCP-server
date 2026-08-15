@@ -96,6 +96,47 @@ class ToolBackupSpec extends ToolSpecBase {
 
     // ---------- hub_create_backup + folded schedule ----------
 
+    def "hub_create_backup catalog leaves confirm conditional for schedule-only calls"() {
+        when:
+        def toolDef = script.getAllToolDefinitions().find {
+            it.name == 'hub_create_backup'
+        }
+        def required = script.requiredParamsByTool()
+
+        then: 'the catalog and its derived prevalidation memo permit the documented shape'
+        toolDef != null
+        toolDef.inputSchema.properties?.containsKey('confirm')
+        toolDef.inputSchema.properties?.containsKey('scheduleOnly')
+        toolDef.inputSchema.properties?.containsKey('schedule')
+        !(toolDef.inputSchema.required ?: []).contains('confirm')
+        !required.containsKey('hub_create_backup')
+    }
+
+    def "scheduleOnly without confirm succeeds through the MCP dispatch surface"() {
+        given:
+        def backupCalls = []
+        script.metaClass.asynchttpGet = { String handler, Map params ->
+            backupCalls << [handler: handler, params: params]
+            null
+        }
+
+        when:
+        def response = mcpDriver.callTool('hub_create_backup', [
+            schedule: [hour: 1, minute: 0], scheduleOnly: true
+        ])
+        def inner = mcpDriver.parseInner(response)
+
+        then:
+        response.error == null
+        response.result?.isError != true
+        inner.success == true
+        inner.scheduleUpdated == true
+        posted.path == '/hub2/updateBackupSchedule'
+        posted.body.hour == 1
+        posted.body.minute == 0
+        backupCalls.isEmpty()
+    }
+
     def "create with a schedule POSTs /hub2/updateBackupSchedule and reports scheduleUpdated"() {
         given:
         enableWrite()

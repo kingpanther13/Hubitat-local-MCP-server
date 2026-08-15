@@ -63,8 +63,6 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 class McpRequestDriver {
 
-    private static final JsonSlurper SLURPER = new JsonSlurper()
-
     /** Script the driver invokes through. Bound once by HarnessSpec.compileSharedScript(). */
     Object boundScript
 
@@ -254,7 +252,10 @@ class McpRequestDriver {
             return null
         }
         try {
-            return SLURPER.parseText(data)
+            // Fresh parser, like the decode helpers below: JsonSlurper is not thread-safe
+            // and a shared instance would be reachable from any spec that drives the
+            // request path off more than one thread.
+            return new JsonSlurper().parseText(data)
         } catch (Exception e) {
             throw new IllegalStateException(
                 "render() data did not parse as JSON. Captured render args: " +
@@ -278,14 +279,40 @@ class McpRequestDriver {
     }
 
     /**
+     * Decode the serialize-once sentinel returned by a direct
+     * {@code handleToolsCall()} invocation. The production HTTP dispatcher
+     * unwraps this before writing the wire response; tier-1 dispatcher specs
+     * call the method below that boundary and therefore need the same decode.
+     * A fresh slurper is intentional because concurrency specs invoke this
+     * helper from multiple threads.
+     */
+    Map decodeToolCallResponse(Map response) {
+        if (response != null && response.containsKey('__preserialized')) {
+            def raw = response.__preserialized
+            if (raw == null) {
+                throw new IllegalStateException(
+                    'The __preserialized tools/call response carried a null payload')
+            }
+            def decoded = new JsonSlurper().parseText(raw as String)
+            if (!(decoded instanceof Map)) {
+                throw new IllegalStateException(
+                    'The __preserialized tools/call response did not decode to a JSON object')
+            }
+            return decoded as Map
+        }
+        return response
+    }
+
+    /**
      * Parse the inner tool-result payload from a successful tools/call response.
      * MCP wraps tool output as {@code response.result.content[0].text}, JSON-encoded;
      * dispatch-envelope specs commonly assert on the decoded shape. Centralized here
-     * to share the {@link #SLURPER} instance and remove the boilerplate inline
-     * {@code new JsonSlurper().parseText(...)} pattern from every spec.
+     * with a fresh parser because concurrency specs call this helper from
+     * multiple threads and JsonSlurper is not thread-safe.
      */
     Object parseInner(Map response) {
-        SLURPER.parseText(response.result.content[0].text as String)
+        Map decoded = decodeToolCallResponse(response)
+        new JsonSlurper().parseText(decoded.result.content[0].text as String)
     }
 
     /**

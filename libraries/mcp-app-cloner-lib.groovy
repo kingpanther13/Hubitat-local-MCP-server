@@ -852,8 +852,7 @@ def _getAllToolDefinitions_partAppCloner() {
                     sourceAppId: [type: "integer", description: "Installed-app ID of the rule/app to clone. (alias: appId) Either sourceAppId or appId is required."],
                     appId: [type: "integer", description: "Alias for sourceAppId."],
                     newName: [type: "string", description: "Label for the new cloned app.[[FLAT_TRIM]] If omitted, the cloner default ('<source-label> clone') is kept.[[/FLAT_TRIM]]"],
-                    stageDisabled: [type: "boolean", description: "true = disable the new app AND every DESCENDANT under it right after the clone (staged-migration safety: a clone of an ACTIVE rule lands ACTIVE, and a cloned Button Controller's child Button Rules react to live button events). Re-enable via hub_set_app_disabled(disabled=false)."],
-                    opToken: [type: "string", description: "STRONGLY RECOMMENDED on every call: idempotency token you invent (8-128 chars, A-Za-z0-9._-). If the transport drops the response, re-issue this call with the SAME token to poll/replay the committed result — a token-less re-run clones a DUPLICATE app."],
+                    stageDisabled: [type: "boolean", description: "true = disable the new app AND every DESCENDANT under it right after the clone. Staged-migration safety: a clone of an ACTIVE rule lands ACTIVE, and a cloned Button Controller's child Button Rules react to live button events. Re-enable via hub_set_app_disabled(disabled=false)."],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
                 // "sourceAppId OR appId" can't be a schema-level anyOf (Anthropic's
@@ -887,7 +886,7 @@ def _getAllToolDefinitions_partAppCloner() {
                 properties: [
                     sourceAppId: [type: "integer", description: "Installed-app ID of the rule/app to export. (alias: appId)"],
                     appId: [type: "integer", description: "Alias for sourceAppId."],
-                    saveAs: [type: "string", description: "Optional File Manager filename (.json or .txt). When provided, the export is also written to /local/<saveAs>."]
+                    saveAs: [type: "string", description: "Optional File Manager filename (.json or .txt). When provided, the export is also written to /local/<saveAs>."],
                 ]
             ],
             outputSchema: [
@@ -918,7 +917,6 @@ def _getAllToolDefinitions_partAppCloner() {
                     parentHintAppId: [type: "integer", description: "Any existing rule's id under the target parent app.[[FLAT_TRIM]] Used purely to seed the cloner instance — has no semantic effect on the imported rule beyond placing it under the same parent.[[/FLAT_TRIM]]"],
                     newName: [type: "string", description: "Label for the imported app.[[FLAT_TRIM]] If omitted, the cloner default ('<original-label> import') is kept.[[/FLAT_TRIM]]"],
                     stageDisabled: [type: "boolean", description: "true = disable the new app AND every DESCENDANT under it right after the import (staged-migration safety: an import lands ACTIVE). Re-enable via hub_set_app_disabled(disabled=false)."],
-                    opToken: [type: "string", description: "STRONGLY RECOMMENDED on every call: idempotency token you invent (8-128 chars, A-Za-z0-9._-). If the transport drops the response, re-issue this call with the SAME token to poll/replay the committed result — a token-less re-run imports a DUPLICATE app."],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
                 // "jsonContent OR fromFile" is enforced at runtime in
