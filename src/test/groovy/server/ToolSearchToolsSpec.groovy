@@ -201,9 +201,19 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         then: 'BOTH carrying gateways were actually reached -- a guarded loop that never enters passes vacuously, so the count is what makes this a guard'
         checked == 2
 
-        and: 'a hints-ONLY term retrieves the tool. Querying "filter" would prove nothing: the corpus derives params from inputSchema.properties, so that token was already indexed before any summary or hint changed. "substring" appears in no name, title, summary, param key or gateway description -- only in searchHints -- so it is the token that actually pins the hint corpus'
-        !script.getGatewayConfig().any { _, gw ->
-            (gw?.summaries?.hub_list_files ?: '').toLowerCase().contains('substring')
+        and: 'a hints-ONLY term retrieves the tool. Querying "filter" would prove nothing: the corpus derives params from inputSchema.properties, so that token was already indexed before any summary or hint changed. The sweep is scoped to hub_list_files OWN gateway row and to exactly the fields buildToolSearchCorpus indexes for such a row -- name, title, "summary [gateway description]", param keys -- deliberately NOT the leaf tool description, which a gateway row never indexes. Per-entry scoping is the point: BM25 scores each row, so another tool carrying the token (hub_get_logs summary says "source (substring)") cannot make THIS one rank'
+        String listFilesTitle = script.getToolDisplayMeta()['hub_list_files']?.title ?: ''
+        String listFilesParams = script.getAllToolDefinitions()
+            .find { it.name == 'hub_list_files' }?.inputSchema?.properties?.keySet()?.join(' ') ?: ''
+        script.getGatewayConfig().findAll { _, gw -> gw?.summaries?.containsKey('hub_list_files') }
+            .every { gwName, gw ->
+                !("hub_list_files ${listFilesTitle} ${gw.summaries.hub_list_files ?: ''} "
+                  + "${gw.description ?: ''} ${listFilesParams}").toLowerCase().contains('substring')
+            }
+
+        and: 'so searchHints is the only field the token can come from'
+        script.getGatewayConfig().any { _, gw ->
+            (gw?.searchHints?.hub_list_files ?: '').toLowerCase().contains('substring')
         }
         script.toolSearchTools([query: 'substring', maxResults: 10])
             .results*.tool.contains('hub_list_files')

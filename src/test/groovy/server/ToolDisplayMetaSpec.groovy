@@ -190,9 +190,9 @@ class ToolDisplayMetaSpec extends ToolSpecBase {
     }
 
     def "a same-shape cached corpus whose content drifted is rebuilt on the first search (content fingerprint)"() {
-        // Shape-identical caches from an older release (same keys, stale titles or
-        // search hints) are invisible to the shape check; the version stamp written
-        // alongside the cache forces a rebuild on the first search after a deploy.
+        // Shape-identical caches (same keys, stale titles or search hints) are invisible
+        // to the shape check; the content fingerprint written alongside the cache is what
+        // forces a rebuild on the first search after a deploy.
         given: 'a title-bearing, token-aligned cache whose content no longer matches the catalog -- the SAME-VERSION drift a version stamp could not see, and the only shape a contributor can produce since version bumps are bot-only'
         settingsMap.useGateways = true
         settingsMap.enableCustomRuleEngine = true

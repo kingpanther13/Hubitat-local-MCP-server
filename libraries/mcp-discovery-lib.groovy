@@ -131,21 +131,31 @@ def toolSearchCorpusFingerprint() {
     def sb = new StringBuilder()
     def displayMeta = getToolDisplayMeta()
     applyDescriptionTransform(getAllToolDefinitions(), false).each { toolDef ->
-        sb.append(toolDef.name as String).append('|')
-          .append(displayMeta[toolDef.name]?.title ?: '').append('|')
-          .append(toolDef.description ?: '').append('|')
-          .append(toolDef.inputSchema?.properties?.keySet()?.join(',') ?: '').append(';')
+        _fpField(sb, toolDef.name as String)
+        _fpField(sb, displayMeta[toolDef.name]?.title)
+        _fpField(sb, toolDef.description)
+        _fpField(sb, toolDef.inputSchema?.properties?.keySet()?.join(','))
     }
     getGatewayConfig().each { gwName, config ->
-        sb.append(gwName as String).append('|').append(config.description ?: '').append('|')
+        _fpField(sb, gwName as String)
+        _fpField(sb, config.description)
         config.tools.each { toolName ->
-            sb.append(toolName as String).append('=')
-              .append(config.summaries?."${toolName}" ?: '').append('~')
-              .append(config.searchHints?."${toolName}" ?: '').append(',')
+            _fpField(sb, toolName as String)
+            _fpField(sb, config.summaries?."${toolName}")
+            _fpField(sb, config.searchHints?."${toolName}")
         }
-        sb.append(';')
     }
     return sb.toString()
+}
+
+// Length-prefix every field. Plain delimiters would be ambiguous here: summaries
+// genuinely contain the separator characters (an alternatives list reads
+// "source|sourceFile|importUrl"), so content could impersonate a field boundary and
+// two different catalogs could fingerprint identically -- serving the stale corpus
+// this fingerprint exists to invalidate.
+private void _fpField(StringBuilder sb, value) {
+    String s = (value == null) ? "" : value.toString()
+    sb.append(s.length()).append(':').append(s).append('|')
 }
 
 // Build a flat list of all tools (core + proxied) with gateway attribution
