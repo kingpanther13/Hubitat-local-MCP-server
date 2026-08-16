@@ -2629,14 +2629,12 @@ private Map _mrtrRecordSlice(String stateId, Map originalRec, Map claim, Map res
             aggregate.kind = kind
             switch (kind) {
                 case "call_rule":
-                    // Collapse at BANK time, matching the .unique() on the sibling line: the
-                    // durable record then holds one entry per rule instead of one per attempt,
-                    // which is what _mrtrPutLocked re-serializes on every slice.
-                    aggregate.results = _mrtrCollapseRuleResults(
-                        ((aggregate.results instanceof List) ? aggregate.results : []) +
-                        _mrtrRuleResultRows(result))
-                    aggregate.ruleIds = (((aggregate.ruleIds instanceof List) ? aggregate.ruleIds : []) +
-                        ((result.ruleIds instanceof List) ? result.ruleIds : [])).unique()
+                    // Collapse at BANK time so the durable record holds one entry per rule
+                    // instead of one per attempt -- that record is what _mrtrPutLocked
+                    // re-serializes on every slice.
+                    def banked = _mrtrBankRuleResults(aggregate, result)
+                    aggregate.results = banked.results
+                    aggregate.ruleIds = banked.ruleIds
                     break
                 case "walk_steps":
                     aggregate.steps = ((aggregate.steps instanceof List) ? aggregate.steps : []) +
@@ -2697,12 +2695,10 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
             // answer on the one path where the batch was large enough to hit the cap.
             def cappedAgg = (rec.aggregate instanceof Map) ? rec.aggregate as Map : [:]
             if (cappedAgg.kind?.toString() == "call_rule") {
-                def banked = _mrtrCollapseRuleResults(
-                    ((cappedAgg.results instanceof List) ? cappedAgg.results : []) +
-                    _mrtrRuleResultRows(result))
+                def cappedBank = _mrtrBankRuleResults(cappedAgg, result)
+                def banked = cappedBank.results
                 capped.results = banked
-                capped.ruleIds = (((cappedAgg.ruleIds instanceof List) ? cappedAgg.ruleIds : []) +
-                    ((result instanceof Map && result.ruleIds instanceof List) ? result.ruleIds : [])).unique()
+                capped.ruleIds = cappedBank.ruleIds
                 def cappedFailed = banked.findAll { it instanceof Map && it.success != true }
                 if (!cappedFailed.isEmpty()) {
                     capped.failedRuleIds = cappedFailed.collect { it.ruleId }.findAll { it != null }.unique()
@@ -2748,11 +2744,9 @@ private def _mrtrAggregateTerminal(Map rec, result) {
     def aggregate = (rec.aggregate instanceof Map) ? rec.aggregate as Map : [:]
     switch (aggregate.kind?.toString()) {
         case "call_rule":
-            out.results = _mrtrCollapseRuleResults(
-                ((aggregate.results instanceof List) ? aggregate.results : []) +
-                _mrtrRuleResultRows(out))
-            out.ruleIds = (((aggregate.ruleIds instanceof List) ? aggregate.ruleIds : []) +
-                ((out.ruleIds instanceof List) ? out.ruleIds : [])).unique()
+            def terminalBank = _mrtrBankRuleResults(aggregate, out)
+            out.results = terminalBank.results
+            out.ruleIds = terminalBank.ruleIds
             def failed = out.results.findAll { it instanceof Map && it.success != true }
             out.success = out.success == true && failed.isEmpty()
             // Deliberately NOT OR-ing aggregate.anyPartial: a call_rule slice sets partial on a
@@ -2998,6 +2992,19 @@ private List _mrtrRuleResultRows(result) {
     if (result.rmAction != null) row.rmAction = result.rmAction
     if (result.error != null) row.error = result.error
     return [row]
+}
+
+// Single formula for merging a call_rule round into its running ledger, used at bank time,
+// at the continuation cap, and at the terminal. Keeping the three in lockstep matters:
+// they must agree on collapsing per rule AND on how a scalar-path round contributes, or the
+// durable record and the envelope the client reads drift apart.
+private Map _mrtrBankRuleResults(Map aggregate, resultLike) {
+    def prior = (aggregate?.results instanceof List) ? aggregate.results as List : []
+    def priorIds = (aggregate?.ruleIds instanceof List) ? aggregate.ruleIds as List : []
+    def roundIds = (resultLike instanceof Map && resultLike.ruleIds instanceof List)
+        ? resultLike.ruleIds as List : []
+    return [results: _mrtrCollapseRuleResults(prior + _mrtrRuleResultRows(resultLike)),
+            ruleIds: (priorIds + roundIds).unique()]
 }
 
 private List _mrtrCollapseRuleResults(List entries) {
