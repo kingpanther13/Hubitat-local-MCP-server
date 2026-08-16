@@ -24,10 +24,14 @@ def toolSearchTools(args) {
     // title, or search hint carries the SAME version as the cache it needs to invalidate --
     // which made a discovery change unverifiable on a test hub. The fingerprint is the same
     // remedy requiredParamsByTool() already uses for its own same-version deploy problem.
-    String corpusFp = toolSearchCorpusFingerprint()
+    // The catalog is walked ONCE per call: allDefs is fetched here and handed to both the
+    // fingerprint and the rebuild, the same reason requiredParamsCatalogFingerprint takes a
+    // pre-fetched defs list rather than re-fetching its own.
+    def allDefs = getAllToolDefinitions()
+    String corpusFp = toolSearchCorpusFingerprint(allDefs)
     if (!corpus || !docTokensAll || docTokensAll.size() != corpus.size() ||
         !(corpus[0]?.containsKey('title')) || atomicState.toolSearchCorpusFingerprint != corpusFp) {
-        corpus = buildToolSearchCorpus()
+        corpus = buildToolSearchCorpus(allDefs)
         // Tokenize every corpus entry once, in corpus order, so docTokensAll[i] is the
         // tokenization of corpus[i] (a pure function of that entry). Plain List<List<String>>
         // (sandbox-safe; whole-value single assignment, no nested-subscript mutation).
@@ -127,45 +131,56 @@ def toolSearchTools(args) {
 // regex tokenize and the corpus map allocation, which are the expensive half. Kept as the
 // raw string (no sandbox digest API assumed, String equality is cheap) exactly like
 // requiredParamsCatalogFingerprint.
-def toolSearchCorpusFingerprint() {
-    def sb = new StringBuilder()
+def toolSearchCorpusFingerprint(List defs = null) {
+    long h = 17L
     def displayMeta = getToolDisplayMeta()
-    applyDescriptionTransform(getAllToolDefinitions(), false).each { toolDef ->
-        _fpField(sb, toolDef.name as String)
-        _fpField(sb, displayMeta[toolDef.name]?.title)
-        _fpField(sb, toolDef.description)
-        _fpField(sb, toolDef.inputSchema?.properties?.keySet()?.join(','))
+    applyDescriptionTransform(defs ?: getAllToolDefinitions(), false).each { toolDef ->
+        h = _fpField(h, toolDef.name as String)
+        h = _fpField(h, displayMeta[toolDef.name]?.title)
+        h = _fpField(h, toolDef.description)
+        h = _fpField(h, toolDef.inputSchema?.properties?.keySet()?.join(','))
     }
     getGatewayConfig().each { gwName, config ->
-        _fpField(sb, gwName as String)
-        _fpField(sb, config.description)
+        h = _fpField(h, gwName as String)
+        h = _fpField(h, config.description)
         config.tools.each { toolName ->
-            _fpField(sb, toolName as String)
-            _fpField(sb, config.summaries?."${toolName}")
-            _fpField(sb, config.searchHints?."${toolName}")
+            h = _fpField(h, toolName as String)
+            h = _fpField(h, config.summaries?."${toolName}")
+            h = _fpField(h, config.searchHints?."${toolName}")
         }
     }
-    return sb.toString()
+    // The cached TOKENS are only length-checked against the corpus, so a tokenizer change
+    // (split pattern, min length, or the field template on the tokenize line) moves neither
+    // the corpus content nor its size -- and the hub would keep serving tokens built by the
+    // old tokenizer. Fold a tokenizer-shape probe in so that change invalidates too.
+    h = _fpField(h, bm25Tokenize("hub_x-1 A_b cd").join(','))
+    return Long.toString(h)
 }
 
-// Length-prefix every field. Plain delimiters would be ambiguous here: summaries
-// genuinely contain the separator characters (an alternatives list reads
-// "source|sourceFile|importUrl"), so content could impersonate a field boundary and
-// two different catalogs could fingerprint identically -- serving the stale corpus
-// this fingerprint exists to invalidate.
-private void _fpField(StringBuilder sb, value) {
+// Accumulate rather than materialize: the concatenated form of this catalog is ~98 KB, and
+// it would be rebuilt and re-compared on EVERY hub_search_tools call plus stored in
+// atomicState. Length-prefix each field before folding it in -- plain delimiters would be
+// ambiguous, because the summaries genuinely contain them (an alternatives list reads
+// "source|sourceFile|importUrl"), so content could impersonate a field boundary and two
+// different catalogs could fingerprint identically, serving the stale corpus this exists
+// to invalidate.
+private long _fpField(long h, value) {
     String s = (value == null) ? "" : value.toString()
-    sb.append(s.length()).append(':').append(s).append('|')
+    h = h * 31L + s.length()
+    for (int i = 0; i < s.length(); i++) {
+        h = h * 31L + (s.charAt(i) as int)
+    }
+    return h * 31L + 1L
 }
 
 // Build a flat list of all tools (core + proxied) with gateway attribution
-private buildToolSearchCorpus() {
+private buildToolSearchCorpus(List defs = null) {
     def gatewayConfig = getGatewayConfig()
     def proxiedNames = gatewayConfig.values().collectMany { it.tools } as Set
     // Strip [[FLAT_TRIM]] marker tokens before BM25 corpus build -- the markers
     // shouldn't show up as searchable tokens, but the wrapped capability lists
     // SHOULD (so hub_search_tools still matches "switch motion contact").
-    def allDefs = applyDescriptionTransform(getAllToolDefinitions(), false)
+    def allDefs = applyDescriptionTransform(defs ?: getAllToolDefinitions(), false)
     def allDefsMap = allDefs.collectEntries { [(it.name): it] }
     // Friendly names join the searchable text: titles add tokens the bare
     // name/description lack (hub_set_rule gains 'author' from "Author Rule

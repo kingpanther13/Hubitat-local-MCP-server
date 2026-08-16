@@ -4714,12 +4714,18 @@ class TestRunner:
     @test("native_apps")
     def test_call_rule_multi_id_aggregates_per_rule(self) -> None:
         # A multi-ruleId hub_call_rule is MRTR-eligible from round zero (see the
-        # round_zero_mrtr gate), so its terminal envelope is assembled by the
-        # continuation aggregator rather than returned by the leaf. The Spock guards
-        # drive that aggregator with hand-built literals; only a real hub proves the
-        # envelope a client actually receives after the slices are stitched back
-        # together. Two tiny rules, no triggers or actions -- the subject is the
-        # envelope, not rule behaviour -- each deleted in the finally.
+        # round_zero_mrtr gate), so this proves the envelope a live client actually
+        # receives for the multi-rule contract: one row per rule, no duplicates, and
+        # success/partial/failedRuleIds agreeing with those rows.
+        #
+        # Scope, stated honestly: these rules are tiny, so the write will normally
+        # finish inside the relay budget and return WITHOUT continuing. That means this
+        # asserts the contract as the client sees it, but does NOT by itself exercise
+        # the cross-slice collapse -- forcing a real pause needs a batch big enough to
+        # blow the budget, which is exactly the load this suite's limiter guidance says
+        # to keep out of the RM family. The collapse across slices is pinned in
+        # MrtrContinuationSpec, where a banked-then-retried rule can be constructed
+        # deterministically. Both layers are needed; neither substitutes for the other.
         rule_a = self._create_native_rule("CallRuleAggA")
         rule_b = None
         try:
@@ -4737,7 +4743,13 @@ class TestRunner:
             # Exactly one result row per rule -- a rule re-queued across slices must not
             # appear twice, which is what the per-rule collapse exists to guarantee.
             results = res.get("results") or []
-            seen = [str(r.get("ruleId")) for r in results if isinstance(r, dict) and r.get("ruleId") is not None]
+            # Do NOT filter out rows with a missing ruleId -- an unattributable row is
+            # itself a defect here, and silently dropping it would hide exactly the
+            # scalar-tail shape (outcome reported top-level, no results[] row) that
+            # makes a rule vanish from the ledger.
+            assert all(isinstance(r, dict) and r.get("ruleId") is not None for r in results), \
+                f"every result row must name its ruleId: {res}"
+            seen = [str(r.get("ruleId")) for r in results]
             assert sorted(seen) == sorted(str(i) for i in ids), \
                 f"expected exactly one result row per requested rule, got {seen}: {res}"
             assert len(seen) == len(set(seen)), f"a rule appears twice in results[]: {res}"
@@ -4747,14 +4759,18 @@ class TestRunner:
             # than with any single slice's view of them.
             failed = [r for r in results if isinstance(r, dict) and r.get("success") is not True]
             if failed:
-                assert res.get("success") is False and res.get("partial") is True, \
-                    f"a failed row must make the envelope unsuccessful and partial: {res}"
+                assert res.get("success") is False, \
+                    f"a failed row must make the envelope unsuccessful: {res}"
+                # partial means SOME actioned and some not -- an all-failed batch is a
+                # failure, not a partial one, matching the leaf and the outputSchema.
+                assert res.get("partial") is (len(failed) < len(results)), \
+                    f"partial must mean some-actioned-some-not, not merely any-failure: {res}"
                 assert sorted(str(x) for x in (res.get("failedRuleIds") or [])) == \
                     sorted(str(r.get("ruleId")) for r in failed), \
                     f"failedRuleIds must match the failing rows: {res}"
             else:
                 assert res.get("success") is True, f"all rows succeeded but envelope did not: {res}"
-                assert not res.get("partial"), \
+                assert res.get("partial") in (False, None), \
                     f"an all-success batch must not report partial -- a budget pause is not a partial result: {res}"
                 assert not res.get("failedRuleIds"), f"no rows failed but failedRuleIds is set: {res}"
             # The action really landed on BOTH rules, not just the first slice's.

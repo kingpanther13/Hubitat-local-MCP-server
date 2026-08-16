@@ -1931,8 +1931,44 @@ class MrtrContinuationSpec extends ToolSpecBase {
         then:
         out.results.size() == 1
         out.success == false
-        out.partial == true
         out.failedRuleIds == [12]
+
+        and: 'but NOT partial: every rule failed, so nothing was actioned. partial means some-actioned-some-not, per the leaf and the outputSchema -- reporting an all-failed batch as partial would tell a client some rules landed when none did'
+        out.partial == false
+    }
+
+    def "a call_rule batch with a mix of outcomes IS partial"() {
+        given: 'the positive counterpart -- without this, partial:false everywhere would satisfy the pin above'
+        Map rec = [aggregate: [kind: 'call_rule', results: [[ruleId: 12, success: true]], ruleIds: [12]]]
+        Map lastSlice = [success: true, ruleIds: [13], results: [[ruleId: 13, success: false]]]
+
+        when:
+        def out = script._mrtrAggregateTerminal(rec, lastSlice)
+
+        then: 'one actioned, one failed'
+        out.results.size() == 2
+        out.success == false
+        out.partial == true
+        out.failedRuleIds == [13]
+    }
+
+    def "a continuation tail that narrows to one rule still contributes its row"() {
+        given: 'the leaf takes its SCALAR path for a single id -- outcome reported top-level, no results[] -- which is the natural tail of any paginated batch'
+        Map rec = [aggregate: [kind: 'call_rule', results: [[ruleId: 12, success: true]], ruleIds: [12]]]
+        Map scalarTail = [success: false, ruleId: 13, ruleIds: [13], rmAction: 'runRuleAct',
+                          error: 'rule 13 is broken']
+
+        when:
+        def out = script._mrtrAggregateTerminal(rec, scalarTail)
+
+        then: 'the tail rule appears in the ledger rather than vanishing from it'
+        out.results.size() == 2
+        out.results*.ruleId.collect { it.toString() } == ['12', '13']
+
+        and: 'and its failure is attributable -- success:false with an empty failedRuleIds would name no culprit'
+        out.success == false
+        out.failedRuleIds == [13]
+        out.partial == true
     }
 
     def "the work-item sweep reaps by claim identity and never under a live worker"() {
@@ -1940,24 +1976,28 @@ class MrtrContinuationSpec extends ToolSpecBase {
         Map workItems = scriptStaticField('MRTR_WORK_ITEMS') as Map
         Set live = scriptStaticField('LIVE_WRITE_EXECUTIONS') as Set
         workItems['orphan'] = [stateId: 'gone', claimId: 'orphan', started: false,
-                               arguments: [driverSource: 'x' * 64], queuedAt: script.now()]
+                               arguments: [driverSource: 'x' * 64]]
         // Freshly queued AND its record is active, so nothing about its age marks it dead --
         // only the claimId mismatch does. This is the item an age ceiling would have held for
         // a full window while its record was already serving a different claim.
         workItems['superseded'] = [stateId: 'moved', claimId: 'superseded', started: true,
-                                   arguments: [driverSource: 'z' * 64], queuedAt: script.now()]
+                                   arguments: [driverSource: 'z' * 64]]
+        // Its record has ALSO moved on to a later claim, so claim identity alone would reap it.
+        // The live marker is the only thing that can spare it -- delete the liveness line and
+        // this item is gone, which is what makes the assertion below a guard rather than a
+        // restatement of the superseded case.
         workItems['running'] = [stateId: 'alive', claimId: 'running', started: true,
-                                arguments: [driverSource: 'y' * 64], queuedAt: script.now()]
+                                arguments: [driverSource: 'y' * 64]]
         live.add('running')
         atomicStateMap.mrtrRequests = [
             'moved': [status: 'active', claimId: 'claim-2', generation: 2, claimedGeneration: 2,
                       expiresAt: script.now() + 60000L],
-            'alive': [status: 'active', claimId: 'running', generation: 1, claimedGeneration: 1,
+            'alive': [status: 'active', claimId: 'claim-9', generation: 2, claimedGeneration: 2,
                       expiresAt: script.now() + 60000L]
         ]
         script._writeStateCacheInvalidate()
 
-        when: 'a real production write path sweeps -- _activeWrites is one of the four entries that reach _mrtrSweepLocked'
+        when: 'a sweep runs'
         script._activeWrites()
 
         then: 'the orphan (a full copy of its call arguments) is released'
@@ -1966,35 +2006,8 @@ class MrtrContinuationSpec extends ToolSpecBase {
         and: 'so is the superseded one, which no age ceiling could have seen'
         workItems['superseded'] == null
 
-        and: 'the executing worker still owns its item -- reaping under it would break the slice'
+        and: 'the executing worker keeps its item even though its record moved on -- reaping under a live worker would break the slice mid-write'
         workItems['running'] != null
-    }
-
-    def "a liveness marker stranded past the hard ceiling stops pinning its record and its write slot"() {
-        given: 'an expired active record whose claimId is still in the live set -- the shape a hard kill outside the catch leaves behind'
-        Map workItems = scriptStaticField('MRTR_WORK_ITEMS') as Map
-        Set live = scriptStaticField('LIVE_WRITE_EXECUTIONS') as Set
-        long past = script.now() - (script._mrtrActiveTtlMs() * 2L + 1000L)
-        live.add('stranded')
-        atomicStateMap.mrtrRequests = ['zombie': [status: 'active', claimId: 'stranded',
-                                                  generation: 1, claimedGeneration: 1,
-                                                  startedAt: past, expiresAt: past]]
-        workItems['stranded'] = [stateId: 'zombie', claimId: 'stranded', started: true,
-                                 arguments: [driverSource: 'q' * 64], queuedAt: past]
-        script._writeStateCacheInvalidate()
-
-        when:
-        def active = script._activeWrites()
-
-        then: 'the record is gone -- an uncapped liveness disjunct would have exempted it forever'
-        (atomicStateMap.mrtrRequests ?: [:])['zombie'] == null
-
-        and: 'its stranded marker is dropped with it, so it stops counting against the write cap'
-        !live.contains('stranded')
-        !active.any { (it instanceof Map ? it.claimId : null)?.toString() == 'stranded' }
-
-        and: 'and the work item it was pinning is released in the same pass'
-        workItems['stranded'] == null
     }
 
     def "abandoning a claimed request releases its queued work item on the next sweep"() {
@@ -2007,13 +2020,13 @@ class MrtrContinuationSpec extends ToolSpecBase {
         atomicStateMap.mrtrRequests = ['s1': rec]
         script._writeStateCacheInvalidate()
         workItems['c1'] = [stateId: 's1', claimId: 'c1', started: false,
-                           arguments: [patches: [1, 2, 3]], queuedAt: script.now()]
+                           arguments: [patches: [1, 2, 3]]]
 
         when: 'the request is abandoned and any later write sweeps'
         script._mrtrAbandon('s1', rec, claim, 'test-abandon')
         script._activeWrites()
 
-        then: 'the abandoned record no longer claims the item, so the sweep releases it'
+        then: 'the item is released. Abandon both ends the claim and drops the record out of active, so this pins the OUTCOME rather than isolating which of the two the sweep noticed -- deleting the sweep is what turns it red'
         workItems['c1'] == null
     }
 

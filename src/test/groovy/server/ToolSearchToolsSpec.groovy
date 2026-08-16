@@ -219,6 +219,25 @@ class ToolSearchToolsSpec extends ToolSpecBase {
             .results*.tool.contains('hub_list_files')
     }
 
+    def "the corpus fingerprint actually discriminates -- a content change moves it"() {
+        given: 'the sibling requiredParams memo ships this exact guard, because every other fingerprint test passes just as well against a function that returns a constant'
+        searchEnabled()
+        def defs = script.getAllToolDefinitions()
+        String fpA = script.toolSearchCorpusFingerprint(defs)
+
+        when: 'one indexed field changes -- a single description edit, the smallest thing this cache must notice'
+        def mutated = defs.collect { d ->
+            d.name == 'hub_list_files' ? (d + [description: "${d.description} zzz-probe"]) : d
+        }
+        String fpB = script.toolSearchCorpusFingerprint(mutated)
+
+        then: 'the fingerprint moves; if it did not, a stale corpus would be served forever with nothing red'
+        fpA != fpB
+
+        and: 'and it is stable for identical input, so it cannot thrash the cache on every call'
+        script.toolSearchCorpusFingerprint(defs) == fpA
+    }
+
     def "a plain comma-separated Args: list names only real inputSchema properties"() {
         given: 'the Args: tail hand-restates a schema the summary cannot see, and nothing else stops the two drifting -- an invented argument sends the model to call it, surfacing as a rejected tool call rather than a red build'
         searchEnabled()

@@ -321,7 +321,7 @@ Exception: `toolCreateHubBackup` checks `confirm` directly without requiring a p
 - All operations are fully local — no cloud involvement
 
 **File Manager Tools** (4 tools):
-- `hub_list_files` — lists all files via `/hub/fileManager/json` internal API endpoint; always available, no access gate
+- `hub_list_files` — lists files via `/hub/fileManager/json` internal API endpoint, optionally narrowed by a `filter` name substring; always available, no access gate
 - `hub_read_file` — reads file via `downloadHubFile()`; returns content inline for files ≤60KB, otherwise provides download URL; always available
 - `hub_write_file` — writes via `uploadHubFile()`; requires the Write master + confirm + a recent backup; automatically backs up existing file before overwriting (backup named `<original>_backup_<timestamp>.<ext>`)
 - `hub_delete_file` — deletes via `deleteHubFile()`; requires the Write master + confirm + a recent backup; automatically backs up file before deletion

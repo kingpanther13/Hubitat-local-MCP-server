@@ -241,6 +241,13 @@ abstract class HarnessSpec extends Specification {
         // them, so a feature that reserves without releasing would otherwise hand the
         // next feature a write slot that is already spent.
         (scriptStaticField('WRITE_REQUEST_LEASES') as Map).clear()
+        // A leftover live-execution marker makes a record look like it has a running
+        // worker, which spares it from every sweep -- leaving the aged-out paths
+        // unreachable for the rest of the JVM.
+        (scriptStaticField('LIVE_WRITE_EXECUTIONS') as Set).clear()
+        // Queued slice payloads are class-static too; a leftover item would let a later
+        // feature's claimId collide with a stale one.
+        (scriptStaticField('MRTR_WORK_ITEMS') as Map).clear()
         // The per-rule baseline mirror is JVM truth beside the manifest; a leftover
         // handle would satisfy reuse for a rule id a later feature reuses.
         (scriptStaticField('RM_BASELINE_HANDLES') as Map).clear()

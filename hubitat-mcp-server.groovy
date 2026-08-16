@@ -2277,22 +2277,20 @@ private void _mrtrSweepTerminalEvidenceLocked() {
 }
 
 // MRTR_WORK_ITEMS hands a claimed slice's arguments to its scheduled worker, and was
-// the one MRTR structure with no sweep: an item whose runMrtrSlice never fired (the
-// scheduler dropped the job, or the hub restarted mid-flight) retained a full copy of
-// the call arguments -- driver source, a whole patch list -- for the life of the class.
-// Sweep by the OWNING CLAIM's fate rather than a private TTL: the item feeds exactly one
-// claim, so it is garbage the moment its record is gone, no longer active, or has moved
-// on to a later claim. Runs AFTER the record loop so the marker it consults is already
-// ceiling-checked. No size cap is needed -- items are 1:1 with claims, which
-// _mrtrMaxRecords already bounds.
+// the one MRTR structure with no sweep: an item whose runMrtrSlice never fired -- the
+// scheduler dropped the job -- retains a full copy of the call arguments (driver source,
+// a whole patch list) for the life of the class. Sweep by the OWNING CLAIM's fate rather
+// than a private TTL: the item feeds exactly one claim, so it is garbage the moment its
+// record is gone, no longer active, or has moved on to a later claim. An age ceiling could
+// not see that last case. Runs AFTER the record loop so it reads the post-sweep record map.
+// No size cap is needed -- items are 1:1 with claims, which _mrtrMaxRecords already bounds.
 private void _mrtrSweepWorkItemsLocked() {
     if (MRTR_WORK_ITEMS.isEmpty()) return
     def stored = _writeStateMapLocked("mrtrRequests")
     def dead = MRTR_WORK_ITEMS.findAll { k, v ->
         if (!(v instanceof Map)) return true
-        // An executing worker owns its item; never reap under it. Safe to consult the marker
-        // here because the record loop has already run and dropped any marker stranded past
-        // the hard ceiling, so a "live" answer at this point means genuinely live.
+        // An executing worker owns its item; never reap under it, or the slice loses the
+        // arguments it is mid-way through applying.
         if (v.started == true && _writeExecutionLiveLocked(k)) return false
         def rec = stored[v.stateId?.toString()]
         if (!(rec instanceof Map) || rec.status != "active") return true
@@ -2312,12 +2310,16 @@ private List _mrtrSweepLocked() {
     _mrtrSweepTerminalEvidenceLocked()
     def stored = _writeStateMapLocked("mrtrRequests")
     long at = now()
-    // Same two horizons the lease sweep uses, for the same reason: a liveness disjunct with
-    // no ceiling exempts precisely the records this sweep exists to reap, because a hard kill
-    // strands its claimId in LIVE_WRITE_EXECUTIONS looking live forever and _activeWritesLocked
-    // keeps counting it against the write cap. Past the ceiling the record goes, and its
-    // stranded marker goes with it.
-    long ceiling = _mrtrActiveTtlMs()
+    // The liveness disjunct is deliberately UNCAPPED here, unlike the lease sweep's two
+    // horizons. A detached worker strips __reqT0 so _timeBudgetExceeded is permanently false
+    // for it: its slice is time-unbounded by design, and nothing refreshes expiresAt WHILE it
+    // runs (only _mrtrClaim and the slice-completion bank write it). So any ceiling measured
+    // from expiresAt eventually fires under a genuinely running worker -- evicting the record
+    // it needs to store its terminal (the client then gets "Invalid or expired requestState"
+    // for a write that already mutated the hub) and freeing its write-cap slot so a second
+    // write can interleave on the same classic-app page. A stranded marker from a hard kill
+    // outside the catch is the lesser evil; closing it needs a worker heartbeat that refreshes
+    // expiresAt, so "live but expired" can mean dead. Do not add a ceiling without one.
     def kept = [:]
     def cleanup = []
     stored.each { k, v ->
@@ -2325,13 +2327,11 @@ private List _mrtrSweepLocked() {
             v instanceof Map ? v as Map : null)
         if (recovered instanceof Map) v = recovered
         boolean executing = v instanceof Map && v.status == "active" &&
-            _writeExecutionLiveLocked(v.claimId) &&
-            (v.expiresAt == null || at < (v.expiresAt as Long) + ceiling)
+            _writeExecutionLiveLocked(v.claimId)
         if (v instanceof Map && (executing ||
                 (v.expiresAt != null && (v.expiresAt as Long) > at))) {
             kept[k] = v
         } else if (v instanceof Map && v.status == "active") {
-            LIVE_WRITE_EXECUTIONS.remove(v.claimId?.toString())
             cleanup << ([:] + (v as Map))
         }
     }
@@ -2634,7 +2634,7 @@ private Map _mrtrRecordSlice(String stateId, Map originalRec, Map claim, Map res
                     // which is what _mrtrPutLocked re-serializes on every slice.
                     aggregate.results = _mrtrCollapseRuleResults(
                         ((aggregate.results instanceof List) ? aggregate.results : []) +
-                        ((result.results instanceof List) ? result.results : []))
+                        _mrtrRuleResultRows(result))
                     aggregate.ruleIds = (((aggregate.ruleIds instanceof List) ? aggregate.ruleIds : []) +
                         ((result.ruleIds instanceof List) ? result.ruleIds : [])).unique()
                     break
@@ -2699,7 +2699,7 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
             if (cappedAgg.kind?.toString() == "call_rule") {
                 def banked = _mrtrCollapseRuleResults(
                     ((cappedAgg.results instanceof List) ? cappedAgg.results : []) +
-                    ((result instanceof Map && result.results instanceof List) ? result.results : []))
+                    _mrtrRuleResultRows(result))
                 capped.results = banked
                 capped.ruleIds = (((cappedAgg.ruleIds instanceof List) ? cappedAgg.ruleIds : []) +
                     ((result instanceof Map && result.ruleIds instanceof List) ? result.ruleIds : [])).unique()
@@ -2707,7 +2707,22 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                 if (!cappedFailed.isEmpty()) {
                     capped.failedRuleIds = cappedFailed.collect { it.ruleId }.findAll { it != null }.unique()
                 }
+                // Reaching this branch REQUIRES a non-empty remainingRuleIds, and failed is a
+                // different set from not-yet-reached -- so name the un-actioned ids rather than
+                // making the caller diff them out of hub state.
+                if (result instanceof Map && result.remainingRuleIds instanceof List
+                        && !(result.remainingRuleIds as List).isEmpty()) {
+                    capped.remainingRuleIds = result.remainingRuleIds
+                }
+                // Some rules WERE actioned or this branch is unreachable, so partial is true
+                // whenever anything landed -- stated explicitly, because the sibling terminal
+                // always sets the key and a client reading it must not see it absent here.
+                capped.partial = !banked.isEmpty()
             }
+            // A capped result is by definition stitched from slices; carry the same provenance
+            // block the ordinary terminal emits, since consumers read mrtr.rounds.
+            capped.mrtr = [continued: true, rounds: ((rec.rounds ?: 0) as Integer) + 1,
+                           startedAt: rec.startedAt]
             _mrtrCleanupRecord(rec)
             _mrtrStoreTerminal(stateId, rec, claim, capped, true)
             return [outcome: "terminal", result: capped, isError: true]
@@ -2735,18 +2750,19 @@ private def _mrtrAggregateTerminal(Map rec, result) {
         case "call_rule":
             out.results = _mrtrCollapseRuleResults(
                 ((aggregate.results instanceof List) ? aggregate.results : []) +
-                ((out.results instanceof List) ? out.results : []))
+                _mrtrRuleResultRows(out))
             out.ruleIds = (((aggregate.ruleIds instanceof List) ? aggregate.ruleIds : []) +
                 ((out.ruleIds instanceof List) ? out.ruleIds : [])).unique()
             def failed = out.results.findAll { it instanceof Map && it.success != true }
             out.success = out.success == true && failed.isEmpty()
-            // Deliberately NOT OR-ing aggregate.anyPartial here, unlike the sibling arms: a
-            // call_rule slice sets partial on a bare budget pause (mcp-native-rules-lib
-            // partial: budgetPaused || ...), and remainingRuleIds -- the only thing that makes
-            // this kind continue -- is written only when paused. So anyPartial is true for
-            // EVERY continued call_rule, and OR-ing it would report partial on a batch where
-            // every rule succeeded. The siblings compute partial from real per-item outcomes.
-            out.partial = !failed.isEmpty()
+            // Deliberately NOT OR-ing aggregate.anyPartial: a call_rule slice sets partial on a
+            // bare budget pause, and remainingRuleIds -- the only thing that makes this kind
+            // continue -- is written only when paused, so anyPartial is true for EVERY continued
+            // call_rule and OR-ing it would report partial on an all-success batch. The formula
+            // below is the leaf's own definition (some actioned, some not), so an identical hub
+            // outcome reports identically whether or not MRTR happened to continue -- an
+            // all-FAILED batch is a failure, not a partial one.
+            out.partial = !failed.isEmpty() && failed.size() < out.results.size()
             if (!failed.isEmpty()) {
                 out.failedRuleIds = failed.collect { it.ruleId }.findAll { it != null }.unique()
                 if (!out.error) out.error = "One or more rule operations failed; inspect results[]."
@@ -2830,7 +2846,7 @@ private Map _mrtrScheduleSlice(String stateId, Map rec, Map claim, Map execution
         }
         MRTR_WORK_ITEMS[claimId] = [
             stateId: stateId, claimId: claimId, generation: generation,
-            arguments: _mrtrCopyMap(executionArgs), started: false, queuedAt: now()
+            arguments: _mrtrCopyMap(executionArgs), started: false
         ]
     }
     try {
@@ -2969,6 +2985,21 @@ private Map _mrtrControl(String kind, Map checkpoint) {
 // rule that succeeded on retry still poisons success/partial/failedRuleIds. First-appearance
 // order is preserved; entries carrying no ruleId are never collapsed and keep their order
 // after the keyed ones.
+// A call_rule slice whose id list narrowed to ONE takes the leaf's scalar path, which
+// reports the outcome as top-level ruleId/success and emits no results[] at all. That is
+// the natural tail of any paginated batch, so without this the last rule is missing from
+// the ledger -- and if it FAILED, success:false would be returned with every visible row
+// succeeding and nothing in failedRuleIds.
+private List _mrtrRuleResultRows(result) {
+    if (!(result instanceof Map)) return []
+    if (result.results instanceof List) return result.results as List
+    if (result.ruleId == null) return []
+    def row = [ruleId: result.ruleId, success: result.success == true]
+    if (result.rmAction != null) row.rmAction = result.rmAction
+    if (result.error != null) row.error = result.error
+    return [row]
+}
+
 private List _mrtrCollapseRuleResults(List entries) {
     def lastByRule = [:]
     def unkeyed = []
@@ -2983,11 +3014,11 @@ private List _mrtrCollapseRuleResults(List entries) {
     return lastByRule.values().toList() + unkeyed
 }
 
-// Work items are NOT removed here. Keying that on rec.claimId made it a silent no-op
-// wherever the snapshot came from a between-slices record (_mrtrRecordSlice strips the
-// field), which is most of this method's callers. _mrtrSweepWorkItemsLocked is the single
-// owner: it reaps by claim identity against the live record map, so a record removed or
-// re-claimed anywhere frees its item on the next sweep -- and every write path sweeps.
+// Work items are deliberately NOT removed here. This method is handed record SNAPSHOTS, and
+// a between-slices record carries no claimId (_mrtrRecordSlice strips it), so keying an item
+// removal on one would be a no-op for most callers. _mrtrSweepWorkItemsLocked owns item
+// lifetime instead: it reaps by claim identity against the live record map, so a record that
+// is removed or re-claimed frees its item on the next sweep, and every write path sweeps.
 private void _mrtrCleanupRecord(Map rec) {
     def clonerId = rec?.checkpoint?.clonerAppId
     if (clonerId == null) return
