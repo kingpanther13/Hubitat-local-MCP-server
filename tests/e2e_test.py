@@ -4755,8 +4755,31 @@ class TestRunner:
         try:
             rule_b = self._create_native_rule("CallRuleAggB")
             ids = [int(rule_a), int(rule_b)]
-            res = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_call_rule", "args": {"ruleId": ids, "action": "stop"}})
+
+            def _attempt():
+                # hub_call_rule stop/start is limiter-susceptible, the same as the sibling
+                # lifecycle test documents. _run_one's generic retry only matches a 50[0-3]
+                # status, which an "excessive hub load" McpToolError never carries -- so
+                # without this the test fails outright rather than flake-retrying.
+                try:
+                    envelope = self.client.call_tool("hub_manage_rule_machine", {
+                        "tool": "hub_call_rule", "args": {"ruleId": ids, "action": "stop"}})
+                except McpToolError as exc:
+                    if "excessive hub load" not in str(exc):
+                        raise
+                    return None, str(exc)
+                if (isinstance(envelope, dict) and envelope.get("success") is False
+                        and "excessive hub load" in str(envelope.get("error", ""))):
+                    return envelope, str(envelope.get("error"))
+                return envelope, None
+
+            res, limited = _attempt()
+            if limited and self._clear_load_throttle(f"multi-id hub_call_rule: {limited}"):
+                res, limited = _attempt()
+            assert not limited, (
+                "multi-id hub_call_rule stayed blocked by the platform load limiter: "
+                f"{limited}"
+            )
             assert isinstance(res, dict), f"multi-id hub_call_rule should return an envelope: {res}"
             # Whether this took one slice or several, the client sees ONE terminal
             # envelope with no continuation bookkeeping left in it.
@@ -4797,10 +4820,26 @@ class TestRunner:
                 assert res.get("partial") in (False, None), \
                     f"an all-success batch must not report partial -- a budget pause is not a partial result: {res}"
                 assert not res.get("failedRuleIds"), f"no rows failed but failedRuleIds is set: {res}"
-            # The action really landed on BOTH rules, not just the first slice's.
+            # The action really landed on BOTH rules, not just the first slice's. Polled,
+            # not read once: the hub decorates the stopped label asynchronously, and the
+            # read itself can hit the same limiter as the write above.
+            def _health_stopped(target_id, attempts: int = 8, gap: float = 1.5):
+                last: dict = {}
+                for _ in range(attempts):
+                    try:
+                        last = self.client.call_tool("hub_manage_rule_machine", {
+                            "tool": "hub_get_rule_health", "args": {"appId": target_id}})
+                    except McpToolError as exc:
+                        if "excessive hub load" not in str(exc):
+                            raise
+                        last = {"error": str(exc)}
+                    if isinstance(last, dict) and last.get("stopped") is True:
+                        return last
+                    time.sleep(gap)
+                return last
+
             for rid in ids:
-                health = self.client.call_tool("hub_manage_rule_machine", {
-                    "tool": "hub_get_rule_health", "args": {"appId": rid}})
+                health = _health_stopped(rid)
                 assert health.get("stopped") is True, \
                     f"rule {rid} reported success but is not stopped: {health}"
         finally:
