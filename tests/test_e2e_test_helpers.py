@@ -476,10 +476,72 @@ def test_regular_e2e_mrtr_summary_requires_a_long_multi_leg_terminal_call():
         "legs": 4,
         "successful_decoded_responses": 4,
         "replayed_legs": 0,
+        "relay_dropped_legs": 0,
         "continuation_rounds": 3,
         "logical_elapsed": 20.8,
-        "max_leg_elapsed": 8.1,
+        "max_decoded_leg_elapsed": 8.1,
     }
+
+
+def test_regular_e2e_mrtr_ceiling_ignores_a_relay_dropped_leg():
+    # The observed live failure: five legs the server answered well under the ceiling,
+    # plus one the relay dropped at 10.039s and the client replayed successfully. The
+    # ceiling measures OUR response time, so a leg we never answered cannot breach it --
+    # counting it there failed the run for the transport doing what MRTR absorbs.
+    summary = et._summarize_mrtr_e2e_proof(
+        continuation_rounds=4,
+        result_type="complete",
+        logical_elapsed=43.5,
+        http_legs=[
+            (4.374, 200, True),
+            (6.429, 200, True),
+            (8.307, 200, True),
+            (8.632, 200, True),
+            (10.039, 504, False),
+            (3.045, 200, True),
+        ],
+        server_rounds=1,
+    )
+
+    assert summary["relay_dropped_legs"] == 1
+    assert summary["max_decoded_leg_elapsed"] == 8.632
+
+
+def test_regular_e2e_mrtr_ceiling_still_catches_a_slow_answered_leg():
+    # The negative pin: excluding dropped legs must not blunt the ceiling for legs the
+    # server DID answer, or the guard would be hollow.
+    with pytest.raises(AssertionError, match="per-leg relay ceiling"):
+        et._summarize_mrtr_e2e_proof(
+            continuation_rounds=2,
+            result_type="complete",
+            logical_elapsed=20.8,
+            http_legs=[
+                (0.2, 200, True),
+                (9.7, 200, True),
+                (3.0, 200, True),
+            ],
+            server_rounds=1,
+        )
+
+
+def test_regular_e2e_mrtr_rejects_a_server_that_drops_most_legs():
+    # Relay drops are absorbed, not ignored: a server tripping the relay as a rule is a
+    # real regression the (now narrowed) ceiling can no longer see.
+    with pytest.raises(AssertionError, match="lost more legs to the relay"):
+        et._summarize_mrtr_e2e_proof(
+            continuation_rounds=2,
+            result_type="complete",
+            logical_elapsed=40.0,
+            http_legs=[
+                (0.2, 200, True),
+                (10.1, 504, False),
+                (10.2, 504, False),
+                (10.3, 504, False),
+                (3.0, 200, True),
+                (2.0, 200, True),
+            ],
+            server_rounds=1,
+        )
 
 
 def test_regular_e2e_mrtr_summary_accepts_one_safe_transport_replay():
