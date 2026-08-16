@@ -31,6 +31,11 @@ import support.ToolSpecBase
  * #351): a cloud request reads relayBudgetMs (default 8000), a LAN request reads
  * lanBudgetMs (default 0 = off) -- so with the LAN knob unset, LAN loops keep
  * their pre-#348 shape byte-for-byte, covered by the not-exceeded cases below.
+ *
+ * Two features here are master-gate coverage rather than budget coverage: they sit
+ * beside the #351 write-concurrency knob because they share its issue. They pin that
+ * hub_call_device_replace's list_options mode answers the READ master while every
+ * other call stays a Write-master write.
  */
 class RelayBudgetSpec extends ToolSpecBase {
 
@@ -69,6 +74,40 @@ class RelayBudgetSpec extends ToolSpecBase {
 
         expect:
         script._lanBudgetMs() == 45000L
+    }
+
+    def "_maxConcurrentWrites defaults to 2 and honours zero as unlimited"() {
+        expect:
+        script._maxConcurrentWrites() == 2
+
+        when:
+        settingsMap.maxConcurrentWrites = 0
+
+        then:
+        script._maxConcurrentWrites() == 0
+    }
+
+    def "hub_call_device_replace(list_options) answers the READ master, not the write gates"() {
+        given: 'writes disabled and the best-practice gate ON -- the read mode must still run'
+        settingsMap.enableWrite = false
+        settingsMap.enableMandatoryBPS = true
+        def ran = 0
+        script.metaClass.toolCallDeviceReplace = { Map a -> ran++; [success: true, listOptions: true, options: []] }
+
+        when:
+        def result = script.executeTool('hub_call_device_replace', [old_device_id: '12', list_options: true])
+
+        then: 'it executed: no Write-master block, no bestPracticeKey demanded'
+        ran == 1
+        result.success == true
+
+        when: 'the same tool WITHOUT the read mode is still gated as the write it is'
+        script.executeTool('hub_call_device_replace', [old_device_id: '12', new_device_id: '13', confirm: true])
+
+        then: 'refused by the Write master -- named, so the best-practice gate cannot stand in for it'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('Write tools are disabled')
+        ex.message.contains('hub_call_device_replace')
     }
 
     @Unroll

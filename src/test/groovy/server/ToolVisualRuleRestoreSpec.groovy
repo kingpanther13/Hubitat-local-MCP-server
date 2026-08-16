@@ -209,7 +209,7 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
 
         then: 'backup-before-write stays a hard gate -- nothing written'
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains('Cannot back up rule')
+        ex.message.contains('No rule/app with id')
         uploads.isEmpty()
     }
 

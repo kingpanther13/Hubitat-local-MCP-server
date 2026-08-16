@@ -572,6 +572,19 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         }
     }
 
+    def "eliminated opToken protocol leaves no stale output-schema fields"() {
+        when:
+        def defs = script.getAllToolDefinitions()
+        def stale = defs.findAll { tool ->
+            def properties = tool.outputSchema?.properties
+            properties instanceof Map && (properties.containsKey('opToken') ||
+                properties.containsKey('recentOps') || properties.containsKey('recentOpsTotal'))
+        }*.name
+
+        then:
+        stale == []
+    }
+
     def "getAllToolDefinitions() concatenates its chunk methods with no dropped or duplicated tools"() {
         // getAllToolDefinitions() concatenates one per-domain chunk method
         // (_getAllToolDefinitions_part<Name>(), each contributed by its #include
@@ -766,6 +779,10 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         markers(script.getAllToolDefinitions()) > 0
 
         and: 'flat-mode strips every marker -- the wrapped content is gone from the flat wire'
-        markers(script.getToolDefinitions()) == 0
+        // Name the offenders: a bare count dumps the whole catalog into the failure output and
+        // says nothing about WHICH tool leaked, which is a long hunt on a catalog of 100+ tools.
+        script.getToolDefinitions().findAll {
+            groovy.json.JsonOutput.toJson(it).contains('[[FLAT_TRIM]]')
+        }*.name == []
     }
 }

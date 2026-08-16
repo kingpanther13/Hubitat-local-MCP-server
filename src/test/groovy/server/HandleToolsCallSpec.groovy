@@ -47,6 +47,25 @@ class HandleToolsCallSpec extends ToolSpecBase {
         response.error.message.contains('Read tools are disabled')
     }
 
+    def "a call still carrying the removed opToken is refused loudly with the requestState pointer"() {
+        given: 'a client running the removed idempotent-replay protocol'
+        settingsMap.enableWrite = true
+        def ran = 0
+        script.metaClass.toolCreateVariable = { Map a -> ran++; [success: true] }
+
+        when:
+        def response = mcpDriver.callTool('hub_create_variable',
+            [name: 'legacyTokenVar', type: 'String', value: 'x', confirm: true, opToken: 'tok-12345678'])
+
+        then: 'silence would cost the client its duplicate-commit protection unnoticed'
+        response.error.code == -32602
+        response.error.message.contains('opToken was removed')
+        response.error.message.contains('requestState')
+
+        and: 'the refusal fired before any side effect -- the write never ran'
+        ran == 0
+    }
+
     def "generic Exception from a tool returns isError success envelope (MCP spec)"() {
         given: 'getRooms() throws a non-IAE so hub_list_rooms hits the generic catch'
         script.metaClass.getRooms = { throw new RuntimeException('boom') }
@@ -244,6 +263,33 @@ class HandleToolsCallSpec extends ToolSpecBase {
         def inner = mcpDriver.parseInner(response)
         inner.logs == []
         inner.count == 0
+    }
+
+    def "tool result rendering keeps nested brokenBefore metadata internal without mutating cached results"() {
+        given:
+        def canonicalBackup = [backupKey: 'rm-rule_7_baseline', brokenBefore: true,
+                               baselineReused: true]
+        def nestedBackup = [backupKey: 'rm-rule_7_required', brokenBefore: false]
+        def canonicalResult = [success: true, backup: canonicalBackup,
+                               patches: [[success: true, backup: nestedBackup]]]
+        settingsMap.useGateways = true
+        settingsMap.publishOutputSchemas = true
+        script.metaClass.toolGetHubInfo = { a -> canonicalResult }
+
+        when:
+        def response = mcpDriver.callTool('hub_get_info', [:])
+        def inner = mcpDriver.parseInner(response)
+
+        then: 'the internal diagnostic is absent from the public text payload'
+        inner.backup == [backupKey: 'rm-rule_7_baseline', baselineReused: true]
+        inner.patches[0].backup == [backupKey: 'rm-rule_7_required']
+        response.result.structuredContent == inner
+
+        and: 'recursive path copies leave internal consumers and terminal replay untouched'
+        canonicalBackup.brokenBefore == true
+        nestedBackup.brokenBefore == false
+        canonicalResult.backup.is(canonicalBackup)
+        canonicalResult.patches[0].backup.is(nestedBackup)
     }
 
     def "handleToolsCall returns a __preserialized sentinel on the under-cap success path (serialize-once)"() {

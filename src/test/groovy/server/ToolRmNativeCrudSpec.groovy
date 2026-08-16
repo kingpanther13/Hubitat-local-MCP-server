@@ -4,7 +4,9 @@ import support.RMUtilsMock
 import support.TestLocation
 import support.ToolSpecBase
 import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
 import spock.lang.Shared
+import spock.lang.Unroll
 
 /**
  * Spec for the native Rule Machine CRUD tools in libraries/mcp-native-rules-lib.groovy:
@@ -1107,6 +1109,244 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.hubMessage?.contains("child devices")
         result.note?.contains("force=true")
         result.backup != null
+    }
+
+    // ---------- recent edit-baseline reuse ----------
+
+    def "ordinary edits reuse one same-rule backup for an hour but never share across rules"() {
+        given:
+        enableWrite()
+        def clock = [1234567890000L]
+        NOW_OVERRIDE.set({ -> clock[0] })
+        hubGet.register('/installedapp/configure/json/501') { params -> ruleConfigJson(501, "reuse-a") }
+        hubGet.register('/installedapp/statusJson/501') { params -> statusJson(501) }
+        hubGet.register('/installedapp/configure/json/502') { params -> ruleConfigJson(502, "reuse-b") }
+        hubGet.register('/installedapp/statusJson/502') { params -> statusJson(502) }
+        def uploads = []
+        def files = [:]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn; files[fn] = b }
+        script.metaClass.downloadHubFile = { String fn -> files[fn] }
+
+        when: "two logical edits target the same rule inside the reuse window"
+        def first = script._rmBackupBeforeEdit(501, "pre-addAction")
+        clock[0] += 5 * 60 * 1000L
+        def second = script._rmBackupBeforeEdit(501, "pre-walkStep")
+
+        and: "another rule is edited inside that same window"
+        def other = script._rmBackupBeforeEdit(502, "pre-update")
+
+        then:
+        first.backupKey == second.backupKey
+        first.baselineReused == false
+        second.baselineReused == true
+        second.rollbackScope?.contains("reverts every edit")
+        other.backupKey != first.backupKey
+        uploads.size() == 2
+    }
+
+    def "baseline reuse survives a worker execution reading a stale manifest snapshot"() {
+        given:
+        def clock = [1234567890000L]
+        NOW_OVERRIDE.set({ -> clock[0] })
+        hubGet.register('/installedapp/configure/json/503') { params -> ruleConfigJson(503, "reuse-stale") }
+        hubGet.register('/installedapp/statusJson/503') { params -> statusJson(503) }
+        def files = [:]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> files[fn] = b }
+        script.metaClass.downloadHubFile = { String fn -> files[fn] }
+
+        when: 'a baseline is taken, then the next execution reads atomicState from before that write'
+        def first = script._rmBackupBeforeEdit(503, "pre-addAction")
+        atomicStateMap.itemBackupManifest = [:]   // the stale snapshot has no entry for it
+        clock[0] += 30 * 1000L
+        def second = script._rmBackupBeforeEdit(503, "pre-addActions-bulk")
+
+        then: 'the JVM mirror carries the handle across the visibility gap'
+        second.baselineReused == true
+        second.backupKey == first.backupKey
+    }
+
+    def "a transient backup-file read hiccup is retried instead of discarding the baseline"() {
+        given:
+        def clock = [1234567890000L]
+        NOW_OVERRIDE.set({ -> clock[0] })
+        hubGet.register('/installedapp/configure/json/504') { params -> ruleConfigJson(504, "reuse-retry") }
+        hubGet.register('/installedapp/statusJson/504') { params -> statusJson(504) }
+        def files = [:]
+        def failures = [1]   // fail the FIRST post-baseline read only
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> files[fn] = b }
+        script.metaClass.downloadHubFile = { String fn ->
+            if (failures[0] > 0) { failures[0]--; return null }
+            files[fn]
+        }
+
+        when:
+        def first = script._rmBackupBeforeEdit(504, "pre-addAction")
+        clock[0] += 30 * 1000L
+        def second = script._rmBackupBeforeEdit(504, "pre-walkStep")
+
+        then: 'the retry sees the file and the manifest handle is not unlinked'
+        second.baselineReused == true
+        second.backupKey == first.backupKey
+        atomicStateMap.itemBackupManifest.containsKey(first.backupKey.toString())
+    }
+
+    def "ordinary edit discards a recent manifest entry whose backup file is missing"() {
+        given:
+        enableWrite()
+        def clock = [1234567890000L]
+        NOW_OVERRIDE.set({ -> clock[0] })
+        hubGet.register('/installedapp/configure/json/505') { params -> ruleConfigJson(505, "missing-backup") }
+        hubGet.register('/installedapp/statusJson/505') { params -> statusJson(505) }
+        atomicStateMap.itemBackupManifest = [
+            "rm-rule_505_missing": [type: "rm-rule", id: 505, ruleId: 505,
+                                    fileName: "mcp-rm-backup-505-missing.json",
+                                    reason: "pre-addAction", appLabel: "missing-backup",
+                                    timestamp: clock[0] - 60_000L, sourceLength: 123]
+        ]
+        def downloads = []
+        def uploads = []
+        script.metaClass.downloadHubFile = { String fn -> downloads << fn; null }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
+
+        when:
+        def result = script._rmBackupBeforeEdit(505, "pre-walkStep")
+
+        then: "the dangling handle is removed and a restorable fresh baseline replaces it"
+        // Two reads: the probe retries a missing file once before declaring it dead,
+        // so a transient hiccup cannot trigger the permanent unlink below.
+        downloads == ["mcp-rm-backup-505-missing.json", "mcp-rm-backup-505-missing.json"]
+        !atomicStateMap.itemBackupManifest.containsKey("rm-rule_505_missing")
+        result.backupKey != "rm-rule_505_missing"
+        uploads.size() == 1
+        result.fileName == uploads[0]
+        atomicStateMap.itemBackupManifest[result.backupKey]?.fileName == result.fileName
+    }
+
+    def "ordinary edit refuses to reuse a backup file that belongs to another rule"() {
+        given:
+        enableWrite()
+        def clock = [1234567890000L]
+        NOW_OVERRIDE.set({ -> clock[0] })
+        hubGet.register('/installedapp/configure/json/506') { params -> ruleConfigJson(506, "identity-check") }
+        hubGet.register('/installedapp/statusJson/506') { params -> statusJson(506) }
+        byte[] wrongSnapshot = JsonOutput.toJson([schemaVersion: 1, appId: 999, ruleId: 999]).getBytes("UTF-8")
+        atomicStateMap.itemBackupManifest = [
+            "rm-rule_506_wrong": [type: "rm-rule", id: 506, ruleId: 506,
+                                  fileName: "mcp-rm-backup-506-wrong.json",
+                                  timestamp: clock[0] - 60_000L, sourceLength: wrongSnapshot.length]
+        ]
+        def uploads = []
+        script.metaClass.downloadHubFile = { String fn -> wrongSnapshot }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
+
+        when:
+        def result = script._rmBackupBeforeEdit(506, "pre-update")
+
+        then:
+        !atomicStateMap.itemBackupManifest.containsKey("rm-rule_506_wrong")
+        result.backupKey != "rm-rule_506_wrong"
+        uploads.size() == 1
+        result.fileName == uploads[0]
+    }
+
+    def "ordinary edit refuses a same-rule backup file with no restorable payload"() {
+        given:
+        enableWrite()
+        def clock = [1234567890000L]
+        NOW_OVERRIDE.set({ -> clock[0] })
+        hubGet.register('/installedapp/configure/json/508') { params -> ruleConfigJson(508, "truncated-backup") }
+        hubGet.register('/installedapp/statusJson/508') { params -> statusJson(508) }
+        byte[] truncated = JsonOutput.toJson([schemaVersion: 1, appId: 508, ruleId: 508]).getBytes("UTF-8")
+        atomicStateMap.itemBackupManifest = [
+            "rm-rule_508_truncated": [type: "rm-rule", id: 508, ruleId: 508,
+                                       fileName: "mcp-rm-backup-508-truncated.json",
+                                       timestamp: clock[0] - 60_000L, sourceLength: truncated.length]
+        ]
+        def uploads = []
+        script.metaClass.downloadHubFile = { String fn -> truncated }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
+
+        when:
+        def result = script._rmBackupBeforeEdit(508, "pre-update")
+
+        then: 'the unusable handle is discarded instead of advertised as a rollback baseline'
+        !atomicStateMap.itemBackupManifest.containsKey("rm-rule_508_truncated")
+        result.backupKey != "rm-rule_508_truncated"
+        result.baselineReused == false
+        uploads.size() == 1
+    }
+
+    def "ordinary edit reuses a valid backup when current-config diagnostics fail transiently"() {
+        given:
+        enableWrite()
+        def clock = [1234567890000L]
+        NOW_OVERRIDE.set({ -> clock[0] })
+        def savedConfig = new JsonSlurper().parseText(ruleConfigJson(507, "transient-diagnostic"))
+        byte[] snapshot = JsonOutput.toJson([schemaVersion: 1, appId: 507, ruleId: 507,
+                                             appType: "rule_machine", configJson: savedConfig]).getBytes("UTF-8")
+        atomicStateMap.itemBackupManifest = [
+            "rm-rule_507_recent": [type: "rm-rule", id: 507, ruleId: 507,
+                                   fileName: "mcp-rm-backup-507-recent.json",
+                                   timestamp: clock[0] - 60_000L, sourceLength: snapshot.length]
+        ]
+        script.metaClass.downloadHubFile = { String fn -> snapshot }
+        hubGet.register('/installedapp/configure/json/507') { params ->
+            throw new RuntimeException('HTTP 500: hub temporarily busy')
+        }
+        hubGet.register('/app/ruleBuilder20Json/507') { params -> '{"success":false}' }
+        hubGet.register('/app/ruleBuilderJson/507') { params -> '{}' }
+        def uploads = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
+
+        when:
+        def result = script._rmBackupBeforeEdit(507, "pre-update")
+
+        then: 'the runtime read failure only suppresses the internal wording diagnostic'
+        result.backupKey == "rm-rule_507_recent"
+        result.baselineReused == true
+        result.brokenBefore == null
+        uploads.isEmpty()
+    }
+
+    def "ordinary edit takes a fresh backup after the one-hour reuse window expires"() {
+        given:
+        enableWrite()
+        def clock = [1234567890000L]
+        NOW_OVERRIDE.set({ -> clock[0] })
+        hubGet.register('/installedapp/configure/json/503') { params -> ruleConfigJson(503, "expiry") }
+        hubGet.register('/installedapp/statusJson/503') { params -> statusJson(503) }
+        def uploads = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
+
+        when:
+        def first = script._rmBackupBeforeEdit(503, "pre-addAction")
+        clock[0] += 60 * 60 * 1000L
+        def expired = script._rmBackupBeforeEdit(503, "pre-addAction")
+
+        then:
+        first.backupKey != expired.backupKey
+        uploads.size() == 2
+    }
+
+    def "backupEveryRuleWrite bypasses recent edit backup reuse"() {
+        given:
+        enableWrite()
+        settingsMap.backupEveryRuleWrite = true
+        def clock = [1234567890000L]
+        NOW_OVERRIDE.set({ -> clock[0] })
+        hubGet.register('/installedapp/configure/json/504') { params -> ruleConfigJson(504, "strict") }
+        hubGet.register('/installedapp/statusJson/504') { params -> statusJson(504) }
+        def uploads = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
+
+        when:
+        def first = script._rmBackupBeforeEdit(504, "pre-addAction")
+        clock[0] += 1L
+        def second = script._rmBackupBeforeEdit(504, "pre-walkStep")
+
+        then:
+        first.backupKey != second.backupKey
+        uploads.size() == 2
     }
 
     // ---------- unified backup integration: hub_list_backups + hub_restore_backup ----------
@@ -3962,7 +4202,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error.contains("re-add leg failed")
 
         and: "restoreHint is the roll-back form, NOT the pre-flight not-touched form"
-        result.restoreHint.contains("Backup saved before write")
+        result.restoreHint.contains("Backup baseline available")
         !result.restoreHint.contains("Pre-flight refusal")
     }
 
@@ -3982,7 +4222,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == false
         result.partial == true
         result.error.contains("re-add failed")
-        result.restoreHint.contains("Backup saved before write")
+        result.restoreHint.contains("Backup baseline available")
 
         and: "the trailing updateRule was SKIPPED, so the rule mutated without a re-init"
         result.subscriptionsNotLive == true
@@ -4091,6 +4331,207 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "no rule-write POST committed -- the refusal happened before any hub round-trip"
         !posts.any { it.path == "/installedapp/update/json" }
+    }
+
+    def "addTrigger plus addTriggers in one call is rejected fail-loud"() {
+        // A family's singular and plural collapse into ONE group, so the group count alone
+        // reads as a single operation: the dispatcher would run addTrigger and silently drop
+        // addTriggers. Per-family size is what catches it.
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "one edit call carries both the singular and the plural trigger form"
+        Exception thrownEx = null
+        try {
+            script.toolSetRule([appId: 100, confirm: true,
+                                addTrigger: [capability: "Switch", deviceIds: [8], state: "on"],
+                                addTriggers: [[capability: "Switch", deviceIds: [8], state: "off"]]])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "rejected before any wizard write, naming both operations"
+        thrownEx instanceof IllegalArgumentException
+        thrownEx.message.contains("multiple operations")
+        thrownEx.message.contains("addTrigger, addTriggers")
+
+        and: "no wizard POST fired"
+        posts.isEmpty()
+    }
+
+    def "addAction plus addActions in one call is rejected fail-loud"() {
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "one edit call carries both the singular and the plural action form"
+        Exception thrownEx = null
+        try {
+            script.toolSetRule([appId: 100, confirm: true,
+                                addAction: [capability: "log", message: "one"],
+                                addActions: [[capability: "log", message: "two"]]])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "rejected before any wizard write, naming both operations"
+        thrownEx instanceof IllegalArgumentException
+        thrownEx.message.contains("multiple operations")
+        thrownEx.message.contains("addAction, addActions")
+
+        and: "no wizard POST fired"
+        posts.isEmpty()
+    }
+
+    def "clearActions plus a non-empty replaceActions is rejected fail-loud"() {
+        // Both are action-family WRITES sharing one dispatcher branch, so before the fix
+        // they BOTH executed: the clear wiped the rule, then replaceActions re-added its
+        // own list -- in an order the caller never chose. The guard stayed silent because
+        // the replaceActions group was suppressed whenever clearActions was set, a
+        // condition whose only OTHER job (not double-counting replaceActions:[]) the
+        // null-normalization above it already does.
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        Exception thrownEx = null
+        try {
+            script.toolSetRule([appId: 100, confirm: true,
+                                clearActions: true,
+                                replaceActions: [[capability: "log", message: "replacement"]]])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "rejected before any wizard write, naming both operations"
+        thrownEx instanceof IllegalArgumentException
+        thrownEx.message.contains("multiple operations")
+        thrownEx.message.contains("clearActions")
+        thrownEx.message.contains("replaceActions")
+
+        and: "no wizard POST fired"
+        posts.isEmpty()
+    }
+
+    @Unroll
+    def "the bulk pair exemption is EXACT: #first plus #second still throws"() {
+        // allowedBulkPair compares the family lists to exact singletons. Pinned on the
+        // REFUSED side too, so a later "simplification" to a truthiness test goes red
+        // instead of quietly admitting a singular pair -- where the addTrigger branch
+        // returns its own envelope and the addAction would be dropped with success:true.
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        Exception thrownEx = null
+        try {
+            script.toolSetRule([appId: 100, confirm: true] + payload)
+        } catch (Exception e) { thrownEx = e }
+
+        then:
+        thrownEx instanceof IllegalArgumentException
+        thrownEx.message.contains("multiple operations")
+        posts.isEmpty()
+
+        where:
+        first          | second        | payload
+        "addTrigger"   | "addAction"   | [addTrigger: [capability: "Switch", deviceIds: [8], state: "on"], addAction: [capability: "log", message: "x"]]
+        "addTrigger"   | "addActions"  | [addTrigger: [capability: "Switch", deviceIds: [8], state: "on"], addActions: [[capability: "log", message: "x"]]]
+        "addTriggers"  | "addAction"   | [addTriggers: [[capability: "Switch", deviceIds: [8], state: "on"]], addAction: [capability: "log", message: "x"]]
+    }
+
+    def "an edit on a nonexistent app id throws the 404 steer before any write"() {
+        // The pre-write snapshot is the gate: a 404 there means the id does not exist, and
+        // the caller needs the id-lookup steer rather than a generic backup failure.
+        given:
+        enableWrite()
+        def uploads = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
+        hubGet.register('/installedapp/configure/json/704') { params -> throw new RuntimeException('404 from configure/json') }
+        hubGet.register('/app/ruleBuilder20Json/704') { params -> throw new RuntimeException('404') }
+        hubGet.register('/app/ruleBuilderJson/704') { params -> throw new RuntimeException('404') }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << path
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        script.toolSetRule([appId: 704, confirm: true, settings: [origLabel: 'Renamed']])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('No rule/app with id 704')
+        ex.message.contains('hub_list_rules')
+
+        and: 'nothing was written -- no wizard POST and no backup upload'
+        posts.isEmpty()
+        uploads.isEmpty()
+    }
+
+    def "replaceActions plus addActions in one call is rejected fail-loud"() {
+        // replaceActions had no entry in the multi-op guard's group list, so this pair
+        // slipped through and the dispatcher ran the replace branch while addActions
+        // vanished without a word.
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "one edit call carries a replace AND an add"
+        Exception thrownEx = null
+        try {
+            script.toolSetRule([appId: 100, confirm: true,
+                                replaceActions: [[capability: "log", message: "replaced"]],
+                                addActions: [[capability: "log", message: "added"]]])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "rejected before any wizard write, naming both operations"
+        thrownEx instanceof IllegalArgumentException
+        thrownEx.message.contains("multiple operations")
+        thrownEx.message.contains("addActions")
+        thrownEx.message.contains("replaceActions")
+
+        and: "no wizard POST fired"
+        posts.isEmpty()
+    }
+
+    def "replaceActions:[] normalizes to clearActions and is not double-counted by the guard"() {
+        // The empty list is rewritten to the clearActions flag before the guard runs, so
+        // the guard must see ONE operation, not clearActions + replaceActions.
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        when: "an empty replaceActions rides alone"
+        Exception thrownEx = null
+        try {
+            script.toolSetRule([appId: 100, confirm: true, replaceActions: []])
+        } catch (Exception e) { thrownEx = e }
+
+        then: "whatever else happens downstream, it is NOT refused as a multi-op call"
+        !(thrownEx instanceof IllegalArgumentException && thrownEx.message.contains("multiple operations"))
     }
 
     def "modifyTrigger pre-flight shape refusal on the edit path yields a not-touched restoreHint, not a restore prompt"() {
@@ -8395,6 +8836,120 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.after?.inputs == result.before.inputs
     }
 
+    def "walkStep progressively rebinds a stale doActPage slot through a complete log action"() {
+        // A navigate into doActPage can return actType.N and then advance RM's internal
+        // wizard counter before the caller's next request.  The next write therefore
+        // arrives with the correctly-derived-but-now-stale actType.N while the fresh
+        // schema exposes actType.N+1.  Hubitat accepts the stale form POST but silently
+        // drops it.  Rebind only when the requested indexed stem has exactly one live
+        // counterpart; the absence of ambiguity is what makes this automatic recovery
+        // safe for the raw walker.
+        given:
+        enableWrite()
+        def stored = [:]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            def inputs = [[name: "actType.3", type: "enum", options: ["messageActs"]]]
+            if (stored["actType.3"] == "messageActs") {
+                inputs << [name: "actSubType.3", type: "enum", options: ["getLogMsg"]]
+            }
+            if (stored["actSubType.3"] == "getLogMsg") {
+                inputs << [name: "logmsg.3", type: "text"]
+            }
+            inputs << [name: "cancelBtn", type: "button"]
+            ruleConfigJson(100, "r", inputs)
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, stored.collect { k, v -> [name: k, type: "enum", value: v] })
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            def key = body.keySet().collect { _settingKeyOf(it) }.find { it != null }
+            if (key != null) stored[key] = body["settings[${key}]".toString()]
+            [status: 200, location: null, data: '']
+        }
+
+        when: "each progressive write uses the slot returned by the earlier navigate response"
+        def typeResult = script.toolSetRule([
+            appId: 100,
+            walkStep: [page: "doActPage", operation: "write", write: ["actType.2": "messageActs"]],
+            confirm: true
+        ])
+        def subtypeResult = script.toolSetRule([
+            appId: 100,
+            walkStep: [page: "doActPage", operation: "write", write: ["actSubType.2": "getLogMsg"]],
+            confirm: true
+        ])
+        def messageResult = script.toolSetRule([
+            appId: 100,
+            walkStep: [page: "doActPage", operation: "write", write: ["logmsg.2": "after-RE"]],
+            confirm: true
+        ])
+
+        then: "all three fresh-schema fields are written, never their stale counterparts"
+        posts.any { it.path == "/installedapp/update/json" && it.body?.get("settings[actType.3]") == "messageActs" }
+        posts.any { it.path == "/installedapp/update/json" && it.body?.get("settings[actSubType.3]") == "getLogMsg" }
+        posts.any { it.path == "/installedapp/update/json" && it.body?.get("settings[logmsg.3]") == "after-RE" }
+        !posts.any { post -> post.body?.keySet()?.any { it in [
+            "settings[actType.2]", "settings[actSubType.2]", "settings[logmsg.2]"
+        ] } }
+
+        and: "every response reports its resolved key and successful round trip"
+        typeResult.success == true
+        subtypeResult.success == true
+        messageResult.success == true
+        typeResult.opResult?.rebound == [requestedKey: "actType.2", resolvedKey: "actType.3"]
+        subtypeResult.opResult?.rebound == [requestedKey: "actSubType.2", resolvedKey: "actSubType.3"]
+        messageResult.opResult?.rebound == [requestedKey: "logmsg.2", resolvedKey: "logmsg.3"]
+        typeResult.valueEcho?.match == true
+        subtypeResult.valueEcho?.match == true
+        messageResult.valueEcho?.match == true
+        typeResult.silentRejection == false
+        subtypeResult.silentRejection == false
+        messageResult.silentRejection == false
+    }
+
+    def "walkStep write does not guess when a stale doActPage slot has multiple live counterparts"() {
+        // Automatic rebinding is safe only for a sole same-stem field.  If firmware
+        // exposes multiple actType slots, choosing either one could mutate the wrong
+        // action.  Keep the existing fail-loud behavior: attempt only the caller's
+        // exact key, retain the schema warning, and report the silent rejection.
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "actType.3", type: "enum", options: ["messageActs"]],
+                [name: "actType.4", type: "enum", options: ["messageActs"]]
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            walkStep: [page: "doActPage", operation: "write", write: ["actType.2": "messageActs"]],
+            confirm: true
+        ])
+
+        then: "neither live candidate is guessed; the exact requested key follows the legacy path"
+        posts.any { it.path == "/installedapp/update/json" && it.body?.containsKey("settings[actType.2]") }
+        !posts.any { it.body?.containsKey("settings[actType.3]") || it.body?.containsKey("settings[actType.4]") }
+        result.opResult?.wrote == ["actType.2": "messageActs"]
+        result.opResult?.rebound == null
+        result.opResult?.warning?.toString()?.contains("not in current schema")
+        result.success == false
+        result.silentRejection == true
+    }
+
     def "walkStep click fires a /installedapp/btn POST with the requested button name + stateAttribute"() {
         // Direct unit cover for walkStep operation='click' — the dispatcher
         // routes through _rmClickAppButton which POSTs to /installedapp/btn
@@ -9284,6 +9839,100 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.label == "Healthy Rule"
         result.brokenMarkers == [] || result.brokenMarkers?.isEmpty()
         result.multipleFlagPoison == [] || result.multipleFlagPoison?.isEmpty()
+    }
+
+    def "hub_get_rule_health reads stopped from the config-page label decoration"() {
+        given: "the runtime decoration arrives as markup a user-typed name cannot contain"
+        enableReadOnly()
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            ruleConfigJson(100, 'Porch Light <span style="color:green">(Stopped)</span>', [])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolCheckRuleHealth([appId: 100])
+
+        then:
+        result.stopped == true
+
+        and: "the decoration is stripped so the label stays the rule's real name"
+        result.label == "Porch Light"
+    }
+
+    def "hub_get_rule_health reports stopped=false on an undecorated label"() {
+        given:
+        enableReadOnly()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Porch Light", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolCheckRuleHealth([appId: 100])
+
+        then:
+        result.stopped == false
+        result.label == "Porch Light"
+    }
+
+    def "a rule literally NAMED ending in (Stopped) is not reported as stopped"() {
+        given: "a plain unmarked suffix with no runtime stopped flag behind it"
+        enableReadOnly()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Alert When Stopped (Stopped)", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolCheckRuleHealth([appId: 100])
+
+        then: "the name is left alone -- stripping it would rename the rule in every report"
+        result.stopped == false
+        result.label == "Alert When Stopped (Stopped)"
+    }
+
+    def "a plain (Stopped) suffix counts when the runtime status agrees"() {
+        given:
+        enableReadOnly()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Porch Light (Stopped)", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [],
+                               scheduledJobs: [], appState: [[name: "stopped", value: true]]])
+        }
+
+        when:
+        def result = script.toolCheckRuleHealth([appId: 100])
+
+        then:
+        result.stopped == true
+        result.label == "Porch Light"
+    }
+
+    def "hub_get_rule_health reports 0 live counts when statusJson has no subscriptions section"() {
+        given: "a schedule-only rule carries no eventSubscriptions list at all"
+        enableReadOnly()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Timer Rule", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], appState: [:]])
+        }
+
+        when:
+        def result = script.toolCheckRuleHealth([appId: 100])
+
+        then: "0, not null -- null is reserved for the fetch itself failing"
+        result.eventSubscriptionCount == 0
+        result.scheduledJobCount == 0
+        !result.checkErrors.any { it.toString().startsWith("statusJson:") }
+    }
+
+    def "an unreadable statusJson yields null counts AND a checkErrors entry"() {
+        given: "the config page reads fine but the runtime status does not"
+        enableReadOnly()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Porch Light", []) }
+
+        when:
+        def result = script.toolCheckRuleHealth([appId: 100])
+
+        then: "null counts alone would read as 'this rule has none' -- record the reason"
+        result.eventSubscriptionCount == null
+        result.scheduledJobCount == null
+        result.checkErrors.any { it.toString().startsWith("statusJson:") }
     }
 
     def "hub_get_rule_health flags BROKEN marker in label as ok=false"() {
@@ -14884,6 +15533,72 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "hard failure -- nothing landed in applied, so success=false"
         result.success == false
         (result.settingsApplied == null || (result.settingsApplied as List).isEmpty())
+    }
+
+    /** doActPage schema for the log action with an incrementing paragraph so every
+     *  write observes renderShifted=true and routes to applied (same trick as
+     *  doActPageCondSchemaJson below). */
+    private String doActPageLogSchemaJson(int ruleId, int seqNum) {
+        JsonOutput.toJson([
+            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
+            configPage: [name: "doActPage", title: "T", install: false, error: null,
+                         sections: [[title: "", input: [
+                             [name: "actType.1", type: "enum",
+                              options: ["notificationActs": "Notifications and Logging"]],
+                             [name: "actSubType.1", type: "enum",
+                              options: ["getLog": "Log a message"]],
+                             [name: "logMessage.1", type: "text"],
+                             [name: "actionDone", type: "button"]
+                         ], paragraphs: ["seq ${seqNum}".toString()]]]],
+            settings: [:], childApps: []
+        ])
+    }
+
+    def "settingsApplied lists a key once when the normal write and a rawSettings duplicate hit the same field"() {
+        // The T661-era cosmetic bug: message + a rawSettings alias of the same field
+        // recorded the key twice in settingsApplied. The uniqueApplied dedupe collapses it.
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
+                options: ["notificationActs": "Notifications and Logging"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            fetchSeq++
+            doActPageLogSchemaJson(100, fetchSeq)
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                             sections: [[title: "", input: [], paragraphs: ["Log: 'hello'"]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "log", message: "hello", rawSettings: ["logMessage.@N": "hello"]],
+            confirm: true
+        ])
+
+        then: "the duplicated key appears exactly once"
+        result.success == true
+        def appliedList = (result.settingsApplied as List)
+        appliedList.count { it?.toString() == "logMessage.1" } == 1
+
+        and: "the whole list is duplicate-free"
+        appliedList == appliedList.unique(false)
     }
 
     // ---------- ifThen condition wizard (Custom Attribute comparator fix) ----------
@@ -22923,6 +23638,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         inner.label == "Healthy Rule"
         inner.brokenMarkers == [] || inner.brokenMarkers?.isEmpty()
         inner.multipleFlagPoison == [] || inner.multipleFlagPoison?.isEmpty()
+        inner.eventSubscriptionCount == 1
+        inner.scheduledJobCount == 0
 
         where:
         useGateways << [true, false]
@@ -36593,6 +37310,67 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.note?.contains("fired (subscriptions populated)")
     }
 
+    def "hub_set_rule EDIT rejects mixed operation families before any wizard POST"() {
+        given:
+        enableWrite()
+        def posts = []
+        def backups = []
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason ->
+            backups << [id: id, reason: reason]
+            [backupKey: 'snap']
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "log", message: "should not land"],
+            addLocalVariable: [name: "shouldNotExist", type: "String", value: "x"],
+            settings: [comments: "should not land"],
+            confirm: true
+        ])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("addAction")
+        ex.message.contains("addLocalVariable")
+        ex.message.contains("settings")
+        ex.message.contains("patches")
+
+        and: "the validation throw precedes every backup or wizard write"
+        posts.isEmpty()
+        backups.isEmpty()
+    }
+
+    def "hub_set_rule EDIT allows addTriggers plus addActions and processes both bulk lists"() {
+        given:
+        enableWrite()
+        def clicks = []
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason -> [backupKey: "snap"] }
+        script.metaClass._rmClickAppButton = { Integer id, String name, String stateAttr = null,
+                                               String pageName = null, Map cache = null -> clicks << name }
+        script.metaClass._rmCheckRuleHealth = { Integer id -> [ok: true] }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addTriggers: ["trigger-sentinel"],
+            addActions: ["action-sentinel"],
+            confirm: true
+        ])
+
+        then: "both lists reached their own bulk loop instead of the multi-op guard"
+        result.triggers.size() == 1
+        result.triggers[0].error.contains("addTriggers[0]")
+        result.actions.size() == 1
+        result.actions[0].error.contains("addActions[0]")
+        clicks == ["updateRule"]
+        result.note.contains("Bulk update committed")
+    }
+
     // ---------- bulk addTriggers/addActions trailing-updateRule failure surfaces dedicated slots ----------
 
     @spock.lang.Unroll
@@ -40809,8 +41587,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def def_ = script.getAllToolDefinitions().find { it.name == 'hub_set_native_app' }
         def props = def_.inputSchema.properties.keySet()
 
-        then: "the generic upsert params, plus the generic classic-page walkStep walker, the buttonRule create helper (issue #185), and the opToken idempotency handle"
-        props == (['appId', 'appType', 'name', 'settings', 'button', 'pageName', 'stateAttribute', 'buttonRule', 'walkStep', 'opToken', 'confirm'] as Set)
+        then: "the generic upsert params, plus the generic classic-page walkStep walker and buttonRule create helper (issue #185)"
+        props == (['appId', 'appType', 'name', 'settings', 'button', 'pageName', 'stateAttribute', 'buttonRule', 'walkStep', 'confirm'] as Set)
 
         and: "the FAT RM trigger/action authoring shortcuts still stay OUT of the schema (use hub_set_rule)"
         ['addTrigger', 'addTriggers', 'addAction', 'addActions', 'addRequiredExpression',

@@ -236,4 +236,35 @@ class McpRequestDriverSpec extends ToolSpecBase {
         response.result.content[0].type == 'text'
         response.result.content[0].text.contains('TestHub-987654')
     }
+
+    def "decodeToolCallResponse unwraps a direct serialize-once response"() {
+        given:
+        def sentinel = [__preserialized:
+            '{"jsonrpc":"2.0","id":7,"result":{"content":[{"type":"text","text":"{\\"ok\\":true}"}]}}']
+
+        when:
+        def decoded = driver.decodeToolCallResponse(sentinel)
+
+        then:
+        decoded.jsonrpc == '2.0'
+        decoded.id == 7
+        driver.parseInner(sentinel) == [ok: true]
+    }
+
+    def "decodeToolCallResponse leaves an ordinary decoded response unchanged"() {
+        given:
+        def response = [jsonrpc: '2.0', id: 8, result: [ok: true]]
+
+        expect:
+        driver.decodeToolCallResponse(response).is(response)
+    }
+
+    def "decodeToolCallResponse rejects a preserialized payload that is not a JSON object"() {
+        when:
+        driver.decodeToolCallResponse([__preserialized: '[1,2,3]'])
+
+        then:
+        def e = thrown(IllegalStateException)
+        e.message.contains('did not decode to a JSON object')
+    }
 }

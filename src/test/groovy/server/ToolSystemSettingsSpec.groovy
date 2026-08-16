@@ -20,6 +20,8 @@ import groovy.json.JsonSlurper
  *
  * The GET is stubbed via hubGet.register; the POST is captured via script.metaClass.hubInternalPostJson.
  * A timeZone change reboots the hub, so it is confirm-gated (enableWrite()+lastBackupTimestamp satisfy it).
+ *
+ * Also covers toolSetHsm -> hub_set_hsm, the other location-backed write in the same library.
  */
 class ToolSystemSettingsSpec extends ToolSpecBase {
 
@@ -50,6 +52,19 @@ class ToolSystemSettingsSpec extends ToolSpecBase {
     private void enableWrite() {
         settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L   // matches the harness fixed now()
+    }
+
+    def "hub_set_hsm returns a non-null previousStatus when HSM has never reported"() {
+        given:
+        sharedLocation.hsmStatus = null
+
+        when:
+        def result = script.toolSetHsm('armHome')
+
+        then:
+        result.success == true
+        result.previousStatus == 'unknown'
+        result.newMode == 'armHome'
     }
 
     // ---------- no-args validation ----------

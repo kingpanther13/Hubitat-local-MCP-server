@@ -1,9 +1,28 @@
 library(name: "McpFilesLib", namespace: "mcp", author: "kingpanther13", description: "File Manager tool implementations (hub_list_files/hub_read_file/hub_write_file/hub_delete_file) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
+// Hubitat's sandbox does not expose java.util.Locale. File Manager names are
+// ASCII-only, so use a deterministic ASCII fold instead of the process locale.
+private String _filesFoldCase(value) {
+    return value?.toString()?.tr('ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')
+}
+
+// Keep the name filter in one place so JSON and HTML firmware response shapes agree.
+private List _filesApplyListFilters(List fileList, String filterLower) {
+    def out = fileList
+    if (filterLower) {
+        out = out.findAll { _filesFoldCase(it?.name)?.contains(filterLower) }
+    }
+    return out
+}
+
 def toolListFiles(args = null) {
+    if (args?.filter != null && !(args.filter instanceof CharSequence)) {
+        throw new IllegalArgumentException("filter must be a string (a case-insensitive substring of the file name), not ${args.filter instanceof Number ? 'a number' : args.filter instanceof Map ? 'an object' : args.filter instanceof List ? 'an array' : 'a non-string value'}")
+    }
     mcpLog("debug", "file-manager", "Listing files in File Manager")
     def cursor = args?.cursor
-
+    def filterText = args?.filter?.toString()?.trim()
+    def filterLower = _filesFoldCase(filterText)
     // Try known File Manager API endpoints (varies by firmware version)
     def endpoints = ["/hub/fileManager/json", "/hub/fileManager"]
     def responseText = null
@@ -74,7 +93,8 @@ def toolListFiles(args = null) {
             mcpLog("warn", "file-manager", "hub_list_files: parsed response yielded zero files (${shapeHint}) -- shape may not be recognized", null, [details: [endpoint: endpointUsed, shape: shapeHint]])
         }
 
-        mcpLog("info", "file-manager", "Listed ${fileList.size()} files in File Manager (via ${endpointUsed})")
+        fileList = _filesApplyListFilters(fileList, filterLower)
+        mcpLog("info", "file-manager", "Listed ${fileList.size()}${filterLower ? ' matching' : ''} files in File Manager (via ${endpointUsed})")
         def pagedFM = _paginateList(fileList, cursor, 100, "hub_list_files")
         def res = [
             files: pagedFM.page,
@@ -103,7 +123,8 @@ def toolListFiles(args = null) {
 
         if (fileList) {
             fileList = fileList.sort { a, b -> (a.name <=> b.name) }
-            mcpLog("info", "file-manager", "Listed ${fileList.size()} files from File Manager HTML page")
+            fileList = _filesApplyListFilters(fileList, filterLower)
+            mcpLog("info", "file-manager", "Listed ${fileList.size()}${filterLower ? ' matching' : ''} files from File Manager HTML page")
             def pagedHtml = _paginateList(fileList, cursor, 100, "hub_list_files")
             def res = [
                 files: pagedHtml.page,
@@ -248,7 +269,8 @@ def toolDeleteFile(args) {
     if (!args.fileName) throw new IllegalArgumentException("fileName is required")
 
     // Skip auto-backup for files that are already backups (prevent infinite backup chains)
-    def isBackupFile = args.fileName.contains("_backup_") || args.fileName.startsWith("mcp-backup-") || args.fileName.startsWith("mcp-prerestore-")
+    def isBackupFile = args.fileName.contains("_backup_") || args.fileName.startsWith("mcp-backup-") ||
+        args.fileName.startsWith("mcp-rm-backup-") || args.fileName.startsWith("mcp-prerestore-")
 
     // Back up the file before deleting (unless it's already a backup file)
     def backedUp = false
@@ -276,6 +298,15 @@ def toolDeleteFile(args) {
     try {
         deleteHubFile(args.fileName)
         mcpLog("info", "file-manager", "Deleted file '${args.fileName}'")
+        try {
+            def unlinked = unlinkItemBackupManifestFile(args.fileName.toString())
+            if (unlinked) mcpLog("debug", "file-manager", "Unlinked deleted backup file '${args.fileName}' from manifest keys ${unlinked}")
+        } catch (Exception manifestErr) {
+            // The file is already gone. A later backup-reuse check validates the file and
+            // repairs a dangling manifest entry, so bookkeeping failure must not turn a
+            // successful File Manager deletion into a false failure.
+            mcpLog("warn", "file-manager", "Deleted '${args.fileName}' but could not unlink its backup manifest entry: ${manifestErr.message}")
+        }
 
         def result = [
             success: true,
@@ -304,6 +335,8 @@ def toolDeleteFile(args) {
         mcpLogError("file-manager", "Failed to delete file '${args.fileName}'", e)
         return [
             success: false,
+            message: "Failed to delete file '${args.fileName}': ${e.message}",
+            fileName: args.fileName,
             error: "Failed to delete '${args.fileName}': ${e.message}",
             suggestion: "Check that the file exists. Use 'hub_list_files' to see available files."
         ]
@@ -315,10 +348,11 @@ def _getAllToolDefinitions_partFiles() {
         // File Manager Tools
         [
             name: "hub_list_files",
-            description: "List files stored in the hub's File Manager[[FLAT_TRIM]] (the local web-accessible file store)[[/FLAT_TRIM]], returning each file's name, size, last-modified date, and direct download URL.[[FLAT_TRIM]] Use this to discover available files before reading one with hub_read_file, or to confirm a write/backup landed.[[/FLAT_TRIM]] Read-only.",
+            description: "List files stored in the hub's File Manager (the local web-accessible file store), returning each file's name, size, last-modified date, and direct download URL. Optionally filter by a case-insensitive substring of the file name. Use this to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. Read-only.",
             inputSchema: [
                 type: "object",
                 properties: [
+                    filter: [type: "string", description: "Optional case-insensitive substring to match against file names, e.g. \"backup\" or \"mcp-rm-backup\"."],
                     cursor: [type: "string", description: "Opt-in pagination cursor.[[FLAT_TRIM]] Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
                 ]
             ],

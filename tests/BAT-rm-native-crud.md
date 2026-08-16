@@ -32,6 +32,8 @@ Each test is a JSON scenario with optional `setup_prompt`, required `test_prompt
 }
 ```
 
+**Runner contract:** The COMPLETE message to the agent under test is exactly `On my Hubitat, using the mcp connector: <test_prompt>` — no additional framing, no MCP server or tool names, no tool-loading hints, no report-format instructions. `setup_prompt`/`teardown_prompt` are orchestrator-only; **Expected** blocks are grading reference only and are never shown to the agent.
+
 ### Prompt style — goal-first
 
 Same rule as [BAT-v2.md](./BAT-v2.md): the `test_prompt` fed to the sub-agent under test states the scenario + goal in plain language and does **not** name any MCP tool, gateway, or call arg — tool names belong in the test title, **Expected**, and failure-mode grading text. `setup_prompt` / `teardown_prompt` are orchestrator scaffolding and MAY name tools directly. Per-test edge case: a test whose *subject is* the MCP surface itself (wire-shape regressions, deliberately malformed calls, gateway-override visibility) may still name that surface in its `test_prompt`.
@@ -226,12 +228,12 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a scratch rule via hub_set_rule with name='BAT-RM-Stop Start' and at least one trivial trigger (e.g., a virtual switch trigger on 'BAT-RM Switch 1'). Remember the rule id.",
-  "test_prompt": "Stop the rule (stopRuleAct). Verify by reading it back that statusJson.eventSubscriptions drops to zero / the rule's delays and repeats are cancelled. Then Start the rule again. Verify eventSubscriptions.length > 0 afterwards (Start also resets Private Boolean to true).",
+  "test_prompt": "Stop the rule and verify through the rule's health that it is stopped and holds no live event subscriptions. Then Start it again and verify it is no longer stopped and its subscriptions are live (Start also resets Private Boolean to true).",
   "teardown_prompt": "Delete the rule via hub_delete_native_app(appId=ruleId, force=true)."
 }
 ```
 
-**Expected**: AI calls `hub_call_rule(ruleId=ruleId, action='stop')` then `hub_call_rule(ruleId=ruleId, action='start')`. Post-test invariants: after stop, `statusJson.eventSubscriptions` is empty; after start, `eventSubscriptions.length > 0` (matches invariant #2).
+**Expected**: AI calls `hub_call_rule(ruleId=ruleId, action='stop')`, then `hub_get_rule_health(appId=ruleId)` and verifies `stopped == true` with `eventSubscriptionCount == 0` (0 = read fine, nothing live; null appears only when the runtime status itself was unreadable); it calls `hub_call_rule(ruleId=ruleId, action='start')`, reads health again, and verifies `stopped == false` and `eventSubscriptionCount > 0` (the rule's trigger is device-event-based).
 
 ### T312 — Update Rule button (re-initialize)
 
@@ -612,12 +614,12 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create BAT virtual device 'BAT-Motion-HTTP' (Virtual Motion Sensor) for the Last Event Device test. Record ID.",
-  "test_prompt": "Create 'BAT-RM-HTTP Triggers' with three triggers: (1) Local End Point (generate a local HTTP URL), (2) Cloud End Point (generate a cloud HTTP URL), (3) BAT-Motion-HTTP active AND Last Event Device reference in a subsequent trigger/action. Verify the local and cloud URLs are generated and returned in the rule config. Note: HTTP-triggered rules may NOT produce event subscriptions (eventSubscriptions.length can be 0 for HTTP-only triggers) — this is expected and should NOT fail the post-write invariant for this test.",
+  "test_prompt": "Create 'BAT-RM-HTTP Triggers' with three triggers: (1) Local End Point, (2) Cloud End Point, (3) BAT-Motion-HTTP active AND Last Event Device reference in a subsequent trigger/action. Verify both endpoint trigger capabilities and the Last Event Device reference in the rule config. Note: HTTP-triggered rules may NOT produce event subscriptions (eventSubscriptions.length can be 0 for HTTP-only triggers) — this is expected and should NOT fail the post-write invariant for this test.",
   "teardown_prompt": "Delete the rule and remove BAT-Motion-HTTP."
 }
 ```
 
-**Expected**: Rule has Local End Point + Cloud End Point triggers producing accessible URLs in the config page. Last Event Device trigger references the motion trigger. **Invariant exception**: for HTTP-triggered rules, `eventSubscriptions.length` may be 0 — verify [INV-1] `configPage.error == null` but DO NOT assert non-empty subscriptions. Device-based trigger in the same rule does produce subscriptions.
+**Expected**: Rule has Local End Point + Cloud End Point trigger rows. Last Event Device trigger references the motion trigger. The token-bearing endpoint URLs are deliberately not exposed through MCP reads, so grading must not require URL retrieval. **Invariant exception**: for HTTP-triggered rules, `eventSubscriptions.length` may be 0 — verify [INV-1] `configPage.error == null` but DO NOT assert non-empty subscriptions. Device-based trigger in the same rule does produce subscriptions.
 
 ### T346 — Multi-device Contact trigger (SECOND regression-guard case)
 
@@ -1542,107 +1544,107 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 ```json
 {
   "setup_prompt": "Create a BAT helper rule first: call hub_manage_rule_machine.hub_set_rule with name='BAT-RM-T430-Target' and a minimal action (e.g., log message 'fired'). Note its ruleId as {target_id}.",
-  "test_prompt": "Create a new Rule Machine rule named 'BAT-RM-T430-Endpoint' whose only trigger is a Local End Point that runs the actions of rule {target_id} (so the generated URL should include /runRuleAct={target_id}). Give it a simple log action. After creation, read the rule back and tell me the generated local endpoint URL.",
+  "test_prompt": "Create a new Rule Machine rule named 'BAT-RM-T430-Endpoint' whose only trigger is a Local End Point configured with runRuleAct for rule {target_id}. Give it a simple log action. After creation, read the rule back and verify the endpoint trigger, verb, and target configuration without requesting its token-bearing URL.",
   "teardown_prompt": "Delete both BAT-RM-T430-Endpoint and BAT-RM-T430-Target with hub_delete_native_app force=true. Verify hub_list_rules no longer contains either name."
 }
 ```
 
-**Expected**: Calls `hub_manage_rule_machine.hub_set_rule` with a Local End Point trigger bound to `/runRuleAct=<target_id>`. `hub_get_app_config` round-trip shows the endpoint URL in the rule config and the selected verb. [INV-1] `configPage.error == null`; `statusJson.eventSubscriptions.length > 0`. Teardown force-deletes both rules; final `hub_list_rules` count returns to baseline.
+**Expected**: Calls `hub_manage_rule_machine.hub_set_rule` with a Local End Point trigger bound to `runRuleAct` and `<target_id>`. `hub_get_app_config` round-trip shows the supported trigger/verb/target configuration. [INV-1] `configPage.error == null`. This HTTP-only rule may correctly have zero `eventSubscriptions`, so subscriptions are not graded. The token-bearing endpoint URL is deliberately not exposed through MCP reads. Teardown force-deletes both rules; final `hub_list_rules` count returns to baseline.
 
 ### T431 — Local End Point trigger with /stopRuleAct verb
 
 ```json
 {
   "setup_prompt": "Create a helper rule BAT-RM-T431-Target via hub_set_rule with a simple delayed log action. Note its ruleId.",
-  "test_prompt": "Create 'BAT-RM-T431-Endpoint' whose only trigger is a Local End Point configured to stop the actions of the helper rule (/stopRuleAct=<id>). Then read the rule back and show me the endpoint URL and the verb.",
+  "test_prompt": "Create 'BAT-RM-T431-Endpoint' whose only trigger is a Local End Point configured with stopRuleAct for the helper rule. Then read the rule back and verify the endpoint trigger, verb, and target configuration without requesting its token-bearing URL.",
   "teardown_prompt": "Force-delete both BAT-RM-T431-* rules. Verify hub_list_rules is clean and no orphan children remain under the RM parent."
 }
 ```
 
-**Expected**: `hub_set_rule` with Local End Point + verb `stopRuleAct`. Round-trip via `hub_get_app_config` confirms the URL contains `/stopRuleAct=<id>`. [INV-1] `configPage.error == null`. Clean teardown.
+**Expected**: `hub_set_rule` with Local End Point + verb `stopRuleAct` targeting the helper ID. Round-trip via `hub_get_app_config` confirms the supported trigger/verb/target configuration. [INV-1] `configPage.error == null`. The token-bearing endpoint URL is deliberately not exposed through MCP reads. Clean teardown.
 
-### T432 — Local End Point pauseRule and resumeRule verbs (paired)
+### T432 — Local End Point triggers with pauseRule and resumeRule actions (paired)
 
 ```json
 {
   "setup_prompt": "Create helper rule BAT-RM-T432-Target. Note its ruleId.",
-  "test_prompt": "Create two rules: 'BAT-RM-T432-Pauser' with a Local End Point trigger that calls /pauseRule=<target_id>, and 'BAT-RM-T432-Resumer' with a Local End Point trigger that calls /resumeRule=<target_id>. After creating both, read them back and show me the two generated URLs.",
+  "test_prompt": "Create two rules: 'BAT-RM-T432-Pauser' with a Local End Point trigger and an action that pauses the helper rule, and 'BAT-RM-T432-Resumer' with a Local End Point trigger and an action that resumes the helper rule. Read both configurations back and verify the trigger and targeted action rows.",
   "teardown_prompt": "Force-delete all three BAT-RM-T432-* rules. Confirm hub_list_rules no longer lists them."
 }
 ```
 
-**Expected**: Two `hub_set_rule` calls, one per verb. `hub_get_app_config` on each shows correct `/pauseRule=` and `/resumeRule=` endpoint paths. Both [INV-1] `configPage.error == null`; both `eventSubscriptions.length > 0`. Teardown force-deletes all three.
+**Expected**: Two `hub_set_rule` creates. Each has a pure Local End Point trigger (`tCapab1="Local End Point"`, with no verb/target field) plus a `pauseRule` action targeting the helper: Pauser renders pause and persists inverse raw `pR.<N>="false"`; Resumer renders resume and persists inverse raw `pR.<N>="true"` (the flag stores the inverse of the shown verb, as in T433). Verify both through `hub_get_app_config`; [INV-1] `configPage.error == null`. The endpoint URL, including its access token, is deliberately NOT exposed through MCP reads, so grading must not require URL retrieval. Teardown force-deletes all three.
 
-### T433 — Local End Point setRuleBooleanTrue / setRuleBooleanFalse (paired)
+### T433 — Local End Point triggers with Private Boolean actions (paired)
 
 ```json
 {
   "setup_prompt": "Create helper rule BAT-RM-T433-Target that uses Private Boolean in a condition. Note its ruleId.",
-  "test_prompt": "Create 'BAT-RM-T433-PBTrue' with Local End Point trigger /setRuleBooleanTrue=<target_id> and 'BAT-RM-T433-PBFalse' with /setRuleBooleanFalse=<target_id>. Confirm both endpoint URLs by reading the rules back.",
+  "test_prompt": "Create 'BAT-RM-T433-PBTrue' with a Local End Point trigger and an action that sets the helper rule's Private Boolean true, and 'BAT-RM-T433-PBFalse' with the same trigger and an action that sets the helper rule's Private Boolean false. Read both configurations back and verify the trigger and targeted action rows.",
   "teardown_prompt": "Force-delete all three BAT-RM-T433-* rules. Verify cleanup."
 }
 ```
 
-**Expected**: Two `hub_set_rule` creates, each with the respective PB verb. Round-trip URLs contain the expected path segments. [INV-1] `configPage.error == null`. Clean teardown.
+**Expected**: Two `hub_set_rule` creates. Each has a pure Local End Point trigger (`tCapab1="Local End Point"`) plus a `privateBoolean` action targeting the helper: PBTrue renders True and persists inverse raw `pvTF.<N>="false"`; PBFalse renders False and persists `pvTF.<N>="true"`. Verify through `hub_get_app_config`; [INV-1] `configPage.error == null`. The endpoint URL, including its access token, is deliberately NOT exposed through MCP reads, so grading must not require URL retrieval. Clean teardown.
 
 ### T434 — Local End Point legacy /runRule verb
 
 ```json
 {
   "setup_prompt": "Create BAT-RM-T434-Target with a simple log action.",
-  "test_prompt": "Create 'BAT-RM-T434-Legacy' with a Local End Point trigger that uses the legacy /runRule=<id> verb (not runRuleAct). After creation, read the rule back and confirm the URL uses the legacy path.",
+  "test_prompt": "Create 'BAT-RM-T434-Legacy' with a Local End Point trigger that uses the legacy runRule verb (not runRuleAct) for the target rule. After creation, read the rule back and confirm the supported verb/target configuration.",
   "teardown_prompt": "Force-delete both BAT-RM-T434-* rules."
 }
 ```
 
-**Expected**: `hub_set_rule` with legacy `runRule` verb. `hub_get_app_config` confirms `/runRule=<id>` (not `/runRuleAct=`). AI may note that `runRuleAct` is preferred on 4.x+. Clean teardown.
+**Expected**: `hub_set_rule` with legacy `runRule` verb and the target ID. `hub_get_app_config` confirms `runRule` (not `runRuleAct`) in the supported configuration fields. AI may note that `runRuleAct` is preferred on 4.x+. URL retrieval is not graded. Clean teardown.
 
 ### T435 — Local End Point /getRuleList (returns JSON of rules)
 
 ```json
 {
-  "test_prompt": "Create a rule 'BAT-RM-T435-GetList' with a Local End Point trigger that calls /getRuleList (the verb that returns a JSON map of all rules). Read the rule back and verify the generated URL ends with /getRuleList and that no rule-id parameter is required.",
+  "test_prompt": "Create a rule 'BAT-RM-T435-GetList' with a Local End Point trigger that calls getRuleList (the verb that returns a JSON map of all rules). Read the rule back and verify the verb configuration requires no rule-id target.",
   "teardown_prompt": "Force-delete BAT-RM-T435-GetList. Verify cleanup."
 }
 ```
 
-**Expected**: `hub_set_rule` with `getRuleList` verb (no rule id). `hub_get_app_config` shows endpoint path ending in `/getRuleList`. [INV-1] `configPage.error == null`. Clean teardown.
+**Expected**: `hub_set_rule` with `getRuleList` verb (no rule id). `hub_get_app_config` shows the supported verb configuration without exposing the token-bearing endpoint URL. [INV-1] `configPage.error == null`. Clean teardown.
 
 ### T436 — Local End Point /setHubVariable verb
 
 ```json
 {
   "setup_prompt": "Create a hub variable named 'batT436Var' (number, initial 0) via manage_hub_variables.",
-  "test_prompt": "Create 'BAT-RM-T436-SetHubVar' with a Local End Point trigger configured with the /setHubVariable verb targeting batT436Var. Read the rule back and confirm the generated URL shows /setHubVariable=batT436Var:<value> pattern in the rule config.",
+  "test_prompt": "Create 'BAT-RM-T436-SetHubVar' with a Local End Point trigger configured with the setHubVariable verb targeting batT436Var. Read the rule back and confirm the verb and variable target configuration.",
   "teardown_prompt": "Force-delete BAT-RM-T436-SetHubVar. Delete the batT436Var hub variable. Verify both are gone."
 }
 ```
 
-**Expected**: `hub_set_rule` with `setHubVariable` verb + target variable name. Round-trip shows the `:value` placeholder in the URL. [INV-1] `configPage.error == null`. Teardown removes both the rule and the hub variable.
+**Expected**: `hub_set_rule` with `setHubVariable` verb + target variable name. Round-trip shows the supported verb/target configuration; URL retrieval is not graded. [INV-1] `configPage.error == null`. Teardown removes both the rule and the hub variable.
 
 ### T437 — Local End Point /setHubVariableEncoded (name with spaces)
 
 ```json
 {
   "setup_prompt": "Create a hub variable literally named 'my test var' (with spaces) via manage_hub_variables.",
-  "test_prompt": "Create 'BAT-RM-T437-EncodedVar' with a Local End Point trigger using /setHubVariableEncoded targeting the variable 'my test var'. Because the name has spaces, the generated URL must URL-encode both the name and value placeholders. Read the rule back and confirm the encoded path.",
+  "test_prompt": "Create 'BAT-RM-T437-EncodedVar' with a Local End Point trigger using setHubVariableEncoded targeting the variable 'my test var'. Read the rule back and confirm the encoded-variable verb and exact variable target configuration.",
   "teardown_prompt": "Force-delete BAT-RM-T437-EncodedVar and delete the 'my test var' hub variable."
 }
 ```
 
-**Expected**: `hub_set_rule` with `setHubVariableEncoded` verb. `hub_get_app_config` shows `/setHubVariableEncoded=my%20test%20var:<encoded>`. AI explains this verb's purpose is for names with spaces/special chars. Clean teardown.
+**Expected**: `hub_set_rule` with `setHubVariableEncoded` and exact target `my test var`. `hub_get_app_config` confirms the supported verb/target configuration without exposing the endpoint URL. AI explains this verb's purpose is for names with spaces/special chars. Clean teardown.
 
 ### T438 — Local End Point legacy /setGlobalVariable verb
 
 ```json
 {
   "setup_prompt": "Create a legacy global variable (or reuse a suitable hub variable) named 'batT438Legacy'.",
-  "test_prompt": "Create 'BAT-RM-T438-SetGV' with a Local End Point trigger using the legacy /setGlobalVariable=<name>:<value> verb. Read the rule back and confirm the URL uses /setGlobalVariable (not /setHubVariable).",
+  "test_prompt": "Create 'BAT-RM-T438-SetGV' with a Local End Point trigger using the legacy setGlobalVariable verb and the target variable. Read the rule back and confirm the legacy verb configuration is used instead of setHubVariable.",
   "teardown_prompt": "Force-delete BAT-RM-T438-SetGV. Remove the test variable."
 }
 ```
 
-**Expected**: `hub_set_rule` with `setGlobalVariable` verb. Round-trip confirms legacy path. AI may note this is a legacy alias retained for backward compat. Clean teardown.
+**Expected**: `hub_set_rule` with `setGlobalVariable` verb and the target name. Round-trip confirms the supported legacy verb/target configuration; URL retrieval is not graded. AI may note this is a legacy alias retained for backward compat. Clean teardown.
 
 ### T439 — Local End Point arbitrary string (sets %value%)
 
@@ -1655,29 +1657,29 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 **Expected**: `hub_set_rule` with Local End Point in "arbitrary string → %value%" mode — no verb selection. Round-trip confirms the catch-all configuration. [INV-1] `configPage.error == null`. Clean teardown.
 
-### T440 — Cloud End Point trigger (cloud URL variant)
+### T440 — Cloud End Point trigger
 
 ```json
 {
   "setup_prompt": "Confirm the hub has cloud access configured (Hubitat login registered).",
-  "test_prompt": "Create 'BAT-RM-T440-Cloud' with a Cloud End Point trigger using /runRuleAct=<self> (pointed at the rule itself). After creation, read the rule back and confirm the URL starts with https://cloud.hubitat.com (or the equivalent cloud host), NOT the local http://<hub-ip>:8080 prefix.",
+  "test_prompt": "Create 'BAT-RM-T440-Cloud' with a Cloud End Point trigger using runRuleAct pointed at the rule itself. After creation, read the rule back and confirm the Cloud End Point capability and self-targeted verb configuration.",
   "teardown_prompt": "Force-delete BAT-RM-T440-Cloud. Verify cleanup."
 }
 ```
 
-**Expected**: `hub_set_rule` with capability `Cloud End Point` (not Local). Round-trip confirms the `cloud.hubitat.com` URL prefix. [INV-1] `configPage.error == null`. If cloud is unconfigured, AI reports that cleanly instead of fabricating a URL. Clean teardown.
+**Expected**: `hub_set_rule` with capability `Cloud End Point` (not Local), verb `runRuleAct`, and the self target. Round-trip confirms those supported fields; the token-bearing cloud URL/host is not exposed or graded. [INV-1] `configPage.error == null`. If cloud is unconfigured, AI reports that cleanly. Clean teardown.
 
-### T441 — Endpoint URL round-trips verbatim through hub_set_rule (edit path)
+### T441 — Endpoint target round-trips through hub_set_rule (edit path)
 
 ```json
 {
   "setup_prompt": "Create BAT-RM-T441-TargetA and BAT-RM-T441-TargetB (two simple log-only rules). Note both ruleIds.",
-  "test_prompt": "Create 'BAT-RM-T441-Switchable' with a Local End Point trigger bound to /runRuleAct=<TargetA_id>. Read the rule back and record the URL. Then edit the rule to switch the binding to /runRuleAct=<TargetB_id>. Read it back again and confirm the URL now references TargetB, and that the old TargetA subscription is gone from eventSubscriptions.",
+  "test_prompt": "Create 'BAT-RM-T441-Switchable' with a Local End Point trigger using runRuleAct for TargetA. Read the supported configuration. Then edit the rule to target TargetB, read it back again, and confirm the persisted target field changed from TargetA to TargetB.",
   "teardown_prompt": "Force-delete all three BAT-RM-T441-* rules."
 }
 ```
 
-**Expected**: `hub_set_rule` (create) then `hub_set_rule(appId=ruleId)` (edit) flips the endpoint target. `hub_get_app_config` after update shows the new target id in the URL. `statusJson.eventSubscriptions` reflects the new binding (no stale A reference). [INV-1] `configPage.error == null` throughout. Clean teardown.
+**Expected**: `hub_set_rule` (create) then `hub_set_rule(appId=ruleId)` (edit) flips the endpoint target. `hub_get_app_config` after update shows TargetB, not TargetA, in the supported endpoint target field. This HTTP-only rule may correctly have zero `eventSubscriptions`, so subscriptions are not used to grade rebinding. URL retrieval is not graded. [INV-1] `configPage.error == null` throughout. Clean teardown.
 
 ### T442 — Orphan cleanup after failed create — must EXERCISE the cleanup path, not pre-validate
 

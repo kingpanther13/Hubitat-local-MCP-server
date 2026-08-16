@@ -80,9 +80,18 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         enableEveryToggle()
 
         when:
-        def catalogJson = JsonOutput.toJson(script.getToolDefinitions())
+        // One build, both assertions: a second getToolDefinitions() call would let the named
+        // scan and the serialized payload disagree if a leak ever depended on build state.
+        def tools = script.getToolDefinitions()
+        def catalogJson = JsonOutput.toJson(tools)
 
         then: 'neither opening nor closing marker appears in the wire payload'
+        // Named, not just counted: on a 116-tool catalog a bare contains() failure prints the
+        // whole payload and never says which tool leaked.
+        tools.findAll {
+            def j = JsonOutput.toJson(it)
+            j.contains(OPEN_MARKER) || j.contains(CLOSE_MARKER)
+        }*.name == []
         !catalogJson.contains(OPEN_MARKER)
         !catalogJson.contains(CLOSE_MARKER)
     }

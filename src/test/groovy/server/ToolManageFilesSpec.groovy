@@ -54,6 +54,126 @@ class ToolManageFilesSpec extends ToolSpecBase {
         result.files[0].directDownload.contains('/local/a.txt')
     }
 
+    def "hub_list_files filters file names by case-insensitive substring"() {
+        given:
+        hubGet.register('/hub/fileManager/json') { params ->
+            JsonOutput.toJson([
+                [name: 'alpha.txt', size: 10],
+                [name: 'ALPINE.csv', size: 20],
+                [name: 'beta.txt', size: 30]
+            ])
+        }
+
+        when:
+        def result = script.toolListFiles([filter: 'AlP'])
+
+        then:
+        result.total == 2
+        result.files*.name == ['ALPINE.csv', 'alpha.txt']
+    }
+
+    def "hub_list_files refuses a non-string filter before any hub read"() {
+        when:
+        script.toolListFiles([filter: 123])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('filter must be a string')
+        hubGet.calls.isEmpty()
+    }
+
+    def "hub_list_files case folding is locale-independent"() {
+        given:
+        def prior = Locale.default
+        Locale.default = new Locale('tr', 'TR')
+        hubGet.register('/hub/fileManager/json') { params ->
+            JsonOutput.toJson([
+                [name: 'TITLE.txt', size: 10],
+                [name: 'other.txt', size: 20]
+            ])
+        }
+
+        when:
+        def result = script.toolListFiles([filter: 'title'])
+
+        then:
+        result.files*.name == ['TITLE.txt']
+
+        cleanup:
+        Locale.default = prior
+    }
+
+    @spock.lang.Unroll
+    def "hub_list_files filter survives the dispatch envelope in both gateway modes (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        hubGet.register('/hub/fileManager/json') { params ->
+            JsonOutput.toJson([
+                [name: 'alpha.txt', size: 10],
+                [name: 'ALPINE.csv', size: 20],
+                [name: 'beta.txt', size: 30]
+            ])
+        }
+
+        when:
+        def response = mcpDriver.callTool('hub_list_files', [filter: 'AlP'])
+
+        then:
+        response.error == null
+        !response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.total == 2
+        inner.files*.name == ['ALPINE.csv', 'alpha.txt']
+
+        where:
+        useGateways << [true, false]
+    }
+
+    def "hub_list_files applies the filter on the HTML fallback too"() {
+        given: 'the endpoint answers with the File Manager HTML page, so JSON parsing throws'
+        hubGet.register('/hub/fileManager/json') { params ->
+            '<html><body>' +
+            '<a href="/local/alpha.txt">alpha.txt</a>' +
+            "<a href='/local/ALPINE.csv'>ALPINE.csv</a>" +
+            '<a href="/local/beta.txt">beta.txt</a>' +
+            '</body></html>'
+        }
+
+        when:
+        def result = script.toolListFiles([filter: 'AlP'])
+
+        then: 'the HTML branch served the listing and the filter still applied case-insensitively'
+        result.note.contains('HTML page')
+        result.total == 2
+        result.files*.name == ['ALPINE.csv', 'alpha.txt']
+    }
+
+    def "hub_list_files filters BEFORE paginating so every page holds only matches"() {
+        // Ordering proof: the cursor must index into the FILTERED list. If pagination ran
+        // first, total would count the non-matching files and they would surface on page 2.
+        given:
+        def names = (0..101).collect { [name: String.format('match-%03d.txt', it), size: 1] }
+        names << [name: 'other-a.txt', size: 1]
+        names << [name: 'other-b.txt', size: 1]
+        hubGet.register('/hub/fileManager/json') { params -> JsonOutput.toJson(names) }
+
+        when: 'first page of the filtered set'
+        def page1 = script.toolListFiles([filter: 'MATCH', cursor: '0'])
+
+        then: 'a full page of matches, with a cursor for the remainder'
+        page1.total == 102
+        page1.files.size() == 100
+        page1.nextCursor == '100'
+
+        when: 'the remainder'
+        def page2 = script.toolListFiles([filter: 'MATCH', cursor: page1.nextCursor])
+
+        then: 'the two pages together are exactly the 102 matches, no non-matching file anywhere'
+        page2.files.size() == 2
+        page2.nextCursor == null
+        (page1.files*.name + page2.files*.name) == (0..101).collect { String.format('match-%03d.txt', it) }
+    }
+
     @spock.lang.Unroll
     def "hub_list_files via dispatch returns sorted file list (useGateways=#useGateways)"() {
         given:
@@ -662,7 +782,30 @@ class ToolManageFilesSpec extends ToolSpecBase {
         fileName                              | _
         'notes_backup_20260419-100000.txt'    | _   // substring _backup_
         'mcp-backup-app-42.groovy'            | _   // prefix mcp-backup-
+        'mcp-rm-backup-42-20260419.json'       | _   // native-rule backup prefix
         'mcp-prerestore-driver-9.groovy'      | _   // prefix mcp-prerestore-
+    }
+
+    def "hub_delete_file unlinks every manifest entry for the deleted backup file"() {
+        given:
+        enableWrite()
+        atomicStateMap.itemBackupManifest = [
+            "rm-rule_42_old": [type: "rm-rule", ruleId: 42, fileName: "mcp-rm-backup-42-old.json", timestamp: 1L],
+            "rm-rule_42_alias": [type: "rm-rule", ruleId: 42, fileName: "mcp-rm-backup-42-old.json", timestamp: 2L],
+            "rm-rule_43_keep": [type: "rm-rule", ruleId: 43, fileName: "mcp-rm-backup-43-keep.json", timestamp: 3L]
+        ]
+        def deleted = []
+        script.metaClass.downloadHubFile = { String name -> throw new AssertionError("backup files must not be backed up again") }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> throw new AssertionError("backup files must not be uploaded again") }
+        script.metaClass.deleteHubFile = { String name -> deleted << name }
+
+        when:
+        def result = script.toolDeleteFile([fileName: "mcp-rm-backup-42-old.json", confirm: true])
+
+        then:
+        result.success == true
+        deleted == ["mcp-rm-backup-42-old.json"]
+        atomicStateMap.itemBackupManifest.keySet() == ["rm-rule_43_keep"] as Set
     }
 
     def "hub_delete_file reports failure without throwing when deleteHubFile errors"() {
@@ -679,6 +822,8 @@ class ToolManageFilesSpec extends ToolSpecBase {
 
         then:
         result.success == false
+        result.fileName == 'notes.txt'
+        result.message.contains('permission denied')
         result.error.contains('permission denied')
         result.suggestion.contains('hub_list_files')
     }
