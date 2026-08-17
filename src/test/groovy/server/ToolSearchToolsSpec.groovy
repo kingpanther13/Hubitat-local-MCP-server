@@ -219,6 +219,20 @@ class ToolSearchToolsSpec extends ToolSpecBase {
             .results*.tool.contains('hub_list_files')
     }
 
+    def "the fingerprint memo is actually populated by a search"() {
+        given: 'TOOL_SEARCH_CORPUS_FP is the only non-final @Field static and the only bare-identifier WRITE to an app field from library text. If that assignment ever resolved to the script Binding instead of the field, every other gate stays green and the sole symptom is a permanently cold path re-walking the catalog on every call'
+        searchEnabled()
+
+        expect: 'the memo starts cold -- asserted, not stated: an expression in a given: block is not auto-asserted by Spock, so writing it there would leave the premise unenforced and this test green even if the harness reset regressed'
+        scriptStaticField('TOOL_SEARCH_CORPUS_FP') == null
+
+        when:
+        script.toolSearchTools([query: 'list rooms', maxResults: 3])
+
+        then: 'the memo warmed, and holds the live catalog fingerprint'
+        scriptStaticField('TOOL_SEARCH_CORPUS_FP') == script.toolSearchCorpusFingerprint()
+    }
+
     def "the corpus fingerprint actually discriminates -- a content change moves it"() {
         given: 'the sibling requiredParams memo ships this exact guard, because every other fingerprint test passes just as well against a function that returns a constant'
         searchEnabled()
@@ -254,6 +268,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         when: 'every plain comma-separated Args: tail is parsed back into argument names'
         def phantom = []
         int summariesChecked = 0
+        int listFilesChecked = 0
         script.getGatewayConfig().each { gwName, gw ->
             (gw?.summaries ?: [:]).each { toolName, summary ->
                 def m = (summary as String) =~ /Args:\s*([^.]*)/
@@ -261,6 +276,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
                 String tail = m.group(1).trim()
                 if (!plainList.matcher(tail).matches()) return
                 summariesChecked++
+                if (toolName == 'hub_list_files') listFilesChecked++
                 tail.split(',').each { raw ->
                     String arg = raw.trim()
                     if (!(schemaProps[toolName as String]?.contains(arg))) {
@@ -273,7 +289,10 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         then: 'no such summary advertises an argument its tool does not accept'
         phantom == []
 
-        and: 'the scan reached real summaries -- an empty sweep would pass vacuously, and both hub_list_files rows are in scope'
+        and: 'the scan reached real summaries -- an empty sweep would pass vacuously'
         summariesChecked >= 2
+
+        and: 'and BOTH hub_list_files rows are specifically in scope: a bare total is satisfied by two unrelated summaries while the rows this PR edited are skipped by the regex'
+        listFilesChecked == 2
     }
 }

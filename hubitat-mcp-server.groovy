@@ -50,6 +50,15 @@
 // to be there, which every per-entry write path used to re-check with its own read.
 @groovy.transform.Field static final Set WRITE_STATE_DURABLE_MAPS = new java.util.HashSet()
 
+// Memo of the tool-search corpus fingerprint, kept OUTSIDE the lock-guarded block above:
+// unlike those, it is deliberately unsynchronized. Computing it walks the whole catalog,
+// which would otherwise happen on EVERY hub_search_tools call just to decide the cache is
+// warm. The tool surface is code, so within one class lifetime the value cannot change --
+// concurrent computers race to the same answer -- and a code deploy recompiles the class,
+// clearing it, which is exactly the event the fingerprint exists to catch. updated() clears
+// it too. The only non-final static here; it is assigned, not mutated in place.
+@groovy.transform.Field static String TOOL_SEARCH_CORPUS_FP = null
+
 definition(
     name: "MCP Rule Server",
     namespace: "mcp",
@@ -566,6 +575,7 @@ def updated() {
     atomicState.remove("toolSearchTokens")        // ...and the paired BM25 token cache in lockstep
     atomicState.remove("toolSearchCorpusVersion")  // ...and the retired version stamp, so an upgraded hub sheds it
     atomicState.remove("toolSearchCorpusFingerprint")  // ...and the corpus content fingerprint in lockstep
+    TOOL_SEARCH_CORPUS_FP = null                  // ...and its in-JVM memo, or the next search reuses a stale key
     atomicState.remove("requiredParamsByTool")    // ...and the gateway required-param memo
     atomicState.remove("requiredParamsByToolFingerprint")  // ...and its content fingerprint in lockstep
     initialize()
@@ -2626,34 +2636,7 @@ private Map _mrtrRecordSlice(String stateId, Map originalRec, Map claim, Map res
         try {
             def aggregate = (rec.aggregate instanceof Map) ? ([:] + rec.aggregate) : [:]
             String kind = continuation.kind?.toString()
-            aggregate.kind = kind
-            switch (kind) {
-                case "call_rule":
-                    // Collapse at BANK time so the durable record holds one entry per rule
-                    // instead of one per attempt -- that record is what _mrtrPutLocked
-                    // re-serializes on every slice.
-                    def banked = _mrtrBankRuleResults(aggregate, result)
-                    aggregate.results = banked.results
-                    aggregate.ruleIds = banked.ruleIds
-                    break
-                case "walk_steps":
-                    aggregate.steps = ((aggregate.steps instanceof List) ? aggregate.steps : []) +
-                        ((result.steps instanceof List) ? result.steps : [])
-                    aggregate.stepsRequested = ((aggregate.stepsRequested ?: 0) as Integer) +
-                        ((result.stepsRequested ?: 0) as Integer)
-                    break
-                case "bulk_edit":
-                    aggregate.triggers = ((aggregate.triggers instanceof List) ? aggregate.triggers : []) +
-                        ((result.triggers instanceof List) ? result.triggers : [])
-                    aggregate.actions = ((aggregate.actions instanceof List) ? aggregate.actions : []) +
-                        ((result.actions instanceof List) ? result.actions : [])
-                    break
-                case "patches":
-                    aggregate.patchResults = ((aggregate.patchResults instanceof List) ? aggregate.patchResults : []) +
-                        ((result.patchResults instanceof List) ? result.patchResults : [])
-                    break
-            }
-            aggregate.anyPartial = aggregate.anyPartial == true || result.partial == true
+            _mrtrMergeAggregate(aggregate, kind, result)
             rec.aggregate = aggregate
             if (continuation.nextArguments instanceof Map) rec.nextArguments = continuation.nextArguments
             else rec.remove("nextArguments")
@@ -2710,10 +2693,46 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                         && !(result.remainingRuleIds as List).isEmpty()) {
                     capped.remainingRuleIds = result.remainingRuleIds
                 }
-                // Some rules WERE actioned or this branch is unreachable, so partial is true
-                // whenever anything landed -- stated explicitly, because the sibling terminal
-                // always sets the key and a client reading it must not see it absent here.
-                capped.partial = !banked.isEmpty()
+                // partial means some rules were actioned and some were not. Keying it on
+                // "anything banked" would be structurally always true here -- reaching the cap
+                // requires a pause, which requires a banked row -- and would report an
+                // all-failed capped batch as partial while the identical outcome through the
+                // ordinary terminal reports a plain failure.
+                //
+                // The formula is deliberately NOT the terminal's `failed.size() < results.size()`:
+                // reaching this branch REQUIRES a non-empty remainingRuleIds, so rules that were
+                // never reached always exist here and the terminal's version never sees them. One
+                // success is therefore enough to make this batch some-actioned-some-not, whereas
+                // at the ordinary terminal nothing is left unreached and a mixed row set is the
+                // only way to be partial.
+                capped.partial = banked.any { it instanceof Map && it.success == true }
+                // Name the re-issue set explicitly. The un-done work at the cap is
+                // failedRuleIds UNION remainingRuleIds -- exactly what the continuation would
+                // have re-queued -- and note is the field an agent reads for its next move.
+                // Left generic, it leads to re-issuing only the un-reached ids and stranding
+                // the failed ones, which is what the leaf's own note exists to prevent.
+                def reissue = (((capped.failedRuleIds ?: []) as List) +
+                               ((capped.remainingRuleIds ?: []) as List)).unique { it?.toString() }
+                if (!reissue.isEmpty()) {
+                    capped.note = "The completed slices remain committed. Re-issue ${reissue} " +
+                        "to finish: that is the failed rules plus the ones never reached. " +
+                        "results[] shows what each rule actually did."
+                }
+            } else if (!cappedAgg.isEmpty()) {
+                // Every other kind banks an aggregate too (steps, triggers/actions,
+                // patchResults). Discarding it would lose the record of what landed on the one
+                // path where the operation was big enough to need it. Merge the round that
+                // triggered the cap first -- it has already run against the hub, and the banked
+                // aggregate is otherwise a round stale, which would have an agent re-apply work
+                // that is already committed.
+                def merged = [:] + cappedAgg
+                _mrtrMergeAggregate(merged, merged.kind?.toString(), result)
+                capped.aggregate = merged
+                capped.note = "The completed slices remain committed. aggregate carries what " +
+                    "each slice did" +
+                    (merged.backup != null ? " and a rollback handle in aggregate.backup" : "") +
+                    ", so a follow-up can resume from there rather than re-running the whole " +
+                    "operation."
             }
             // A capped result is by definition stitched from slices; carry the same provenance
             // block the ordinary terminal emits, since consumers read mrtr.rounds.
@@ -2747,6 +2766,17 @@ private def _mrtrAggregateTerminal(Map rec, result) {
             def terminalBank = _mrtrBankRuleResults(aggregate, out)
             out.results = terminalBank.results
             out.ruleIds = terminalBank.ruleIds
+            // out started as a copy of the LAST slice's envelope, so every field the leaf
+            // scopes to that slice describes only its share of the batch: ruleId names the
+            // tail rule, rmAction counts that slice's rules ("stopRule toggle x2" for a batch
+            // of four), and the leaf's error sentence counts them too ("the other 1 rule(s)
+            // WERE actioned" when three were). Drop all three BEFORE the verdict below, so the
+            // rebuilt error and the per-rule rows are what carry the batch-wide truth.
+            if ((terminalBank.ruleIds as List).size() > 1) {
+                out.remove("ruleId")
+                out.remove("rmAction")
+                out.remove("error")
+            }
             def failed = out.results.findAll { it instanceof Map && it.success != true }
             out.success = out.success == true && failed.isEmpty()
             // Deliberately NOT OR-ing aggregate.anyPartial: a call_rule slice sets partial on a
@@ -2973,24 +3003,23 @@ private Map _mrtrControl(String kind, Map checkpoint) {
     return [__mrtrContinue: [kind: kind, checkpoint: checkpoint]]
 }
 
-// A rule that failed in an earlier slice is RE-QUEUED for retry alongside the remaining
-// ids, so it lands in results[] twice: the banked failure and the retry's outcome. Keep
-// the LAST entry per ruleId -- a rule's final attempt is its actual state -- otherwise a
-// rule that succeeded on retry still poisons success/partial/failedRuleIds. First-appearance
-// order is preserved; entries carrying no ruleId are never collapsed and keep their order
-// after the keyed ones.
 // A call_rule slice whose id list narrowed to ONE takes the leaf's scalar path, which
 // reports the outcome as top-level ruleId/success and emits no results[] at all. That is
 // the natural tail of any paginated batch, so without this the last rule is missing from
 // the ledger -- and if it FAILED, success:false would be returned with every visible row
 // succeeding and nothing in failedRuleIds.
+//
+// The row is built by EXCLUDING the envelope-level keys rather than listing the row's own
+// fields. An allowlist silently drops whatever the leaf adds next -- it already dropped
+// `note`, which is where a no-op stop explains itself -- and nothing would go red.
 private List _mrtrRuleResultRows(result) {
     if (!(result instanceof Map)) return []
     if (result.results instanceof List) return result.results as List
     if (result.ruleId == null) return []
-    def row = [ruleId: result.ruleId, success: result.success == true]
-    if (result.rmAction != null) row.rmAction = result.rmAction
-    if (result.error != null) row.error = result.error
+    def envelopeOnly = ["ruleIds", "remainingRuleIds", "failedRuleIds", "results",
+                        "partial", "mrtr", "status", "tool", "isError"] as Set
+    def row = (result as Map).findAll { k, v -> !envelopeOnly.contains(k?.toString()) }
+    row.success = result.success == true
     return [row]
 }
 
@@ -2998,15 +3027,65 @@ private List _mrtrRuleResultRows(result) {
 // at the continuation cap, and at the terminal. Keeping the three in lockstep matters:
 // they must agree on collapsing per rule AND on how a scalar-path round contributes, or the
 // durable record and the envelope the client reads drift apart.
+// Merge one round's result into the running aggregate, in place. Used by the bank AND by the
+// continuation cap: the cap's whole purpose is to hand back what the record is holding, and
+// the round that triggered it has already run against the hub -- merging it there by a
+// separate path is how the two drift, which is exactly how the cap came to return an
+// aggregate one round stale.
+private void _mrtrMergeAggregate(Map aggregate, String kind, result) {
+    if (!(result instanceof Map)) return
+    aggregate.kind = kind
+    switch (kind) {
+        case "call_rule":
+            // Collapse at merge time so the durable record holds one entry per rule instead
+            // of one per attempt -- that record is what _mrtrPutLocked re-serializes.
+            def banked = _mrtrBankRuleResults(aggregate, result)
+            aggregate.results = banked.results
+            aggregate.ruleIds = banked.ruleIds
+            break
+        case "walk_steps":
+            aggregate.steps = ((aggregate.steps instanceof List) ? aggregate.steps : []) +
+                ((result.steps instanceof List) ? result.steps : [])
+            aggregate.stepsRequested = ((aggregate.stepsRequested ?: 0) as Integer) +
+                ((result.stepsRequested ?: 0) as Integer)
+            break
+        case "bulk_edit":
+            aggregate.triggers = ((aggregate.triggers instanceof List) ? aggregate.triggers : []) +
+                ((result.triggers instanceof List) ? result.triggers : [])
+            aggregate.actions = ((aggregate.actions instanceof List) ? aggregate.actions : []) +
+                ((result.actions instanceof List) ? result.actions : [])
+            break
+        case "patches":
+            aggregate.patchResults = ((aggregate.patchResults instanceof List) ? aggregate.patchResults : []) +
+                ((result.patchResults instanceof List) ? result.patchResults : [])
+            // The rollback handle is the single most useful thing to hand back on a batch big
+            // enough to reach the cap, and it lives only on the round that produced it.
+            if (result.backup != null) aggregate.backup = result.backup
+            break
+    }
+    aggregate.anyPartial = aggregate.anyPartial == true || result.partial == true
+}
+
 private Map _mrtrBankRuleResults(Map aggregate, resultLike) {
     def prior = (aggregate?.results instanceof List) ? aggregate.results as List : []
     def priorIds = (aggregate?.ruleIds instanceof List) ? aggregate.ruleIds as List : []
     def roundIds = (resultLike instanceof Map && resultLike.ruleIds instanceof List)
         ? resultLike.ruleIds as List : []
+    // Dedupe by string, matching the collapse below. priorIds is read back from atomicState
+    // while roundIds arrives live, so a serializer handing back "12" for 12 would leave
+    // results with N rows and ruleIds with N+1 -- and ruleIds.size() now decides whether the
+    // terminal keeps its top-level ruleId, so the drift would strip a legitimately single-rule
+    // envelope's field. Both test layers already normalize with toString/str before comparing.
     return [results: _mrtrCollapseRuleResults(prior + _mrtrRuleResultRows(resultLike)),
-            ruleIds: (priorIds + roundIds).unique()]
+            ruleIds: (priorIds + roundIds).unique { it?.toString() }]
 }
 
+// A rule that failed in an earlier slice is RE-QUEUED for retry alongside the remaining
+// ids, so it lands in results[] twice: the banked failure and the retry's outcome. Keep
+// the LAST entry per ruleId -- a rule's final attempt is its actual state -- otherwise a
+// rule that succeeded on retry still poisons success/partial/failedRuleIds. First-appearance
+// order is preserved; entries carrying no ruleId are never collapsed and keep their order
+// after the keyed ones.
 private List _mrtrCollapseRuleResults(List entries) {
     def lastByRule = [:]
     def unkeyed = []
@@ -3021,11 +3100,9 @@ private List _mrtrCollapseRuleResults(List entries) {
     return lastByRule.values().toList() + unkeyed
 }
 
-// Work items are deliberately NOT removed here. This method is handed record SNAPSHOTS, and
-// a between-slices record carries no claimId (_mrtrRecordSlice strips it), so keying an item
-// removal on one would be a no-op for most callers. _mrtrSweepWorkItemsLocked owns item
-// lifetime instead: it reaps by claim identity against the live record map, so a record that
-// is removed or re-claimed frees its item on the next sweep, and every write path sweeps.
+// Work items are deliberately NOT removed here: this takes a record SNAPSHOT, and a
+// between-slices snapshot carries no claimId to key one on. Reclamation belongs to
+// _mrtrSweepWorkItemsLocked, which matches claim identity against the live record map.
 private void _mrtrCleanupRecord(Map rec) {
     def clonerId = rec?.checkpoint?.clonerAppId
     if (clonerId == null) return

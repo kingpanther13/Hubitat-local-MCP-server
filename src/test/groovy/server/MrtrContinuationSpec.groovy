@@ -1950,12 +1950,15 @@ class MrtrContinuationSpec extends ToolSpecBase {
         out.success == false
         out.partial == true
         out.failedRuleIds == [13]
+
+        and: 'and the id ledger merges both rounds -- results[] and ruleIds are separate merges, so a dedupe that fixed only one would still ship a self-contradicting envelope'
+        out.ruleIds.collect { it.toString() } == ['12', '13']
     }
 
     def "a continuation tail that narrows to one rule still contributes its row"() {
         given: 'the leaf takes its SCALAR path for a single id -- outcome reported top-level, no results[] -- which is the natural tail of any paginated batch'
         Map rec = [aggregate: [kind: 'call_rule', results: [[ruleId: 12, success: true]], ruleIds: [12]]]
-        Map scalarTail = [success: false, ruleId: 13, ruleIds: [13], rmAction: 'runRuleAct',
+        Map scalarTail = [success: false, ruleId: 13, ruleIds: [13], rmAction: 'stopRule button -> state.stopped=true',
                           error: 'rule 13 is broken']
 
         when:
@@ -1965,10 +1968,34 @@ class MrtrContinuationSpec extends ToolSpecBase {
         out.results.size() == 2
         out.results*.ruleId.collect { it.toString() } == ['12', '13']
 
+        and: 'the id ledger agrees with the rows -- these are separate merges and must not drift'
+        out.ruleIds.collect { it.toString() } == ['12', '13']
+
         and: 'and its failure is attributable -- success:false with an empty failedRuleIds would name no culprit'
         out.success == false
         out.failedRuleIds == [13]
         out.partial == true
+
+        and: 'the scalar tail\'s top-level ruleId is dropped: the outputSchema declares that field present only when exactly one rule was asked for, so leaving it would name the tail rule as if it were the whole batch'
+        !out.containsKey('ruleId')
+
+        and: 'the note the leaf attaches to a row survives the synthesizer -- an allowlist silently drops whatever the leaf adds next'
+        script._mrtrRuleResultRows([success: false, ruleId: 13, rmAction: 'noop',
+                                    note: 'Rule was already stopped'])[0].note == 'Rule was already stopped'
+    }
+
+    def "a single-rule terminal keeps its top-level ruleId"() {
+        given: 'the negative pin -- the field is legitimate when exactly one rule was asked for, so the strip must be conditional rather than unconditional'
+        Map rec = [aggregate: [kind: 'call_rule', results: [], ruleIds: []]]
+        Map lastSlice = [success: true, ruleId: 12, ruleIds: [12],
+                         results: [[ruleId: 12, success: true]]]
+
+        when:
+        def out = script._mrtrAggregateTerminal(rec, lastSlice)
+
+        then:
+        out.ruleIds.collect { it.toString() } == ['12']
+        out.ruleId == 12
     }
 
     def "the work-item sweep reaps by claim identity and never under a live worker"() {
@@ -2008,6 +2035,100 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         and: 'the executing worker keeps its item even though its record moved on -- reaping under a live worker would break the slice mid-write'
         workItems['running'] != null
+    }
+
+    def "the continuation cap returns the per-rule ledger it is holding"() {
+        given: 'a call_rule request one round below the cap, with two rules already banked and a third round still pausing'
+        Map claim = [claimId: 'cap1', generation: 1]
+        Map rec = [status: 'active', claimId: 'cap1', claimedGeneration: 1, generation: 1,
+                   rounds: script._mrtrMaxContinuationSlices() - 1,
+                   outerTool: 'hub_manage_rule_machine', leafTool: 'hub_call_rule',
+                   startedAt: script.now(), expiresAt: script.now() + 60000L,
+                   aggregate: [kind: 'call_rule',
+                               results: [[ruleId: 11, success: true], [ruleId: 12, success: false]],
+                               ruleIds: [11, 12]]]
+        atomicStateMap.mrtrRequests = ['cap': rec]
+        script._writeStateCacheInvalidate()
+        Map execArgs = [tool: 'hub_call_rule', args: [ruleId: [13, 14], action: 'stop']]
+        // ruleIds is the FULL list this slice was asked for and remainingRuleIds is a
+        // subList of it -- the leaf derives one from the other, so a paused slice can never
+        // report [13] with [14] remaining.
+        Map slice = [success: true, ruleIds: [13, 14], results: [[ruleId: 13, success: true]],
+                     remainingRuleIds: [14], partial: true]
+
+        when:
+        def outcome = script._mrtrCommitSlice('cap', rec, claim, execArgs, slice)
+
+        then: 'the request ends terminally at the cap rather than continuing'
+        outcome.outcome == 'terminal'
+        outcome.isError == true
+        outcome.result.status == 'continuation_limit'
+
+        and: 'the ledger it was already holding is handed back, not discarded for a go-look-at-the-hub note'
+        outcome.result.results*.ruleId.collect { it.toString() } == ['11', '12', '13']
+        outcome.result.ruleIds.collect { it.toString() } == ['11', '12', '13', '14']
+        outcome.result.failedRuleIds == [12]
+
+        and: 'the rules never reached are named -- failed and not-yet-reached are different sets'
+        outcome.result.remainingRuleIds == [14]
+
+        and: 'partial means some rules were actioned, the same definition the ordinary terminal uses'
+        outcome.result.partial == true
+
+        and: 'and it carries the provenance block consumers read'
+        outcome.result.mrtr?.continued == true
+    }
+
+    def "an all-SUCCESS batch at the continuation cap is still partial"() {
+        given: 'the case the two siblings leave open. The cap formula deliberately differs from the ordinary terminal, and unifying them on the terminal formula would silently report this batch as complete with rules still un-actioned'
+        Map claim = [claimId: 'cap3', generation: 1]
+        Map rec = [status: 'active', claimId: 'cap3', claimedGeneration: 1, generation: 1,
+                   rounds: script._mrtrMaxContinuationSlices() - 1,
+                   outerTool: 'hub_manage_rule_machine', leafTool: 'hub_call_rule',
+                   startedAt: script.now(), expiresAt: script.now() + 60000L,
+                   aggregate: [kind: 'call_rule',
+                               results: [[ruleId: 31, success: true]], ruleIds: [31]]]
+        atomicStateMap.mrtrRequests = ['cap3': rec]
+        script._writeStateCacheInvalidate()
+        Map execArgs = [tool: 'hub_call_rule', args: [ruleId: [32, 33], action: 'stop']]
+        Map slice = [success: true, ruleIds: [32, 33], results: [[ruleId: 32, success: true]],
+                     remainingRuleIds: [33], partial: true]
+
+        when:
+        def outcome = script._mrtrCommitSlice('cap3', rec, claim, execArgs, slice)
+
+        then: 'every banked rule succeeded, but rule 33 was never reached -- that is partial'
+        outcome.result.status == 'continuation_limit'
+        outcome.result.partial == true
+        !outcome.result.failedRuleIds
+        outcome.result.remainingRuleIds == [33]
+
+        and: 'and the note names the re-issue set rather than sending the caller to the hub'
+        outcome.result.note.contains('33')
+    }
+
+    def "an all-failed batch at the continuation cap is a failure, not a partial one"() {
+        given: 'the negative pin -- keying partial on "anything banked" would be structurally always true here, since reaching the cap requires a banked row'
+        Map claim = [claimId: 'cap2', generation: 1]
+        Map rec = [status: 'active', claimId: 'cap2', claimedGeneration: 1, generation: 1,
+                   rounds: script._mrtrMaxContinuationSlices() - 1,
+                   outerTool: 'hub_manage_rule_machine', leafTool: 'hub_call_rule',
+                   startedAt: script.now(), expiresAt: script.now() + 60000L,
+                   aggregate: [kind: 'call_rule',
+                               results: [[ruleId: 21, success: false]], ruleIds: [21]]]
+        atomicStateMap.mrtrRequests = ['cap2': rec]
+        script._writeStateCacheInvalidate()
+        Map execArgs = [tool: 'hub_call_rule', args: [ruleId: [22, 23], action: 'stop']]
+        Map slice = [success: false, ruleIds: [22, 23], results: [[ruleId: 22, success: false]],
+                     remainingRuleIds: [23], partial: true]
+
+        when:
+        def outcome = script._mrtrCommitSlice('cap2', rec, claim, execArgs, slice)
+
+        then: 'every rule failed, so nothing was actioned'
+        outcome.result.status == 'continuation_limit'
+        outcome.result.partial == false
+        outcome.result.failedRuleIds.collect { it.toString() } == ['21', '22']
     }
 
     def "abandoning a claimed request releases its queued work item on the next sweep"() {

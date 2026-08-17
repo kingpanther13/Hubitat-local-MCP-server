@@ -479,7 +479,7 @@ def test_regular_e2e_mrtr_summary_requires_a_long_multi_leg_terminal_call():
         "relay_dropped_legs": 0,
         "continuation_rounds": 3,
         "logical_elapsed": 20.8,
-        "max_decoded_leg_elapsed": 8.1,
+        "max_answered_leg_elapsed": 8.1,
     }
 
 
@@ -504,7 +504,27 @@ def test_regular_e2e_mrtr_ceiling_ignores_a_relay_dropped_leg():
     )
 
     assert summary["relay_dropped_legs"] == 1
-    assert summary["max_decoded_leg_elapsed"] == 8.632
+    assert summary["max_answered_leg_elapsed"] == 8.632
+
+
+def test_regular_e2e_mrtr_ceiling_catches_a_slow_2xx_leg_that_did_not_decode():
+    # A 200 whose body fails to decode -- the relay's HTML error page under load, which
+    # _send retries JSONDecodeError specifically to absorb. It is a leg the server ANSWERED,
+    # so its duration is ours and must still trip the ceiling. Gating on `decoded` instead
+    # of on the status dropped it out of the ceiling AND out of the relay-drop bound.
+    with pytest.raises(AssertionError, match="per-leg relay ceiling"):
+        et._summarize_mrtr_e2e_proof(
+            continuation_rounds=2,
+            result_type="complete",
+            logical_elapsed=20.8,
+            http_legs=[
+                (0.2, 200, True),
+                (9.6, 200, False),
+                (3.0, 200, True),
+                (2.0, 200, True),
+            ],
+            server_rounds=1,
+        )
 
 
 def test_regular_e2e_mrtr_ceiling_still_catches_a_slow_answered_leg():
@@ -527,7 +547,7 @@ def test_regular_e2e_mrtr_ceiling_still_catches_a_slow_answered_leg():
 def test_regular_e2e_mrtr_rejects_a_server_that_drops_most_legs():
     # Relay drops are absorbed, not ignored: a server tripping the relay as a rule is a
     # real regression the (now narrowed) ceiling can no longer see.
-    with pytest.raises(AssertionError, match="lost more legs to the relay"):
+    with pytest.raises(AssertionError, match="lost at least as many legs to the relay"):
         et._summarize_mrtr_e2e_proof(
             continuation_rounds=2,
             result_type="complete",

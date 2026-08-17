@@ -335,6 +335,12 @@ abstract class HarnessSpec extends Specification {
         // The per-rule baseline mirror is JVM truth beside the manifest; a leftover
         // handle would satisfy reuse for a rule id a later feature reuses.
         (scriptStaticField('RM_BASELINE_HANDLES') as Map).clear()
+        // The corpus fingerprint memo is a scalar, so it needs a set rather than a clear.
+        // A leftover value would make a later spec's search read a warm key for a catalog
+        // that spec had already changed.
+        def corpusFpField = script.getClass().getDeclaredField('TOOL_SEARCH_CORPUS_FP')
+        corpusFpField.accessible = true
+        corpusFpField.set(null, null)
         // The write-reservation machinery serves mrtrRequests / packageDeployInFlight
         // from a class-static snapshot of atomicState. Clearing atomicStateMap above
         // without this would leave the previous feature's snapshot as the read path --

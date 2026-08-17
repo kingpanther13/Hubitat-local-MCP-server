@@ -11,9 +11,11 @@ def toolSearchTools(args) {
     // always cached; visibility filtering is applied per-request so toggle changes take
     // effect immediately without invalidating the cache. The per-doc tokenization is cached
     // in lockstep (atomicState.toolSearchTokens, index-aligned to the FULL corpus) so
-    // queries never re-tokenize; both entries invalidate together in updated(). The cache
-    // is a pure function of the static tool surface (definitions, gateway config,
-    // display meta), so app-update invalidation is sufficient.
+    // queries never re-tokenize; updated() clears the corpus, the tokens and the fingerprint
+    // together. The cache is a pure function of the static tool surface (definitions, gateway
+    // config, display meta), but updated()-only invalidation is NOT sufficient: a code deploy
+    // recompiles the class without firing it, so the content fingerprint below is what
+    // actually catches a changed surface.
     def corpus = atomicState.toolSearchCorpus
     def docTokensAll = atomicState.toolSearchTokens
     // Content fingerprint + shape checks self-heal a cache written by an older build: a code
@@ -24,18 +26,24 @@ def toolSearchTools(args) {
     // title, or search hint carries the SAME version as the cache it needs to invalidate --
     // which made a discovery change unverifiable on a test hub. The fingerprint is the same
     // remedy requiredParamsByTool() already uses for its own same-version deploy problem.
-    // The catalog is walked ONCE per call: allDefs is fetched here and handed to both the
-    // fingerprint and the rebuild, the same reason requiredParamsCatalogFingerprint takes a
-    // pre-fetched defs list rather than re-fetching its own.
-    def allDefs = getAllToolDefinitions()
-    String corpusFp = toolSearchCorpusFingerprint(allDefs)
+    // On a warm class the fingerprint is memoized, so the cache-HIT path does no catalog
+    // work at all. When it must be computed, the catalog is walked ONCE and handed to both
+    // the fingerprint and the rebuild -- the same reason requiredParamsCatalogFingerprint
+    // takes a pre-fetched defs list rather than re-fetching its own.
+    def allDefs = null
+    String corpusFp = TOOL_SEARCH_CORPUS_FP
+    if (corpusFp == null) {
+        allDefs = getAllToolDefinitions()
+        corpusFp = toolSearchCorpusFingerprint(allDefs)
+        TOOL_SEARCH_CORPUS_FP = corpusFp
+    }
     if (!corpus || !docTokensAll || docTokensAll.size() != corpus.size() ||
         !(corpus[0]?.containsKey('title')) || atomicState.toolSearchCorpusFingerprint != corpusFp) {
         corpus = buildToolSearchCorpus(allDefs)
         // Tokenize every corpus entry once, in corpus order, so docTokensAll[i] is the
         // tokenization of corpus[i] (a pure function of that entry). Plain List<List<String>>
         // (sandbox-safe; whole-value single assignment, no nested-subscript mutation).
-        docTokensAll = corpus.collect { bm25Tokenize("${it.name} ${it.title ?: ''} ${it.description} ${it.params ?: ''} ${it.hints ?: ''}") }
+        docTokensAll = corpus.collect { bm25Tokenize(_bm25DocText(it)) }
         atomicState.toolSearchCorpus = corpus
         atomicState.toolSearchTokens = docTokensAll
         atomicState.toolSearchCorpusFingerprint = corpusFp
@@ -127,10 +135,24 @@ def toolSearchTools(args) {
 
 // Content fingerprint of everything the BM25 corpus tokenizes -- tool names, descriptions,
 // param keys, friendly titles, gateway summaries and search hints. Walks the same three
-// sources buildToolSearchCorpus does, but only concatenates them: it skips the per-entry
-// regex tokenize and the corpus map allocation, which are the expensive half. Kept as the
-// raw string (no sandbox digest API assumed, String equality is cheap) exactly like
-// requiredParamsCatalogFingerprint.
+// sources buildToolSearchCorpus does, folding each field into a 64-bit rolling hash rather
+// than materializing the ~98 KB concatenation of this catalog, and skipping the per-entry
+// regex tokenize and corpus map allocation. Unlike requiredParamsCatalogFingerprint, which
+// touches only inputSchema.required and stays small enough to keep as a raw string, this
+// one returns the hash as a decimal String.
+//
+// A hash admits collisions that exact string equality would not: two different catalogs can
+// in principle fold to the same value, and no field framing changes that. Accepted here --
+// the cost of a collision is one stale corpus until the next code deploy, against walking
+// and holding ~98 KB on a memory-constrained hub. The length-prefixing in _fpField is a
+// separate concern: it stops adjacent fields from being reordered or re-split into the same
+// input, which is a structural ambiguity rather than a hash property.
+//
+// NOT pure, unlike requiredParamsCatalogFingerprint: applyDescriptionTransform rewrites the
+// descriptions of the defs list IN PLACE. A caller that passes its own list gets it back
+// already stripped, and a later applyDescriptionTransform(defs, true) on that same list is a
+// no-op -- which would ship every [[FLAT_TRIM]] block inline and blow the flat catalog's
+// size cap. Pass a list you do not intend to strip again, or fetch a fresh one.
 def toolSearchCorpusFingerprint(List defs = null) {
     long h = 17L
     def displayMeta = getToolDisplayMeta()
@@ -150,11 +172,23 @@ def toolSearchCorpusFingerprint(List defs = null) {
         }
     }
     // The cached TOKENS are only length-checked against the corpus, so a tokenizer change
-    // (split pattern, min length, or the field template on the tokenize line) moves neither
-    // the corpus content nor its size -- and the hub would keep serving tokens built by the
-    // old tokenizer. Fold a tokenizer-shape probe in so that change invalidates too.
-    h = _fpField(h, bm25Tokenize("hub_x-1 A_b cd").join(','))
+    // moves neither the corpus content nor its size and the hub keeps serving tokens built
+    // by the old one. The probe runs a synthetic entry through the SAME two functions the
+    // real tokenize line uses -- _bm25DocText for the field template, bm25Tokenize for the
+    // split -- so editing either invalidates. Probing bm25Tokenize on a bare literal would
+    // cover the split only and miss a template edit entirely (dropping `hints` from the
+    // template changes no corpus content, so nothing else in this guard would notice).
+    h = _fpField(h, bm25Tokenize(_bm25DocText(
+        [name: 'hub_x-1', title: 'A_b', description: 'cd', params: 'ef', hints: 'gh',
+         gateway: 'ij'])).join(','))
     return Long.toString(h)
+}
+
+// The exact text a corpus entry contributes to its tokens. Shared by the tokenize line and
+// the fingerprint probe so the two cannot drift -- if this template changes, the fingerprint
+// changes with it.
+private String _bm25DocText(entry) {
+    return "${entry.name} ${entry.title ?: ''} ${entry.description} ${entry.params ?: ''} ${entry.hints ?: ''}"
 }
 
 // Accumulate rather than materialize: the concatenated form of this catalog is ~98 KB, and
@@ -166,11 +200,13 @@ def toolSearchCorpusFingerprint(List defs = null) {
 // to invalidate.
 private long _fpField(long h, value) {
     String s = (value == null) ? "" : value.toString()
+    // String.hashCode(), not a hand-rolled character loop. Nothing here is @CompileStatic,
+    // so every charAt/cast/multiply is a sandbox-intercepted dynamic dispatch -- spelling
+    // this out by hand over the ~98 KB catalog is order 10^5 dispatches in one request, on
+    // the first search after every deploy, in a tool with no budget or continuation escape
+    // hatch. The JDK's own hash has the same collision profile for ~2 dispatches per field.
     h = h * 31L + s.length()
-    for (int i = 0; i < s.length(); i++) {
-        h = h * 31L + (s.charAt(i) as int)
-    }
-    return h * 31L + 1L
+    return h * 31L + s.hashCode()
 }
 
 // Build a flat list of all tools (core + proxied) with gateway attribution

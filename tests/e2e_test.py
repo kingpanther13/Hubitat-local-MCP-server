@@ -115,12 +115,26 @@ def _summarize_mrtr_e2e_proof(
     # ceiling that exists to prove we return BEFORE the relay gives up fails the run
     # for the transport doing exactly what MRTR is designed to absorb -- and this
     # helper already classifies a 5xx replay as safe and expected.
-    decoded_leg_seconds = [
-        duration for _leg_index, (duration, _status, _decoded) in decoded_responses
+    # These two lists PARTITION every leg -- nothing may fall between them, which is the bug
+    # this framing exists to prevent. The ceiling covers everything the relay did not drop,
+    # so it keeps the cases whose duration is genuinely ours: a 2xx whose body failed to
+    # decode (the relay's HTML error page, which _send retries JSONDecodeError to absorb) and
+    # a leg with NO status (the client gave up with no response -- exactly the slow-server
+    # regression the ceiling exists to catch). Gating on `decoded`, or excusing a null status,
+    # each drop a leg out of BOTH guards.
+    answered_leg_seconds = [
+        duration for _leg_index, (duration, status, _decoded) in indexed_legs
+        if status not in (502, 503, 504)
     ]
+    # ONLY the gateway 5xx class -- a status the relay actually returned. Deliberately NOT
+    # `status is None`: no status means the client gave up with no response at all, which is
+    # precisely the slow-server regression the ceiling exists to catch, and excusing it would
+    # hide the failure inside the drop budget. A plain 500 is ours for the same reason. A
+    # 3xx/4xx is neither answered nor dropped; `unsafe_replays` above already fails the run
+    # for it, correctly, because the client cannot safely replay it.
     relay_dropped = [
-        (leg_index, status) for leg_index, (_duration, status, _decoded) in replayed
-        if status is None or 500 <= status < 600
+        (leg_index, status) for leg_index, (_duration, status, _decoded) in indexed_legs
+        if status in (502, 503, 504)
     ]
     assert continuation_rounds >= 2, (
         "MRTR proof needs multiple continuation rounds, got "
@@ -141,19 +155,19 @@ def _summarize_mrtr_e2e_proof(
         "MRTR proof observed a physical leg that the client must not safely replay: "
         f"statuses={unsafe_replays}"
     )
-    assert decoded_leg_seconds and max(decoded_leg_seconds) < MRTR_RELAY_LEG_CEILING_SECONDS, (
+    assert answered_leg_seconds and max(answered_leg_seconds) < MRTR_RELAY_LEG_CEILING_SECONDS, (
         "MRTR proof exceeded the per-leg relay ceiling on a leg the server answered: "
-        f"max={max(decoded_leg_seconds, default=0.0):.3f}s, "
+        f"max={max(answered_leg_seconds, default=0.0):.3f}s, "
         f"ceiling={MRTR_RELAY_LEG_CEILING_SECONDS:.1f}s"
     )
-    # Relay drops are absorbed, not ignored. A server slow enough to trip the relay on
-    # most of its legs is a real regression that the ceiling above can no longer see,
-    # because those legs are excluded from it -- so bound them here instead. Scaling the
-    # bound to the decoded count keeps this meaningful whatever the round count is.
-    assert len(relay_dropped) < len(decoded_responses), (
-        "MRTR proof lost more legs to the relay than it completed cleanly, so the server "
-        "is tripping the relay ceiling as a rule rather than as an exception: "
-        f"dropped={relay_dropped}, decoded={len(decoded_responses)}"
+    # Relay drops are absorbed, not ignored. A server slow enough to trip the relay on most
+    # of its legs is a real regression the ceiling above can no longer see, because those
+    # legs are excluded from it -- so bound them here instead. Scaling the bound to the
+    # answered count keeps this meaningful whatever the round count is.
+    assert len(relay_dropped) < len(answered_leg_seconds), (
+        "MRTR proof lost at least as many legs to the relay as the server answered, so it is "
+        "tripping the relay ceiling as a rule rather than as an exception: "
+        f"dropped={relay_dropped}, answered={len(answered_leg_seconds)}"
     )
     assert isinstance(server_rounds, int) and 1 <= server_rounds < continuation_rounds, (
         "MRTR proof owner slices must be positive and fewer than client "
@@ -168,7 +182,7 @@ def _summarize_mrtr_e2e_proof(
         "relay_dropped_legs": len(relay_dropped),
         "continuation_rounds": continuation_rounds,
         "logical_elapsed": logical_elapsed,
-        "max_decoded_leg_elapsed": max(decoded_leg_seconds),
+        "max_answered_leg_elapsed": max(answered_leg_seconds),
     }
 
 # ---------------------------------------------------------------------------
@@ -4774,19 +4788,34 @@ class TestRunner:
                 return envelope, None
 
             res, limited = _attempt()
-            if limited and self._clear_load_throttle(f"multi-id hub_call_rule: {limited}"):
+            # Two bounce rounds, not one. The sibling lifecycle test's own comments record
+            # that a single bounce+retry was NOT enough there and it needed a further
+            # converged-read fallback -- so one round here would inherit a failure mode that
+            # test already demonstrated. This test's subject is the ENVELOPE, and a limiter
+            # refusal produces no envelope to assert, so it cannot fall back to a read the way
+            # the sibling does; it retries harder instead, then fails with the rules' actual
+            # state attached so a human can tell a blocked write from a landed one.
+            for _round in range(2):
+                if not limited:
+                    break
+                if not self._clear_load_throttle(f"multi-id hub_call_rule: {limited}"):
+                    break
                 res, limited = _attempt()
             assert not limited, (
-                "multi-id hub_call_rule stayed blocked by the platform load limiter: "
-                f"{limited}"
+                "multi-id hub_call_rule stayed blocked by the platform load limiter after "
+                f"two bounce+retry rounds: {limited}"
             )
             assert isinstance(res, dict), f"multi-id hub_call_rule should return an envelope: {res}"
             # Whether this took one slice or several, the client sees ONE terminal
             # envelope with no continuation bookkeeping left in it.
             assert res.get("status") != "in_progress", \
                 f"the client should receive a terminal envelope, not a pause: {res}"
-            assert "remainingRuleIds" not in res, \
-                f"continuation bookkeeping leaked into the terminal envelope: {res}"
+            # remainingRuleIds must not survive a COMPLETED batch. It is legitimate on the
+            # continuation-limit terminal, which deliberately names the rules it never
+            # reached -- so scope the check to the completed case rather than the shape.
+            if res.get("status") != "continuation_limit":
+                assert "remainingRuleIds" not in res, \
+                    f"continuation bookkeeping leaked into a completed envelope: {res}"
             # Exactly one result row per rule -- a rule re-queued across slices must not
             # appear twice, which is what the per-rule collapse exists to guarantee.
             results = res.get("results") or []
@@ -6363,7 +6392,7 @@ class TestRunner:
                 f"relay_dropped_legs={proof['relay_dropped_legs']} "
                 f"continuation_rounds={proof['continuation_rounds']} "
                 f"logical={proof['logical_elapsed']:.3f}s "
-                f"max_decoded_leg={proof['max_decoded_leg_elapsed']:.3f}s "
+                f"max_answered_leg={proof['max_answered_leg_elapsed']:.3f}s "
                 f"leg_evidence=[{leg_evidence}]"
             )
             # Independent persisted-state proof, deliberately after the measured

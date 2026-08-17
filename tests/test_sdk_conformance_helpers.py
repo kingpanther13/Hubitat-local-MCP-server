@@ -178,6 +178,28 @@ def test_owner_rounds_allow_detached_worker_coordination_responses() -> None:
         assert_mrtr_owner_rounds(4, 3)
 
 
+def test_mrtr_summary_absorbs_one_relay_dropped_leg() -> None:
+    # The observed incident this exists for: the server answers well under the ceiling and
+    # the relay drops one leg at ~10s, which the SDK replays. Counting that leg's duration
+    # against the ceiling -- or rejecting it as a non-2xx -- fails the required gate for the
+    # transport doing exactly what MRTR is built to absorb.
+    summary = summarize_mrtr_proof(
+        [{"status": 200, "mcp_protocol_version": "2026-07-28", "duration": 3.0,
+          "has_request_state": False},
+         {"status": 504, "mcp_protocol_version": "2026-07-28", "duration": 10.1,
+          "has_request_state": True},
+         {"status": 200, "mcp_protocol_version": "2026-07-28", "duration": 4.0,
+          "has_request_state": True},
+         {"status": 200, "mcp_protocol_version": "2026-07-28", "duration": 4.5,
+          "has_request_state": True}],
+        logical_elapsed=21.6,
+    )
+
+    assert summary["legs"] == 4
+    # The ceiling reports the slowest ANSWERED leg, not the relay's timeout.
+    assert summary["max_leg_elapsed"] == 4.5
+
+
 @pytest.mark.parametrize(
     ("legs", "elapsed", "message"),
     [
@@ -192,8 +214,10 @@ def test_owner_rounds_allow_detached_worker_coordination_responses() -> None:
          11.0, "relay ceiling"),
         ([{"status": 200, "mcp_protocol_version": "2025-06-18", "duration": 3.0}] * 3,
          11.0, "2026-07-28"),
+        # A single relay drop is absorbed (the SDK replays it), but a proof where EVERY leg
+        # was dropped never reached the server and proves nothing.
         ([{"status": 504, "mcp_protocol_version": "2026-07-28", "duration": 3.0}] * 3,
-         11.0, "2xx"),
+         11.0, "dropped by the relay"),
         # Mixed None/str and None/int diagnostic sets: an absent header and an unanswered
         # leg must still report the contract failure, not a sort TypeError.
         ([{"status": None, "mcp_protocol_version": None, "duration": 3.0},
