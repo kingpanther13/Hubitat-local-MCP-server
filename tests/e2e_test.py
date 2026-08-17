@@ -95,7 +95,6 @@ def _summarize_mrtr_e2e_proof(
     deliberately add coordination rounds while the claimed generation is still
     running, so the owner count must be positive and cannot exceed the client count.
     """
-    leg_seconds = [duration for duration, _status, _decoded in http_legs]
     indexed_legs = list(enumerate(http_legs))
     decoded_responses = [
         (leg_index, leg) for leg_index, leg in indexed_legs
@@ -109,6 +108,33 @@ def _summarize_mrtr_e2e_proof(
         (leg_index, status) for leg_index, (_duration, status, decoded) in replayed
         if decoded or (
             status is not None and not (200 <= status < 300 or 500 <= status < 600))
+    ]
+    # The per-leg ceiling measures OUR response time, so it applies only to legs the
+    # server actually answered. A relay-dropped leg's duration is the relay's own
+    # timeout, not ours: the 504 IS the relay giving up, so counting it against a
+    # ceiling that exists to prove we return BEFORE the relay gives up fails the run
+    # for the transport doing exactly what MRTR is designed to absorb -- and this
+    # helper already classifies a 5xx replay as safe and expected.
+    # These two lists PARTITION every leg -- nothing may fall between them, which is the bug
+    # this framing exists to prevent. The ceiling covers everything the relay did not drop,
+    # so it keeps the cases whose duration is genuinely ours: a 2xx whose body failed to
+    # decode (the relay's HTML error page, which _send retries JSONDecodeError to absorb) and
+    # a leg with NO status (the client gave up with no response -- exactly the slow-server
+    # regression the ceiling exists to catch). Gating on `decoded`, or excusing a null status,
+    # each drop a leg out of BOTH guards.
+    answered_leg_seconds = [
+        duration for _leg_index, (duration, status, _decoded) in indexed_legs
+        if status not in (502, 503, 504)
+    ]
+    # ONLY the gateway 5xx class -- a status the relay actually returned. Deliberately NOT
+    # `status is None`: no status means the client gave up with no response at all, which is
+    # precisely the slow-server regression the ceiling exists to catch, and excusing it would
+    # hide the failure inside the drop budget. A plain 500 is ours for the same reason. A
+    # 3xx/4xx is neither answered nor dropped; `unsafe_replays` above already fails the run
+    # for it, correctly, because the client cannot safely replay it.
+    relay_dropped = [
+        (leg_index, status) for leg_index, (_duration, status, _decoded) in indexed_legs
+        if status in (502, 503, 504)
     ]
     assert continuation_rounds >= 2, (
         "MRTR proof needs multiple continuation rounds, got "
@@ -129,22 +155,34 @@ def _summarize_mrtr_e2e_proof(
         "MRTR proof observed a physical leg that the client must not safely replay: "
         f"statuses={unsafe_replays}"
     )
-    assert leg_seconds and max(leg_seconds) < MRTR_RELAY_LEG_CEILING_SECONDS, (
-        "MRTR proof exceeded the per-leg relay ceiling: "
-        f"max={max(leg_seconds, default=0.0):.3f}s, "
+    assert answered_leg_seconds and max(answered_leg_seconds) < MRTR_RELAY_LEG_CEILING_SECONDS, (
+        "MRTR proof exceeded the per-leg relay ceiling on a leg the server answered: "
+        f"max={max(answered_leg_seconds, default=0.0):.3f}s, "
         f"ceiling={MRTR_RELAY_LEG_CEILING_SECONDS:.1f}s"
+    )
+    # Relay drops are absorbed, not ignored. A server slow enough to trip the relay on most
+    # of its legs is a real regression the ceiling above can no longer see, because those
+    # legs are excluded from it -- so bound them here instead. Scaling the bound to the
+    # answered count keeps this meaningful whatever the round count is.
+    assert len(relay_dropped) < len(answered_leg_seconds), (
+        "MRTR proof lost at least as many legs to the relay as the server answered, so it is "
+        "tripping the relay ceiling as a rule rather than as an exception: "
+        f"dropped={relay_dropped}, answered={len(answered_leg_seconds)}"
     )
     assert isinstance(server_rounds, int) and 1 <= server_rounds < continuation_rounds, (
         "MRTR proof owner slices must be positive and fewer than client "
         f"continuations: client={continuation_rounds}, server={server_rounds!r}"
     )
     return {
-        "legs": len(leg_seconds),
+        "legs": len(http_legs),
         "successful_decoded_responses": len(decoded_responses),
         "replayed_legs": len(replayed),
+        # Reported separately from replayed_legs so a run that is quietly leaning on the
+        # replay path is visible in the log even while the assertions still pass.
+        "relay_dropped_legs": len(relay_dropped),
         "continuation_rounds": continuation_rounds,
         "logical_elapsed": logical_elapsed,
-        "max_leg_elapsed": max(leg_seconds),
+        "max_answered_leg_elapsed": max(answered_leg_seconds),
     }
 
 # ---------------------------------------------------------------------------
@@ -4712,6 +4750,133 @@ class TestRunner:
             self._delete_native(app_id)
 
     @test("native_apps")
+    def test_call_rule_multi_id_aggregates_per_rule(self) -> None:
+        # A multi-ruleId hub_call_rule is MRTR-eligible from round zero (see the
+        # round_zero_mrtr gate), so this proves the envelope a live client actually
+        # receives for the multi-rule contract: one row per rule, no duplicates, and
+        # success/partial/failedRuleIds agreeing with those rows.
+        #
+        # Scope, stated honestly: these rules are tiny, so the write will normally
+        # finish inside the relay budget and return WITHOUT continuing. That means this
+        # asserts the contract as the client sees it, but does NOT by itself exercise
+        # the cross-slice collapse -- forcing a real pause needs a batch big enough to
+        # blow the budget, which is exactly the load this suite's limiter guidance says
+        # to keep out of the RM family. The collapse across slices is pinned in
+        # MrtrContinuationSpec, where a banked-then-retried rule can be constructed
+        # deterministically. Both layers are needed; neither substitutes for the other.
+        rule_a = self._create_native_rule("CallRuleAggA")
+        rule_b = None
+        try:
+            rule_b = self._create_native_rule("CallRuleAggB")
+            ids = [int(rule_a), int(rule_b)]
+
+            def _attempt():
+                # hub_call_rule stop/start is limiter-susceptible, the same as the sibling
+                # lifecycle test documents. _run_one's generic retry only matches a 50[0-3]
+                # status, which an "excessive hub load" McpToolError never carries -- so
+                # without this the test fails outright rather than flake-retrying.
+                try:
+                    envelope = self.client.call_tool("hub_manage_rule_machine", {
+                        "tool": "hub_call_rule", "args": {"ruleId": ids, "action": "stop"}})
+                except McpToolError as exc:
+                    if "excessive hub load" not in str(exc):
+                        raise
+                    return None, str(exc)
+                if (isinstance(envelope, dict) and envelope.get("success") is False
+                        and "excessive hub load" in str(envelope.get("error", ""))):
+                    return envelope, str(envelope.get("error"))
+                return envelope, None
+
+            res, limited = _attempt()
+            # Two bounce rounds, not one. The sibling lifecycle test's own comments record
+            # that a single bounce+retry was NOT enough there and it needed a further
+            # converged-read fallback -- so one round here would inherit a failure mode that
+            # test already demonstrated. This test's subject is the ENVELOPE, and a limiter
+            # refusal produces no envelope to assert, so it cannot fall back to a read the way
+            # the sibling does; it retries harder instead, then fails with the rules' actual
+            # state attached so a human can tell a blocked write from a landed one.
+            for _round in range(2):
+                if not limited:
+                    break
+                if not self._clear_load_throttle(f"multi-id hub_call_rule: {limited}"):
+                    break
+                res, limited = _attempt()
+            assert not limited, (
+                "multi-id hub_call_rule stayed blocked by the platform load limiter after "
+                f"two bounce+retry rounds: {limited}"
+            )
+            assert isinstance(res, dict), f"multi-id hub_call_rule should return an envelope: {res}"
+            # Whether this took one slice or several, the client sees ONE terminal
+            # envelope with no continuation bookkeeping left in it.
+            assert res.get("status") != "in_progress", \
+                f"the client should receive a terminal envelope, not a pause: {res}"
+            # remainingRuleIds must not survive a COMPLETED batch. It is legitimate on the
+            # continuation-limit terminal, which deliberately names the rules it never
+            # reached -- so scope the check to the completed case rather than the shape.
+            if res.get("status") != "continuation_limit":
+                assert "remainingRuleIds" not in res, \
+                    f"continuation bookkeeping leaked into a completed envelope: {res}"
+            # Exactly one result row per rule -- a rule re-queued across slices must not
+            # appear twice, which is what the per-rule collapse exists to guarantee.
+            results = res.get("results") or []
+            # Do NOT filter out rows with a missing ruleId -- an unattributable row is
+            # itself a defect here, and silently dropping it would hide exactly the
+            # scalar-tail shape (outcome reported top-level, no results[] row) that
+            # makes a rule vanish from the ledger.
+            assert all(isinstance(r, dict) and r.get("ruleId") is not None for r in results), \
+                f"every result row must name its ruleId: {res}"
+            seen = [str(r.get("ruleId")) for r in results]
+            assert sorted(seen) == sorted(str(i) for i in ids), \
+                f"expected exactly one result row per requested rule, got {seen}: {res}"
+            assert len(seen) == len(set(seen)), f"a rule appears twice in results[]: {res}"
+            assert sorted(str(i) for i in (res.get("ruleIds") or [])) == sorted(str(i) for i in ids), \
+                f"ruleIds should echo the requested set exactly once each: {res}"
+            # success/partial/failedRuleIds must agree with the collapsed rows rather
+            # than with any single slice's view of them.
+            failed = [r for r in results if isinstance(r, dict) and r.get("success") is not True]
+            if failed:
+                assert res.get("success") is False, \
+                    f"a failed row must make the envelope unsuccessful: {res}"
+                # partial means SOME actioned and some not -- an all-failed batch is a
+                # failure, not a partial one, matching the leaf and the outputSchema.
+                assert res.get("partial") is (len(failed) < len(results)), \
+                    f"partial must mean some-actioned-some-not, not merely any-failure: {res}"
+                assert sorted(str(x) for x in (res.get("failedRuleIds") or [])) == \
+                    sorted(str(r.get("ruleId")) for r in failed), \
+                    f"failedRuleIds must match the failing rows: {res}"
+            else:
+                assert res.get("success") is True, f"all rows succeeded but envelope did not: {res}"
+                assert res.get("partial") in (False, None), \
+                    f"an all-success batch must not report partial -- a budget pause is not a partial result: {res}"
+                assert not res.get("failedRuleIds"), f"no rows failed but failedRuleIds is set: {res}"
+            # The action really landed on BOTH rules, not just the first slice's. Polled,
+            # not read once: the hub decorates the stopped label asynchronously, and the
+            # read itself can hit the same limiter as the write above.
+            def _health_stopped(target_id, attempts: int = 8, gap: float = 1.5):
+                last: dict = {}
+                for _ in range(attempts):
+                    try:
+                        last = self.client.call_tool("hub_manage_rule_machine", {
+                            "tool": "hub_get_rule_health", "args": {"appId": target_id}})
+                    except McpToolError as exc:
+                        if "excessive hub load" not in str(exc):
+                            raise
+                        last = {"error": str(exc)}
+                    if isinstance(last, dict) and last.get("stopped") is True:
+                        return last
+                    time.sleep(gap)
+                return last
+
+            for rid in ids:
+                health = _health_stopped(rid)
+                assert health.get("stopped") is True, \
+                    f"rule {rid} reported success but is not stopped: {health}"
+        finally:
+            if rule_b is not None:
+                self._delete_native(rule_b)
+            self._delete_native(rule_a)
+
+    @test("native_apps")
     def test_set_rule_waitevents_on_offset_action_slot(self) -> None:
         # The first Wait-Event capability field does NOT reliably render at tCapab-1, and its
         # slot number is NOT the action index -- a Required Expression (and/or prior actions)
@@ -4754,8 +4919,14 @@ class TestRunner:
                 we_res = created_actions[1]
                 assert we_res.get("success") is True, \
                     f"waitEvents add on an offset action slot should commit, got: {we_res}"
-                applied_blob = json.dumps(we_res)
-                assert "tstate-2" in applied_blob and "tstate-1" not in applied_blob, \
+                # Exact membership in settingsApplied, not substring-in-JSON. The old
+                # positive half searched the whole serialized envelope, where "tstate-2"
+                # also matches "tstate-20".."tstate-29" and appears in the schema key
+                # lists and hint strings the response carries -- so it could pass on a
+                # response that never wrote the slot at all. A false GREEN on exactly the
+                # offset-slot contract this test exists to pin.
+                applied_keys = we_res.get("settingsApplied") or []
+                assert "tstate-2" in applied_keys and "tstate-1" not in applied_keys, \
                     f"the wait event response should bind to offset slot tstate-2: {we_res}"
 
             # The committed rule is structurally sound (no broken markers from a half-written event row).
@@ -4770,7 +4941,11 @@ class TestRunner:
                 f"the offset wait-event state did not persist at tstate-2: {settings}"
             assert str(settings.get("tstate-1")).lower() != "on", \
                 f"the event was miswritten to non-offset tstate-1: {settings}"
-            assert "wait" in json.dumps(cfg).lower(), \
+            # Prove the Wait-for-events ACTION committed, by its persisted subtype. The
+            # old check ("wait" in the config JSON) was vacuous: the seed log action's
+            # message is "E2E waitEvents offset base", so it matched whether or not the
+            # wait action landed.
+            assert any(self._setting_holds_exact(v, "getWaitEvents") for v in settings.values()), \
                 f"the committed rule config should show the Wait-for-events action, got: {cfg}"
         finally:
             self._delete_native(app_id)
@@ -6214,9 +6389,10 @@ class TestRunner:
                 f"legs={proof['legs']} "
                 f"decoded_responses={proof['successful_decoded_responses']} "
                 f"replayed_legs={proof['replayed_legs']} "
+                f"relay_dropped_legs={proof['relay_dropped_legs']} "
                 f"continuation_rounds={proof['continuation_rounds']} "
                 f"logical={proof['logical_elapsed']:.3f}s "
-                f"max_leg={proof['max_leg_elapsed']:.3f}s "
+                f"max_answered_leg={proof['max_answered_leg_elapsed']:.3f}s "
                 f"leg_evidence=[{leg_evidence}]"
             )
             # Independent persisted-state proof, deliberately after the measured

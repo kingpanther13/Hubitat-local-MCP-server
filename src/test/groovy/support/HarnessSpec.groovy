@@ -324,9 +324,23 @@ abstract class HarnessSpec extends Specification {
         // them, so a feature that reserves without releasing would otherwise hand the
         // next feature a write slot that is already spent.
         (scriptStaticField('WRITE_REQUEST_LEASES') as Map).clear()
+        // The liveness set gates BOTH sweeps: a lease or MRTR record whose id is still
+        // "live" is retained past its TTL. Leaving it populated across features made the
+        // aged-out paths unreachable in tests -- the sweep could never observe a lease
+        // that outlived its execution, which is the exact case those sweeps exist for.
+        (scriptStaticField('LIVE_WRITE_EXECUTIONS') as Set).clear()
+        // Queued slice payloads are class-static too; a leftover item would let a later
+        // feature's sweep or cleanup observe work it never scheduled.
+        (scriptStaticField('MRTR_WORK_ITEMS') as Map).clear()
         // The per-rule baseline mirror is JVM truth beside the manifest; a leftover
         // handle would satisfy reuse for a rule id a later feature reuses.
         (scriptStaticField('RM_BASELINE_HANDLES') as Map).clear()
+        // The corpus fingerprint memo is a scalar, so it needs a set rather than a clear.
+        // A leftover value would make a later spec's search read a warm key for a catalog
+        // that spec had already changed.
+        def corpusFpField = script.getClass().getDeclaredField('TOOL_SEARCH_CORPUS_FP')
+        corpusFpField.accessible = true
+        corpusFpField.set(null, null)
         // The write-reservation machinery serves mrtrRequests / packageDeployInFlight
         // from a class-static snapshot of atomicState. Clearing atomicStateMap above
         // without this would leave the previous feature's snapshot as the read path --

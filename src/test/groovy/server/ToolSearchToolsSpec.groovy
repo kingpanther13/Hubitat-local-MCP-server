@@ -162,6 +162,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         atomicStateMap.toolSearchCorpus = [[name: 'x', description: 'd']]
         atomicStateMap.toolSearchTokens = [['x']]
         atomicStateMap.toolSearchCorpusVersion = 'v-test'
+        atomicStateMap.toolSearchCorpusFingerprint = 'fp-corpus-test'
         atomicStateMap.requiredParamsByTool = [hub_get_room: ['room']]
         atomicStateMap.requiredParamsByToolFingerprint = 'fp-test'
         script.metaClass.initialize = { -> }
@@ -175,10 +176,123 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         atomicStateMap.toolSearchCorpusVersion == null
         atomicStateMap.requiredParamsByTool == null
 
-        and: 'the memo fingerprint is cleared in lockstep -- a stranded fingerprint would let the next rebuild miscompare'
+        and: 'both content fingerprints are cleared in lockstep -- a stranded fingerprint would let the next rebuild miscompare'
+        atomicStateMap.toolSearchCorpusFingerprint == null
         atomicStateMap.requiredParamsByToolFingerprint == null
 
         and: 'the legacy state entry is never reintroduced'
         !stateMap.containsKey('toolSearchCorpus')
+    }
+
+    def "hub_list_files advertises its filter argument on both discovery surfaces"() {
+        given: 'the summary is the only description riding tools/list every turn -- the full inputSchema IS reachable, but only by spending a catalog call on the gateway first, so an arg named nowhere in the summary costs a round trip to discover'
+        searchEnabled()
+
+        when: 'each gateway carrying hub_list_files is checked for the filter arg in its summary'
+        int checked = 0
+        script.getGatewayConfig().each { gwName, gw ->
+            if (gw?.summaries?.containsKey('hub_list_files')) {
+                checked++
+                assert gw.summaries.hub_list_files.contains('filter'),
+                    "${gwName} summary hides the filter arg: ${gw.summaries.hub_list_files}"
+            }
+        }
+
+        then: 'BOTH carrying gateways were actually reached -- a guarded loop that never enters passes vacuously, so the count is what makes this a guard'
+        checked == 2
+
+        and: 'a hints-ONLY term retrieves the tool. Querying "filter" would prove nothing: the corpus derives params from inputSchema.properties, so that token was already indexed before any summary or hint changed. The sweep is scoped to hub_list_files OWN gateway row and to exactly the fields buildToolSearchCorpus indexes for such a row -- name, title, "summary [gateway description]", param keys -- deliberately NOT the leaf tool description, which a gateway row never indexes. Per-entry scoping is the point: BM25 scores each row, so another tool carrying the token (hub_get_logs summary says "source (substring)") cannot make THIS one rank'
+        String listFilesTitle = script.getToolDisplayMeta()['hub_list_files']?.title ?: ''
+        String listFilesParams = script.getAllToolDefinitions()
+            .find { it.name == 'hub_list_files' }?.inputSchema?.properties?.keySet()?.join(' ') ?: ''
+        script.getGatewayConfig().findAll { _, gw -> gw?.summaries?.containsKey('hub_list_files') }
+            .every { gwName, gw ->
+                !("hub_list_files ${listFilesTitle} ${gw.summaries.hub_list_files ?: ''} "
+                  + "${gw.description ?: ''} ${listFilesParams}").toLowerCase().contains('substring')
+            }
+
+        and: 'so searchHints is the only field the token can come from'
+        script.getGatewayConfig().any { _, gw ->
+            (gw?.searchHints?.hub_list_files ?: '').toLowerCase().contains('substring')
+        }
+        script.toolSearchTools([query: 'substring', maxResults: 10])
+            .results*.tool.contains('hub_list_files')
+    }
+
+    def "the fingerprint memo is actually populated by a search"() {
+        given: 'TOOL_SEARCH_CORPUS_FP is the only non-final @Field static and the only bare-identifier WRITE to an app field from library text. If that assignment ever resolved to the script Binding instead of the field, every other gate stays green and the sole symptom is a permanently cold path re-walking the catalog on every call'
+        searchEnabled()
+
+        expect: 'the memo starts cold -- asserted, not stated: an expression in a given: block is not auto-asserted by Spock, so writing it there would leave the premise unenforced and this test green even if the harness reset regressed'
+        scriptStaticField('TOOL_SEARCH_CORPUS_FP') == null
+
+        when:
+        script.toolSearchTools([query: 'list rooms', maxResults: 3])
+
+        then: 'the memo warmed, and holds the live catalog fingerprint'
+        scriptStaticField('TOOL_SEARCH_CORPUS_FP') == script.toolSearchCorpusFingerprint()
+    }
+
+    def "the corpus fingerprint actually discriminates -- a content change moves it"() {
+        given: 'the sibling requiredParams memo ships this exact guard, because every other fingerprint test passes just as well against a function that returns a constant'
+        searchEnabled()
+        def defs = script.getAllToolDefinitions()
+        String fpA = script.toolSearchCorpusFingerprint(defs)
+
+        when: 'one indexed field changes -- a single description edit, the smallest thing this cache must notice'
+        def mutated = defs.collect { d ->
+            d.name == 'hub_list_files' ? (d + [description: "${d.description} zzz-probe"]) : d
+        }
+        String fpB = script.toolSearchCorpusFingerprint(mutated)
+
+        then: 'the fingerprint moves; if it did not, a stale corpus would be served forever with nothing red'
+        fpA != fpB
+
+        and: 'and it is stable for identical input, so it cannot thrash the cache on every call'
+        script.toolSearchCorpusFingerprint(defs) == fpA
+    }
+
+    def "a plain comma-separated Args: list names only real inputSchema properties"() {
+        given: 'the Args: tail hand-restates a schema the summary cannot see, and nothing else stops the two drifting -- an invented argument sends the model to call it, surfacing as a rejected tool call rather than a red build'
+        searchEnabled()
+        def schemaProps = script.getAllToolDefinitions().collectEntries {
+            [(it.name as String): (it.inputSchema?.properties?.keySet() ?: [] as Set)]
+        }
+        // Scoped DELIBERATELY to the plain "Args: a, b, c" form. Across the gateways the tail
+        // is not one convention: it also carries alternatives (source|sourceFile|importUrl),
+        // slash groups (since/until) and action VALUES (repair_node, pair), none of which are
+        // property names. Those forms need a convention decision, not a regex; this guard
+        // covers the unambiguous subset and must not be widened by loosening the match.
+        def plainList = ~/^[A-Za-z_][A-Za-z0-9_]*(\s*,\s*[A-Za-z_][A-Za-z0-9_]*)+$/
+
+        when: 'every plain comma-separated Args: tail is parsed back into argument names'
+        def phantom = []
+        int summariesChecked = 0
+        int listFilesChecked = 0
+        script.getGatewayConfig().each { gwName, gw ->
+            (gw?.summaries ?: [:]).each { toolName, summary ->
+                def m = (summary as String) =~ /Args:\s*([^.]*)/
+                if (!m.find()) return
+                String tail = m.group(1).trim()
+                if (!plainList.matcher(tail).matches()) return
+                summariesChecked++
+                if (toolName == 'hub_list_files') listFilesChecked++
+                tail.split(',').each { raw ->
+                    String arg = raw.trim()
+                    if (!(schemaProps[toolName as String]?.contains(arg))) {
+                        phantom << "${gwName}/${toolName}: '${arg}' is not in inputSchema.properties"
+                    }
+                }
+            }
+        }
+
+        then: 'no such summary advertises an argument its tool does not accept'
+        phantom == []
+
+        and: 'the scan reached real summaries -- an empty sweep would pass vacuously'
+        summariesChecked >= 2
+
+        and: 'and BOTH hub_list_files rows are specifically in scope: a bare total is satisfied by two unrelated summaries while the rows this PR edited are skipped by the regex'
+        listFilesChecked == 2
     }
 }

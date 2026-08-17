@@ -44,7 +44,11 @@ FILE_GROUP_MAP = {
     "libraries/mcp-discovery-lib.groovy":       ["infrastructure", "protocol"],
     "libraries/mcp-app-cloner-lib.groovy":      ["native_apps", "rule_crud", "mrtr"],
     "libraries/mcp-dashboards-lib.groovy":      ["dashboards"],
-    "hubitat-mcp-server.groovy":                ["mrtr", "protocol", "legacy_protocol"],
+    # native_apps: the MRTR continuation aggregator lives here, and its client-visible
+    # guard (test_call_rule_multi_id_aggregates_per_rule) is registered in that group. Without
+    # it, a PR editing the aggregation but no test file selects a lane that never runs it.
+    "hubitat-mcp-server.groovy":                ["mrtr", "protocol", "legacy_protocol",
+                                                 "native_apps"],
 }
 
 

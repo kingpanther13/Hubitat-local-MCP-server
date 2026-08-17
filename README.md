@@ -388,7 +388,7 @@ Monitoring tools are gated by the Read master (ON by default).
 
 | Tool | Description |
 |------|-------------|
-| `hub_list_files` | List all files in File Manager |
+| `hub_list_files` | List files in File Manager (optional `filter` name substring) |
 | `hub_read_file` | Read a file's contents |
 
 </details>
@@ -602,7 +602,7 @@ Non-destructive radio operations. Destructive radio ops (reset/wipe, firmware up
 
 | Tool | Description |
 |------|-------------|
-| `hub_list_files` | List all files in File Manager (also in `hub_read_files`) |
+| `hub_list_files` | List files in File Manager (optional `filter` name substring; also in `hub_read_files`) |
 | `hub_read_file` | Read a file's contents (also in `hub_read_files`) |
 | `hub_write_file` | Create or update a file (auto-backs up existing) |
 | `hub_delete_file` | Delete a file (auto-backs up first) |
