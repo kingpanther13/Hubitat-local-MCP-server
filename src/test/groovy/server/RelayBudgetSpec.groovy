@@ -646,7 +646,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         settingsMap.useGateways = true
         settingsMap.enableWrite = true
         def captured = [:]
-        script.metaClass.toolSendCommand = { d, c, p = null, w = null, cmds = null, t0 = null ->
+        script.metaClass.toolSendCommand = { d, c, p = null, w = null, cmds = null, t0 = null, st = true ->
             captured.reqT0 = t0
             captured.commands = cmds
             [success: true, count: 1, sentCount: 1, failedCount: 0, results: []]

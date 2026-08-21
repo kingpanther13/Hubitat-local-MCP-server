@@ -992,7 +992,7 @@ def toolGetDevice(deviceId) {
     ]
 }
 
-def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = null, reqT0 = null) {
+def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = null, reqT0 = null, includeState = true) {
     // Batch form: one call carrying several {deviceId, command, parameters?} entries. A parameter
     // rather than a second tool, and mutually exclusive with the single-device arguments, which is
     // the same shape hub_get_device_attribute already uses for deviceId vs deviceIds.
@@ -1119,6 +1119,11 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
         result.waitFor = waitForBlock
     }
 
+    // Batch entries skip the read-back entirely: their response drops state anyway, and under
+    // bypass the snapshot is a SECOND /device/fullJson fetch per entry -- up to 20 wasted reads
+    // against the same relay budget the batch is trying to stay inside.
+    if (!includeState) return result
+
     // Snapshot AFTER any waitFor poll. Without waitFor this is the immediate (pre-effect)
     // read; with waitFor it reflects the converged state. A null return is the read-back
     // FAILURE sentinel (distinct from a legitimately empty [:]); surface why so the agent
@@ -1138,6 +1143,15 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
         result.state = snap
     }
     return result
+}
+
+// Canonical string form of a device-id argument. A String passes through; an INTEGRAL Number is
+// stringified (ids arrive numeric from hub_list_devices format='ids'); anything else -- a
+// fractional number included -- returns null for the caller to reject before any side effect.
+private _canonicalDeviceIdArg(value) {
+    if (value instanceof String) return value
+    if (value instanceof Number) return (value == value.longValue()) ? value.longValue().toString() : null
+    return null
 }
 
 // The commands-array form of hub_call_device_command. Not a tool of its own: it is reached only
@@ -1167,7 +1181,7 @@ private _sendCommandBatch(commands, reqT0 = null) {
         }
         // A hub device id is numeric, so a caller that sends it as a JSON number is not wrong --
         // coerce to the string form every downstream comparison uses instead of rejecting it.
-        def id = (entry.deviceId instanceof Number) ? entry.deviceId.toString() : entry.deviceId
+        def id = _canonicalDeviceIdArg(entry.deviceId)
         if (!(id instanceof String) || !id.trim()) {
             throw new IllegalArgumentException("commands[${i}].deviceId is required and must be a non-empty string (got: ${_describeValueForError(entry.deviceId)})")
         }
@@ -1209,7 +1223,7 @@ private _sendCommandBatch(commands, reqT0 = null) {
             // Delegates to the single-device tool, so allowlist handling, the bypass path,
             // command-support validation and parameter normalisation stay in one place and cannot
             // drift between the two entry points.
-            def one = toolSendCommand(deviceId, e.command, e.parameters)
+            def one = toolSendCommand(deviceId, e.command, e.parameters, null, null, null, false)
 
             // A bypass-path failure arrives as a returned [success:false, error, note], not a
             // throw, so the aggregate below derives from results[] rather than counting throws.
@@ -1232,7 +1246,7 @@ private _sendCommandBatch(commands, reqT0 = null) {
                 deviceId: deviceId,
                 command : e.command,
                 error   : "${cls}: ${ex.message ?: '(no message)'}".toString(),
-                note    : "This entry did not actuate; the other entries were still sent. Verify the deviceId with hub_list_devices and the command with hub_get_device, then re-send ONLY this entry."
+                note    : "This entry was not confirmed to actuate; the other entries were still sent. Verify the deviceId with hub_list_devices and the command with hub_get_device -- and if the failure happened mid-command, confirm the device state before re-sending this entry."
             ]
         }
     }
@@ -1250,7 +1264,7 @@ private _sendCommandBatch(commands, reqT0 = null) {
         result.failedDeviceIds = results.findAll { it.success == false }.collect { it.deviceId }
         if (failed < results.size()) result.partial = true
         result.error = "${failed} of ${results.size()} device command(s) failed; ${sent} were sent. See results[] for the per-device cause.".toString()
-        result.note = "The entries that succeeded ALREADY actuated -- do NOT re-send the whole batch; re-send only the entries in failedDeviceIds. See hub_get_tool_guide(section='device_authorization') for what makes an entry fail."
+        result.note = "The entries that succeeded ALREADY actuated -- do NOT re-send the whole batch. Before re-sending a failed entry, read its error/note: an outcome the hub did not CONFIRM may still have actuated, so verify with hub_get_device_attribute first. See hub_get_tool_guide(section='device_authorization') for what makes an entry fail."
         // Only a batch where nothing landed is a tool-execution error. Flagging a partial one
         // would tell the caller the call did nothing while devices had in fact moved.
         if (failed == results.size() && !remaining) result.isError = true
@@ -1835,7 +1849,7 @@ def toolPollUntilAttribute(args) {
         // the duplicate check see 5 and "5" as the same device.
         def coercedIds = []
         args.deviceIds.eachWithIndex { v, i ->
-            def id = (v instanceof Number) ? v.toString() : v
+            def id = _canonicalDeviceIdArg(v)
             if (!(id instanceof String) || !id) {
                 throw new IllegalArgumentException("deviceIds[${i}] must be a non-empty string, got: ${_describeValueForError(v)}")
             }
@@ -1853,7 +1867,7 @@ def toolPollUntilAttribute(args) {
         deviceIdList = coercedIds
     } else {
         // Same Number coercion as the deviceIds branch: a numeric id is not wrong, just unstrung.
-        def singleId = (args.deviceId instanceof Number) ? args.deviceId.toString() : args.deviceId
+        def singleId = _canonicalDeviceIdArg(args.deviceId)
         if (!(singleId instanceof String) || !singleId) {
             throw new IllegalArgumentException("deviceId is required and must be a non-empty string (got: ${_describeValueForError(args.deviceId)})")
         }
@@ -4339,8 +4353,8 @@ One-shot read by default (deviceId + attribute). Provide expectedValue or expect
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: "string", description: "Device ID from hub_list_devices."],
-                    deviceIds: [type: "array", items: [type: "string"], description: "Array of device IDs for a multi-device poll (mutually exclusive with deviceId; max 20)."],
+                    deviceId: [type: ["string", "integer"], description: "Device ID from hub_list_devices."],
+                    deviceIds: [type: "array", items: [type: ["string", "integer"]], description: "Array of device IDs for a multi-device poll (mutually exclusive with deviceId; max 20)."],
                     mode: [type: "string", enum: ["any", "all"], description: "Multi-device aggregate.", default: "all"],
                     attribute: [type: "string", description: "Attribute name."],
                     expectedValue: [type: "string", description: "If set, block-poll until currentValue matches per comparator (enables poll mode). Single value, e.g. \"72\".[[FLAT_TRIM]] Provide exactly one of expectedValue or expectedValues.[[/FLAT_TRIM]]"],
@@ -4393,7 +4407,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: "string", description: "Device ID from hub_list_devices - must be confirmed by user if not an exact match.[[FLAT_TRIM]] Omit when using commands.[[/FLAT_TRIM]]"],
+                    deviceId: [type: ["string", "integer"], description: "Device ID from hub_list_devices - must be confirmed by user if not an exact match.[[FLAT_TRIM]] Omit when using commands.[[/FLAT_TRIM]]"],
                     command: [type: "string", description: "Command name, e.g. \"setLevel\". Must be one of the device's supported commands (see hub_get_device).[[FLAT_TRIM]] Omit when using commands.[[/FLAT_TRIM]]"],
 
                     // The nested item descriptions are terse by design: the three fields are
@@ -4407,7 +4421,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
                         items: [
                             type: "object",
                             properties: [
-                                deviceId: [type: "string", description: "As deviceId above"],
+                                deviceId: [type: ["string", "integer"], description: "As deviceId above"],
                                 command: [type: "string", description: "As command above"],
                                 parameters: [type: "array", description: "As parameters above", items: [type: "string"]]
                             ],
@@ -4440,7 +4454,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
                     count: [type: "integer", description: "commands form: number of entries attempted"],
                     sentCount: [type: "integer", description: "commands form: number of entries sent successfully"],
                     failedCount: [type: "integer", description: "commands form: number of attempted entries that failed (0 when all were sent)"],
-                    failedDeviceIds: [type: "array", description: "commands form: the deviceIds of the failed entries, in request order -- re-send ONLY these.", items: [type: "string"]],
+                    failedDeviceIds: [type: "array", description: "commands form: the deviceIds of the failed entries, in request order -- the retry candidates. Check each entry's error/note before re-sending: an unconfirmed outcome may still have actuated.", items: [type: "string"]],
                     stoppedEarly: [type: "boolean", description: "commands form: present and true when the batch stopped early because the request was nearing the relay time budget; the entries in remainingCommands were NOT sent."],
                     remainingCommands: [type: "array", description: "commands form: present with stoppedEarly -- the untried tail of the request, verbatim, to re-send in a new call.", items: [type: "object"]],
                     results: [

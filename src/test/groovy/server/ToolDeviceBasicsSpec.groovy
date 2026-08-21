@@ -1360,8 +1360,36 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         where:
         scenario          | entry                                                   || expected
         'boolean id'      | [deviceId: true, command: 'on']                         || 'deviceId is required and must be a non-empty string (got: true (boolean))'
+        'fractional id'   | [deviceId: 1.5, command: 'on']                          || 'deviceId is required and must be a non-empty string (got: 1.5 (number))'
         'Map parameters'  | [deviceId: '10', command: 'on', parameters: [level: 5]] || 'parameters must be an array when present (got: [level:5] (object))'
         'numeric command' | [deviceId: '10', command: 7]                            || 'command is required and must be a non-empty string (got: 7 (number))'
+    }
+
+    def "batch entries skip the state read-back entirely; the single-device form keeps it"() {
+        given: 'both snapshot paths counted, never stubbed out of the dispatch flow'
+        def snapshots = 0
+        script.metaClass._snapshotDeviceState = { device, label, err = null -> snapshots++; [:] }
+        script.metaClass._snapshotBypassDeviceState = { id, label, err = null -> snapshots++; [:] }
+        def a = switchDevice(10, 'Lamp A')
+        def b = switchDevice(11, 'Lamp B')
+        childDevicesList << a << b
+
+        when: 'a clean two-entry batch'
+        def batch = sendBatch([[deviceId: '10', command: 'on'], [deviceId: '11', command: 'on']])
+
+        then: 'no snapshot was read for either entry -- the batch response carries none'
+        1 * a.on()
+        1 * b.on()
+        batch.success == true
+        snapshots == 0
+
+        when: 'the same device through the single-device form'
+        def single = script.toolSendCommand('10', 'off', null)
+
+        then: 'the single-device contract still reads its snapshot'
+        1 * a.off()
+        single.success == true
+        snapshots == 1
     }
 
     def "commands form rejects more than 20 entries"() {
@@ -1398,7 +1426,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         // Returned rather than thrown is this project's contract for a runtime (non-argument)
         // error, so the batch has to notice it. Stubbed because reaching it for real needs the
         // allowlist bypass plus a hub that answers the runmethod endpoint unconfirmably.
-        script.metaClass.toolSendCommand = { d, c, p = null, w = null, cmds = null, t0 = null ->
+        script.metaClass.toolSendCommand = { d, c, p = null, w = null, cmds = null, t0 = null, st = true ->
             d == '11' ? [success: false, error: 'Command not confirmed', note: 'retry'] : [success: true, device: 'Lamp A']
         }
 
@@ -1564,7 +1592,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         script.metaClass.mcpLog = { String level, String component, String msg ->
             logged << [level: level, component: component, msg: msg]
         }
-        script.metaClass.toolSendCommand = { d, c, p = null, w = null, cmds = null, t0 = null ->
+        script.metaClass.toolSendCommand = { d, c, p = null, w = null, cmds = null, t0 = null, st = true ->
             if (d == '11') return [success: false, error: 'Command not confirmed', note: 'retry']
             throw new IllegalArgumentException("Device not found: ${d}")
         }

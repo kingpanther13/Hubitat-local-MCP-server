@@ -261,17 +261,17 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
     // 8. Type-validation throws
     // ---------------------------------------------------------------------------
 
-    def "throws when deviceId is an integer instead of string"() {
+    def "an integer deviceId is coerced past validation and reaches device resolution"() {
         when:
         script.toolPollUntilAttribute([
-            deviceId      : 99,          // should be String
+            deviceId      : 99,          // numeric form, coerced to '99'
             attribute     : 'switch',
             expectedValue : 'on'
         ])
 
-        then:
+        then: 'the failure is resolution (no such device), not the old type rejection'
         def ex = thrown(IllegalArgumentException)
-        ex.message.toLowerCase().contains('deviceid')
+        ex.message.contains('Device not found: 99')
     }
 
     def "throws when attribute is a list instead of string"() {
