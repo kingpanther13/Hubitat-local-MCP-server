@@ -190,7 +190,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: Calls `hub_call_device_command` ONCE with `commands=[{deviceId, command:"on"} x3]` — not three separate calls. The response is `success: true, count: 3, sentCount: 3` plus a `results` array in request order, each entry carrying its own `deviceId` and the same shape a single `hub_call_device_command` returns (label, command, PRE-effect `state` snapshot). `commands` rejects `waitFor`, so the confirmation is a separate `hub_get_device_attribute` using the multi-device `deviceIds` form with `mode:"all"` — two round trips for the whole group. Watch for the AI falling back to three separate command calls: that is the behaviour the parameter exists to replace, and it costs roughly 3x the wall-clock time.
+**Expected**: Calls `hub_call_device_command` ONCE with `commands=[{deviceId, command:"on"} x3]` — not three separate calls. The response is `success: true, count: 3, sentCount: 3, failedCount: 0` (the counts are always present, `failedCount` included on a clean pass) plus a `results` array in request order, each entry carrying its own `deviceId`, the device label, the command and its normalized `parameters`. Batch entries carry NO `state` snapshot — the batch fires, it does not read back — and `commands` rejects `waitFor`, so the confirmation is a separate `hub_get_device_attribute` using the multi-device `deviceIds` form with `mode:"all"` — two round trips for the whole group. Watch for the AI falling back to three separate command calls: that is the behaviour the parameter exists to replace, and it costs roughly 3x the wall-clock time.
 
 ### T05d — `commands` partial failure (one bad entry)
 
@@ -202,7 +202,7 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 }
 ```
 
-**Expected**: The batch still fires the valid entry — one bad device does not abandon the rest. The response is `success: false, sentCount: 1, failedCount: 1`, with `results[0].success: true` and `results[1]` carrying `success: false`, its `deviceId`, and an `error` naming the missing device. The AI reports the specific device that failed rather than reporting the whole command as failed. (Contrast with a MALFORMED batch — an entry missing `deviceId`, a non-array `parameters`, or more than 20 entries — which is rejected with `-32602` BEFORE anything is sent, so no device is actuated.)
+**Expected**: The batch still fires the valid entry — one bad device does not abandon the rest. The response is `success: false, count: 2, sentCount: 1, failedCount: 1`, plus `failedDeviceIds: ["99999"]`, an `error` summarising the failure, an actionable `note`, and `partial: true` (only some entries failed). It is a NORMAL tool result, not an `isError` envelope — `isError` is reserved for the batch where every entry failed. `results[0].success` is `true` and `results[1]` carries `success: false`, its `deviceId`, and an `error` naming the missing device. The AI reports the specific device that failed rather than reporting the whole command as failed. (Contrast with a MALFORMED batch — an entry missing `deviceId`, a `parameters` value that is neither an array nor a string, or more than 20 entries — which is rejected with `-32602` BEFORE anything is sent, so no device is actuated.)
 
 ### T06 — hub_call_device_command (setLevel)
 

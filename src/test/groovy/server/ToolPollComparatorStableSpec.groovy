@@ -1162,13 +1162,65 @@ class ToolPollComparatorStableSpec extends ToolSpecBase {
         ex.message.contains('deviceIds')
     }
 
-    def "a non-string element in deviceIds -> IAE naming the index"() {
-        when:
-        script.toolPollUntilAttribute([deviceIds: ['100', 200], attribute: 'switch', expectedValue: 'on', timeoutMs: 5000])
+    def "a non-string, non-numeric element in deviceIds -> IAE naming the index and the value"() {
+        when: 'a boolean is neither a device id nor coercible to one'
+        script.toolPollUntilAttribute([deviceIds: ['100', true], attribute: 'switch', expectedValue: 'on', timeoutMs: 5000])
 
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains('deviceIds[1]')
+        ex.message.contains('true (boolean)')
+    }
+
+    def "a NUMERIC deviceIds element is coerced to its string form, not rejected"() {
+        given: 'a hub device id IS a number, so a caller that sends JSON numbers is not wrong'
+        def a = new TestDevice(id: 744, label: 'A', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        childDevicesList << a
+
+        when:
+        def r = script.toolPollUntilAttribute([deviceIds: [744], attribute: 'switch', expectedValue: 'on', timeoutMs: 5000])
+
+        then: 'it resolved, and reports the id in the string form the rest of the engine compares on'
+        r.success == true
+        r.devices*.deviceId == ['744']
+    }
+
+    def "deviceIds sees 745 and '745' as one device and rejects the pair as a duplicate"() {
+        when: 'the coercion runs BEFORE the duplicate check, so the two spellings collide'
+        script.toolPollUntilAttribute([deviceIds: [745, '745'], attribute: 'switch', expectedValue: 'on', timeoutMs: 5000])
+
+        then: 'caught as a duplicate rather than double-counting one device in convergedCount'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('duplicate entries')
+        ex.message.contains('745')
+    }
+
+    def "a NUMERIC single deviceId is coerced too, so the two forms accept the same ids"() {
+        given: 'the single branch does the same coercion as the deviceIds branch above'
+        def a = new TestDevice(id: 746, label: 'Numeric Id', supportedAttributes: [[name: 'switch']], attributeValues: [switch: 'on'])
+        childDevicesList << a
+
+        when:
+        def numeric = script.toolPollUntilAttribute([deviceId: 746, attribute: 'switch', expectedValue: 'on', timeoutMs: 5000])
+        def strung = script.toolPollUntilAttribute([deviceId: '746', attribute: 'switch', expectedValue: 'on', timeoutMs: 5000])
+
+        then: 'it resolved and converged -- an unresolved id throws Device not found, so this is the proof'
+        numeric.success == true
+        numeric.finalValue == 'on'
+
+        and: 'the two spellings of the same id agree'
+        numeric.success == strung.success
+        numeric.finalValue == strung.finalValue
+    }
+
+    def "a non-string, non-numeric single deviceId -> IAE rendering the value and its type"() {
+        when: 'a boolean is neither a device id nor coercible to one'
+        script.toolPollUntilAttribute([deviceId: true, attribute: 'switch', expectedValue: 'on', timeoutMs: 5000])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('deviceId is required and must be a non-empty string')
+        ex.message.contains('true (boolean)')
     }
 
     def "per-device neverReported and nonNumericAttribute surface on a multi-device timeout"() {

@@ -992,7 +992,7 @@ def toolGetDevice(deviceId) {
     ]
 }
 
-def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = null) {
+def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = null, reqT0 = null) {
     // Batch form: one call carrying several {deviceId, command, parameters?} entries. A parameter
     // rather than a second tool, and mutually exclusive with the single-device arguments, which is
     // the same shape hub_get_device_attribute already uses for deviceId vs deviceIds.
@@ -1006,7 +1006,7 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
         if (waitFor != null) {
             throw new IllegalArgumentException("waitFor is not supported with commands: it blocks a hub thread per device. Send the batch, then confirm the whole set in one call with hub_get_device_attribute using deviceIds + mode")
         }
-        return _sendCommandBatch(commands)
+        return _sendCommandBatch(commands, reqT0)
     }
 
     if (deviceId == null) throw new IllegalArgumentException("deviceId is required (or pass a commands array to send several at once)")
@@ -1046,7 +1046,10 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
                                 : (device.supportedAttributes?.collect { it.name } ?: [])
     def pollArgs = (waitFor != null) ? _buildWaitForPollArgs(deviceId, supportedAttrs, deviceLabel, waitFor) : null
 
-    // Normalize parameters once (when present) so both paths see the typed values.
+    // Normalize parameters once (when present) so both paths see the typed values. A blank
+    // String means "no parameters" -- null it so the reported parameters stay inside the
+    // outputSchema's array-or-null contract (a non-blank String always normalizes to a List).
+    if (parameters instanceof String && !parameters.trim()) parameters = null
     if (parameters && parameters.size() > 0) {
         parameters = normalizeCommandParams(parameters)
     }
@@ -1138,104 +1141,128 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
 }
 
 // The commands-array form of hub_call_device_command. Not a tool of its own: it is reached only
-// through that tool's `commands` parameter.
-//
-// Motivation: the per-call cost is dominated by the request round trip, not by the hub actuating
-// the device. Measured against a live hub over a LAN, one command takes ~1.0s end to end while
-// six independent calls take ~4.5-5.0s -- about 0.8s each -- and that per-device figure is the
-// same for Z-Wave switches as for shades behind a Bond bridge, which is what shows the cost is
-// the round trip rather than the radio. Issuing the six concurrently barely helps, because the
-// hub serialises them on its side regardless.
-//
-// Batching collapses N round trips into one, and the measurement says that is nearly the whole
-// cost: on Z-Wave switches a batch of 1, 2 and 4 devices all came back in ~0.95s -- flat, because
-// one round trip is one round trip -- with six at ~1.5s against ~4.4s sent one at a time.
-//
-// A device reached through a bridge is the exception: six Bond shades batched came back in ~2.75s,
-// because that hop costs real time per device and no amount of batching removes it.
-//
-// A group or scene is the better answer for a set you use repeatedly: it is one device to command
-// and the hub does the fan-out. This is for the set nobody defined in advance -- the arbitrary
-// group of devices a spoken sentence resolves to.
-private _sendCommandBatch(commands) {
+// through that tool's `commands` parameter. Batching exists because the per-call round trip, not
+// the hub actuating the device, dominates wall clock. The measured figures, the bridged-device
+// exception and the group/scene trade-off live in hub_get_tool_guide(section='performance').
+private _sendCommandBatch(commands, reqT0 = null) {
     if (!(commands instanceof List) || commands.isEmpty()) {
         throw new IllegalArgumentException("commands must be a non-empty array of {deviceId, command, parameters?} objects")
     }
-    // The same ceiling as hub_get_device_attribute's multi-device poll, for the same reason: this
-    // occupies a hub thread for the whole batch, so the batch has to stay bounded.
-    if (commands.size() > 20) {
-        throw new IllegalArgumentException("commands may contain at most 20 entries (got ${commands.size()})")
+    // Same ceiling as hub_get_device_attribute's multi-device poll (MAX_POLL_DEVICES); this bound
+    // keeps one request's serial dispatch inside the relay window.
+    def MAX_BATCH_COMMANDS = 20
+    if (commands.size() > MAX_BATCH_COMMANDS) {
+        throw new IllegalArgumentException("commands may contain at most ${MAX_BATCH_COMMANDS} entries (got ${commands.size()})")
     }
 
     // Validate the whole batch BEFORE firing any of it. A malformed entry half way down would
     // otherwise leave the earlier devices actuated and the caller holding an error with no way to
     // know how far it got -- the same no-side-effect-on-a-bad-spec guarantee waitFor already
     // gives on the single-device path.
+    def validEntryKeys = ["deviceId", "command", "parameters"] as Set
+    def entryDeviceIds = []
     commands.eachWithIndex { entry, i ->
         if (!(entry instanceof Map)) {
             throw new IllegalArgumentException("commands[${i}] must be an object with deviceId and command")
         }
-        if (!(entry.deviceId instanceof String) || !entry.deviceId.trim()) {
-            throw new IllegalArgumentException("commands[${i}].deviceId is required and must be a non-empty string")
+        // A hub device id is numeric, so a caller that sends it as a JSON number is not wrong --
+        // coerce to the string form every downstream comparison uses instead of rejecting it.
+        def id = (entry.deviceId instanceof Number) ? entry.deviceId.toString() : entry.deviceId
+        if (!(id instanceof String) || !id.trim()) {
+            throw new IllegalArgumentException("commands[${i}].deviceId is required and must be a non-empty string (got: ${_describeValueForError(entry.deviceId)})")
         }
         if (!(entry.command instanceof String) || !entry.command.trim()) {
-            throw new IllegalArgumentException("commands[${i}].command is required and must be a non-empty string")
+            throw new IllegalArgumentException("commands[${i}].command is required and must be a non-empty string (got: ${_describeValueForError(entry.command)})")
         }
-        if (entry.parameters != null && !(entry.parameters instanceof List)) {
-            throw new IllegalArgumentException("commands[${i}].parameters must be an array when present")
+        // A String parameters value is passed straight through: normalizeCommandParams repairs the
+        // shape the hub's JSON parser produces when a nested object defeats it.
+        if (entry.parameters != null && !(entry.parameters instanceof List) && !(entry.parameters instanceof String)) {
+            throw new IllegalArgumentException("commands[${i}].parameters must be an array when present (got: ${_describeValueForError(entry.parameters)})")
         }
-        def unknown = (entry.keySet() - (["deviceId", "command", "parameters"] as Set)).sort()
+        def unknown = (entry.keySet() - validEntryKeys).sort()
         if (unknown) {
-            throw new IllegalArgumentException("commands[${i}] has unknown keys: ${unknown.join(', ')}. Valid keys: command, deviceId, parameters")
+            throw new IllegalArgumentException("commands[${i}] has unknown keys: ${unknown.join(', ')}. Valid keys: ${validEntryKeys.sort().join(', ')}")
         }
+        entryDeviceIds << id
     }
 
     // One entry failing must not abandon the rest. A batch is a list of independent intents, and
     // a caller turning off six lights would rather five went off with one reported failure than
     // have the whole thing refused because a sixth device had been removed. Per-entry outcomes
-    // are reported individually so the caller can tell exactly which.
+    // are reported individually so the caller can tell exactly which. "Failing" means an
+    // Exception: a JVM-level Error (OOM, StackOverflow) deliberately escapes the loop and aborts
+    // the batch -- a broken VM should stop actuating hardware, not soldier on.
     def results = []
-    def failed = 0
-
-    commands.each { entry ->
+    def remaining = []
+    long t0 = (reqT0 instanceof Number) ? ((Number) reqT0).longValue() : now()
+    for (int i = 0; i < commands.size(); i++) {
+        // Hand the untried tail back rather than let a long batch of slow devices run the request
+        // past the relay's response window, where a dropped response leaves the caller unable to
+        // tell what actuated. Never on the first entry: a batch always attempts at least one.
+        if (i > 0 && _timeBudgetExceeded(t0)) {
+            remaining = commands.subList(i, commands.size()).collect { it }
+            break
+        }
+        def e = commands[i]
+        def deviceId = entryDeviceIds[i]
         try {
             // Delegates to the single-device tool, so allowlist handling, the bypass path,
             // command-support validation and parameter normalisation stay in one place and cannot
             // drift between the two entry points.
-            def one = toolSendCommand(entry.deviceId, entry.command, entry.parameters)
-            one.deviceId = entry.deviceId
+            def one = toolSendCommand(deviceId, e.command, e.parameters)
 
-            // A failure does not always arrive as an exception. On the allowlist bypass a command
-            // whose fire could not be confirmed comes back as [success:false, error, note] -- a
-            // structured runtime error, by this project's own error contract. Counting only the
-            // thrown ones let the aggregate report success while an entry in results[] had plainly
-            // failed, so a caller taking the documented fast path ("check results[] when success is
-            // false") would never look. That map also carries no command, which the per-entry
-            // required fields promise, so it is backfilled from the request.
-            if (one.command == null) one.command = entry.command
-            if (one.success == false) failed++
-
-            results << one
-        } catch (Throwable e) {
-            failed++
-            def cls = e.class.simpleName
-            mcpLog("error", "send-commands", "batch entry failed for ${entry.deviceId}: ${cls}: ${e.message ?: '(no message)'}")
+            // A bypass-path failure arrives as a returned [success:false, error, note], not a
+            // throw, so the aggregate below derives from results[] rather than counting throws.
+            // That returned map carries no command, hence the backfill (a real command from the
+            // delegate wins). The per-device state snapshot is dropped: a batch confirms through
+            // hub_get_device_attribute's deviceIds form, not through N inline snapshots.
+            def entry = [deviceId: deviceId, command: e.command] + one
+            entry.remove("state")
+            entry.remove("stateError")
+            entry.remove("partial")
+            if (entry.success == false) {
+                mcpLog("error", "send-command", "batch entry failed for ${deviceId} (${e.command}): ${entry.error ?: '(no error text)'}")
+            }
+            results << entry
+        } catch (Exception ex) {
+            def cls = ex.class.simpleName
+            mcpLog("error", "send-command", "batch entry threw for ${deviceId} (${e.command}): ${cls}: ${ex.message ?: '(no message)'}")
             results << [
                 success : false,
-                deviceId: entry.deviceId,
-                command : entry.command,
-                error   : "${cls}: ${e.message ?: '(no message)'}".toString()
+                deviceId: deviceId,
+                command : e.command,
+                error   : "${cls}: ${ex.message ?: '(no message)'}".toString(),
+                note    : "This entry did not actuate; the other entries were still sent. Verify the deviceId with hub_list_devices and the command with hub_get_device, then re-send ONLY this entry."
             ]
         }
     }
 
+    def failed = results.count { it.success == false }
+    def sent = results.size() - failed
     def result = [
-        success  : failed == 0,
-        count    : results.size(),
-        sentCount: results.size() - failed,
-        results  : results
+        success    : failed == 0,
+        count      : results.size(),
+        sentCount  : sent,
+        failedCount: failed,
+        results    : results
     ]
-    if (failed > 0) result.failedCount = failed
+    if (failed > 0) {
+        result.failedDeviceIds = results.findAll { it.success == false }.collect { it.deviceId }
+        if (failed < results.size()) result.partial = true
+        result.error = "${failed} of ${results.size()} device command(s) failed; ${sent} were sent. See results[] for the per-device cause.".toString()
+        result.note = "The entries that succeeded ALREADY actuated -- do NOT re-send the whole batch; re-send only the entries in failedDeviceIds. See hub_get_tool_guide(section='device_authorization') for what makes an entry fail."
+        // Only a batch where nothing landed is a tool-execution error. Flagging a partial one
+        // would tell the caller the call did nothing while devices had in fact moved.
+        if (failed == results.size() && !remaining) result.isError = true
+    }
+    if (remaining) {
+        result.success = false
+        result.stoppedEarly = true
+        result.remainingCommands = remaining
+        result.error = ("Stopped after attempting ${results.size()} of ${commands.size()} entries, nearing the relay time budget; the remaining ${remaining.size()} were NOT sent." +
+                        (failed > 0 ? " ${failed} of the attempted entries also failed -- see results[]." : "")).toString()
+        result.note = "The ${results.size()} attempted entries were already dispatched (see results[]); re-send ONLY remainingCommands in a new call.".toString()
+    }
     return result
 }
 
@@ -1493,7 +1520,9 @@ private Map _fireBypassCommand(deviceId, command, List params, Map fullJson) {
     try {
         resp = hubInternalPostJson("/device/runmethod", body)
     } catch (Exception e) {
-        mcpLog("warn", "send-command", "bypass: /device/runmethod for '${command}' on ${deviceId} threw: ${e.message ?: e.toString()}")
+        // Log at error: a warn is below Hubitat's default log level, so this failed-fire would
+        // land in neither the hub log nor the buffer.
+        mcpLog("error", "send-command", "bypass: /device/runmethod for '${command}' on ${deviceId} threw: ${e.message ?: e.toString()}")
         return [success: false, error: "runmethod call failed for '${command}': ${e.message ?: e.toString()}",
                 note: "The hub call to /device/runmethod failed; the command may not have actuated. Retry, or verify the device id."]
     }
@@ -1501,14 +1530,17 @@ private Map _fireBypassCommand(deviceId, command, List params, Map fullJson) {
     // response on a write -> unknown commit), a non-JSON body, a non-Map, or a Map that does not
     // carry success==true (e.g. {}) all mean "not confirmed" -- never silently treat them as success.
     if (resp == null) {
+        mcpLog("error", "send-command", "bypass: /device/runmethod for '${command}' on ${deviceId} returned an empty/dropped response")
         return [success: false, error: "runmethod returned an empty/dropped response for '${command}'",
                 note: "The hub call to /device/runmethod returned no body; the command may have actuated but was not confirmed. Retry, or verify with hub_get_device."]
     }
     if (resp instanceof Map && resp._unparseable) {
+        mcpLog("error", "send-command", "bypass: /device/runmethod for '${command}' on ${deviceId} returned a non-JSON body: ${resp.message}")
         return [success: false, error: "runmethod returned a non-JSON body for '${command}': ${resp.message}",
                 note: "The hub did not return a JSON result; the command may not have actuated. Retry."]
     }
     if (!(resp instanceof Map) || resp.success != true) {
+        mcpLog("error", "send-command", "bypass: /device/runmethod for '${command}' on ${deviceId} did not confirm success: ${resp}")
         return [success: false, error: "runmethod did not confirm success for '${command}': ${resp}",
                 note: "The hub rejected or did not confirm the command. Verify the command and arguments against hub_get_device."]
     }
@@ -1798,26 +1830,34 @@ def toolPollUntilAttribute(args) {
         if (!(args.deviceIds instanceof List) || args.deviceIds.isEmpty()) {
             throw new IllegalArgumentException("deviceIds must be a non-empty list of device-ID strings")
         }
+        // A hub device id is numeric, so a caller that sends it as a JSON number is not wrong --
+        // coerce to the string form the rest of the engine compares on. Coercing here also makes
+        // the duplicate check see 5 and "5" as the same device.
+        def coercedIds = []
         args.deviceIds.eachWithIndex { v, i ->
-            if (!(v instanceof String) || !v) {
+            def id = (v instanceof Number) ? v.toString() : v
+            if (!(id instanceof String) || !id) {
                 throw new IllegalArgumentException("deviceIds[${i}] must be a non-empty string, got: ${_describeValueForError(v)}")
             }
+            coercedIds << id
         }
-        if (args.deviceIds.size() > MAX_POLL_DEVICES) {
-            throw new IllegalArgumentException("deviceIds has ${args.deviceIds.size()} device IDs -- the cap is ${MAX_POLL_DEVICES} per poll")
+        if (coercedIds.size() > MAX_POLL_DEVICES) {
+            throw new IllegalArgumentException("deviceIds has ${coercedIds.size()} device IDs -- the cap is ${MAX_POLL_DEVICES} per poll")
         }
         // Reject duplicates: a repeated id would double-count convergedCount and emit duplicate
         // devices[] rows. Each device may appear at most once.
-        def dupes = args.deviceIds.countBy { it }.findAll { k, c -> c > 1 }.keySet().sort()
+        def dupes = coercedIds.countBy { it }.findAll { k, c -> c > 1 }.keySet().sort()
         if (dupes) {
             throw new IllegalArgumentException("deviceIds contains duplicate entries: ${dupes} -- each device may appear once")
         }
-        deviceIdList = args.deviceIds
+        deviceIdList = coercedIds
     } else {
-        if (!(args.deviceId instanceof String) || !args.deviceId) {
-            throw new IllegalArgumentException("deviceId is required and must be a non-empty string")
+        // Same Number coercion as the deviceIds branch: a numeric id is not wrong, just unstrung.
+        def singleId = (args.deviceId instanceof Number) ? args.deviceId.toString() : args.deviceId
+        if (!(singleId instanceof String) || !singleId) {
+            throw new IllegalArgumentException("deviceId is required and must be a non-empty string (got: ${_describeValueForError(args.deviceId)})")
         }
-        deviceIdList = [args.deviceId]
+        deviceIdList = [singleId]
     }
 
     // 2. Validate attribute (the same condition applies to every device).
@@ -4347,7 +4387,7 @@ One-shot read by default (deviceId + attribute). Provide expectedValue or expect
             name: "hub_call_device_command",
             description: """Send a command (e.g. on, off, setLevel) to one device, or to SEVERAL at once via `commands`. Use to actuate or control a device; for read-only checks use hub_get_device_attribute instead.
 
-For more than one device pass `commands` (max 20) rather than calling this repeatedly: one round trip instead of N, which is most of the wall-clock time.[[FLAT_TRIM]] Entries are independent -- mixed devices and mixed commands -- and one failing entry does not stop the others; check results[] for per-entry success. Confirm a batch with hub_get_device_attribute's deviceIds form. For a set commanded repeatedly a group or scene is better still - one device to command, with the hub fanning out; `commands` is for the ad-hoc set nobody defined in advance.[[/FLAT_TRIM]]
+For more than one device pass `commands` (max 20) rather than calling this repeatedly: one round trip instead of N. Entries are independent -- one failing entry does not stop the others; check results[] for per-entry success. Confirm a batch with hub_get_device_attribute's deviceIds form.[[FLAT_TRIM]] The round trip, not the hub actuating the device, is most of the wall-clock time, so this is the biggest win available on a multi-device intent; mixed devices and mixed commands go in one batch. For a set commanded repeatedly a group or scene is better still - one device to command, with the hub fanning out; `commands` is for the ad-hoc set nobody defined in advance.[[/FLAT_TRIM]]
 
 If no exact device match: suggest similar devices and get user confirmation before sending any command.""",
             inputSchema: [
@@ -4356,14 +4396,12 @@ If no exact device match: suggest similar devices and get user confirmation befo
                     deviceId: [type: "string", description: "Device ID from hub_list_devices - must be confirmed by user if not an exact match.[[FLAT_TRIM]] Omit when using commands.[[/FLAT_TRIM]]"],
                     command: [type: "string", description: "Command name, e.g. \"setLevel\". Must be one of the device's supported commands (see hub_get_device).[[FLAT_TRIM]] Omit when using commands.[[/FLAT_TRIM]]"],
 
-                    // The nested item descriptions are deliberately terse: they name the same three
-                    // fields the top-level deviceId/command/parameters already describe in full, and
-                    // restating them here doubled this tool's schema bytes. The flat catalog has a
-                    // hard 124KB cap for the whole surface, so the duplicate wording is FLAT_TRIM'd
-                    // and lives once, in the guide.
+                    // The nested item descriptions are terse by design: the three fields are
+                    // described in full at the top level, and restating them here doubled this
+                    // tool's schema bytes against the flat catalog's ~124KB cap.
                     commands: [
                         type: "array",
-                        description: "Several devices in ONE call. Mutually exclusive with deviceId/command; no waitFor.[[FLAT_TRIM]] Sent in the order given; a bad entry is reported in its own results[] slot while the rest still go, and malformed input is rejected before anything is sent.[[/FLAT_TRIM]]",
+                        description: "Several devices in ONE call. Mutually exclusive with deviceId/command; no waitFor. Entries return no state snapshot. A bad entry is reported in its own results[] slot while the rest still go; malformed input is rejected before anything is sent.[[FLAT_TRIM]] Entries are sent in the order given.[[/FLAT_TRIM]]",
                         minItems: 1,
                         maxItems: 20,
                         items: [
@@ -4395,16 +4433,19 @@ If no exact device match: suggest similar devices and get user confirmation befo
             outputSchema: [
                 type: "object",
                 properties: [
-                    success: [type: "boolean", description: "Whether the command was sent. In the commands form, true only when EVERY entry was sent - check results[] when false."],
+                    success: [type: "boolean", description: "Whether the command was sent. In the commands form, true only when EVERY entry was attempted AND sent - check results[] (and stoppedEarly) when false."],
                     device: [type: "string", description: "Device label (single-device form)"],
                     command: [type: "string", description: "Command sent (single-device form)"],
-                    parameters: [type: "array", description: "Normalized parameters passed to the command"],
+                    parameters: [type: ["array", "null"], description: "Normalized parameters passed to the command; null for a parameterless command"],
                     count: [type: "integer", description: "commands form: number of entries attempted"],
                     sentCount: [type: "integer", description: "commands form: number of entries sent successfully"],
-                    failedCount: [type: "integer", description: "commands form: present only when at least one entry failed"],
+                    failedCount: [type: "integer", description: "commands form: number of attempted entries that failed (0 when all were sent)"],
+                    failedDeviceIds: [type: "array", description: "commands form: the deviceIds of the failed entries, in request order -- re-send ONLY these.", items: [type: "string"]],
+                    stoppedEarly: [type: "boolean", description: "commands form: present and true when the batch stopped early because the request was nearing the relay time budget; the entries in remainingCommands were NOT sent."],
+                    remainingCommands: [type: "array", description: "commands form: present with stoppedEarly -- the untried tail of the request, verbatim, to re-send in a new call.", items: [type: "object"]],
                     results: [
                         type: "array",
-                        description: "commands form: per-entry outcome, in request order. A successful entry carries this tool's single-device fields (success, device, command, parameters, state, and stateError/partial where applicable) plus deviceId. A failed entry carries success:false, deviceId, command and error.",
+                        description: "commands form: per-entry outcome, in request order. Entries carry no state snapshot -- confirm outcomes with hub_get_device_attribute's deviceIds form. A successful entry carries success, deviceId, device, command and parameters. A failed entry carries success:false, deviceId, command, error, and sometimes note.",
                         items: [
                             type: "object",
                             properties: [
@@ -4412,11 +4453,9 @@ If no exact device match: suggest similar devices and get user confirmation befo
                                 deviceId: [type: "string", description: "Device ID this entry targeted"],
                                 device: [type: "string", description: "Device label (successful entries only)"],
                                 command: [type: "string", description: "Command sent"],
-                                parameters: [type: "array", description: "Normalized parameters passed to the command (successful entries only)"],
-                                state: [type: "object", description: "Attribute snapshot keyed by attribute name; each entry is {value, timestamp}. The immediate PRE-effect value, as in the single-device form without waitFor."],
-                                stateError: [type: "string", description: "Present only when this entry's state read-back threw; its state is then {}"],
-                                partial: [type: "boolean", description: "Present and true when this entry's command fired but the state read-back failed (see stateError)"],
-                                error: [type: "string", description: "Present only on a FAILED entry: the error class and message, e.g. an unknown deviceId or an unsupported command. The other entries were still sent."]
+                                parameters: [type: ["array", "null"], description: "Normalized parameters passed to the command; null for a parameterless command"],
+                                error: [type: "string", description: "Present only on a FAILED entry: the error class and message, e.g. an unknown deviceId or an unsupported command. The other entries were still sent."],
+                                note: [type: "string", description: "Present on a failed entry that carries recovery guidance"]
                             ],
                             required: ["success", "deviceId", "command"]
                         ]
@@ -4426,7 +4465,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
                         timestamp: [type: ["string", "null"], description: "Last-event timestamp for this attribute (yyyy-MM-dd HH:mm:ss), or null if the attribute has never reported"]
                     ]]],
                     stateError: [type: "string", description: "Present only when the post-command state read-back threw; state is then {} (an empty state with NO stateError means the device legitimately has no readable attributes). Carries the error class and message."],
-                    partial: [type: "boolean", description: "Present and true when the command fired but a confirmation step degraded: the state read-back failed (see stateError) and/or the waitFor poll threw (see waitFor.error). Absent on a fully clean result."],
+                    partial: [type: "boolean", description: "Single-device form: present and true when the command fired but a confirmation step degraded -- the state read-back failed (see stateError) and/or the waitFor poll threw (see waitFor.error). commands form: present and true when some entries were sent and some failed (see failedDeviceIds). Absent on a fully clean result."],
                     waitFor: [type: "object", description: "Present only when the waitFor arg was supplied: the result of block-polling the attribute to its expected value.", properties: [
                         attribute  : [type: "string", description: "Attribute that was polled"],
                         expected   : [type: ["string", "array"], description: "The expectedValue string or expectedValues list that was awaited"],
@@ -4441,11 +4480,13 @@ If no exact device match: suggest similar devices and get user confirmation befo
                         note       : [type: "string", description: "Present with nonNumericAttribute -- human-readable recovery guidance (names the comparator/attribute, suggests eq/ne for a string attribute)."],
                         transitioning: [type: "boolean", description: "Present only on a TIMEOUT: true if the value was still changing across polls (>=2 distinct non-null values seen) so the device is likely still settling, vs false for a stable non-target (a real mismatch). Best-effort: only reliable when the timeout spans a reporting jump."],
                         error      : [type: "string", description: "Present only if the poll loop threw after the command fired; the command still succeeded"]
-                    ]]
+                    ]],
+                    error: [type: "string", description: "Failure reason (success=false)"],
+                    note: [type: "string", description: "Recovery guidance -- on a failed batch, which entries already actuated and what to re-send"]
                 ],
 
-                // The single-device success shape. The commands form returns success/count/
-                // sentCount/results instead, so device/command/state cannot be required overall.
+                // The commands form returns success/count/sentCount/results instead, so
+                // device/command/state cannot be required overall.
                 required: ["success"]
             ]
         ],
@@ -4741,7 +4782,7 @@ def _toolDisplayMeta_partDevices() {
         hub_get_device: [title: "Get Device Details", summary: "Get one device's full details: attributes, commands, capabilities."],
         hub_get_device_attribute: [title: "Get Device Attribute", summary: "Read one attribute value, optionally waiting until it matches an expected value."],
         hub_list_device_events: [title: "List Device Events", summary: "Recent events for a device or app, or location events when neither is given."],
-        hub_call_device_command: [title: "Send Device Command", summary: "Send a command like on, off, or setLevel to a device."],
+        hub_call_device_command: [title: "Send Device Command", summary: "Send a command like on, off, or setLevel to one device, or up to 20 in one call."],
         hub_call_device_swap: [title: "Swap Device", summary: "Replace a device across all apps and rules that reference it, in one operation."],
         hub_call_device_replace: [title: "Replace Device Hardware", summary: "Re-point a device to replacement hardware, keeping its id and all references."],
         hub_update_device: [title: "Update Device Properties", summary: "Update a device's label, room, preferences, show-on-home, status attribute, or tags."],

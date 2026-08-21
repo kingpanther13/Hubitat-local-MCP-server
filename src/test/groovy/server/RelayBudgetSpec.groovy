@@ -581,12 +581,13 @@ class RelayBudgetSpec extends ToolSpecBase {
         captured.edit.patches.size() == 2
     }
 
-    // The three leaves added to _budgetAwareTools alongside hub_set_rule. Each owns a
+    // The other leaves in _budgetAwareTools alongside hub_set_rule. Each owns a
     // partial-commit loop that consumes the clock (hub_call_rule's per-rule stop/start
-    // toggle; the cloner's stageDisabled disable loop), and each is reached through the
-    // SAME two-hop injection as the pin above -- a leaf missing from the allowlist never
-    // sees the key, so its loop silently runs unbounded. The loop behaviour itself is
-    // pinned in the tools' own specs; these pin only DELIVERY.
+    // toggle; the cloner's stageDisabled disable loop; hub_call_device_command's serial
+    // batch dispatch), and each is reached through the SAME two-hop injection as the pin
+    // above -- a leaf missing from the allowlist never sees the key, so its loop silently
+    // runs unbounded. The loop behaviour itself is pinned in the tools' own specs; these
+    // pin only DELIVERY.
 
     def "the budget clock reaches hub_call_rule through dispatch and the gateway"() {
         given:
@@ -638,6 +639,27 @@ class RelayBudgetSpec extends ToolSpecBase {
         response.error == null
         captured.args.__reqT0 instanceof Long
         captured.args.stageDisabled == true
+    }
+
+    def "the budget clock reaches hub_call_device_command through dispatch and the gateway"() {
+        given:
+        settingsMap.useGateways = true
+        settingsMap.enableWrite = true
+        def captured = [:]
+        script.metaClass.toolSendCommand = { d, c, p = null, w = null, cmds = null, t0 = null ->
+            captured.reqT0 = t0
+            captured.commands = cmds
+            [success: true, count: 1, sentCount: 1, failedCount: 0, results: []]
+        }
+
+        when: 'the commands form -- the shape whose serial dispatch loop consumes the clock'
+        def response = mcpDriver.callTool('hub_manage_devices',
+            [tool: 'hub_call_device_command', args: [commands: [[deviceId: '10', command: 'on']]]])
+
+        then: 'the clock arrived as the sixth positional argument, not dropped by the gateway hop'
+        response.error == null
+        captured.reqT0 instanceof Long
+        captured.commands.size() == 1
     }
 
     // ---------------- health-probe shedding + unreadable tolerance (issue #351) ----------------
