@@ -1615,7 +1615,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         childDevicesList << device
 
         when:
-        script.toolSendCommand(deviceId, command, null, null, [[deviceId: '10', command: 'on']])
+        script.toolSendCommand(deviceId, command, parameters, null, [[deviceId: '10', command: 'on']])
 
         then: 'rejected by name, and nothing fired'
         def ex = thrown(IllegalArgumentException)
@@ -1624,10 +1624,28 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         0 * device.on()
 
         where:
-        scenario           | deviceId | command || named
-        'deviceId as well' | '10'     | null    || 'deviceId'
-        'command as well'  | null     | 'on'    || 'command'
-        'both as well'     | '10'     | 'on'    || 'deviceId and command'
+        scenario             | deviceId | command | parameters || named
+        'deviceId as well'   | '10'     | null    | null       || 'deviceId'
+        'command as well'    | null     | 'on'    | null       || 'command'
+        'both as well'       | '10'     | 'on'    | null       || 'deviceId and command'
+        'parameters as well' | null     | null    | ['75']     || 'parameters'
+    }
+
+    def "a padded string deviceId is trimmed to the canonical id in both forms"() {
+        given:
+        def device = switchDevice(10, 'Lamp A')
+        childDevicesList << device
+
+        when: 'a batch entry and a single-device call, both padded'
+        def batch = sendBatch([[deviceId: ' 10 ', command: 'on']])
+        def single = script.toolSendCommand('  10', 'off', null)
+
+        then: 'both resolve device 10, and the batch reports the canonical id'
+        1 * device.on()
+        1 * device.off()
+        batch.success == true
+        batch.results[0].deviceId == '10'
+        single.success == true
     }
 
     def "commands rejects waitFor rather than silently ignoring it"() {

@@ -1000,8 +1000,11 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
         def conflicting = []
         if (deviceId != null) conflicting << "deviceId"
         if (command != null) conflicting << "command"
+        // A top-level parameters with commands would otherwise be SILENTLY dropped -- the batch
+        // executes without the caller's arguments, which is worse than refusing the mixed shape.
+        if (parameters != null) conflicting << "parameters"
         if (conflicting) {
-            throw new IllegalArgumentException("commands is mutually exclusive with ${conflicting.join(' and ')} -- pass EITHER a single deviceId+command OR a commands array, not both")
+            throw new IllegalArgumentException("commands is mutually exclusive with ${conflicting.join(' and ')} -- pass EITHER a single deviceId+command OR a commands array, not both (per-entry parameters go inside each commands entry)")
         }
         if (waitFor != null) {
             throw new IllegalArgumentException("waitFor is not supported with commands: it blocks a hub thread per device. Send the batch, then confirm the whole set in one call with hub_get_device_attribute using deviceIds + mode")
@@ -1011,6 +1014,14 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
 
     if (deviceId == null) throw new IllegalArgumentException("deviceId is required (or pass a commands array to send several at once)")
     if (command == null) throw new IllegalArgumentException("command is required (or pass a commands array to send several at once)")
+
+    // Canonicalize BEFORE resolution: a fractional or non-scalar id must fail validation here,
+    // not spend a bypass fullJson fetch on a value that can never name a device.
+    def canonicalId = _canonicalDeviceIdArg(deviceId)
+    if (canonicalId == null) {
+        throw new IllegalArgumentException("deviceId must be a non-empty string or integral number (got: ${_describeValueForError(deviceId)})")
+    }
+    deviceId = canonicalId
 
     def device = findDevice(deviceId)
     // Allowlist bypass: an unlisted device (bypass on) resolves through /device/fullJson and is
@@ -1149,7 +1160,8 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
 // stringified (ids arrive numeric from hub_list_devices format='ids'); anything else -- a
 // fractional number included -- returns null for the caller to reject before any side effect.
 private _canonicalDeviceIdArg(value) {
-    if (value instanceof String) return value
+    // CharSequence, not String: an internal caller may hand a GString and must not be rejected.
+    if (value instanceof CharSequence) return value.toString().trim() ?: null
     if (value instanceof Number) return (value == value.longValue()) ? value.longValue().toString() : null
     return null
 }
@@ -1246,7 +1258,7 @@ private _sendCommandBatch(commands, reqT0 = null) {
                 deviceId: deviceId,
                 command : e.command,
                 error   : "${cls}: ${ex.message ?: '(no message)'}".toString(),
-                note    : "This entry was not confirmed to actuate; the other entries were still sent. Verify the deviceId with hub_list_devices and the command with hub_get_device -- and if the failure happened mid-command, confirm the device state before re-sending this entry."
+                note    : "This entry was not confirmed to actuate; the other attempted entries were still sent (entries the relay budget stopped are in remainingCommands, unsent). Verify the deviceId with hub_list_devices and the command with hub_get_device -- and if the failure happened mid-command, confirm the device state before re-sending this entry."
             ]
         }
     }
@@ -1743,6 +1755,14 @@ def toolGetDeviceEvents(deviceId, limit) {
 }
 
 def toolGetAttribute(deviceId, attribute) {
+    // Same canonical form as every other device-id entry point: reject a fractional or
+    // non-scalar id before it can spend a bypass fullJson fetch below.
+    def canonicalId = _canonicalDeviceIdArg(deviceId)
+    if (canonicalId == null) {
+        throw new IllegalArgumentException("deviceId must be a non-empty string or integral number (got: ${_describeValueForError(deviceId)})")
+    }
+    deviceId = canonicalId
+
     def device = findDevice(deviceId)
     if (!device) {
         if (_bypassEnabled()) {
@@ -4468,7 +4488,7 @@ If no exact device match: suggest similar devices and get user confirmation befo
                                 device: [type: "string", description: "Device label (successful entries only)"],
                                 command: [type: "string", description: "Command sent"],
                                 parameters: [type: ["array", "null"], description: "Normalized parameters passed to the command; null for a parameterless command"],
-                                error: [type: "string", description: "Present only on a FAILED entry: the error class and message, e.g. an unknown deviceId or an unsupported command. The other entries were still sent."],
+                                error: [type: "string", description: "Present only on a FAILED entry: the error class and message, e.g. an unknown deviceId or an unsupported command. The other ATTEMPTED entries were still sent; entries a relay-budget stop left untried are in remainingCommands."],
                                 note: [type: "string", description: "Present on a failed entry that carries recovery guidance"]
                             ],
                             required: ["success", "deviceId", "command"]
