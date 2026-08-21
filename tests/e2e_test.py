@@ -4925,8 +4925,8 @@ class TestRunner:
             # converged-read fallback -- so one round here would inherit a failure mode that
             # test already demonstrated. This test's subject is the ENVELOPE, and a limiter
             # refusal produces no envelope to assert, so it cannot fall back to a read the way
-            # the sibling does; it retries harder instead, then fails with the rules' actual
-            # state attached so a human can tell a blocked write from a landed one.
+            # the sibling does; it retries harder instead, then reports the limiter error if both
+            # bounce+retry rounds are exhausted.
             for _round in range(2):
                 if not limited:
                     break
