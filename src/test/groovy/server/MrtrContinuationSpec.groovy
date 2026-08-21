@@ -677,7 +677,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def calls = new AtomicInteger(0)
         def virtualNow = new AtomicLong(1234567890000L)
         NOW_OVERRIDE.set({ -> virtualNow.get() })
-        Closure leaf = { deviceId, command, parameters, waitFor ->
+        Closure leaf = { deviceId, command, parameters, waitFor, commands ->
             calls.incrementAndGet()
             entered.countDown()
             release.await(5, TimeUnit.SECONDS)
@@ -731,7 +731,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def calls = new AtomicInteger(0)
         def results = java.util.Collections.synchronizedList([])
         def failures = java.util.Collections.synchronizedList([])
-        Closure leaf = { deviceId, command, parameters, waitFor ->
+        Closure leaf = { deviceId, command, parameters, waitFor, commands ->
             calls.incrementAndGet()
             entered.countDown()
             release.await(10, TimeUnit.SECONDS)

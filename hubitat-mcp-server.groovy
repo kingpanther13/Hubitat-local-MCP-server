@@ -3978,7 +3978,7 @@ def getGatewayConfig() {
             description: "Control and inspect devices: send commands, update a device, create a device from a driver type, and swap/replace a device across all referencing apps, plus read-only inspection (list/get/attribute/events). Device reads are also in hub_read_devices.",
             tools: ["hub_call_device_command", "hub_call_device_swap", "hub_call_device_replace", "hub_update_device", "hub_create_device", "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events"],
             summaries: [
-                hub_call_device_command: "Send a command to a device (verify state after). Args: deviceId, command, parameters?, waitFor?",
+                hub_call_device_command: "Send one device command, or batch up to 20 mixed commands in one call. Args: deviceId, command, parameters?, waitFor? | commands: [{deviceId, command, parameters?}]",
                 hub_call_device_swap: "Replace a device across ALL apps/rules that reference it (built-in Swap Device tool). Args: from_device_id, to_device_id, confirm",
                 hub_call_device_replace: "Replace a dead device's hardware while KEEPING its id + all app/rule references (re-points to new_device_id; list_options=true reads compatible candidates). Args: old_device_id, new_device_id?, list_options?, confirm",
                 hub_update_device: "Update a device's properties: label, name, room, deviceNetworkId, enabled, dataValues, preferences, showOnHome, defaultCurrentState (Status-column attribute), tags. Args: deviceId, label?, name?, room?, deviceNetworkId?, enabled?, dataValues?, preferences?, showOnHome?, defaultCurrentState?, tags?",
@@ -3989,7 +3989,7 @@ def getGatewayConfig() {
                 hub_list_device_events: "Recent device events, a time-windowed history, an absolute bookmark (since), per-app events (appId), or location events. Args: deviceId?, appId?, hoursBack?, since?, attribute?, limit?"
             ],
             searchHints: [
-                hub_call_device_command: "send command control turn on off set level dim lock unlock device run",
+                hub_call_device_command: "send command control turn on off set level dim lock unlock device run batch multiple several devices mixed commands ad hoc one call",
                 hub_call_device_swap: "swap replace device migrate references substitute rewire apps rules everywhere retire failing hardware",
                 hub_call_device_replace: "replace device hardware failed dead broken re-point preserve keep id references rules dashboard compatible replacement candidates getReplacementOptions",
                 hub_update_device: "rename relabel move room device edit show on home status attribute default current state tags label preferences",

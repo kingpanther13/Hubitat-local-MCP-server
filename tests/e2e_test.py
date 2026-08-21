@@ -3411,13 +3411,10 @@ class TestRunner:
 
         # This assertion is about the REJECTED batch leaving the switch alone, so it can only be
         # trusted if leg 1's "on" actually landed. A platform limiter that swallowed that event
-        # would present as switch=off -- indistinguishable here from a partial send -- so bounce the
-        # throttle and re-drive once, then soft-pass only on hub-log proof.
+        # would present as switch=off -- indistinguishable here from a partial send. Clear the
+        # throttle and re-poll, but never issue a command that could mask a partial send.
         if after.get("success") is not True and self._clear_load_throttle(
                 f"batched 'on' never landed on {sw_a}: {after}"):
-            self.client.call_tool("hub_call_device_command", {
-                "deviceId": sw_a, "command": "on",
-                "waitFor": {"attribute": "switch", "expectedValue": "on", "timeoutMs": 5000}})
             after = self.client.call_tool("hub_get_device_attribute", {
                 "deviceId": sw_a, "attribute": "switch", "expectedValue": "on", "timeoutMs": 3000})
 
