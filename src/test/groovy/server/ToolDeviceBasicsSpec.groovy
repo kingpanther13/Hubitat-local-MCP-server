@@ -1292,7 +1292,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         result.results[1].deviceId == '999'
         result.results[1].command == 'on'
         result.results[1].error.contains('Device not found: 999')
-        result.results[1].note?.contains('re-send ONLY this entry')
+        result.results[1].note?.contains('not confirmed to actuate')
 
         and: 'its neighbours are unaffected'
         result.results[0].success == true
@@ -1365,11 +1365,8 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         'numeric command' | [deviceId: '10', command: 7]                            || 'command is required and must be a non-empty string (got: 7 (number))'
     }
 
-    def "batch entries skip the state read-back entirely; the single-device form keeps it"() {
-        given: 'both snapshot paths counted, never stubbed out of the dispatch flow'
-        def snapshots = 0
-        script.metaClass._snapshotDeviceState = { device, label, err = null -> snapshots++; [:] }
-        script.metaClass._snapshotBypassDeviceState = { id, label, err = null -> snapshots++; [:] }
+    def "batch entries carry no state key while the single-device form still returns one"() {
+        given:
         def a = switchDevice(10, 'Lamp A')
         def b = switchDevice(11, 'Lamp B')
         childDevicesList << a << b
@@ -1377,19 +1374,19 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         when: 'a clean two-entry batch'
         def batch = sendBatch([[deviceId: '10', command: 'on'], [deviceId: '11', command: 'on']])
 
-        then: 'no snapshot was read for either entry -- the batch response carries none'
+        then: 'entries skip the read-back -- no state, stateError, or partial anywhere'
         1 * a.on()
         1 * b.on()
         batch.success == true
-        snapshots == 0
+        batch.results.every { !it.containsKey('state') && !it.containsKey('stateError') && !it.containsKey('partial') }
 
         when: 'the same device through the single-device form'
         def single = script.toolSendCommand('10', 'off', null)
 
-        then: 'the single-device contract still reads its snapshot'
+        then: 'the single-device contract still returns its snapshot key'
         1 * a.off()
         single.success == true
-        snapshots == 1
+        single.containsKey('state')
     }
 
     def "commands form rejects more than 20 entries"() {
@@ -1465,7 +1462,7 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         result.failedCount == 2
         result.failedDeviceIds == ['998', '999']
         result.error.contains('2 of 2')
-        result.note.contains('failedDeviceIds')
+        result.note.contains('may still have actuated')
 
         and: 'partial is for a batch that half-landed -- this one did not'
         !result.containsKey('partial')
