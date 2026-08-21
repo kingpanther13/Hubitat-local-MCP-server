@@ -388,7 +388,7 @@ Monitoring tools are gated by the Read master (ON by default).
 
 | Tool | Description |
 |------|-------------|
-| `hub_list_files` | List all files in File Manager |
+| `hub_list_files` | List files in File Manager (optional `filter` name substring) |
 | `hub_read_file` | Read a file's contents |
 
 </details>
@@ -602,7 +602,7 @@ Non-destructive radio operations. Destructive radio ops (reset/wipe, firmware up
 
 | Tool | Description |
 |------|-------------|
-| `hub_list_files` | List all files in File Manager (also in `hub_read_files`) |
+| `hub_list_files` | List files in File Manager (optional `filter` name substring; also in `hub_read_files`) |
 | `hub_read_file` | Read a file's contents (also in `hub_read_files`) |
 | `hub_write_file` | Create or update a file (auto-backs up existing) |
 | `hub_delete_file` | Delete a file (auto-backs up first) |
@@ -1660,6 +1660,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v4.0.1** - fix: close MRTR write-cap leaks and make the search corpus self-heal. PRs: [#391](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/391)
 - **v4.0.0** - build(deps): bump gradle/actions from 6 to 6.2.0 in the github-actions group ([#375](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/375), @app/dependabot); feat: batch rule pause/run, modifyAction retarget, stageDisabled on clone/import; chore: Create Code Review Style Guide for Hubitat MCP Server; build(deps): bump gradle/actions from 6.2.0 to 6.3.0 in the github-actions group ([#380](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/380), @app/dependabot); ci: dispatchable fast lanes, and promote Groovy 2.5 Spock to a required gate; chore: vendor final MCP 2026-07-28 schema; feat: replace slow-write tokens with MCP request state, change to MRTR from new mcp spec. PRs: [#375](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/375), [#377](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/377), [#379](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/379), [#380](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/380), [#382](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/382), [#384](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/384), [#388](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/388)
 - **v3.7.0** - build(deps): bump net.bytebuddy:byte-buddy from 1.18.10 to 1.18.11 in the gradle-dependencies group across 1 directory ([#368](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/368), @app/dependabot); chore: renormalize gradlew.bat to match its eol=crlf attribute; ci: stop rebooting the test hub, move device fixtures off the app; docs: pin mcp SDK <2.0.0 in the Claude Desktop mcp-proxy config; feat: context snapshot, device-state filters, MCP resources, bearer-auth docs. PRs: [#368](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/368), [#370](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/370), [#371](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/371), [#372](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/372), [#374](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/374)
 - **v3.6.0** - test: close review findings on the conformance harness. PRs: [#369](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/369)

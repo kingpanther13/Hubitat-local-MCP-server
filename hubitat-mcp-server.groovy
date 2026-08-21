@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 4.0.0 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 4.0.1 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -49,6 +49,15 @@
 // Keys already proven to hold a durable Map. atomicState.updateMapValue requires one
 // to be there, which every per-entry write path used to re-check with its own read.
 @groovy.transform.Field static final Set WRITE_STATE_DURABLE_MAPS = new java.util.HashSet()
+
+// Memo of the tool-search corpus fingerprint, kept OUTSIDE the lock-guarded block above:
+// unlike those, it is deliberately unsynchronized. Computing it walks the whole catalog,
+// which would otherwise happen on EVERY hub_search_tools call just to decide the cache is
+// warm. The tool surface is code, so within one class lifetime the value cannot change --
+// concurrent computers race to the same answer -- and a code deploy recompiles the class,
+// clearing it, which is exactly the event the fingerprint exists to catch. updated() clears
+// it too. The only non-final static here; it is assigned, not mutated in place.
+@groovy.transform.Field static String TOOL_SEARCH_CORPUS_FP = null
 
 definition(
     name: "MCP Rule Server",
@@ -564,7 +573,9 @@ def updated() {
     log.info "MCP Rule Server updated"
     atomicState.remove("toolSearchCorpus")        // Invalidate BM25 corpus cache on app update
     atomicState.remove("toolSearchTokens")        // ...and the paired BM25 token cache in lockstep
-    atomicState.remove("toolSearchCorpusVersion")  // ...and the corpus version stamp
+    atomicState.remove("toolSearchCorpusVersion")  // ...and the retired version stamp, so an upgraded hub sheds it
+    atomicState.remove("toolSearchCorpusFingerprint")  // ...and the corpus content fingerprint in lockstep
+    TOOL_SEARCH_CORPUS_FP = null                  // ...and its in-JVM memo, or the next search reuses a stale key
     atomicState.remove("requiredParamsByTool")    // ...and the gateway required-param memo
     atomicState.remove("requiredParamsByToolFingerprint")  // ...and its content fingerprint in lockstep
     initialize()
@@ -2275,6 +2286,33 @@ private void _mrtrSweepTerminalEvidenceLocked() {
     }
 }
 
+// MRTR_WORK_ITEMS hands a claimed slice's arguments to its scheduled worker, and was
+// the one MRTR structure with no sweep: an item whose runMrtrSlice never fired -- the
+// scheduler dropped the job -- retains a full copy of the call arguments (driver source,
+// a whole patch list) for the life of the class. Sweep by the OWNING CLAIM's fate rather
+// than a private TTL: the item feeds exactly one claim, so it is garbage the moment its
+// record is gone, no longer active, or has moved on to a later claim. An age ceiling could
+// not see that last case. Runs AFTER the record loop so it reads the post-sweep record map.
+// No size cap is needed -- items are 1:1 with claims, which _mrtrMaxRecords already bounds.
+private void _mrtrSweepWorkItemsLocked() {
+    if (MRTR_WORK_ITEMS.isEmpty()) return
+    def stored = _writeStateMapLocked("mrtrRequests")
+    def dead = MRTR_WORK_ITEMS.findAll { k, v ->
+        if (!(v instanceof Map)) return true
+        // An executing worker owns its item; never reap under it, or the slice loses the
+        // arguments it is mid-way through applying.
+        if (v.started == true && _writeExecutionLiveLocked(k)) return false
+        def rec = stored[v.stateId?.toString()]
+        if (!(rec instanceof Map) || rec.status != "active") return true
+        // Match on claim IDENTITY, not just the record: the item exists to feed ONE claim, so
+        // once the record has moved on to a later claim this item is garbage no matter how
+        // young it looks. An age ceiling can't see that -- it would hold a full copy of the
+        // call arguments for the whole window on every superseded claim.
+        return rec.claimId?.toString() != k?.toString()
+    }.collect { it.key }
+    dead.each { MRTR_WORK_ITEMS.remove(it) }
+}
+
 // Returns expired active records whose external helper resources must be
 // cleaned after the mutex is released. Only terminal/abandoned records may be
 // trimmed for storage pressure; live requestState records are never evicted.
@@ -2282,6 +2320,16 @@ private List _mrtrSweepLocked() {
     _mrtrSweepTerminalEvidenceLocked()
     def stored = _writeStateMapLocked("mrtrRequests")
     long at = now()
+    // The liveness disjunct is deliberately UNCAPPED here, unlike the lease sweep's two
+    // horizons. A detached worker strips __reqT0 so _timeBudgetExceeded is permanently false
+    // for it: its slice is time-unbounded by design, and nothing refreshes expiresAt WHILE it
+    // runs (only _mrtrClaim and the slice-completion bank write it). So any ceiling measured
+    // from expiresAt eventually fires under a genuinely running worker -- evicting the record
+    // it needs to store its terminal (the client then gets "Invalid or expired requestState"
+    // for a write that already mutated the hub) and freeing its write-cap slot so a second
+    // write can interleave on the same classic-app page. A stranded marker from a hard kill
+    // outside the catch is the lesser evil; closing it needs a worker heartbeat that refreshes
+    // expiresAt, so "live but expired" can mean dead. Do not add a ceiling without one.
     def kept = [:]
     def cleanup = []
     stored.each { k, v ->
@@ -2308,15 +2356,8 @@ private List _mrtrSweepLocked() {
         }
     }
     if (kept.size() != stored.size()) _writeStateSetLocked("mrtrRequests", kept)
+    _mrtrSweepWorkItemsLocked()
     return cleanup
-}
-
-private void _mrtrSweep() {
-    List cleanup
-    synchronized (WRITE_RESERVATION_LOCK) {
-        cleanup = _mrtrSweepLocked()
-    }
-    cleanup.each { _mrtrCleanupRecord(it as Map) }
 }
 
 private Map _mrtrFindActiveLocked(leafTool, Map binding) {
@@ -2595,32 +2636,7 @@ private Map _mrtrRecordSlice(String stateId, Map originalRec, Map claim, Map res
         try {
             def aggregate = (rec.aggregate instanceof Map) ? ([:] + rec.aggregate) : [:]
             String kind = continuation.kind?.toString()
-            aggregate.kind = kind
-            switch (kind) {
-                case "call_rule":
-                    aggregate.results = ((aggregate.results instanceof List) ? aggregate.results : []) +
-                        ((result.results instanceof List) ? result.results : [])
-                    aggregate.ruleIds = (((aggregate.ruleIds instanceof List) ? aggregate.ruleIds : []) +
-                        ((result.ruleIds instanceof List) ? result.ruleIds : [])).unique()
-                    break
-                case "walk_steps":
-                    aggregate.steps = ((aggregate.steps instanceof List) ? aggregate.steps : []) +
-                        ((result.steps instanceof List) ? result.steps : [])
-                    aggregate.stepsRequested = ((aggregate.stepsRequested ?: 0) as Integer) +
-                        ((result.stepsRequested ?: 0) as Integer)
-                    break
-                case "bulk_edit":
-                    aggregate.triggers = ((aggregate.triggers instanceof List) ? aggregate.triggers : []) +
-                        ((result.triggers instanceof List) ? result.triggers : [])
-                    aggregate.actions = ((aggregate.actions instanceof List) ? aggregate.actions : []) +
-                        ((result.actions instanceof List) ? result.actions : [])
-                    break
-                case "patches":
-                    aggregate.patchResults = ((aggregate.patchResults instanceof List) ? aggregate.patchResults : []) +
-                        ((result.patchResults instanceof List) ? result.patchResults : [])
-                    break
-            }
-            aggregate.anyPartial = aggregate.anyPartial == true || result.partial == true
+            _mrtrMergeAggregate(aggregate, kind, result)
             rec.aggregate = aggregate
             if (continuation.nextArguments instanceof Map) rec.nextArguments = continuation.nextArguments
             else rec.remove("nextArguments")
@@ -2657,6 +2673,71 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                 error: "The operation did not finish within ${_mrtrMaxContinuationSlices()} bounded continuation slices.",
                 note: "The completed slices remain committed. Inspect the current hub state before deciding whether to submit a smaller follow-up operation."
             ]
+            // Hand back the per-item ledger the record is already holding. Telling a caller to
+            // inspect hub state by hand while discarding the outcomes we know is the worst
+            // answer on the one path where the batch was large enough to hit the cap.
+            def cappedAgg = (rec.aggregate instanceof Map) ? rec.aggregate as Map : [:]
+            if (cappedAgg.kind?.toString() == "call_rule") {
+                def cappedBank = _mrtrBankRuleResults(cappedAgg, result)
+                def banked = cappedBank.results
+                capped.results = banked
+                capped.ruleIds = cappedBank.ruleIds
+                def cappedFailed = banked.findAll { it instanceof Map && it.success != true }
+                if (!cappedFailed.isEmpty()) {
+                    capped.failedRuleIds = cappedFailed.collect { it.ruleId }.findAll { it != null }.unique()
+                }
+                // Reaching this branch REQUIRES a non-empty remainingRuleIds, and failed is a
+                // different set from not-yet-reached -- so name the un-actioned ids rather than
+                // making the caller diff them out of hub state.
+                if (result instanceof Map && result.remainingRuleIds instanceof List
+                        && !(result.remainingRuleIds as List).isEmpty()) {
+                    capped.remainingRuleIds = result.remainingRuleIds
+                }
+                // partial means some rules were actioned and some were not. Keying it on
+                // "anything banked" would be structurally always true here -- reaching the cap
+                // requires a pause, which requires a banked row -- and would report an
+                // all-failed capped batch as partial while the identical outcome through the
+                // ordinary terminal reports a plain failure.
+                //
+                // The formula is deliberately NOT the terminal's `failed.size() < results.size()`:
+                // reaching this branch REQUIRES a non-empty remainingRuleIds, so rules that were
+                // never reached always exist here and the terminal's version never sees them. One
+                // success is therefore enough to make this batch some-actioned-some-not, whereas
+                // at the ordinary terminal nothing is left unreached and a mixed row set is the
+                // only way to be partial.
+                capped.partial = banked.any { it instanceof Map && it.success == true }
+                // Name the re-issue set explicitly. The un-done work at the cap is
+                // failedRuleIds UNION remainingRuleIds -- exactly what the continuation would
+                // have re-queued -- and note is the field an agent reads for its next move.
+                // Left generic, it leads to re-issuing only the un-reached ids and stranding
+                // the failed ones, which is what the leaf's own note exists to prevent.
+                def reissue = (((capped.failedRuleIds ?: []) as List) +
+                               ((capped.remainingRuleIds ?: []) as List)).unique { it?.toString() }
+                if (!reissue.isEmpty()) {
+                    capped.note = "The completed slices remain committed. Re-issue ${reissue} " +
+                        "to finish: that is the failed rules plus the ones never reached. " +
+                        "results[] shows what each rule actually did."
+                }
+            } else if (!cappedAgg.isEmpty()) {
+                // Every other kind banks an aggregate too (steps, triggers/actions,
+                // patchResults). Discarding it would lose the record of what landed on the one
+                // path where the operation was big enough to need it. Merge the round that
+                // triggered the cap first -- it has already run against the hub, and the banked
+                // aggregate is otherwise a round stale, which would have an agent re-apply work
+                // that is already committed.
+                def merged = [:] + cappedAgg
+                _mrtrMergeAggregate(merged, merged.kind?.toString(), result)
+                capped.aggregate = merged
+                capped.note = "The completed slices remain committed. aggregate carries what " +
+                    "each slice did" +
+                    (merged.backup != null ? " and a rollback handle in aggregate.backup" : "") +
+                    ", so a follow-up can resume from there rather than re-running the whole " +
+                    "operation."
+            }
+            // A capped result is by definition stitched from slices; carry the same provenance
+            // block the ordinary terminal emits, since consumers read mrtr.rounds.
+            capped.mrtr = [continued: true, rounds: ((rec.rounds ?: 0) as Integer) + 1,
+                           startedAt: rec.startedAt]
             _mrtrCleanupRecord(rec)
             _mrtrStoreTerminal(stateId, rec, claim, capped, true)
             return [outcome: "terminal", result: capped, isError: true]
@@ -2682,13 +2763,30 @@ private def _mrtrAggregateTerminal(Map rec, result) {
     def aggregate = (rec.aggregate instanceof Map) ? rec.aggregate as Map : [:]
     switch (aggregate.kind?.toString()) {
         case "call_rule":
-            out.results = ((aggregate.results instanceof List) ? aggregate.results : []) +
-                ((out.results instanceof List) ? out.results : [])
-            out.ruleIds = (((aggregate.ruleIds instanceof List) ? aggregate.ruleIds : []) +
-                ((out.ruleIds instanceof List) ? out.ruleIds : [])).unique()
+            def terminalBank = _mrtrBankRuleResults(aggregate, out)
+            out.results = terminalBank.results
+            out.ruleIds = terminalBank.ruleIds
+            // out started as a copy of the LAST slice's envelope, so every field the leaf
+            // scopes to that slice describes only its share of the batch: ruleId names the
+            // tail rule, rmAction counts that slice's rules ("stopRule toggle x2" for a batch
+            // of four), and the leaf's error sentence counts them too ("the other 1 rule(s)
+            // WERE actioned" when three were). Drop all three BEFORE the verdict below, so the
+            // rebuilt error and the per-rule rows are what carry the batch-wide truth.
+            if ((terminalBank.ruleIds as List).size() > 1) {
+                out.remove("ruleId")
+                out.remove("rmAction")
+                out.remove("error")
+            }
             def failed = out.results.findAll { it instanceof Map && it.success != true }
             out.success = out.success == true && failed.isEmpty()
-            out.partial = !failed.isEmpty()
+            // Deliberately NOT OR-ing aggregate.anyPartial: a call_rule slice sets partial on a
+            // bare budget pause, and remainingRuleIds -- the only thing that makes this kind
+            // continue -- is written only when paused, so anyPartial is true for EVERY continued
+            // call_rule and OR-ing it would report partial on an all-success batch. The formula
+            // below is the leaf's own definition (some actioned, some not), so an identical hub
+            // outcome reports identically whether or not MRTR happened to continue -- an
+            // all-FAILED batch is a failure, not a partial one.
+            out.partial = !failed.isEmpty() && failed.size() < out.results.size()
             if (!failed.isEmpty()) {
                 out.failedRuleIds = failed.collect { it.ruleId }.findAll { it != null }.unique()
                 if (!out.error) out.error = "One or more rule operations failed; inspect results[]."
@@ -2882,6 +2980,8 @@ private void _mrtrAbandon(String stateId, Map originalRec, Map claim, String rea
             rec.remove("claimId")
             rec.remove("claimedGeneration")
             rec.remove("claimedAt")
+            // Snapshot BEFORE the checkpoint is dropped -- _mrtrCleanupRecord needs
+            // checkpoint.clonerAppId to delete an in-progress clone's temporary app.
             cleanup = [:] + rec
             rec.remove("checkpoint")
             _mrtrPutLocked(stateId, rec)
@@ -2903,11 +3003,107 @@ private Map _mrtrControl(String kind, Map checkpoint) {
     return [__mrtrContinue: [kind: kind, checkpoint: checkpoint]]
 }
 
-private void _mrtrCleanupRecord(Map rec) {
-    String claimId = rec?.claimId?.toString()
-    if (claimId != null) {
-        synchronized (WRITE_RESERVATION_LOCK) { MRTR_WORK_ITEMS.remove(claimId) }
+// A call_rule slice whose id list narrowed to ONE takes the leaf's scalar path, which
+// reports the outcome as top-level ruleId/success and emits no results[] at all. That is
+// the natural tail of any paginated batch, so without this the last rule is missing from
+// the ledger -- and if it FAILED, success:false would be returned with every visible row
+// succeeding and nothing in failedRuleIds.
+//
+// The row is built by EXCLUDING the envelope-level keys rather than listing the row's own
+// fields. An allowlist silently drops whatever the leaf adds next -- it already dropped
+// `note`, which is where a no-op stop explains itself -- and nothing would go red.
+private List _mrtrRuleResultRows(result) {
+    if (!(result instanceof Map)) return []
+    if (result.results instanceof List) return result.results as List
+    if (result.ruleId == null) return []
+    def envelopeOnly = ["ruleIds", "remainingRuleIds", "failedRuleIds", "results",
+                        "partial", "mrtr", "status", "tool", "isError"] as Set
+    def row = (result as Map).findAll { k, v -> !envelopeOnly.contains(k?.toString()) }
+    row.success = result.success == true
+    return [row]
+}
+
+// Single formula for merging a call_rule round into its running ledger, used at bank time,
+// at the continuation cap, and at the terminal. Keeping the three in lockstep matters:
+// they must agree on collapsing per rule AND on how a scalar-path round contributes, or the
+// durable record and the envelope the client reads drift apart.
+// Merge one round's result into the running aggregate, in place. Used by the bank AND by the
+// continuation cap: the cap's whole purpose is to hand back what the record is holding, and
+// the round that triggered it has already run against the hub -- merging it there by a
+// separate path is how the two drift, which is exactly how the cap came to return an
+// aggregate one round stale.
+private void _mrtrMergeAggregate(Map aggregate, String kind, result) {
+    if (!(result instanceof Map)) return
+    aggregate.kind = kind
+    switch (kind) {
+        case "call_rule":
+            // Collapse at merge time so the durable record holds one entry per rule instead
+            // of one per attempt -- that record is what _mrtrPutLocked re-serializes.
+            def banked = _mrtrBankRuleResults(aggregate, result)
+            aggregate.results = banked.results
+            aggregate.ruleIds = banked.ruleIds
+            break
+        case "walk_steps":
+            aggregate.steps = ((aggregate.steps instanceof List) ? aggregate.steps : []) +
+                ((result.steps instanceof List) ? result.steps : [])
+            aggregate.stepsRequested = ((aggregate.stepsRequested ?: 0) as Integer) +
+                ((result.stepsRequested ?: 0) as Integer)
+            break
+        case "bulk_edit":
+            aggregate.triggers = ((aggregate.triggers instanceof List) ? aggregate.triggers : []) +
+                ((result.triggers instanceof List) ? result.triggers : [])
+            aggregate.actions = ((aggregate.actions instanceof List) ? aggregate.actions : []) +
+                ((result.actions instanceof List) ? result.actions : [])
+            break
+        case "patches":
+            aggregate.patchResults = ((aggregate.patchResults instanceof List) ? aggregate.patchResults : []) +
+                ((result.patchResults instanceof List) ? result.patchResults : [])
+            // The rollback handle is the single most useful thing to hand back on a batch big
+            // enough to reach the cap, and it lives only on the round that produced it.
+            if (result.backup != null) aggregate.backup = result.backup
+            break
     }
+    aggregate.anyPartial = aggregate.anyPartial == true || result.partial == true
+}
+
+private Map _mrtrBankRuleResults(Map aggregate, resultLike) {
+    def prior = (aggregate?.results instanceof List) ? aggregate.results as List : []
+    def priorIds = (aggregate?.ruleIds instanceof List) ? aggregate.ruleIds as List : []
+    def roundIds = (resultLike instanceof Map && resultLike.ruleIds instanceof List)
+        ? resultLike.ruleIds as List : []
+    // Dedupe by string, matching the collapse below. priorIds is read back from atomicState
+    // while roundIds arrives live, so a serializer handing back "12" for 12 would leave
+    // results with N rows and ruleIds with N+1 -- and ruleIds.size() now decides whether the
+    // terminal keeps its top-level ruleId, so the drift would strip a legitimately single-rule
+    // envelope's field. Both test layers already normalize with toString/str before comparing.
+    return [results: _mrtrCollapseRuleResults(prior + _mrtrRuleResultRows(resultLike)),
+            ruleIds: (priorIds + roundIds).unique { it?.toString() }]
+}
+
+// A rule that failed in an earlier slice is RE-QUEUED for retry alongside the remaining
+// ids, so it lands in results[] twice: the banked failure and the retry's outcome. Keep
+// the LAST entry per ruleId -- a rule's final attempt is its actual state -- otherwise a
+// rule that succeeded on retry still poisons success/partial/failedRuleIds. First-appearance
+// order is preserved; entries carrying no ruleId are never collapsed and keep their order
+// after the keyed ones.
+private List _mrtrCollapseRuleResults(List entries) {
+    def lastByRule = [:]
+    def unkeyed = []
+    (entries ?: []).each { entry ->
+        def rid = (entry instanceof Map) ? entry.ruleId : null
+        if (rid == null) {
+            unkeyed << entry
+        } else {
+            lastByRule[rid.toString()] = entry
+        }
+    }
+    return lastByRule.values().toList() + unkeyed
+}
+
+// Work items are deliberately NOT removed here: this takes a record SNAPSHOT, and a
+// between-slices snapshot carries no claimId to key one on. Reclamation belongs to
+// _mrtrSweepWorkItemsLocked, which matches claim identity against the live record map.
+private void _mrtrCleanupRecord(Map rec) {
     def clonerId = rec?.checkpoint?.clonerAppId
     if (clonerId == null) return
     try { _appClonerCleanup(clonerId as Integer) }
@@ -3624,13 +3820,13 @@ def getGatewayConfig() {
             description: "Manage hub File Manager: list, read, write, and delete files stored on the hub.",
             tools: ["hub_list_files", "hub_read_file", "hub_write_file", "hub_delete_file"],
             summaries: [
-                hub_list_files: "List files in File Manager (names, sizes, URLs)",
+                hub_list_files: "List files in File Manager (names, sizes, URLs). Args: filter, cursor",
                 hub_read_file: "Read file content. Args: fileName, offset, length",
                 hub_write_file: "Write file to File Manager. Args: fileName, content, confirm=true",
                 hub_delete_file: "Delete file from File Manager (auto-backs up first to <name>_backup_<ts>, unless it's already a backup). Args: fileName, confirm=true"
             ],
             searchHints: [
-                hub_list_files: "show uploaded stored csv json text data",
+                hub_list_files: "show uploaded stored csv json text data filter search name substring backup",
                 hub_read_file: "view open contents download stored data",
                 hub_write_file: "upload save store create csv json text data",
                 hub_delete_file: "remove clean up stored data"
@@ -3756,11 +3952,11 @@ def getGatewayConfig() {
             description: "Read-only hub File Manager access: list files and read file content. All operations are read-only; write/delete live in hub_manage_files.",
             tools: ["hub_list_files", "hub_read_file"],
             summaries: [
-                hub_list_files: "List files in File Manager (names, sizes, URLs)",
+                hub_list_files: "List files in File Manager (names, sizes, URLs). Args: filter, cursor",
                 hub_read_file: "Read file content. Args: fileName, offset, length"
             ],
             searchHints: [
-                hub_list_files: "show uploaded stored csv json text data files",
+                hub_list_files: "show uploaded stored csv json text data files filter search name substring backup",
                 hub_read_file: "view open contents download stored data file"
             ]
         ],
@@ -7824,7 +8020,7 @@ private Map _rmForceDeleteApp(Integer appId) {
 
 
 def currentVersion() {
-    return "4.0.0"
+    return "4.0.1"
 }
 
 
@@ -8445,7 +8641,7 @@ Files stored at http://<HUB_IP>/local/<filename>
 
 ### hub_list_files
 
-Use to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. **Cursor pagination:** page size 100 -- omit the cursor for an unbounded list; pass "" for the first page and iterate `nextCursor`.
+Use to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. **`filter`:** case-insensitive substring match on the file name -- pass `filter: "backup"` to find backups instead of paging the whole listing and matching client-side. **Cursor pagination:** page size 100 -- omit the cursor for an unbounded list; pass "" for the first page and iterate `nextCursor`.
 
 ### hub_read_file
 

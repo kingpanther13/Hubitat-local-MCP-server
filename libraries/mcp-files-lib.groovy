@@ -481,7 +481,7 @@ def _toolDisplayMeta_partFiles() {
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
     return [
         // File Manager
-        hub_list_files: [title: "List Files", summary: "List all files in the hub File Manager."],
+        hub_list_files: [title: "List Files", summary: "List files in the hub File Manager, optionally filtered by a name substring."],
         hub_read_file: [title: "Read File", summary: "Read a File Manager file's contents."],
         hub_write_file: [title: "Write File", summary: "Create or update a File Manager file (auto-backs up existing)."],
         hub_delete_file: [title: "Delete File", summary: "Delete a File Manager file (auto-backs up first)."]
