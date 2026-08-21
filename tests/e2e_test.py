@@ -3297,6 +3297,165 @@ class TestRunner:
             f"post-waitFor snapshot should reflect the converged value {target!r}: {cmd.get('state')}"
 
     @test("virtual_device_lifecycle")
+    def test_batch_commands_multi_device(self) -> None:
+        # The commands form is the whole point: N devices, ONE round trip.
+        # Fire a heterogeneous batch (two switches + a dimmer setLevel) and then confirm the pair
+        # with the multi-device poll -- the intended two-call flow for a confirmed group command.
+        #
+        # PERMANENT non-child fixtures, and the switch target is derived from the CURRENT value, so
+        # a fixture carrying state from an earlier run still drives a real transition.
+        sw_a = self._ensure_perm_fixture("switch_a")
+        sw_b = self._ensure_perm_fixture("switch_b")
+        dim = self._ensure_perm_fixture("dimmer")
+        switches = (sw_a, sw_b)
+
+        cur = self.client.call_tool("hub_get_device_attribute", {"deviceId": sw_a, "attribute": "switch"})
+        start = cur.get("value") if isinstance(cur, dict) else None
+        target = "off" if start == "on" else "on"
+
+        def _confirm() -> Any:
+            # The confirm half of the flow: the batch reads nothing back, so the whole group is
+            # converged in ONE multi-device poll.
+            return self.client.call_tool("hub_get_device_attribute", {
+                "deviceIds": list(switches),
+                "attribute": "switch",
+                "expectedValue": target,
+                "mode": "all",
+                "timeoutMs": 8000,
+            })
+
+        # Baselines BEFORE the dispatch: these are permanent shared devices, so a limiter line from
+        # an earlier test or run still sits in the hub's error ring (see test_command_waitfor_converges).
+        bases = {d: self._limiter_lines(d, method=target) for d in switches}
+
+        # sw_b goes in as an INTEGER on purpose: that is the shape hub_list_devices format='ids'
+        # hands back, so the id a caller most naturally chains into a batch must be accepted.
+        batch = self.client.call_tool("hub_call_device_command", {"commands": [
+            {"deviceId": sw_a, "command": target},
+            {"deviceId": int(sw_b), "command": target},
+            {"deviceId": dim, "command": "setLevel", "parameters": ["40"]},
+        ]})
+        assert isinstance(batch, dict), f"unexpected response: {batch!r}"
+        assert batch.get("success") is True, f"batch reported a failure: {batch}"
+        assert batch.get("count") == 3 and batch.get("sentCount") == 3, f"wrong counts: {batch}"
+        # failedCount is reported even when nothing failed, so a client reading the three counts
+        # never has to treat an absent key as zero.
+        assert batch.get("failedCount") == 0, f"failedCount must be present and 0 on a clean batch: {batch}"
+
+        results = batch.get("results")
+        assert isinstance(results, list) and len(results) == 3, f"missing per-entry results: {batch}"
+        assert [str(r.get("deviceId")) for r in results] == [str(sw_a), str(sw_b), str(dim)], \
+            f"results are not in request order with their deviceIds: {results}"
+        assert all(r.get("success") is True for r in results), f"an entry failed: {results}"
+        # A successful entry names its device -- but carries NO state snapshot. The batch fires
+        # and does not read back; the deviceIds poll below is what confirms the group.
+        assert results[0].get("device"), f"entry is missing the device label: {results[0]}"
+        assert "state" not in results[0], \
+            f"a batch entry must not carry a state snapshot: {results[0]}"
+
+        # Confirm the group with the multi-device poll -- one batch to fire, one poll to confirm.
+        poll = _confirm()
+        # Bounce the throttle and re-drive once before believing a non-convergence, the same way
+        # the sibling multi-device poll does: a limiter trip late in a run is a capacity signal,
+        # not a product failure, and re-running on a cleared throttle tells the two apart.
+        if poll.get("success") is not True and self._clear_load_throttle(
+                f"batched '{target}' never landed on both: {poll}"):
+            self.client.call_tool("hub_call_device_command", {"commands": [
+                {"deviceId": sw_a, "command": target},
+                {"deviceId": sw_b, "command": target},
+            ]})
+            poll = _confirm()
+
+        if poll.get("success") is not True and any(
+                self._limiter_logged(d, method=target, baseline=bases[d]) for d in switches):
+            self._soft_passes.append(
+                "virtual_device_lifecycle/test_batch_commands_multi_device: limiter-proven "
+                "(batch dispatched; platform throttled event delivery so the confirm poll could not converge)")
+            return
+        assert poll.get("success") is True, f"batched commands did not take effect on the hub: {poll}"
+
+    @test("virtual_device_lifecycle")
+    def test_batch_commands_partial_failure_and_no_partial_send(self) -> None:
+        # Two guarantees a client depends on, both only observable end to end:
+        #   1. A BAD ENTRY does not abandon the batch -- the good entries still fire, and the bad one
+        #      is reported in its own results[] slot.
+        #   2. A MALFORMED BATCH actuates NOTHING -- validation runs before the first command fires,
+        #      so a client never has to wonder how far a rejected request got.
+        sw_a = self._ensure_perm_fixture("switch_a")
+
+        # Known starting point for both legs.
+        self.client.call_tool("hub_call_device_command", {"deviceId": sw_a, "command": "off"})
+
+        # Baseline BEFORE any dispatch: a PERMANENT shared device, so a limiter line from an earlier
+        # test -- or an earlier RUN, the id being stable forever -- already sits in the hub's error
+        # ring and would satisfy the soft-pass below without a fresh trip.
+        on_base = self._limiter_lines(sw_a, method="on")
+
+        def _poll_on() -> Any:
+            return self.client.call_tool("hub_get_device_attribute", {
+                "deviceId": sw_a, "attribute": "switch", "expectedValue": "on", "timeoutMs": 3000,
+            })
+
+        # --- 1. bad entry among good ones ---
+        # Some entries failing is a PARTIAL result, not a failed call: only an all-failed batch
+        # raises the isError envelope, so call_tool returns this one normally and reaching the
+        # assertions below is itself the proof (an isError would have raised McpToolError).
+        batch = self.client.call_tool("hub_call_device_command", {"commands": [
+            {"deviceId": sw_a, "command": "on"},
+            {"deviceId": "99999", "command": "on"},
+        ]})
+        assert isinstance(batch, dict), f"unexpected response: {batch!r}"
+        assert batch.get("success") is False, f"a batch with a bad entry must not report success: {batch}"
+        assert batch.get("count") == 2 and batch.get("sentCount") == 1 \
+            and batch.get("failedCount") == 1, f"wrong counts: {batch}"
+        assert batch.get("partial") is True, f"one of two entries failing is a partial batch: {batch}"
+        # The aggregate names the casualties, so a caller can retry them without walking results[].
+        assert batch.get("failedDeviceIds") == ["99999"], \
+            f"the failed entry must be named in failedDeviceIds, as sent: {batch}"
+        for key in ("error", "note"):
+            val = batch.get(key)
+            assert isinstance(val, str) and val.strip(), \
+                f"a partly-failed batch must carry a non-empty {key}: {batch}"
+        results = batch.get("results") or []
+        assert results[0].get("success") is True, f"the good entry should still have fired: {results}"
+        assert "state" not in results[0], \
+            f"a batch entry must not carry a state snapshot: {results[0]}"
+        assert results[1].get("success") is False and "99999" in str(results[1].get("error", "")), \
+            f"the bad entry should be reported in its own slot, naming the device: {results}"
+
+        # --- 2. malformed batch fires nothing ---
+        # The first entry is VALID and would flip the switch back off, so a fire-then-validate
+        # implementation would leave a visible trace on the hub.
+        try:
+            self.client.call_tool("hub_call_device_command", {"commands": [
+                {"deviceId": sw_a, "command": "off"},
+                {"command": "on"},  # no deviceId
+            ]})
+            raise AssertionError("a batch entry with no deviceId should have been rejected")
+        except (McpToolError, McpError):
+            pass  # expected -- IllegalArgumentException maps to -32602
+
+        after = _poll_on()
+
+        # This assertion is about the REJECTED batch leaving the switch alone, so it can only be
+        # trusted if leg 1's "on" actually landed. A platform limiter that swallowed that event
+        # would present as switch=off -- indistinguishable here from a partial send. Clear the
+        # throttle and re-poll, but never issue a command that could mask a partial send.
+        if after.get("success") is not True and self._clear_load_throttle(
+                f"batched 'on' never landed on {sw_a}: {after}"):
+            after = _poll_on()
+
+        if after.get("success") is not True and self._limiter_logged(sw_a, method="on", baseline=on_base):
+            self._soft_passes.append(
+                "virtual_device_lifecycle/test_batch_commands_partial_failure_and_no_partial_send: "
+                "limiter-proven (batch dispatched; platform throttled event delivery so the "
+                "post-rejection state could not be confirmed)")
+            return
+
+        assert after.get("success") is True, \
+            f"the rejected batch actuated its first entry -- validation must precede every send: {after}"
+
+    @test("virtual_device_lifecycle")
     def test_poll_comparator_and_stable(self) -> None:
         # Exercises the read-side convergence extensions on a real hub:
         #   - numeric comparator (gt) on a dimmer's level via hub_get_device_attribute poll mode
@@ -4793,8 +4952,8 @@ class TestRunner:
             # converged-read fallback -- so one round here would inherit a failure mode that
             # test already demonstrated. This test's subject is the ENVELOPE, and a limiter
             # refusal produces no envelope to assert, so it cannot fall back to a read the way
-            # the sibling does; it retries harder instead, then fails with the rules' actual
-            # state attached so a human can tell a blocked write from a landed one.
+            # the sibling does; it retries harder instead, then reports the limiter error if both
+            # bounce+retry rounds are exhausted.
             for _round in range(2):
                 if not limited:
                     break

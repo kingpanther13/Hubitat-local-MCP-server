@@ -17,8 +17,8 @@ import support.ToolSpecBase
  *  - Empty expectedValues list -> throws (B1)
  *  - Empty string expectedValue -> throws (W1)
  *  - Null value for present keys (timeoutMs, pollIntervalMs, expectedValue, expectedValues) -> throws (B2)
- *  - Type-validation throws: deviceId as int, attribute as list, timeoutMs string,
- *    expectedValues with int element, pollIntervalMs string, expectedValue as int (6 tests)
+ *  - Type-validation throws: attribute as list, timeoutMs string (deviceId as int is now
+ *    COERCED and reaches device resolution), expectedValues with int element, pollIntervalMs string, expectedValue as int
  *  - timeoutMs out of range (< 100, > 60000)
  *  - timeoutMs exact boundaries (99 throws, 60001 throws, 100 accepts, 60000 accepts) (W2)
  *  - pollIntervalMs out of range (< 50, > 5000)
@@ -261,17 +261,17 @@ class ToolPollUntilAttributeSpec extends ToolSpecBase {
     // 8. Type-validation throws
     // ---------------------------------------------------------------------------
 
-    def "throws when deviceId is an integer instead of string"() {
+    def "an integer deviceId is coerced past validation and reaches device resolution"() {
         when:
         script.toolPollUntilAttribute([
-            deviceId      : 99,          // should be String
+            deviceId      : 99,          // numeric form, coerced to '99'
             attribute     : 'switch',
             expectedValue : 'on'
         ])
 
-        then:
+        then: 'the failure is resolution (no such device), not the old type rejection'
         def ex = thrown(IllegalArgumentException)
-        ex.message.toLowerCase().contains('deviceid')
+        ex.message.contains('Device not found: 99')
     }
 
     def "throws when attribute is a list instead of string"() {

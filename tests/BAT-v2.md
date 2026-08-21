@@ -180,6 +180,30 @@ These tools appear directly on `tools/list` in both v0.7.7 (all 74 tools) and v0
 
 **Expected**: Calls `hub_call_device_command` with `command=on` and a `waitFor={attribute:"switch", expectedValue:"on"}`. The response carries a `waitFor` block with `converged: true` and `finalValue: "on"` (a String, read from the device's live current-state list), and -- because the snapshot is taken AFTER the waitFor poll -- the `state` map's switch entry now reads `on` (the converged/resulting value, not the pre-effect one). On a clean run there is NO `partial` flag and NO `stateError`; a non-convergence would instead surface a diagnostic flag (`timedOut` / `interrupted` / `neverReported` / `error`), and a degraded confirmation step (failed snapshot or a poll-loop `error`) would add `partial: true`. The `waitFor` `timeoutMs` caps at 30000 (vs 60000 on the standalone `hub_get_device_attribute` poll) and `pollIntervalMs` defaults to 250. No separate `hub_get_device_attribute` read is needed to confirm.
 
+### T05c — hub_call_device_command with `commands` (several devices in one call)
+
+```json
+{
+  "setup_prompt": "Create three virtual switches called 'BAT Batch A', 'BAT Batch B', and 'BAT Batch C'.",
+  "test_prompt": "Turn on all three BAT Batch switches, then confirm all three are on.",
+  "teardown_prompt": "Turn off all three BAT Batch switches, then delete the three virtual devices."
+}
+```
+
+**Expected**: Calls `hub_call_device_command` ONCE with `commands=[{deviceId, command:"on"} x3]` — not three separate calls. The response is `success: true, count: 3, sentCount: 3, failedCount: 0` (the counts are always present, `failedCount` included on a clean pass) plus a `results` array in request order, each entry carrying its own `deviceId`, the device label, the command and its normalized `parameters`. Batch entries carry NO `state` snapshot — the batch fires, it does not read back — and `commands` rejects `waitFor`, so the confirmation is a separate `hub_get_device_attribute` using the multi-device `deviceIds` form with `mode:"all"` — two round trips for the whole group. Watch for the AI falling back to three separate command calls: that is the behaviour the parameter exists to replace, and it costs roughly 3x the wall-clock time.
+
+### T05d — `commands` partial failure (one bad entry)
+
+```json
+{
+  "setup_prompt": "Create a virtual switch called 'BAT Batch Partial'.",
+  "test_prompt": "Turn on 'BAT Batch Partial' and device 99999 in one call.",
+  "teardown_prompt": "Turn off 'BAT Batch Partial', then delete the virtual device."
+}
+```
+
+**Expected**: The batch still fires the valid entry — one bad device does not abandon the rest. The response is `success: false, count: 2, sentCount: 1, failedCount: 1`, plus `failedDeviceIds: ["99999"]`, an `error` summarising the failure, an actionable `note`, and `partial: true` (only some entries failed). It is a NORMAL tool result, not an `isError` envelope — `isError` is reserved for the batch where every entry failed. `results[0].success` is `true` and `results[1]` carries `success: false`, its `deviceId`, and an `error` naming the missing device. The AI reports the specific device that failed rather than reporting the whole command as failed. (Contrast with a MALFORMED batch — an entry missing `deviceId`, a `parameters` value that is neither an array nor a string, or more than 20 entries — which is rejected with `-32602` BEFORE anything is sent, so no device is actuated.)
+
 ### T06 — hub_call_device_command (setLevel)
 
 ```json

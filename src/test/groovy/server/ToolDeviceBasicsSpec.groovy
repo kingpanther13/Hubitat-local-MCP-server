@@ -6,18 +6,23 @@ import support.ToolSpecBase
 /**
  * Device-tool primitives: findDevice (the resolver used by every
  * device-targeting tool), toolGetDevice (summary response shape), and
- * toolSendCommand (command dispatch).
+ * toolSendCommand (command dispatch, both the single-device form and the
+ * commands batch form).
  *
  * Consolidated from FindDeviceSpec + ToolGetDeviceSpec + ToolSendCommandSpec —
  * same harness fixture, same support imports, three thematically adjacent
  * slices of the device-tool surface. Sandbox compile is amortised across
- * all 11 features instead of three separate spec-class compiles.
+ * every feature here instead of three separate spec-class compiles.
  *
  * findDevice search order: settings.selectedDevices first, then
  * getChildDevices(). Returns null on miss. Both String and Integer ids
  * are accepted (internally coerces via .toString() equality).
  */
 class ToolDeviceBasicsSpec extends ToolSpecBase {
+
+    // The harness clock (HarnessSpec stubs now() to this whenever NOW_OVERRIDE is unset), so a
+    // request clock expressed relative to it makes the time-budget trip deterministic.
+    private static final long FIXED_NOW = 1234567890000L
 
     // ---- findDevice resolver -------------------------------------------------
 
@@ -1187,6 +1192,582 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         then:
         response.error.code == -32602
         response.error.message.contains('Device not found: 999')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    // ---- hub_call_device_command, commands form (batch) -------------------------------------------
+
+    private def switchDevice(int id, String label, List commandNames = ['on', 'off', 'setLevel']) {
+        Spy(TestDevice) {
+            getId() >> id
+            getName() >> "Switch${id}"
+            getLabel() >> label
+            getSupportedCommands() >> commandNames.collect { [name: it] }
+            getCurrentStates() >> [[name: 'switch', value: 'off']]
+        }
+    }
+
+    // The batch form's leading positional nulls are noise in tests whose subject is the batch
+    // itself. Tests that ARE about those arguments (mutual exclusion, waitFor, the budget
+    // clock) keep the full call so the argument under test stays visible.
+    private def sendBatch(commands) {
+        script.toolSendCommand(null, null, null, null, commands)
+    }
+
+    def "commands form fires every entry and reports per-entry results in request order"() {
+        given:
+        def a = switchDevice(10, 'Lamp A')
+        def b = switchDevice(11, 'Lamp B')
+        childDevicesList << a << b
+
+        when:
+        def result = sendBatch([
+            [deviceId: '10', command: 'on'],
+            [deviceId: '11', command: 'off']
+        ])
+
+        then: 'each device saw exactly its own command'
+        1 * a.on()
+        1 * b.off()
+
+        and: 'failedCount is reported even at zero, so a caller never has to infer it from absence'
+        result.success == true
+        result.count == 2
+        result.sentCount == 2
+        result.failedCount == 0
+
+        and: 'results carry the per-entry deviceId, in request order'
+        result.results*.deviceId == ['10', '11']
+        result.results*.command == ['on', 'off']
+        result.results.every { it.success == true }
+
+        and: 'each entry keeps the device label but drops the per-device snapshot fields'
+        result.results[0].device == 'Lamp A'
+        result.results.every { !it.containsKey('state') && !it.containsKey('stateError') && !it.containsKey('partial') }
+
+        and: 'a parameterless command still reports the key, valued null'
+        result.results.every { it.containsKey('parameters') && it.parameters == null }
+    }
+
+    def "commands form passes parameters through to the device command"() {
+        given:
+        def device = switchDevice(10, 'Dimmer')
+        childDevicesList << device
+
+        when:
+        def result = sendBatch([[deviceId: '10', command: 'setLevel', parameters: ['75']]])
+
+        then: 'normalized to a number, as on the single-device path'
+        1 * device.setLevel(75)
+        result.results[0].parameters == [75]
+    }
+
+    def "commands form keeps sending after a failing entry and reports it individually"() {
+        given: 'the middle entry names a device that does not exist'
+        def a = switchDevice(10, 'Lamp A')
+        def c = switchDevice(12, 'Lamp C')
+        childDevicesList << a << c
+
+        when:
+        def result = sendBatch([
+            [deviceId: '10', command: 'on'],
+            [deviceId: '999', command: 'on'],
+            [deviceId: '12', command: 'on']
+        ])
+
+        then: 'the entry AFTER the failure still fired -- one bad device does not abandon the batch'
+        1 * a.on()
+        1 * c.on()
+
+        and:
+        result.success == false
+        result.count == 3
+        result.sentCount == 2
+        result.failedCount == 1
+
+        and: 'the failure is reported in its own slot, naming the device, the cause and the recovery'
+        result.results[1].success == false
+        result.results[1].deviceId == '999'
+        result.results[1].command == 'on'
+        result.results[1].error.contains('Device not found: 999')
+        result.results[1].note?.contains('not confirmed to actuate')
+
+        and: 'its neighbours are unaffected'
+        result.results[0].success == true
+        result.results[2].success == true
+    }
+
+    def "commands form reports an unsupported command per entry rather than failing the batch"() {
+        given:
+        def a = switchDevice(10, 'Lamp A')
+        childDevicesList << a
+
+        when:
+        def result = sendBatch([
+            [deviceId: '10', command: 'on'],
+            [deviceId: '10', command: 'lock']
+        ])
+
+        then:
+        1 * a.on()
+        result.sentCount == 1
+        result.failedCount == 1
+        result.results[1].error.contains('does not support command: lock')
+    }
+
+    @spock.lang.Unroll
+    def "commands form rejects a malformed batch BEFORE firing anything (#scenario)"() {
+        given: 'a valid first entry, so a fire-then-validate implementation would actuate it'
+        def device = switchDevice(10, 'Lamp A')
+        childDevicesList << device
+
+        when:
+        sendBatch(commands)
+
+        then: 'rejected on validation, with nothing sent'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains(expected)
+        0 * device.on()
+
+        where: 'a String parameters value is NOT here -- it is accepted and repaired by normalizeCommandParams'
+        scenario                  | commands                                                                    || expected
+        'not a list'              | [deviceId: '10', command: 'on']                                             || 'non-empty array'
+        'empty list'              | []                                                                          || 'non-empty array'
+        'entry not an object'     | [[deviceId: '10', command: 'on'], 'off']                                    || 'must be an object'
+        'missing deviceId'        | [[deviceId: '10', command: 'on'], [command: 'on']]                          || 'deviceId is required'
+        'blank deviceId'          | [[deviceId: '10', command: 'on'], [deviceId: ' ', command: 'on']]           || 'deviceId is required'
+        'missing command'         | [[deviceId: '10', command: 'on'], [deviceId: '11']]                         || 'command is required'
+        'parameters not an array' | [[deviceId: '10', command: 'on'], [deviceId: '11', command: 'on', parameters: [level: 5]]] || 'must be an array'
+        'unknown key'             | [[deviceId: '10', command: 'on'], [deviceId: '11', command: 'on', waitFor: [:]]]      || 'unknown keys: waitFor'
+    }
+
+    @spock.lang.Unroll
+    def "a rejected entry renders the offending VALUE and its runtime type (#scenario)"() {
+        given: 'a device that would answer, so only the message shape is under test'
+        def device = switchDevice(10, 'Lamp A')
+        childDevicesList << device
+
+        when:
+        sendBatch([entry])
+
+        then: 'the caller is shown what they actually passed, not only which key was wrong'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains(expected)
+        0 * device.on()
+
+        where:
+        scenario          | entry                                                   || expected
+        'boolean id'      | [deviceId: true, command: 'on']                         || 'deviceId is required and must be a non-empty string (got: true (boolean))'
+        'fractional id'   | [deviceId: 1.5, command: 'on']                          || 'deviceId is required and must be a non-empty string (got: 1.5 (number))'
+        'Map parameters'  | [deviceId: '10', command: 'on', parameters: [level: 5]] || 'parameters must be an array when present (got: [level:5] (object))'
+        'numeric command' | [deviceId: '10', command: 7]                            || 'command is required and must be a non-empty string (got: 7 (number))'
+    }
+
+    def "batch entries carry no state key while the single-device form still returns one"() {
+        given:
+        def a = switchDevice(10, 'Lamp A')
+        def b = switchDevice(11, 'Lamp B')
+        childDevicesList << a << b
+
+        when: 'a clean two-entry batch'
+        def batch = sendBatch([[deviceId: '10', command: 'on'], [deviceId: '11', command: 'on']])
+
+        then: 'entries skip the read-back -- no state, stateError, or partial anywhere'
+        1 * a.on()
+        1 * b.on()
+        batch.success == true
+        batch.results.every { !it.containsKey('state') && !it.containsKey('stateError') && !it.containsKey('partial') }
+
+        when: 'the same device through the single-device form'
+        def single = script.toolSendCommand('10', 'off', null)
+
+        then: 'the single-device contract still returns its snapshot key'
+        1 * a.off()
+        single.success == true
+        single.containsKey('state')
+    }
+
+    def "commands form rejects more than 20 entries"() {
+        given:
+        def device = switchDevice(10, 'Lamp A')
+        childDevicesList << device
+
+        when:
+        sendBatch((1..21).collect { [deviceId: '10', command: 'on'] })
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('at most 20 entries (got 21)')
+        0 * device.on()
+    }
+
+    def "commands form accepts exactly 20 entries (the boundary is inclusive)"() {
+        given:
+        def device = switchDevice(10, 'Lamp A')
+        childDevicesList << device
+
+        when:
+        def result = sendBatch((1..20).collect { [deviceId: '10', command: 'on'] })
+
+        then:
+        20 * device.on()
+        result.success == true
+        result.sentCount == 20
+        result.failedCount == 0
+    }
+
+    def "commands counts a returned success:false as a failure, not only a thrown one"() {
+        given: 'the non-throwing failure path - a bypass fire that could not be confirmed'
+        // Returned rather than thrown is this project's contract for a runtime (non-argument)
+        // error, so the batch has to notice it. Stubbed because reaching it for real needs the
+        // allowlist bypass plus a hub that answers the runmethod endpoint unconfirmably.
+        script.metaClass.toolSendCommand = { d, c, p = null, w = null, cmds = null, t0 = null, st = true ->
+            d == '11' ? [success: false, error: 'Command not confirmed', note: 'retry'] : [success: true, device: 'Lamp A']
+        }
+
+        when:
+        def result = script._sendCommandBatch([
+            [deviceId: '10', command: 'on'],
+            [deviceId: '11', command: 'on']
+        ])
+
+        then: 'the aggregate tells the truth, so the documented fast path is not misleading'
+        result.success == false
+        result.sentCount == 1
+        result.failedCount == 1
+
+        and: 'the failed entry still carries the fields its schema promises'
+        result.results[1].success == false
+        result.results[1].deviceId == '11'
+        result.results[1].command == 'on'
+    }
+
+    def "a batch where EVERY entry failed is a tool error, listing every device"() {
+        given: 'neither device exists'
+        childDevicesList.clear()
+
+        when:
+        def result = sendBatch([
+            [deviceId: '998', command: 'on'],
+            [deviceId: '999', command: 'off']
+        ])
+
+        then: 'nothing landed, so the call genuinely did nothing and says so'
+        result.success == false
+        result.isError == true
+        result.count == 2
+        result.sentCount == 0
+        result.failedCount == 2
+        result.failedDeviceIds == ['998', '999']
+        result.error.contains('2 of 2')
+        result.note.contains('may still have actuated')
+
+        and: 'partial is for a batch that half-landed -- this one did not'
+        !result.containsKey('partial')
+    }
+
+    def "a partially failed batch is NOT a tool error -- some devices already moved"() {
+        given:
+        def a = switchDevice(10, 'Lamp A')
+        childDevicesList << a
+
+        when:
+        def result = sendBatch([
+            [deviceId: '10', command: 'on'],
+            [deviceId: '999', command: 'on']
+        ])
+
+        then:
+        1 * a.on()
+
+        and: 'isError would tell the caller the call did nothing, while Lamp A is already on'
+        result.success == false
+        result.partial == true
+        !result.containsKey('isError')
+        result.failedDeviceIds == ['999']
+        result.error.contains('1 of 2')
+        result.note.contains('ALREADY actuated')
+    }
+
+    def "a batch entry may carry a NUMERIC deviceId, resolving the same device as the string form"() {
+        given: 'one device, addressed as a JSON number in the batch and as a string on its own'
+        def a = switchDevice(10, 'Lamp A')
+        childDevicesList << a
+
+        when:
+        def batched = sendBatch([[deviceId: 10, command: 'on']])
+        def single = script.toolSendCommand('10', 'on', [])
+
+        then: 'both forms actuated the same device'
+        2 * a.on()
+
+        and: 'the entry agrees with the single-device call, and reports the id coerced to a string'
+        batched.results[0].success == true
+        batched.results[0].device == single.device
+        batched.results[0].deviceId == '10'
+        batched.failedCount == 0
+    }
+
+    def "a batch entry's String parameters normalize exactly as the single-device form's do"() {
+        given: 'the mangled wrapper the hub JSON parser hands through when a nested object defeats it'
+        def mangled = '["{"hue":120,"saturation":50,"level":75}"]'
+        def bulb = switchDevice(10, 'Colour Bulb', ['setColor'])
+        childDevicesList << bulb
+
+        when:
+        def batched = sendBatch([[deviceId: '10', command: 'setColor', parameters: mangled]])
+        def single = script.toolSendCommand('10', 'setColor', mangled)
+
+        then: 'both routes handed the device the same repaired Map argument'
+        2 * bulb.setColor({ it.hue == 120 && it.saturation == 50 && it.level == 75 })
+
+        and: 'both report the same normalized parameters back'
+        batched.results[0].parameters == single.parameters
+        batched.results[0].parameters.size() == 1
+        batched.results[0].parameters[0].hue == 120
+        batched.results[0].parameters[0].saturation == 50
+        batched.results[0].parameters[0].level == 75
+    }
+
+    def "a batch nearing the relay time budget stops early and hands back the untried tail"() {
+        given: 'a cloud request whose budget was already spent before the loop started'
+        settingsMap.relayBudgetMs = 100
+        script.metaClass._isCloudRequest = { -> true }
+        def a = switchDevice(10, 'Lamp A')
+        childDevicesList << a
+        def tail = [[deviceId: '10', command: 'off'], [deviceId: '10', command: 'on']]
+
+        when: 'the request clock reads 200ms ago against a 100ms budget'
+        def result = script.toolSendCommand(null, null, null, null,
+            [[deviceId: '10', command: 'on']] + tail, FIXED_NOW - 200L)
+
+        then: 'the first entry always goes; the rest never fired'
+        1 * a.on()
+        0 * a.off()
+
+        and: 'the tail comes back verbatim, so the caller re-sends exactly what was not sent'
+        result.success == false
+        result.stoppedEarly == true
+        result.count == 1
+        result.results.size() == 1
+        result.remainingCommands == tail
+        result.error.contains('Stopped after attempting 1 of 3')
+        result.note.contains('remainingCommands')
+    }
+
+    def "a batch with NO request clock times itself from the loop start, so nothing stops early"() {
+        given: 'the same tiny cloud budget, but the tool was called without a request clock'
+        settingsMap.relayBudgetMs = 100
+        script.metaClass._isCloudRequest = { -> true }
+        def a = switchDevice(10, 'Lamp A')
+        childDevicesList << a
+
+        when:
+        def result = sendBatch([
+            [deviceId: '10', command: 'on'],
+            [deviceId: '10', command: 'off'],
+            [deviceId: '10', command: 'on']
+        ])
+
+        then: 'every entry went -- the fallback clock is this loop, not an epoch the budget is always past'
+        2 * a.on()
+        1 * a.off()
+
+        and:
+        result.success == true
+        result.count == 3
+        result.sentCount == 3
+        !result.containsKey('stoppedEarly')
+        !result.containsKey('remainingCommands')
+    }
+
+    def "both entry-failure shapes log at error under the send-command component"() {
+        given: 'one entry throws; the other returns the structured failure the bypass path produces'
+        def logged = []
+        script.metaClass.mcpLog = { String level, String component, String msg ->
+            logged << [level: level, component: component, msg: msg]
+        }
+        script.metaClass.toolSendCommand = { d, c, p = null, w = null, cmds = null, t0 = null, st = true ->
+            if (d == '11') return [success: false, error: 'Command not confirmed', note: 'retry']
+            throw new IllegalArgumentException("Device not found: ${d}")
+        }
+
+        when:
+        def result = script._sendCommandBatch([
+            [deviceId: '10', command: 'on'],
+            [deviceId: '11', command: 'on']
+        ])
+
+        then: 'neither shape is silent, and neither logs below the hub default level'
+        result.failedCount == 2
+        logged.size() == 2
+        logged.every { it.level == 'error' && it.component == 'send-command' }
+        logged[0].msg.contains('batch entry threw for 10 (on)')
+        logged[1].msg.contains('batch entry failed for 11 (on)')
+    }
+
+    @spock.lang.Unroll
+    def "commands is mutually exclusive with the single-device arguments (#scenario)"() {
+        given: 'a device that would answer either form, so only the validation can stop it'
+        def device = switchDevice(10, 'Lamp A')
+        childDevicesList << device
+
+        when:
+        script.toolSendCommand(deviceId, command, parameters, null, [[deviceId: '10', command: 'on']])
+
+        then: 'rejected by name, and nothing fired'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('mutually exclusive')
+        ex.message.contains(named)
+        0 * device.on()
+
+        where:
+        scenario             | deviceId | command | parameters || named
+        'deviceId as well'   | '10'     | null    | null       || 'deviceId'
+        'command as well'    | null     | 'on'    | null       || 'command'
+        'both as well'       | '10'     | 'on'    | null       || 'deviceId and command'
+        'parameters as well' | null     | null    | ['75']     || 'parameters'
+    }
+
+    def "a padded string deviceId is trimmed to the canonical id in both forms"() {
+        given:
+        def device = switchDevice(10, 'Lamp A')
+        childDevicesList << device
+
+        when: 'a batch entry and a single-device call, both padded'
+        def batch = sendBatch([[deviceId: ' 10 ', command: 'on']])
+        def single = script.toolSendCommand('  10', 'off', null)
+
+        then: 'both resolve device 10, and the batch reports the canonical id'
+        1 * device.on()
+        1 * device.off()
+        batch.success == true
+        batch.results[0].deviceId == '10'
+        single.success == true
+    }
+
+    def "commands rejects waitFor rather than silently ignoring it"() {
+        given: 'a caller asking to confirm a batch the way they would confirm one device'
+        def device = switchDevice(10, 'Lamp A')
+        childDevicesList << device
+
+        when:
+        script.toolSendCommand(null, null, null, [attribute: 'switch', expectedValue: 'on'],
+            [[deviceId: '10', command: 'on']])
+
+        then: 'told why, and pointed at the call that does confirm a whole set'
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('waitFor is not supported with commands')
+        ex.message.contains('hub_get_device_attribute')
+        0 * device.on()
+    }
+
+    @spock.lang.Unroll
+    def "the single-device form still requires #missing"() {
+        when:
+        script.toolSendCommand(deviceId, command, null)
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("${missing} is required")
+        ex.message.contains('commands')      // names the alternative, rather than only the omission
+
+        where:
+        missing    | deviceId | command
+        'deviceId' | null     | 'on'
+        'command'  | '10'     | null
+    }
+
+    @spock.lang.Unroll
+    def "via dispatch: hub_call_device_command with commands sends the batch and returns per-entry results (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        def a = switchDevice(10, 'Lamp A')
+        def b = switchDevice(11, 'Lamp B')
+        childDevicesList << a << b
+
+        when:
+        def response = mcpDriver.callTool('hub_call_device_command', [commands: [
+            [deviceId: '10', command: 'on'],
+            [deviceId: '11', command: 'on']
+        ]])
+
+        then:
+        1 * a.on()
+        1 * b.on()
+
+        and:
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.sentCount == 2
+        inner.results*.deviceId == ['10', '11']
+
+        where:
+        useGateways << [true, false]
+    }
+
+    @spock.lang.Unroll
+    def "via dispatch: hub_call_device_command with commands returns -32602 on a malformed batch (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+
+        when:
+        def response = mcpDriver.callTool('hub_call_device_command', [commands: [[command: 'on']]])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('deviceId is required')
+
+        where:
+        useGateways << [true, false]
+    }
+
+    // The two forms need different arguments, so the tool declares no `required` array and the
+    // gateway's missing-parameter pre-check cannot answer for it -- the handler's own runtime
+    // message is what the caller has to see, and it has to name the batch form as the alternative.
+    def "via the gateway envelope: an argument-less call reports the runtime requirement, naming both forms"() {
+        given: 'gateway mode, so the call rides the gateway envelope rather than the leaf name'
+        settingsMap.useGateways = true
+
+        when:
+        def response = mcpDriver.callTool('hub_manage_devices', [tool: 'hub_call_device_command', args: [:]])
+
+        then:
+        response.error.code == -32602
+        response.error.message.contains('deviceId is required (or pass a commands array')
+    }
+
+    @spock.lang.Unroll
+    def "via dispatch: a partial batch renders a normal envelope, an all-failed batch renders isError (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        def a = switchDevice(10, 'Lamp A')
+        childDevicesList << a
+
+        when: 'one entry lands and one does not'
+        def partialResponse = mcpDriver.callTool('hub_call_device_command', [commands: [
+            [deviceId: '10', command: 'on'],
+            [deviceId: '999', command: 'on']
+        ]])
+
+        then: 'Lamp A is already on, so an isError envelope would misreport the call as a no-op'
+        1 * a.on()
+        partialResponse.error == null
+        partialResponse.result.isError != true
+        mcpDriver.parseInner(partialResponse).partial == true
+
+        when: 'nothing lands at all'
+        def allFailedResponse = mcpDriver.callTool('hub_call_device_command', [commands: [
+            [deviceId: '998', command: 'on'],
+            [deviceId: '999', command: 'on']
+        ]])
+
+        then: 'that IS a tool-execution error, and the envelope says so'
+        allFailedResponse.error == null
+        allFailedResponse.result.isError == true
+        mcpDriver.parseInner(allFailedResponse).failedDeviceIds == ['998', '999']
 
         where:
         useGateways << [true, false]

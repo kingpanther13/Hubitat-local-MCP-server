@@ -546,6 +546,45 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         result.waitFor.neverReported == true
     }
 
+    def "bypass ON: a batch mixing a listed device with an unconfirmable unlisted one reports both outcomes"() {
+        given: 'the listed entry runs on its Groovy object; the unlisted one fires through runmethod, which does not confirm'
+        settingsMap.bypassDeviceAllowlist = true
+        registerFullJson()
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            [success: false, message: 'device rejected the command']
+        }
+        def listed = Spy(TestDevice) {
+            getId() >> 10
+            getName() >> 'Listed'
+            getLabel() >> 'Listed Switch'
+            getSupportedCommands() >> [[name: 'on'], [name: 'off']]
+            getCurrentStates() >> [[name: 'switch', value: 'on', date: null]]
+        }
+        childDevicesList << listed
+
+        when:
+        def result = script.toolSendCommand(null, null, null, null, [
+            [deviceId: '10', command: 'on'],
+            [deviceId: UNLISTED_ID, command: 'on']
+        ])
+
+        then: 'the listed entry actuated'
+        1 * listed.on()
+
+        and: 'the unconfirmed bypass fire counts as a failure -- it is returned, not thrown, so the batch has to notice'
+        result.sentCount == 1
+        result.failedCount == 1
+        result.partial == true
+        result.failedDeviceIds == [UNLISTED_ID]
+
+        and: 'the failed entry carries the id, the backfilled command, and the bypass cause + recovery'
+        result.results[1].deviceId == UNLISTED_ID
+        result.results[1].command == 'on'
+        result.results[1].success == false
+        result.results[1].error.contains('did not confirm success')
+        result.results[1].note.contains('hub_get_device')
+    }
+
     // ---- toggle ON: poll path ---------------------------------------------------
 
     def "bypass ON: toolPollUntilAttribute on a NOT-YET-REPORTED attribute times out neverReported (does not throw)"() {
