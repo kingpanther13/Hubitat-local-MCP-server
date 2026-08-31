@@ -273,17 +273,21 @@ jobs:
           if printf '%s' "$RESP" | grep -qiE "SAFETY CHECK|BACKUP REQUIRED|Write tools are disabled"; then
             echo "::error::hub_update_firmware REFUSED by the gate -- see response above."; exit 1
           fi
-          sleep 90
+          # Poll for the VERSION to move, not merely for the hub to answer: the
+          # download runs with the hub still serving, so an availability probe
+          # succeeds long before the reboot and reads the pre-update version.
+          NEW="$OLD"
           attempt=1
-          until curl -sS --fail --max-time 20 -X POST "$MCP_URL" -H "Content-Type: application/json" \
-              -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}' \
-              | jq -e '.result.content[0].text' >/dev/null 2>&1; do
-            if [ "$attempt" -ge 60 ]; then echo "::error::hub did not return within ~15 min."; exit 1; fi
-            attempt=$((attempt + 1)); sleep 15
+          while [ "$attempt" -lt 80 ]; do
+            sleep 15
+            attempt=$((attempt + 1))
+            PROBE=$(call '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}' 2>/dev/null || true)
+            CUR=$(printf '%s' "$PROBE" | jq -r '.firmwareVersion // empty' 2>/dev/null || true)
+            if [ -n "$CUR" ] && [ "$CUR" != "$OLD" ]; then NEW="$CUR"; break; fi
+            if [ $((attempt % 8)) -eq 0 ]; then echo "  still ${CUR:-unreachable} after $((attempt * 15))s"; fi
           done
-          NEW=$(call '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}' | jq -r '.firmwareVersion // "unknown"')
           echo "::notice::E2E hub firmware ${OLD} -> ${NEW}"
-          [ "$NEW" != "$OLD" ] || { echo "::error::same firmware ${NEW} after install."; exit 1; }
+          [ "$NEW" != "$OLD" ] || { echo "::error::firmware still ${NEW} after ~20 min."; exit 1; }
       - name: Probe hub inventory
         run: bash .github/scripts/mcp_probe_hub.sh
       - name: Disable installed app (disable_app_id set)
