@@ -198,7 +198,7 @@ jobs:
     needs: [approve]
     if: inputs.probe_only == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 35
     concurrency:
       group: hub-e2e-serialized
       # queue:max (matching the e2e job) so a probe dispatch QUEUES behind a pending e2e run rather
@@ -249,6 +249,41 @@ jobs:
             sleep 15
           done
           echo "Hub is back after reboot (poll attempt ${attempt})."
+      - name: ONE-OFF install pending hub firmware
+        run: |
+          set -euo pipefail
+          call() {
+            curl -sS --max-time 180 -X POST "$MCP_URL" -H "Content-Type: application/json" \
+              --data-binary "$1" | jq -r '.result.content[0].text // empty'
+          }
+          BEFORE=$(call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{"includeAppUpdate":true}}}')
+          OLD=$(printf '%s' "$BEFORE" | jq -r '.firmwareVersion // "unknown"')
+          echo "::notice::current firmware=${OLD}"
+          echo "platformUpdate: $(printf '%s' "$BEFORE" | jq -c '.platformUpdate // "none"')"
+          PENDING=$(printf '%s' "$BEFORE" | jq -r 'if (.platformUpdate|type)=="object" then (.platformUpdate.version // "yes") elif (.platformUpdate|type)=="string" then .platformUpdate else empty end')
+          if [ -z "$PENDING" ] || [ "$PENDING" = "null" ] || [ "$PENDING" = "false" ] || [ "$PENDING" = "none" ]; then
+            echo "::notice::No pending platform update -- hub already current at ${OLD}."
+            exit 0
+          fi
+          BACKUP=$(call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true,"bestPracticeKey":"bps-ack-299"}}}')
+          printf '%s' "$BACKUP" | jq -e '.success == true' >/dev/null || {
+            echo "::error::real backup failed; hub_update_firmware needs one. $(printf '%s' "$BACKUP" | head -c 300)"; exit 1; }
+          RESP=$(call '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"hub_update_firmware","arguments":{"confirm":true}}}' || true)
+          echo "update response head: $(printf '%s' "$RESP" | head -c 300 | tr '\n' ' ')"
+          if printf '%s' "$RESP" | grep -qiE "SAFETY CHECK|BACKUP REQUIRED|Write tools are disabled"; then
+            echo "::error::hub_update_firmware REFUSED by the gate -- see response above."; exit 1
+          fi
+          sleep 90
+          attempt=1
+          until curl -sS --fail --max-time 20 -X POST "$MCP_URL" -H "Content-Type: application/json" \
+              -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}' \
+              | jq -e '.result.content[0].text' >/dev/null 2>&1; do
+            if [ "$attempt" -ge 60 ]; then echo "::error::hub did not return within ~15 min."; exit 1; fi
+            attempt=$((attempt + 1)); sleep 15
+          done
+          NEW=$(call '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}' | jq -r '.firmwareVersion // "unknown"')
+          echo "::notice::E2E hub firmware ${OLD} -> ${NEW}"
+          [ "$NEW" != "$OLD" ] || { echo "::error::same firmware ${NEW} after install."; exit 1; }
       - name: Probe hub inventory
         run: bash .github/scripts/mcp_probe_hub.sh
       - name: Disable installed app (disable_app_id set)
