@@ -40,7 +40,7 @@ jobs:
     name: test (${{ matrix.mode }}, ${{ matrix.dispatch-mode }})
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           # Gradle daemon runs on this JVM. Gradle 9 requires JDK 17+
