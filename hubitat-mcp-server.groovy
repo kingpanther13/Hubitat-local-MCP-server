@@ -7357,9 +7357,14 @@ private Map _ruleCompiledState(Integer appId) {
             if (parsed.containsKey("broken")) {
                 def pred = (parsed.containsKey("hasPredicate") || parsed.containsKey("predCapabs")) ?
                     [hasPredicate: parsed.hasPredicate == true, predCapabs: parsed.predCapabs ?: []] : null
+                // actionList is RM's own ordered array of action indices — the only
+                // display-ordered source there is. appSettings key order is arbitrary.
+                // Carried through raw so _rmCollectActionIndices can reuse this fetch
+                // instead of opening a second path to the same endpoint.
                 return [ruleFormat: "rm", broken: parsed.broken == true, validationErrors: [],
                         predicate: pred,
                         capabsfalse: (parsed.capabsfalse instanceof Map ? parsed.capabsfalse : null),
+                        actionList: (parsed.actionList instanceof List ? parsed.actionList : null),
                         endpoint: "ruleBuilderJson"]
             }
         }
@@ -7473,32 +7478,143 @@ private List _rmStructuralIssuesFromSequence(List<Map> sequence) {
 }
 
 /**
- * Build the structural-balance sequence from a rule's live appSettings
- * map (keyed by name). Collects actType.<N>/actSubType.<N> pairs in
- * numerical order and marks any actType-without-actSubType entry with
- * `partial: true` so the walker can surface it as a #172-class
- * half-commit rather than silently treating it as a leaf. Optional
- * excludeIndices (used by removeAction pre-flight) skip listed action
- * indices so the walker sees the post-deletion state.
+ * Map a structural actSubType to the actType RM stores alongside it, or
+ * null for a leaf subtype. RM 5.1's UI persists actType.<N> only on the
+ * rows whose editor asked for a capability — an ELSE / ELSE-IF / END-IF
+ * or a Repeat closer built in the UI carries actSubType.<N> ALONE. Our
+ * own wizard writer writes both, so the pair is only ever half-present
+ * on UI-built rules.
  */
-private List _rmStructuralSequenceFromSettings(Map settingsByName, Set excludeIndices = ([] as Set)) {
-    def indices = [] as TreeSet
-    settingsByName.keySet().each { name ->
-        def m = name?.toString() =~ /^actType\.(\d+)$/
-        if (m.matches()) indices << ((m[0] as List)[1] as Integer)
+private String _rmActTypeForStructuralSubType(String subType) {
+    switch (subType) {
+        case "getIfThen":
+        case "getElseIf":
+        case "getElse":
+        case "getEndIf":
+            return "condActs"
+        case "getRepeat":
+        case "getWhile":
+        case "getStopRepeat":
+            return "repeatActs"
+        default: return null
+    }
+}
+
+/**
+ * Read one action setting, mapping an empty string to null. RM leaves
+ * emptied rows behind as blank values, and every caller here means
+ * "absent" by both.
+ */
+private String _rmActionSettingText(Map settingsByName, String prefix, Integer idx) {
+    def v = settingsByName["${prefix}.${idx}".toString()]?.value?.toString()
+    (v == null || v == "") ? null : v
+}
+
+/**
+ * Coerce a compiled actionList (an array of index strings) to Integers,
+ * preserving its order. Returns null when there is nothing usable, which
+ * every caller reads as "membership unknown".
+ */
+private List _rmCoerceActionIndices(List raw) {
+    if (raw == null || raw.isEmpty()) return null
+    def out = []
+    raw.each { entry ->
+        try { out << (entry.toString() as Integer) } catch (NumberFormatException ignored) {}
+    }
+    out ?: null
+}
+
+/**
+ * The rule's action indices in display order, straight from the compiled
+ * rule. Null when the compiled state is unreadable or carries no list.
+ */
+private List _rmOrderedActionIndices(Integer appId) {
+    _rmCoerceActionIndices(_ruleCompiledState(appId)?.actionList)
+}
+
+/**
+ * Build the structural-balance sequence for a rule.
+ *
+ * MEMBERSHIP comes from orderedIndices (the compiled actionList) when the
+ * caller has it: structure is a property of the RULE, and appSettings
+ * retains rows the rule no longer contains — an interrupted wizard write,
+ * or a deleted action whose settings were never cleared. Walking those
+ * makes a balanced rule read as damaged (a stale IF with no closer reports
+ * "never closed" forever). They are reported separately by
+ * _rmOrphanedActionRows instead.
+ *
+ * With no orderedIndices (compiled state unreadable, or a non-RM classic
+ * app) it falls back to every index either key mentions, in numeric order.
+ * That is the pre-membership behaviour and can still be fooled by a stale
+ * row — it is the honest best effort when the rule itself cannot be read.
+ *
+ * VALUES always come from settings: a missing actType on a structural
+ * subtype is inferred via _rmActTypeForStructuralSubType (RM's UI writes no
+ * actType on ELSE / ELSE-IF / END-IF), and the reverse half-pair (actType
+ * without actSubType) is marked `partial: true` so the walker surfaces it as
+ * a #172-class half-commit rather than silently treating it as a leaf.
+ *
+ * Optional excludeIndices (used by removeAction pre-flight) skip listed
+ * action indices so the walker sees the post-deletion state.
+ */
+private List _rmStructuralSequenceFromSettings(Map settingsByName, Set excludeIndices = ([] as Set), List orderedIndices = null) {
+    def indices
+    if (orderedIndices != null && !orderedIndices.isEmpty()) {
+        indices = orderedIndices
+    } else {
+        def scanned = [] as TreeSet
+        settingsByName.keySet().each { name ->
+            def m = name?.toString() =~ /^act(?:Type|SubType)\.(\d+)$/
+            if (m.matches()) scanned << ((m[0] as List)[1] as Integer)
+        }
+        indices = scanned as List
     }
     def sequence = []
     indices.each { idx ->
         if (excludeIndices.contains(idx)) return
-        def aType = settingsByName["actType.${idx}".toString()]?.value?.toString()
-        def sType = settingsByName["actSubType.${idx}".toString()]?.value?.toString()
+        def aType = _rmActionSettingText(settingsByName, "actType", idx)
+        def sType = _rmActionSettingText(settingsByName, "actSubType", idx)
+        if (aType == null && sType != null) aType = _rmActTypeForStructuralSubType(sType)
         def entry = [idx: idx, actType: aType, actSubType: sType]
-        if (aType in ["condActs", "repeatActs"] && (sType == null || sType == "")) {
+        if (aType in ["condActs", "repeatActs"] && sType == null) {
             entry.partial = true
         }
         sequence << entry
     }
     sequence
+}
+
+/**
+ * Settings rows carrying action content for an index the rule does not
+ * contain. These are leftovers — a wizard write that never baked, or a
+ * deleted action whose settings survived — and they are NOT structural
+ * damage: the rule runs exactly as rendered. They are reported on their own
+ * (never in structuralIssues, never in issues) so a healthy rule does not
+ * read as broken, while the state stays visible: it explains why a new
+ * action allocates above the gap, and an actType-only leftover is the
+ * #172-class half-commit the walker used to surface.
+ *
+ * Empty on both keys is vestigial, not a leftover, and is skipped. Returns
+ * empty when membership is unknown — without the rule's own list there is
+ * no way to tell a leftover from a live row.
+ */
+private List _rmOrphanedActionRows(Map settingsByName, List orderedIndices) {
+    if (orderedIndices == null || orderedIndices.isEmpty()) return []
+    def inRule = orderedIndices as Set
+    def scanned = [] as TreeSet
+    settingsByName.keySet().each { name ->
+        def m = name?.toString() =~ /^act(?:Type|SubType)\.(\d+)$/
+        if (m.matches()) scanned << ((m[0] as List)[1] as Integer)
+    }
+    def out = []
+    scanned.each { idx ->
+        if (inRule.contains(idx)) return
+        def aType = _rmActionSettingText(settingsByName, "actType", idx)
+        def sType = _rmActionSettingText(settingsByName, "actSubType", idx)
+        if (aType == null && sType == null) return
+        out << ("action ${idx} (actType=${aType ?: 'none'}, actSubType=${sType ?: 'none'}) is present in settings but is NOT one of the rule's actions \u2014 leftover state from an interrupted write or a removed action. It does not run and does not affect block structure; it does hold index ${idx}, so new actions are allocated above it.".toString())
+    }
+    out
 }
 
 /**
@@ -7595,6 +7711,8 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     def brokenMarkers = []
     def multipleFlagPoison = []
     def structuralIssues = []
+    def orphanedActionRows = []
+    def compiledActionList = null  // the rule's own action membership; null = unknown, walker falls back
     def validationErrors = []      // VRB graph-rule validation problems (its `broken` equivalent)
     Boolean broken = null          // authoritative boolean: RM compiled state, or VRB validationErrors non-empty
     def predicate = null           // compact {hasPredicate, predCapabs} from ruleBuilderJson (RM)
@@ -7614,6 +7732,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
             sourcesUsed << cs.endpoint
             broken = cs.broken
             if (cs.predicate != null) predicate = cs.predicate
+            if (cs.actionList != null) compiledActionList = _rmCoerceActionIndices(cs.actionList)
             if (cs.validationErrors) validationErrors = cs.validationErrors
             if (ruleFormat == "rm" && broken == true) {
                 // capabsfalse renders the live false-condition text (with current
@@ -7704,7 +7823,9 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
             // in _rmDeleteAction / _rmAddAction / replaceActions block most
             // imbalance at the source; this catches raw settings writes and the
             // post-response-commit race for non-structural deletes).
-            structuralIssues = _rmStructuralIssuesFromSequence(_rmStructuralSequenceFromSettings(settingsByName))
+            structuralIssues = _rmStructuralIssuesFromSequence(
+                _rmStructuralSequenceFromSettings(settingsByName, ([] as Set), compiledActionList))
+            orphanedActionRows = _rmOrphanedActionRows(settingsByName, compiledActionList)
             if (structuralIssues) {
                 issues << ("structural imbalance in action block nesting: ${structuralIssues.join('; ')} — if you are still building this rule (adding an IF/ELSE or Repeat block across separate calls), this is EXPECTED until you add the closer, and the fix is simply to add it via addAction(capability='endIf'|'stopRepeat') — do NOT restore. Only if the rule was already complete does this indicate damage (a raw settings write or a mutation that committed post-response), in which case use hub_restore_backup to roll back.".toString())
             }
@@ -7781,6 +7902,10 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
         brokenMarkerCounts: brokenMarkerCounts,
         multipleFlagPoison: multipleFlagPoison,
         structuralIssues: structuralIssues,
+        // Leftover settings rows the rule does not contain. Deliberately outside
+        // `issues` (same reasoning as checkErrors): they are visible state, not a
+        // defect, so they must not flip ok or feed the regression differ.
+        orphanedActionRows: orphanedActionRows,
         validationErrors: validationErrors,
         issues: issues,
         // Half-checked marker: ONE source failed to read while the other read clean.

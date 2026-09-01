@@ -6045,6 +6045,116 @@ class TestRunner:
             self._delete_native(app_id)
 
     @test("native_apps")
+    def test_rule_health_ui_shaped_else_endif_rows(self) -> None:
+        # Structural balance on a rule whose ELSE / END-IF rows carry ONLY actSubType.<N>
+        # and no actType.<N> -- the settings shape Rule Machine's own UI leaves behind for
+        # a branch keyword and a block closer. Every other health test builds its rule
+        # through OUR writer, which always writes BOTH keys, so this shape was never
+        # exercised live: while the structural walker discovered action rows from the
+        # actType.<N> keys alone, a UI-authored ELSE/END-IF was invisible to it and the
+        # balanced IF it belongs to read as "opened a block that was never closed".
+        #
+        # The shape is produced through the documented edit-as-text round trip
+        # (hub_export_native_app -> mutate the exported JSON -> hub_import_native_app).
+        # It cannot be produced any other way through the tool surface: the writer never
+        # emits an actType-less row, and nothing DELETES an app setting -- a raw `settings`
+        # write only writes, and only the keys the current page schema already carries.
+        sw = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("RuleHealthUIShape", {
+            "addActions": [
+                {"capability": "ifThen", "expression": {"conditions": [
+                    {"capability": "Switch", "deviceIds": [sw], "state": "on"}]}},
+                {"capability": "log", "message": "then-branch"},
+                {"capability": "else"},
+                {"capability": "log", "message": "else-branch"},
+                {"capability": "endIf"},
+            ],
+        })
+        imported_id = None
+        try:
+            source_settings = self._get_persisted_rule_config(app_id).get("settings") or {}
+            branch_rows = sorted(str(key).split(".", 1)[1] for key, value in source_settings.items()
+                                 if str(key).startswith("actSubType.")
+                                 and str(value) in ("getElse", "getEndIf"))
+            assert len(branch_rows) == 2, \
+                f"fixture should carry exactly one ELSE and one END-IF row: {source_settings}"
+
+            exported = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_export_native_app", "args": {"sourceAppId": int(app_id)}})
+            assert exported.get("success") is True and exported.get("jsonContent"), \
+                f"appCloner export did not return the rule JSON: {exported}"
+            document = json.loads(exported["jsonContent"])
+
+            doomed_names = {f"actType.{idx}" for idx in branch_rows}
+
+            def _drop_named_settings(node: Any) -> int:
+                """Remove appSettings entries named in doomed_names, wherever they sit.
+
+                A canonical appCloner export carries them as
+                appData.<sourceId>.appSettings[] = [{name, type, multiple, value}, ...].
+                The walk is shape-agnostic on purpose: a nesting change then surfaces as
+                the removal-count mismatch below instead of a silent no-op that would
+                health-check an unmutated rule and pass green."""
+                removed = 0
+                if isinstance(node, dict):
+                    for value in node.values():
+                        removed += _drop_named_settings(value)
+                elif isinstance(node, list):
+                    doomed = [item for item in node if isinstance(item, dict)
+                              and str(item.get("name")) in doomed_names]
+                    for item in doomed:
+                        node.remove(item)
+                    removed += len(doomed)
+                    for item in node:
+                        removed += _drop_named_settings(item)
+                return removed
+
+            dropped = _drop_named_settings(document)
+            assert dropped == len(doomed_names), \
+                (f"expected to strip {sorted(doomed_names)} from the export, removed {dropped} "
+                 f"entries -- the export's settings shape is not what the mutation targets")
+
+            imported = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_import_native_app",
+                "args": {"jsonContent": json.dumps(document), "parentHintAppId": int(app_id),
+                         "newName": f"{PREFIX}RuleHealthUIShapeImp_{_run_artifact_suffix()}",
+                         "confirm": True}})
+            imported_id = imported.get("newAppId")
+            assert imported.get("success") is True and imported_id, \
+                f"importing the mutated rule did not create a new app: {imported}"
+            self.created_native_app_ids.append(str(imported_id))
+
+            # The imported rule must actually be UI-shaped, else an all-clear health verdict
+            # below would prove nothing. Re-derive the rows from the IMPORT (the cloner owns
+            # the indices), then pin actSubType present / actType absent on exactly those.
+            imported_settings = self._get_persisted_rule_config(imported_id).get("settings") or {}
+            ui_rows = sorted(str(key).split(".", 1)[1] for key, value in imported_settings.items()
+                             if str(key).startswith("actSubType.")
+                             and str(value) in ("getElse", "getEndIf"))
+            assert len(ui_rows) == len(branch_rows), \
+                f"the import did not carry the ELSE/END-IF rows over: {imported_settings}"
+            assert not any(f"actType.{idx}" in imported_settings for idx in ui_rows), \
+                ("the import re-materialized actType.<N> on the branch/closer rows, so the "
+                 f"UI-authored settings shape never reached the hub: {imported_settings}")
+            assert any(str(key).startswith("actType.") for key in imported_settings), \
+                f"the strip took more than the branch/closer rows: {imported_settings}"
+
+            health = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_get_rule_health", "args": {"appId": imported_id}})
+            # An unread configPage leg leaves structuralIssues vacuously empty -- assert the
+            # structural walk actually ran before trusting its all-clear.
+            assert not health.get("checkErrors") and "configPage" in str(health.get("source") or ""), \
+                f"the structural walk did not run, so an empty verdict proves nothing: {health}"
+            assert health.get("structuralIssues") == [], \
+                f"UI-shaped ELSE/END-IF rows were flagged as a structural imbalance: {health}"
+            assert "never closed" not in str(health).lower(), \
+                f"a balanced UI-authored IF block was reported as missing its END-IF: {health}"
+        finally:
+            if imported_id:
+                self._delete_native(imported_id)
+            self._delete_native(app_id)
+
+    @test("native_apps")
     def test_set_rule_trigger_mutations(self) -> None:
         # hub_set_rule edit -> the device-state addTrigger + addAction wizard paths, then
         # modifyTrigger (state) + removeTrigger driven by the RETURNED triggerIndex

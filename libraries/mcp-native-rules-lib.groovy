@@ -398,6 +398,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     brokenMarkerCounts: [type: "object", description: "Per-marker occurrence count in the current render -- key is the marker string (e.g. **Broken Condition**), value is how many times it appears. The replace restore gate uses a count increase to detect a genuinely-new broken instance when the same marker already existed in the baseline."],
                     multipleFlagPoison: [type: "array", description: "Poisoned setting names; always present, empty when none", items: [type: "string"]],
                     structuralIssues: [type: "array", description: "Structural issues; always present, empty when none", items: [type: "string"]],
+                    orphanedActionRows: [type: "array", items: [type: "string"], description: "Settings rows carrying action content for an index the rule does not contain -- leftovers from an interrupted write or a removed action. Diagnostics only: they neither run nor affect block structure, so ok ignores them. Always present (empty when none, and when the rule's action membership could not be read)."],
                     validationErrors: [type: "array", description: "Graph Visual Rule validation errors; always present, empty when none", items: [type: "string"]],
                     predicate: [type: "object", description: "Compiled required-expression summary from ruleBuilderJson: {hasPredicate, predCapabs}. Present only when the compiled RM state carried the predicate fields (hasPredicate may be false)."],
                     paused: [type: ["boolean", "null"], description: "Rule is paused (the label's (Paused) decoration); null when the label was unreadable."],
@@ -4108,46 +4109,61 @@ private Map _rmCollectTriggerCapabilities(Integer appId) {
     return out
 }
 
-// Scan an RM rule's appSettings for actType.<N> entries and return the
-// list of action indices in DISPLAY ORDER. Used by _rmAddAction to pick
-// the next free index and by _rmMoveAction to verify position shifts.
+// Action indices exactly as they appear in the rule's appSettings, in the
+// order the hub served them. An index is discovered from actType.<N> OR
+// actSubType.<N>: a row authored in RM's UI carries only the subtype on
+// ELSE / ELSE-IF / END-IF, so an actType-only scan misses it. `seen`
+// collapses the two keys an action contributes into one entry.
+//
+// appSettings key order is ARBITRARY -- neither display order nor lexical
+// (live capture: actSubType.7, actSubType.8, actSubType.2, ... actType.11,
+// actType.14, actType.13, ...). Callers that need ORDER must use
+// _rmCollectActionIndices instead. What this sees and the compiled action
+// list does not is a row that exists ONLY in settings -- a wizard write
+// that landed but was never baked -- which is exactly why the add path's
+// index allocation and orphan rollback read this and not the compiled list.
+private List _rmActionIndicesFromSettings(Map status) {
+    def out = []
+    def seen = [] as Set
+    (status?.appSettings ?: []).each { s ->
+        def n = s?.name?.toString()
+        if (n) {
+            def m = (n =~ /^act(?:Type|SubType)\.(\d+)$/)
+            if (m.matches()) {
+                def idx = (m[0][1] as Integer)
+                if (seen.add(idx)) out << idx
+            }
+        }
+    }
+    return out
+}
+
+// Action indices in RM's DISPLAY ORDER. Used by _rmMoveAction to verify a
+// position shift and by _rmModifyAction to walk a rebuilt action back to its
+// original slot -- both read this list positionally.
 //
 // Ordering strategy (two-tier):
-// 1. If statusJson.actions is a Map with integer keys, use its key
-// iteration order (Hubitat serializes this in display order).
-// This is immune to the JSON key lexical-sort bug (actType.1,
-// actType.10, actType.2) that appSettings scanning suffers from.
-// 2. Fall back to the appSettings actType.<N> scan with lexical sort
-// when statusJson.actions is absent. Lexical order matches display
-// order at small action counts but may diverge above 10 actions
-// (actType.10 sorts before actType.2 lexically); the tier-1
-// statusJson.actions path is the authoritative source when available.
+// 1. /app/ruleBuilderJson's `actionList` -- RM's own ordered array of action
+// indices, and the only display-ordered source the hub exposes. Read via
+// _ruleCompiledState so this shares the health check's fetch rather than
+// opening a second path to the endpoint.
+// 2. Fall back to the appSettings scan when actionList is absent or
+// unreadable (a non-RM classic app, older firmware, a failed read). That
+// order is arbitrary, so the fallback answers WHICH rows exist, not the
+// order they display in.
 //
 // Note action keys use a dot-N suffix (actType.1) vs trigger keys
 // without dot (tCapab1).
 private List _rmCollectActionIndices(Integer appId) {
-    def status = _rmFetchStatusJson(appId)
-
-    // Tier 1: statusJson.actions map (integer-keyed, display-ordered).
-    def actionsMap = status?.actions
-    if (actionsMap instanceof Map && !actionsMap.isEmpty()) {
-        def ordered = []
-        actionsMap.keySet().each { k ->
-            try { ordered << k.toString().toInteger() } catch (NumberFormatException ignored) {}
+    def ordered = _ruleCompiledState(appId)?.actionList
+    if (ordered instanceof List && !ordered.isEmpty()) {
+        def out = []
+        ordered.each { entry ->
+            try { out << entry.toString().toInteger() } catch (NumberFormatException ignored) {}
         }
-        return ordered
+        if (out) return out
     }
-
-    // Tier 2: lexical appSettings scan.
-    def out = []
-    (status?.appSettings ?: []).each { s ->
-        def n = s?.name?.toString()
-        if (n) {
-            def m = (n =~ /^actType\.(\d+)$/)
-            if (m.matches()) out << (m[0][1] as Integer)
-        }
-    }
-    return out
+    return _rmActionIndicesFromSettings(_rmFetchStatusJson(appId))
 }
 
 // Delete a single action at a specific index. Verified live
@@ -4190,18 +4206,10 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
     // independently, tripling the per-delete read load on the hub.
     def status = _rmFetchStatusJson(appId)
     def settingsByName = (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it] }
-    def beforeIndices = []
-    def actionsMap = status?.actions
-    if (actionsMap instanceof Map && !actionsMap.isEmpty()) {
-        actionsMap.keySet().each { k ->
-            try { beforeIndices << k.toString().toInteger() } catch (NumberFormatException ignored) {}
-        }
-    } else {
-        settingsByName.keySet().each { n ->
-            def m = (n =~ /^actType\.(\d+)$/)
-            if (m.matches()) beforeIndices << (m[0][1] as Integer)
-        }
-    }
+    // Existence check reads SETTINGS, not the compiled action list: a row that
+    // was written but never baked exists only here, and refusing to delete it
+    // would strand it. The status fetch above is reused.
+    def beforeIndices = _rmActionIndicesFromSettings(status)
     if (!beforeIndices.contains(actionIdx)) {
         throw new IllegalArgumentException("removeAction.index ${actionIdx} not found in rule ${appId}. Existing indices: ${beforeIndices.sort().join(', ')}")
     }
@@ -4221,12 +4229,21 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
     // "END-IF closes a Repeat — mismatched" keeps the count flat). The
     // set diff still allows deletions that strictly improve a broken
     // rule, because every projected issue is also in current.
-    def aType = settingsByName["actType.${actionIdx}".toString()]?.value?.toString()
+    // Keyed off actSubType ALONE: RM 5.1's UI persists no actType.<N> on
+    // ELSE / ELSE-IF / END-IF rows, so also requiring actType would let a
+    // UI-built closer skip the refusal and silently unbalance the rule.
     def sType = settingsByName["actSubType.${actionIdx}".toString()]?.value?.toString()
     def structuralSubTypes = ["getIfThen", "getElseIf", "getElse", "getEndIf", "getRepeat", "getWhile", "getStopRepeat"]
-    if (aType in ["condActs", "repeatActs"] && sType in structuralSubTypes) {
-        def currentIssues = _rmStructuralIssuesFromSequence(_rmStructuralSequenceFromSettings(settingsByName))
-        def projectedIssues = _rmStructuralIssuesFromSequence(_rmStructuralSequenceFromSettings(settingsByName, ([actionIdx] as Set)))
+    if (sType in structuralSubTypes) {
+        // Both sides walk the rule's OWN actions. A leftover settings row is not
+        // part of the rule's structure, and the set-diff does not reliably cancel
+        // it out: a stale closer can absorb the imbalance a real deletion creates,
+        // so current and projected both come back clean and the refusal never fires.
+        def orderedIndices = _rmOrderedActionIndices(appId)
+        def currentIssues = _rmStructuralIssuesFromSequence(
+            _rmStructuralSequenceFromSettings(settingsByName, ([] as Set), orderedIndices))
+        def projectedIssues = _rmStructuralIssuesFromSequence(
+            _rmStructuralSequenceFromSettings(settingsByName, ([actionIdx] as Set), orderedIndices))
         def newIssues = projectedIssues - currentIssues
         if (newIssues) {
             def humanKind = [
@@ -4791,12 +4808,13 @@ private List _rmClearActions(Integer appId) {
 private Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
     def stateAttr = direction == "up" ? "arrowUp" : (direction == "down" ? "arrowDn" : null)
     if (!stateAttr) throw new IllegalArgumentException("moveAction direction must be 'up' or 'down'")
-    // Capture pre-move ORDERING (insertion order from appSettings, which RM
-    // updates on every shuffle to reflect display order). The unsorted list
-    // lets us verify the action's POSITION moved, not just that the index
-    // set is unchanged -- a mid-list silent no-op leaves both before- and
-    // after-sets identical AND positions identical, but a real move shifts
-    // position by exactly one slot.
+    // Capture pre-move ORDERING from ruleBuilderJson's actionList (RM's own
+    // display-ordered array). appSettings key order is arbitrary -- neither
+    // display nor lexical -- so it can never serve this check; see
+    // _rmCollectActionIndices. The ordered list lets us verify the action's
+    // POSITION moved, not just that the index set is unchanged -- a mid-list
+    // silent no-op leaves both before- and after-sets identical AND positions
+    // identical, but a real move shifts position by exactly one slot.
     def beforeOrderRaw = _rmCollectActionIndices(appId)
     if (!beforeOrderRaw.contains(actionIdx)) {
         throw new IllegalArgumentException("moveAction.index ${actionIdx} not found in rule ${appId}. Existing indices: ${beforeOrderRaw.sort().join(', ')}")
@@ -5475,9 +5493,11 @@ private boolean _rmRollbackInFlightExpressionAction(Integer appId, Integer idx, 
     try { _rmClickAppButton(appId, "cancelAct", null, "doActPage") } catch (Exception ignored) { /* editor may already be closed */ }
     // 3. If the opener row still persists in settings (actType.<idx> written by this call), delete it.
     try {
-        if (!_rmCollectActionIndices(appId).contains(idx)) return true
+        // Settings, not the compiled list: an un-baked orphan row never reaches
+        // ruleBuilderJson.actionList, so a compiled read would call it already gone.
+        if (!_rmActionIndicesFromSettings(_rmFetchStatusJson(appId)).contains(idx)) return true
         _rmDeleteAction(appId, idx)
-        return !_rmCollectActionIndices(appId).contains(idx)
+        return !_rmActionIndicesFromSettings(_rmFetchStatusJson(appId)).contains(idx)
     } catch (Exception delExc) {
         mcpLog("warn", "rm-native", "_rmAddAction: rollback of orphan action ${idx} failed for app ${appId} (${delExc.message ?: delExc.toString()}) -- the expression block opener may persist; caller surfaces a stuck-orphan marker so the response points at recovery")
         return false
@@ -5526,7 +5546,10 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     def closerOrBranchKeywords = ["endIf", "stopRepeat", "elseIf", "else"]
     if (cap in closerOrBranchKeywords && preflightCap != null) {
         def settingsByName = _rmFetchSettingsByName(appId)
-        def currentSeq = _rmStructuralSequenceFromSettings(settingsByName)
+        // Scoped to the rule's own actions for the same reason as the delete
+        // pre-flight: a leftover settings row must not decide whether a closer
+        // is orphaned.
+        def currentSeq = _rmStructuralSequenceFromSettings(settingsByName, ([] as Set), _rmOrderedActionIndices(appId))
         // The projected idx only matters for issue-message construction;
         // any value not in current works for the walker.
         def projectedSeq = currentSeq + [[idx: -1, actType: preflightCap[0], actSubType: preflightCap[1]]]
@@ -5610,8 +5633,10 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     // — avoids the doActPage 'startsWith on null' error on empty rules.
     _rmInitSelectActionsPage(appId)
 
-    // Discover next action index by scanning existing actType.<N> settings.
-    def existing = _rmCollectActionIndices(appId)
+    // Discover next action index from SETTINGS, not the compiled action list:
+    // an un-baked row occupies its index without appearing in actionList, so
+    // allocating from the compiled view could hand out an index already in use.
+    def existing = _rmActionIndicesFromSettings(_rmFetchStatusJson(appId))
     def idx = (existing ? existing.max() + 1 : 1)
 
     // RM 5.1 platform limitation: waitEvents actions share GLOBAL event-row

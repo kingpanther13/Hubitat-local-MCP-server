@@ -3691,9 +3691,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // them (unlike the non-private _rmAddAction). The composites below run all three for real
     // against an evolving statusJson: the tier-1 actions map carries display order, and the
     // /installedapp/btn interceptor applies each delAct / arrowUp click to that order the way RM
-    // would. Returns a control map -- order (display-ordered settings indices), clicks (every
-    // button click the composite fired), moveShifts (set false to model a move-arrow click that
-    // never commits).
+    // would. ctl.order is the DISPLAY order and is served as ruleBuilderJson's actionList, which
+    // is where production reads it from; appSettings carries the same indices but its key order
+    // means nothing. Returns a control map -- order, clicks (every button click the composite
+    // fired), moveShifts (set false to model a move-arrow click that never commits).
     // `postHook` (optional) sees every POST before the interceptor applies it, so a spec can
     // fail ONE specific click (the trailing updateRule) without re-implementing the order
     // machine. committedSettings is read at request time, so a spec may mutate it between
@@ -3707,7 +3708,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 eventSubscriptions: [[name: "evt1"]],
                 scheduledJobs: [],
                 appState: [],
-                actions: live.collectEntries { [(it.toString()): "action ${it}".toString()] },
                 childAppCount: 0, childDeviceCount: 0
             ])
         }
@@ -3718,6 +3718,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ruleConfigJson(ruleId, "r", [], null, committedSettings)
         }
         hubGet.register("/installedapp/statusJson/${ruleId}".toString()) { params -> statusFor(ctl.order as List) }
+        // Display order, the way production reads it. Minimal on purpose: `broken`
+        // is the key _ruleCompiledState needs to recognize a classic RM rule, and
+        // false is what these fixtures mean -- none of them model a broken rule.
+        hubGet.register("/app/ruleBuilderJson/${ruleId}".toString()) { params ->
+            JsonOutput.toJson([broken: false, actionList: (ctl.order as List).collect { it.toString() }])
+        }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             if (postHook != null) postHook.call(path, body)
             if (path == "/installedapp/btn") {
@@ -7766,32 +7772,32 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "moveAction arrowDn: action moves forward one position and tier-1 ordering path is exercised"() {
         // Before: actions in display order [1, 2, 3]. Move index 1 down.
         // After:  actions in display order [2, 1, 3]. Position shifts from 0 to 1.
-        // statusJson.actions map (tier-1 path) drives ordering for both before and
-        // after fetches -- exercises the lexical-sort fix from _rmCollectActionIndices.
+        // ruleBuilderJson.actionList (tier-1) drives ordering for both the before and
+        // after fetches -- it is the only display-ordered source the hub exposes.
         given:
         enableWrite()
         def clickFired = false
-        def beforeActionsMap = ["1": "Switch On", "2": "Delay", "3": "Switch Off"]
-        def afterActionsMap  = ["2": "Delay", "1": "Switch On", "3": "Switch Off"]
-        def makeStatus = { Map actMap ->
-            JsonOutput.toJson([
-                installedApp: [id: 100],
-                appSettings: [
-                    [name: "actType.1", value: "switchActs"],
-                    [name: "actType.2", value: "delayActs"],
-                    [name: "actType.3", value: "switchActs"]
-                ],
-                eventSubscriptions: [[name: "evt1"]],
-                scheduledJobs: [],
-                appState: [:],
-                actions: actMap,
-                childAppCount: 0, childDeviceCount: 0
-            ])
-        }
+        def beforeOrder = ["1", "2", "3"]
+        def afterOrder  = ["2", "1", "3"]
+        // appSettings key order carries no display information, so it stays static;
+        // only actionList reorders.
+        def statusBody = JsonOutput.toJson([
+            installedApp: [id: 100],
+            appSettings: [
+                [name: "actType.1", value: "switchActs"],
+                [name: "actType.2", value: "delayActs"],
+                [name: "actType.3", value: "switchActs"]
+            ],
+            eventSubscriptions: [[name: "evt1"]],
+            scheduledJobs: [],
+            appState: [:],
+            childAppCount: 0, childDeviceCount: 0
+        ])
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/statusJson/100') { params ->
-            clickFired ? makeStatus(afterActionsMap) : makeStatus(beforeActionsMap)
+        hubGet.register('/installedapp/statusJson/100') { params -> statusBody }
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            JsonOutput.toJson([broken: false, actionList: (clickFired ? afterOrder : beforeOrder)])
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -7840,27 +7846,27 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         given:
         enableWrite()
         def clickFired = false
-        def beforeActionsMap = ["1": "Switch On", "2": "Delay", "3": "Switch Off"]
-        def afterActionsMap  = ["2": "Delay", "1": "Switch On", "3": "Switch Off"]
-        def makeStatus = { Map actMap ->
-            JsonOutput.toJson([
-                installedApp: [id: 100],
-                appSettings: [
-                    [name: "actType.1", value: "switchActs"],
-                    [name: "actType.2", value: "delayActs"],
-                    [name: "actType.3", value: "switchActs"]
-                ],
-                eventSubscriptions: [[name: "evt1"]],
-                scheduledJobs: [],
-                appState: [:],
-                actions: actMap,
-                childAppCount: 0, childDeviceCount: 0
-            ])
-        }
+        def beforeOrder = ["1", "2", "3"]
+        def afterOrder  = ["2", "1", "3"]
+        // appSettings key order carries no display information, so it stays static;
+        // only actionList reorders.
+        def statusBody = JsonOutput.toJson([
+            installedApp: [id: 100],
+            appSettings: [
+                [name: "actType.1", value: "switchActs"],
+                [name: "actType.2", value: "delayActs"],
+                [name: "actType.3", value: "switchActs"]
+            ],
+            eventSubscriptions: [[name: "evt1"]],
+            scheduledJobs: [],
+            appState: [:],
+            childAppCount: 0, childDeviceCount: 0
+        ])
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/statusJson/100') { params ->
-            clickFired ? makeStatus(afterActionsMap) : makeStatus(beforeActionsMap)
+        hubGet.register('/installedapp/statusJson/100') { params -> statusBody }
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            JsonOutput.toJson([broken: false, actionList: (clickFired ? afterOrder : beforeOrder)])
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -7905,27 +7911,29 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // success/partial and surfaces asyncCommitLikely + verifyHint.
         given:
         enableWrite()
-        // statusJson order NEVER changes -> position never shifts on the
+        // The display order NEVER changes -> position never shifts on the
         // immediate read OR the short re-check.
-        def actionsMap = ["1": "Switch On", "2": "Delay", "3": "Switch Off"]
-        def makeStatus = {
-            JsonOutput.toJson([
-                installedApp: [id: 100],
-                appSettings: [
-                    [name: "actType.1", value: "switchActs"],
-                    [name: "actType.2", value: "delayActs"],
-                    [name: "actType.3", value: "switchActs"]
-                ],
-                eventSubscriptions: [[name: "evt1"]],
-                scheduledJobs: [],
-                appState: [:],
-                actions: actionsMap,
-                childAppCount: 0, childDeviceCount: 0
-            ])
-        }
+        // appSettings key order carries no display information, so it stays static;
+        // only actionList reorders.
+        def statusBody = JsonOutput.toJson([
+            installedApp: [id: 100],
+            appSettings: [
+                [name: "actType.1", value: "switchActs"],
+                [name: "actType.2", value: "delayActs"],
+                [name: "actType.3", value: "switchActs"]
+            ],
+            eventSubscriptions: [[name: "evt1"]],
+            scheduledJobs: [],
+            appState: [:],
+            childAppCount: 0, childDeviceCount: 0
+        ])
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> makeStatus() }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusBody }
+        // actionList NEVER reorders -> the position can never shift.
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            JsonOutput.toJson([broken: false, actionList: ["1", "2", "3"]])
+        }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -7955,25 +7963,27 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // dispatcher, with the same failure mode the fix targets).
         given:
         enableWrite()
-        def actionsMap = ["1": "Switch On", "2": "Delay", "3": "Switch Off"]
-        def makeStatus = {
-            JsonOutput.toJson([
-                installedApp: [id: 100],
-                appSettings: [
-                    [name: "actType.1", value: "switchActs"],
-                    [name: "actType.2", value: "delayActs"],
-                    [name: "actType.3", value: "switchActs"]
-                ],
-                eventSubscriptions: [[name: "evt1"]],
-                scheduledJobs: [],
-                appState: [:],
-                actions: actionsMap,
-                childAppCount: 0, childDeviceCount: 0
-            ])
-        }
+        // appSettings key order carries no display information, so it stays static;
+        // only actionList reorders.
+        def statusBody = JsonOutput.toJson([
+            installedApp: [id: 100],
+            appSettings: [
+                [name: "actType.1", value: "switchActs"],
+                [name: "actType.2", value: "delayActs"],
+                [name: "actType.3", value: "switchActs"]
+            ],
+            eventSubscriptions: [[name: "evt1"]],
+            scheduledJobs: [],
+            appState: [:],
+            childAppCount: 0, childDeviceCount: 0
+        ])
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/statusJson/100') { params -> makeStatus() }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusBody }
+        // actionList NEVER reorders -> the position can never shift.
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            JsonOutput.toJson([broken: false, actionList: ["1", "2", "3"]])
+        }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             [status: 200, location: null, data: '']
@@ -8009,33 +8019,33 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         enableWrite()
         def clickFired = false
         def postClickReads = 0
-        def beforeActionsMap = ["1": "Switch On", "2": "Delay", "3": "Switch Off"]
-        def afterActionsMap  = ["2": "Delay", "1": "Switch On", "3": "Switch Off"]
-        def makeStatus = { Map actMap ->
-            JsonOutput.toJson([
-                installedApp: [id: 100],
-                appSettings: [
-                    [name: "actType.1", value: "switchActs"],
-                    [name: "actType.2", value: "delayActs"],
-                    [name: "actType.3", value: "switchActs"]
-                ],
-                eventSubscriptions: [[name: "evt1"]],
-                scheduledJobs: [],
-                appState: [:],
-                actions: actMap,
-                childAppCount: 0, childDeviceCount: 0
-            ])
-        }
+        def beforeOrder = ["1", "2", "3"]
+        def afterOrder  = ["2", "1", "3"]
+        // appSettings key order carries no display information, so it stays static;
+        // only actionList reorders.
+        def statusBody = JsonOutput.toJson([
+            installedApp: [id: 100],
+            appSettings: [
+                [name: "actType.1", value: "switchActs"],
+                [name: "actType.2", value: "delayActs"],
+                [name: "actType.3", value: "switchActs"]
+            ],
+            eventSubscriptions: [[name: "evt1"]],
+            scheduledJobs: [],
+            appState: [:],
+            childAppCount: 0, childDeviceCount: 0
+        ])
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/statusJson/100') { params ->
-            if (!clickFired) return makeStatus(beforeActionsMap)
+        hubGet.register('/installedapp/statusJson/100') { params -> statusBody }
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            if (!clickFired) return JsonOutput.toJson([broken: false, actionList: beforeOrder])
             postClickReads++
             // First post-click read (the immediate afterPosition) STILL shows the
             // pre-move order -> shift not yet seen -> triggers the re-check. The
             // second post-click read (the re-check, after the short pause) shows
             // the late commit. Later reads (health) keep the post-move order.
-            postClickReads >= 2 ? makeStatus(afterActionsMap) : makeStatus(beforeActionsMap)
+            JsonOutput.toJson([broken: false, actionList: (postClickReads >= 2 ? afterOrder : beforeOrder)])
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -8080,12 +8090,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 eventSubscriptions: [[name: "evt1"]],
                 scheduledJobs: [],
                 appState: [:],
-                actions: actionsMap,
                 childAppCount: 0, childDeviceCount: 0
             ])
         }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        // ruleBuilderJson is deliberately UNSTUBBED here: _ruleCompiledState swallows
+        // its own read failures, so a flake injected there could never reach the
+        // re-check catch. Leaving the compiled tier unavailable routes ordering
+        // through the settings scan, which is where the flake can be injected.
         hubGet.register('/installedapp/statusJson/100') { params ->
             if (!clickFired) return makeStatus()
             postClickReads++
@@ -8304,6 +8317,44 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error?.contains("removeAction(9) blocked")
         result.error?.contains("structural IF")
         result.error?.contains("RM is not touched")
+        !posts.any { it.body?.get("stateAttribute") == "delAct" }
+    }
+
+    def "removeAction still refuses when a stale closer outside the rule would mask the imbalance"() {
+        // The set-diff does NOT cancel a leftover closer out. Walked unscoped, the
+        // stale END-IF at 9 reports as an orphan in CURRENT and then absorbs the real
+        // IF in PROJECTED, so both sides come back with nothing new and the refusal
+        // never fires -- the caller deletes the rule's only real closer. Scoping the
+        // walk to the rule's own actions is what restores the refusal.
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        def settings = ifStructureSettings([
+            [idx: 1, actType: "condActs",   actSubType: "getIfThen"],
+            [idx: 2, actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 3,                        actSubType: "getEndIf"],
+            [idx: 9,                        actSubType: "getEndIf"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Stale Closer", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+        // 9 is leftover settings state; the rule itself is 1/2/3 and balanced.
+        hubGet.register('/app/ruleBuilderJson/100') { params -> ruleBuilderJsonWithActionList(["1", "2", "3"]) }
+
+        when: "the rule's only real END-IF is removed"
+        def result = script.toolSetRule([appId: 100, removeAction: [index: 3], confirm: true])
+
+        then: "refused -- deleting it leaves the IF at 1 unclosed"
+        result.success == false
+        result.error?.contains("removeAction(3) blocked")
+        result.error?.contains("structural END-IF")
+        result.error?.contains("RM is not touched")
+
+        and: "no delAct button click fires"
         !posts.any { it.body?.get("stateAttribute") == "delAct" }
     }
 
@@ -9957,10 +10008,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     private List ifStructureSettings(List<Map> rows) {
         // rows = [[idx: N, actType: "condActs", actSubType: "getIfThen"], ...]
+        // A row that OMITS a key emits no setting for it — that is the UI-built
+        // shape, where RM 5.1 persists actSubType alone on ELSE / ELSE-IF /
+        // END-IF rows. An explicit "" emits the key with an empty value.
         def out = []
         rows.each { r ->
-            out << [name: "actType.${r.idx}".toString(), value: r.actType]
-            out << [name: "actSubType.${r.idx}".toString(), value: r.actSubType]
+            if (r.containsKey("actType")) out << [name: "actType.${r.idx}".toString(), value: r.actType]
+            if (r.containsKey("actSubType")) out << [name: "actSubType.${r.idx}".toString(), value: r.actSubType]
         }
         out
     }
@@ -10137,6 +10191,446 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then:
         result.ok == true
         result.structuralIssues == [] || result.structuralIssues?.isEmpty()
+    }
+
+    // A rule built in the Rule Machine UI stores NO actType.<N> on its ELSE /
+    // ELSE-IF / END-IF rows — only this server's wizard writer writes both
+    // halves. Discovering action indices from actType alone therefore made every
+    // UI-built closer invisible and reported every IF as unclosed. The rows below
+    // mirror a live UI-built rule's appSettings shape.
+
+    def "hub_get_rule_health reports ok on a UI-built nested IF ELSE IF ELSE END-IF END-IF with no actType on the closers"() {
+        given:
+        enableReadOnly()
+        def settings = ifStructureSettings([
+            [idx: 2,  actType: "condActs",   actSubType: "getIfThen"],
+            [idx: 3,  actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 4,                         actSubType: "getElse"],
+            [idx: 7,  actType: "condActs",   actSubType: "getIfThen"],
+            [idx: 8,  actType: "switchActs", actSubType: "getOnOffSwitch"],
+            // Both halves present but empty — a real shape on live rules; empty
+            // must read as absent, not as a partial commit or a phantom block.
+            [idx: 10, actType: "",           actSubType: ""],
+            [idx: 11, actType: "modeActs",   actSubType: "getSetVariable"],
+            [idx: 12,                        actSubType: "getElse"],
+            [idx: 13, actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 14, actType: "modeActs",   actSubType: "getSetVariable"],
+            [idx: 15,                        actSubType: "getEndIf"],
+            [idx: 16,                        actSubType: "getEndIf"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "UI Built Nested", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+        // actionList present, so the walk is scoped to the rule's own actions.
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            JsonOutput.toJson([broken: false,
+                               actionList: ["2", "3", "4", "7", "8", "11", "12", "13", "14", "15", "16"]])
+        }
+
+        when:
+        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
+
+        then:
+        result.ok == true
+        result.structuralIssues == [] || result.structuralIssues?.isEmpty()
+    }
+
+    def "hub_get_rule_health reports ok on a UI-built flat IF ELSE END-IF with no actType on the closers"() {
+        given:
+        enableReadOnly()
+        def settings = ifStructureSettings([
+            [idx: 1, actType: "condActs",   actSubType: "getIfThen"],
+            [idx: 2, actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 3,                        actSubType: "getElse"],
+            [idx: 4, actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 5,                        actSubType: "getEndIf"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "UI Built Flat", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            JsonOutput.toJson([broken: false, actionList: ["1", "2", "3", "4", "5"]])
+        }
+
+        when:
+        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
+
+        then:
+        result.ok == true
+        result.structuralIssues == [] || result.structuralIssues?.isEmpty()
+    }
+
+    def "hub_get_rule_health still flags the outer IF when a UI-built rule is genuinely missing its last END-IF"() {
+        given:
+        enableReadOnly()
+        // The nested UI-built rule above with the outermost END-IF row gone.
+        def settings = ifStructureSettings([
+            [idx: 2,  actType: "condActs",   actSubType: "getIfThen"],
+            [idx: 3,  actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 4,                         actSubType: "getElse"],
+            [idx: 7,  actType: "condActs",   actSubType: "getIfThen"],
+            [idx: 8,  actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 11, actType: "modeActs",   actSubType: "getSetVariable"],
+            [idx: 12,                        actSubType: "getElse"],
+            [idx: 13, actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 14, actType: "modeActs",   actSubType: "getSetVariable"],
+            [idx: 15,                        actSubType: "getEndIf"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "UI Built Unclosed", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+
+        when:
+        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
+
+        then: "exactly one issue, naming the OUTER IF — the inner IF is closed by the surviving END-IF"
+        result.ok == false
+        result.structuralIssues.size() == 1
+        result.structuralIssues[0].toString().contains("action 2")
+        result.structuralIssues[0].toString().contains("never closed")
+    }
+
+    def "hub_get_rule_health flags a UI-built orphaned END-IF that has no actType"() {
+        given:
+        enableReadOnly()
+        def settings = ifStructureSettings([
+            [idx: 1, actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 2,                        actSubType: "getEndIf"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "UI Built Orphan", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+
+        when:
+        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
+
+        then:
+        result.ok == false
+        result.structuralIssues.any { it.toString().contains("orphaned closer") }
+        result.structuralIssues.any { it.toString().contains("action 2") }
+    }
+
+    // A rule's settings outlive its actions: an interrupted write or a removed action
+    // can leave a fully-populated row behind. Structure is a property of the RULE, so
+    // the walk is scoped to the compiled action list and those leftovers are reported
+    // on their own instead of being walked as if they were part of the block nesting.
+
+    private String ruleBuilderJsonWithActionList(List actionList) {
+        JsonOutput.toJson([broken: false, actionList: actionList])
+    }
+
+    def "hub_get_rule_health ignores a stale settings row that is not one of the rule's actions"() {
+        given: "a balanced rule whose settings also carry a stale IF and three blanked rows"
+        enableReadOnly()
+        def settings = ifStructureSettings([
+            [idx: 1,  actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 3,                         actSubType: ""],
+            [idx: 6,  actType: "condActs",   actSubType: "getIfThen"],
+            [idx: 8,  actType: "modeActs",   actSubType: "getSetVariable"],
+            [idx: 10, actType: "",           actSubType: ""],
+            [idx: 12, actType: "condActs",   actSubType: "getIfThen"],
+            [idx: 13, actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 14,                        actSubType: "getElse"],
+            [idx: 15, actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 16,                        actSubType: "getEndIf"],
+            [idx: 17, actType: "",           actSubType: ""]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Stale Row", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+        // 3, 6, 10 and 17 are in settings but NOT in the rule.
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            ruleBuilderJsonWithActionList(["1", "8", "12", "13", "14", "15", "16"])
+        }
+
+        when:
+        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
+
+        then: "the stale IF at 6 is not walked, so the rule reads balanced"
+        result.structuralIssues == [] || result.structuralIssues?.isEmpty()
+        !result.issues.any { it.toString().contains("action 6") }
+        result.ok == true
+
+        and: "it is still surfaced — as a leftover row, not as an imbalance"
+        result.orphanedActionRows.any { it.toString().contains("action 6") }
+        result.orphanedActionRows.any { it.toString().contains("getIfThen") }
+
+        and: "rows blank on both keys are vestigial, not leftovers"
+        !result.orphanedActionRows.any { it.toString().contains("action 10") }
+        !result.orphanedActionRows.any { it.toString().contains("action 17") }
+    }
+
+    def "hub_get_rule_health walks a stale row when the rule's action list cannot be read"() {
+        given: "the same settings, but no compiled action list to scope membership"
+        enableReadOnly()
+        def settings = ifStructureSettings([
+            [idx: 1,  actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 6,  actType: "condActs",   actSubType: "getIfThen"],
+            [idx: 12, actType: "condActs",   actSubType: "getIfThen"],
+            [idx: 13, actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 16,                        actSubType: "getEndIf"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "No Action List", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+
+        when:
+        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
+
+        then: "the fallback cannot tell a leftover from a live row, so it walks it"
+        result.structuralIssues.any { it.toString().contains("action 6") }
+
+        and: "and it reports no leftovers, because membership is unknown"
+        result.orphanedActionRows == [] || result.orphanedActionRows?.isEmpty()
+    }
+
+    def "hub_get_rule_health still flags a genuine missing END-IF when the action list is present"() {
+        given: "an unclosed IF that IS one of the rule's actions"
+        enableReadOnly()
+        def settings = ifStructureSettings([
+            [idx: 1, actType: "condActs",   actSubType: "getIfThen"],
+            [idx: 2, actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 3,                        actSubType: "getElse"],
+            [idx: 4, actType: "switchActs", actSubType: "getOnOffSwitch"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Unclosed In Rule", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            ruleBuilderJsonWithActionList(["1", "2", "3", "4"])
+        }
+
+        when:
+        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
+
+        then: "membership scoping does not blind the walker to real damage"
+        result.ok == false
+        result.structuralIssues.size() == 1
+        result.structuralIssues[0].toString().contains("action 1")
+        result.structuralIssues[0].toString().contains("never closed")
+    }
+
+    def "hub_get_rule_health keeps the half-commit diagnostic for a row the rule does contain"() {
+        given: "actType committed, actSubType empty, on an index the rule lists"
+        enableReadOnly()
+        def settings = ifStructureSettings([
+            [idx: 1, actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 2, actType: "condActs",   actSubType: ""]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "In Rule Half", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+        hubGet.register('/app/ruleBuilderJson/100') { params -> ruleBuilderJsonWithActionList(["1", "2"]) }
+
+        when:
+        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
+
+        then: "a half-written row INSIDE the rule is still an opaque block boundary"
+        result.structuralIssues.size() == 1
+        result.structuralIssues[0].toString().contains("partial-commit state")
+        result.orphanedActionRows == [] || result.orphanedActionRows?.isEmpty()
+    }
+
+    def "hub_get_rule_health reports a half-written row outside the rule as a leftover, not an imbalance"() {
+        given: "the same half-written shape on an index the rule does NOT list"
+        enableReadOnly()
+        def settings = ifStructureSettings([
+            [idx: 1, actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 2, actType: "condActs",   actSubType: ""]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Out Of Rule Half", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+        hubGet.register('/app/ruleBuilderJson/100') { params -> ruleBuilderJsonWithActionList(["1"]) }
+
+        when:
+        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
+
+        then: "the detection survives, moved to the non-gating field"
+        result.structuralIssues == [] || result.structuralIssues?.isEmpty()
+        result.orphanedActionRows.any { it.toString().contains("action 2") }
+        result.orphanedActionRows.any { it.toString().contains("condActs") }
+        result.ok == true
+    }
+
+    def "hub_get_rule_health still reports a half-committed action whose actType landed without its actSubType"() {
+        given:
+        enableReadOnly()
+        // The reverse half-pair of the UI shape: actType committed, actSubType
+        // left empty by an interrupted wizard write. Still a partial commit.
+        def settings = ifStructureSettings([
+            [idx: 1, actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 2, actType: "condActs",   actSubType: ""]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Half Committed", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+
+        when:
+        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
+
+        then:
+        result.ok == false
+        result.structuralIssues.size() == 1
+        result.structuralIssues[0].toString().contains("action 2")
+        result.structuralIssues[0].toString().contains("partial-commit state")
+    }
+
+    // The settings fallback shares the UI-shape blind spot: an actType-only scan cannot
+    // see an ELSE / END-IF row that RM's UI stored with actSubType alone. The tests in
+    // this cluster register no ruleBuilderJson, so the compiled tier reads as
+    // unavailable and the settings scan answers.
+
+    def "collectActionIndices tier 2 discovers a UI-built row that carries only actSubType"() {
+        given: "no statusJson.actions map, so the appSettings fallback runs"
+        def settings = ifStructureSettings([
+            [idx: 1, actType: "condActs",   actSubType: "getIfThen"],
+            [idx: 2, actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 3,                        actSubType: "getElse"],
+            [idx: 4, actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 5,                        actSubType: "getEndIf"]
+        ])
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+
+        expect: "the ELSE at 3 and the END-IF at 5 are visible despite carrying no actType"
+        script._rmCollectActionIndices(100) == [1, 2, 3, 4, 5]
+    }
+
+    def "collectActionIndices tier 2 emits one entry per action, not one per settings key"() {
+        given: "nine actions, most carrying both keys and every third carrying only a subtype"
+        def rows = (1..9).collect { n ->
+            (n % 3 == 0) ? [idx: n, actSubType: "getEndIf"]
+                         : [idx: n, actType: "switchActs", actSubType: "getOnOffSwitch"]
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, ifStructureSettings(rows)) }
+
+        expect: "the actType/actSubType pair collapses to a single index, no duplicates"
+        script._rmCollectActionIndices(100) == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    }
+
+    def "collectActionIndices tier 2 keeps the served order for indices spanning two digits"() {
+        given: "a UI-shaped rule whose indices straddle 10, served in lexical name order"
+        // Lexical is one plausible serialization ('actSubType.' sorts ahead of
+        // 'actType.', and '.11' ahead of '.2'). Whichever order the hub really
+        // uses, this path must hand it back untouched.
+        def settings = ifStructureSettings([
+            [idx: 2,  actType: "condActs",   actSubType: "getIfThen"],
+            [idx: 3,  actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 4,                         actSubType: "getElse"],
+            [idx: 7,  actType: "condActs",   actSubType: "getIfThen"],
+            [idx: 8,  actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 11, actType: "modeActs",   actSubType: "getSetVariable"],
+            [idx: 12,                        actSubType: "getElse"],
+            [idx: 13, actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 14, actType: "modeActs",   actSubType: "getSetVariable"],
+            [idx: 15,                        actSubType: "getEndIf"],
+            [idx: 16,                        actSubType: "getEndIf"]
+        ]).sort { it.name }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+
+        expect: "served order, NOT re-ranked numerically — and 4, 12, 15, 16 carry no actType"
+        script._rmCollectActionIndices(100) == [11, 12, 13, 14, 15, 16, 2, 3, 4, 7, 8]
+    }
+
+    def "collectActionIndices tier 2 preserves an arbitrary served order"() {
+        given: "rows served in neither numeric nor lexical order, one carrying only a subtype"
+        // The order-sensitive consumers (_rmMoveAction's position-shift check,
+        // _rmModifyAction's walk-back) read this list positionally, so whatever
+        // the hub sent must survive the scan.
+        def settings = ifStructureSettings([
+            [idx: 5, actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 1, actType: "condActs",   actSubType: "getIfThen"],
+            [idx: 4,                        actSubType: "getElse"],
+            [idx: 2, actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 3, actType: "modeActs",   actSubType: "getSetVariable"]
+        ])
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+
+        expect:
+        script._rmCollectActionIndices(100) == [5, 1, 4, 2, 3]
+    }
+
+    def "collectActionIndices tier 1 returns the actionList array in its own order"() {
+        given: "an actionList deliberately not in numeric order"
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            JsonOutput.toJson([broken: false, actionList: ["11", "2", "7", "4"]])
+        }
+        // Deliberately disagrees with actionList: were the settings consulted the
+        // answer would differ, so the assertion proves the compiled tier answered.
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, ifStructureSettings([[idx: 1, actType: "switchActs", actSubType: "getOnOffSwitch"]]))
+        }
+
+        expect: "RM's display order, not re-sorted"
+        script._rmCollectActionIndices(100) == [11, 2, 7, 4]
+    }
+
+    def "collectActionIndices falls back to the settings scan when actionList is absent"() {
+        given: "a compiled state that answers but carries no actionList"
+        hubGet.register('/app/ruleBuilderJson/100') { params -> JsonOutput.toJson([broken: false]) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, ifStructureSettings([
+                [idx: 1, actType: "condActs",   actSubType: "getIfThen"],
+                [idx: 2, actType: "switchActs", actSubType: "getOnOffSwitch"],
+                [idx: 3,                        actSubType: "getEndIf"]
+            ]))
+        }
+
+        expect:
+        script._rmCollectActionIndices(100) == [1, 2, 3]
+    }
+
+    def "a UI-built closer is discovered by the actionList tier and by the settings tier"() {
+        given:
+        def settings = ifStructureSettings([
+            [idx: 1, actType: "condActs",   actSubType: "getIfThen"],
+            [idx: 2, actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 3,                        actSubType: "getElse"],
+            [idx: 4, actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 5,                        actSubType: "getEndIf"]
+        ])
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            JsonOutput.toJson([broken: false, actionList: ["1", "2", "3", "4", "5"]])
+        }
+
+        when: "the compiled tier answers"
+        def fromActionList = script._rmCollectActionIndices(100)
+
+        and: "actionList goes away, so the settings tier answers"
+        hubGet.register('/app/ruleBuilderJson/100') { params -> JsonOutput.toJson([broken: false]) }
+        def fromSettings = script._rmCollectActionIndices(100)
+
+        then: "the ELSE at 3 and the END-IF at 5 are present either way"
+        fromActionList == [1, 2, 3, 4, 5]
+        fromSettings == [1, 2, 3, 4, 5]
+    }
+
+    def "removeAction deletes a UI-built ELSE row that carries only actSubType"() {
+        given: "IF / leaf / ELSE / leaf / END-IF where ELSE and END-IF have no actType"
+        enableWrite()
+        // Removing the ELSE leaves IF/END-IF balanced, so the structural pre-flight
+        // permits it — this exercises discovery and post-click verification, not refusal.
+        def liveRows = [
+            [idx: 1, actType: "condActs",   actSubType: "getIfThen"],
+            [idx: 2, actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 3,                        actSubType: "getElse"],
+            [idx: 4, actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 5,                        actSubType: "getEndIf"]
+        ]
+        def delActFired = false
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "UI Built Delete", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            def rows = delActFired ? liveRows.findAll { it.idx != 3 } : liveRows
+            statusJson(100, ifStructureSettings(rows))
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.get("stateAttribute") == "delAct") delActFired = true
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, removeAction: [index: 3], confirm: true])
+
+        then: "the row was found, the click fired, and its disappearance was detected as landed"
+        result.success == true
+        delActFired
+        result.removedIndices?.contains(3) || result.note?.contains("Removed action 3")
+
+        and: "both index sources agree the UI-shaped rows exist"
+        result.beforeIndices == [1, 2, 3, 4, 5]
+        result.afterIndices == [1, 2, 4, 5]
     }
 
     // ---------- clone / export / hub_import_native_app (appCloner trio) ----------
@@ -39685,27 +40179,27 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         given:
         enableWrite()
         def clickFired = false
-        def beforeActionsMap = ["1": "Switch On", "2": "Delay", "3": "Switch Off"]
-        def afterActionsMap  = ["2": "Delay", "1": "Switch On", "3": "Switch Off"]
-        def makeStatus = { Map actMap ->
-            JsonOutput.toJson([
-                installedApp: [id: 100],
-                appSettings: [
-                    [name: "actType.1", value: "switchActs"],
-                    [name: "actType.2", value: "delayActs"],
-                    [name: "actType.3", value: "switchActs"]
-                ],
-                eventSubscriptions: [[name: "evt1"]],
-                scheduledJobs: [],
-                appState: [:],
-                actions: actMap,
-                childAppCount: 0, childDeviceCount: 0
-            ])
-        }
+        def beforeOrder = ["1", "2", "3"]
+        def afterOrder  = ["2", "1", "3"]
+        // appSettings key order carries no display information, so it stays static;
+        // only actionList reorders.
+        def statusBody = JsonOutput.toJson([
+            installedApp: [id: 100],
+            appSettings: [
+                [name: "actType.1", value: "switchActs"],
+                [name: "actType.2", value: "delayActs"],
+                [name: "actType.3", value: "switchActs"]
+            ],
+            eventSubscriptions: [[name: "evt1"]],
+            scheduledJobs: [],
+            appState: [:],
+            childAppCount: 0, childDeviceCount: 0
+        ])
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
-        hubGet.register('/installedapp/statusJson/100') { params ->
-            clickFired ? makeStatus(afterActionsMap) : makeStatus(beforeActionsMap)
+        hubGet.register('/installedapp/statusJson/100') { params -> statusBody }
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            JsonOutput.toJson([broken: false, actionList: (clickFired ? afterOrder : beforeOrder)])
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
