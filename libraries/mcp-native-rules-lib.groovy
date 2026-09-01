@@ -4199,6 +4199,21 @@ private List _rmCollectActionIndices(Integer appId) {
 // observed in live-hub runs; on retry exhaustion the throw directs the
 // caller to verify via hub_get_app_config since the deletion may complete
 // post-response. See source comment below for the original race description.
+// True only when /installedapp/json/<id> positively reports disabled. An unreadable or
+// unparseable response returns false: a transient read failure must not block an add that
+// would otherwise work, and the wizard's own error still catches the disabled case downstream.
+private boolean _rmIsAppDisabled(Integer appId) {
+    try {
+        def txt = hubInternalGet("/installedapp/json/${appId}")
+        if (!txt) return false
+        def parsed = new groovy.json.JsonSlurper().parseText(txt)
+        return (parsed instanceof Map) && parsed.disabled == true
+    } catch (Exception e) {
+        mcpLog("debug", "rm-native", "_rmIsAppDisabled(${appId}): read failed (${e.message}) -- treating as enabled")
+        return false
+    }
+}
+
 private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
     // Single statusJson fetch shared by all three pre-flight checks below;
     // before the refactor each helper (_rmCollectActionIndices,
@@ -5536,6 +5551,16 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     // action — each capability's branch validates as needed.
 
     _rmValidateRoundZeroActionSpec(actionSpec)
+
+    // Pre-flight: a DISABLED rule renders its classic wizard pages EMPTY, so any page-walking
+    // add fails partway through with an opaque schema error (verified live: the same addAction
+    // succeeds on a rule, fails on that same rule disabled, and succeeds again once re-enabled).
+    // Refuse up front with the remedy instead, so no backup is taken and no condition slot is
+    // left half-open. Read the flag from the app list rather than the config page -- the config
+    // page is exactly what goes empty.
+    if (_rmIsAppDisabled(appId)) {
+        throw new IllegalArgumentException("addAction blocked: rule ${appId} is DISABLED, and Rule Machine serves empty wizard pages for a disabled app, so the action cannot be built. Re-enable it first with hub_set_app_disabled(appId=${appId}, disabled=false), add the action, then disable it again if you want it parked. RM is not touched.")
+    }
 
     // Pre-flight: refuse closers (endIf / stopRepeat) and orphan branch
     // keywords (elseIf / else) that would render as orphaned because they

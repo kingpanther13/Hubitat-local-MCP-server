@@ -4732,6 +4732,43 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.partial == false
     }
 
+    // A DISABLED rule serves EMPTY classic wizard pages, so a page-walking add used to fail
+    // partway through with an opaque "rCapab_<N> not in doActPage schema" -- after taking a
+    // backup and leaving a condition slot open. Verified live: the same add succeeds on a rule,
+    // fails on that same rule disabled, and succeeds again once re-enabled.
+    def "addAction on a DISABLED rule is refused up front with the re-enable remedy"() {
+        given:
+        hubGet.register('/installedapp/json/100') { params ->
+            JsonOutput.toJson([id: 100, name: "Rule-5.1", type: "Rule-5.1", disabled: true])
+        }
+
+        when:
+        script._rmAddAction(100, [capability: "ifThen",
+                                  expression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]]])
+
+        then: "refused before any wizard write, naming the flag and the fix"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("is DISABLED")
+        ex.message.contains("hub_set_app_disabled")
+        ex.message.contains("RM is not touched")
+    }
+
+    def "addAction is NOT blocked when the disabled read-back says enabled or is unreadable"() {
+        given: "an unreadable flag must not block an add that would otherwise work"
+        hubGet.register('/installedapp/json/100') { params -> body }
+
+        when:
+        script._rmAddAction(100, [capability: "ifThen",
+                                  expression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]]])
+
+        then: "it proceeds past the disabled gate (failing later on the unstubbed wizard, not on the flag)"
+        def ex = thrown(Exception)
+        !ex.message?.contains("is DISABLED")
+
+        where:
+        body << ['{"id":100,"disabled":false}', '{"id":100}', 'not json', '']
+    }
+
     def "addAction #cap with a top-level conditions array (no expression wrapper) is rejected naming the expression shape"() {
         // Fail-loud parity: the condition-bearing action subtypes read their conditions from
         // expression:{conditions:[...]}; a flat top-level conditions array is never consumed.
