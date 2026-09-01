@@ -7988,13 +7988,17 @@ class TestRunner:
             if fmt == "classic":
                 trigger_node = (got.get("whenNodes") or [None])[0]
             else:
+                # Graph nodes carry the category in `kind`; `type` is the variety ("switch").
                 trigger_node = next(
                     (n for n in (got.get("definition") or {}).get("nodes", [])
-                     if n.get("type") == "trigger"), None)
+                     if n.get("kind") == "trigger"), None)
             assert isinstance(trigger_node, dict), \
                 f"no trigger node in the {fmt} read-back: {got}"
-            assert int(switch_id) in (trigger_node.get("deviceIds") or []), \
-                f"trigger device {switch_id} not in the trigger node's deviceIds: {trigger_node}"
+            # Classic keeps device ids on the node; graph moves them into config.switches.
+            trigger_devices = (trigger_node.get("deviceIds")
+                               or (trigger_node.get("config") or {}).get("switches") or [])
+            assert int(switch_id) in trigger_devices, \
+                f"trigger device {switch_id} not on the trigger node: {trigger_node}"
 
             # HEALTH on a Visual Rule (issue #254): hub_get_rule_health must NOT reject a VRB
             # rule -- it reports the engine-native verdict. ruleFormat identifies which engine
@@ -8237,13 +8241,17 @@ class TestRunner:
             if fmt == "classic":
                 trigger_node = (got.get("whenNodes") or [None])[0]
             else:
+                # Graph nodes carry the category in `kind`; `type` is the variety ("switch").
                 trigger_node = next(
                     (n for n in (got.get("definition") or {}).get("nodes", [])
-                     if n.get("type") == "trigger"), None)
+                     if n.get("kind") == "trigger"), None)
             assert isinstance(trigger_node, dict), \
                 f"no trigger node in the restored {fmt} read-back: {got}"
-            assert int(switch_id) in (trigger_node.get("deviceIds") or []), \
-                f"trigger device {switch_id} not in the restored trigger node's deviceIds: {trigger_node}"
+            # Classic keeps device ids on the node; graph moves them into config.switches.
+            trigger_devices = (trigger_node.get("deviceIds")
+                               or (trigger_node.get("config") or {}).get("switches") or [])
+            assert int(switch_id) in trigger_devices, \
+                f"trigger device {switch_id} not on the restored trigger node: {trigger_node}"
         finally:
             # Cleanup the RESTORED rule (the original is already gone). Same delete
             # contract + untrack-after-gone-assert discipline as the lifecycle test.
