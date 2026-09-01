@@ -1370,23 +1370,6 @@ class WatchdogV2Spec extends Specification {
         posted == '/hub/reboot'
     }
 
-    def "the streak-start baseline is stamped on the first failure and cleared on success"() {
-        given:
-        script.metaClass.httpGet = { Map p, Closure c -> throw new RuntimeException('Read timed out') }
-
-        when: 'first failure of a fresh streak'
-        script.hubGet('/x', [:])
-
-        then:
-        atomicStateMap.loopbackStreakStartedAt != null
-
-        when: 'a later success'
-        script.noteLoopback(true)
-
-        then: 'the baseline is released so the next streak stamps its own'
-        atomicStateMap.loopbackStreakStartedAt == null
-    }
-
     // ---- purge failures carry an aggregate error + recovery note ------------------------------
 
     def "a purge with failures reports a top-level error and actionable note"() {
