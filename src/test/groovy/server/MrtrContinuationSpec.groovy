@@ -959,8 +959,8 @@ class MrtrContinuationSpec extends ToolSpecBase {
         given:
         script.metaClass._isCloudRequest = { -> true }
 
-        expect:
-        script._mrtrContentionWaitMs() == 4000L
+        expect: 'half of the 7000ms default'
+        script._mrtrContentionWaitMs() == 3500L
 
         when:
         settingsMap.relayBudgetMs = 3000
@@ -982,7 +982,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         script._mrtrScheduleObserveWaitMs('hub_set_native_app') == 3500L
 
         and: 'synchronous slices retain half their request budget for actual leaf work'
-        script._mrtrContentionWaitMs('hub_call_rule') == 4000L
+        script._mrtrContentionWaitMs('hub_call_rule') == 3500L
 
         when: 'an operator configures a smaller cloud leg budget'
         settingsMap.relayBudgetMs = 5000
