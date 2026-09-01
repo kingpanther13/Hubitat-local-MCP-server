@@ -1295,4 +1295,122 @@ class WatchdogV2Spec extends Specification {
         rb.annotations.openWorldHint == false
     }
 
+
+    // ---- served errors are not a wedge -------------------------------------------------------
+    // Hubitat's httpGet/httpPost THROW on 4xx/5xx, so the catch-all counted an ANSWERED error as a
+    // loopback failure. That inflated the wedge streak on a healthy hub and could auto-reboot it.
+
+    def "an answered 4xx/5xx does not count toward the wedge streak (#code)"() {
+        given:
+        atomicStateMap.loopbackFailStreak = 3
+        def err = new RuntimeException('boom')
+        err.metaClass.getResponse = { -> [status: code] }
+        script.metaClass.httpGet = { Map p, Closure c -> throw err }
+
+        when:
+        script.hubGet('/some/path', [:])
+
+        then: "the hub served us, so the streak is reset rather than advanced"
+        atomicStateMap.loopbackFailStreak == 0
+
+        where:
+        code << [404, 500]
+    }
+
+    def "a real transport failure (no response) does advance the wedge streak"() {
+        given:
+        atomicStateMap.loopbackFailStreak = 3
+        script.metaClass.httpGet = { Map p, Closure c -> throw new RuntimeException('Read timed out') }
+
+        when:
+        script.hubGet('/some/path', [:])
+
+        then:
+        atomicStateMap.loopbackFailStreak == 4
+    }
+
+    def "hubPostForm keeps the status off a thrown error response"() {
+        given:
+        def err = new RuntimeException('boom')
+        err.metaClass.getResponse = { -> [status: 500] }
+        script.metaClass.httpPost = { Map p, Closure c -> throw err }
+
+        when:
+        def out = script.hubPostForm('/installedapp/btn', [:])
+
+        then: "the caller sees the status instead of a null that reads as a transport failure"
+        out.status == 500
+        atomicStateMap.loopbackFailStreak == 0
+    }
+
+    // ---- the escape must work on a hub that was ALREADY wedged at startup ---------------------
+
+    def "a watchdog that has never had a successful loopback call can still detect a wedge"() {
+        given: "no loopbackLastOkAt at all -- the hub was wedged before this app ever ran"
+        atomicStateMap.loopbackFailStreak = 12
+        atomicStateMap.loopbackLastOkAt = null
+        atomicStateMap.loopbackStreakStartedAt = System.currentTimeMillis() - 300_000L
+        String posted = null
+        script.metaClass.readFlag = { -> null }
+        script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+
+        when:
+        script.checkDeadman()
+
+        then: "the streak-start timestamp is the baseline, so the escape still fires"
+        posted == '/hub/reboot'
+    }
+
+    def "the streak-start baseline is stamped on the first failure and cleared on success"() {
+        given:
+        script.metaClass.httpGet = { Map p, Closure c -> throw new RuntimeException('Read timed out') }
+
+        when: 'first failure of a fresh streak'
+        script.hubGet('/x', [:])
+
+        then:
+        atomicStateMap.loopbackStreakStartedAt != null
+
+        when: 'a later success'
+        script.noteLoopback(true)
+
+        then: 'the baseline is released so the next streak stamps its own'
+        atomicStateMap.loopbackStreakStartedAt == null
+    }
+
+    // ---- purge failures carry an aggregate error + recovery note ------------------------------
+
+    def "a purge with failures reports a top-level error and actionable note"() {
+        given: "one variable the wizard will not remove"
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+        script.metaClass.hubGetStatus = { String p, Map q ->
+            [status: 302, location: '/installedapp/configure/9001', data: null]
+        }
+        script.metaClass.hubPostForm = { String p, Map b -> [status: 200, data: 'ok'] }
+        script.metaClass.pauseExecution = { long ms -> }
+        script.metaClass.getAllGlobalVars = { -> [BAT_E2E_stuck: [value: 1]] }
+        script.metaClass.getGlobalVar = { String n -> [value: 1] }   // never goes away
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then: "a caller must not have to diff count fields to notice the sweep failed"
+        res.success == false
+        res.error?.contains('1 variable(s)')
+        res.note?.contains('Do NOT blind-retry')
+    }
+
+    def "a clean purge carries no error field"() {
+        given:
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+        script.metaClass.getAllGlobalVars = { -> [:] }
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then:
+        res.success == true
+        res.error == null
+    }
+
 }

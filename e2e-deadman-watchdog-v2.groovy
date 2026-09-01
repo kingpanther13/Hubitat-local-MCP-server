@@ -1227,11 +1227,30 @@ def adminPurgeE2eArtifacts(args) {
         mcpAdminLog "Purge result served from cache (${((nowMs - cachedAt) / 1000) as long}s old)."
         return cached
     }
+    // WRITE-THEN-VERIFY claim. The check above is a read, so two requests arriving together can
+    // both pass it; atomicState offers no compare-and-set. Stamp a unique claim, then re-read it --
+    // the loser sees another request's claim and yields. Same optimistic-lock shape the main server
+    // uses for its write leases (claimId in hubitat-mcp-server.groovy).
+    //
+    // NOT solved with definition(singleThreaded: true): that serialises the mapped /mcp endpoint
+    // WITH the dead-man timer, so a multi-minute purge would block checkDeadman -- disabling the
+    // wedge escape during exactly the incident it exists for. Narrow the window instead of
+    // trading it for a stalled watchdog.
+    String claim = "purge-${java.util.UUID.randomUUID()}".toString()
     atomicState.purgeInFlightAt = nowMs
+    atomicState.purgeClaim = claim
+    if (atomicState.purgeClaim?.toString() != claim) {
+        mcpAdminLog "Purge claim lost to a concurrent request -- yielding rather than sweeping twice."
+        return [success: true, inFlight: true, prefix: prefix,
+                deletedCount: 0, failedCount: 0, deleted: [], failed: [],
+                variablesDeletedCount: 0, variablesFailedCount: 0, variablesDeleted: [], variablesFailed: [],
+                note: "A concurrent purge for the same prefix won the claim; this call was a no-op. Do NOT retry."]
+    }
     try {
         return purgeE2eArtifactsLocked(prefix)
     } finally {
         atomicState.purgeInFlightAt = null
+        if (atomicState.purgeClaim?.toString() == claim) atomicState.purgeClaim = null
     }
 }
 
@@ -1287,11 +1306,21 @@ private Map purgeE2eArtifactsLocked(String prefix) {
     }
     mcpAdminLog "Purge complete: ${deleted.size()} app(s), ${varsDeleted.size()} variable(s) deleted; " +
                 "${failed.size()} app + ${varsFailed.size()} var failure(s)."
+    // Runtime-failure contract: a caller must not have to diff two count fields to notice the
+    // sweep failed. Aggregate what broke into a top-level error + an actionable note.
+    def problems = []
+    if (!failed.isEmpty()) problems << "${failed.size()} app(s)"
+    if (!varsFailed.isEmpty()) problems << "${varsFailed.size()} variable(s)"
+    def deviceNote = "Virtual DEVICES are NOT purged here (they are child devices of the main app and the hub's admin device-delete endpoint is not yet mirrored into the watchdog); the post-restore --cleanup-only sweep still reaps ${prefix} devices."
     def result = [success: failed.isEmpty() && varsFailed.isEmpty(), prefix: prefix,
             deletedCount: deleted.size(), failedCount: failed.size(), deleted: deleted, failed: failed,
             variablesDeletedCount: varsDeleted.size(), variablesFailedCount: varsFailed.size(),
             variablesDeleted: varsDeleted, variablesFailed: varsFailed,
-            note: "Virtual DEVICES are NOT purged here (they are child devices of the main app and the hub's admin device-delete endpoint is not yet mirrored into the watchdog); the post-restore --cleanup-only sweep still reaps BAT_E2E_ devices."]
+            note: deviceNote]
+    if (problems) {
+        result.error = "Purge of ${prefix}* completed with failures: ${problems.join(' and ')} could not be removed."
+        result.note = "Inspect the failed / variablesFailed entries for the per-item reason. A variable that will not delete is usually still referenced by a rule -- delete the rule first. Do NOT blind-retry the sweep; re-run it only after addressing the listed items. ${deviceNote}"
+    }
     // Cache BEFORE returning so a CI retry that lost the response to a relay drop reads the real
     // outcome rather than re-running the sweep.
     try { atomicState.purgeResult = result; atomicState.purgeResultAt = now() } catch (Exception ignore) { }
@@ -2053,8 +2082,23 @@ String hubGet(String path, Map query, int timeoutSec = 30) {
     if (cookie) params.headers = [Cookie: cookie]
     String out = null
     try { httpGet(params) { resp -> out = respText(resp) }; noteLoopback(true) }
-    catch (Exception e) { noteLoopback(false); log.error "hubGet ${path}: ${e.message}" }
+    catch (Exception e) {
+        // A 4xx/5xx THROWS here, but the hub answered -- that is a served response, not a dead web
+        // stack. Counting it as a loopback failure would inflate the wedge streak on a perfectly
+        // responsive hub (e.g. a probe for a file that does not exist) and could auto-reboot it.
+        noteLoopback(httpStatusOf(e) != null)
+        log.error "hubGet ${path}: ${e.message}"
+    }
     return out
+}
+
+// The response status carried on a thrown Hubitat HTTP exception, or null on a real transport
+// failure. Mirrors the e.response.status capture hubGetStatus already does.
+private Integer httpStatusOf(Exception e) {
+    try {
+        def resp = e.response
+        return resp?.status as Integer
+    } catch (Exception ignore) { return null }
 }
 
 // ---- wedge detection ------------------------------------------------------
@@ -2069,9 +2113,14 @@ private void noteLoopback(boolean ok) {
     try {
         if (ok) {
             atomicState.loopbackFailStreak = 0
+            atomicState.loopbackStreakStartedAt = null
             atomicState.loopbackLastOkAt = now()
         } else {
-            atomicState.loopbackFailStreak = ((atomicState.loopbackFailStreak ?: 0) as int) + 1
+            int prior = (atomicState.loopbackFailStreak ?: 0) as int
+            // Stamp when THIS streak began so hubLooksWedged has a baseline even if the watchdog
+            // has never seen a successful loopback call.
+            if (prior == 0) atomicState.loopbackStreakStartedAt = now()
+            atomicState.loopbackFailStreak = prior + 1
         }
     } catch (Exception ignore) { /* never let bookkeeping break a hub call */ }
 }
@@ -2083,10 +2132,14 @@ private void noteLoopback(boolean ok) {
 private boolean hubLooksWedged() {
     try {
         int streak = (atomicState.loopbackFailStreak ?: 0) as int
-        Long lastOk = atomicState.loopbackLastOkAt as Long
         if (streak < 8) return false
-        if (lastOk == null) return false
-        return (now() - lastOk) > 240000L
+        // Fall back to the FIRST failure of the current streak when there has never been a success.
+        // A hub already wedged when the watchdog started (or restarted into a wedged hub) has no
+        // lastOk at all -- returning false there disabled the escape in exactly the case it exists
+        // for, leaving the app to tick silently forever the way it did on 2026-09-01.
+        Long baseline = (atomicState.loopbackLastOkAt ?: atomicState.loopbackStreakStartedAt) as Long
+        if (baseline == null) return false
+        return (now() - baseline) > 240000L
     } catch (Exception ignore) { return false }
 }
 
@@ -2157,7 +2210,13 @@ Map hubPostForm(String path, Map body) {
     params.headers = headers
     Map out = [status: null, data: null]
     try { httpPost(params) { resp -> out = [status: resp.status, data: respText(resp)] } }
-    catch (Exception e) { log.error "hubPostForm ${path}: ${e.message}" }
+    catch (Exception e) {
+        // Same as hubGet: a thrown 4xx/5xx still means the hub served us. Keep the status so the
+        // caller sees it AND so the wedge streak is not inflated by an answered error.
+        Integer st = httpStatusOf(e)
+        if (st != null) out = [status: st, data: null]
+        log.error "hubPostForm ${path}: ${e.message}"
+    }
     noteLoopback(out.status != null)
     return out
 }
@@ -2174,7 +2233,11 @@ Map hubPostJson(String path, String jsonBody) {
     params.headers = headers
     Map out = [status: null, data: null]
     try { httpPost(params) { resp -> out = [status: resp.status, data: respText(resp)] } }
-    catch (Exception e) { log.error "hubPostJson ${path}: ${e.message}" }
+    catch (Exception e) {
+        Integer st = httpStatusOf(e)
+        if (st != null) out = [status: st, data: null]
+        log.error "hubPostJson ${path}: ${e.message}"
+    }
     noteLoopback(out.status != null)
     return out
 }
