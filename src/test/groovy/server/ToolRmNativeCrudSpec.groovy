@@ -4774,14 +4774,18 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script._rmAddAction(100, [capability: "ifThen",
                                   expression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]]])
 
-        then: "the gate was consulted and let it through"
-        thrown(Exception)
+        then: "it fails somewhere, but NOT on the disabled gate"
+        def ex = thrown(Exception)
+        !(ex.message?.contains("is DISABLED"))
+
+        // Non-vacuity: the gate is only reached after the earlier arg validation, so a read of
+        // /installedapp/json proves execution got PAST that validation and through the gate --
+        // an exception thrown before it would leave this endpoint untouched.
+        and: "the gate itself was consulted and let it through"
         hubGet.calls.any { it.path == '/installedapp/json/100' }
 
-        // Failing downstream in the wizard, not on the gate: an earlier validation error would
-        // leave the selectActions init unattempted, so this would pass vacuously without it.
-        and: "execution reached the wizard"
-        posts.any { it.path?.contains('/installedapp/') }
+        and: "and it wrote nothing on the way out"
+        posts.isEmpty()
 
         where:
         body << ['{"id":100,"disabled":false}', '{"id":100}', 'not json', '']
