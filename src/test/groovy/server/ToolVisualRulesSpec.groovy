@@ -733,11 +733,12 @@ class ToolVisualRulesSpec extends ToolSpecBase {
                        rulePaused: true, promptHistory: []] + classicDefinition()
         hubGet.register('/app/ruleBuilder20Json/48') { params -> GRAPH_NOT_FOUND }
         hubGet.register('/app/ruleBuilderJson/48') { params -> json(state48) }
-        stubPostJson { path, body ->
-            // Resuming clears the decoration, so the read-back name is BARE.
+        // Resume rides its OWN endpoint (a GET), not the save POST, and clearing the pause is what
+        // removes the decoration -- so the read-back name goes BARE here.
+        hubGet.register('/app/ruleBuilderPause/48/false') { params ->
             state48.name = 'BAT_E2E_VisualRuleRenamed'
             state48.rulePaused = false
-            null
+            '{"success":true}'
         }
 
         when: 'resume only -- no name is passed, so requestedName falls back to the pre-write name'
@@ -750,6 +751,9 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.success == true
         result.verified == true
         result.rulePaused == false
+
+        and: 'and it went through the dedicated pause endpoint, not the save POST'
+        hubGet.calls*.path.contains('/app/ruleBuilderPause/48/false')
     }
 
     def "full replacement with paused=true verifies past the decoration"() {
