@@ -2097,14 +2097,21 @@ private boolean hubLooksWedged() {
 def adminRebootHub(args) {
     requireConfirm(args)
     mcpAdminLog "Rebooting the hub (POST /hub/reboot)."
-    try {
-        def resp = hubPostForm("/hub/reboot", [:])
-        return [success: true, message: "Hub reboot initiated; the hub is unreachable for 1-3 minutes.",
-                response: resp?.toString()?.take(200)]
-    } catch (Exception e) {
-        return [success: false, error: "reboot failed: ${e.message}",
-                note: "If loopback HTTP is wedged this call cannot land either -- the hub needs a physical power cycle."]
+    // hubPostForm SWALLOWS transport exceptions and returns [status: null, data: null], so the
+    // status is the ONLY success signal -- a try/catch around it can never fire, and reporting
+    // success unconditionally would make the auto-reboot escape log "rebooted" for a POST that
+    // never landed, which is precisely the case (a wedged web stack) this exists to handle.
+    def resp = hubPostForm("/hub/reboot", [:])
+    Integer st = null
+    try { st = resp?.status as Integer } catch (Exception ignore) { st = null }
+    if (st != null && st >= 200 && st < 400) {
+        return [success: true, status: st,
+                message: "Hub reboot initiated; the hub is unreachable for 1-3 minutes.",
+                response: resp?.data?.toString()?.take(200)]
     }
+    return [success: false, status: st,
+            error: st == null ? "reboot POST got no response from the hub (transport failure)" : "reboot POST returned status ${st}",
+            note: "If loopback HTTP is wedged this call cannot land either -- the hub needs a physical power cycle."]
 }
 
 // Status-aware loopback GET. Unlike hubGet (text body, swallows every exception -> null), this
@@ -2155,6 +2162,8 @@ Map hubPostForm(String path, Map body) {
     return out
 }
 
+// noteLoopback here too: without it a watchdog doing mostly JSON POSTs could accumulate a false
+// failure streak from the other helpers and trip the wedge detector while the hub is answering.
 Map hubPostJson(String path, String jsonBody) {
     def params = [uri: "http://127.0.0.1:8080", path: path, body: jsonBody,
                   requestContentType: "application/json",
@@ -2166,6 +2175,7 @@ Map hubPostJson(String path, String jsonBody) {
     Map out = [status: null, data: null]
     try { httpPost(params) { resp -> out = [status: resp.status, data: respText(resp)] } }
     catch (Exception e) { log.error "hubPostJson ${path}: ${e.message}" }
+    noteLoopback(out.status != null)
     return out
 }
 

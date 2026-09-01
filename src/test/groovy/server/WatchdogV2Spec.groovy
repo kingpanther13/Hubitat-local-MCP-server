@@ -1126,17 +1126,27 @@ class WatchdogV2Spec extends Specification {
         res.success == true
     }
 
-    def "hub_reboot reports a failure rather than claiming a reboot that did not happen"() {
-        given:
-        script.metaClass.hubPostForm = { String p, Map b -> throw new RuntimeException('Read timed out') }
+    def "hub_reboot reports a failure rather than claiming a reboot that did not happen (#scenario)"() {
+        given: "hubPostForm SWALLOWS transport errors and returns status null -- it never throws,"
+        // so the status is the only success signal. An earlier revision wrapped the call in a
+        // try/catch and returned success:true unconditionally: the catch could never fire, and the
+        // auto-reboot escape would have logged a successful reboot for a POST that never landed --
+        // exactly the wedged-web-stack case the escape exists for.
+        script.metaClass.hubPostForm = { String p, Map b -> [status: st, data: null] }
 
         when:
         def res = script.adminRebootHub([confirm: true])
 
         then:
         res.success == false
-        res.error?.contains('Read timed out')
         res.note?.contains('physical power cycle')
+        res.error?.contains(errFragment)
+
+        where:
+        scenario                        | st   | errFragment
+        'transport failure, no status'  | null | 'no response'
+        'hub refused the reboot'        | 500  | '500'
+        'not found'                     | 404  | '404'
     }
 
     // ---- hub-variable purge drives the classic hubVar wizard --------------------------------
