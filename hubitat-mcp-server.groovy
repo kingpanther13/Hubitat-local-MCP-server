@@ -474,8 +474,8 @@ def advancedOverridesPage() {
                   description: "Refuse a new write while this many live write requests are active (default: 2; 1 = fully serial; 0 disables the cap). Reads and read-shaped tool modes do not count; abandoned leases expire automatically.",
                   defaultValue: 2, range: "0..100", required: false
             input "relayBudgetMs", "number", title: "Cloud-relay time budget (ms, 0 = off)",
-                  description: "Pause a slow multi-step write over the cloud relay once this many ms have elapsed (default: 8000, under the ~10s relay ceiling).",
-                  defaultValue: 8000, range: "0..30000", required: false
+                  description: "Pause a slow multi-step write over the cloud relay once this many ms have elapsed (default: 7000). A leg runs to this budget PLUS the step already in flight when it trips, plus relay overhead, so 7000 lands legs near 8.5s -- real headroom under the ~10s relay ceiling.",
+                  defaultValue: 7000, range: "0..30000", required: false
             input "lanBudgetMs", "number", title: "LAN time budget (ms, 0 = off)",
                   description: "Pause a slow multi-step write on a LAN request once this many ms have elapsed (default: 0 = off; set just under your MCP client's request timeout).",
                   defaultValue: 0, range: "0..300000", required: false
@@ -1789,11 +1789,15 @@ def _isCloudRequest() {
     catch (Exception e) { return false }
 }
 
-// Relay time budget in ms. 0 disables self-budgeting; unset defaults to 8000,
+// Relay time budget in ms. 0 disables self-budgeting; unset defaults to 7000. The check
+// fires BETWEEN steps, so an answered leg = budget + the last step it started (1-2s for a
+// wizard POST on a loaded hub) + relay overhead (~0.35s). At 8000 that landed legs at
+// 9.0-9.9s against the ~10s relay ceiling and the e2e proof's 9.5s bound -- no margin, and
+// run 33558883645 crossed it by 0.36s. 7000 puts the same arithmetic near 8.5s.
 // comfortably under the observed relay ceiling. The budget is a setting, never a
 // literal elsewhere -- read it here.
 def _relayBudgetMs() {
-    return settings.relayBudgetMs != null ? (settings.relayBudgetMs as Long) : 8000L
+    return settings.relayBudgetMs != null ? (settings.relayBudgetMs as Long) : 7000L
 }
 
 // LAN time budget in ms. Default 0 = off: LAN has no fixed transport ceiling, so
@@ -9696,7 +9700,7 @@ Every actual write obtains a server-side lease, whether it uses MRTR or complete
 
 Clients negotiated below MCP 2026-07-28 do not understand requestState. They retain the existing `status: "in_progress"` remainder envelope for bounded multi-step writes. Completed steps are already committed; reissue only the returned remaining work. This is a compatibility fallback, not a second polling protocol.
 
-The advanced `relayBudgetMs` setting (default 8000 ms, 0 disables) controls cloud slices. `lanBudgetMs` defaults to 0; set it just below a LAN client's request timeout only when needed.
+The advanced `relayBudgetMs` setting (default 7000 ms, 0 disables) controls cloud slices. `lanBudgetMs` defaults to 0; set it just below a LAN client's request timeout only when needed.
 
 ### Package deployment
 

@@ -28,7 +28,7 @@ import support.ToolSpecBase
  * _timeBudgetExceeded so the pause is deterministic; the composition of that
  * predicate is unit-tested separately with _isCloudRequest stubbed and the
  * harness's fixed clock (now()==1234567890000L). The budget is per-source (issue
- * #351): a cloud request reads relayBudgetMs (default 8000), a LAN request reads
+ * #351): a cloud request reads relayBudgetMs (default 7000), a LAN request reads
  * lanBudgetMs (default 0 = off) -- so with the LAN knob unset, LAN loops keep
  * their pre-#348 shape byte-for-byte, covered by the not-exceeded cases below.
  *
@@ -43,9 +43,9 @@ class RelayBudgetSpec extends ToolSpecBase {
 
     // ---------------- generic budget helpers (main file) ----------------
 
-    def "_relayBudgetMs defaults to 8000 when the setting is unset"() {
+    def "_relayBudgetMs defaults to 7000 when the setting is unset"() {
         expect:
-        script._relayBudgetMs() == 8000L
+        script._relayBudgetMs() == 7000L
     }
 
     def "_relayBudgetMs honours settings.relayBudgetMs"() {
