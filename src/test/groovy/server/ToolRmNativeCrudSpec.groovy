@@ -4778,8 +4778,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         thrown(Exception)
         hubGet.calls.any { it.path == '/installedapp/json/100' }
 
-        and: "it failed downstream in the wizard, not on the disabled gate -- a vacuous pass on an
-              earlier validation error would leave the selectActions init unattempted"
+        // Failing downstream in the wizard, not on the gate: an earlier validation error would
+        // leave the selectActions init unattempted, so this would pass vacuously without it.
+        and: "execution reached the wizard"
         posts.any { it.path?.contains('/installedapp/') }
 
         where:
