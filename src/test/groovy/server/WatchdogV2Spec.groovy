@@ -1258,4 +1258,41 @@ class WatchdogV2Spec extends Specification {
         res.variablesFailed[0].name == 'BAT_E2E_unreadable'
     }
 
+    // ---- annotation completeness ------------------------------------------------------------
+
+    def "every watchdog tool definition carries explicit annotation hints"() {
+        given: "tools/list returns getAdminToolDefinitions() directly, so these reach the wire"
+        def defs = script.getAdminToolDefinitions()
+
+        expect: "no tool may fall back to a client's defaults -- openWorldHint defaults to TRUE when omitted"
+        defs.every { it.annotations != null }
+        defs.every { it.annotations.containsKey('readOnlyHint') }
+        defs.every { it.annotations.containsKey('idempotentHint') }
+        defs.every { it.annotations.containsKey('openWorldHint') }
+
+        and: "destructiveHint is emitted on every write and omitted on reads (spec: only meaningful when readOnlyHint is false)"
+        defs.findAll { it.annotations.readOnlyHint == false }.every { it.annotations.containsKey('destructiveHint') }
+        defs.findAll { it.annotations.readOnlyHint == true }.every { !it.annotations.containsKey('destructiveHint') }
+    }
+
+    def "the tools that reach the open internet are the ones that fetch by URL"() {
+        given: "openWorldHint is an accuracy statement: the hub is the closed-world system"
+        def defs = script.getAdminToolDefinitions()
+
+        expect: "only the importUrl/zip-fetch/platform-download tools leave the hub"
+        (defs.findAll { it.annotations?.openWorldHint == true }*.name as Set) ==
+            ['hub_update_app', 'hub_create_library', 'hub_update_library',
+             'hub_update_platform', 'hub_install_bundle'] as Set
+    }
+
+    def "hub_reboot is declared a destructive write"() {
+        given:
+        def rb = script.getAdminToolDefinitions().find { it.name == 'hub_reboot' }
+
+        expect:
+        rb.annotations.readOnlyHint == false
+        rb.annotations.destructiveHint == true
+        rb.annotations.openWorldHint == false
+    }
+
 }
