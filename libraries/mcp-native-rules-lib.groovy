@@ -8267,8 +8267,12 @@ private List _rmStructuralSequenceFromSpecList(List specList) {
 // caught error message. Both the structured _rmBuildUpdateErrorResponse
 // path and the legacy-flat trigger-mutation catch reuse this so the two
 // surfaces stay word-identical.
-private String _rmPreflightRestoreHint() {
-    "Pre-flight refusal -- RM was not touched; nothing needs to be restored (a pre-flight reject writes nothing -- no backup taken, or one identical to the current rule)."
+private String _rmPreflightRestoreHint(String reason = null) {
+    // The `reason` echo matters: without it the caller sees only this generic sentence beside
+    // the error and has to infer WHY nothing happened. The disabled-rule refusal is the case
+    // that made this obvious -- "RM was not touched" alone reads as a mystery failure.
+    def why = reason ? " Reason: ${reason}" : ""
+    "Pre-flight refusal -- RM was not touched; nothing needs to be restored (a pre-flight reject writes nothing -- no backup taken, or one identical to the current rule).${why}"
 }
 
 // Build the standard error response shape for _applyNativeAppEdit catch
@@ -8291,7 +8295,11 @@ private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, S
     try { health = _rmCheckRuleHealth(appId) } catch (Exception ignored) { /* best effort — never let a health read mask the real error */ }
     def restoreHint
     if (isPreflightRefusal) {
-        restoreHint = _rmPreflightRestoreHint()
+        // Echo the disabled-rule cause specifically: it is the one refusal whose remedy is a
+        // hub setting rather than a change to the caller's arguments, so a caller that reads
+        // only the hint would otherwise never learn a disabled rule cannot be edited at all.
+        restoreHint = _rmPreflightRestoreHint(
+            msgStr.contains("is DISABLED") ? "the rule is disabled, and Hubitat does not allow editing a disabled app -- re-enable it, make the change, then disable it again" : null)
     } else if (wizardStuck) {
         // pageName tells the caller which wizard page the cancelCapab recovery click belongs on
         // (doActPage for addAction, STPage for addRequiredExpression). The wizardStuck markers

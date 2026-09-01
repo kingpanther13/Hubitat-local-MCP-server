@@ -4762,6 +4762,24 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         posts.isEmpty()
     }
 
+    def "the disabled refusal explains itself in the restoreHint, not just the error"() {
+        given: "the envelope path a real caller sees, not the raw throw"
+        settingsMap.enableWrite = true
+        stateMap.lastBackupTimestamp = 1234567890000L
+        hubGet.register('/installedapp/json/100') { params ->
+            JsonOutput.toJson([id: 100, name: "Rule-5.1", type: "Rule-5.1", disabled: true])
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addAction: [capability: "log", message: "x"], confirm: true])
+
+        then: "a caller reading only the hint still learns a disabled rule cannot be edited"
+        result.success == false
+        result.restoreHint.contains("RM was not touched")
+        result.restoreHint.contains("disabled")
+        result.restoreHint.contains("does not allow editing a disabled app")
+    }
+
     def "addAction is NOT blocked when the disabled read-back says enabled or is unreadable"() {
         given: "an unreadable flag must not block an add that would otherwise work"
         def posts = []
