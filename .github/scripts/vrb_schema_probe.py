@@ -70,17 +70,15 @@ def main():
         print("::error::no switch device available")
         return 1
 
-    def node(nid, kind, ntype, cfg):
-        return {"id": nid, "kind": kind, "type": ntype, "config": cfg}
-
-    def graph(trigger_type, merge_type, decision_type, action_type):
+    def graph(decision_type):
         return {
             "version": 1,
             "nodes": [
-                node("t1", "trigger", trigger_type, {"deviceIds": [sw], "switchEvent": "Turns off"}),
-                node("tm", "merge", merge_type, {}),
-                node("d1", "decision", decision_type, {}),
-                node("a1", "action", action_type, {"deviceIds": [sw]}),
+                {"id": "t1", "kind": "trigger", "type": "switch",
+                 "config": {"switches": [sw], "switchEvent": "Turns off"}},
+                {"id": "tm", "kind": "merge", "type": "triggerMerge", "config": {}},
+                {"id": "d1", "kind": "decision", "type": decision_type, "config": {}},
+                {"id": "a1", "kind": "action", "type": "turnOff", "config": {"switches": [sw]}},
             ],
             "edges": [
                 {"from": "t1", "to": "tm", "port": "next"},
@@ -89,17 +87,10 @@ def main():
             ],
         }
 
-    candidates = [
-        ("node-level type: switch / triggerMerge / always / turnOff",
-         graph("switch", "triggerMerge", "always", "turnOff")),
-        ("decision type 'simple'", graph("switch", "triggerMerge", "simple", "turnOff")),
-        ("decision type 'condition'", graph("switch", "triggerMerge", "condition", "turnOff")),
-        ("decision type 'ifThen'", graph("switch", "triggerMerge", "ifThen", "turnOff")),
-        ("action type 'setSwitch'", graph("switch", "triggerMerge", "always", "setSwitch")),
-        ("action type 'device'", graph("switch", "triggerMerge", "always", "device")),
-        ("trigger type 'device'", graph("device", "triggerMerge", "always", "turnOff")),
-        ("merge type 'any'", graph("switch", "any", "always", "turnOff")),
-    ]
+    candidates = [(f"decision type '{g}'", graph(g)) for g in [
+        "if", "conditions", "conditionGroup", "expression", "boolean", "evaluate",
+        "test", "branch", "check", "all", "and", "rule",
+    ]]
 
     for i, (label, definition) in enumerate(candidates, start=1):
         probe(i, label, definition)
