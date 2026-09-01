@@ -4738,6 +4738,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // Verified live: the same add succeeds enabled, fails disabled, succeeds again re-enabled.
     def "addAction on a DISABLED rule is refused up front, naming it as intended platform behavior"() {
         given:
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map b, Integer t = 420 ->
+            posts << [path: path, body: b]; [status: 200, location: null, data: '']
+        }
         hubGet.register('/installedapp/json/100') { params ->
             JsonOutput.toJson([id: 100, name: "Rule-5.1", type: "Rule-5.1", disabled: true])
         }
@@ -4746,26 +4750,37 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script._rmAddAction(100, [capability: "ifThen",
                                   expression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]]])
 
-        then: "refused before any wizard write, framed as platform behavior with the remedy"
+        then: "framed as platform behavior with the remedy"
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("is DISABLED")
         ex.message.contains("Hubitat does not allow editing a disabled app")
         ex.message.contains("intended platform behavior")
         ex.message.contains("hub_set_app_disabled")
         ex.message.contains("RM is not touched")
+
+        and: "and RM really is untouched -- the message alone would not catch a write-then-throw"
+        posts.isEmpty()
     }
 
     def "addAction is NOT blocked when the disabled read-back says enabled or is unreadable"() {
         given: "an unreadable flag must not block an add that would otherwise work"
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map b, Integer t = 420 ->
+            posts << [path: path, body: b]; [status: 200, location: null, data: '']
+        }
         hubGet.register('/installedapp/json/100') { params -> body }
 
         when:
         script._rmAddAction(100, [capability: "ifThen",
                                   expression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]]])
 
-        then: "it proceeds past the disabled gate (failing later on the unstubbed wizard, not on the flag)"
-        def ex = thrown(Exception)
-        !ex.message?.contains("is DISABLED")
+        then: "the gate was consulted and let it through"
+        thrown(Exception)
+        hubGet.calls.any { it.path == '/installedapp/json/100' }
+
+        and: "it failed downstream in the wizard, not on the disabled gate -- a vacuous pass on an
+              earlier validation error would leave the selectActions init unattempted"
+        posts.any { it.path?.contains('/installedapp/') }
 
         where:
         body << ['{"id":100,"disabled":false}', '{"id":100}', 'not json', '']
