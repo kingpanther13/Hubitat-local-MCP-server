@@ -94,7 +94,7 @@ dependencies {
     // Required by Spock to Mock/Spy non-interface types (TestDevice, TestChildApp).
     // Spock 2.x can use either byte-buddy or cglib-nodep as its class-gen
     // backend; neither is a transitive dep of spock-core.
-    testImplementation 'net.bytebuddy:byte-buddy:1.18.11'
+    testImplementation 'net.bytebuddy:byte-buddy:1.18.12'
 
     // JSON Schema validator — the referee for McpWireSchemaConformanceSpec (see
     // src/test/resources/mcp-schema/README.md). Every standard meta-schema ships
@@ -106,7 +106,7 @@ dependencies {
     // It pulls jackson-databind and slf4j-api above the Maven-style ranges
     // su.litvak.chromecast:api-v2 declares — a plain upgrade under Gradle's
     // rich-version rules, not a conflict, and nothing here consumes that jackson.
-    testImplementation 'com.networknt:json-schema-validator:2.0.4'
+    testImplementation 'com.networknt:json-schema-validator:2.0.7'
 
     // Security pin: commons-collections 3.2.x carries the InvokeTransformer
     // deserialization RCE (CVE-2015-7501, CVE-2015-6420). 3.2.2 is a drop-in
