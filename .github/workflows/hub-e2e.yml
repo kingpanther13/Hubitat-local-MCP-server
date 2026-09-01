@@ -250,46 +250,7 @@ jobs:
           done
           echo "Hub is back after reboot (poll attempt ${attempt})."
       - name: ONE-OFF probe the VRB graph schema
-        run: |
-          set -euo pipefail
-          call() {
-            curl -sS --max-time 90 -X POST "$MCP_URL" -H "Content-Type: application/json"               --data-binary "$1" | jq -r '.result.content[0].text // empty'
-          }
-          mk() { jq -nc --argjson d "$2" --arg n "$1"             '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_manage_rule_machine",arguments:{tool:"hub_set_visual_rule",args:{name:$n,confirm:true,definition:$d}}}}'; }
-
-          SW=$(call '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"hub_read_devices","arguments":{"tool":"hub_list_devices","args":{"capabilityFilter":"Switch","limit":1}}}}' | jq -r '.devices[0].id // empty')
-          echo "::notice::probe switch id=${SW:-none}"
-          [ -n "$SW" ] || { echo "::error::no switch device to build a fixture with"; exit 1; }
-
-          # Candidates, each a guess at 2.5.1's graph schema. The validator names what is wrong,
-          # so every attempt teaches the next one. Rules are deleted immediately after reading back.
-          i=0
-          try() {
-            i=$((i+1))
-            local label="$1" def="$2"
-            local name="VRBPROBE_${GITHUB_RUN_ID}_${i}"
-            echo "--------------------------------------------------"
-            echo "CANDIDATE ${i}: ${label}"
-            local r; r=$(call "$(mk "$name" "$def")" || true)
-            local appId; appId=$(printf '%s' "$r" | jq -r '.appId // empty')
-            printf '%s' "$r" | jq -r '"  create: success=\(.success) appId=\(.appId // "none") fmt=\(.format // .hubNativeFormat // "?")"'
-            printf '%s' "$r" | jq -r 'if .error then "  error: "+(.error|tostring) else empty end'
-            if [ -n "$appId" ]; then
-              local h; h=$(call "$(jq -nc --argjson a "$appId" '{jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"hub_read_rules",arguments:{tool:"hub_get_rule_health",args:{appId:$a}}}}')" || true)
-              echo "  broken=$(printf '%s' "$h" | jq -r '.broken')"
-              printf '%s' "$h" | jq -r '.validationErrors[]? | "  ERR: "+.'
-              call "$(jq -nc --argjson a "$appId" '{jsonrpc:"2.0",id:3,method:"tools/call",params:{name:"hub_manage_rule_machine",arguments:{tool:"hub_delete_native_app",args:{appId:$a,confirm:true}}}}')" >/dev/null 2>&1 || true
-            fi
-          }
-
-          try "current e2e fixture (type + inline fields)" "$(jq -nc --argjson s "$SW" '{version:1,nodes:[{id:"t1",type:"trigger",triggerCondition:"trigger",triggerType:"switch",switches:[$s],deviceIds:[$s],switchEvent:"Turns off"},{id:"a1",type:"action",actionType:"turnOff",switches:[$s],deviceIds:[$s]}],edges:[{from:"t1",to:"a1",port:"next"}]}')"
-
-          try "kind + config, no merge/decision" "$(jq -nc --argjson s "$SW" '{version:1,nodes:[{id:"t1",kind:"trigger",config:{triggerType:"switch",deviceIds:[$s],switchEvent:"Turns off"}},{id:"a1",kind:"action",config:{actionType:"turnOff",deviceIds:[$s]}}],edges:[{from:"t1",to:"a1",port:"next"}]}')"
-
-          try "kind + config + triggerMerge + decision" "$(jq -nc --argjson s "$SW" '{version:1,nodes:[{id:"t1",kind:"trigger",config:{triggerType:"switch",deviceIds:[$s],switchEvent:"Turns off"}},{id:"tm",kind:"triggerMerge",config:{}},{id:"d1",kind:"decision",config:{}},{id:"a1",kind:"action",config:{actionType:"turnOff",deviceIds:[$s]}}],edges:[{from:"t1",to:"tm",port:"next"},{from:"tm",to:"d1",port:"next"},{from:"d1",to:"a1",port:"true"}]}')"
-
-          echo "--------------------------------------------------"
-          echo "probe complete"
+        run: python .github/scripts/vrb_schema_probe.py
       - name: Probe hub inventory
         run: bash .github/scripts/mcp_probe_hub.sh
       - name: Disable installed app (disable_app_id set)
