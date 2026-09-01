@@ -4732,11 +4732,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.partial == false
     }
 
-    // A DISABLED rule serves EMPTY classic wizard pages, so a page-walking add used to fail
-    // partway through with an opaque "rCapab_<N> not in doActPage schema" -- after taking a
-    // backup and leaving a condition slot open. Verified live: the same add succeeds on a rule,
-    // fails on that same rule disabled, and succeeds again once re-enabled.
-    def "addAction on a DISABLED rule is refused up front with the re-enable remedy"() {
+    // Hubitat does not allow editing a disabled app -- its config page renders only
+    // "App is disabled / Enable", by design. Without this gate the page-walking add got an
+    // empty schema and died partway with an opaque "rCapab_<N> not in doActPage schema".
+    // Verified live: the same add succeeds enabled, fails disabled, succeeds again re-enabled.
+    def "addAction on a DISABLED rule is refused up front, naming it as intended platform behavior"() {
         given:
         hubGet.register('/installedapp/json/100') { params ->
             JsonOutput.toJson([id: 100, name: "Rule-5.1", type: "Rule-5.1", disabled: true])
@@ -4746,9 +4746,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script._rmAddAction(100, [capability: "ifThen",
                                   expression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]]])
 
-        then: "refused before any wizard write, naming the flag and the fix"
+        then: "refused before any wizard write, framed as platform behavior with the remedy"
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("is DISABLED")
+        ex.message.contains("Hubitat does not allow editing a disabled app")
+        ex.message.contains("intended platform behavior")
         ex.message.contains("hub_set_app_disabled")
         ex.message.contains("RM is not touched")
     }

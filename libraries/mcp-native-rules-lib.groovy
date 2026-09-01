@@ -5552,14 +5552,14 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
 
     _rmValidateRoundZeroActionSpec(actionSpec)
 
-    // Pre-flight: a DISABLED rule renders its classic wizard pages EMPTY, so any page-walking
-    // add fails partway through with an opaque schema error (verified live: the same addAction
-    // succeeds on a rule, fails on that same rule disabled, and succeeds again once re-enabled).
-    // Refuse up front with the remedy instead, so no backup is taken and no condition slot is
-    // left half-open. Read the flag from the app list rather than the config page -- the config
-    // page is exactly what goes empty.
+    // Pre-flight: Hubitat does not allow EDITING a disabled app -- by design, a disabled app's
+    // config page renders only "App is disabled / Enable", with no form at all. That is a
+    // platform feature, not a defect. Without this check the page-walking add gets an empty
+    // schema and dies partway with an opaque "rCapab_<N> not in doActPage schema", after taking
+    // a backup and leaving a condition slot open. Refuse up front with the remedy instead.
+    // The flag is read from /installedapp/json -- not the config page, which is what goes empty.
     if (_rmIsAppDisabled(appId)) {
-        throw new IllegalArgumentException("addAction blocked: rule ${appId} is DISABLED, and Rule Machine serves empty wizard pages for a disabled app, so the action cannot be built. Re-enable it first with hub_set_app_disabled(appId=${appId}, disabled=false), add the action, then disable it again if you want it parked. RM is not touched.")
+        throw new IllegalArgumentException("addAction blocked: rule ${appId} is DISABLED. Hubitat does not allow editing a disabled app -- its configuration page renders only \"App is disabled\", so there is no wizard to drive. This is intended platform behavior, not an error in the rule. To edit it: hub_set_app_disabled(appId=${appId}, disabled=false), make the change, then disable it again if you want it left parked. RM is not touched.")
     }
 
     // Pre-flight: refuse closers (endIf / stopRepeat) and orphan branch
