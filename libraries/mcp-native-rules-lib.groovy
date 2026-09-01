@@ -5555,8 +5555,10 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     // Pre-flight: Hubitat does not allow EDITING a disabled app -- by design, a disabled app's
     // config page renders only "App is disabled / Enable", with no form at all. That is a
     // platform feature, not a defect. Without this check the page-walking add gets an empty
-    // schema and dies partway with an opaque "rCapab_<N> not in doActPage schema", after taking
-    // a backup and leaving a condition slot open. Refuse up front with the remedy instead.
+    // schema and dies partway with an opaque "rCapab_<N> not in doActPage schema", having
+    // half-driven the wizard and left a condition slot open. Refuse up front with the remedy.
+    // NOTE the backup is taken by _applyNativeAppEdit BEFORE this runs, so a refusal still
+    // reports one -- the gate prevents the wizard damage, not the snapshot.
     // The flag is read from /installedapp/json -- not the config page, which is what goes empty.
     if (_rmIsAppDisabled(appId)) {
         throw new IllegalArgumentException("addAction blocked: rule ${appId} is DISABLED. Hubitat does not allow editing a disabled app -- its configuration page renders only \"App is disabled\", so there is no wizard to drive. This is intended platform behavior, not an error in the rule. To edit it: hub_set_app_disabled(appId=${appId}, disabled=false), make the change, then disable it again if you want it left parked. RM is not touched.")

@@ -4766,6 +4766,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         given: "the envelope path a real caller sees, not the raw throw"
         settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        // _applyNativeAppEdit snapshots BEFORE the add runs, so the backup path must be stubbed
+        // even though the call is refused -- the gate prevents wizard damage, not the snapshot.
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
         hubGet.register('/installedapp/json/100') { params ->
             JsonOutput.toJson([id: 100, name: "Rule-5.1", type: "Rule-5.1", disabled: true])
         }
