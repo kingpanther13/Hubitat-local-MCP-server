@@ -91,6 +91,12 @@ mappings {
     }
 }
 
+// Monitor for the purge claim. Same primitive the main server uses for its write reservations
+// (WRITE_RESERVATION_LOCK in hubitat-mcp-server.groovy): a static field is one object per compiled
+// class, so concurrent /mcp requests into this app instance contend on it properly. Held ONLY
+// across the claim check-and-set, never across the sweep itself.
+@groovy.transform.Field static final Object PURGE_CLAIM_LOCK = new Object()
+
 def installed() { initialize() }
 def updated()   { unschedule(); initialize() }
 
@@ -1249,19 +1255,27 @@ def adminPurgeE2eArtifacts(args) {
         mcpAdminLog "Purge result served from cache (${((nowMs - cachedAt) / 1000) as long}s old)."
         return cached
     }
-    // WRITE-THEN-VERIFY claim. The check above is a read, so two requests arriving together can
-    // both pass it; atomicState offers no compare-and-set. Stamp a unique claim, then re-read it --
-    // the loser sees another request's claim and yields. Same optimistic-lock shape the main server
-    // uses for its write leases (claimId in hubitat-mcp-server.groovy).
+    // ATOMIC claim. The staleness check above is a plain read, so two requests arriving together
+    // can both pass it -- and atomicState has no compare-and-set. Take the monitor for the
+    // check-and-set ONLY: whoever writes purgeInFlightAt inside it owns the sweep, and the loser
+    // sees the marker and yields. The lock is released before the sweep runs, so a multi-minute
+    // purge never holds it.
     //
-    // NOT solved with definition(singleThreaded: true): that serialises the mapped /mcp endpoint
-    // WITH the dead-man timer, so a multi-minute purge would block checkDeadman -- disabling the
-    // wedge escape during exactly the incident it exists for. Narrow the window instead of
-    // trading it for a stalled watchdog.
+    // Deliberately NOT definition(singleThreaded: true): that serialises the mapped /mcp endpoint
+    // WITH the dead-man timer, so a long purge would block checkDeadman -- disabling the wedge
+    // escape during exactly the incident it guards. Lock the claim, not the whole app.
     String claim = "purge-${java.util.UUID.randomUUID()}".toString()
-    atomicState.purgeInFlightAt = nowMs
-    atomicState.purgeClaim = claim
-    if (atomicState.purgeClaim?.toString() != claim) {
+    boolean claimed = false
+    synchronized (PURGE_CLAIM_LOCK) {
+        Long held = null
+        try { held = atomicState.purgeInFlightAt as Long } catch (Exception ignore) { held = null }
+        if (held == null || (nowMs - held) >= 900000L) {
+            atomicState.purgeInFlightAt = nowMs
+            atomicState.purgeClaim = claim
+            claimed = true
+        }
+    }
+    if (!claimed) {
         mcpAdminLog "Purge claim lost to a concurrent request -- yielding rather than sweeping twice."
         return [success: true, inFlight: true, prefix: prefix,
                 deletedCount: 0, failedCount: 0, deleted: [], failed: [],
@@ -1271,8 +1285,10 @@ def adminPurgeE2eArtifacts(args) {
     try {
         return purgeE2eArtifactsLocked(prefix)
     } finally {
-        atomicState.purgeInFlightAt = null
-        if (atomicState.purgeClaim?.toString() == claim) atomicState.purgeClaim = null
+        synchronized (PURGE_CLAIM_LOCK) {
+            atomicState.purgeInFlightAt = null
+            if (atomicState.purgeClaim?.toString() == claim) atomicState.purgeClaim = null
+        }
     }
 }
 
@@ -2176,7 +2192,11 @@ private boolean hubLooksWedged() {
 // spec could not override it and the reboot tests would silently pass on the real implementation
 // instead of the stub -- which is exactly how they first passed by accident.
 def probeLoopbackAlive() {
-    try { return hubGet("/hub/advanced/freeOSMemory", [:], 10) != null }
+    // hubGetStatus, NOT hubGet: hubGet returns null on ANY exception, and Hubitat THROWS on a
+    // served 4xx/5xx -- so a hub answering 404 on this endpoint (a firmware that moved it, say)
+    // would read as DEAD and get rebooted. The question here is only "did the web stack serve
+    // us", so any status at all is a live hub; only a null status is a dead one.
+    try { return hubGetStatus("/hub/advanced/freeOSMemory", [:], 10)?.status != null }
     catch (Exception ignore) { return false }
 }
 

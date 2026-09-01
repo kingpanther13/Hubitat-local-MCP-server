@@ -1502,6 +1502,53 @@ class WatchdogV2Spec extends Specification {
         atomicStateMap.expectedDownUntil == null
     }
 
+    def "the liveness probe treats ANY served status as alive (#code)"() {
+        given: "the question is only whether the web stack served us"
+        script.metaClass.hubGetStatus = { String p, Map q, int t = 30 -> [status: code, location: null, data: null] }
+
+        expect: "a hub answering 404 on the probe endpoint is alive -- rebooting it would be the misfire"
+        script.probeLoopbackAlive()
+
+        where:
+        code << [200, 404, 500]
+    }
+
+    def "the liveness probe reports dead only when nothing answered"() {
+        given:
+        script.metaClass.hubGetStatus = { String p, Map q, int t = 30 -> [status: null, location: null, data: null] }
+
+        expect:
+        !script.probeLoopbackAlive()
+    }
+
+    def "a held purge claim makes a second caller yield without sweeping"() {
+        given:
+        int enumerations = 0
+        script.metaClass.hubGet = { String p, Map q -> enumerations++; '{"apps":[]}' }
+        atomicStateMap.purgeInFlightAt = System.currentTimeMillis() - 5_000L
+        atomicStateMap.purgeClaim = 'purge-someone-else'
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then:
+        enumerations == 0
+        res.inFlight == true
+    }
+
+    def "the claim and its marker are both released once the sweep finishes"() {
+        given:
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+        script.metaClass.getAllGlobalVars = { -> [:] }
+
+        when:
+        script.adminPurgeE2eArtifacts([confirm: true])
+
+        then: 'a stranded claim would lock out every later sweep for 15 minutes'
+        atomicStateMap.purgeInFlightAt == null
+        atomicStateMap.purgeClaim == null
+    }
+
 }
 
 class FakeHttpException extends RuntimeException {
