@@ -9472,8 +9472,10 @@ A VRB rule speaks exactly one of two wire formats, decided by the hub firmware a
 - At least one whenNode must be a REAL trigger (the builder refuses rules whose only triggers are `timeIsBetween`/`daysOfWeek`).
 
 **graph** — `{version: 1, nodes: [...], edges: [...]}` (the dormant 2.0 graph editor):
-- Node: `{id, type: "trigger"|"condition"|"action", deviceIds: [...]}` + `triggerType`/`actionType` + per-type fields. Stored graph nodes put the node KIND in `triggerCondition` and the sub-condition in `condition`.
-- Edge: `{from, to, port}`. Ports: `next` (trigger/action source), `true`/`false` (condition source). Triggers have no incoming edges; conditions/actions exactly one. No cycles.
+- Node: `{id, kind, type, config}`. `kind` is the category — `trigger` | `merge` | `decision` | `action`; `type` is the variety within it (trigger `switch`, merge `triggerMerge`, decision `all`, action `turnOff`, ...). Per-node fields live INSIDE `config`, and device ids go in `config.switches` (a non-empty array).
+- A valid graph needs at least one `trigger`, EXACTLY ONE `merge`/`triggerMerge`, and EXACTLY ONE `decision`. A decision's `config.conditions` must be an array — empty means unconditional.
+- Edge: `{from, to, port}`. Ports: `next` (trigger/merge source), `true`/`false` (decision source). Triggers have no incoming edges. No cycles.
+- Minimal valid rule: trigger -> merge -> decision -> action, e.g. `{version:1, nodes:[{id:"t1",kind:"trigger",type:"switch",config:{switches:[7],switchEvent:"Turns off"}},{id:"tm",kind:"merge",type:"triggerMerge",config:{}},{id:"d1",kind:"decision",type:"all",config:{conditions:[]}},{id:"a1",kind:"action",type:"turnOff",config:{switches:[7]}}], edges:[{from:"t1",to:"tm",port:"next"},{from:"tm",to:"d1",port:"next"},{from:"d1",to:"a1",port:"true"}]}`. Read `hub_get_rule_health(appId)` after a write: the graph engine reports its own `validationErrors`, and they name the offending node and field.
 - On the wire the graph travels as a JSON STRING inside `{name, ruleJson}` — the tool handles the double-encoding for you; always pass `definition` as a normal JSON object.
 
 ### Field catalog (classic + graph dialogs share these)

@@ -7889,15 +7889,26 @@ class TestRunner:
                                "index": 0, "type": "then"}],
                 "elseNodes": [],
             }
+        # Platform 2.5.1 graph schema, confirmed against the hub's own validator: every node
+        # carries `kind` (category) AND `type` (variety) at node level plus a `config` object;
+        # device ids live in config.switches. A valid rule needs exactly one merge/triggerMerge
+        # and exactly one decision node, and the decision's config.conditions must be an array
+        # (empty == unconditional). The decision exits to actions on the "true" port.
         return {
             "version": 1,
             "nodes": [
-                {"id": "t1", "type": "trigger", "triggerCondition": "trigger", "triggerType": "switch",
-                 "switches": [switch_id], "deviceIds": [switch_id], "switchEvent": switch_event},
-                {"id": "a1", "type": "action", "actionType": action,
-                 "switches": [switch_id], "deviceIds": [switch_id]},
+                {"id": "t1", "kind": "trigger", "type": "switch",
+                 "config": {"switches": [switch_id], "switchEvent": switch_event}},
+                {"id": "tm", "kind": "merge", "type": "triggerMerge", "config": {}},
+                {"id": "d1", "kind": "decision", "type": "all", "config": {"conditions": []}},
+                {"id": "a1", "kind": "action", "type": action,
+                 "config": {"switches": [switch_id]}},
             ],
-            "edges": [{"from": "t1", "to": "a1", "port": "next"}],
+            "edges": [
+                {"from": "t1", "to": "tm", "port": "next"},
+                {"from": "tm", "to": "d1", "port": "next"},
+                {"from": "d1", "to": "a1", "port": "true"},
+            ],
         }
 
     def _get_visual_rule(self, app_id: Any = None) -> Any:
