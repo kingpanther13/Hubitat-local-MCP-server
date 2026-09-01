@@ -242,6 +242,23 @@ private Map _vrbNormalizeDefinition(def rawDefinition) {
     return [map: map, format: _vrbDetectDefinitionFormat(map)]
 }
 
+private boolean _vrbNameMatches(Map after, String requestedName) {
+    // Read-back name comparison for every save path. A PAUSED rule comes back carrying the
+    // hub's own "(Paused)" decoration, usually HTML-wrapped ("Name <span
+    // class='text-red'>(Paused)</span>"), so a literal compare reported verified:false on a
+    // write that had landed -- and on create that left the child installed, inviting a
+    // duplicate on retry. Strip the markup, then accept the bare name too whenever the rule
+    // reads back paused; that covers both a pause applied by this call and a rename against an
+    // already-paused rule. A name that differs beyond the suffix still fails.
+    if (after == null) return false
+    def actual = stripAppConfigHtml(after.data?.name)?.toString()
+    if (actual == requestedName) return true
+    if (after.data?.rulePaused == true && actual?.endsWith("(Paused)")) {
+        return actual.substring(0, actual.length() - "(Paused)".length()).trim() == requestedName
+    }
+    return false
+}
+
 private Map _vrbNotVisualRuleError(Integer appId) {
     // Shared error envelope for "this appId isn't a Visual Rules Builder rule", enriched with
     // the app's real type when it exists so the model can route to the right tool.
@@ -425,16 +442,7 @@ private Map _toolSetVisualRuleImpl(args) {
         // Neither save endpoint returns a usable body, so the read-back comparison is the
         // only write confirmation -- success must not be claimed without it.
         def after = _vrbDetect(appId)
-        // A paused rule's name comes back carrying the hub's own "(Paused)" decoration, often
-        // HTML-wrapped ("Name <span class='text-red'>(Paused)</span>"). Compare against the
-        // stripped name, and when THIS call paused the rule, tolerate that one suffix -- else a
-        // rename+pause in the same request reports verified:false on a write that landed.
-        // Only the suffix we just caused is tolerated, so an unrequested decoration still fails.
-        def afterName = after == null ? null : stripAppConfigHtml(after.data.name)?.toString()
-        def afterNameBare = (hasPaused && paused && afterName?.endsWith("(Paused)"))
-            ? afterName.substring(0, afterName.length() - "(Paused)".length()).trim()
-            : afterName
-        def nameOk = after != null && (afterName == requestedName || afterNameBare == requestedName)
+        def nameOk = after != null && _vrbNameMatches(after, requestedName)
         def pauseOk = !hasPaused || ((after?.data?.rulePaused == true) == paused)
         def verified = nameOk && pauseOk
         def out = [success: verified, appId: appId, format: detected.format, verified: verified,
@@ -480,7 +488,7 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
     // real write verification: name, requested pause state, and node-list sizes (the hub may
     // normalize node CONTENTS on save, so deep equality would false-negative).
     def after = _vrbDetect(appId)
-    def nameOk = after != null && after.data.name?.toString() == name
+    def nameOk = after != null && _vrbNameMatches(after, name)
     def pauseOk = pausedRequested == null || ((after?.data?.rulePaused == true) == pausedRequested)
     def countsOk = after != null && _vrbDefinitionCountsMatch(format, definition, after.data)
     def verified = nameOk && pauseOk && countsOk

@@ -706,6 +706,50 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.rulePaused == true
     }
 
+    def "rename-only on an ALREADY-paused rule verifies past the standing decoration"() {
+        given: 'the rule is already paused, so the decoration is present before this call'
+        enableWrite()
+        def state46 = [name: "Old name <span class='text-red'>(Paused)</span>", rulePaused: true,
+                       promptHistory: []] + classicDefinition()
+        hubGet.register('/app/ruleBuilder20Json/46') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/46') { params -> json(state46) }
+        stubPostJson { path, body ->
+            state46.name = "New name <span class='text-red'>(Paused)</span>"
+            null
+        }
+
+        when: 'no paused flag is passed -- this call only renames'
+        def result = script.toolSetVisualRule([appId: 46, name: 'New name', confirm: true])
+
+        then:
+        result.success == true
+        result.verified == true
+    }
+
+    def "full replacement with paused=true verifies past the decoration"() {
+        given:
+        enableWrite()
+        def state47 = [name: 'Old name', rulePaused: false, promptHistory: []] + classicDefinition()
+        hubGet.register('/app/ruleBuilder20Json/47') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/47') { params ->
+            json(state47) }
+        stubPostJson { path, body ->
+            def sent = new JsonSlurper().parseText(body) as Map
+            state47.putAll(sent)
+            state47.name = "New name <span class='text-red'>(Paused)</span>"
+            state47.rulePaused = true
+            null
+        }
+
+        when: 'the save path (_vrbApplySave), not the rename-only path'
+        def result = script.toolSetVisualRule([appId: 47, name: 'New name',
+                                               definition: classicDefinition(), paused: true, confirm: true])
+
+        then:
+        result.success == true
+        result.verified == true
+    }
+
     def "rename+pause still fails when the read-back name differs beyond the decoration"() {
         given:
         enableWrite()
