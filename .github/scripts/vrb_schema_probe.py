@@ -70,36 +70,36 @@ def main():
         print("::error::no switch device available")
         return 1
 
-    def trig(cfg_extra=None):
-        cfg = {"type": "switch", "deviceIds": [sw], "switchEvent": "Turns off"}
-        cfg.update(cfg_extra or {})
-        return {"id": "t1", "kind": "trigger", "config": cfg}
+    def node(nid, kind, ntype, cfg):
+        return {"id": nid, "kind": kind, "type": ntype, "config": cfg}
 
-    def act():
-        return {"id": "a1", "kind": "action",
-                "config": {"type": "turnOff", "deviceIds": [sw]}}
-
-    def dec():
-        return {"id": "d1", "kind": "decision", "config": {"type": "always"}}
-
-    candidates = [
-        ("config.type on trigger+action only", {
-            "version": 1, "nodes": [trig(), act()],
-            "edges": [{"from": "t1", "to": "a1", "port": "next"}],
-        }),
-    ]
-    # The merge node is required but 'triggerMerge' is not a valid kind. Try the plausible
-    # names one per rule so the error message identifies which one the validator accepts.
-    for guess in ["merge", "triggerMerged", "trigger_merge", "anyTrigger", "or", "logic", "gate"]:
-        candidates.append((f"merge kind '{guess}'", {
+    def graph(trigger_type, merge_type, decision_type, action_type):
+        return {
             "version": 1,
-            "nodes": [trig(), {"id": "tm", "kind": guess, "config": {"type": "any"}}, dec(), act()],
+            "nodes": [
+                node("t1", "trigger", trigger_type, {"deviceIds": [sw], "switchEvent": "Turns off"}),
+                node("tm", "merge", merge_type, {}),
+                node("d1", "decision", decision_type, {}),
+                node("a1", "action", action_type, {"deviceIds": [sw]}),
+            ],
             "edges": [
                 {"from": "t1", "to": "tm", "port": "next"},
                 {"from": "tm", "to": "d1", "port": "next"},
                 {"from": "d1", "to": "a1", "port": "true"},
             ],
-        }))
+        }
+
+    candidates = [
+        ("node-level type: switch / triggerMerge / always / turnOff",
+         graph("switch", "triggerMerge", "always", "turnOff")),
+        ("decision type 'simple'", graph("switch", "triggerMerge", "simple", "turnOff")),
+        ("decision type 'condition'", graph("switch", "triggerMerge", "condition", "turnOff")),
+        ("decision type 'ifThen'", graph("switch", "triggerMerge", "ifThen", "turnOff")),
+        ("action type 'setSwitch'", graph("switch", "triggerMerge", "always", "setSwitch")),
+        ("action type 'device'", graph("switch", "triggerMerge", "always", "device")),
+        ("trigger type 'device'", graph("device", "triggerMerge", "always", "turnOff")),
+        ("merge type 'any'", graph("switch", "any", "always", "turnOff")),
+    ]
 
     for i, (label, definition) in enumerate(candidates, start=1):
         probe(i, label, definition)
