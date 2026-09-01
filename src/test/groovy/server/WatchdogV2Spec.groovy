@@ -1549,6 +1549,32 @@ class WatchdogV2Spec extends Specification {
         atomicStateMap.purgeClaim == null
     }
 
+    def "steady-state successes do not rewrite atomicState on every loopback call"() {
+        given: "a healthy hub: streak already 0, lastOk stamped moments ago"
+        long recent = System.currentTimeMillis() - 5_000L
+        atomicStateMap.loopbackFailStreak = 0
+        atomicStateMap.loopbackLastOkAt = recent
+
+        when: "a purge sweep makes 150+ loopback calls in a minute -- each is a DB write if unthrottled"
+        script.noteLoopback(true)
+
+        then: "nothing changed, so nothing was written"
+        atomicStateMap.loopbackLastOkAt == recent
+    }
+
+    def "a success refreshes lastOk once it is older than the throttle window"() {
+        given:
+        long stale = System.currentTimeMillis() - 60_000L
+        atomicStateMap.loopbackFailStreak = 0
+        atomicStateMap.loopbackLastOkAt = stale
+
+        when:
+        script.noteLoopback(true)
+
+        then: "the wedge detector's baseline still advances, just not on every call"
+        atomicStateMap.loopbackLastOkAt > stale
+    }
+
 }
 
 class FakeHttpException extends RuntimeException {

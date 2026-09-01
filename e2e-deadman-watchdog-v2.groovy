@@ -2155,9 +2155,20 @@ Integer httpStatusOf(Exception e) {
 private void noteLoopback(boolean ok) {
     try {
         if (ok) {
-            atomicState.loopbackFailStreak = 0
-            atomicState.loopbackStreakStartedAt = null
-            atomicState.loopbackLastOkAt = now()
+            // Every atomicState write is a DB write, and a purge sweep makes 150+ loopback calls.
+            // The success path is the steady state, so it writes only when something CHANGED: a
+            // streak to clear, or a lastOk older than 30s. That keeps the bookkeeping at ~2 writes
+            // a minute on a healthy hub instead of one per call on the app whose job is to keep
+            // the hub unloaded.
+            int prior = (atomicState.loopbackFailStreak ?: 0) as int
+            Long lastOk = null
+            try { lastOk = atomicState.loopbackLastOkAt as Long } catch (Exception ignore) { lastOk = null }
+            long nowMs = now()
+            if (prior != 0) {
+                atomicState.loopbackFailStreak = 0
+                atomicState.loopbackStreakStartedAt = null
+            }
+            if (lastOk == null || (nowMs - lastOk) > 30000L) atomicState.loopbackLastOkAt = nowMs
         } else {
             int prior = (atomicState.loopbackFailStreak ?: 0) as int
             // Stamp when THIS streak began so hubLooksWedged has a baseline even if the watchdog
