@@ -4413,6 +4413,25 @@ class TestRunner:
         assert disabled.get("status") == "disabled" and disabled.get("disabled") is True, \
             f"disabled rule should read status disabled + disabled:true, got: {disabled}"
 
+        # While it IS disabled: every edit shape must be REFUSED, not silently no-op'd. Hubitat
+        # renders no configuration page for a disabled app, so the wizard has nothing to drive.
+        # Verified live on fw 2.5.1.177 that the unguarded paths were worse than a refusal --
+        # walkStep and a settings write both returned success:true having done nothing, and
+        # removeAction burned ~8s of clicks then told the caller it was safe to retry. Two shapes
+        # here (one wizard shortcut, one raw settings write) so a gate that covers only the
+        # shortcut family cannot pass this.
+        for shape, label in ((
+            {"addAction": {"capability": "log", "message": "must not land"}}, "addAction"),
+            ({"settings": {"logmsg.1": "must not land"}}, "settings"),
+        ):
+            # Envelope, not a raise: the gate throws IllegalArgumentException but
+            # _applyNativeAppEdit's pre-flight catch converts it to the structured refusal
+            # response, which is what the live hub returned on 2.5.1.177.
+            refused = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule", "args": {"appId": app_id, "confirm": True, **shape}})
+            assert refused.get("success") is False,                 f"editing a DISABLED rule via {label} must be refused, got: {refused}"
+            assert "DISABLED" in str(refused.get("error", "")),                 f"the {label} refusal must name the disabled app as the cause, got: {refused}"
+
         _status_write("hub_set_app_disabled", {"appId": app_id, "disabled": False},
                       "hub_set_app_disabled(disabled=False)")
         reenabled = _rule_status_when(app_id, lambda s: s.get("status") == "active" and s.get("disabled") is False)

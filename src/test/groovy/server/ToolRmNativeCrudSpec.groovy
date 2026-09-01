@@ -4767,8 +4767,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        // _applyNativeAppEdit snapshots BEFORE the add runs, so the backup path must be stubbed
-        // even though the call is refused -- the gate prevents wizard damage, not the snapshot.
+        // The disabled gate is hoisted AHEAD of _applyNativeAppEdit's snapshot, so this refusal
+        // never reaches the backup path. The reads stay stubbed anyway: an un-hoisted regression
+        // would fall through to them, and the assertions below are what catches it.
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
         hubGet.register('/installedapp/json/100') { params ->
@@ -4784,9 +4785,48 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.restoreHint.contains("disabled")
         result.restoreHint.contains("does not allow editing a disabled app")
 
-        and: "the hint must not contradict its own envelope -- a backup IS taken before the gate"
-        !result.restoreHint.contains("no backup taken")
-        result.backup?.backupKey != null
+        and: "the hint must not contradict its own envelope: no snapshot was taken, and it says so"
+        result.backup?.backupKey == null
+        result.restoreHint.contains("No backup was taken")
+        !result.restoreHint.contains("unused snapshot")
+    }
+
+    def "every edit shape is refused on a DISABLED rule, before any snapshot (#shape)"() {
+        given: "Hubitat renders no config page for a disabled app, so no edit can drive the wizard"
+        settingsMap.enableWrite = true
+        stateMap.lastBackupTimestamp = 1234567890000L
+        int snapshots = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass._rmBackupBeforeEdit = { Integer id, String reason -> snapshots++; [backupKey: "k"] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/installedapp/json/100') { params ->
+            JsonOutput.toJson([id: 100, name: "Rule-5.1", type: "Rule-5.1", disabled: true])
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, confirm: true] + edit)
+
+        then: "refused, naming the disabled app -- not a silent no-op"
+        result.success == false
+        result.error.contains("is DISABLED")
+
+        and: "and refused BEFORE the snapshot, per the validation-before-side-effects contract"
+        snapshots == 0
+
+        where: "shapes verified live on fw 2.5.1.177 to misbehave when ungated"
+        // removeAction burned a backup, clicked delAct, re-clicked, polled ~8s, then reported the
+        // action still present and told the caller it was safe to RETRY. walkStep and the raw
+        // settings write BOTH returned success:true having changed nothing -- the settings path
+        // even blamed RM's incremental schema, which is the wrong diagnosis entirely.
+        shape           | edit
+        'addAction'     | [addAction: [capability: "log", message: "x"]]
+        'removeAction'  | [removeAction: [index: 1]]
+        'moveAction'    | [moveAction: [index: 1, direction: "up"]]
+        'clearActions'  | [clearActions: true]
+        'walkStep'      | [walkStep: [page: "mainPage", operation: "introspect"]]
+        'settings'      | [settings: ["logmsg.1": "x"]]
+        'button'        | [button: "updateRule"]
     }
 
     def "addAction is NOT blocked when the disabled read-back says enabled or is unreadable"() {
@@ -4796,6 +4836,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             posts << [path: path, body: b]; [status: 200, location: null, data: '']
         }
         hubGet.register('/installedapp/json/100') { params -> body }
+        // Stub the device the condition names so deviceId validation (which runs just after the
+        // gate) passes -- otherwise the run dies there and this test would prove only that it got
+        // past the gate, not that it proceeded into the wizard.
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
 
         when:
         script._rmAddAction(100, [capability: "ifThen",
@@ -4811,7 +4855,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "the gate itself was consulted and let it through"
         hubGet.calls.any { it.path == '/installedapp/json/100' }
 
-        and: "and it wrote nothing on the way out"
+        // Downstream execution, not just non-blocking: the wizard is entered and reaches its
+        // config-page read. That read is deliberately unstubbed, so the run dies THERE rather
+        // than at the gate -- which is why nothing is posted. Asserting the read (instead of
+        // only posts.isEmpty()) is what distinguishes "let through" from "blocked earlier".
+        and: "execution reached the wizard's config-page fetch"
+        hubGet.calls.any { it.path?.startsWith('/installedapp/configure/json/100') }
+
+        and: "and it wrote nothing on the way out, having died at that unstubbed read"
         posts.isEmpty()
 
         where:

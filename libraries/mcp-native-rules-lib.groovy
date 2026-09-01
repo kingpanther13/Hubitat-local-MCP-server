@@ -4214,6 +4214,27 @@ private boolean _rmIsAppDisabled(Integer appId) {
     }
 }
 
+// Shared disabled-app refusal. Called from BOTH _applyNativeAppEdit's pre-snapshot pre-flight and
+// _rmAddAction's own top-of-function guard (the intra-batch patch / createRule callers reach
+// _rmAddAction without passing through _applyNativeAppEdit), so the wording cannot drift between
+// the two sites. IllegalArgumentException: this is caller-recoverable -- re-enable, edit, re-disable.
+// Name the operation for the disabled-app refusal so the message says which edit was refused
+// rather than a generic "edit". Mirrors the backupReason chain's ordering.
+private String _rmEditOpLabel(Map args) {
+    if (args == null) return "edit"
+    def first = ["addAction", "addActions", "addTrigger", "addTriggers", "addRequiredExpression",
+                 "replaceRequiredExpression", "addLocalVariable", "removeLocalVariable",
+                 "removeAction", "clearActions", "replaceActions", "moveAction", "removeTrigger",
+                 "modifyTrigger", "modifyAction", "walkStep", "patches", "button",
+                 "settings"].find { args[it] != null }
+    return first ?: "edit"
+}
+
+private void _rmRejectDisabledAppEdit(Integer appId, String opName) {
+    if (!_rmIsAppDisabled(appId)) return
+    throw new IllegalArgumentException("${opName} blocked: rule ${appId} is DISABLED. Hubitat does not allow editing a disabled app -- its configuration page renders only \"App is disabled\", so there is no wizard to drive. This is intended platform behavior, not an error in the rule. To edit it: hub_set_app_disabled(appId=${appId}, disabled=false), make the change, then disable it again if you want it left parked. RM is not touched.")
+}
+
 private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
     // Single statusJson fetch shared by all three pre-flight checks below;
     // before the refactor each helper (_rmCollectActionIndices,
@@ -5557,12 +5578,9 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     // platform feature, not a defect. Without this check the page-walking add gets an empty
     // schema and dies partway with an opaque "rCapab_<N> not in doActPage schema", having
     // half-driven the wizard and left a condition slot open. Refuse up front with the remedy.
-    // NOTE the backup is taken by _applyNativeAppEdit BEFORE this runs, so a refusal still
-    // reports one -- the gate prevents the wizard damage, not the snapshot.
-    // The flag is read from /installedapp/json -- not the config page, which is what goes empty.
-    if (_rmIsAppDisabled(appId)) {
-        throw new IllegalArgumentException("addAction blocked: rule ${appId} is DISABLED. Hubitat does not allow editing a disabled app -- its configuration page renders only \"App is disabled\", so there is no wizard to drive. This is intended platform behavior, not an error in the rule. To edit it: hub_set_app_disabled(appId=${appId}, disabled=false), make the change, then disable it again if you want it left parked. RM is not touched.")
-    }
+    // _applyNativeAppEdit hoists this same refusal ahead of its snapshot; this copy is what
+    // covers the patch / createRule intra-batch callers that reach _rmAddAction directly.
+    _rmRejectDisabledAppEdit(appId, "addAction")
 
     // Pre-flight: refuse closers (endIf / stopRepeat) and orphan branch
     // keywords (elseIf / else) that would render as orphaned because they
@@ -8269,15 +8287,19 @@ private List _rmStructuralSequenceFromSpecList(List specList) {
 // caught error message. Both the structured _rmBuildUpdateErrorResponse
 // path and the legacy-flat trigger-mutation catch reuse this so the two
 // surfaces stay word-identical.
-private String _rmPreflightRestoreHint(String reason = null) {
+private String _rmPreflightRestoreHint(String reason = null, Map backup = null) {
     // The `reason` echo matters: without it the caller sees only this generic sentence beside
     // the error and has to infer WHY nothing happened. The disabled-rule refusal is the case
     // that made this obvious -- "RM was not touched" alone reads as a mystery failure.
     def why = reason ? " Reason: ${reason}" : ""
-    // Do NOT claim "no backup taken": _applyNativeAppEdit snapshots BEFORE the pre-flight runs,
-    // so a refusal routinely reports a fresh backupKey. Saying otherwise contradicts the very
-    // envelope this hint travels in.
-    "Pre-flight refusal -- RM was not touched, so nothing needs to be restored. Any backupKey on this response is an unused snapshot taken before the refusal.${why}"
+    // Never state a backup fact the envelope contradicts. Whether a snapshot exists depends on
+    // WHICH pre-flight fired: the ones hoisted ahead of _applyNativeAppEdit's snapshot (unwalkable
+    // conditions, disabled app) refuse with backup null, while the ones inside the per-operation
+    // helpers refuse after it and carry a fresh backupKey. So read it off the envelope instead of
+    // asserting either case -- an earlier revision hardcoded "no backup taken" and was wrong on
+    // every post-snapshot refusal.
+    def snapshot = backup?.backupKey ? " The backupKey on this response is an unused snapshot taken before the refusal." : " No backup was taken."
+    "Pre-flight refusal -- RM was not touched, so nothing needs to be restored.${snapshot}${why}"
 }
 
 // Build the standard error response shape for _applyNativeAppEdit catch
@@ -8304,7 +8326,8 @@ private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, S
         // hub setting rather than a change to the caller's arguments, so a caller that reads
         // only the hint would otherwise never learn a disabled rule cannot be edited at all.
         restoreHint = _rmPreflightRestoreHint(
-            msgStr.contains("is DISABLED") ? "the rule is disabled, and Hubitat does not allow editing a disabled app -- re-enable it, make the change, then disable it again" : null)
+            msgStr.contains("is DISABLED") ? "the rule is disabled, and Hubitat does not allow editing a disabled app -- re-enable it, make the change, then disable it again" : null,
+            backup)
     } else if (wizardStuck) {
         // pageName tells the caller which wizard page the cancelCapab recovery click belongs on
         // (doActPage for addAction, STPage for addRequiredExpression). The wizardStuck markers
@@ -13564,6 +13587,24 @@ def _applyNativeAppEdit(args) {
     try {
         if (addActionSpec) _rmRejectUnwalkableExpressionConditions(addActionSpec)
         addActionsList?.each { if (it instanceof Map) _rmRejectUnwalkableExpressionConditions(it as Map) }
+        // Same pre-snapshot slot for the disabled-app refusal, and it covers EVERY edit shape, not
+        // just addAction. Hubitat renders no configuration page for a disabled app, and every branch
+        // below this point drives that page -- so none of them can work. Verified live on fw
+        // 2.5.1.177 against a disabled rule, and the unguarded paths fail in ways that are worse
+        // than a refusal:
+        //   removeAction -> takes a backup, clicks delAct, re-clicks, polls ~8s, then reports the
+        //                   action "still present" and tells the caller it is SAFE TO RETRY. It
+        //                   never becomes safe while the app is disabled.
+        //   walkStep     -> returns success:true with an empty schema (inputs:[], hrefs:[], every
+        //                   commitButton false), because "App is disabled" is the whole page.
+        //   settings     -> returns success:true, settingsApplied:[], and blames the miss on RM's
+        //                   incremental-schema behaviour, which is the wrong diagnosis entirely.
+        // Silent success and a misleading retry hint are both worse than a refusal that names the
+        // cause, so the gate is unconditional here. Reaching this line already means the call is an
+        // edit (the "requires one of ..." validation above rejects everything else). Costs one
+        // non-mutating GET of /installedapp/json. _rmAddAction keeps its own copy of the guard for
+        // the intra-batch patch / createRule callers that reach it without passing through here.
+        _rmRejectDisabledAppEdit(appId, _rmEditOpLabel(args))
     } catch (IllegalArgumentException preflightExc) {
         return _rmBuildUpdateErrorResponse(appId, preflightExc.message, null)
     }

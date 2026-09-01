@@ -56,6 +56,7 @@ preferences {
         section("Watchdog") {
             input "flagFileName", "text", title: "Flag file name (File Manager)", defaultValue: "e2e-deadman-v2.json", required: false
             input "debugLogging", "bool", title: "Debug logging", defaultValue: true, required: false
+            input "autoRebootOnWedge", "bool", title: "Auto-reboot when the hub wedges (loopback HTTP dead + restore latched failed)", defaultValue: true, required: false
             paragraph statusText()
         }
         section("MCP Deploy Endpoint") {
@@ -114,12 +115,20 @@ def initialize() {
 
 // ---- the dead-man check (runs every minute) ----
 def checkDeadman() {
+    // WEDGE ESCAPE -- runs BEFORE readFlag() on purpose. readFlag() is itself a loopback call, so on
+    // a wedged hub it returns null and every path below exits at "no flag file -- idle": the watchdog
+    // would tick quietly forever while the hub is dead, which is exactly what happened on 2026-09-01
+    // (3h32m of heartbeats and nothing else, until a human power-cycled it). This is the one thing
+    // that can still act, because a reboot needs no working web stack on the way in.
+    if (maybeAutoRebootWedgedHub()) return
+
     def flag = readFlag()
     if (flag == null) { logDebug "no flag file -- idle"; return }
 
     // Clean-finish restore: CI wrote intent=disarm for a run that finished. Restore main once
     // per runId (idempotency stamp restoreFor) even though armed is already false.
     if (flag.intent == "disarm" && (flag.restoreFor?.toString() != flag.runId?.toString())) {
+        if (retryBackoffPending(flag, "disarm")) return
         logInfo "disarm received for run ${flag.runId} -- restoring main package from cache."
         actAndRecord(flag, "disarm")
         return
@@ -141,6 +150,7 @@ def checkDeadman() {
     }
 
     // Armed AND past deadline -> the session never disarmed -> FIRE (crash/brick recovery).
+    if (retryBackoffPending(flag, "fire")) return
     log.warn "E2E Dead-Man Watchdog v2 FIRING: armed flag expired ${((now() - deadline) / 1000) as long}s ago. Restoring main package for run ${flag.runId}."
     actAndRecord(flag, "fire")
 }
@@ -154,6 +164,54 @@ def deadmanKick() { checkDeadman() }
 // Run the package restore, then record result + idempotency stamp into the flag (the signal CI
 // polls). BOTH triggers retry up to a 5-tick cap before latching "failed" (a transient miss must not
 // latch the restore failed); a success stamps restoreFor=runId so it runs at most once per run.
+// Space out restore RETRIES. Attempt 1 is immediate; after that each failure waits 2^(n-1) minutes
+// before the next try. The old behaviour retried on every 1-minute tick, and each attempt is a
+// 660KB source fetch + a bundle install + two app recompiles -- so a hub already struggling got
+// five of those inside five minutes, which is load piled onto the exact condition that made the
+// restore fail. Backoff spreads the same five attempts over ~30 minutes and gives a loaded hub
+// room to drain. A wedged hub skips the attempt entirely: the restore cannot possibly land while
+// loopback HTTP is dead, and trying costs load the hub does not have.
+private boolean retryBackoffPending(Map flag, String trigger) {
+    int attempts = (flag?.fireAttempts ?: 0) as int
+    if (attempts <= 0) return false
+    if (hubLooksWedged()) {
+        log.warn "E2E Dead-Man Watchdog v2: hub loopback looks wedged -- skipping restore attempt ${attempts + 1} (trigger=${trigger}); the wedge escape handles recovery."
+        return true
+    }
+    Long lastAt = null
+    try { lastAt = flag?.lastAttemptAt as Long } catch (Exception ignore) { lastAt = null }
+    if (lastAt == null) return false
+    long waitMs = 60000L * (1L << Math.min(attempts - 1, 4))
+    long sinceMs = now() - lastAt
+    if (sinceMs < waitMs) {
+        logDebug "restore retry ${attempts + 1} (trigger=${trigger}) backing off: ${((waitMs - sinceMs) / 1000) as long}s to go"
+        return true
+    }
+    return false
+}
+
+// Reboot a wedged hub. Rate-limited to one attempt per 30 minutes so a reboot that does not clear
+// the condition cannot become a boot loop, and gated behind the autoRebootOnWedge preference for a
+// maintainer who would rather inspect the wedged hub than have it recycled underneath them.
+private boolean maybeAutoRebootWedgedHub() {
+    if (settings?.autoRebootOnWedge == false) return false
+    if (!hubLooksWedged()) return false
+    long nowMs = now()
+    Long lastReboot = null
+    try { lastReboot = atomicState.lastAutoRebootAt as Long } catch (Exception ignore) { lastReboot = null }
+    if (lastReboot != null && (nowMs - lastReboot) < 1800000L) {
+        log.warn "E2E Dead-Man Watchdog v2: hub still looks wedged but an auto-reboot fired ${((nowMs - lastReboot) / 1000) as long}s ago -- not rebooting again yet. If it is still down, it needs a physical power cycle."
+        return true
+    }
+    atomicState.lastAutoRebootAt = nowMs
+    log.error "E2E Dead-Man Watchdog v2: hub loopback HTTP has been dead for ${(atomicState.loopbackFailStreak ?: 0)} consecutive calls with no success in over 4 minutes -- the web stack is wedged and nothing in-process recovers from that. AUTO-REBOOTING."
+    def r = adminRebootHub([confirm: true])
+    if (!r?.success) {
+        log.error "E2E Dead-Man Watchdog v2: auto-reboot POST failed (${r?.error}). The hub needs a physical power cycle."
+    }
+    return true
+}
+
 private void actAndRecord(Map flag, String trigger) {
     // SINGLE-FLIGHT LATCH. restoreFor is only stamped at the END of a restore, but a restore takes
     // 3-4 minutes and checkDeadman fires every minute (plus the adminWriteFile kick) -- without this
@@ -587,6 +645,7 @@ def executeAdminTool(String toolName, Map args) {
         case "hub_delete_item":     return adminDeleteItem(args)
         case "hub_force_delete_app": return adminForceDeleteInstalledApp(args)
         case "hub_purge_e2e_artifacts": return adminPurgeE2eArtifacts(args)
+        case "hub_reboot": return adminRebootHub(args)
         case "hub_set_app_disabled": return adminSetAppDisabled(args)
         case "hub_get_metrics":      return adminGetMetrics(args)
         case "hub_update_platform":  return adminUpdatePlatform(args)
@@ -1073,9 +1132,50 @@ def adminForceDeleteInstalledApp(args) {
 // forcedelete+verify-gone path. The whole loop runs loopback-local on the hub, so CI makes ONE cloud
 // round-trip instead of N -- replacing the disarm's per-item reap loop and the post-restore
 // --cleanup-only RM sweep. Hard-scoped to the prefix (never a real app); confirm:true required.
+// SINGLE-FLIGHT LATCH + SHORT RESULT CACHE -- the same protection actAndRecord has, for the same
+// reason. This sweep takes minutes (N apps x forcedelete + verify-gone), which is far longer than
+// the ~10s cloud-relay timeout, so CI's retry-on-dropped-response fires while the FIRST sweep is
+// still running. Observed live 2026-09-01: five overlapping invocations, each re-enumerating the
+// same app list and racing on the same ids (three hit forcedelete/30839 in the same millisecond),
+// each running 11+ minutes. That pile-on is what exhausted the hub's web thread pool and wedged
+// it for 3h32m. A duplicate call now returns the in-flight marker instead of starting a sweep,
+// and a call arriving just after one finished gets the real result from the cache -- so a relay
+// drop costs CI nothing and costs the hub nothing.
 def adminPurgeE2eArtifacts(args) {
     requireConfirm(args)
     String prefix = (args?.prefix instanceof String && args.prefix.trim()) ? args.prefix.trim() : "BAT_E2E_"
+
+    long nowMs = now()
+    Long purgeAt = null
+    try { purgeAt = atomicState.purgeInFlightAt as Long } catch (Exception ignore) { purgeAt = null }
+    // 15-minute staleness escape: a sweep killed mid-flight (app recompile, hub restart) must not
+    // wedge the latch permanently. Matches the observed worst-case sweep of ~11.5 minutes.
+    if (purgeAt != null && (nowMs - purgeAt) < 900000L) {
+        mcpAdminLog "Purge already in flight (${((nowMs - purgeAt) / 1000) as long}s) -- returning the in-flight marker instead of starting a second sweep."
+        return [success: true, inFlight: true, prefix: prefix,
+                deletedCount: 0, failedCount: 0, deleted: [], failed: [],
+                variablesDeletedCount: 0, variablesFailedCount: 0, variablesDeleted: [], variablesFailed: [],
+                note: "A purge started ${((nowMs - purgeAt) / 1000) as long}s ago is still running; this call was a no-op. Do NOT retry -- the running sweep covers the same prefix. The post-restore --cleanup-only sweep remains the backstop."]
+    }
+    Long cachedAt = null
+    try { cachedAt = atomicState.purgeResultAt as Long } catch (Exception ignore) { cachedAt = null }
+    if (cachedAt != null && (nowMs - cachedAt) < 300000L && atomicState.purgeResult instanceof Map
+            && atomicState.purgeResult?.prefix?.toString() == prefix) {
+        def cached = [:] + (atomicState.purgeResult as Map)
+        cached.cached = true
+        cached.note = "Result of the sweep that completed ${((nowMs - cachedAt) / 1000) as long}s ago (cached; this call did NOT re-run it). ${cached.note ?: ''}"
+        mcpAdminLog "Purge result served from cache (${((nowMs - cachedAt) / 1000) as long}s old)."
+        return cached
+    }
+    atomicState.purgeInFlightAt = nowMs
+    try {
+        return purgeE2eArtifactsLocked(prefix)
+    } finally {
+        atomicState.purgeInFlightAt = null
+    }
+}
+
+private Map purgeE2eArtifactsLocked(String prefix) {
     String raw = hubGet("/hub2/appsList", [:])
     if (!raw) return [success: false, error: "empty response from /hub2/appsList -- cannot enumerate to purge"]
     def parsed
@@ -1119,11 +1219,15 @@ def adminPurgeE2eArtifacts(args) {
     }
     mcpAdminLog "Purge complete: ${deleted.size()} app(s), ${varsDeleted.size()} variable(s) deleted; " +
                 "${failed.size()} app + ${varsFailed.size()} var failure(s)."
-    return [success: failed.isEmpty() && varsFailed.isEmpty(), prefix: prefix,
+    def result = [success: failed.isEmpty() && varsFailed.isEmpty(), prefix: prefix,
             deletedCount: deleted.size(), failedCount: failed.size(), deleted: deleted, failed: failed,
             variablesDeletedCount: varsDeleted.size(), variablesFailedCount: varsFailed.size(),
             variablesDeleted: varsDeleted, variablesFailed: varsFailed,
             note: "Virtual DEVICES are NOT purged here (they are child devices of the main app and the hub's admin device-delete endpoint is not yet mirrored into the watchdog); the post-restore --cleanup-only sweep still reaps BAT_E2E_ devices."]
+    // Cache BEFORE returning so a CI retry that lost the response to a relay drop reads the real
+    // outcome rather than re-running the sweep.
+    try { atomicState.purgeResult = result; atomicState.purgeResultAt = now() } catch (Exception ignore) { }
+    return result
 }
 
 // hub_set_app_disabled: toggle an installed app's disabled flag (the admin UI's red-X) via
@@ -1799,6 +1903,7 @@ def getAdminToolDefinitions() {
         [name: "hub_set_app_disabled", description: "Toggle an installed app's disabled flag (the admin UI red-X) via POST /installedapp/disable; verified by read-back. confirm:true required.",
          inputSchema: [type: "object", properties: [appId: [type: "string"], disable: [type: "boolean"], confirm: [type: "boolean"]], required: ["appId", "disable", "confirm"]]],
         [name: "hub_get_metrics", description: "Current hub metrics (free memory, temp, DB size, uptime) + the hub's own health alerts. Read-only."],
+        [name: "hub_reboot", description: "Reboot the hub (POST /hub/reboot; 1-3 min downtime). The only in-band recovery from a wedged web stack -- if loopback HTTP is already dead this call cannot land either and the hub needs a physical power cycle. The watchdog also fires this automatically when it detects a wedge (see the autoRebootOnWedge preference). Requires confirm=true.", inputSchema: [type: "object", properties: [confirm: [type: "boolean", description: "Must be true."]], required: ["confirm"]]],
         [name: "hub_update_platform", description: "Apply the hub's pending platform update (downloads + installs + REBOOTS the hub; requires confirm=true). statusOnly=true polls update progress without confirm.", inputSchema: [type: "object", properties: [confirm: [type: "boolean", description: "Must be true to apply (the hub reboots itself)."], statusOnly: [type: "boolean", description: "Poll /hub/cloud/checkUpdateStatus only; no confirm needed."]]]],
         [name: "hub_get_memory_history", description: "Free-memory / CPU-load history rows from the hub. Args: limit (default 60). Read-only.",
          inputSchema: [type: "object", properties: [limit: [type: "integer"]]]],
@@ -1879,9 +1984,59 @@ String hubGet(String path, Map query, int timeoutSec = 30) {
     def cookie = secCookie()
     if (cookie) params.headers = [Cookie: cookie]
     String out = null
-    try { httpGet(params) { resp -> out = respText(resp) } }
-    catch (Exception e) { log.error "hubGet ${path}: ${e.message}" }
+    try { httpGet(params) { resp -> out = respText(resp) }; noteLoopback(true) }
+    catch (Exception e) { noteLoopback(false); log.error "hubGet ${path}: ${e.message}" }
     return out
+}
+
+// ---- wedge detection ------------------------------------------------------
+// Loopback reads to 127.0.0.1:8080 normally answer in milliseconds. When the platform's web
+// thread pool is exhausted -- the failure mode that concurrent purges + restores produce, see the
+// single-flight latch note on actAndRecord -- EVERY loopback read starts returning "Read timed
+// out" and the hub stops serving its own admin UI. Observed live 2026-09-01: wedged 06:01, still
+// dead at 09:33, recovered only by a manual power cycle. Nothing in-process recovers from it, so
+// the watchdog has to be able to SEE it. Track consecutive loopback failures plus the last
+// success so "one flaky read" is distinguishable from "the hub is gone".
+private void noteLoopback(boolean ok) {
+    try {
+        if (ok) {
+            atomicState.loopbackFailStreak = 0
+            atomicState.loopbackLastOkAt = now()
+        } else {
+            atomicState.loopbackFailStreak = ((atomicState.loopbackFailStreak ?: 0) as int) + 1
+        }
+    } catch (Exception ignore) { /* never let bookkeeping break a hub call */ }
+}
+
+// Both conditions are required on purpose. The streak alone fires on a burst of slow reads from a
+// busy-but-alive hub; the silence window alone fires on an idle watchdog that simply made no
+// calls. Together they describe only the observed wedge: many consecutive failures AND no
+// successful loopback read for minutes.
+private boolean hubLooksWedged() {
+    try {
+        int streak = (atomicState.loopbackFailStreak ?: 0) as int
+        Long lastOk = atomicState.loopbackLastOkAt as Long
+        if (streak < 8) return false
+        if (lastOk == null) return false
+        return (now() - lastOk) > 240000L
+    } catch (Exception ignore) { return false }
+}
+
+// hub_reboot: POST /hub/reboot. Copied from hubitat-mcp-server.groovy's toolRebootHub
+// (libraries/mcp-system-lib.groovy) -- same endpoint, minus the 24h-backup gate the watchdog
+// deliberately drops (see the SECURITY banner). This is the ONLY in-band recovery from a wedged
+// web stack, so it is also what the auto-reboot escape calls.
+def adminRebootHub(args) {
+    requireConfirm(args)
+    mcpAdminLog "Rebooting the hub (POST /hub/reboot)."
+    try {
+        def resp = hubPostForm("/hub/reboot", [:])
+        return [success: true, message: "Hub reboot initiated; the hub is unreachable for 1-3 minutes.",
+                response: resp?.toString()?.take(200)]
+    } catch (Exception e) {
+        return [success: false, error: "reboot failed: ${e.message}",
+                note: "If loopback HTTP is wedged this call cannot land either -- the hub needs a physical power cycle."]
+    }
 }
 
 // Status-aware loopback GET. Unlike hubGet (text body, swallows every exception -> null), this
@@ -1910,6 +2065,9 @@ Map hubGetStatus(String path, Map query, int timeoutSec = 30) {
             log.error "hubGetStatus ${path}: ${e.message}"
         }
     }
+    // A status of any kind (incl. the 302 the forcedelete endpoints answer with) means the web
+    // stack served us; only a null status is the wedge signature.
+    noteLoopback(out.status != null)
     return out
 }
 
@@ -1925,6 +2083,7 @@ Map hubPostForm(String path, Map body) {
     Map out = [status: null, data: null]
     try { httpPost(params) { resp -> out = [status: resp.status, data: respText(resp)] } }
     catch (Exception e) { log.error "hubPostForm ${path}: ${e.message}" }
+    noteLoopback(out.status != null)
     return out
 }
 

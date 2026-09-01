@@ -924,4 +924,205 @@ class WatchdogV2Spec extends Specification {
         r.success == false
         r.error.contains("updatePlatform failed")
     }
+
+    // ---- purge single-flight latch (the 2026-09-01 hub wedge) --------------------------------
+    // Five overlapping hub_purge_e2e_artifacts sweeps -- CI retrying one dropped relay response --
+    // each re-enumerated the same app list and raced on the same ids for 11+ minutes, exhausting
+    // the hub's web thread pool and leaving it unresponsive for 3h32m until a manual power cycle.
+
+    def "a purge landing during an in-flight purge is a no-op, not a second sweep"() {
+        given:
+        int enumerations = 0
+        script.metaClass.hubGet = { String p, Map q -> enumerations++; '{"apps":[]}' }
+        atomicStateMap.purgeInFlightAt = System.currentTimeMillis() - 30_000L
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then: 'the duplicate call never enumerates, so it cannot race the running sweep'
+        enumerations == 0
+        res.inFlight == true
+        res.success == true
+        res.note?.contains('Do NOT retry')
+    }
+
+    def "a STALE purge latch (sweep killed mid-flight) does not block the next purge"() {
+        given:
+        int enumerations = 0
+        script.metaClass.hubGet = { String p, Map q -> enumerations++; '{"apps":[]}' }
+        atomicStateMap.purgeInFlightAt = System.currentTimeMillis() - 1_000_000L
+
+        when:
+        script.adminPurgeE2eArtifacts([confirm: true])
+
+        then: 'the stale latch is overridden and the sweep runs'
+        enumerations == 1
+    }
+
+    def "the purge latch is released once the sweep completes"() {
+        given:
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+
+        when:
+        script.adminPurgeE2eArtifacts([confirm: true])
+
+        then:
+        atomicStateMap.purgeInFlightAt == null
+    }
+
+    def "a purge arriving just after one finished is served from cache, not re-run"() {
+        given:
+        int enumerations = 0
+        script.metaClass.hubGet = { String p, Map q -> enumerations++; '{"apps":[]}' }
+        atomicStateMap.purgeResult = [success: true, prefix: 'BAT_E2E_', deletedCount: 12, failedCount: 0]
+        atomicStateMap.purgeResultAt = System.currentTimeMillis() - 10_000L
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then: 'CI gets the real outcome of the sweep it lost the response to'
+        enumerations == 0
+        res.cached == true
+        res.deletedCount == 12
+    }
+
+    def "a purge cache older than the window re-runs instead of serving a stale result"() {
+        given:
+        int enumerations = 0
+        script.metaClass.hubGet = { String p, Map q -> enumerations++; '{"apps":[]}' }
+        atomicStateMap.purgeResult = [success: true, prefix: 'BAT_E2E_', deletedCount: 12, failedCount: 0]
+        atomicStateMap.purgeResultAt = System.currentTimeMillis() - 400_000L
+
+        when:
+        script.adminPurgeE2eArtifacts([confirm: true])
+
+        then:
+        enumerations == 1
+    }
+
+    // ---- wedge detection + auto-reboot escape -------------------------------------------------
+
+    def "a wedged hub is auto-rebooted, and the escape runs BEFORE readFlag"() {
+        given: 'loopback dead: 8+ consecutive failures and no success for over four minutes'
+        boolean flagRead = false
+        String posted = null
+        script.metaClass.readFlag = { -> flagRead = true; null }
+        script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+        atomicStateMap.loopbackFailStreak = 12
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 300_000L
+
+        when:
+        script.checkDeadman()
+
+        then: 'the reboot lands, and the tick never reaches the flag read (itself a loopback call)'
+        posted == '/hub/reboot'
+        !flagRead
+    }
+
+    def "a healthy hub is never auto-rebooted (#scenario)"() {
+        given:
+        String posted = null
+        script.metaClass.readFlag = { -> null }
+        script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+        atomicStateMap.loopbackFailStreak = streak
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - sinceOkMs
+
+        when:
+        script.checkDeadman()
+
+        then:
+        posted == null
+
+        where:
+        scenario                                   | streak | sinceOkMs
+        'no failures at all'                       | 0      | 1_000L
+        'a burst of failures but a recent success' | 20     | 30_000L
+        'stale silence but too few failures'       | 3      | 600_000L
+    }
+
+    def "auto-reboot is rate-limited so it cannot become a boot loop"() {
+        given:
+        String posted = null
+        script.metaClass.readFlag = { -> null }
+        script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+        atomicStateMap.loopbackFailStreak = 12
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 300_000L
+        atomicStateMap.lastAutoRebootAt = System.currentTimeMillis() - 60_000L
+
+        when:
+        script.checkDeadman()
+
+        then: 'a hub that did not come back is left for a human, not rebooted again'
+        posted == null
+    }
+
+    def "a successful loopback call clears the wedge streak"() {
+        given:
+        atomicStateMap.loopbackFailStreak = 12
+
+        when:
+        script.noteLoopback(true)
+
+        then:
+        atomicStateMap.loopbackFailStreak == 0
+        atomicStateMap.loopbackLastOkAt != null
+    }
+
+    // ---- restore retry backoff ----------------------------------------------------------------
+    // Each restore attempt is a 660KB source fetch + a bundle install + two app recompiles. The old
+    // code retried on every 1-minute tick, piling that load onto the condition that made the
+    // restore fail in the first place.
+
+    def "restore retries back off instead of firing on every tick (#scenario)"() {
+        expect:
+        script.retryBackoffPending([fireAttempts: attempts, lastAttemptAt: System.currentTimeMillis() - agoMs],
+                                   'disarm') == pending
+
+        where:
+        scenario                                  | attempts | agoMs    | pending
+        'first attempt is never delayed'          | 0        | 0L       | false
+        'attempt 2 waits ~2 min'                  | 1        | 30_000L  | true
+        'attempt 2 proceeds once the wait passes' | 1        | 150_000L | false
+        'attempt 4 waits ~8 min'                  | 3        | 300_000L | true
+        'attempt 4 proceeds after its wait'       | 3        | 600_000L | false
+    }
+
+    def "a wedged hub skips the restore attempt entirely rather than adding load"() {
+        given:
+        atomicStateMap.loopbackFailStreak = 12
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 300_000L
+
+        expect: 'the restore cannot land while loopback is dead; trying costs load the hub lacks'
+        script.retryBackoffPending([fireAttempts: 1, lastAttemptAt: System.currentTimeMillis() - 600_000L],
+                                   'disarm')
+    }
+
+    // ---- hub_reboot admin tool ---------------------------------------------------------------
+
+    def "hub_reboot posts to /hub/reboot and is reachable through the tool dispatch"() {
+        given:
+        String posted = null
+        script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+
+        when:
+        def res = script.executeTool('hub_reboot', [confirm: true])
+
+        then:
+        posted == '/hub/reboot'
+        res.success == true
+    }
+
+    def "hub_reboot reports a failure rather than claiming a reboot that did not happen"() {
+        given:
+        script.metaClass.hubPostForm = { String p, Map b -> throw new RuntimeException('Read timed out') }
+
+        when:
+        def res = script.adminRebootHub([confirm: true])
+
+        then:
+        res.success == false
+        res.error?.contains('Read timed out')
+        res.note?.contains('physical power cycle')
+    }
+
 }
