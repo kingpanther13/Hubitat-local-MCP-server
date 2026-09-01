@@ -250,16 +250,18 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
     def "scope='all' fallback reports capabilities for an MCP child device, not just selected ones"() {
         given: "the app's own child device is authorized via getChildDevices, not selectedDevices"
         settingsMap.selectedDevices = []
-        childDevicesList << new TestDevice(id: 77, name: "D77", label: "MCP Virtual Switch",
+        // Label deliberately shares no substring with the capability, so a filter applied to
+        // the wrong field cannot make this pass.
+        childDevicesList << new TestDevice(id: 77, name: "D77", label: "Porch Lamp",
             roomName: null, capabilities: ["Switch"], supportedAttributes: [],
             supportedCommands: [], attributeValues: [:])
         hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
         hubGet.register('/hub2/devicesList') { params ->
-            JsonOutput.toJson([devices: [[key: "DEV-77", data: [id: 77, name: "MCP Virtual Switch"], children: []]]])
+            JsonOutput.toJson([devices: [[key: "DEV-77", data: [id: 77, name: "Porch Lamp"], children: []]]])
         }
 
         when:
-        def result = script.toolListDevices(false, 0, 0, null, "Switch", null, null, null, null, "all")
+        def result = script.toolListDevices(false, 0, 0, null, null, "Switch", null, null, null, "all")
 
         then: "it is both authorized and matchable by capabilityFilter"
         result.devices.size() == 1
