@@ -338,11 +338,20 @@ class WatchdogV2Spec extends Specification {
         script.metaClass.hubGet = { String path, Map q -> path == "/hub2/appsList" ? appsJson : "" }
         script.metaClass.hubGetStatus = { String path, Map q ->
             if (path.startsWith("/installedapp/forcedelete/")) { forced << path; [status: 302, location: "/installedapp/list", data: null] }
+            else if (path == "/installedapp/direct/hubVariables") { [status: 302, location: "/installedapp/configure/9001", data: null] }
             else { [status: 404, location: null, data: null] }   // gone-check: absent
         }
-        def removedVars = []
+        // Variables are deleted by driving the classic hubVar wizard -- there is no app-facing
+        // global-variable delete API. This test previously stubbed removeGlobalVariable(), a method
+        // that does not exist on the app class, so it passed against a mock of nothing while the
+        // real sweep failed on every run. Assert the wizard clicks instead.
+        def deleteClicks = []
+        script.metaClass.hubPostForm = { String path, Map b ->
+            if (path == "/installedapp/btn" && b.stateAttribute == "deleteGV") { deleteClicks << b.name }
+            [status: 200, data: 'ok']
+        }
         script.metaClass.getAllGlobalVars = { -> [BAT_E2E_v1: [type: "string"], RealVar: [type: "string"], BAT_E2E_v2: [type: "integer"]] }
-        script.metaClass.removeGlobalVariable = { String n -> removedVars << n; true }
+        script.metaClass.getGlobalVar = { String n -> null }   // gone after the wizard commits
 
         when:
         def r = script.adminPurgeE2eArtifacts([confirm: true])
@@ -353,7 +362,10 @@ class WatchdogV2Spec extends Specification {
         (r.deleted*.id).collect { it as Integer }.sort() == [100, 201]
         forced.sort() == ["/installedapp/forcedelete/100/quiet", "/installedapp/forcedelete/201/quiet"]
         r.variablesDeletedCount == 2
-        removedVars.sort() == ["BAT_E2E_v1", "BAT_E2E_v2"]
+        (r.variablesDeleted as List).sort() == ["BAT_E2E_v1", "BAT_E2E_v2"]
+
+        and: "the real hub variable is never clicked -- the prefix is the only safety scope"
+        deleteClicks.sort() == ["BAT_E2E_v1", "BAT_E2E_v2"]
     }
 
     def "adminPurgeE2eArtifacts requires confirm (never deletes without it)"() {
