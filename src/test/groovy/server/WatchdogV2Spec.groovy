@@ -1302,50 +1302,48 @@ class WatchdogV2Spec extends Specification {
     // Hubitat's httpGet/httpPost THROW on 4xx/5xx, so the catch-all counted an ANSWERED error as a
     // loopback failure. That inflated the wedge streak on a healthy hub and could auto-reboot it.
 
-    def "an answered 4xx/5xx does not count toward the wedge streak (#code)"() {
-        given:
-        atomicStateMap.loopbackFailStreak = 3
-        def err = new RuntimeException('boom')
-        err.metaClass.getResponse = { -> [status: code] }
-        script.metaClass.httpGet = { Map p, Closure c -> throw err }
-
-        when:
-        script.hubGet('/some/path', [:])
-
-        then: "the hub served us, so the streak is reset rather than advanced"
-        atomicStateMap.loopbackFailStreak == 0
+    def "an ANSWERED error carries its status, so it is not read as a dead web stack (#code)"() {
+        expect: "httpGet/httpPost THROW on 4xx/5xx, but the hub served us -- the status proves it"
+        script.httpStatusOf(new FakeHttpException(code)) == code
 
         where:
-        code << [404, 500]
+        code << [404, 500, 302]
     }
 
-    def "a real transport failure (no response) does advance the wedge streak"() {
+    def "a real transport failure carries no status"() {
+        expect: "only this shape is a dead web stack"
+        script.httpStatusOf(new RuntimeException('Read timed out')) == null
+    }
+
+    def "the wedge streak advances only on a status-less failure"() {
         given:
         atomicStateMap.loopbackFailStreak = 3
-        script.metaClass.httpGet = { Map p, Closure c -> throw new RuntimeException('Read timed out') }
 
-        when:
-        script.hubGet('/some/path', [:])
+        when: 'the caller passes the answered/unanswered decision noteLoopback is given'
+        script.noteLoopback(answered)
 
         then:
-        atomicStateMap.loopbackFailStreak == 4
+        atomicStateMap.loopbackFailStreak == expected
+
+        where:
+        answered | expected
+        true     | 0
+        false    | 4
     }
 
-    def "hubPostForm keeps the status off a thrown error response"() {
-        given:
-        def err = new RuntimeException('boom')
-        err.metaClass.getResponse = { -> [status: 500] }
-        script.metaClass.httpPost = { Map p, Closure c -> throw err }
+    def "the streak-start baseline is stamped on the first failure and cleared on success"() {
+        when: 'first failure of a fresh streak'
+        script.noteLoopback(false)
 
-        when:
-        def out = script.hubPostForm('/installedapp/btn', [:])
+        then:
+        atomicStateMap.loopbackStreakStartedAt != null
 
-        then: "the caller sees the status instead of a null that reads as a transport failure"
-        out.status == 500
-        atomicStateMap.loopbackFailStreak == 0
+        when: 'a later success'
+        script.noteLoopback(true)
+
+        then: 'the baseline is released so the next streak stamps its own'
+        atomicStateMap.loopbackStreakStartedAt == null
     }
-
-    // ---- the escape must work on a hub that was ALREADY wedged at startup ---------------------
 
     def "a watchdog that has never had a successful loopback call can still detect a wedge"() {
         given: "no loopbackLastOkAt at all -- the hub was wedged before this app ever ran"
@@ -1513,4 +1511,15 @@ class WatchdogV2Spec extends Specification {
         atomicStateMap.expectedDownUntil == null
     }
 
+}
+
+class FakeHttpException extends RuntimeException {
+    // Hubitat's httpGet/httpPost throw an exception carrying the response on a 4xx/5xx; the
+    // watchdog reads e.response.status off it. A metaClass-patched RuntimeException does not
+    // present the property to the script, so model it as a real type.
+    def response
+    FakeHttpException(Integer status) {
+        super("HTTP ${status}")
+        this.response = [status: status]
+    }
 }

@@ -2118,8 +2118,10 @@ String hubGet(String path, Map query, int timeoutSec = 30) {
 }
 
 // The response status carried on a thrown Hubitat HTTP exception, or null on a real transport
-// failure. Mirrors the e.response.status capture hubGetStatus already does.
-private Integer httpStatusOf(Exception e) {
+// failure. Mirrors the e.response.status capture hubGetStatus already does. Non-private so specs
+// can exercise it directly -- the harness supplies httpGet/httpPost, so the surrounding helpers'
+// catch paths are not otherwise reachable from a test.
+Integer httpStatusOf(Exception e) {
     try {
         def resp = e.response
         return resp?.status as Integer
@@ -2170,7 +2172,10 @@ private boolean hubLooksWedged() {
 
 // One cheap loopback read used purely as a liveness gate before the destructive escape. Routed
 // through hubGet so a success updates the wedge counters as a side effect.
-private boolean probeLoopbackAlive() {
+// NON-PRIVATE deliberately: a private method's internal callers bypass metaClass dispatch, so a
+// spec could not override it and the reboot tests would silently pass on the real implementation
+// instead of the stub -- which is exactly how they first passed by accident.
+def probeLoopbackAlive() {
     try { return hubGet("/hub/advanced/freeOSMemory", [:], 10) != null }
     catch (Exception ignore) { return false }
 }
