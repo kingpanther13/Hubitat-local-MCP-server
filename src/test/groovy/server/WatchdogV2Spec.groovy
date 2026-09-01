@@ -1078,13 +1078,15 @@ class WatchdogV2Spec extends Specification {
         script.retryBackoffPending([fireAttempts: attempts, lastAttemptAt: System.currentTimeMillis() - agoMs],
                                    'disarm') == pending
 
-        where:
-        scenario                                  | attempts | agoMs    | pending
-        'first attempt is never delayed'          | 0        | 0L       | false
-        'attempt 2 waits ~2 min'                  | 1        | 30_000L  | true
-        'attempt 2 proceeds once the wait passes' | 1        | 150_000L | false
-        'attempt 4 waits ~8 min'                  | 3        | 300_000L | true
-        'attempt 4 proceeds after its wait'       | 3        | 600_000L | false
+        where: "the schedule is 1, 2, 4, 8, 16 minutes -- five attempts spread over ~31 min"
+        scenario                                   | attempts | agoMs      | pending
+        'first attempt is never delayed'           | 0        | 0L         | false
+        'after 1 failure, attempt 2 waits 1 min'   | 1        | 30_000L    | true
+        'attempt 2 proceeds once 1 min has passed' | 1        | 90_000L    | false
+        'after 3 failures, attempt 4 waits 4 min'  | 3        | 200_000L   | true
+        'attempt 4 proceeds once 4 min has passed' | 3        | 300_000L   | false
+        'the wait is capped at 16 min'             | 8        | 900_000L   | true
+        'and it does proceed past that cap'        | 8        | 1_000_000L | false
     }
 
     def "a wedged hub skips the restore attempt entirely rather than adding load"() {
