@@ -425,7 +425,16 @@ private Map _toolSetVisualRuleImpl(args) {
         // Neither save endpoint returns a usable body, so the read-back comparison is the
         // only write confirmation -- success must not be claimed without it.
         def after = _vrbDetect(appId)
-        def nameOk = after != null && after.data.name?.toString() == requestedName
+        // A paused rule's name comes back carrying the hub's own "(Paused)" decoration, often
+        // HTML-wrapped ("Name <span class='text-red'>(Paused)</span>"). Compare against the
+        // stripped name, and when THIS call paused the rule, tolerate that one suffix -- else a
+        // rename+pause in the same request reports verified:false on a write that landed.
+        // Only the suffix we just caused is tolerated, so an unrequested decoration still fails.
+        def afterName = after == null ? null : stripAppConfigHtml(after.data.name)?.toString()
+        def afterNameBare = (hasPaused && paused && afterName?.endsWith("(Paused)"))
+            ? afterName.substring(0, afterName.length() - "(Paused)".length()).trim()
+            : afterName
+        def nameOk = after != null && (afterName == requestedName || afterNameBare == requestedName)
         def pauseOk = !hasPaused || ((after?.data?.rulePaused == true) == paused)
         def verified = nameOk && pauseOk
         def out = [success: verified, appId: appId, format: detected.format, verified: verified,

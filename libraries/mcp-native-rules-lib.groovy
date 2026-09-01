@@ -9234,8 +9234,24 @@ Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
     def detectedAppType = config == null ? "visual_rule" : "rule_machine"
     def configAppName = config?.app?.appType?.name
     if (configAppName) {
+        // Exact first. Then a VERSIONED match: the hub reports Visual Rule children as
+        // "Visual Rule Builder 1.0" / "... 2.0" while the registry holds the bare family name,
+        // so an exact-only lookup silently classified every Visual Rule as rule_machine -- the
+        // snapshot then skipped the definition capture and a restore replayed it as an RM rule.
+        // The remainder must look like a version ("2.0"), so "Visual Rule Builder" can never
+        // swallow the "Visual Rules Builder" parent or any unrelated app.
+        def name = configAppName.toString()
         _appTypeRegistry().each { typeKey, reg ->
-            if (reg.appName == configAppName) detectedAppType = typeKey
+            if (reg.appName == name) detectedAppType = typeKey
+        }
+        if (detectedAppType == "rule_machine" && name != _appTypeRegistry().rule_machine?.appName) {
+            _appTypeRegistry().each { typeKey, reg ->
+                def base = reg.appName?.toString()
+                if (base && name.startsWith(base + " ") &&
+                        name.substring(base.length() + 1).matches(/[0-9]+(\.[0-9]+)*/)) {
+                    detectedAppType = typeKey
+                }
+            }
         }
     }
 

@@ -681,6 +681,51 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.note.contains('hub_get_visual_rule')
     }
 
+    // The hub decorates a paused rule's name with its own "(Paused)" suffix, usually inside a
+    // red span. Comparing the decorated read-back literally reported verified:false on a
+    // rename+pause that had actually landed.
+    def "rename+pause verifies against the hub's own (Paused) decoration on the read-back name"() {
+        given:
+        enableWrite()
+        def state44 = [name: 'Old name', rulePaused: false, promptHistory: []] + classicDefinition()
+        hubGet.register('/app/ruleBuilder20Json/44') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/44') { params -> json(state44) }
+        stubPostJson { path, body ->
+            // The hub applies the rename AND decorates the stored name, as it does live.
+            state44.name = "New name <span class='text-red'>(Paused)</span>"
+            state44.rulePaused = true
+            null
+        }
+
+        when:
+        def result = script.toolSetVisualRule([appId: 44, name: 'New name', paused: true, confirm: true])
+
+        then: 'the decoration is not treated as a failed rename'
+        result.success == true
+        result.verified == true
+        result.rulePaused == true
+    }
+
+    def "rename+pause still fails when the read-back name differs beyond the decoration"() {
+        given:
+        enableWrite()
+        def state45 = [name: 'Old name', rulePaused: false, promptHistory: []] + classicDefinition()
+        hubGet.register('/app/ruleBuilder20Json/45') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/45') { params -> json(state45) }
+        stubPostJson { path, body ->
+            state45.name = "Something else <span class='text-red'>(Paused)</span>"
+            state45.rulePaused = true
+            null
+        }
+
+        when:
+        def result = script.toolSetVisualRule([appId: 45, name: 'New name', paused: true, confirm: true])
+
+        then: 'stripping the decoration must not turn a genuinely wrong name into a pass'
+        result.success == false
+        result.verified == false
+    }
+
     def "edit full replacement (classic) with paused=true commits the pause inside the save POST body"() {
         given:
         enableWrite()
