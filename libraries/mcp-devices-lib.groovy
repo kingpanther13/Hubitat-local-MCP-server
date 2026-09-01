@@ -678,6 +678,22 @@ def _buildContextJson() {
 // endpoint /device/listWithCapabilities/json (id/label/capabilities) -- the ONLY way the app sees
 // devices it isn't granted; the Groovy device model is authorization-scoped. Lightweight uniform
 // records (no attributes/commands/currentStates -- those need an MCP-authorized Groovy device).
+// /hub2/devicesList nests child devices under their parent's `children`, and wraps each record
+// as {key, data:{id,name,...}, children:[...]}. Flatten to the {id, label} shape the caller
+// expects; `name` there is the user-facing label (the driver name is `secondaryName`).
+private List _flattenHub2DeviceTree(nodes, List acc = []) {
+    if (!(nodes instanceof List)) return acc
+    nodes.each { node ->
+        if (!(node instanceof Map)) return
+        def data = node.data
+        if (data instanceof Map && data.id != null) {
+            acc << [id: data.id, label: data.name]
+        }
+        _flattenHub2DeviceTree(node.children, acc)
+    }
+    return acc
+}
+
 private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, format, cursor) {
     if (labelFilter != null && !(labelFilter instanceof String)) {
         throw new IllegalArgumentException("labelFilter must be a string")
@@ -689,27 +705,56 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
     if (format && !["summary", "ids"].contains(resolvedFormat)) {
         throw new IllegalArgumentException("scope='all' supports format 'summary' or 'ids' only (detailed/currentStates require MCP-authorized devices; got '${format}')")
     }
-    def raw
+    // Two inventory sources, tried in order. /device/listWithCapabilities/json carried
+    // capabilities for every device but is gone as of platform 2.5.1 (404). /hub2/devicesList
+    // survives and is still a superset of the authorized set -- the point of scope='all' -- but
+    // exposes no capabilities, so those are filled in from the Groovy model where the app has
+    // access and left empty where it does not (an unauthorized device's capabilities are simply
+    // not knowable from inside the sandbox).
+    def raw = null
+    def sourceEndpoint = "/device/listWithCapabilities/json"
+    def capabilitiesComplete = true
     try {
         def txt = hubInternalGet("/device/listWithCapabilities/json")
-        raw = new groovy.json.JsonSlurper().parseText(txt ?: "[]")
+        def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "[]")
+        if (parsed instanceof List) raw = parsed
     } catch (Exception e) {
-        mcpLog("warn", "device", "hub_list_devices scope='all': /device/listWithCapabilities/json fetch/parse failed: ${e.message}")
-        return [success: false, error: "Failed to fetch the all-hub device list (/device/listWithCapabilities/json): ${e.message}", note: "Endpoint may be unavailable on this firmware; use scope='authorized' (default)."]
+        mcpLog("debug", "device", "hub_list_devices scope='all': /device/listWithCapabilities/json unavailable (${e.message}) -- falling back to /hub2/devicesList")
     }
-    if (!(raw instanceof List)) {
-        mcpLog("warn", "device", "hub_list_devices scope='all': /device/listWithCapabilities/json returned a non-array response")
-        return [success: false, error: "Unexpected /device/listWithCapabilities/json response (expected a JSON array).", note: "Hub firmware may have changed the endpoint contract."]
+    if (raw == null) {
+        sourceEndpoint = "/hub2/devicesList"
+        capabilitiesComplete = false
+        try {
+            def txt = hubInternalGet("/hub2/devicesList")
+            def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "{}")
+            raw = _flattenHub2DeviceTree(parsed instanceof Map ? parsed.devices : null)
+        } catch (Exception e) {
+            mcpLog("warn", "device", "hub_list_devices scope='all': /hub2/devicesList fetch/parse failed: ${e.message}")
+            return [success: false, error: "Failed to fetch the all-hub device list (${sourceEndpoint}): ${e.message}", note: "Endpoint may be unavailable on this firmware; use scope='authorized' (default)."]
+        }
+        if (!(raw instanceof List)) {
+            mcpLog("warn", "device", "hub_list_devices scope='all': /hub2/devicesList returned an unexpected shape")
+            return [success: false, error: "Unexpected /hub2/devicesList response (expected {devices:[...]}).", note: "Hub firmware may have changed the endpoint contract."]
+        }
     }
     def authorizedIds = ((selectedDevices ?: []).collect { it.id?.toString() }.findAll { it != null } as Set)
     (getChildDevices() ?: []).each { def cid = it.id?.toString(); if (cid != null) authorizedIds.add(cid) }
+    // Capability lookup for the fallback source, built once from the authorization-scoped model.
+    def capsById = [:]
+    if (!capabilitiesComplete) {
+        (selectedDevices ?: []).each { dev ->
+            def did = dev?.id?.toString()
+            if (did != null) capsById[did] = (dev.capabilities ?: []).collect { it?.toString() }
+        }
+    }
 
     // Only process actual Map elements; a null/non-object element from a firmware contract drift
     // would otherwise NPE/ClassCast past the structured-error envelope. id is emitted as a String
     // to match the outputSchema and the scope='authorized' path.
     def devices = raw.findAll { it instanceof Map }.collect { d ->
-        def caps = (d.capabilities instanceof List) ? d.capabilities.collect { it?.toString() } : []
         def idStr = d.id?.toString()
+        def caps = (d.capabilities instanceof List) ? d.capabilities.collect { it?.toString() }
+                                                   : (idStr != null ? (capsById[idStr] ?: []) : [])
         [id: idStr, label: d.label, capabilities: caps, mcpAuthorized: idStr != null && authorizedIds.contains(idStr)]
     }
     def unfilteredTotal = devices.size()
@@ -750,6 +795,13 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
         unauthorizedCount: totalCount - authorizedCount,
         note: "scope='all' lists EVERY hub device with mcpAuthorized true/false. mcpAuthorized=false means the device is NOT in this MCP app's device list, so it cannot be read or controlled until added in the hub UI (MCP Rule Server app > device selection). Records are lightweight (id/label/capabilities/mcpAuthorized); use scope='authorized' (default) for full detail/currentStates. mcpAuthorizedCount/unauthorizedCount are over the full filtered set (they sum to total), not the returned page."
     ]
+    result.source = sourceEndpoint
+    if (!capabilitiesComplete) {
+        // Say it plainly rather than let an empty list read as "this device has no capabilities":
+        // capabilityFilter can only match authorized devices on this path.
+        result.capabilitiesPartial = true
+        result.capabilitiesNote = "This firmware no longer serves /device/listWithCapabilities/json, so the inventory came from /hub2/devicesList, which carries no capabilities. Capabilities are filled in for mcpAuthorized devices only; an unauthorized device shows an empty list because its capabilities are not visible to the app. capabilityFilter therefore matches authorized devices only."
+    }
     if (labelFilter) result.labelFilter = labelFilter
     if (capabilityFilter) result.capabilityFilter = capabilityFilter
     if (limit && limit > 0) {

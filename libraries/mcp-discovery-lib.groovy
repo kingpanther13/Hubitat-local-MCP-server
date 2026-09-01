@@ -267,11 +267,17 @@ private bm25Score(List<List<String>> docTokens, List<String> queryTokens) {
     def avgDl = docLengths.sum() / (double) n
     if (avgDl == 0) return new double[n] as List
 
-    // Document frequency: how many docs contain each token
+    // Document frequency: how many docs contain each token.
+    // Keys are namespaced because these maps are subscripted with a COMPUTED key --
+    // a corpus token -- and the platform's sandbox rejects a computed key that
+    // collides with a reflection-ish property name. One real token does collide:
+    // hub_list_devices' `fields` parameter joins the corpus text, so a raw-token
+    // key made every search throw SecurityException. The prefix cannot collide.
     def df = [:]
     docTokens.each { tokens ->
         tokens.toSet().each { token ->
-            df[token] = (df[token] ?: 0) + 1
+            def k = "t_${token}".toString()
+            df[k] = (df[k] ?: 0) + 1
         }
     }
 
@@ -280,12 +286,13 @@ private bm25Score(List<List<String>> docTokens, List<String> queryTokens) {
     docTokens.eachWithIndex { tokens, docIdx ->
         // Term frequency for this doc
         def tf = [:]
-        tokens.each { t -> tf[t] = (tf[t] ?: 0) + 1 }
+        tokens.each { t -> def k = "t_${t}".toString(); tf[k] = (tf[k] ?: 0) + 1 }
 
         def dl = docLengths[docIdx]
         double score = 0.0
 
-        queryTokens.each { qt ->
+        queryTokens.each { rawQt ->
+            def qt = "t_${rawQt}".toString()
             def termFreq = tf[qt] ?: 0
             if (termFreq > 0) {
                 def docFreq = df[qt] ?: 0

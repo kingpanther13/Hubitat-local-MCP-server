@@ -164,10 +164,11 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
 
     // ---- added coverage (PR #289 review gaps) ----------------------------
 
-    def "scope='all' returns a structured error when the endpoint fetch throws"() {
+    def "scope='all' returns a structured error when BOTH inventory endpoints fail"() {
         given:
         settingsMap.selectedDevices = []
         hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("boom") }
+        hubGet.register('/hub2/devicesList') { params -> throw new RuntimeException("boom too") }
 
         when:
         def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
@@ -177,17 +178,90 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
         result.note?.toLowerCase()?.contains("authorized")
     }
 
-    def "scope='all' returns a structured error when the endpoint returns a non-array"() {
+    def "scope='all' returns a structured error when the fallback endpoint returns a non-array"() {
         given:
         settingsMap.selectedDevices = []
         hubGet.register('/device/listWithCapabilities/json') { params -> JsonOutput.toJson([unexpected: "object"]) }
+        hubGet.register('/hub2/devicesList') { params -> JsonOutput.toJson([devices: "not-a-list"]) }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then: "a non-array primary falls through to the fallback, so the error names the fallback"
+        result.success == false
+        result.error?.contains("/hub2/devicesList")
+    }
+
+    // Platform 2.5.1 removed /device/listWithCapabilities/json (404). /hub2/devicesList is still
+    // a superset of the authorized set, so scope='all' keeps working -- minus capabilities, which
+    // that endpoint does not carry and which are unknowable for a device the app cannot see.
+
+    def "scope='all' falls back to hub2 devicesList when the capabilities endpoint is gone"() {
+        given:
+        settingsMap.selectedDevices = [dev(id: 80)]
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([suggestBackup: false, devices: [
+                [key: "DEV-80", data: [id: 80, name: "Authorized Switch"], children: [
+                    [key: "DEV-81", data: [id: 81, name: "Child Of 80"], children: []]
+                ]],
+                [key: "DEV-99", data: [id: 99, name: "Unauthorized Motion"], children: []]
+            ]])
+        }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then: "every device is listed, children flattened, and the source + partial flag are explicit"
+        result.scope == "all"
+        result.source == "/hub2/devicesList"
+        result.capabilitiesPartial == true
+        result.total == 3
+        result.devices*.id.sort() == ["80", "81", "99"]
+        result.devices.find { it.id == "80" }.label == "Authorized Switch"
+
+        and: "authorization is still tagged from the app's own device list"
+        result.devices.find { it.id == "80" }.mcpAuthorized == true
+        result.devices.find { it.id == "99" }.mcpAuthorized == false
+    }
+
+    def "scope='all' fallback leaves an unauthorized device's capabilities empty rather than guessing"() {
+        given:
+        settingsMap.selectedDevices = [new TestDevice(id: 80, name: "D80", label: "Authorized Switch",
+            roomName: null, capabilities: ["Switch", "Actuator"], supportedAttributes: [],
+            supportedCommands: [], attributeValues: [:])]
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [
+                [key: "DEV-80", data: [id: 80, name: "Authorized Switch"], children: []],
+                [key: "DEV-99", data: [id: 99, name: "Unauthorized Motion"], children: []]
+            ]])
+        }
 
         when:
         def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
 
         then:
-        result.success == false
-        result.error?.contains("expected a JSON array")
+        result.devices.find { it.id == "80" }.capabilities == ["Switch", "Actuator"]
+        result.devices.find { it.id == "99" }.capabilities == []
+        result.capabilitiesNote?.contains("unauthorized")
+    }
+
+    def "scope='all' keeps the capabilities endpoint as the primary source when it still answers"() {
+        given:
+        settingsMap.selectedDevices = [dev(id: 80)]
+        hubGet.register('/device/listWithCapabilities/json') { params ->
+            JsonOutput.toJson([[id: 80, label: "A", capabilities: ["Switch"]], [id: 99, label: "B", capabilities: ["MotionSensor"]]])
+        }
+        hubGet.register('/hub2/devicesList') { params -> throw new RuntimeException("must not be reached") }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then:
+        result.source == "/device/listWithCapabilities/json"
+        result.capabilitiesPartial == null
+        result.devices.find { it.id == "99" }.capabilities == ["MotionSensor"]
     }
 
     def "scope='all' format='ids' returns integer ids (strings cast back) and no devices key"() {

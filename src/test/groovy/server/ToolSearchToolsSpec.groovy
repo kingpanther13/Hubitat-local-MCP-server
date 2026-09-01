@@ -295,4 +295,28 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         and: 'and BOTH hub_list_files rows are specifically in scope: a bare total is satisfied by two unrelated summaries while the rows this PR edited are skipped by the regex'
         listFilesChecked == 2
     }
+
+    // The BM25 maps are subscripted with a COMPUTED key -- a corpus token -- and the platform
+    // sandbox rejects a computed key that collides with a reflection-ish property name. The
+    // catalog really does produce one: hub_list_devices' `fields` parameter is joined into the
+    // corpus text, so an unprefixed key made every search throw. These pin that the token is
+    // present AND that searching for it still scores, which is what the prefix buys.
+
+    def "the live corpus contains the sandbox-reserved token that broke raw-key scoring"() {
+        when:
+        def corpus = script.buildToolSearchCorpus(null)
+        def tokens = corpus.collectMany { script.bm25Tokenize(script._bm25DocText(it)) } as Set
+
+        then: 'the token is real, so a regression here is not hypothetical'
+        tokens.contains('fields')
+    }
+
+    def "a query for a sandbox-reserved token still ranks its tool"() {
+        when:
+        def result = script.toolSearchTools([query: 'fields', maxResults: 25])
+
+        then: 'scoring completes and the tool whose parameter contributes the token is found'
+        result.results != null
+        result.results*.tool.contains('hub_list_devices')
+    }
 }
