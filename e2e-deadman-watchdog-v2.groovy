@@ -1132,6 +1132,63 @@ def adminForceDeleteInstalledApp(args) {
 // forcedelete+verify-gone path. The whole loop runs loopback-local on the hub, so CI makes ONE cloud
 // round-trip instead of N -- replacing the disarm's per-item reap loop and the post-restore
 // --cleanup-only RM sweep. Hard-scoped to the prefix (never a real app); confirm:true required.
+// Hub variables have NO app-facing delete API -- there is no removeGlobalVar/removeGlobalVariable on
+// the app class (an earlier revision called removeGlobalVariable and every purge failed with
+// "No signature of method", so the variables leg never once worked and BAT_E2E_ vars accumulated on
+// the test hub). resources/hub2-source/README.md records why: the Vue HubVariables component is a
+// non-functional stub and "the classic hubVar wizard is the real variable-CRUD contract". So drive
+// that wizard, the same two clicks the main server's hub_delete_variable uses.
+private Integer findHubVariablesAppId() {
+    try {
+        // Name-addressed alias for the singleton; the redirect Location carries the instance id.
+        def r = hubGetStatus("/installedapp/direct/hubVariables", [:])
+        def loc = r?.location?.toString()
+        if (loc) {
+            def m = (loc =~ /(\d+)/)
+            if (m.find()) return m.group(1).toInteger()
+        }
+    } catch (Exception e) {
+        mcpAdminLog "findHubVariablesAppId failed: ${e.message}"
+    }
+    return null
+}
+
+// One wizard button click on the hubVar page. Mirrors _rmClickAppButton's body shape from
+// hubitat-mcp-server.groovy, minus the RM-only caching.
+private Map clickHubVarButton(Integer appId, String buttonName, String stateAttribute) {
+    def body = [id: appId.toString(), name: buttonName,
+                ("settings[${buttonName}]".toString()): "clicked",
+                ("${buttonName}.type".toString()): "button",
+                formAction: "update", currentPage: "hubVar",
+                pageBreadcrumbs: '["mainPage"]']
+    if (stateAttribute) body.stateAttribute = stateAttribute
+    return hubPostForm("/installedapp/btn", body)
+}
+
+// deleteGV opens the confirm prompt keyed on the variable name; delConfirm commits. The first click
+// sequence after a fresh create/edit can be dropped by the hub (a state-machine race that priming
+// alone does not reliably defeat), so the whole sequence is retried once -- the same two-attempt
+// shape hub_delete_variable uses, for the same empirically-observed reason.
+private boolean deleteHubVariable(Integer appId, String varName) {
+    for (int attempt = 0; attempt < 2; attempt++) {
+        try {
+            hubGet("/installedapp/configure/json/${appId}", [:])
+            hubGet("/installedapp/statusJson/${appId}", [:])
+        } catch (Exception ignore) { /* priming is best-effort */ }
+        clickHubVarButton(appId, varName, "deleteGV")
+        clickHubVarButton(appId, "delConfirm", null)
+        for (int v = 0; v < 8; v++) {
+            def stillThere = null
+            try { stillThere = getGlobalVar(varName) } catch (Exception ignore) { stillThere = null }
+            if (stillThere == null) return true
+            if (v < 7) {
+                try { pauseExecution(300) } catch (Exception ignore) { }
+            }
+        }
+    }
+    return false
+}
+
 // SINGLE-FLIGHT LATCH + SHORT RESULT CACHE -- the same protection actAndRecord has, for the same
 // reason. This sweep takes minutes (N apps x forcedelete + verify-gone), which is far longer than
 // the ~10s cloud-relay timeout, so CI's retry-on-dropped-response fires while the FIRST sweep is
@@ -1208,11 +1265,19 @@ private Map purgeE2eArtifactsLocked(String prefix) {
     def varsFailed = []
     try {
         def allVars = getAllGlobalVars() ?: [:]
-        allVars.keySet().findAll { (it instanceof String) && it.startsWith(prefix) }.each { vn ->
-            try {
-                if (removeGlobalVariable(vn)) { varsDeleted << vn }
-                else { varsFailed << [name: vn, error: "removeGlobalVariable returned false (in use or already gone)"] }
-            } catch (Exception e) { varsFailed << [name: vn, error: e.message] }
+        def targetVars = allVars.keySet().findAll { (it instanceof String) && it.startsWith(prefix) }
+        if (targetVars) {
+            Integer hvAppId = findHubVariablesAppId()
+            if (hvAppId == null) {
+                varsFailed << [name: "*", error: "could not resolve the Hub Variables app id via /installedapp/direct/hubVariables"]
+            } else {
+                targetVars.each { vn ->
+                    try {
+                        if (deleteHubVariable(hvAppId, vn)) { varsDeleted << vn }
+                        else { varsFailed << [name: vn, error: "hubVar wizard completed but the variable still exists (likely in use by a rule)"] }
+                    } catch (Exception e) { varsFailed << [name: vn, error: e.message] }
+                }
+            }
         }
     } catch (Exception e) {
         varsFailed << [name: "*", error: "getAllGlobalVars failed: ${e.message}"]
@@ -1898,7 +1963,7 @@ def getAdminToolDefinitions() {
          inputSchema: [type: "object", properties: [type: [type: "string", enum: ["app", "driver", "library"]], id: [type: "string"], confirm: [type: "boolean"]], required: ["type", "id", "confirm"]]],
         [name: "hub_force_delete_app", description: "Force-delete an INSTALLED-APP instance (e.g. an RM rule) via /installedapp/forcedelete/<id>/quiet. confirm:true required.",
          inputSchema: [type: "object", properties: [id: [type: "string"], confirm: [type: "boolean"]], required: ["id", "confirm"]]],
-        [name: "hub_purge_e2e_artifacts", description: "One-call LOCAL sweep of leftover test fixtures: force-delete every installed-app instance whose name starts with prefix (default BAT_E2E_) AND removeGlobalVariable every matching hub variable, all loopback-local on the hub so CI pays ONE cloud round-trip instead of N. Virtual devices are NOT covered (child devices of the main app). Returns per-class {deleted/failed} counts. confirm:true required.",
+        [name: "hub_purge_e2e_artifacts", description: "One-call LOCAL sweep of leftover test fixtures: force-delete every installed-app instance whose name starts with prefix (default BAT_E2E_) AND delete every matching hub variable by driving the classic hubVar wizard (there is no app-facing global-variable delete API), all loopback-local on the hub so CI pays ONE cloud round-trip instead of N. Single-flight: a call arriving while a sweep is running is a no-op, and one arriving just after gets the finished sweep's cached result -- never retry it. Virtual devices are NOT covered (child devices of the main app). Returns per-class {deleted/failed} counts. confirm:true required.",
          inputSchema: [type: "object", properties: [prefix: [type: "string", description: "Name prefix to purge; default BAT_E2E_."], confirm: [type: "boolean"]], required: ["confirm"]]],
         [name: "hub_set_app_disabled", description: "Toggle an installed app's disabled flag (the admin UI red-X) via POST /installedapp/disable; verified by read-back. confirm:true required.",
          inputSchema: [type: "object", properties: [appId: [type: "string"], disable: [type: "boolean"], confirm: [type: "boolean"]], required: ["appId", "disable", "confirm"]]],

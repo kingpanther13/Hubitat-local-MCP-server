@@ -1127,4 +1127,93 @@ class WatchdogV2Spec extends Specification {
         res.note?.contains('physical power cycle')
     }
 
+    // ---- hub-variable purge drives the classic hubVar wizard --------------------------------
+    // There is no removeGlobalVar/removeGlobalVariable on the app class. An earlier revision called
+    // one, so every purge failed with "No signature of method" and the variables leg never worked.
+
+    def "purging a hub variable drives the deleteGV then delConfirm wizard clicks"() {
+        given:
+        List<Map> posts = []
+        int getGlobalCalls = 0
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+        script.metaClass.hubGetStatus = { String p, Map q ->
+            [status: 302, location: '/installedapp/configure/9001', data: null]
+        }
+        script.metaClass.hubPostForm = { String p, Map b -> posts << [path: p, body: b]; [status: 200, data: 'ok'] }
+        script.metaClass.getAllGlobalVars = { -> [BAT_E2E_leftover: [value: 1]] }
+        // Gone after the wizard commits, so the verify loop succeeds on its first check.
+        script.metaClass.getGlobalVar = { String n -> getGlobalCalls++; null }
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then: "both clicks land on /installedapp/btn, keyed the way the hubVar page expects"
+        posts.size() == 2
+        posts.every { it.path == '/installedapp/btn' }
+        posts[0].body.name == 'BAT_E2E_leftover'
+        posts[0].body.stateAttribute == 'deleteGV'
+        posts[0].body.currentPage == 'hubVar'
+        posts[1].body.name == 'delConfirm'
+
+        and: "and it is reported as deleted, not as a failure"
+        res.variablesDeletedCount == 1
+        res.variablesFailedCount == 0
+        res.variablesDeleted == ['BAT_E2E_leftover']
+    }
+
+    def "a hub variable that survives the wizard is reported failed, never as deleted"() {
+        given:
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+        script.metaClass.hubGetStatus = { String p, Map q ->
+            [status: 302, location: '/installedapp/configure/9001', data: null]
+        }
+        script.metaClass.hubPostForm = { String p, Map b -> [status: 200, data: 'ok'] }
+        script.metaClass.pauseExecution = { long ms -> }
+        script.metaClass.getAllGlobalVars = { -> [BAT_E2E_inuse: [value: 1]] }
+        script.metaClass.getGlobalVar = { String n -> [value: 1] }   // never goes away
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then: "an in-use variable the wizard refuses is surfaced, not silently counted as gone"
+        res.variablesDeletedCount == 0
+        res.variablesFailedCount == 1
+        res.variablesFailed[0].name == 'BAT_E2E_inuse'
+        res.success == false
+    }
+
+    def "an unresolvable Hub Variables app is reported once, not per variable"() {
+        given:
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+        script.metaClass.hubGetStatus = { String p, Map q -> [status: null, location: null, data: null] }
+        script.metaClass.getAllGlobalVars = { -> [BAT_E2E_a: [value: 1], BAT_E2E_b: [value: 2]] }
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then:
+        res.variablesFailedCount == 1
+        res.variablesFailed[0].name == '*'
+        res.variablesFailed[0].error.contains('Hub Variables app id')
+    }
+
+    def "variables that do not match the prefix are never touched"() {
+        given:
+        List<Map> posts = []
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+        script.metaClass.hubGetStatus = { String p, Map q ->
+            [status: 302, location: '/installedapp/configure/9001', data: null]
+        }
+        script.metaClass.hubPostForm = { String p, Map b -> posts << [path: p, body: b]; [status: 200, data: 'ok'] }
+        script.metaClass.getAllGlobalVars = { -> [HomeMode: [value: 'x'], Thermostat_Target: [value: 70]] }
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then: "a prefix-scoped sweep must never reach a real hub variable"
+        posts.isEmpty()
+        res.variablesDeletedCount == 0
+        res.variablesFailedCount == 0
+    }
+
 }
