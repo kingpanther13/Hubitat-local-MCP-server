@@ -70,14 +70,14 @@ def main():
         print("::error::no switch device available")
         return 1
 
-    def graph(decision_type):
+    def graph(dec_cfg):
         return {
             "version": 1,
             "nodes": [
                 {"id": "t1", "kind": "trigger", "type": "switch",
                  "config": {"switches": [sw], "switchEvent": "Turns off"}},
                 {"id": "tm", "kind": "merge", "type": "triggerMerge", "config": {}},
-                {"id": "d1", "kind": "decision", "type": decision_type, "config": {}},
+                {"id": "d1", "kind": "decision", "type": "all", "config": dec_cfg},
                 {"id": "a1", "kind": "action", "type": "turnOff", "config": {"switches": [sw]}},
             ],
             "edges": [
@@ -87,10 +87,14 @@ def main():
             ],
         }
 
-    candidates = [(f"decision type '{g}'", graph(g)) for g in [
-        "if", "conditions", "conditionGroup", "expression", "boolean", "evaluate",
-        "test", "branch", "check", "all", "and", "rule",
-    ]]
+    candidates = [
+        ("decision all + empty conditions", graph({"conditions": []})),
+        ("decision all + switch condition", graph({"conditions": [
+            {"type": "switch", "switches": [sw], "comparator": "is", "value": "off"}]})),
+        ("decision all + conditions with kind/config", graph({"conditions": [
+            {"kind": "condition", "type": "switch",
+             "config": {"switches": [sw], "state": "off"}}]})),
+    ]
 
     for i, (label, definition) in enumerate(candidates, start=1):
         probe(i, label, definition)
