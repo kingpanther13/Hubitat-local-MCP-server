@@ -265,19 +265,34 @@ private Map _validateMcpDeviceScope(scopeValue) {
     // present (or no longer exists on the hub) is a harmless no-op, and forcing an unknown-id read
     // fetch there would block a legitimate cleanup of a since-deleted device.
     if (mode in ["replace", "add"] && !requestedIds.isEmpty()) {
-        def raw
+        // Same two-source fallback as hub_list_devices scope='all': the capabilities endpoint is
+        // gone as of platform 2.5.1 (404), and /hub2/devicesList is still a full inventory. Only
+        // ids are needed here, which that endpoint carries, so validation is unaffected.
+        def raw = null
+        def sourceEndpoint = "/device/listWithCapabilities/json"
         try {
             def txt = hubInternalGet("/device/listWithCapabilities/json")
-            raw = new groovy.json.JsonSlurper().parseText(txt ?: "[]")
+            def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "[]")
+            if (parsed instanceof List) raw = parsed
         } catch (Exception e) {
-            mcpLog("warn", "developer-mode", "hub_update_mcp_settings selectedDevices: /device/listWithCapabilities/json fetch/parse failed: ${e.message}")
-            // isError:true so handleToolsCall hoists this onto the JSON-RPC envelope -- a failed
-            // validation that wrote nothing must reach the client AS an error, not a quiet result.
-            return [success: false, isError: true, error: "Failed to fetch the all-hub device list (/device/listWithCapabilities/json) to validate selectedDevices: ${e.message}", note: "Endpoint may be unavailable on this firmware; nothing was changed."]
+            mcpLog("debug", "developer-mode", "hub_update_mcp_settings selectedDevices: /device/listWithCapabilities/json unavailable (${e.message}) -- falling back to /hub2/devicesList")
+        }
+        if (raw == null) {
+            sourceEndpoint = "/hub2/devicesList"
+            try {
+                def txt = hubInternalGet("/hub2/devicesList")
+                def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "{}")
+                raw = _flattenHub2DeviceTree(parsed instanceof Map ? parsed.devices : null)
+            } catch (Exception e) {
+                mcpLog("warn", "developer-mode", "hub_update_mcp_settings selectedDevices: /hub2/devicesList fetch/parse failed: ${e.message}")
+                // isError:true so handleToolsCall hoists this onto the JSON-RPC envelope -- a failed
+                // validation that wrote nothing must reach the client AS an error, not a quiet result.
+                return [success: false, isError: true, error: "Failed to fetch the all-hub device list (${sourceEndpoint}) to validate selectedDevices: ${e.message}", note: "Endpoint may be unavailable on this firmware; nothing was changed."]
+            }
         }
         if (!(raw instanceof List)) {
-            mcpLog("warn", "developer-mode", "hub_update_mcp_settings selectedDevices: /device/listWithCapabilities/json returned a non-array response")
-            return [success: false, isError: true, error: "Unexpected /device/listWithCapabilities/json response (expected a JSON array); cannot validate selectedDevices.", note: "Hub firmware may have changed the endpoint contract; nothing was changed."]
+            mcpLog("warn", "developer-mode", "hub_update_mcp_settings selectedDevices: ${sourceEndpoint} returned an unexpected shape")
+            return [success: false, isError: true, error: "Unexpected ${sourceEndpoint} response; cannot validate selectedDevices.", note: "Hub firmware may have changed the endpoint contract; nothing was changed."]
         }
         def hubDeviceIds = (raw.findAll { it instanceof Map }.collect { it.id?.toString() }.findAll { it != null }) as Set
         def unknown = requestedIds.findAll { !hubDeviceIds.contains(it) }

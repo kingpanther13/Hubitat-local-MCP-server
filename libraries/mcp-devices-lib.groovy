@@ -678,26 +678,6 @@ def _buildContextJson() {
 // endpoint /device/listWithCapabilities/json (id/label/capabilities) -- the ONLY way the app sees
 // devices it isn't granted; the Groovy device model is authorization-scoped. Lightweight uniform
 // records (no attributes/commands/currentStates -- those need an MCP-authorized Groovy device).
-// /hub2/devicesList nests child devices under their parent's `children`, and wraps each record
-// as {key, data:{id,name,...}, children:[...]}. Flatten to the {id, label} shape the caller
-// expects; `name` there is the user-facing label (the driver name is `secondaryName`).
-private List _flattenHub2DeviceTree(nodes, List acc = null) {
-    // A non-List at the TOP level means the contract moved -- return null so the caller
-    // raises it, rather than an empty list that would read as "this hub has no devices".
-    // Nested `children` legitimately arrive absent, so those recurse into the accumulator.
-    if (!(nodes instanceof List)) return acc
-    if (acc == null) acc = []
-    nodes.each { node ->
-        if (!(node instanceof Map)) return
-        def data = node.data
-        if (data instanceof Map && data.id != null) {
-            acc << [id: data.id, label: data.name]
-        }
-        _flattenHub2DeviceTree(node.children, acc)
-    }
-    return acc
-}
-
 private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, format, cursor) {
     if (labelFilter != null && !(labelFilter instanceof String)) {
         throw new IllegalArgumentException("labelFilter must be a string")

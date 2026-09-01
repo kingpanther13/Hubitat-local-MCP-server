@@ -7299,6 +7299,26 @@ private Map _rmPagePostResponse(postResp) {
  * appSettings[] with marshal flags, eventSubscriptions[], scheduledJobs[],
  * appState[]. This is the ground-truth post-write verification surface.
  */
+// /hub2/devicesList nests child devices under their parent's `children`, and wraps each record
+// as {key, data:{id,name,...}, children:[...]}. Flatten to the {id, label} shape the caller
+// expects; `name` there is the user-facing label (the driver name is `secondaryName`).
+private List _flattenHub2DeviceTree(nodes, List acc = null) {
+    // A non-List at the TOP level means the contract moved -- return null so the caller
+    // raises it, rather than an empty list that would read as "this hub has no devices".
+    // Nested `children` legitimately arrive absent, so those recurse into the accumulator.
+    if (!(nodes instanceof List)) return acc
+    if (acc == null) acc = []
+    nodes.each { node ->
+        if (!(node instanceof Map)) return
+        def data = node.data
+        if (data instanceof Map && data.id != null) {
+            acc << [id: data.id, label: data.name]
+        }
+        _flattenHub2DeviceTree(node.children, acc)
+    }
+    return acc
+}
+
 private Map _rmFetchStatusJson(Integer appId) {
     def responseText = hubInternalGet("/installedapp/statusJson/${appId}")
     if (!responseText) {

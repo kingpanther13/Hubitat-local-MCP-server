@@ -786,4 +786,57 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
         where:
         useGateways << [true, false]
     }
+
+    // Platform 2.5.1 removed /device/listWithCapabilities/json. Id validation falls back to
+    // /hub2/devicesList, which carries every device id -- all this check needs.
+
+    def "selectedDevices validation falls back to hub2 devicesList when the capabilities endpoint is gone"() {
+        given:
+        enableDevModeAndWrite()
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [
+                [key: "DEV-11", data: [id: 11, name: "Eleven"], children: [
+                    [key: "DEV-12", data: [id: 12, name: "Twelve"], children: []]
+                ]]
+            ]])
+        }
+
+        when:
+        def result = setScope([11, 12])
+
+        then: "ids present in the fallback inventory validate, children included"
+        result.success == true
+    }
+
+    def "selectedDevices validation still names an unknown id on the fallback path"() {
+        given:
+        enableDevModeAndWrite()
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [[key: "DEV-11", data: [id: 11, name: "Eleven"], children: []]]])
+        }
+
+        when:
+        setScope([11, 999])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("999")
+    }
+
+    def "selectedDevices validation errors when BOTH inventory endpoints fail"() {
+        given:
+        enableDevModeAndWrite()
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("boom") }
+        hubGet.register('/hub2/devicesList') { params -> throw new RuntimeException("boom too") }
+
+        when:
+        def result = setScope([11])
+
+        then: "nothing is written and the failure reaches the client as an error"
+        result.success == false
+        result.isError == true
+        result.error.contains("/hub2/devicesList")
+    }
 }
