@@ -8036,7 +8036,13 @@ class TestRunner:
             else:
                 assert rp["response"].get("success") is True, f"rename+pause reported failure: {rp['response']}"
             got = self._get_visual_rule(app_id)
-            assert got.get("name") == renamed, f"rename did not land: {got.get('name')!r}"
+            # A paused rule's name carries the builder's own decoration -- the literal constant
+            # " <span class='text-red'>(Paused)</span>". Strip markup and that one suffix before
+            # comparing, or a rename that landed reads as a failure.
+            got_name = re.sub(r"<[^>]+>", "", str(got.get("name") or "")).strip()
+            if got.get("rulePaused") is True and got_name.endswith("(Paused)"):
+                got_name = got_name[: -len("(Paused)")].strip()
+            assert got_name == renamed, f"rename did not land: {got.get('name')!r}"
             assert got.get("rulePaused") is True, f"pause did not land: {got}"
 
             # LIST-MODE paused (issue #359): the no-args listing surfaces a suffix-detected
