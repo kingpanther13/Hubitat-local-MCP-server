@@ -1178,9 +1178,12 @@ private boolean deleteHubVariable(Integer appId, String varName) {
         clickHubVarButton(appId, varName, "deleteGV")
         clickHubVarButton(appId, "delConfirm", null)
         for (int v = 0; v < 8; v++) {
-            def stillThere = null
-            try { stillThere = getGlobalVar(varName) } catch (Exception ignore) { stillThere = null }
-            if (stillThere == null) return true
+            // A THROW is not evidence of deletion -- only a clean read returning null is. Treating
+            // the exception as "gone" (which the enumerate-then-delete flow would let through
+            // silently) would report a variable purged that is still on the hub.
+            def gone = false
+            try { gone = (getGlobalVar(varName) == null) } catch (Exception ignore) { gone = false }
+            if (gone) return true
             if (v < 7) {
                 try { pauseExecution(300) } catch (Exception ignore) { }
             }

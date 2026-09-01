@@ -1216,4 +1216,24 @@ class WatchdogV2Spec extends Specification {
         res.variablesFailedCount == 0
     }
 
+    def "a throwing getGlobalVar is never mistaken for a deleted variable"() {
+        given: "the read fails rather than reporting absence -- that is unknown, not gone"
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+        script.metaClass.hubGetStatus = { String p, Map q ->
+            [status: 302, location: '/installedapp/configure/9001', data: null]
+        }
+        script.metaClass.hubPostForm = { String p, Map b -> [status: 200, data: 'ok'] }
+        script.metaClass.pauseExecution = { long ms -> }
+        script.metaClass.getAllGlobalVars = { -> [BAT_E2E_unreadable: [value: 1]] }
+        script.metaClass.getGlobalVar = { String n -> throw new RuntimeException('read failed') }
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then: "reported as a failure, so a variable still on the hub is never claimed purged"
+        res.variablesDeletedCount == 0
+        res.variablesFailedCount == 1
+        res.variablesFailed[0].name == 'BAT_E2E_unreadable'
+    }
+
 }
