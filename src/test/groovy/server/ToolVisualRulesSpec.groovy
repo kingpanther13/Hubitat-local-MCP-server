@@ -726,6 +726,32 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.verified == true
     }
 
+    def "RESUME of a paused rule verifies, despite the decoration on the pre-write name"() {
+        given: 'paused, so the name the fallback reads carries the hub decoration'
+        enableWrite()
+        def state48 = [name: "BAT_E2E_VisualRuleRenamed <span class='text-red'>(Paused)</span>",
+                       rulePaused: true, promptHistory: []] + classicDefinition()
+        hubGet.register('/app/ruleBuilder20Json/48') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/48') { params -> json(state48) }
+        stubPostJson { path, body ->
+            // Resuming clears the decoration, so the read-back name is BARE.
+            state48.name = 'BAT_E2E_VisualRuleRenamed'
+            state48.rulePaused = false
+            null
+        }
+
+        when: 'resume only -- no name is passed, so requestedName falls back to the pre-write name'
+        def result = script.toolSetVisualRule([appId: 48, paused: false, confirm: true])
+
+        then: 'the decorated fallback must not be compared against the bare read-back'
+        // Before the fix requestedName kept the "(Paused)" decoration while `actual` was stripped,
+        // and the decoration-tolerant branch needs rulePaused==true -- which the resume had just
+        // made false. So every resume of a paused rule reported a failure on a write that landed.
+        result.success == true
+        result.verified == true
+        result.rulePaused == false
+    }
+
     def "full replacement with paused=true verifies past the decoration"() {
         given:
         enableWrite()

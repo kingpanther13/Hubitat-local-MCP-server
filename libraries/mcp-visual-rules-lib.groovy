@@ -242,6 +242,16 @@ private Map _vrbNormalizeDefinition(def rawDefinition) {
     return [map: map, format: _vrbDetectDefinitionFormat(map)]
 }
 
+// The rule's name with the hub's paused decoration removed. Only strips when the rule actually
+// reads back paused, so a rule a user genuinely named "... (Paused)" keeps its name.
+private String _vrbBareName(Object raw, boolean paused) {
+    def s = stripAppConfigHtml(raw)?.toString()
+    if (s != null && paused && s.endsWith("(Paused)")) {
+        return s.substring(0, s.length() - "(Paused)".length()).trim()
+    }
+    return s
+}
+
 private boolean _vrbNameMatches(Map after, String requestedName) {
     // Read-back name comparison for every save path. A PAUSED rule comes back carrying the
     // hub's own "(Paused)" decoration, usually HTML-wrapped ("Name <span
@@ -415,7 +425,13 @@ private Map _toolSetVisualRuleImpl(args) {
     // Rename and/or pause without replacing the definition: re-save the EXISTING nodes under
     // the new name (the save endpoints have no rename-only verb), then apply the pause flag.
     try {
-        def requestedName = (name ?: detected.data.name)?.toString()
+        // Strip the hub's "(Paused)" decoration off the fallback. On a RESUME the caller sends no
+        // name, so requestedName falls back to the name read BEFORE the write -- and the rule was
+        // paused then, so that string carries the decoration while the post-resume read-back is
+        // bare. _vrbNameMatches strips `actual` but not `requestedName`, and its decoration-
+        // tolerant branch needs rulePaused==true, which the resume just made false: every resume
+        // of a paused rule therefore reported verified:false on a write that had landed.
+        def requestedName = (name ?: _vrbBareName(detected.data?.name, detected.data?.rulePaused == true))?.toString()
         def classicBodyCarriedPause = false
         if (name && name != detected.data.name?.toString()) {
             // A never-saved graph rule reads back a blank ruleJson; the builder UI would save
