@@ -256,10 +256,17 @@ jobs:
             curl -sS --max-time 180 -X POST "$MCP_URL" -H "Content-Type: application/json" \
               --data-binary "$1" | jq -r '.result.content[0].text // empty'
           }
-          BEFORE=$(call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{"includeAppUpdate":true}}}')
+          BEFORE=$(curl -sS --max-time 25 -X POST "$MCP_URL" -H "Content-Type: application/json" \
+            --data-binary '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{"includeAppUpdate":true}}}' \
+            | jq -r '.result.content[0].text // empty' || true)
+          if [ -z "$BEFORE" ]; then
+            echo "::error::hub did not answer hub_get_info within 25s -- it is DOWN or unreachable."; exit 1
+          fi
           OLD=$(printf '%s' "$BEFORE" | jq -r '.firmwareVersion // "unknown"')
           echo "::notice::current firmware=${OLD}"
           echo "platformUpdate: $(printf '%s' "$BEFORE" | jq -c '.platformUpdate // "none"')"
+          echo "::notice::hub is UP and answering"
+          exit 0
           PENDING=$(printf '%s' "$BEFORE" | jq -r 'if (.platformUpdate|type)=="object" then (.platformUpdate.version // "yes") elif (.platformUpdate|type)=="string" then .platformUpdate else empty end')
           if [ -z "$PENDING" ] || [ "$PENDING" = "null" ] || [ "$PENDING" = "false" ] || [ "$PENDING" = "none" ]; then
             echo "::notice::No pending platform update -- hub already current at ${OLD}."
