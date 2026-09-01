@@ -129,6 +129,43 @@ user-facing app type ("Visual Rules Builder" parent; children are hidden type
   reaches it. Its endpoint is live, though — a graph-format rule answers on
   `ruleBuilder20Json` and a classic rule does not, which is how the MCP VRB
   tools detect a rule's serialization.
+  **LIVE as of 2.5.1.138** ("Added Visual Rule Builder 2.0 (beta)"), which also
+  makes it the format newly-created VRB rules speak on such a hub. The bundle is
+  now code-split: the shell (`vue-hub2.min.js`) only registers the route, and the
+  component body lives in the lazily-loaded chunk
+  `/ui2/js/vue-hub2-visual-rule-builder-20.min.js` — grep THAT file, not the
+  shell, for anything VRB 2.0. The chunk-id -> filename table is the `.u=function(e)`
+  map in the shell (`"js/vue-hub2-" + {…}[e] + ".min.js"`).
+
+### VRB 2.0 graph schema (fw 2.5.1.173, read from the chunk + validator-confirmed)
+
+Every node is `{id, kind, type, config}` — `kind` is the CATEGORY, `type` the
+variety within it, and all per-node fields live inside `config` (device ids go in
+`config.switches`, not `deviceIds`). This is NOT the shape the older prose above
+implies, and a graph built the old way saves but fails validation.
+
+- `kind: "trigger"` — `type` is the trigger variety (e.g. `"switch"`).
+- `kind: "merge"`, `type: "triggerMerge"` — REQUIRED, exactly one. All triggers
+  edge into it on port `next`.
+- `kind: "decision"`, `type: "all"|"any"` (null defaults to `all`; `any` is OR and
+  must carry at least one condition) — REQUIRED, exactly one.
+  `config.conditions` must be an array; empty means unconditional.
+- `kind: "merge"`, `type: "branchMerge"` — present only when actions rejoin after
+  the if/else (the builder's `commonActions`).
+- `kind: "action"` — `type` is the action variety (e.g. `"turnOff"`).
+
+Edges: `triggers -> triggerMerge (next)`, `triggerMerge -> decision (next)`,
+`decision -> then-chain (true)`, `decision -> else-chain (false)`, and each chain
+links onward on `next`, optionally terminating at the `branchMerge`.
+
+The engine rejects a non-conforming document with *"The rule is not a Visual Rule
+Builder 2.0 schema version 1 document."*; per-node problems come back in
+`validationErrors` naming the node and field, which makes that endpoint a usable
+oracle when the schema shifts again.
+
+Paused rules: the builder appends the literal constant
+`" <span class='text-red'>(Paused)</span>"` to the rule NAME, so any read-back
+name comparison must strip HTML and tolerate that suffix.
 
 ## Endpoints discovered
 
