@@ -265,9 +265,15 @@ jobs:
             echo "::notice::No pending platform update -- hub already current at ${OLD}."
             exit 0
           fi
-          BACKUP=$(call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true,"bestPracticeKey":"bps-ack-299"}}}')
-          printf '%s' "$BACKUP" | jq -e '.success == true' >/dev/null || {
-            echo "::error::real backup failed; hub_update_firmware needs one. $(printf '%s' "$BACKUP" | head -c 300)"; exit 1; }
+          # Best-effort: the 24h gate may already be satisfied by an earlier
+          # backup, and the hub declines a fresh one while it is busy. The
+          # authoritative verdict is hub_update_firmware's own gate, checked below.
+          BACKUP=$(call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hub_create_backup","arguments":{"confirm":true,"bestPracticeKey":"bps-ack-299"}}}' 2>/dev/null || true)
+          if printf '%s' "$BACKUP" | jq -e '.success == true' >/dev/null 2>&1; then
+            echo "  fresh backup stamped"
+          else
+            echo "::warning::no fresh backup ($(printf '%s' "$BACKUP" | head -c 160)) -- relying on an existing one inside the 24h window"
+          fi
           RESP=$(call '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"hub_update_firmware","arguments":{"confirm":true}}}' || true)
           echo "update response head: $(printf '%s' "$RESP" | head -c 300 | tr '\n' ' ')"
           if printf '%s' "$RESP" | grep -qiE "SAFETY CHECK|BACKUP REQUIRED|Write tools are disabled"; then
