@@ -70,43 +70,37 @@ def main():
         print("::error::no switch device available")
         return 1
 
+    def trig(cfg_extra=None):
+        cfg = {"type": "switch", "deviceIds": [sw], "switchEvent": "Turns off"}
+        cfg.update(cfg_extra or {})
+        return {"id": "t1", "kind": "trigger", "config": cfg}
+
+    def act():
+        return {"id": "a1", "kind": "action",
+                "config": {"type": "turnOff", "deviceIds": [sw]}}
+
+    def dec():
+        return {"id": "d1", "kind": "decision", "config": {"type": "always"}}
+
     candidates = [
-        ("current e2e fixture (type + inline fields)", {
-            "version": 1,
-            "nodes": [
-                {"id": "t1", "type": "trigger", "triggerCondition": "trigger", "triggerType": "switch",
-                 "switches": [sw], "deviceIds": [sw], "switchEvent": "Turns off"},
-                {"id": "a1", "type": "action", "actionType": "turnOff", "switches": [sw], "deviceIds": [sw]},
-            ],
+        ("config.type on trigger+action only", {
+            "version": 1, "nodes": [trig(), act()],
             "edges": [{"from": "t1", "to": "a1", "port": "next"}],
         }),
-        ("kind + config only", {
+    ]
+    # The merge node is required but 'triggerMerge' is not a valid kind. Try the plausible
+    # names one per rule so the error message identifies which one the validator accepts.
+    for guess in ["merge", "triggerMerged", "trigger_merge", "anyTrigger", "or", "logic", "gate"]:
+        candidates.append((f"merge kind '{guess}'", {
             "version": 1,
-            "nodes": [
-                {"id": "t1", "kind": "trigger",
-                 "config": {"triggerType": "switch", "deviceIds": [sw], "switchEvent": "Turns off"}},
-                {"id": "a1", "kind": "action", "config": {"actionType": "turnOff", "deviceIds": [sw]}},
-            ],
-            "edges": [{"from": "t1", "to": "a1", "port": "next"}],
-        }),
-        ("kind + config + triggerMerge + decision", {
-            "version": 1,
-            "nodes": [
-                {"id": "t1", "kind": "trigger",
-                 "config": {"triggerType": "switch", "deviceIds": [sw], "switchEvent": "Turns off"}},
-                {"id": "tm", "kind": "triggerMerge", "config": {}},
-                {"id": "d1", "kind": "decision", "config": {}},
-                {"id": "a1", "kind": "action", "config": {"actionType": "turnOff", "deviceIds": [sw]}},
-            ],
+            "nodes": [trig(), {"id": "tm", "kind": guess, "config": {"type": "any"}}, dec(), act()],
             "edges": [
                 {"from": "t1", "to": "tm", "port": "next"},
                 {"from": "tm", "to": "d1", "port": "next"},
                 {"from": "d1", "to": "a1", "port": "true"},
             ],
-        }),
-        # An empty graph: the validator's complaints enumerate what a minimal rule needs.
-        ("empty graph (enumerate required nodes)", {"version": 1, "nodes": [], "edges": []}),
-    ]
+        }))
+
     for i, (label, definition) in enumerate(candidates, start=1):
         probe(i, label, definition)
     print("-" * 60)
