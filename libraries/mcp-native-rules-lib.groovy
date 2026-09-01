@@ -4283,7 +4283,10 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
     def retryDelaysMs = [1000, 1500, 2000, 3000]
     for (int attempt = 0; attempt < 5; attempt++) {
         if (attempt > 0) pauseExecution(retryDelaysMs[attempt - 1] as Integer)
-        afterIndices = _rmCollectActionIndices(appId)
+        // Settings, matching beforeIndices above. Polling the compiled list instead
+        // would report success the instant a row that was never in it is asked about
+        // -- a leftover row would read as "already deleted" before the click landed.
+        afterIndices = _rmActionIndicesFromSettings(_rmFetchStatusJson(appId))
         if (!afterIndices.contains(actionIdx)) {
             def out = [success: true, removedIndex: actionIdx, beforeIndices: beforeIndices.sort(), afterIndices: afterIndices.sort()]
             if (reclicked) out.reclicked = true
@@ -4521,7 +4524,8 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
     // both are safe; converting the readback to a GString subscript is not.
     def actSubType = committedSettings["actSubType.${actionIdx}".toString()]?.toString()
     if (!actSubType) {
-        def indices = _rmCollectActionIndices(appId)
+        // Settings-side list: the lookup that just failed was settings-side too.
+        def indices = _rmActionIndicesFromSettings(_rmFetchStatusJson(appId))
         throw new IllegalArgumentException("modifyAction.index ${actionIdx} not found in rule ${appId}. Existing indices: ${indices.sort().join(', ')}. RM is not touched.")
     }
     def entry = reverse[actSubType]
@@ -8505,7 +8509,10 @@ Map _rmWalkStep(Integer appId, Map spec) {
     def beforeStatus = _rmFetchStatusJson(appId)
     def beforeSettings = (beforeStatus?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it?.value] }
     def beforeSchema = _rmCollectWalkSchema(beforeCfg?.configPage, beforeSettings)
-    def beforeActionCount = _rmCollectActionIndices(appId).size()
+    // Count only, off the status already in hand -- no order needed and no second
+    // fetch. _rmCollectActionIndices would read the compiled rule for an ordering
+    // this never looks at.
+    def beforeActionCount = _rmActionIndicesFromSettings(beforeStatus).size()
     def beforeTriggerCount = _rmCollectTriggerIndices(appId).size()
 
     def opResult = [:]
@@ -8685,7 +8692,7 @@ Map _rmWalkStep(Integer appId, Map spec) {
     def afterStatus = _rmFetchStatusJson(appId)
     def afterSettings = (afterStatus?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it?.value] }
     def afterSchema = _rmCollectWalkSchema(afterCfg?.configPage, afterSettings)
-    def afterActionCount = _rmCollectActionIndices(appId).size()
+    def afterActionCount = _rmActionIndicesFromSettings(afterStatus).size()
     def afterTriggerCount = _rmCollectTriggerIndices(appId).size()
 
     // Schema diff.

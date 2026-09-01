@@ -7913,8 +7913,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         enableWrite()
         // The display order NEVER changes -> position never shifts on the
         // immediate read OR the short re-check.
-        // appSettings key order carries no display information, so it stays static;
-        // only actionList reorders.
+        // appSettings key order carries no display information either.
         def statusBody = JsonOutput.toJson([
             installedApp: [id: 100],
             appSettings: [
@@ -7963,8 +7962,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // dispatcher, with the same failure mode the fix targets).
         given:
         enableWrite()
-        // appSettings key order carries no display information, so it stays static;
-        // only actionList reorders.
+        // The display order never changes here, so neither list reorders;
+        // appSettings key order carries no display information regardless.
         def statusBody = JsonOutput.toJson([
             installedApp: [id: 100],
             appSettings: [

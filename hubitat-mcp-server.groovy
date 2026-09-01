@@ -7688,8 +7688,8 @@ private Map _rmEmptyHealthVerdict(Map overrides) {
     def v = [ok: false, unreadable: false, broken: null, source: "none", ruleFormat: null,
              label: null, disabled: null, paused: null, configPageError: null,
              brokenMarkers: [], brokenMarkerCounts: [:],
-             multipleFlagPoison: [], structuralIssues: [], validationErrors: [], issues: [],
-             checkErrors: []]
+             multipleFlagPoison: [], structuralIssues: [], orphanedActionRows: [],
+             validationErrors: [], issues: [], checkErrors: []]
     v.putAll(overrides ?: [:])
     return v
 }
