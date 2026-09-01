@@ -1331,18 +1331,26 @@ class WatchdogV2Spec extends Specification {
         false    | 4
     }
 
-    def "the streak-start baseline is stamped on the first failure and cleared on success"() {
-        when: 'first failure of a fresh streak'
+    def "a fresh failure streak stamps its own baseline, and a success clears it"() {
+        given: 'explicitly no prior streak -- the baseline is only stamped on the FIRST failure'
+        atomicStateMap.loopbackFailStreak = 0
+        atomicStateMap.loopbackStreakStartedAt = null
+        atomicStateMap.loopbackLastOkAt = null
+
+        when:
         script.noteLoopback(false)
 
-        then:
+        then: 'this is what gives hubLooksWedged a baseline when there has never been a success'
+        atomicStateMap.loopbackFailStreak == 1
         atomicStateMap.loopbackStreakStartedAt != null
 
-        when: 'a later success'
+        when: 'the hub answers again'
         script.noteLoopback(true)
 
-        then: 'the baseline is released so the next streak stamps its own'
+        then: 'the streak and its baseline are both released'
+        atomicStateMap.loopbackFailStreak == 0
         atomicStateMap.loopbackStreakStartedAt == null
+        atomicStateMap.loopbackLastOkAt != null
     }
 
     def "a watchdog that has never had a successful loopback call can still detect a wedge"() {
