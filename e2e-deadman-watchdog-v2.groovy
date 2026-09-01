@@ -196,6 +196,28 @@ private boolean retryBackoffPending(Map flag, String trigger) {
 private boolean maybeAutoRebootWedgedHub() {
     if (settings?.autoRebootOnWedge == false) return false
     if (!hubLooksWedged()) return false
+
+    // SUPPRESSION 1 -- deliberate downtime. A platform update takes the hub dark for 5-10 minutes
+    // BY DESIGN, and an operator reboot for 1-3. Both look exactly like a wedge from in here, and
+    // rebooting mid platform-install is the worst thing this app could possibly do. Both entry
+    // points stamp expectedDownUntil; until it passes, the escape stands down.
+    Long downUntil = null
+    try { downUntil = atomicState.expectedDownUntil as Long } catch (Exception ignore) { downUntil = null }
+    if (downUntil != null && now() < downUntil) {
+        log.warn "E2E Dead-Man Watchdog v2: loopback is down but a deliberate reboot/platform update is in progress for another ${((downUntil - now()) / 1000) as long}s -- NOT rebooting."
+        return true
+    }
+
+    // SUPPRESSION 2 -- never act on accumulated state alone. hubLooksWedged reads counters that
+    // survive a hub restart, and this runs BEFORE readFlag (so a dead hub does not exit early),
+    // so the first tick after the hub comes back would otherwise see a stale streak plus an old
+    // lastOk and reboot a healthy hub -- then again, and again. Prove it live first. A successful
+    // probe also resets the streak through noteLoopback, so recovery is self-clearing.
+    if (probeLoopbackAlive()) {
+        log.warn "E2E Dead-Man Watchdog v2: the wedge counters were stale -- a live probe answered, so the hub is healthy. NOT rebooting."
+        return false
+    }
+
     long nowMs = now()
     Long lastReboot = null
     try { lastReboot = atomicState.lastAutoRebootAt as Long } catch (Exception ignore) { lastReboot = null }
@@ -1402,6 +1424,9 @@ def adminUpdatePlatform(args) {
     }
     def check = null
     try { check = hubGet("/hub/cloud/checkForUpdate", [:]) } catch (Exception e) { return [success: false, error: "checkForUpdate failed: ${e.message}"] }
+    // 25 minutes: the note below quotes 5-10 for the download+install+reboot, with headroom for a
+    // slow mirror. Stamped BEFORE the call because the hub can go dark the moment it lands.
+    markExpectedDowntime(1500000L, "hub_update_platform")
     def resp = null
     try { resp = hubGet("/hub/cloud/updatePlatform", [:]) } catch (Exception e) { return [success: false, error: "updatePlatform failed: ${e.message}", checkForUpdate: check] }
     return [success: true, checkForUpdate: check, updateResponse: resp,
@@ -2143,6 +2168,22 @@ private boolean hubLooksWedged() {
     } catch (Exception ignore) { return false }
 }
 
+// One cheap loopback read used purely as a liveness gate before the destructive escape. Routed
+// through hubGet so a success updates the wedge counters as a side effect.
+private boolean probeLoopbackAlive() {
+    try { return hubGet("/hub/advanced/freeOSMemory", [:], 10) != null }
+    catch (Exception ignore) { return false }
+}
+
+// Mark a window in which the hub is EXPECTED to be unreachable, so the auto-reboot escape does not
+// fire on downtime we caused ourselves.
+private void markExpectedDowntime(long ms, String reason) {
+    try {
+        atomicState.expectedDownUntil = now() + ms
+        mcpAdminLog "Expecting the hub to be unreachable for up to ${(ms / 60000) as long} min (${reason}); the auto-reboot escape is suppressed until then."
+    } catch (Exception ignore) { }
+}
+
 // hub_reboot: POST /hub/reboot. Copied from hubitat-mcp-server.groovy's toolRebootHub
 // (libraries/mcp-system-lib.groovy) -- same endpoint, minus the 24h-backup gate the watchdog
 // deliberately drops (see the SECURITY banner). This is the ONLY in-band recovery from a wedged
@@ -2150,6 +2191,8 @@ private boolean hubLooksWedged() {
 def adminRebootHub(args) {
     requireConfirm(args)
     mcpAdminLog "Rebooting the hub (POST /hub/reboot)."
+    // Before the POST: once it lands the hub may go before we get to run again.
+    markExpectedDowntime(600000L, "hub_reboot")
     // hubPostForm SWALLOWS transport exceptions and returns [status: null, data: null], so the
     // status is the ONLY success signal -- a try/catch around it can never fire, and reporting
     // success unconditionally would make the auto-reboot escape log "rebooted" for a POST that

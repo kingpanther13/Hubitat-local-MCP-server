@@ -1020,6 +1020,7 @@ class WatchdogV2Spec extends Specification {
         String posted = null
         script.metaClass.readFlag = { -> flagRead = true; null }
         script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+        script.metaClass.probeLoopbackAlive = { -> false }   // the live gate agrees: still dead
         atomicStateMap.loopbackFailStreak = 12
         atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 300_000L
 
@@ -1060,6 +1061,7 @@ class WatchdogV2Spec extends Specification {
         atomicStateMap.loopbackFailStreak = 12
         atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 300_000L
         atomicStateMap.lastAutoRebootAt = System.currentTimeMillis() - 60_000L
+        script.metaClass.probeLoopbackAlive = { -> false }
 
         when:
         script.checkDeadman()
@@ -1353,6 +1355,7 @@ class WatchdogV2Spec extends Specification {
         String posted = null
         script.metaClass.readFlag = { -> null }
         script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+        script.metaClass.probeLoopbackAlive = { -> false }
 
         when:
         script.checkDeadman()
@@ -1411,6 +1414,103 @@ class WatchdogV2Spec extends Specification {
         then:
         res.success == true
         res.error == null
+    }
+
+
+    // ---- the auto-reboot must NOT fire on downtime we caused, or on stale counters -------------
+    // These are the misfire modes that matter: rebooting mid platform-install, and boot-looping a
+    // hub that has already come back. Both are worse than the wedge the escape exists to clear.
+
+    def "a live probe that answers stands the escape down, even with a wedged-looking streak"() {
+        given: "counters survive a hub restart, and this runs BEFORE readFlag -- so the first tick"
+        // after recovery would otherwise see a stale streak plus an old lastOk and reboot a
+        // healthy hub, then do it again on the next tick.
+        String posted = null
+        script.metaClass.readFlag = { -> null }
+        script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+        script.metaClass.probeLoopbackAlive = { -> true }   // the hub is actually back
+        atomicStateMap.loopbackFailStreak = 12
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 600_000L
+
+        when:
+        script.checkDeadman()
+
+        then: 'no reboot -- accumulated state alone is never enough to act'
+        posted == null
+    }
+
+    def "a deliberate reboot/platform-update window suppresses the escape (#reason)"() {
+        given: "the hub is dark because WE took it down; rebooting into that is the worst outcome"
+        String posted = null
+        script.metaClass.readFlag = { -> null }
+        script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+        script.metaClass.probeLoopbackAlive = { -> false }   // genuinely unreachable, as expected
+        atomicStateMap.loopbackFailStreak = 20
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 900_000L
+        atomicStateMap.expectedDownUntil = System.currentTimeMillis() + remainingMs
+
+        when:
+        script.checkDeadman()
+
+        then: 'no reboot while the expected-downtime window is open'
+        posted == null
+
+        where:
+        reason                       | remainingMs
+        'platform update, 20 min left' | 1_200_000L
+        'operator reboot, 2 min left'  | 120_000L
+    }
+
+    def "once the expected-downtime window expires a genuine wedge is still caught"() {
+        given:
+        String posted = null
+        script.metaClass.readFlag = { -> null }
+        script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+        script.metaClass.probeLoopbackAlive = { -> false }
+        atomicStateMap.loopbackFailStreak = 20
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 900_000L
+        atomicStateMap.expectedDownUntil = System.currentTimeMillis() - 1_000L   // already elapsed
+
+        when:
+        script.checkDeadman()
+
+        then: 'the suppression is a window, not a permanent disable'
+        posted == '/hub/reboot'
+    }
+
+    def "hub_reboot stamps the downtime window so it cannot trigger its own escape"() {
+        given:
+        script.metaClass.hubPostForm = { String p, Map b -> [status: 200, data: 'ok'] }
+
+        when:
+        script.adminRebootHub([confirm: true])
+
+        then:
+        atomicStateMap.expectedDownUntil != null
+        atomicStateMap.expectedDownUntil > System.currentTimeMillis()
+    }
+
+    def "hub_update_platform stamps a longer window before the hub can go dark"() {
+        given: "the update takes the hub down for 5-10 min by design"
+        script.metaClass.hubGet = { String p, Map q -> '{"ok":true}' }
+
+        when:
+        script.adminUpdatePlatform([confirm: true])
+
+        then: 'stamped generously -- a reboot mid firmware-install is unrecoverable'
+        atomicStateMap.expectedDownUntil != null
+        (atomicStateMap.expectedDownUntil - System.currentTimeMillis()) > 1_000_000L
+    }
+
+    def "statusOnly platform polling does NOT stamp a downtime window"() {
+        given: "polling progress takes nothing down, so it must not blind the escape"
+        script.metaClass.hubGet = { String p, Map q -> '{"state":"downloading"}' }
+
+        when:
+        script.adminUpdatePlatform([statusOnly: true])
+
+        then:
+        atomicStateMap.expectedDownUntil == null
     }
 
 }
