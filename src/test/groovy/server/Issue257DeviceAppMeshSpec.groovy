@@ -247,6 +247,26 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
         result.capabilitiesNote?.contains("unauthorized")
     }
 
+    def "scope='all' fallback reports capabilities for an MCP child device, not just selected ones"() {
+        given: "the app's own child device is authorized via getChildDevices, not selectedDevices"
+        settingsMap.selectedDevices = []
+        childDevicesList << new TestDevice(id: 77, name: "D77", label: "MCP Virtual Switch",
+            roomName: null, capabilities: ["Switch"], supportedAttributes: [],
+            supportedCommands: [], attributeValues: [:])
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [[key: "DEV-77", data: [id: 77, name: "MCP Virtual Switch"], children: []]]])
+        }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, "Switch", null, null, null, null, "all")
+
+        then: "it is both authorized and matchable by capabilityFilter"
+        result.devices.size() == 1
+        result.devices[0].mcpAuthorized == true
+        result.devices[0].capabilities == ["Switch"]
+    }
+
     def "scope='all' keeps the capabilities endpoint as the primary source when it still answers"() {
         given:
         settingsMap.selectedDevices = [dev(id: 80)]

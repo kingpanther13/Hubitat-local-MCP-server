@@ -746,7 +746,10 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
     // Capability lookup for the fallback source, built once from the authorization-scoped model.
     def capsById = [:]
     if (!capabilitiesComplete) {
-        (selectedDevices ?: []).each { dev ->
+        // Both sources that feed authorizedIds above, so every device tagged mcpAuthorized
+        // can also report its capabilities -- otherwise an MCP-managed child device would be
+        // authorized yet unmatchable by capabilityFilter.
+        (((selectedDevices ?: []) as List) + ((getChildDevices() ?: []) as List)).each { dev ->
             def did = dev?.id?.toString()
             if (did != null) capsById[did] = (dev.capabilities ?: []).collect { it?.toString() }
         }
