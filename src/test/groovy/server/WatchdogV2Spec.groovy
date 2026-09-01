@@ -1105,7 +1105,7 @@ class WatchdogV2Spec extends Specification {
         script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
 
         when:
-        def res = script.executeTool('hub_reboot', [confirm: true])
+        def res = script.executeAdminTool('hub_reboot', [confirm: true])
 
         then:
         posted == '/hub/reboot'
