@@ -8274,7 +8274,10 @@ private String _rmPreflightRestoreHint(String reason = null) {
     // the error and has to infer WHY nothing happened. The disabled-rule refusal is the case
     // that made this obvious -- "RM was not touched" alone reads as a mystery failure.
     def why = reason ? " Reason: ${reason}" : ""
-    "Pre-flight refusal -- RM was not touched; nothing needs to be restored (a pre-flight reject writes nothing -- no backup taken, or one identical to the current rule).${why}"
+    // Do NOT claim "no backup taken": _applyNativeAppEdit snapshots BEFORE the pre-flight runs,
+    // so a refusal routinely reports a fresh backupKey. Saying otherwise contradicts the very
+    // envelope this hint travels in.
+    "Pre-flight refusal -- RM was not touched, so nothing needs to be restored. Any backupKey on this response is an unused snapshot taken before the refusal.${why}"
 }
 
 // Build the standard error response shape for _applyNativeAppEdit catch

@@ -4783,6 +4783,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.restoreHint.contains("RM was not touched")
         result.restoreHint.contains("disabled")
         result.restoreHint.contains("does not allow editing a disabled app")
+
+        and: "the hint must not contradict its own envelope -- a backup IS taken before the gate"
+        !result.restoreHint.contains("no backup taken")
+        result.backup?.backupKey != null
     }
 
     def "addAction is NOT blocked when the disabled read-back says enabled or is unreadable"() {
