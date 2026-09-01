@@ -272,7 +272,7 @@ jobs:
             echo "CANDIDATE ${i}: ${label}"
             local r; r=$(call "$(mk "$name" "$def")" || true)
             local appId; appId=$(printf '%s' "$r" | jq -r '.appId // empty')
-            echo "  create: success=$(printf '%s' "$r" | jq -r '.success // "?"') appId=${appId:-none} fmt=$(printf '%s' "$r" | jq -r '.format // .hubNativeFormat // "?"')
+            printf '%s' "$r" | jq -r '"  create: success=\(.success) appId=\(.appId // "none") fmt=\(.format // .hubNativeFormat // "?")"'
             printf '%s' "$r" | jq -r 'if .error then "  error: "+(.error|tostring) else empty end'
             if [ -n "$appId" ]; then
               local h; h=$(call "$(jq -nc --argjson a "$appId" '{jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"hub_read_rules",arguments:{tool:"hub_get_rule_health",args:{appId:$a}}}}')" || true)
