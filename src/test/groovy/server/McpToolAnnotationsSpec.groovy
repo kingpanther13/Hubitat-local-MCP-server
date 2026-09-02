@@ -552,19 +552,18 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         classifiedAsWrite == expectedWrites
     }
 
-    def "every leaf tool in getAllToolDefinitions() declares a well-formed outputSchema"() {
-        // Every tool DEFINITION declares an outputSchema describing its success shape
-        // (MCP spec 2025-06-18 /server/tools). Per issue #290 the definitions are ALWAYS
-        // present even though wire EMISSION is opt-in (settings.publishOutputSchemas,
-        // default OFF) -- this test guards the definitions, NOT the emission. Asserting the
-        // shape (object + non-empty properties map) catches a missing, stubbed, or
-        // malformed schema on a newly-added tool.
+    def "every outputSchema that a leaf tool declares is well-formed"() {
+        // outputSchema is legacy and frozen (AGENTS.md § Schema design): the declarations that
+        // exist are kept for the opt-in emission (settings.publishOutputSchemas, default OFF),
+        // a new tool does not add one, and no schema is extended. So this guards only the
+        // shape of what IS declared (object + non-empty properties map): a stubbed or
+        // malformed schema would break a spec-validating client the moment the toggle is on.
         when:
-        def defs = script.getAllToolDefinitions()
+        def declared = script.getAllToolDefinitions().findAll { it.containsKey('outputSchema') }
 
         then:
-        !defs.isEmpty()  // defend against a vacuous every {}
-        defs.every {
+        !declared.isEmpty()  // defend against a vacuous every {}
+        declared.every {
             it.outputSchema instanceof Map &&
             it.outputSchema.type == 'object' &&
             it.outputSchema.properties instanceof Map &&
@@ -662,8 +661,8 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
     }
 
     def "outputSchema emission is gated by publishOutputSchemas in gateway mode; flat mode never emits it"() {
-        // Issue #290: outputSchema emission is OPT-IN. The DEFINITION is always present
-        // (see the 'every leaf tool declares a well-formed outputSchema' spec above), but
+        // Issue #290: outputSchema emission is OPT-IN. The legacy tools carry a DEFINITION
+        // (see the 'every outputSchema that a leaf tool declares is well-formed' spec above), but
         // it reaches the wire only in gateway mode AND only when publishOutputSchemas is on
         // -- OFF by default so strict clients (e.g. Claude Desktop) that reject an
         // outputSchema returned without structuredContent work. The flat tools/list never

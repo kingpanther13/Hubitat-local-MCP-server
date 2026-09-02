@@ -195,7 +195,7 @@ For write tools, include safety warnings and mandatory pre-flight checklists."""
 ]
 ```
 
-**Canonical example with annotations + outputSchema (new tools should follow this shape):**
+**Canonical example with annotations (new tools follow this shape; no `outputSchema` — that field is legacy and frozen, see AGENTS.md § Schema design):**
 
 ```groovy
 [
@@ -212,15 +212,6 @@ in the room — it surfaces stale-state warnings the device-level tools don't.""
         ],
         required: ["room_id"]
     ],
-    outputSchema: [
-        type: "object",
-        properties: [
-            healthy: [type: "boolean", description: "True if every device in the room reported within the freshness window."],
-            stale_devices: [type: "array", items: [type: "string"], description: "device IDs with no recent activity"],
-            warnings: [type: "array", items: [type: "string"], description: "human-readable warnings, empty when healthy"]
-        ],
-        required: ["healthy", "stale_devices", "warnings"]
-    ],
     annotations: [
         readOnlyHint: true,
         destructiveHint: false,
@@ -236,6 +227,7 @@ Rules:
 - `inputSchema` root is always `type: "object"` with `properties`
 - `required` array is only present when there are required params
 - No-argument tools use `properties: [:]`
+- No `outputSchema`: legacy and frozen; existing declarations are neither extended nor tested (AGENTS.md § Schema design)
 - Descriptions should include usage guidance for the AI (this text is what the LLM sees when deciding which tool to call)
 - Write tools must have strong safety warnings in their descriptions with mandatory pre-flight checklists
 
