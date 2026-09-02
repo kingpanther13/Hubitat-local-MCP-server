@@ -1920,6 +1920,61 @@ class WatchdogV2Spec extends Specification {
         40     | 40
     }
 
+    def "two overlapping wedge checks issue exactly one reboot POST"() {
+        given: "a wedged hub whose reboot POST is slow enough for the second check to overlap"
+        def posts = new java.util.concurrent.atomic.AtomicInteger(0)
+        script.metaClass.readFlag = { -> null }
+        script.metaClass.probeLoopbackAlive = { -> false }
+        script.metaClass.hubPostForm = { String p, Map b -> posts.incrementAndGet(); Thread.sleep(300); [status: 200, data: 'ok'] }
+        atomicStateMap.loopbackFailStreak = 20
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 900_000L
+
+        when: "the scheduled tick and a kick arrive together"
+        def threads = (1..2).collect { Thread.start { script.checkDeadman() } }
+        threads*.join()
+
+        then: "the second decision saw the first's timestamp"
+        posts.get() == 1
+        atomicStateMap.lastAutoRebootAt != null
+    }
+
+    def "a failed reboot leaves a NEWER downtime window alone"() {
+        given: "a platform update stamps its window while the reboot POST is in flight"
+        long newer = System.currentTimeMillis() + 1_500_000L
+        script.metaClass.hubPostForm = { String p, Map b -> atomicStateMap.expectedDownUntil = newer; [status: null, data: null] }
+
+        when:
+        def res = script.adminRebootHub([confirm: true])
+
+        then: "the reboot's own stamp is not restored over the update's"
+        res.success == false
+        atomicStateMap.expectedDownUntil == newer
+    }
+
+    def "a purge sweep renews its claim before every delete and stops once the claim is lost"() {
+        given: "two apps to purge; the first delete hands the claim to a newer sweep"
+        script.metaClass.hubGet = { String path, Map q = [:], Integer t = null ->
+            path == "/hub2/appsList" ? groovy.json.JsonOutput.toJson([apps: [[data: [id: 1, name: "BAT_E2E_a"]], [data: [id: 2, name: "BAT_E2E_b"]]]]) : null
+        }
+        script.metaClass.getAllGlobalVars = { -> [:] }
+        def deletes = []
+        script.metaClass.adminForceDeleteInstalledApp = { Map a ->
+            deletes << a.id
+            atomicStateMap.purgeClaim = 'purge-newer'
+            [success: true]
+        }
+        atomicStateMap.purgeClaim = 'purge-mine'
+        atomicStateMap.purgeInFlightAt = 1L
+
+        when:
+        def res = script.purgeE2eArtifactsLocked("BAT_E2E_", 'purge-mine')
+
+        then: "the claim stamp was renewed for the delete that ran, and the second target was not touched"
+        deletes == [1]
+        (atomicStateMap.purgeInFlightAt as Long) > 1L
+        res.failed.any { it.id == 2 && it.error.contains("claim lost") }
+    }
+
 }
 
 class FakeHttpException extends RuntimeException {

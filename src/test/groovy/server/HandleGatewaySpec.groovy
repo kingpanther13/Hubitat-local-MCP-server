@@ -48,6 +48,9 @@ class HandleGatewaySpec extends ToolSpecBase {
         // without one is simply forwarded without one.
         result.tools.any { it.containsKey('outputSchema') }
         result.tools.findAll { it.containsKey('outputSchema') }.every { it.outputSchema instanceof Map && it.outputSchema.type == 'object' && !it.outputSchema.containsKey('required') }
+        // Presence follows the DEFINITION exactly: the catalog neither invents a schema for a tool
+        // that declares none nor drops one that does.
+        result.tools.every { t -> t.containsKey('outputSchema') == script.getAllToolDefinitions().find { it.name == t.name }.containsKey('outputSchema') }
     }
 
     def "throws IllegalArgumentException for unknown gateway"() {

@@ -104,6 +104,9 @@ mappings {
 // Consecutive status-less loopback failures before hubLooksWedged may fire; the persisted streak
 // saturates here so a failing sweep is not one DB write per call.
 @groovy.transform.Field static final int WEDGE_STREAK_MIN = 8
+// The scheduled tick and deadmanKick both reach the auto-reboot decision; without a monitor two
+// overlapping runs could each pass the rate-limit check before either recorded its POST.
+@groovy.transform.Field static final Object REBOOT_LOCK = new Object()
 
 def installed() { initialize() }
 def updated()   { unschedule(); initialize() }
@@ -220,6 +223,10 @@ private boolean retryBackoffPending(Map flag, String trigger) {
 // the condition cannot become a boot loop, and gated behind the autoRebootOnWedge preference for a
 // maintainer who would rather inspect the wedged hub than have it recycled underneath them.
 private boolean maybeAutoRebootWedgedHub() {
+    synchronized (REBOOT_LOCK) { return autoRebootDecisionLocked() }
+}
+
+private boolean autoRebootDecisionLocked() {
     if (settings?.autoRebootOnWedge == false) return false
     if (!hubLooksWedged()) return false
 
@@ -1369,7 +1376,7 @@ def adminPurgeE2eArtifacts(args) {
         return purgeNoOpResult(prefix, "A concurrent purge for the same prefix won the claim; this call was a no-op. Do NOT retry.")
     }
     try {
-        return purgeE2eArtifactsLocked(prefix)
+        return purgeE2eArtifactsLocked(prefix, claim)
     } finally {
         // Release ONLY if the claim is still ours. If this sweep ran past the 15-minute staleness
         // escape and a newer sweep took the claim, clearing purgeInFlightAt here would drop the
@@ -1385,10 +1392,23 @@ def adminPurgeE2eArtifacts(args) {
     }
 }
 
+// The 15-minute stale-claim escape must measure a sweep that STOPPED, not one that is long: a sweep
+// is one loopback call per artifact, so its length is unbounded. Renewing the stamp before every
+// destructive step keeps a live sweep's claim exclusive; the ownership check makes a sweep that did
+// lose its claim to the escape stop rather than race the successor.
+private void renewPurgeClaim() {
+    try { atomicState.purgeInFlightAt = now() } catch (Exception ignore) { }
+}
+
+private boolean purgeStillOwned(String claim) {
+    if (claim == null) return true
+    try { return atomicState.purgeClaim?.toString() == claim } catch (Exception ignore) { return true }
+}
+
 // NON-PRIVATE deliberately (see probeLoopbackAlive): a private method's internal callers bypass
 // metaClass dispatch, so a spec could not stand in a sweep body -- the successor-claim test needs
 // to install a competing claim mid-sweep to prove the finally leaves it alone.
-Map purgeE2eArtifactsLocked(String prefix) {
+Map purgeE2eArtifactsLocked(String prefix, String claim = null) {
     String raw = hubGet("/hub2/appsList", [:])
     String noSweep = "Nothing was deleted: the hub did not answer /hub2/appsList. Confirm hub_get_info answers, then re-run hub_purge_e2e_artifacts; a repeat points at the hub's web stack, not the purge."
     if (!raw) return [success: false, error: "empty response from /hub2/appsList -- cannot enumerate to purge", note: noSweep]
@@ -1409,6 +1429,11 @@ Map purgeE2eArtifactsLocked(String prefix) {
     def deleted = []
     def failed = []
     targets.each { t ->
+        if (!purgeStillOwned(claim)) {
+            failed << [id: t.id, name: t.name, error: "purge claim lost to a newer sweep -- stopped before this delete"]
+            return
+        }
+        renewPurgeClaim()
         def r
         try { r = adminForceDeleteInstalledApp([id: t.id, confirm: true]) }
         catch (Exception e) { r = [success: false, error: e.message] }
@@ -1436,6 +1461,11 @@ Map purgeE2eArtifactsLocked(String prefix) {
                 varsFailed << [name: "*", error: "could not resolve the Hub Variables app id via /installedapp/direct/hubVariables"]
             } else {
                 targetVars.each { vn ->
+                    if (!purgeStillOwned(claim)) {
+                        varsFailed << [name: vn, error: "purge claim lost to a newer sweep -- stopped before this delete"]
+                        return
+                    }
+                    renewPurgeClaim()
                     try {
                         String why = deleteHubVariable(hvAppId, vn)
                         if (why == null) { varsDeleted << vn }
@@ -2359,6 +2389,8 @@ def adminRebootHub(args) {
     try { priorWindow = atomicState.expectedDownUntil as Long } catch (Exception ignore) { priorWindow = null }
     // Before the POST: once it lands the hub may go before we get to run again.
     markExpectedDowntime(600000L, "hub_reboot")
+    Long ourStamp = null
+    try { ourStamp = atomicState.expectedDownUntil as Long } catch (Exception ignore) { ourStamp = null }
     // hubPostForm SWALLOWS transport exceptions and returns [status: null, data: null], so the
     // status is the ONLY success signal -- a try/catch around it can never fire, and reporting
     // success unconditionally would make the auto-reboot escape log "rebooted" for a POST that
@@ -2374,7 +2406,12 @@ def adminRebootHub(args) {
     // The window was stamped before the POST (the hub can go the moment it lands); a POST that did
     // NOT land is not downtime, and leaving the stamp would make the wedge escape stand down for 10
     // minutes on a false "deliberate reboot in progress".
-    try { atomicState.expectedDownUntil = priorWindow } catch (Exception ignore) { }
+    // Only undo our own stamp: a platform update that opened a NEWER window while the POST was in
+    // flight must keep it, or the escape could reboot into the install.
+    try {
+        Long current = atomicState.expectedDownUntil as Long
+        if (current == ourStamp) atomicState.expectedDownUntil = priorWindow
+    } catch (Exception ignore) { }
     return [success: false, status: st,
             error: st == null ? "reboot POST got no response from the hub (transport failure)" : "reboot POST returned status ${st}",
             note: "If loopback HTTP is wedged this call cannot land either -- the hub needs a physical power cycle."]

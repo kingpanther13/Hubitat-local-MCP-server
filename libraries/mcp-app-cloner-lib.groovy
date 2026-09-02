@@ -871,7 +871,7 @@ private Map _rmRestoreFromBackup(Map entry) {
         recreated: !exists,
         backupFile: fileName,
         settingsApplied: replaySettings.keySet().toList(),
-        settingsSkipped: skippedButtons,
+        settingsSkipped: skippedButtons.collect { key -> [key: key, reason: "button input excluded from replay"] },
         note: exists ? "Settings restored in place." : "Rule was deleted; recreated with new id ${ruleId} and replayed settings."
     ]
 }

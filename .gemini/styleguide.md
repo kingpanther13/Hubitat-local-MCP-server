@@ -71,7 +71,7 @@ When a PR adds or renames an MCP tool, best-effort judgement: does the tool foll
 3. **Annotations** — all four hints (`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`) set explicitly.
 4. **Description quality** — concise first line; usage guidance; write-tool safety warnings present; semantic IDs over opaque UUIDs.
 5. **Consolidation candidates** — verb-pair tools (enable/disable, pause/resume, etc.) suggested for merge into a single `set_<noun>_<attribute>` tool; always-called-in-sequence tools flagged.
-6. **Schema design** — `enum` for fixed-set free-text params; `required` only when applicable; NO `outputSchema` on a new or changed tool (legacy, frozen — AGENTS.md § Schema design).
+6. **Schema design** — `enum` for fixed-set free-text params; `required` only when applicable; do not add or update `outputSchema` declarations; preserve existing ones unchanged (legacy, frozen — AGENTS.md § Schema design).
 7. **Error contracts** — validation throws `IllegalArgumentException`; runtime returns `[success: false, error, note]`; `isError: true` for tool-execution errors; error text is recovery-oriented.
 8. **Pagination** — cursor support on any tool that can return a long list.
 

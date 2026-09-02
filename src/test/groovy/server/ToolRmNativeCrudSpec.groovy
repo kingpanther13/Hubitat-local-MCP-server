@@ -1606,7 +1606,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ruleConfigJson(361, "click-err", [[name: "origLabel", type: "text"]])
         }
         hubGet.register('/installedapp/statusJson/361') { params -> statusJson(361) }
+        def posted = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posted << [path: path, body: body]
             if (path == "/installedapp/btn") throw new RuntimeException("status code: 500, reason phrase: Server Error")
             [status: 200, location: null, data: '{"status":"success"}']
         }
@@ -1618,6 +1620,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "the envelope names the step and the recovery, instead of blaming the replay"
         result.success == false
         result.failedStep == "the final updateRule click"
+        posted.any { it.path == "/installedapp/update/json" && it.body.containsKey("settings[origLabel]") }
         result.error?.contains("failed during the final updateRule click")
         result.note?.contains("Update Rule")
     }
@@ -1669,7 +1672,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !replay.containsKey("settings[3]")
         !replay.containsKey("settings[cut1]")
         !replay.containsKey("settings[trashAll]")
-        result.settingsSkipped == ["3", "cut1", "trashAll"]
+        result.settingsSkipped*.key == ["3", "cut1", "trashAll"]
+        result.settingsSkipped.every { it.reason }
     }
 
     def "a restore replays a device picker as its ids, not as the snapshot's id-to-label map"() {
