@@ -254,20 +254,15 @@ private String _vrbBareName(Object raw, boolean paused) {
 }
 
 private boolean _vrbNameMatches(Map after, String requestedName) {
-    // Read-back name comparison for every save path. A PAUSED rule comes back carrying the
-    // hub's own "(Paused)" decoration, usually HTML-wrapped ("Name <span
-    // class='text-red'>(Paused)</span>"), so a literal compare reported verified:false on a
-    // write that had landed -- and on create that left the child installed, inviting a
-    // duplicate on retry. Strip the markup, then accept the bare name too whenever the rule
-    // reads back paused; that covers both a pause applied by this call and a rename against an
-    // already-paused rule. A name that differs beyond the suffix still fails.
+    // Read-back name comparison for every save path. A PAUSED rule comes back carrying the hub's
+    // own "(Paused)" decoration, usually HTML-wrapped ("Name <span
+    // class='text-red'>(Paused)</span>"), so a literal compare reported verified:false on a write
+    // that had landed -- and on create that left the child installed, inviting a duplicate on
+    // retry. Accept the literal name OR the decoration-stripped one; a name that differs beyond
+    // the suffix still fails.
     if (after == null) return false
-    def actual = stripAppConfigHtml(after.data?.name)?.toString()
-    if (actual == requestedName) return true
-    if (after.data?.rulePaused == true && actual?.endsWith("(Paused)")) {
-        return actual.substring(0, actual.length() - "(Paused)".length()).trim() == requestedName
-    }
-    return false
+    return stripAppConfigHtml(after.data?.name)?.toString() == requestedName ||
+           _vrbBareName(after.data?.name, after.data?.rulePaused == true) == requestedName
 }
 
 private Map _vrbNotVisualRuleError(Integer appId) {

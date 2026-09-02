@@ -689,39 +689,19 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
     if (format && !["summary", "ids"].contains(resolvedFormat)) {
         throw new IllegalArgumentException("scope='all' supports format 'summary' or 'ids' only (detailed/currentStates require MCP-authorized devices; got '${format}')")
     }
-    // Two inventory sources, tried in order. /device/listWithCapabilities/json carried
-    // capabilities for every device but is gone as of platform 2.5.1.173 and later (404; confirmed on .173 and .174). /hub2/devicesList
-    // survives and is still a superset of the authorized set -- the point of scope='all' -- but
-    // exposes no capabilities, so those are filled in from the Groovy model where the app has
-    // access and left empty where it does not (an unauthorized device's capabilities are simply
-    // not knowable from inside the sandbox).
-    def raw = null
-    def sourceEndpoint = "/device/listWithCapabilities/json"
-    def capabilitiesComplete = true
-    try {
-        def txt = hubInternalGet("/device/listWithCapabilities/json")
-        def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "[]")
-        // An empty/204 body parses to [] and would otherwise pass as a real (empty) inventory.
-        if (txt && parsed instanceof List && !parsed.isEmpty()) raw = parsed
-    } catch (Exception e) {
-        mcpLog("debug", "device", "hub_list_devices scope='all': /device/listWithCapabilities/json unavailable (${e.message}) -- falling back to /hub2/devicesList")
+    // The fallback source exposes no capabilities, so those are filled in from the Groovy model
+    // where the app has access and left empty where it does not (an unauthorized device's
+    // capabilities are simply not knowable from inside the sandbox).
+    def inventory = _fetchAllHubDeviceRecords("device", "hub_list_devices scope='all'")
+    if (inventory.failure == "fetch") {
+        return [success: false, error: "Failed to fetch the all-hub device list (${inventory.source}): ${inventory.fetchError}", note: "Endpoint may be unavailable on this firmware; use scope='authorized' (default)."]
     }
-    if (raw == null) {
-        sourceEndpoint = "/hub2/devicesList"
-        capabilitiesComplete = false
-        try {
-            def txt = hubInternalGet("/hub2/devicesList")
-            def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "{}")
-            raw = _flattenHub2DeviceTree(parsed instanceof Map ? parsed.devices : null)
-        } catch (Exception e) {
-            mcpLog("warn", "device", "hub_list_devices scope='all': /hub2/devicesList fetch/parse failed: ${e.message}")
-            return [success: false, error: "Failed to fetch the all-hub device list (${sourceEndpoint}): ${e.message}", note: "Endpoint may be unavailable on this firmware; use scope='authorized' (default)."]
-        }
-        if (!(raw instanceof List)) {
-            mcpLog("warn", "device", "hub_list_devices scope='all': /hub2/devicesList returned an unexpected shape")
-            return [success: false, error: "Unexpected /hub2/devicesList response (expected {devices:[...]}).", note: "Hub firmware may have changed the endpoint contract."]
-        }
+    if (inventory.failure) {
+        return [success: false, error: "Unexpected ${inventory.source} response (expected {devices:[...]}).", note: "Hub firmware may have changed the endpoint contract."]
     }
+    def raw = inventory.records
+    def sourceEndpoint = inventory.source
+    def capabilitiesComplete = inventory.capabilities
     def authorizedIds = ((selectedDevices ?: []).collect { it.id?.toString() }.findAll { it != null } as Set)
     (getChildDevices() ?: []).each { def cid = it.id?.toString(); if (cid != null) authorizedIds.add(cid) }
     // Capability lookup for the fallback source, built once from the authorization-scoped model.

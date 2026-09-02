@@ -1425,9 +1425,9 @@ class TestRunner:
         # ordinary dict with no "devices" key. Treating that as "absent" would create a duplicate
         # PERMANENT device on every incident, and nothing ever sweeps E2E_PERM_*.
         assert found.get("success") is not False, \
-                f"could not look up permanent fixture '{label}' -- refusing to create a duplicate: {found}"
+            f"could not look up permanent fixture '{label}' -- refusing to create a duplicate: {found}"
         assert isinstance(found.get("devices"), list), \
-                f"fixture lookup returned no device list (hub contract drift?) -- refusing to create a duplicate: {found}"
+            f"fixture lookup returned no device list (hub contract drift?) -- refusing to create a duplicate: {found}"
         for d in found["devices"]:
             if (d.get("label") or "") == label and d.get("id") is not None:
                 self._perm_fixture_ids[key] = str(d["id"])
@@ -1462,7 +1462,7 @@ class TestRunner:
                 page = self.client.call_tool("hub_read_apps_code",
                                              {"tool": "hub_list_drivers", "args": args})
                 assert isinstance(page.get("drivers"), list), \
-                f"driver catalog read failed (not a driver list) -- this is NOT 'driver absent': {page}"
+                    f"driver catalog read failed (not a driver list) -- this is NOT 'driver absent': {page}"
                 for d in page["drivers"]:
                     name, did, bucket = d.get("name"), d.get("id"), d.get("bucket")
                     # Prefer a BUILT-IN over a user driver of the same name -- the catalog exposes
@@ -2975,7 +2975,7 @@ class TestRunner:
              f"wholesale /device/update fallback both missed: label={created.get('label')!r} "
              f"warnings={created.get('warnings')!r}")
         assert not [w for w in (created.get("warnings") or []) if "label" in str(w).lower()], \
-                f"hub_create_device warned about the label: {created.get('warnings')!r}"
+            f"hub_create_device warned about the label: {created.get('warnings')!r}"
         try:
             # A freshly created REAL device is NOT MCP-selected, so the scoped hub_get_device
             # (selected/child devices only) can't resolve it. Confirm it exists via the
@@ -5701,7 +5701,7 @@ class TestRunner:
         still fail; structural imbalance alone does not (the caller's reset/closer handles it)."""
         h = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_get_rule_health", "args": {"appId": app_id}})
         assert not h.get("configPageError") and not h.get("brokenMarkers") and not h.get("multipleFlagPoison"), \
-                f"rule is genuinely broken after the dropped response (not just mid-build imbalance): {h}"
+            f"rule is genuinely broken after the dropped response (not just mid-build imbalance): {h}"
         if h.get("ok") is False:
             print(f"    rule {app_id} renders with structural imbalance after the dropped response "
                   "(expected mid-build state; a reset/closer follows)")
@@ -7982,6 +7982,26 @@ class TestRunner:
             ],
         }
 
+    @staticmethod
+    def _assert_trigger_device(got: Any, fmt: str, switch_id: Any, where: str = "") -> None:
+        """Assert the test switch's id is on the rule's trigger node, in whichever shape it speaks.
+
+        A blob substring match would false-pass on any field that happens to contain the digits.
+        Classic keeps device ids on the node; graph moves them into config.switches and puts the
+        node CATEGORY in `kind` (`type` there is the variety, e.g. "switch")."""
+        if fmt == "classic":
+            trigger_node = (got.get("whenNodes") or [None])[0]
+        else:
+            trigger_node = next(
+                (n for n in (got.get("definition") or {}).get("nodes", [])
+                 if n.get("kind") == "trigger"), None)
+        assert isinstance(trigger_node, dict), \
+            f"no trigger node in the {where}{fmt} read-back: {got}"
+        trigger_devices = (trigger_node.get("deviceIds")
+                           or (trigger_node.get("config") or {}).get("switches") or [])
+        assert int(switch_id) in trigger_devices, \
+            f"trigger device {switch_id} not on the {where}trigger node: {trigger_node}"
+
     def _get_visual_rule(self, app_id: Any = None) -> Any:
         """hub_get_visual_rule through the PURE-READ gateway (hub_read_rules cross-listing)."""
         args = {} if app_id is None else {"appId": app_id}
@@ -8053,23 +8073,7 @@ class TestRunner:
             assert got.get("success") is True, f"read-back of new VRB rule {app_id} failed: {got}"
             assert got.get("name") == name, f"read-back name mismatch: {got.get('name')!r} != {name!r}"
             assert got.get("format") == fmt, f"read-back format {got.get('format')!r} != create format {fmt!r}"
-            # Pull the trigger node in whichever shape the rule speaks and assert
-            # the test switch's id is in its deviceIds array -- a blob substring
-            # match would false-pass on any field that happens to contain the digits.
-            if fmt == "classic":
-                trigger_node = (got.get("whenNodes") or [None])[0]
-            else:
-                # Graph nodes carry the category in `kind`; `type` is the variety ("switch").
-                trigger_node = next(
-                    (n for n in (got.get("definition") or {}).get("nodes", [])
-                     if n.get("kind") == "trigger"), None)
-            assert isinstance(trigger_node, dict), \
-                f"no trigger node in the {fmt} read-back: {got}"
-            # Classic keeps device ids on the node; graph moves them into config.switches.
-            trigger_devices = (trigger_node.get("deviceIds")
-                               or (trigger_node.get("config") or {}).get("switches") or [])
-            assert int(switch_id) in trigger_devices, \
-                f"trigger device {switch_id} not on the trigger node: {trigger_node}"
+            self._assert_trigger_device(got, fmt, switch_id)
 
             # HEALTH on a Visual Rule (issue #254): hub_get_rule_health must NOT reject a VRB
             # rule -- it reports the engine-native verdict. ruleFormat identifies which engine
@@ -8315,20 +8319,7 @@ class TestRunner:
                 f"restored name mismatch: {got.get('name')!r} != {name!r}"
             assert got.get("format") == fmt, \
                 f"restored rule format {got.get('format')!r} != {fmt!r}"
-            if fmt == "classic":
-                trigger_node = (got.get("whenNodes") or [None])[0]
-            else:
-                # Graph nodes carry the category in `kind`; `type` is the variety ("switch").
-                trigger_node = next(
-                    (n for n in (got.get("definition") or {}).get("nodes", [])
-                     if n.get("kind") == "trigger"), None)
-            assert isinstance(trigger_node, dict), \
-                f"no trigger node in the restored {fmt} read-back: {got}"
-            # Classic keeps device ids on the node; graph moves them into config.switches.
-            trigger_devices = (trigger_node.get("deviceIds")
-                               or (trigger_node.get("config") or {}).get("switches") or [])
-            assert int(switch_id) in trigger_devices, \
-                f"trigger device {switch_id} not on the restored trigger node: {trigger_node}"
+            self._assert_trigger_device(got, fmt, switch_id, "restored ")
         finally:
             # Cleanup the RESTORED rule (the original is already gone). Same delete
             # contract + untrack-after-gone-assert discipline as the lifecycle test.
@@ -13215,7 +13206,7 @@ def main() -> None:
                 client.call_tool("hub_call_device_command", cargs)
                 read = client.call_tool("hub_get_device_attribute", {"deviceId": dev_id, "attribute": attr})
                 assert read.get("value") is not None, \
-                f"fixture '{label}' did not report '{attr}' after priming -- polling tests would throw: {read}"
+                    f"fixture '{label}' did not report '{attr}' after priming -- polling tests would throw: {read}"
             print(f"  {key:<10} id={dev_id:<6} '{label}' ({driver}) -- readable, primed")
         children = client.call_tool("hub_list_devices", {"filter": "virtual"}).get("devices") or []
         child_ids = {str(d.get("id")) for d in children}

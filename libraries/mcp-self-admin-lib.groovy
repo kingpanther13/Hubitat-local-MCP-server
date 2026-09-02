@@ -259,43 +259,26 @@ private Map _validateMcpDeviceScope(scopeValue) {
     }
 
     // ATOMIC validation: for replace/add, every requested id must resolve to a real hub device
-    // (validated against /device/listWithCapabilities/json -- the only view of every device,
+    // (validated against the hub-wide device inventory -- the only view of every device,
     // authorized or not). Validate ALL before any write so a single bad id can't leave a
     // half-applied scope. remove does NOT validate membership BECAUSE removing an id that isn't
     // present (or no longer exists on the hub) is a harmless no-op, and forcing an unknown-id read
     // fetch there would block a legitimate cleanup of a since-deleted device.
     if (mode in ["replace", "add"] && !requestedIds.isEmpty()) {
-        // Same two-source fallback as hub_list_devices scope='all': the capabilities endpoint is
-        // gone as of platform 2.5.1.173 and later (404; confirmed on .173 and .174), and /hub2/devicesList is still a full inventory. Only
-        // ids are needed here, which that endpoint carries, so validation is unaffected.
-        def raw = null
-        def sourceEndpoint = "/device/listWithCapabilities/json"
-        try {
-            def txt = hubInternalGet("/device/listWithCapabilities/json")
-            def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "[]")
-            // An empty/204 body parses to [] and would otherwise pass as a real (empty) inventory.
-            if (txt && parsed instanceof List && !parsed.isEmpty()) raw = parsed
-        } catch (Exception e) {
-            mcpLog("debug", "developer-mode", "hub_update_mcp_settings selectedDevices: /device/listWithCapabilities/json unavailable (${e.message}) -- falling back to /hub2/devicesList")
+        // Same two-source fallback as hub_list_devices scope='all' (_fetchAllHubDeviceRecords).
+        // Only ids are needed here, which both endpoints carry, so the missing capabilities on the
+        // fallback source do not affect validation.
+        // isError:true on the failure paths so handleToolsCall hoists them onto the JSON-RPC
+        // envelope -- a failed validation that wrote nothing must reach the client AS an error,
+        // not a quiet result.
+        def inventory = _fetchAllHubDeviceRecords("developer-mode", "hub_update_mcp_settings selectedDevices")
+        if (inventory.failure == "fetch") {
+            return [success: false, isError: true, error: "Failed to fetch the all-hub device list (${inventory.source}) to validate selectedDevices: ${inventory.fetchError}", note: "Endpoint may be unavailable on this firmware; nothing was changed."]
         }
-        if (raw == null) {
-            sourceEndpoint = "/hub2/devicesList"
-            try {
-                def txt = hubInternalGet("/hub2/devicesList")
-                def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "{}")
-                raw = _flattenHub2DeviceTree(parsed instanceof Map ? parsed.devices : null)
-            } catch (Exception e) {
-                mcpLog("warn", "developer-mode", "hub_update_mcp_settings selectedDevices: /hub2/devicesList fetch/parse failed: ${e.message}")
-                // isError:true so handleToolsCall hoists this onto the JSON-RPC envelope -- a failed
-                // validation that wrote nothing must reach the client AS an error, not a quiet result.
-                return [success: false, isError: true, error: "Failed to fetch the all-hub device list (${sourceEndpoint}) to validate selectedDevices: ${e.message}", note: "Endpoint may be unavailable on this firmware; nothing was changed."]
-            }
+        if (inventory.failure) {
+            return [success: false, isError: true, error: "Unexpected ${inventory.source} response; cannot validate selectedDevices.", note: "Hub firmware may have changed the endpoint contract; nothing was changed."]
         }
-        if (!(raw instanceof List)) {
-            mcpLog("warn", "developer-mode", "hub_update_mcp_settings selectedDevices: ${sourceEndpoint} returned an unexpected shape")
-            return [success: false, isError: true, error: "Unexpected ${sourceEndpoint} response; cannot validate selectedDevices.", note: "Hub firmware may have changed the endpoint contract; nothing was changed."]
-        }
-        def hubDeviceIds = (raw.findAll { it instanceof Map }.collect { it.id?.toString() }.findAll { it != null }) as Set
+        def hubDeviceIds = (inventory.records.findAll { it instanceof Map }.collect { it.id?.toString() }.findAll { it != null }) as Set
         def unknown = requestedIds.findAll { !hubDeviceIds.contains(it) }
         if (!unknown.isEmpty()) {
             throw new IllegalArgumentException("Unknown device id(s): ${unknown.join(', ')}. Use hub_list_devices(scope='all') to see valid ids. Nothing was changed.")

@@ -172,14 +172,12 @@ def checkDeadman() {
 // just makes the disarm restore happen ~2s after the flag write instead of on the next minute tick.
 def deadmanKick() { checkDeadman() }
 
-// Space out restore RETRIES. Attempt 1 is immediate; after that each failure waits 2^(n-1) minutes
-// before the next try -- 1, 2, 4 and 8 minutes, so the five attempts actAndRecordLocked allows
-// before latching span ~15 min. The cap matches the latch: attempt 5 is the last one made. The old behaviour retried on every 1-minute tick, and each attempt is a
-// 660KB source fetch + a bundle install + two app recompiles -- so a hub already struggling got
-// five of those inside five minutes, which is load piled onto the exact condition that made the
-// restore fail. Backoff spreads the same five attempts over ~30 minutes and gives a loaded hub
-// room to drain. A wedged hub skips the attempt entirely: the restore cannot possibly land while
-// loopback HTTP is dead, and trying costs load the hub does not have.
+// Space out restore RETRIES: attempt 1 is immediate, then each failure waits 2^(n-1) minutes
+// (1, 2, 4, 8), so the five attempts actAndRecordLocked allows before latching span ~15 min.
+// Every attempt is a 660KB source fetch + a bundle install + two app recompiles, and the old
+// once-a-minute retry piled five of those onto the exact condition that made the restore fail.
+// A wedged hub skips the attempt entirely -- the restore cannot land while loopback HTTP is dead,
+// and trying costs load the hub does not have.
 private boolean retryBackoffPending(Map flag, String trigger) {
     // Read the atomicState mirror too: if the last retry's writeFlag failed, the flag still says
     // the attempt before it, and pacing off that would restart the schedule from the top.
@@ -1185,16 +1183,15 @@ def adminForceDeleteInstalledApp(args) {
     return [success: false, error: "Force-delete of installed app ${id} returned HTTP ${st} but the gone-check could not read /installedapp/json (status=${cst ?: 'none'}) -- keep the id and re-delete to be safe.", id: id]
 }
 
-// Hub variables have NO app-facing delete API -- there is no removeGlobalVar/removeGlobalVariable on
-// the app class (an earlier revision called removeGlobalVariable and every purge failed with
-// "No signature of method", so the variables leg never once worked and BAT_E2E_ vars accumulated on
-// the test hub). resources/hub2-source/README.md records why: the Vue HubVariables component is a
-// non-functional stub and "the classic hubVar wizard is the real variable-CRUD contract". So drive
-// that wizard, the same two clicks the main server's hub_delete_variable uses.
-// Ported from _resolveDirectAppId (hubitat-mcp-server.groovy). Two hops max: direct -> create ->
-// configure, each anchored on its path shape. An earlier revision took the FIRST digits anywhere in
-// the Location -- 127 on an absolute http://127.0.0.1:8080/... Location, or the app TYPE id on a
-// create/<typeId> hop -- and would have driven deleteGV/delConfirm at an unrelated installed app.
+// Hub variables have NO app-facing delete API -- there is no removeGlobalVar/removeGlobalVariable
+// on the app class (an earlier revision called removeGlobalVariable, every purge failed with "No
+// signature of method", and BAT_E2E_ vars accumulated on the test hub). resources/hub2-source's
+// README records the classic hubVar wizard as the real variable-CRUD contract, so drive that.
+//
+// Resolver ported from _resolveDirectAppId (hubitat-mcp-server.groovy). Two hops max: direct ->
+// create -> configure, each ANCHORED on its path shape, because taking the first digits anywhere
+// in the Location picks up 127 from an absolute http://127.0.0.1:8080/... URL, or the app TYPE id
+// on a create/<typeId> hop -- either of which drives deleteGV/delConfirm at an unrelated app.
 private Integer findHubVariablesAppId() {
     String path = "/installedapp/direct/hubVariables"
     for (int hop = 1; hop <= 2; hop++) {
@@ -1269,7 +1266,15 @@ private String deleteHubVariable(Integer appId, String varName) {
         if (!clicksOk) return "hubVar wizard click(s) were not accepted (${lastClicks}) and the variable still exists"
     }
     return "hubVar wizard clicks were accepted (${lastClicks}) but the variable still exists after two attempts -- likely still referenced by a rule"
+}
 
+// A purge call that yielded to a sweep already running. Carries the same zero-count shape a real
+// sweep returns so a caller reading the count fields is not tripped by a missing key.
+private Map purgeNoOpResult(String prefix, String note) {
+    return [success: true, inFlight: true, prefix: prefix,
+            deletedCount: 0, failedCount: 0, deleted: [], failed: [],
+            variablesDeletedCount: 0, variablesFailedCount: 0, variablesDeleted: [], variablesFailed: [],
+            note: note]
 }
 
 // hub_purge_e2e_artifacts: ONE-call LOCAL sweep of leftover test fixtures. Enumerates every installed-app
@@ -1305,10 +1310,7 @@ def adminPurgeE2eArtifacts(args) {
                     note: "Retry after the running sweep completes (its results are cached for 5 minutes, so the retry will not re-run it)."]
         }
         mcpAdminLog "Purge already in flight (${((nowMs - purgeAt) / 1000) as long}s) -- returning the in-flight marker instead of starting a second sweep."
-        return [success: true, inFlight: true, prefix: prefix,
-                deletedCount: 0, failedCount: 0, deleted: [], failed: [],
-                variablesDeletedCount: 0, variablesFailedCount: 0, variablesDeleted: [], variablesFailed: [],
-                note: "A purge started ${((nowMs - purgeAt) / 1000) as long}s ago is still running; this call was a no-op. Do NOT retry -- the running sweep covers the same prefix. The post-restore --cleanup-only sweep remains the backstop."]
+        return purgeNoOpResult(prefix, "A purge started ${((nowMs - purgeAt) / 1000) as long}s ago is still running; this call was a no-op. Do NOT retry -- the running sweep covers the same prefix. The post-restore --cleanup-only sweep remains the backstop.")
     }
     Long cachedAt = null
     try { cachedAt = atomicState.purgeResultAt as Long } catch (Exception ignore) { cachedAt = null }
@@ -1349,10 +1351,7 @@ def adminPurgeE2eArtifacts(args) {
                     note: "Retry after the running sweep completes."]
         }
         mcpAdminLog "Purge claim lost to a concurrent request -- yielding rather than sweeping twice."
-        return [success: true, inFlight: true, prefix: prefix,
-                deletedCount: 0, failedCount: 0, deleted: [], failed: [],
-                variablesDeletedCount: 0, variablesFailedCount: 0, variablesDeleted: [], variablesFailed: [],
-                note: "A concurrent purge for the same prefix won the claim; this call was a no-op. Do NOT retry."]
+        return purgeNoOpResult(prefix, "A concurrent purge for the same prefix won the claim; this call was a no-op. Do NOT retry.")
     }
     try {
         return purgeE2eArtifactsLocked(prefix)
@@ -2258,34 +2257,31 @@ Integer httpStatusOf(Exception e) {
 // the watchdog has to be able to SEE it. Track consecutive loopback failures plus the last
 // success so "one flaky read" is distinguishable from "the hub is gone".
 private void noteLoopback(boolean ok) {
-    synchronized (LOOPBACK_LOCK) { noteLoopbackLocked(ok) }
-}
-
-private void noteLoopbackLocked(boolean ok) {
-    try {
-        if (ok) {
+    synchronized (LOOPBACK_LOCK) {
+        try {
+            int prior = (atomicState.loopbackFailStreak ?: 0) as int
+            if (!ok) {
+                // Stamp when THIS streak began so hubLooksWedged has a baseline even if the
+                // watchdog has never seen a successful loopback call.
+                if (prior == 0) atomicState.loopbackStreakStartedAt = now()
+                atomicState.loopbackFailStreak = prior + 1
+                return
+            }
             // Every atomicState write is a DB write, and a purge sweep makes 150+ loopback calls.
             // The success path is the steady state, so it writes only when something CHANGED: a
             // streak to clear, or a lastOk older than 30s. That keeps the bookkeeping at ~2 writes
             // a minute on a healthy hub instead of one per call on the app whose job is to keep
             // the hub unloaded.
-            int prior = (atomicState.loopbackFailStreak ?: 0) as int
-            Long lastOk = null
-            try { lastOk = atomicState.loopbackLastOkAt as Long } catch (Exception ignore) { lastOk = null }
-            long nowMs = now()
             if (prior != 0) {
                 atomicState.loopbackFailStreak = 0
                 atomicState.loopbackStreakStartedAt = null
             }
+            Long lastOk = null
+            try { lastOk = atomicState.loopbackLastOkAt as Long } catch (Exception ignore) { lastOk = null }
+            long nowMs = now()
             if (lastOk == null || (nowMs - lastOk) > 30000L) atomicState.loopbackLastOkAt = nowMs
-        } else {
-            int prior = (atomicState.loopbackFailStreak ?: 0) as int
-            // Stamp when THIS streak began so hubLooksWedged has a baseline even if the watchdog
-            // has never seen a successful loopback call.
-            if (prior == 0) atomicState.loopbackStreakStartedAt = now()
-            atomicState.loopbackFailStreak = prior + 1
-        }
-    } catch (Exception ignore) { /* never let bookkeeping break a hub call */ }
+        } catch (Exception ignore) { /* never let bookkeeping break a hub call */ }
+    }
 }
 
 // Both conditions are required on purpose. The streak alone fires on a burst of slow reads from a

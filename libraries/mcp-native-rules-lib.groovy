@@ -4109,19 +4109,15 @@ private Map _rmCollectTriggerCapabilities(Integer appId) {
     return out
 }
 
-// Action indices exactly as they appear in the rule's appSettings, in the
-// order the hub served them. An index is discovered from actType.<N> OR
-// actSubType.<N>: a row authored in RM's UI carries only the subtype on
-// ELSE / ELSE-IF / END-IF, so an actType-only scan misses it. `seen`
-// collapses the two keys an action contributes into one entry.
+// Action indices as they appear in the rule's appSettings, in the order the hub served them.
+// Discovered from actType.<N> OR actSubType.<N> -- a UI-authored ELSE / ELSE-IF / END-IF carries
+// only the subtype, so an actType-only scan misses it; `seen` collapses an action's two keys.
 //
-// appSettings key order is ARBITRARY -- neither display order nor lexical
-// (live capture: actSubType.7, actSubType.8, actSubType.2, ... actType.11,
-// actType.14, actType.13, ...). Callers that need ORDER must use
-// _rmCollectActionIndices instead. What this sees and the compiled action
-// list does not is a row that exists ONLY in settings -- a wizard write
-// that landed but was never baked -- which is exactly why the add path's
-// index allocation and orphan rollback read this and not the compiled list.
+// appSettings key order is ARBITRARY -- neither display nor lexical (live capture: actSubType.7,
+// .8, .2, ... actType.11, .14, .13), so callers needing ORDER must use _rmCollectActionIndices.
+// What this sees and the compiled action list does not is a row that exists ONLY in settings -- a
+// wizard write that landed but was never baked -- which is why the add path's index allocation and
+// orphan rollback read this and not the compiled list.
 private List _rmActionIndicesFromSettings(Map status) {
     def out = []
     def seen = [] as Set
@@ -4138,53 +4134,42 @@ private List _rmActionIndicesFromSettings(Map status) {
     return out
 }
 
-// Action indices in RM's DISPLAY ORDER. Used by _rmMoveAction to verify a
-// position shift and by _rmModifyAction to walk a rebuilt action back to its
-// original slot -- both read this list positionally.
+// Action indices in RM's DISPLAY ORDER, read positionally by _rmMoveAction (to verify a position
+// shift) and _rmModifyAction (to walk a rebuilt action back to its original slot). Primary source
+// is /app/ruleBuilderJson's `actionList`, the only display-ordered source the hub exposes, read
+// via _ruleCompiledState so this shares the health check's fetch. When that is absent or
+// unreadable (a non-RM classic app, older firmware, a failed read) the appSettings scan answers
+// WHICH rows exist but NOT the order they display in.
 //
-// Ordering strategy (two-tier):
-// 1. /app/ruleBuilderJson's `actionList` -- RM's own ordered array of action
-// indices, and the only display-ordered source the hub exposes. Read via
-// _ruleCompiledState so this shares the health check's fetch rather than
-// opening a second path to the endpoint.
-// 2. Fall back to the appSettings scan when actionList is absent or
-// unreadable (a non-RM classic app, older firmware, a failed read). That
-// order is arbitrary, so the fallback answers WHICH rows exist, not the
-// order they display in.
-//
-// Note action keys use a dot-N suffix (actType.1) vs trigger keys
-// without dot (tCapab1).
+// Note action keys use a dot-N suffix (actType.1) vs trigger keys without dot (tCapab1).
 private List _rmCollectActionIndices(Integer appId) {
-    // One coercion path (_rmCoerceActionIndices, via _rmOrderedActionIndices) so the two
-    // cannot drift; a null element used to NPE here rather than be skipped.
     def ordered = _rmOrderedActionIndices(appId)
     if (ordered) return ordered
     return _rmActionIndicesFromSettings(_rmFetchStatusJson(appId))
 }
 
-// True only when /installedapp/json/<id> positively reports disabled. An unreadable or
-// unparseable response returns false: a transient read failure must not block an add that
-// would otherwise work, and the wizard's own error still catches the disabled case downstream.
-// Tri-state: true = positively disabled, false = positively enabled, null = the read could not
-// establish either (empty body, unparseable, key absent, exception). null is NOT folded into
-// false: the ungated paths return success:true on a disabled app having done nothing, so a
-// transient read failure that silently opened the gate would restore exactly that. The caller
-// proceeds on null (a blip must not block edits on a healthy hub) but logs it at WARN, the same
-// separation hub_set_app_disabled makes on the same endpoint.
+// Tri-state: true = positively disabled, false = positively enabled, null = the read established
+// neither (empty body, unparseable, key absent, exception). null is NOT folded into false -- the
+// ungated paths return success:true on a disabled app having done nothing, so a transient read
+// failure that silently opened the gate would restore exactly that. Callers proceed on null (a
+// blip must not block edits on a healthy hub) but it is logged at WARN, the same separation
+// hub_set_app_disabled makes on this endpoint.
 private Boolean _rmIsAppDisabled(Integer appId) {
+    String why
     try {
         def txt = hubInternalGet("/installedapp/json/${appId}")
-        if (!txt) { mcpLog("warn", "rm-native", "_rmIsAppDisabled(${appId}): empty /installedapp/json body -- disabled state UNKNOWN, proceeding"); return null }
-        def parsed = new groovy.json.JsonSlurper().parseText(txt)
-        if (!(parsed instanceof Map) || !parsed.containsKey("disabled")) {
-            mcpLog("warn", "rm-native", "_rmIsAppDisabled(${appId}): /installedapp/json carried no 'disabled' key -- disabled state UNKNOWN, proceeding")
-            return null
+        if (!txt) {
+            why = "empty /installedapp/json body"
+        } else {
+            def parsed = new groovy.json.JsonSlurper().parseText(txt)
+            if (parsed instanceof Map && parsed.containsKey("disabled")) return parsed.disabled == true
+            why = "/installedapp/json carried no 'disabled' key"
         }
-        return parsed.disabled == true
     } catch (Exception e) {
-        mcpLog("warn", "rm-native", "_rmIsAppDisabled(${appId}): read failed (${e.message}) -- disabled state UNKNOWN, proceeding")
-        return null
+        why = "read failed (${e.message})"
     }
+    mcpLog("warn", "rm-native", "_rmIsAppDisabled(${appId}): ${why} -- disabled state UNKNOWN, proceeding")
+    return null
 }
 
 // Name the operation for the disabled-app refusal so the message says which edit was refused
@@ -5590,17 +5575,13 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
 
     _rmValidateRoundZeroActionSpec(actionSpec)
 
-    // Pre-flight: Hubitat does not allow EDITING a disabled app -- by design, a disabled app's
-    // config page renders only "App is disabled / Enable", with no form at all. That is a
-    // platform feature, not a defect. Without this check the page-walking add gets an empty
-    // schema and dies partway with an opaque "rCapab_<N> not in doActPage schema", having
-    // half-driven the wizard and left a condition slot open. Refuse up front with the remedy.
-    // _applyNativeAppEdit hoists this same refusal ahead of its snapshot; this copy is what
-    // covers the patch / createRule intra-batch callers that reach _rmAddAction directly.
-    // Skipped intra-batch: every intra-batch caller has already passed _applyNativeAppEdit's
-    // hoisted gate (bulk addActions, replaceActions, patches) or is createRule on a rule seconds
-    // old that cannot yet be disabled. Re-checking per action made a 10-action replaceActions
-    // spend 11 loopback GETs answering one question, inside the relay budget this PR tightened.
+    // A disabled app's config page renders only "App is disabled / Enable", so the page-walking
+    // add gets an empty schema and dies partway with an opaque "rCapab_<N> not in doActPage
+    // schema", having half-driven the wizard and left a condition slot open. _applyNativeAppEdit
+    // hoists this same refusal ahead of its snapshot; this copy covers the patch / createRule
+    // intra-batch callers that reach _rmAddAction directly. Skipped intra-batch because those
+    // callers already passed the hoisted gate (or are createRule on a rule too new to be
+    // disabled), and re-checking per action spent 11 loopback GETs on a 10-action replaceActions.
     if (!intraBatch) _rmRejectDisabledAppEdit(appId, "addAction")
 
     // Pre-flight: refuse closers (endIf / stopRepeat) and orphan branch
@@ -8309,16 +8290,11 @@ private List _rmStructuralSequenceFromSpecList(List specList) {
 // path and the legacy-flat trigger-mutation catch reuse this so the two
 // surfaces stay word-identical.
 private String _rmPreflightRestoreHint(String reason = null, Map backup = null) {
-    // The `reason` echo matters: without it the caller sees only this generic sentence beside
-    // the error and has to infer WHY nothing happened. The disabled-rule refusal is the case
-    // that made this obvious -- "RM was not touched" alone reads as a mystery failure.
     def why = reason ? " Reason: ${reason}" : ""
-    // Never state a backup fact the envelope contradicts. Whether a snapshot exists depends on
-    // WHICH pre-flight fired: the ones hoisted ahead of _applyNativeAppEdit's snapshot (unwalkable
-    // conditions, disabled app) refuse with backup null, while the ones inside the per-operation
-    // helpers refuse after it and carry a fresh backupKey. So read it off the envelope instead of
-    // asserting either case -- an earlier revision hardcoded "no backup taken" and was wrong on
-    // every post-snapshot refusal.
+    // Whether a snapshot exists depends on WHICH pre-flight fired -- the ones hoisted ahead of
+    // _applyNativeAppEdit's snapshot (unwalkable conditions, disabled app) refuse with backup
+    // null, the ones inside the per-operation helpers refuse after it with a fresh backupKey -- so
+    // read it off the envelope rather than asserting either case.
     def snapshot = backup?.backupKey ? " The backupKey on this response is an unused snapshot taken before the refusal." : " No backup was taken."
     "Pre-flight refusal -- RM was not touched, so nothing needs to be restored.${snapshot}${why}"
 }
@@ -9316,24 +9292,17 @@ Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
     def detectedAppType = config == null ? "visual_rule" : "rule_machine"
     def configAppName = config?.app?.appType?.name
     if (configAppName) {
-        // Exact first. Then a VERSIONED match: the hub reports Visual Rule children as
-        // "Visual Rule Builder 1.0" / "... 2.0" while the registry holds the bare family name,
-        // so an exact-only lookup silently classified every Visual Rule as rule_machine -- the
-        // snapshot then skipped the definition capture and a restore replayed it as an RM rule.
-        // The remainder must look like a version ("2.0"), so "Visual Rule Builder" can never
-        // swallow the "Visual Rules Builder" parent or any unrelated app.
+        // The hub reports Visual Rule children VERSIONED ("Visual Rule Builder 1.0" / "... 2.0")
+        // while the registry holds the bare family name, so an exact-only lookup silently
+        // classified every Visual Rule as rule_machine -- the snapshot then skipped the definition
+        // capture and a restore replayed it as an RM rule. Match the name with a trailing version
+        // stripped as well; requiring the suffix to LOOK like a version keeps "Visual Rule
+        // Builder" from swallowing the "Visual Rules Builder" parent or any unrelated app.
         def name = configAppName.toString()
+        def versioned = (name =~ /^(.+) [0-9]+(?:\.[0-9]+)*$/)
+        def bare = versioned.matches() ? (versioned[0] as List)[1].toString() : null
         _appTypeRegistry().each { typeKey, reg ->
-            if (reg.appName == name) detectedAppType = typeKey
-        }
-        if (detectedAppType == "rule_machine" && name != _appTypeRegistry().rule_machine?.appName) {
-            _appTypeRegistry().each { typeKey, reg ->
-                def base = reg.appName?.toString()
-                if (base && name.startsWith(base + " ") &&
-                        name.substring(base.length() + 1).matches(/[0-9]+(\.[0-9]+)*/)) {
-                    detectedAppType = typeKey
-                }
-            }
+            if (reg.appName == name || (bare != null && reg.appName == bare)) detectedAppType = typeKey
         }
     }
 
@@ -13608,23 +13577,13 @@ def _applyNativeAppEdit(args) {
     try {
         if (addActionSpec) _rmRejectUnwalkableExpressionConditions(addActionSpec)
         addActionsList?.each { if (it instanceof Map) _rmRejectUnwalkableExpressionConditions(it as Map) }
-        // Same pre-snapshot slot for the disabled-app refusal, and it covers EVERY edit shape, not
-        // just addAction. Hubitat renders no configuration page for a disabled app, and every branch
-        // below this point drives that page -- so none of them can work. Verified live on fw
-        // 2.5.1.177 against a disabled rule, and the unguarded paths fail in ways that are worse
-        // than a refusal:
-        //   removeAction -> takes a backup, clicks delAct, re-clicks, polls ~8s, then reports the
-        //                   action "still present" and tells the caller it is SAFE TO RETRY. It
-        //                   never becomes safe while the app is disabled.
-        //   walkStep     -> returns success:true with an empty schema (inputs:[], hrefs:[], every
-        //                   commitButton false), because "App is disabled" is the whole page.
-        //   settings     -> returns success:true, settingsApplied:[], and blames the miss on RM's
-        //                   incremental-schema behaviour, which is the wrong diagnosis entirely.
-        // Silent success and a misleading retry hint are both worse than a refusal that names the
-        // cause, so the gate is unconditional here. Reaching this line already means the call is an
-        // edit (the "requires one of ..." validation above rejects everything else). Costs one
-        // non-mutating GET of /installedapp/json. _rmAddAction keeps its own copy of the guard for
-        // the intra-batch patch / createRule callers that reach it without passing through here.
+        // Same pre-snapshot slot, covering EVERY edit shape: Hubitat renders no configuration page
+        // for a disabled app and every branch below drives that page. Unconditional because the
+        // unguarded paths are worse than a refusal -- verified live on fw 2.5.1.177: removeAction
+        // burns a backup and ~8s of clicks then tells the caller it is SAFE TO RETRY (it never
+        // becomes safe), while walkStep and a raw settings write both return success:true having
+        // changed nothing. Reaching this line already means the call is an edit (the "requires one
+        // of ..." validation above rejects everything else). Costs one non-mutating GET.
         _rmRejectDisabledAppEdit(appId, _rmEditOpLabel(args))
     } catch (IllegalArgumentException preflightExc) {
         return _rmBuildUpdateErrorResponse(appId, preflightExc.message, null)

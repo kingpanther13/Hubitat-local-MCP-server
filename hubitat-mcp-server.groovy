@@ -1,11 +1,8 @@
 /**
  * MCP Rule Server for Hubitat
- *
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
- *
  * Version: 4.0.2 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
- *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
  * 2. Paste this code and click Save
@@ -1789,15 +1786,12 @@ def _isCloudRequest() {
     catch (Exception e) { return false }
 }
 
-// Relay time budget in ms. 0 disables self-budgeting; unset defaults to 6000. The check
-// fires BETWEEN steps, so an answered leg = budget + the last step it started (1-2s for a
-// wizard POST on a loaded hub) + relay overhead (~0.35s). Measured on the e2e MRTR proof:
-// 8000 -> 9.855s max leg (failed the 9.5s bound; run 33558883645), 7000 -> 8.844s -- the
-// sum to the millisecond. A hub whose per-app load limiter is tripping (back-to-back runs,
-// no reboot between) adds ~0.9s to the in-flight step, which 7000 could not absorb. 6000
-// lands legs near 8s healthy and ~8.75s throttled, under the bound in both.
-// The budget is a setting, never a
-// literal elsewhere -- read it here.
+// Relay time budget in ms. 0 disables self-budgeting; unset defaults to 6000. The check fires
+// BETWEEN steps, so an answered leg = budget + the last step it started (1-2s for a wizard POST on
+// a loaded hub, ~0.9s more when the hub's per-app load limiter is tripping) + ~0.35s relay
+// overhead. Measured on the e2e MRTR proof: 8000 -> 9.855s max leg (over the 9.5s bound), 7000 ->
+// 8.844s; 6000 lands legs near 8s healthy and ~8.75s throttled.
+// The budget is a setting, never a literal elsewhere -- read it here.
 def _relayBudgetMs() {
     return settings.relayBudgetMs != null ? (settings.relayBudgetMs as Long) : 6000L
 }
@@ -5225,7 +5219,6 @@ def executeTool(toolName, args) {
  * Reuses the existing hub_delete_device path (the connector is a regular hub
  * device once created) -- Hubitat's UI does the same: open the connector
  * device's page, click Remove Device.
- *
  * The hub variable itself is NOT deleted; only the connector linkage.
  */
 
@@ -5943,7 +5936,6 @@ private String _redactSecretsInPath(String path) {
  * Shared core for the six hubInternal* variants: cookie attach, request, duck-typed body read
  * (read failures re-thrown, never swallowed into a Reader.toString() junk string), and the single
  * cookie-refresh retry. The thin wrappers below project their return shape.
- *
  * QUERYSTRINGS RIDE `query:`, NEVER THE PATH -- enforced by the guard below, because the platform
  * client escapes a '?' in `path` into literal path content. Probed live on fw 2.5.0.159: EXACT
  * routes 404 (/app/updateOAuth, /device/updateLabel, /device/setShowOnHome) while WILDCARD routes
@@ -6050,7 +6042,6 @@ def hubInternalGet(String path, Map query = null, int timeout = 30, boolean isRe
  * Caveat: ABSOLUTE Location values may still be auto-followed by the platform
  * client (observed live on /installedapp/sysApp), returning 200 with no
  * Location -- callers must not depend on the 302 shape.
- *
  * Exception handling is duck-typed rather than referencing
  * groovyx.net.http.HttpResponseException by name — that class isn't on the
  * Spock test classpath, and naming it would NCDFE at parse time.
@@ -6070,7 +6061,6 @@ def hubInternalGetRaw(String path, Map query = null, int timeout = 30, boolean i
  * missing/unparseable Location, exception) so callers can fall back to other
  * discovery. The configure page itself is never fetched -- the id lives in
  * the Location header, and following further would render HTML for nothing.
- *
  * Get-or-create caveat: the create hop is the hub's "open this app" flow.
  * For singleton system apps (e.g. hubVariables) it returns the EXISTING
  * instance every time, so probing is side-effect free. For transient tool
@@ -6121,11 +6111,9 @@ private Integer _resolveDirectAppId(String alias) {
  * Fetch Groovy source from an external URL. Mirrors the editor's "Import
  * Code from Website" + Save flow, relocated server-side so MCP callers
  * can deploy from a URL in one tool call.
- *
  * Throws IllegalArgumentException with a structured message + class name on
  * bad scheme, non-200 status, fetch exception, or empty body. mcpLogs each
  * failure at error level so the MCP log buffer carries the URL + cause.
- *
  * (Live-deployed via importUrl: marker comment to verify end-to-end smoke.)
  */
 private String _fetchSourceFromUrl(urlArg) {
@@ -6190,12 +6178,10 @@ private String _fetchSourceFromUrl(urlArg) {
 /**
  * Synchronous httpGet wrapped as a plain Map-returning method.
  * Returns [status: int, body: String, contentType: String].
- *
  * Body read failures (network reset mid-stream, gzip CRC, encoding decode)
  * are re-thrown rather than swallowed. The previous "fall back to toString()
  * on a Reader" pattern produces strings like "java.io.BufferedReader@..." that
  * would silently pass downstream as source code -- not safe for a deploy path.
- *
  * Cert validation is NOT disabled for external URLs (unlike hubInternalGet
  * which targets localhost). A hub-side fetch of executable code over a
  * trusted-CA-signed connection is the floor; self-signed or MITM-d URLs
@@ -6667,15 +6653,12 @@ private Integer normalizeRuleId(def ruleId) {
 /**
  * Registry of native automation app types. Each entry tells the create
  * path which namespace + appName + parent type to use for createchild.
- *
  * Adding a new entry here is the only change needed to support a new
  * native app type — the edit + delete + backup paths are app-type-
  * agnostic because they operate on appIds against the generic
  * /installedapp/* endpoint family.
- *
  * Verified live on firmware 2.4.4.135 / 2.5.0.123:
  *   - rule_machine: namespace=hubitat appName=Rule-5.1 parentType="Rule Machine"
- *
  * Sources for additional entries (per #120 scope expansion notes —
  * confirm namespace+appName via hub_list_apps (scope='instances') before enabling):
  *   - button_controller (parent),  Button Controller-5.1, parentType="Button Controllers"
@@ -6685,7 +6668,6 @@ private Integer normalizeRuleId(def ruleId) {
  *   - groups_scenes (Group-2.1 / Scene-2.1), parentType="Groups and Scenes"
  *   - notifier (Notifier), parentType="Notifications"
  *   - visual_rule (Visual Rule Builder), parentType="Visual Rules Builder"
- *
  * Edit + delete already work on these today — call hub_set_native_app /
  * hub_delete_native_app with the appId of any existing classic-app instance
  * (read appId via hub_list_apps (scope='instances') + hub_get_app_config).
@@ -6737,7 +6719,6 @@ private Map _appTypeRegistry() {
  * hub_set_native_app): createchild is addressed
  * `/installedapp/createchild/<ns>/<appName>/parent/<parentId>`, and the
  * parent id is per-hub.
- *
  * Cache in atomicState.parentAppIds[<appType>] -- one network call per type per
  * fresh install. If the app type's built-in parent is not installed yet (e.g. RM
  * or Button Controllers was never enabled on this hub), bootstrap it via the
@@ -6915,7 +6896,6 @@ private Integer _discoverParentAppId(String appType) {
 /**
  * Hit /installedapp/createchild/<ns>/<app>/parent/<pid> via a raw GET that
  * preserves the 302 Location header. Returns the new child app id as Integer.
- *
  * The UI's "Create New Rule" is a plain anchor — no CSRF, no prior page
  * fetch needed. Tested live on firmware 2.4.4.135 and 2.5.0.123.
  */
@@ -6944,7 +6924,6 @@ private Integer _rmCreateChildApp(Integer parentAppId, String namespace = "hubit
  * Click a button on an app's config page via /installedapp/btn. Used for
  * RM's page-transition buttons: updateRule, pausRule, runAction, editCond,
  * editAct, hasAll, etc. Stable across RM 5.0 and 5.1.
- *
  * Body format captured live from the Hubitat web UI's hasAll click on
  * firmware 2.5.0.123 (network panel):
  *   id=<appId>
@@ -6956,7 +6935,6 @@ private Integer _rmCreateChildApp(Integer parentAppId, String namespace = "hubit
  *   currentPage=<pageName>               <-- ditto
  *   pageBreadcrumbs=["mainPage", ...]    <-- navigation history
  *   stateAttribute=<value>               <-- only when caller passes one (e.g. moreCond, editCond)
- *
  * Earlier versions of this helper sent bare `<buttonName>=clicked`
  * without the `settings[]` wrapper AND omitted formAction/version/
  * currentPage/pageBreadcrumbs, which the hub's button handler accepted
@@ -6965,7 +6943,6 @@ private Integer _rmCreateChildApp(Integer parentAppId, String namespace = "hubit
  * bug that required a second click to commit. With the full form-
  * context body, a single hasAll click commits the trigger cleanly:
  * editor closes, no residual isCondTrig prompt, no phantom trigger.
- *
  * `pageName` is optional. When omitted, formAction/version/currentPage
  * are also omitted (the minimal POST works fine for top-level buttons
  * like updateRule, pausRule, stopRule that operate on the main page).
@@ -7029,7 +7006,6 @@ def _rmClickAppButton(Integer appId, String buttonName, String stateAttribute = 
  * regardless of whether a write landed — without sanitization, those
  * dynamic values would cause renderShifted=true on EVERY write and the
  * silent-rejection detector would never fire (false negatives).
- *
  * Patterns stripped:
  *   - ISO 8601 / "yyyy-MM-dd HH:mm:ss[.SSS]" timestamps
  *   - "fired <N> time(s)" counters
@@ -7051,7 +7027,6 @@ private String _rmSanitizeRenderForHash(Object sections) {
  * current schema. Used by _rmAddTrigger to walk the wizard's incremental
  * schema progression without surfacing settingsSkipped warnings on every
  * field that hasn't appeared yet.
- *
  * Post-write verification: after the POST, the page is re-fetched and
  * the new schema is compared to the pre-write schema. The write counts as
  * "persisted" if EITHER (a) the schema's keys changed (wizard advanced —
@@ -7062,7 +7037,6 @@ private String _rmSanitizeRenderForHash(Object sections) {
  * many wizard-context writes that never land (e.g. cond=a on doActPage
  * without `currentPage`/`pageBreadcrumbs` in the body) and the optimistic
  * append-on-applied bookkeeping was hiding these failures.
- *
  * The `applied` accumulator collects every key that actually landed on
  * the page so the caller can include it in the response.
  */
@@ -7304,9 +7278,9 @@ private Map _rmPagePostResponse(postResp) {
 // as {key, data:{id,name,...}, children:[...]}. Flatten to the {id, label} shape the caller
 // expects; `name` there is the user-facing label (the driver name is `secondaryName`).
 private List _flattenHub2DeviceTree(nodes, List acc = null) {
-    // A non-List at the TOP level means the contract moved -- return null so the caller
-    // raises it, rather than an empty list that would read as "this hub has no devices".
-    // Nested `children` legitimately arrive absent, so those recurse into the accumulator.
+    // A non-List at the TOP level means the contract moved -- return null so the caller raises it,
+    // rather than an empty list that would read as "this hub has no devices". Nested `children`
+    // legitimately arrive absent, so those recurse into the accumulator.
     if (!(nodes instanceof List)) return acc
     if (acc == null) acc = []
     nodes.each { node ->
@@ -7318,6 +7292,41 @@ private List _flattenHub2DeviceTree(nodes, List acc = null) {
         _flattenHub2DeviceTree(node.children, acc)
     }
     return acc
+}
+
+// Every hub device, authorized or not -- shared by hub_list_devices(scope='all') and the
+// selectedDevices validation, which is why it lives here and not in either library.
+// /device/listWithCapabilities/json carries capabilities but is gone as of platform 2.5.1.173 and
+// later (404; confirmed on .173 and .174). /hub2/devicesList survives and is still a superset of
+// the authorized set, but exposes no capabilities.
+// Returns [source, capabilities, records]. On failure records is null and `failure` is "fetch"
+// (with the exception message in fetchError) or "shape"; the caller owns the wording.
+private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
+    try {
+        def txt = hubInternalGet("/device/listWithCapabilities/json")
+        def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "[]")
+        // An empty/204 body parses to [] and would otherwise pass as a real (empty) inventory.
+        if (txt && parsed instanceof List && !parsed.isEmpty()) {
+            return [source: "/device/listWithCapabilities/json", capabilities: true, records: parsed]
+        }
+    } catch (Exception e) {
+        mcpLog("debug", logCategory, "${logPrefix}: /device/listWithCapabilities/json unavailable (${e.message}) -- falling back to /hub2/devicesList")
+    }
+    def records
+    try {
+        def txt = hubInternalGet("/hub2/devicesList")
+        def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "{}")
+        records = _flattenHub2DeviceTree(parsed instanceof Map ? parsed.devices : null)
+    } catch (Exception e) {
+        mcpLog("warn", logCategory, "${logPrefix}: /hub2/devicesList fetch/parse failed: ${e.message}")
+        return [source: "/hub2/devicesList", capabilities: false, records: null,
+                failure: "fetch", fetchError: e.message]
+    }
+    if (!(records instanceof List)) {
+        mcpLog("warn", logCategory, "${logPrefix}: /hub2/devicesList returned an unexpected shape")
+        return [source: "/hub2/devicesList", capabilities: false, records: null, failure: "shape"]
+    }
+    return [source: "/hub2/devicesList", capabilities: false, records: records]
 }
 
 /**
@@ -7341,7 +7350,6 @@ private Map _rmFetchStatusJson(Integer appId) {
  * Read a rule's compiled state from its builder-JSON endpoint — the PREFERRED
  * health source across EVERY rule engine (issue #254 + the VRB follow-up).
  * Returns a normalized map or null when appId is not a recognized rule shape:
- *
  *   - classic Rule Machine -> [ruleFormat:"rm", broken:<bool>, predicate, capabsfalse]
  *     from GET /app/ruleBuilderJson (the real `broken` boolean + predicate/condition
  *     structure, instead of scraping rendered HTML).
@@ -7350,7 +7358,6 @@ private Map _rmFetchStatusJson(Integer appId) {
  *     rules — their validationErrors are the engine-native equivalent of RM's broken.
  *   - classic Visual Rule -> [ruleFormat:"vrb-classic", broken:null] (the when/then/else
  *     shape carries no error field, so there is no structured boolean to report).
- *
  * SHAPE-CHECK, never status-check: /app/ruleBuilderJson serializes the raw state of
  * ANY installed app and answers HTTP 200 regardless (a nonexistent id returns {}, a
  * non-rule app returns its own state map), and /app/ruleBuilder20Json answers
@@ -7383,10 +7390,9 @@ private Map _ruleCompiledState(Integer appId) {
             if (parsed.containsKey("broken")) {
                 def pred = (parsed.containsKey("hasPredicate") || parsed.containsKey("predCapabs")) ?
                     [hasPredicate: parsed.hasPredicate == true, predCapabs: parsed.predCapabs ?: []] : null
-                // actionList is RM's own ordered array of action indices — the only
-                // display-ordered source there is. appSettings key order is arbitrary.
-                // Carried through raw so _rmCollectActionIndices can reuse this fetch
-                // instead of opening a second path to the same endpoint.
+                // actionList is RM's own ordered array of action indices — the only display-ordered
+                // source there is (appSettings key order is arbitrary). Carried through raw so
+                // callers reuse this fetch rather than opening a second path to the endpoint.
                 return [ruleFormat: "rm", broken: parsed.broken == true, validationErrors: [],
                         predicate: pred,
                         capabsfalse: (parsed.capabsfalse instanceof Map ? parsed.capabsfalse : null),
@@ -7420,7 +7426,6 @@ private Map _ruleCompiledState(Integer appId) {
  * Walk a sequence of [idx, actType, actSubType] entries (in numerical
  * order) tracking IF / Repeat block depth via a stack. Returns the list
  * of structural issue strings (empty list = balanced).
- *
  * Used by _rmCheckRuleHealth for post-mutation detection AND by the
  * pre-flight refusal paths in _rmDeleteAction / _rmAddAction /
  * _applyNativeAppEdit's replaceActions handler — they all build a
@@ -7431,13 +7436,11 @@ private Map _ruleCompiledState(Integer appId) {
  * already-broken rules — e.g. adding an END-IF to a rule with an open
  * Repeat keeps the issue count flat but swaps "Repeat never closed" for
  * "END-IF closes a Repeat block — mismatched closer".)
- *
  * Asymmetric refusal at the call sites: openers (ifThen / repeat /
  * repeatWhile) added alone are allowed (normal multi-step build state).
  * Branch keywords (elseIf / else) and bare closers (endIf / stopRepeat)
  * are refused if they would render orphaned, because they have no valid
  * follow-up step the caller would naturally do next.
- *
  * Partial-commit handling: an entry with `actType` set but `actSubType`
  * null is treated as a leaf (skipped from the walk), and a `partial:
  * true` flag on the entry is also accepted as a hint that the writer
@@ -7445,7 +7448,6 @@ private Map _ruleCompiledState(Integer appId) {
  * on the actType-only halfway state that the #172 false-fail race can
  * leave behind, rather than treating it as a leaf and silently masking
  * the imbalance.
- *
  * Groovy's List.pop() removes from the FRONT of a List; the walker uses
  * `<<` for append and `removeAt(size-1)` for tail-pop to preserve the
  * conventional stack semantics.
@@ -7504,12 +7506,10 @@ private List _rmStructuralIssuesFromSequence(List<Map> sequence) {
 }
 
 /**
- * Map a structural actSubType to the actType RM stores alongside it, or
- * null for a leaf subtype. RM 5.1's UI persists actType.<N> only on the
- * rows whose editor asked for a capability — an ELSE / ELSE-IF / END-IF
- * or a Repeat closer built in the UI carries actSubType.<N> ALONE. Our
- * own wizard writer writes both, so the pair is only ever half-present
- * on UI-built rules.
+ * Map a structural actSubType to the actType RM stores alongside it, or null for a leaf subtype.
+ * RM 5.1's UI persists actType.<N> only on rows whose editor asked for a capability, so a
+ * UI-built ELSE / ELSE-IF / END-IF / Repeat closer carries actSubType.<N> ALONE (our own wizard
+ * writer always writes both).
  */
 private String _rmActTypeForStructuralSubType(String subType) {
     switch (subType) {
@@ -7537,15 +7537,12 @@ private String _rmActionSettingText(Map settingsByName, String prefix, Integer i
 }
 
 /**
- * Coerce a compiled actionList (an array of index strings) to Integers,
- * preserving its order. Returns null when there is nothing usable, which
- * every caller reads as "membership unknown".
+ * Coerce a compiled actionList (an array of index strings) to Integers, preserving its order.
+ * null means UNREADABLE (callers fall back to the settings scan); an EMPTY list means the rule
+ * genuinely has no actions and must be honoured as such. Conflating the two sent a rule whose
+ * actions were all removed -- but whose actType/actSubType rows survived -- back down the settings
+ * scan, where the leftovers read as an unclosed block: #393 in its zero-action form.
  */
-// null means the compiled list was UNREADABLE (fall back to the settings scan); an empty list
-// means the rule genuinely has no actions and must be honoured as such. Conflating the two sent
-// a rule whose actions were all removed -- but whose actType/actSubType rows survived -- back
-// down the settings scan, where the leftovers read as an unclosed block: the #393 false
-// positive in its zero-action form.
 private List _rmCoerceActionIndices(List raw) {
     if (raw == null) return null
     def out = []
@@ -7565,32 +7562,9 @@ private List _rmOrderedActionIndices(Integer appId) {
 }
 
 /**
- * Build the structural-balance sequence for a rule.
- *
- * MEMBERSHIP comes from orderedIndices (the compiled actionList) when the
- * caller has it: structure is a property of the RULE, and appSettings
- * retains rows the rule no longer contains — an interrupted wizard write,
- * or a deleted action whose settings were never cleared. Walking those
- * makes a balanced rule read as damaged (a stale IF with no closer reports
- * "never closed" forever). They are reported separately by
- * _rmOrphanedActionRows instead.
- *
- * With no orderedIndices (compiled state unreadable, or a non-RM classic
- * app) it falls back to every index either key mentions, in numeric order.
- * That is the pre-membership behaviour and can still be fooled by a stale
- * row — it is the honest best effort when the rule itself cannot be read.
- *
- * VALUES always come from settings: a missing actType on a structural
- * subtype is inferred via _rmActTypeForStructuralSubType (RM's UI writes no
- * actType on ELSE / ELSE-IF / END-IF), and the reverse half-pair (actType
- * without actSubType) is marked `partial: true` so the walker surfaces it as
- * a #172-class half-commit rather than silently treating it as a leaf.
- *
- * Optional excludeIndices (used by removeAction pre-flight) skip listed
- * action indices so the walker sees the post-deletion state.
+ * Every action index carrying an actType.<N> or actSubType.<N> settings row, ascending. Shared by
+ * the structural walk's settings fallback and the orphan scan so the two cannot drift.
  */
-// Every action index that has an actType.<N> or actSubType.<N> settings row, ascending. Shared by
-// the structural walk's settings fallback and the orphan scan so the two cannot drift.
 private TreeSet _rmScannedActionIndices(Map settingsByName) {
     def scanned = [] as TreeSet
     settingsByName?.keySet()?.each { name ->
@@ -7600,6 +7574,16 @@ private TreeSet _rmScannedActionIndices(Map settingsByName) {
     return scanned
 }
 
+/**
+ * Build the structural-balance sequence for a rule. MEMBERSHIP is orderedIndices (the compiled
+ * actionList) when the caller has it: appSettings retains rows the rule no longer contains, and
+ * walking those makes a balanced rule read as damaged (a stale IF reports "never closed" forever)
+ * — _rmOrphanedActionRows reports them separately. Without it, every index either key mentions in
+ * numeric order: the pre-membership behaviour, still foolable by a stale row, but the honest best
+ * effort when the rule itself cannot be read.
+ * VALUES always come from settings. excludeIndices (removeAction's pre-flight) skips listed
+ * indices so the walker sees the post-deletion state.
+ */
 private List _rmStructuralSequenceFromSettings(Map settingsByName, Set excludeIndices = ([] as Set), List orderedIndices = null) {
     def indices = (orderedIndices != null) ? orderedIndices : (_rmScannedActionIndices(settingsByName) as List)
     def sequence = []
@@ -7607,29 +7591,23 @@ private List _rmStructuralSequenceFromSettings(Map settingsByName, Set excludeIn
         if (excludeIndices.contains(idx)) return
         def aType = _rmActionSettingText(settingsByName, "actType", idx)
         def sType = _rmActionSettingText(settingsByName, "actSubType", idx)
+        // RM's UI writes no actType on ELSE / ELSE-IF / END-IF -- infer it or the walker sees a leaf.
         if (aType == null && sType != null) aType = _rmActTypeForStructuralSubType(sType)
         def entry = [idx: idx, actType: aType, actSubType: sType]
-        if (aType in ["condActs", "repeatActs"] && sType == null) {
-            entry.partial = true
-        }
+        // The reverse half-pair is a #172-class half-commit, not a leaf; mark it for the walker.
+        if (aType in ["condActs", "repeatActs"] && sType == null) entry.partial = true
         sequence << entry
     }
     sequence
 }
 
 /**
- * Settings rows carrying action content for an index the rule does not
- * contain. These are leftovers — a wizard write that never baked, or a
- * deleted action whose settings survived — and they are NOT structural
- * damage: the rule runs exactly as rendered. They are reported on their own
- * (never in structuralIssues, never in issues) so a healthy rule does not
- * read as broken, while the state stays visible: it explains why a new
- * action allocates above the gap, and an actType-only leftover is the
- * #172-class half-commit the walker used to surface.
- *
- * Empty on both keys is vestigial, not a leftover, and is skipped. Returns
- * empty when membership is unknown — without the rule's own list there is
- * no way to tell a leftover from a live row.
+ * Settings rows carrying action content for an index the rule does not contain — a wizard write
+ * that never baked, or a deleted action whose settings survived. NOT structural damage (the rule
+ * runs exactly as rendered), so they are reported on their own, never in structuralIssues or
+ * issues; they stay visible because they explain why a new action allocates above the gap.
+ * Empty on both keys is vestigial rather than a leftover. Empty when membership is unknown: with
+ * no list of the rule's own actions there is no way to tell a leftover from a live row.
  */
 private List _rmOrphanedActionRows(Map settingsByName, List orderedIndices) {
     if (orderedIndices == null) return []
@@ -7680,14 +7658,12 @@ private String _classicAppFormat(Map cfg) {
  * works across EVERY rule engine (issue #254 + VRB follow-up). Surfaces
  * problems an LLM caller needs to see and act on without re-investigating
  * via curl.
- *
  *   PREFERRED — the rule's compiled state via _ruleCompiledState(): the
  *     classic RM `broken` boolean (+ predicate) from /app/ruleBuilderJson,
  *     OR a graph Visual Rule's validationErrors from /app/ruleBuilder20Json
  *     (VRB rules are rules too — their validationErrors are that engine's
  *     `broken` equivalent), OR a recognized classic Visual Rule (no boolean).
  *     `ruleFormat` in the result says which engine answered.
- *
  *   RETAINED (HTML / configure-json) — classic RM only: kept as a cross-check
  *     and the fallback when the compiled state is unavailable (older firmware
  *     or a different shape), AND because it detects classes the boolean does
@@ -7696,15 +7672,12 @@ private String _classicAppFormat(Map cfg) {
  *     multiple-flag DB poisoning (schema multiple vs statusJson marshal
  *     flag), and IF/Repeat block imbalance from actType.<N>/actSubType.<N>.
  *     Skipped for Visual Rules (they don't speak this protocol).
- *
  * `source` selects which paths run: "auto" (default — preferred verdict plus
  * the RM HTML detections + a cross-check), "ruleBuilderJson" (compiled state
  * only), or "configPage" (RM HTML only). Neither path is ever dropped.
- *
  * Result shape is backward-compatible with the pre-#254 contract (the RM
  * detection arrays are always present) plus the cross-engine fields broken /
  * source / ruleFormat / validationErrors; predicate is added only when read.
- *
  * Callers (_applyNativeAppEdit, _createNativeAppShell, toolCheckRuleHealth,
  * _rmBuildUpdateErrorResponse, toolSetVisualRule) attach this report to
  * mutation success AND error responses so an LLM sees broken state immediately.
@@ -7982,9 +7955,7 @@ private Map _rmCollectInputSchema(Map configPage) {
  *   settings[<key>] = <value>      (List → CSV for capability-multi, JSON-array for enum-multi)
  *   <key>.type     = <input type>  (if schema says so)
  *   <key>.multiple = true          (if multi)
- *
  * Wire-format rules verified live against firmware 2.5.0.123:
- *
  *   capability.X multiple=true → CSV: "8,9". JSON-array shape errors HTTP 500.
  *   enum         multiple=true → JSON-array: "[\"X\",\"Y\"]". CSV stores raw
  *       string after the next updateRule click (looks correct in storage
@@ -7992,13 +7963,11 @@ private Map _rmCollectInputSchema(Map configPage) {
  *       uses JSON-array exclusively for any <select multiple> element
  *       (appUI.js:579 `JSON.stringify($(this).val())`), so matching that is
  *       the canonical path.
- *
  * Omitting the .multiple=true sidecar on capability.* silently flips the
  * AppSetting DB flag to false and every subsequent rule render throws
  * `Command 'size' is not supported by device`. This function emits the
  * full 3-field group for every multi input in the schema, whether the
  * caller remembered or not.
- *
  * settingsMap values: String/Number/Boolean for scalars; List for
  * multi-value (device-id list for capability, option list for enum).
  */
@@ -8094,7 +8063,6 @@ private Map _rmLiveSettingsFromStatus(Map status) {
  * If any have been flipped to false, the DB has been poisoned and the rule
  * will render with `Command 'size' is not supported` errors. Callers catch
  * MarshalFlagDivergenceException and re-POST with the full 3-field group.
- *
  * Throws IllegalStateException (sandbox-friendly alias for the divergence
  * condition) with a specific message listing the poisoned setting names.
  */
