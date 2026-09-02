@@ -1618,7 +1618,7 @@ class WatchdogV2Spec extends Specification {
         script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
         script.metaClass.getAllGlobalVars = { -> [:] }
         // Make the sweep body itself install a successor claim mid-flight.
-        script.metaClass.purgeE2eArtifactsLocked = { String prefix ->
+        script.metaClass.purgeE2eArtifactsLocked = { String prefix, String claim = null ->
             atomicStateMap.purgeInFlightAt = System.currentTimeMillis()
             atomicStateMap.purgeClaim = 'purge-successor'
             atomicStateMap.purgeClaimPrefix = 'BAT_E2E_'
