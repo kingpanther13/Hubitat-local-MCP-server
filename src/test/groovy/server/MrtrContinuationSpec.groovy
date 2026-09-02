@@ -158,6 +158,17 @@ class MrtrContinuationSpec extends ToolSpecBase {
         'numeric-string appId'      | 'hub_manage_rule_machine'          | 'hub_set_rule'       | [appId: '777', addAction: [capability: 'switch', state: 'on'], confirm: true]                               | 'action:'
     }
 
+    def "the pre-flight restore hint names a reused baseline for what it is (#label)"() {
+        expect:
+        script._rmPreflightRestoreHint("x", backup).contains(expected)
+
+        where:
+        label            | backup                                              | expected
+        'no backup'      | null                                                | 'No backup was taken'
+        'fresh snapshot' | [backupKey: 'rm-rule_1_a', baselineReused: false]   | 'unused snapshot taken before the refusal'
+        'reused'         | [backupKey: 'rm-rule_1_a', baselineReused: true]    | 'baseline reused from an earlier edit'
+    }
+
     def "direct flat-mode native preflight still returns a terminal refusal"() {
         given:
         settingsMap.enableWrite = true

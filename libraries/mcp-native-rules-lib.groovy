@@ -8296,7 +8296,12 @@ private String _rmPreflightRestoreHint(String reason = null, Map backup = null) 
     // _applyNativeAppEdit's snapshot (unwalkable conditions, disabled app) refuse with backup
     // null, the ones inside the per-operation helpers refuse after it with a fresh backupKey -- so
     // read it off the envelope rather than asserting either case.
-    def snapshot = backup?.backupKey ? " The backupKey on this response is an unused snapshot taken before the refusal." : " No backup was taken."
+    // A reused baseline (same rule edited again inside the reuse window) was taken for an EARLIER
+    // edit, so describing it as a snapshot taken before this refusal misstates what it restores.
+    def snapshot = !backup?.backupKey ? " No backup was taken." :
+        (backup.baselineReused == true
+            ? " The backupKey on this response is the baseline reused from an earlier edit; restoring it reverts every edit since it was taken, not just this one."
+            : " The backupKey on this response is an unused snapshot taken before the refusal.")
     "Pre-flight refusal -- RM was not touched, so nothing needs to be restored.${snapshot}${why}"
 }
 
