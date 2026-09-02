@@ -821,8 +821,9 @@ private Map _rmRestoreFromBackup(Map entry) {
     // a caller reading only the envelope could not tell the two apart (seen live: a 500 on rule 37).
     // A button input has no persisted value: RM keeps its row buttons (edit/insert/cut/disable, and
     // the bare "1"/"2"/"3" condition-row buttons) in settings with an empty value, and replaying
-    // those through the update endpoint is at best a no-op and at worst a press. Seen live on rule
-    // 37: the replay 500'd and left a blank condition behind. Replay only value-bearing inputs.
+    // those through the update endpoint is at best a no-op and at worst a press. The replay of one
+    // such snapshot answered 500 on a live 2.5.1.177 hub; the same shapes replay cleanly without
+    // the button rows. Replay only value-bearing inputs.
     def replaySettings = savedSettings.findAll { k, v -> savedSchema[k.toString()]?.type != "button" }
     def skippedButtons = (savedSettings.keySet() - replaySettings.keySet()).collect { it.toString() }.sort()
     String step = "settings replay"
