@@ -1400,9 +1400,10 @@ Map purgeE2eArtifactsLocked(String prefix) {
         if (r?.success) { deleted << [id: t.id, name: t.name] }
         else { failed << [id: t.id, name: t.name, error: r?.error] }
     }
-    // Variables are hub-GLOBAL, so the watchdog (any app) can enumerate + remove them via DSL --
-    // local, no relay, no classic-wizard (the main server's wizard exists only for in-use/connector
-    // safety, which is moot for a BAT_E2E_ purge that runs AFTER the referencing rules are gone).
+    // Variables are hub-GLOBAL, so any app can ENUMERATE them via getAllGlobalVars -- but there is
+    // no app-facing DELETE (the belief that there was is what left this leg silently broken), so
+    // removal drives the classic hubVar wizard through findHubVariablesAppId / deleteHubVariable
+    // above, the same two clicks the main server's hub_delete_variable uses. Loopback-local; no relay.
     def varsDeleted = []
     def varsFailed = []
     try {
