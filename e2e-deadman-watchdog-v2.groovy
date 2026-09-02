@@ -1394,15 +1394,17 @@ def adminPurgeE2eArtifacts(args) {
 
 // The 15-minute stale-claim escape must measure a sweep that STOPPED, not one that is long: a sweep
 // is one loopback call per artifact, so its length is unbounded. Renewing the stamp before every
-// destructive step keeps a live sweep's claim exclusive; the ownership check makes a sweep that did
-// lose its claim to the escape stop rather than race the successor.
-private void renewPurgeClaim() {
-    try { atomicState.purgeInFlightAt = now() } catch (Exception ignore) { }
-}
-
-private boolean purgeStillOwned(String claim) {
-    if (claim == null) return true
-    try { return atomicState.purgeClaim?.toString() == claim } catch (Exception ignore) { return true }
+// destructive step keeps a live sweep's claim exclusive; a sweep that did lose its claim to the
+// escape stops rather than race the successor. Ownership check and renewal are ONE section under the
+// claim lock: split, a successor could take the claim between them and both sweeps would delete.
+private boolean renewPurgeClaim(String claim) {
+    synchronized (PURGE_CLAIM_LOCK) {
+        try {
+            if (claim != null && atomicState.purgeClaim?.toString() != claim) return false
+            atomicState.purgeInFlightAt = now()
+            return true
+        } catch (Exception ignore) { return false }
+    }
 }
 
 // NON-PRIVATE deliberately (see probeLoopbackAlive): a private method's internal callers bypass
@@ -1429,11 +1431,10 @@ Map purgeE2eArtifactsLocked(String prefix, String claim = null) {
     def deleted = []
     def failed = []
     targets.each { t ->
-        if (!purgeStillOwned(claim)) {
+        if (!renewPurgeClaim(claim)) {
             failed << [id: t.id, name: t.name, error: "purge claim lost to a newer sweep -- stopped before this delete"]
             return
         }
-        renewPurgeClaim()
         def r
         try { r = adminForceDeleteInstalledApp([id: t.id, confirm: true]) }
         catch (Exception e) { r = [success: false, error: e.message] }
@@ -1461,11 +1462,10 @@ Map purgeE2eArtifactsLocked(String prefix, String claim = null) {
                 varsFailed << [name: "*", error: "could not resolve the Hub Variables app id via /installedapp/direct/hubVariables"]
             } else {
                 targetVars.each { vn ->
-                    if (!purgeStillOwned(claim)) {
+                    if (!renewPurgeClaim(claim)) {
                         varsFailed << [name: vn, error: "purge claim lost to a newer sweep -- stopped before this delete"]
                         return
                     }
-                    renewPurgeClaim()
                     try {
                         String why = deleteHubVariable(hvAppId, vn)
                         if (why == null) { varsDeleted << vn }

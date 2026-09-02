@@ -1951,7 +1951,7 @@ class WatchdogV2Spec extends Specification {
         atomicStateMap.expectedDownUntil == newer
     }
 
-    def "a purge sweep renews its claim before every delete and stops once the claim is lost"() {
+    def "a purge sweep renews its claim under the lock before every delete and stops once the claim is lost"() {
         given: "two apps to purge; the first delete hands the claim to a newer sweep"
         script.metaClass.hubGet = { String path, Map q = [:], Integer t = null ->
             path == "/hub2/appsList" ? groovy.json.JsonOutput.toJson([apps: [[data: [id: 1, name: "BAT_E2E_a"]], [data: [id: 2, name: "BAT_E2E_b"]]]]) : null
