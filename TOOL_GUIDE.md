@@ -469,7 +469,7 @@ Files stored locally on hub at `http://<HUB_IP>/local/<filename>`
 - Entries are independent, so mixed devices and mixed commands go in one batch. Max 20. An entry's `deviceId` may be an integer (the shape `hub_list_devices` `format='ids'` returns) as well as a string, and a `parameters` value that arrives as a string is repaired by the same normalizer the single-device form uses. A bad entry is reported in its own `results[]` slot and the rest still fire; malformed input (missing `deviceId`, a `parameters` value that is neither an array nor a string, >20 entries) is rejected BEFORE anything is sent, so a bad request never actuates part of a batch
 - The aggregate always carries `success`, `count` (entries attempted), `sentCount`, `failedCount` (`0` on a clean batch) and `results`. When at least one entry failed it also carries `failedDeviceIds`, `error` and `note`, plus `partial: true` when only SOME failed; `isError: true` is reserved for the batch where every entry failed
 - Per-entry results carry NO `state` snapshot — the batch fires, it does not read back. To confirm the result, follow with `hub_get_device_attribute` using `deviceIds` (multi-device convergence) — one batch to fire, one poll to confirm, two round trips for the whole group
-- A large batch that nears the relay's ~7s time budget part way through stops dispatching rather than losing the response: it returns `stoppedEarly: true` plus `remainingCommands`, the entries it did not send, ready to pass straight back as the `commands` of a second call. Whatever it did attempt is in `results[]` as usual
+- A large batch that nears the relay's ~6s time budget part way through stops dispatching rather than losing the response: it returns `stoppedEarly: true` plus `remainingCommands`, the entries it did not send, ready to pass straight back as the `commands` of a second call. Whatever it did attempt is in `results[]` as usual
 - For a set commanded repeatedly, a group or scene beats both: one device to command and the hub fans out. `commands` is for the ad-hoc set that was never defined in advance
 
 **hub_list_devices:**
@@ -1189,7 +1189,7 @@ Every actual write obtains a server-side lease, whether it uses MRTR or complete
 
 Clients negotiated below MCP 2026-07-28 do not understand requestState. They retain the existing `status: "in_progress"` remainder envelope for bounded multi-step writes. Completed steps are already committed; reissue only the returned remaining work. This is a compatibility fallback, not a second polling protocol.
 
-The advanced `relayBudgetMs` setting (default 7000 ms, 0 disables) controls cloud slices. `lanBudgetMs` defaults to 0; set it just below a LAN client's request timeout only when needed.
+The advanced `relayBudgetMs` setting (default 6000 ms, 0 disables) controls cloud slices. `lanBudgetMs` defaults to 0; set it just below a LAN client's request timeout only when needed.
 
 ### Package deployment
 
