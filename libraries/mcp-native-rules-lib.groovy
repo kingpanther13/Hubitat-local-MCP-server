@@ -4328,6 +4328,7 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
         if (!afterIndices.contains(actionIdx)) {
             def out = [success: true, removedIndex: actionIdx, beforeIndices: beforeIndices.sort(), afterIndices: afterIndices.sort()]
             if (reclicked) out.reclicked = true
+            out.structuralGuardDegraded = structuralGuardDegraded
             return out
         }
         if (!reclicked && attempt == 2) {
@@ -4519,7 +4520,7 @@ private Map _rmModifyTrigger(Integer appId, Integer triggerIdx, Map mods) {
         mcpLog("warn", "rm-native", "_rmModifyTrigger: post-commit configure/json fetch failed for app ${appId} (${verifyExc.message}) -- cannot echo-verify new state; returning verificationFetchFailed=true")
     }
     def success = verificationFetchFailed ? false : (verifiedState != null ? verifiedState == mods.state?.toString() : !applied.isEmpty())
-    return [structuralGuardDegraded: structuralGuardDegraded,
+    return [
         success: success,
         modifiedIndex: triggerIdx,
         verifiedState: verifiedState,
