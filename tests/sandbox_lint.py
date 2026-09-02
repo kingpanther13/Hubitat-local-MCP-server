@@ -4022,36 +4022,50 @@ def _scan_library_block_comments(name: str, text: str) -> list[dict]:
 def check_bm25_key_subscripts() -> list[dict]:
     """hub_search_tools sandbox fix guard. The platform's SandboxSubscriptGuard rejects a COMPUTED
     map key that collides with a reflection-ish property name, and one real corpus token
-    ("fields", from hub_list_devices' parameter) does -- so every df/tf/query subscript in
-    bm25Score must go through _bm25Key. The Spock harness is plain Groovy with no such guard, so
-    a test cannot fail on a bare subscript; only a source-level rule can hold this invariant."""
+    ("fields", from hub_list_devices' parameter) does -- so every key used to subscript the
+    df/tf maps in bm25Score must be derived through _bm25Key. The Spock harness is plain Groovy
+    with no such guard, so a test cannot fail on a bare token key; only a source-level rule can
+    hold this invariant. Checked at the DERIVATION: a subscript variable assigned from anything
+    but _bm25Key(...) fails, as does a literal subscript, as does a body with no _bm25Key call."""
     findings: list[dict] = []
     lib = REPO_ROOT / "libraries" / "mcp-discovery-lib.groovy"
     if not lib.is_file():
         return findings
     src = lib.read_text(encoding="utf-8")
-    m = re.search(r"\n[^\n]*bm25Score\([^)]*\)\s*\{", src)
+    m = re.search(r"\n[^\n]*\bbm25Score\([^)]*\)\s*\{", src)
     if not m:
         findings.append({"file": str(lib.relative_to(REPO_ROOT)), "line": 1, "severity": "error",
                          "rule": "bm25-key-subscripts",
                          "message": "Could not locate bm25Score() -- has the function shape changed?"})
         return findings
-    # Body = from the opening brace to the matching close at column 0.
     start = m.end()
     end = src.find("\n}", start)
     body = src[start:end if end > 0 else len(src)]
     base_line = src.count("\n", 0, start) + 1
-    bare = re.compile(r"\b(df|tf)\s*\[\s*(?!_bm25Key\()(?!k\b)(?!qt\b)[^\]]+\]")
+    rel = str(lib.relative_to(REPO_ROOT))
+
+    def flag(i: int, msg: str) -> None:
+        findings.append({"file": rel, "line": base_line + i, "severity": "error",
+                         "rule": "bm25-key-subscripts", "message": msg})
+
+    # Which local names are used as df/tf subscripts, and where each is assigned.
+    subscript_vars: set[str] = set()
     for i, line in enumerate(body.split("\n")):
-        if bare.search(line):
-            findings.append({"file": str(lib.relative_to(REPO_ROOT)), "line": base_line + i,
-                             "severity": "error", "rule": "bm25-key-subscripts",
-                             "message": "bare df[...]/tf[...] subscript in bm25Score -- route the key through _bm25Key(token); a raw corpus token as a map key trips the platform's SandboxSubscriptGuard (hub_search_tools threw on every call).",
-                             })
+        for sm in re.finditer(r"\b(?:df|tf)\s*\[\s*([^\]]+?)\s*\]", line):
+            key = sm.group(1).strip()
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+                subscript_vars.add(key)
+            elif key.startswith("_bm25Key("):
+                continue
+            else:
+                flag(i, f"df/tf subscripted with a non-variable key `{key}` in bm25Score -- route it through _bm25Key(token).")
+    for i, line in enumerate(body.split("\n")):
+        for am in re.finditer(r"\bdef\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;]+?)(?:;|$)", line):
+            name, rhs = am.group(1), am.group(2).strip()
+            if name in subscript_vars and not rhs.startswith("_bm25Key("):
+                flag(i, f"`{name}` is used as a df/tf subscript but is assigned from `{rhs}` -- it must be _bm25Key(...); a raw corpus token as a map key trips the platform's SandboxSubscriptGuard (hub_search_tools threw on every call).")
     if "_bm25Key(" not in body:
-        findings.append({"file": str(lib.relative_to(REPO_ROOT)), "line": base_line, "severity": "error",
-                         "rule": "bm25-key-subscripts",
-                         "message": "bm25Score never calls _bm25Key -- the sandbox-safe key namespacing has been removed."})
+        flag(0, "bm25Score never calls _bm25Key -- the sandbox-safe key namespacing has been removed.")
     return findings
 
 def check_library_no_file_scope_block_comments() -> list[dict]:
