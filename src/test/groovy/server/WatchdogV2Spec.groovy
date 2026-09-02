@@ -1858,7 +1858,7 @@ class WatchdogV2Spec extends Specification {
         atomicStateMap.restoreLastAttemptAt != null
 
         and: "the next tick paces off the mirror even though the stale flag still says zero attempts"
-        script.retryBackoffPending([fireAttempts: 0, lastAttemptAt: null], 'disarm')
+        script.retryBackoffPending([runId: '7', fireAttempts: 0, lastAttemptAt: null], 'disarm')
     }
 
     def "the retry mirror is cleared when the restore succeeds or latches"() {
