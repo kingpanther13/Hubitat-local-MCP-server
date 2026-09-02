@@ -4059,11 +4059,19 @@ def check_bm25_key_subscripts() -> list[dict]:
                 continue
             else:
                 flag(i, f"df/tf subscripted with a non-variable key `{key}` in bm25Score -- route it through _bm25Key(token).")
+    derived: set[str] = set()
     for i, line in enumerate(body.split("\n")):
         for am in re.finditer(r"\bdef\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;]+?)(?:;|$)", line):
             name, rhs = am.group(1), am.group(2).strip()
-            if name in subscript_vars and not rhs.startswith("_bm25Key("):
-                flag(i, f"`{name}` is used as a df/tf subscript but is assigned from `{rhs}` -- it must be _bm25Key(...); a raw corpus token as a map key trips the platform's SandboxSubscriptGuard (hub_search_tools threw on every call).")
+            if name in subscript_vars:
+                if rhs.startswith("_bm25Key("):
+                    derived.add(name)
+                else:
+                    flag(i, f"`{name}` is used as a df/tf subscript but is assigned from `{rhs}` -- it must be _bm25Key(...); a raw corpus token as a map key trips the platform's SandboxSubscriptGuard (hub_search_tools threw on every call).")
+    # Positive evidence required: a subscript variable with NO _bm25Key assignment in the body is a
+    # closure parameter or an outer binding carrying the raw token straight into the map.
+    for name in sorted(subscript_vars - derived):
+        flag(0, f"`{name}` subscripts df/tf but is never assigned from _bm25Key(...) in bm25Score -- a raw corpus token as a map key trips the platform's SandboxSubscriptGuard.")
     if "_bm25Key(" not in body:
         flag(0, "bm25Score never calls _bm25Key -- the sandbox-safe key namespacing has been removed.")
     return findings
