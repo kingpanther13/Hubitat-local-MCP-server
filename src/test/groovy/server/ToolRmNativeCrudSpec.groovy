@@ -10437,7 +10437,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "a mismatched closer is a structural issue even with the actType inferred"
         !(result.structuralIssues == null || result.structuralIssues.isEmpty())
-        result.structuralIssues.any { it.toString().toLowerCase().contains("mismatch") || it.toString().toLowerCase().contains("never closed") }
+        result.structuralIssues.any { it.toString().toLowerCase().contains("mismatched") }
     }
 
     def "hub_get_rule_health honours an EMPTY actionList: leftover rows are orphans, not an unclosed block"() {

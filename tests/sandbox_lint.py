@@ -4044,9 +4044,12 @@ def check_bm25_key_subscripts() -> list[dict]:
     base_line = src.count("\n", 0, start) + 1
     rel = str(lib.relative_to(REPO_ROOT))
 
+    body_lines = body.split("\n")
+
     def flag(i: int, msg: str) -> None:
         findings.append({"file": rel, "line": base_line + i, "severity": "error",
-                         "rule": "bm25-key-subscripts", "message": msg})
+                         "rule": "bm25-key-subscripts", "message": msg,
+                         "source": body_lines[i].strip() if 0 <= i < len(body_lines) else ""})
 
     # Which local names are used as df/tf subscripts, and where each is assigned.
     subscript_vars: set[str] = set()

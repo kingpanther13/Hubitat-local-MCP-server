@@ -743,6 +743,13 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
     if (resolvedFormat == "ids") {
         def ids = paged.findAll { it.id?.isInteger() }.collect { it.id as Integer }
         def r = [deviceIds: ids, count: ids.size(), total: totalCount, scope: "all", unfilteredTotal: unfilteredTotal]
+        // Same inventory metadata as the summary shape: the ids caller must also be able to see
+        // that capabilityFilter matched authorized devices only.
+        r.source = sourceEndpoint
+        if (!capabilitiesComplete) {
+            r.capabilitiesPartial = true
+            r.capabilitiesNote = "The capabilities endpoint (/device/listWithCapabilities/json) did not answer on this hub -- it was removed in platform 2.5.1.173 and later -- so the inventory came from /hub2/devicesList, which carries no capabilities. Capabilities are filled in for mcpAuthorized devices only; an unauthorized device shows an empty list because its capabilities are not visible to the app. capabilityFilter therefore matches authorized devices only."
+        }
         if (labelFilter) r.labelFilter = labelFilter
         if (capabilityFilter) r.capabilityFilter = capabilityFilter
         if (limit && limit > 0) {

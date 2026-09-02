@@ -1878,6 +1878,30 @@ class WatchdogV2Spec extends Specification {
         atomicStateMap.restoreLastAttemptAt == null
     }
 
+    def "a retry mirror left by a DIFFERENT run does not pace this run"() {
+        given: "a stale mirror from run 6; this tick is run 7"
+        atomicStateMap.restoreAttempts = 3
+        atomicStateMap.restoreLastAttemptAt = System.currentTimeMillis() - 30_000L
+        atomicStateMap.restoreAttemptsRun = '6'
+
+        expect: "the new run's first attempt is immediate"
+        !script.retryBackoffPending([runId: '7', fireAttempts: 0, lastAttemptAt: null], 'disarm')
+    }
+
+    def "a failed reboot POST restores the downtime window it found, rather than clearing it"() {
+        given: "a platform update already has a window open"
+        long existing = System.currentTimeMillis() + 900_000L
+        atomicStateMap.expectedDownUntil = existing
+        script.metaClass.hubPostForm = { String p, Map b -> [status: null, data: null] }
+
+        when:
+        def res = script.adminRebootHub([confirm: true])
+
+        then: "the platform update's suppression survives a reboot attempt that did not land"
+        res.success == false
+        atomicStateMap.expectedDownUntil == existing
+    }
+
 }
 
 class FakeHttpException extends RuntimeException {

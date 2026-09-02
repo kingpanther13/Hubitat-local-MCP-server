@@ -398,7 +398,6 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     brokenMarkerCounts: [type: "object", description: "Per-marker occurrence count in the current render -- key is the marker string (e.g. **Broken Condition**), value is how many times it appears. The replace restore gate uses a count increase to detect a genuinely-new broken instance when the same marker already existed in the baseline."],
                     multipleFlagPoison: [type: "array", description: "Poisoned setting names; always present, empty when none", items: [type: "string"]],
                     structuralIssues: [type: "array", description: "Structural issues; always present, empty when none", items: [type: "string"]],
-                    orphanedActionRows: [type: "array", items: [type: "string"], description: "Settings rows carrying action content for an index the rule does not contain -- leftovers from an interrupted write or a removed action. Diagnostics only: they neither run nor affect block structure, so ok ignores them. Always present (empty when none, and when the rule's action membership could not be read)."],
                     validationErrors: [type: "array", description: "Graph Visual Rule validation errors; always present, empty when none", items: [type: "string"]],
                     predicate: [type: "object", description: "Compiled required-expression summary from ruleBuilderJson: {hasPredicate, predCapabs}. Present only when the compiled RM state carried the predicate fields (hasPredicate may be false)."],
                     paused: [type: ["boolean", "null"], description: "Rule is paused (the label's (Paused) decoration); null when the label was unreadable."],
@@ -4144,7 +4143,8 @@ private List _rmActionIndicesFromSettings(Map status) {
 // Note action keys use a dot-N suffix (actType.1) vs trigger keys without dot (tCapab1).
 private List _rmCollectActionIndices(Integer appId) {
     def ordered = _rmOrderedActionIndices(appId)
-    if (ordered) return ordered
+    // null = unreadable (scan settings); [] = the rule genuinely has no actions, honoured as such.
+    if (ordered != null) return ordered
     return _rmActionIndicesFromSettings(_rmFetchStatusJson(appId))
 }
 
@@ -14557,7 +14557,7 @@ def _applyNativeAppEdit(args) {
                         // mutation envelope does. Mirrors the moveAction sibling
                         // below.
                         def rmRes = _rmDeleteAction(appId, pm.removeAction.index as Integer)
-                        patchResults << [
+                        def rmEntry = [
                             success: true,
                             op: "removeAction",
                             index: pm.removeAction.index,
@@ -14565,6 +14565,8 @@ def _applyNativeAppEdit(args) {
                             beforeIndices: rmRes?.beforeIndices,
                             afterIndices: rmRes?.afterIndices
                         ]
+                        if (rmRes?.structuralGuardDegraded) rmEntry.structuralGuardDegraded = true
+                        patchResults << rmEntry
                     } else if (pm.containsKey("clearActions")) {
                         def cleared
                         try { cleared = _rmClearActions(appId) ?: [] }

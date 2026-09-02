@@ -178,13 +178,22 @@ def deadmanKick() { checkDeadman() }
 // once-a-minute retry piled five of those onto the exact condition that made the restore fail.
 // A wedged hub skips the attempt entirely -- the restore cannot land while loopback HTTP is dead,
 // and trying costs load the hub does not have.
+// The atomicState retry mirror is valid only for the run that wrote it. A mirror left behind by
+// a previous run (a restore that never reached success or latch -- app restart mid-run) must not
+// pace a new run's first attempt; a missing or different run id means no mirror.
+private int mirroredAttemptsFor(Map flag) {
+    try {
+        if (atomicState.restoreAttemptsRun?.toString() != flag?.runId?.toString()) return 0
+        return (atomicState.restoreAttempts ?: 0) as int
+    } catch (Exception ignore) { return 0 }
+}
+
 private boolean retryBackoffPending(Map flag, String trigger) {
     // Read the atomicState mirror too: if the last retry's writeFlag failed, the flag still says
     // the attempt before it, and pacing off that would restart the schedule from the top.
-    int mirrored = 0
+    int mirrored = mirroredAttemptsFor(flag)
     Long mirroredAt = null
-    try { mirrored = (atomicState.restoreAttempts ?: 0) as int } catch (Exception ignore) { mirrored = 0 }
-    try { mirroredAt = atomicState.restoreLastAttemptAt as Long } catch (Exception ignore) { mirroredAt = null }
+    if (mirrored > 0) { try { mirroredAt = atomicState.restoreLastAttemptAt as Long } catch (Exception ignore) { mirroredAt = null } }
     int attempts = Math.max((flag?.fireAttempts ?: 0) as int, mirrored)
     if (attempts <= 0) return false
     if (hubLooksWedged()) {
@@ -296,7 +305,7 @@ private void actAndRecordLocked(Map flag, String trigger) {
         flag.restoredAt = now()
         flag.restoreDetail = res.detail
         flag.fireAttempts = 0
-        try { atomicState.restoreAttempts = null; atomicState.restoreLastAttemptAt = null } catch (Exception ignore) { }
+        try { atomicState.restoreAttempts = null; atomicState.restoreLastAttemptAt = null; atomicState.restoreAttemptsRun = null } catch (Exception ignore) { }
         // Restore confirmed -> the hub is canonical main again. Stamp the SHA marker the PR
         // install cleared so the next run's arm can skip its main refresh. CI's disarm is
         // fire-and-forget (it no longer polls for this restore), so the stamp must happen
@@ -312,11 +321,14 @@ private void actAndRecordLocked(Map flag, String trigger) {
         // gap between healthy and fully wedged) -- and when it failed the next tick re-read
         // fireAttempts=0 from the old flag: no backoff, no cap, once-a-minute restores forever,
         // the behaviour the backoff exists to stop. atomicState is a DB write and survives that.
-        int mirrored = 0
-        try { mirrored = (atomicState.restoreAttempts ?: 0) as int } catch (Exception ignore) { mirrored = 0 }
+        int mirrored = mirroredAttemptsFor(flag)
         int attempts = Math.max((flag.fireAttempts ?: 0) as int, mirrored) + 1
         flag.fireAttempts = attempts
-        try { atomicState.restoreAttempts = attempts; atomicState.restoreLastAttemptAt = now() } catch (Exception ignore) { }
+        try {
+            atomicState.restoreAttempts = attempts
+            atomicState.restoreLastAttemptAt = now()
+            atomicState.restoreAttemptsRun = flag.runId?.toString()
+        } catch (Exception ignore) { }
         flag.restoreDetail = res.detail
         // Retry BOTH triggers up to the cap -- a transient miss must not latch the restore "failed".
         // (fire: armed+deadline re-fires next tick; disarm: intent=disarm with restoreFor still
@@ -329,7 +341,7 @@ private void actAndRecordLocked(Map flag, String trigger) {
             }
             return
         }
-        try { atomicState.restoreAttempts = null; atomicState.restoreLastAttemptAt = null } catch (Exception ignore) { }
+        try { atomicState.restoreAttempts = null; atomicState.restoreLastAttemptAt = null; atomicState.restoreAttemptsRun = null } catch (Exception ignore) { }
         flag.armed = false
         flag.restoreFor = flag.runId
         flag.restoreResult = "failed"
@@ -2332,6 +2344,10 @@ private void markExpectedDowntime(long ms, String reason) {
 def adminRebootHub(args) {
     requireConfirm(args)
     mcpAdminLog "Rebooting the hub (POST /hub/reboot)."
+    // Remember any window already open (a platform update in progress, say) so a POST that does
+    // not land restores THAT rather than clearing it.
+    Long priorWindow = null
+    try { priorWindow = atomicState.expectedDownUntil as Long } catch (Exception ignore) { priorWindow = null }
     // Before the POST: once it lands the hub may go before we get to run again.
     markExpectedDowntime(600000L, "hub_reboot")
     // hubPostForm SWALLOWS transport exceptions and returns [status: null, data: null], so the
@@ -2349,7 +2365,7 @@ def adminRebootHub(args) {
     // The window was stamped before the POST (the hub can go the moment it lands); a POST that did
     // NOT land is not downtime, and leaving the stamp would make the wedge escape stand down for 10
     // minutes on a false "deliberate reboot in progress".
-    try { atomicState.expectedDownUntil = null } catch (Exception ignore) { }
+    try { atomicState.expectedDownUntil = priorWindow } catch (Exception ignore) { }
     return [success: false, status: st,
             error: st == null ? "reboot POST got no response from the hub (transport failure)" : "reboot POST returned status ${st}",
             note: "If loopback HTTP is wedged this call cannot land either -- the hub needs a physical power cycle."]

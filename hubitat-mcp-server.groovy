@@ -7773,7 +7773,9 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
             // verdict below comes from the whole-settings scan -- the mode #393 proved can
             // false-positive -- and the orphan scan is disabled. Say so; silence would read as
             // "no orphans, structure verified".
-            if (compiledActionList == null) {
+            // Only where the settings scan actually runs: an RM rule on the config-page path. A
+            // Visual Rule has no actionList by design, and source='ruleBuilderJson' skips the scan.
+            if (compiledActionList == null && ruleFormat == "rm" && useConfigPage) {
                 checkErrors << "ruleBuilderJson carried no usable actionList for app ${appId}; structuralIssues came from the settings scan (leftover rows may read as an unclosed block) and orphanedActionRows could not be computed".toString()
             }
             if (cs.validationErrors) validationErrors = cs.validationErrors
