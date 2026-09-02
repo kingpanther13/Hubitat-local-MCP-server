@@ -8844,6 +8844,91 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         delActFired == true
     }
 
+    // The structural pre-flight's degraded marker: set by _rmDeleteAction when the compiled
+    // actionList is unreadable, and forwarded by BOTH dispatch paths, which copy named fields
+    // off the delete result rather than the whole map.
+
+    private Map structuralDeleteFixture(Closure<Boolean> fired) {
+        def chain = ifStructureSettings([
+            [idx: 1, actType: "condActs", actSubType: "getIfThen"],
+            [idx: 2, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 3, actType: "condActs", actSubType: "getElseIf"],
+            [idx: 4, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 5, actType: "condActs", actSubType: "getEndIf"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Chain", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            fired() ? statusJson(100, chain.findAll { !it.name?.endsWith(".3") }) : statusJson(100, chain)
+        }
+        return [chain: chain]
+    }
+
+    def "removeAction carries structuralGuardDegraded on the single-op envelope when ruleBuilderJson is unreadable"() {
+        given:
+        enableWrite()
+        def delActFired = false
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.get("stateAttribute") == "delAct") delActFired = true
+            [status: 200, location: null, data: '']
+        }
+        structuralDeleteFixture { delActFired }
+        hubGet.register('/app/ruleBuilderJson/100') { params -> throw new RuntimeException('404') }
+
+        when:
+        def result = script.toolSetRule([appId: 100, removeAction: [index: 3], confirm: true])
+
+        then: "the delete lands and the caller can see the guard ran on the settings scan"
+        result.success == true
+        delActFired == true
+        result.structuralGuardDegraded == true
+    }
+
+    def "removeAction omits structuralGuardDegraded when the compiled actionList scopes the guard"() {
+        given:
+        enableWrite()
+        def delActFired = false
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.get("stateAttribute") == "delAct") delActFired = true
+            [status: 200, location: null, data: '']
+        }
+        structuralDeleteFixture { delActFired }
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            JsonOutput.toJson([broken: false, actionList: (delActFired ? ["1", "2", "4", "5"] : ["1", "2", "3", "4", "5"])])
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, removeAction: [index: 3], confirm: true])
+
+        then: "no marker: the key is absent, not null"
+        result.success == true
+        delActFired == true
+        !result.containsKey("structuralGuardDegraded")
+    }
+
+    def "a patches removeAction entry carries structuralGuardDegraded when ruleBuilderJson is unreadable"() {
+        given:
+        enableWrite()
+        def delActFired = false
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.get("stateAttribute") == "delAct") delActFired = true
+            [status: 200, location: null, data: '']
+        }
+        structuralDeleteFixture { delActFired }
+        hubGet.register('/app/ruleBuilderJson/100') { params -> throw new RuntimeException('404') }
+
+        when:
+        def result = script.toolSetRule([appId: 100, patches: [[removeAction: [index: 3]]], confirm: true])
+
+        then:
+        delActFired == true
+        def entry = (result.patches as List).find { it instanceof Map && it.op == "removeAction" }
+        entry.success == true
+        entry.structuralGuardDegraded == true
+    }
+
     // Coverage for elseIf/else orphan refusal in _rmAddAction (the closer-or-
     // branch-keywords path that landed alongside the structural pre-flight).
 
