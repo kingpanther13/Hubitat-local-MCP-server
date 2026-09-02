@@ -296,7 +296,6 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     subscriptionSettle: [type: "string", description: "Subscription settle note"],
                     removedIndex: [type: "integer", description: "removeAction/removeTrigger result index"],
                     reclicked: [type: "boolean", description: "removeAction/removeTrigger: true when the first delete click silently no-oped and the in-tool verified re-click landed the removal"],
-                    structuralGuardDegraded: [type: "boolean", description: "removeAction: present (true) when the structural pre-flight could not scope by the compiled actionList and fell back to the whole-settings scan, where a leftover closer can mask the imbalance a deletion creates"],
                     beforeIndices: [type: "array", description: "Indices before edit", items: [type: "integer"]],
                     afterIndices: [type: "array", description: "Indices after edit", items: [type: "integer"]],
                     index: [type: "integer", description: "moveAction index"],
