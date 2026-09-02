@@ -1672,6 +1672,57 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.settingsSkipped == ["3", "cut1", "trashAll"]
     }
 
+    def "a restore replays a device picker as its ids, not as the snapshot's id-to-label map"() {
+        given: "a snapshot whose switch picker is the {id: label} map configure/json renders"
+        enableWrite()
+        def snapshot = [
+            schemaVersion: 1, ruleId: 363, reason: "pre-test", timestamp: 1000,
+            timestampIso: "2026-01-01T00:00:00Z", appLabel: "picker",
+            configJson: [
+                app: [id: 363, label: "picker"],
+                configPage: [sections: [[title: "", input: [[name: "origLabel", type: "text"]]]]],
+                settings: [origLabel: "picker", "onOffSwitch.2": ["9": "MSHeatMode"], "tDev3": ["54": "T&H Sensor"]]
+            ],
+            statusJson: [appSettings: [
+                [name: "onOffSwitch.2", type: "capability.switch", multiple: true, value: null, deviceIdsForDeviceList: [9]],
+                [name: "tDev3", type: "capability.temperatureMeasurement", multiple: true, value: null, deviceIdsForDeviceList: [54, 55]]
+            ]]
+        ]
+        def snapshotBytes = JsonOutput.toJson(snapshot).getBytes("UTF-8")
+        atomicStateMap.itemBackupManifest = [
+            "rm-rule_363_w": [type: "rm-rule", id: 363, ruleId: 363,
+                              fileName: "mcp-rm-backup-363-w.json", reason: "pre-test",
+                              appLabel: "picker", timestamp: 1000, sourceLength: snapshotBytes.length]
+        ]
+        script.metaClass.downloadHubFile = { String fn -> snapshotBytes }
+        hubGet.register('/installedapp/configure/json/363') { params ->
+            ruleConfigJson(363, "picker", [[name: "origLabel", type: "text"]])
+        }
+        hubGet.register('/installedapp/statusJson/363') { params ->
+            statusJson(363, [
+                [name: "onOffSwitch.2", type: "capability.switch", multiple: true, value: null, deviceIdsForDeviceList: [9]],
+                [name: "tDev3", type: "capability.temperatureMeasurement", multiple: true, value: null, deviceIdsForDeviceList: [54, 55]]
+            ])
+        }
+        def posted = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posted << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        when:
+        def result = script.toolRestoreItemBackup([backupKey: "rm-rule_363_w", confirm: true])
+
+        then: "the pickers post as id lists (statusJson's live ids win over the map's keys)"
+        result.success == true
+        def replay = posted.find { it.path == "/installedapp/update/json" }?.body
+        replay["settings[onOffSwitch.2]"] == "9"
+        replay["settings[tDev3]"] == "54,55"
+        replay["onOffSwitch.2.multiple"] == "true"
+        !replay.values().any { it?.toString()?.contains("MSHeatMode") }
+    }
+
     // ---------- wire-format invariants ----------
     // These tests guard the wire-format fixes documented in the PR. Each is
     // anchored to a specific live-hub failure and the corresponding fix

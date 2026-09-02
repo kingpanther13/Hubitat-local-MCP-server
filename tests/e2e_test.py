@@ -6079,6 +6079,44 @@ class TestRunner:
             self._delete_native(app_id)
 
     @test("native_apps")
+    def test_rm_rule_restore_in_place_with_device_picker(self) -> None:
+        # In-place hub_restore_backup on a Rule Machine rule that carries a device picker. The
+        # snapshot stores a picker as the {id: label} map configure/json renders, and the replay
+        # used to post that map's toString as the device list: the hub answered 500 and every
+        # such restore reported "applied partially". No other e2e restores an RM rule with a
+        # device in it, so this was invisible until a live home hub showed it.
+        sw = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("RestorePicker", {
+            "addActions": [{"capability": "switch", "action": "off", "deviceIds": [sw]}],
+        })
+        try:
+            added = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule",
+                "args": {"appId": int(app_id), "confirm": True,
+                         "addAction": {"capability": "log", "message": "restore-picker probe"}}})
+            assert added.get("success") is True, f"addAction that takes the snapshot failed: {added}"
+            backup_key = (added.get("backup") or {}).get("backupKey")
+            assert backup_key, f"addAction returned no backupKey: {added}"
+            restored = self.client.call_tool("hub_manage_backup", {
+                "tool": "hub_restore_backup",
+                "args": {"scope": "source", "backupKey": backup_key, "confirm": True}})
+            assert restored.get("success") is True, \
+                f"in-place restore of a rule with a device picker failed: {restored}"
+            assert restored.get("failedStep") is None, restored
+            applied = restored.get("settingsApplied") or []
+            assert any(str(k).startswith("onOffSwitch.") for k in applied), \
+                f"the switch picker was not part of the replay: {restored}"
+            cfg = self._get_persisted_rule_config(app_id).get("settings") or {}
+            picker = next((v for k, v in cfg.items() if str(k).startswith("onOffSwitch.")), None)
+            assert isinstance(picker, dict) and str(sw) in {str(k) for k in picker}, \
+                f"the switch picker does not carry the test switch after the restore: {picker!r}"
+            health = self.client.call_tool("hub_read_rules", {
+                "tool": "hub_get_rule_health", "args": {"appId": int(app_id)}})
+            assert health.get("ok") is True, f"rule unhealthy after restore: {health}"
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
     def test_rule_health_ui_shaped_else_endif_rows(self) -> None:
         # Structural balance on a rule whose ELSE / END-IF rows carry ONLY actSubType.<N>
         # and no actType.<N> -- the settings shape Rule Machine's own UI leaves behind for

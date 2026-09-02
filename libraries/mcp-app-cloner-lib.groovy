@@ -826,6 +826,23 @@ private Map _rmRestoreFromBackup(Map entry) {
     // the button rows. Replay only value-bearing inputs.
     def replaySettings = savedSettings.findAll { k, v -> savedSchema[k.toString()]?.type != "button" }
     def skippedButtons = (savedSettings.keySet() - replaySettings.keySet()).collect { it.toString() }.sort()
+    // A device picker is snapshotted as configure/json renders it, an {id: label} map, but the
+    // update endpoint takes ids. Left as a map it reaches the body as Groovy's map toString
+    // ("[9:MSHeatMode]") and the hub answers 500 -- every rule with a device picker failed to
+    // restore in place. statusJson's deviceIdsForDeviceList is the live id list; the map's keys
+    // are the fallback for a snapshot that has no statusJson.
+    def liveDeviceIds = [:]
+    snapshot?.statusJson?.appSettings?.each { st ->
+        def n = st?.name?.toString()
+        if (n && st?.deviceIdsForDeviceList instanceof List) liveDeviceIds[n] = st.deviceIdsForDeviceList
+    }
+    replaySettings = replaySettings.collectEntries { k, v ->
+        String key = k.toString()
+        boolean isPicker = savedSchema[key]?.type?.toString()?.startsWith("capability.") || v instanceof Map
+        if (!isPicker) return [(key): v]
+        def ids = liveDeviceIds.containsKey(key) ? liveDeviceIds[key] : ((v instanceof Map) ? v.keySet().toList() : v)
+        return [(key): (ids instanceof List ? ids.collect { it?.toString() } : ids)]
+    }
     String step = "settings replay"
     try {
         _rmUpdateAppSettings(ruleId, replaySettings, savedSchema)
