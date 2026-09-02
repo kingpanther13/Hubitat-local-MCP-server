@@ -10370,6 +10370,76 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.structuralIssues == [] || result.structuralIssues?.isEmpty()
     }
 
+    def "hub_get_rule_health reports ok on a UI-built IF ELSE-IF ELSE END-IF with no actType on any branch row"() {
+        given: "the ELSE-IF row is actSubType-only too -- the one branch keyword the other fixtures never exercise"
+        enableReadOnly()
+        def settings = ifStructureSettings([
+            [idx: 1, actType: "condActs",   actSubType: "getIfThen"],
+            [idx: 2, actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 3,                        actSubType: "getElseIf"],
+            [idx: 4, actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 5,                        actSubType: "getElse"],
+            [idx: 6, actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 7,                        actSubType: "getEndIf"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "UI ElseIf", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            JsonOutput.toJson([broken: false, actionList: ["1", "2", "3", "4", "5", "6", "7"]])
+        }
+
+        when:
+        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
+
+        then:
+        result.ok == true
+        result.structuralIssues == [] || result.structuralIssues?.isEmpty()
+    }
+
+    def "hub_get_rule_health reports ok on a UI-built REPEAT ... END-REP with no actType on the closer"() {
+        given: "the repeat family: the walker must infer repeatActs, not condActs, for these rows"
+        enableReadOnly()
+        def settings = ifStructureSettings([
+            [idx: 1,                        actSubType: "getRepeat"],
+            [idx: 2, actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 3,                        actSubType: "getStopRepeat"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "UI Repeat", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            JsonOutput.toJson([broken: false, actionList: ["1", "2", "3"]])
+        }
+
+        when:
+        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
+
+        then:
+        result.ok == true
+        result.structuralIssues == [] || result.structuralIssues?.isEmpty()
+    }
+
+    def "hub_get_rule_health still catches a REPEAT closed by an END-IF when neither row carries an actType"() {
+        given: "the discriminating negative: a helper that mapped every subtype to condActs would pass the two tests above and miss this"
+        enableReadOnly()
+        def settings = ifStructureSettings([
+            [idx: 1,                        actSubType: "getRepeat"],
+            [idx: 2, actType: "switchActs", actSubType: "getOnOffSwitch"],
+            [idx: 3,                        actSubType: "getEndIf"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "UI Mismatch", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            JsonOutput.toJson([broken: false, actionList: ["1", "2", "3"]])
+        }
+
+        when:
+        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
+
+        then: "a mismatched closer is a structural issue even with the actType inferred"
+        !(result.structuralIssues == null || result.structuralIssues.isEmpty())
+        result.structuralIssues.any { it.toString().toLowerCase().contains("mismatch") || it.toString().toLowerCase().contains("never closed") }
+    }
+
     def "hub_get_rule_health honours an EMPTY actionList: leftover rows are orphans, not an unclosed block"() {
         given: "every action was removed but its actType/actSubType rows survived in settings"
         // The compiled list is [] -- the rule genuinely has no actions. Treating empty as unknown

@@ -174,7 +174,7 @@ def deadmanKick() { checkDeadman() }
 
 // Space out restore RETRIES. Attempt 1 is immediate; after that each failure waits 2^(n-1) minutes
 // before the next try -- 1, 2, 4 and 8 minutes, so the five attempts actAndRecordLocked allows
-// before latching span ~15 min (the 16-min cap is defensive; unreachable while the latch is 5). The old behaviour retried on every 1-minute tick, and each attempt is a
+// before latching span ~15 min. The cap matches the latch: attempt 5 is the last one made. The old behaviour retried on every 1-minute tick, and each attempt is a
 // 660KB source fetch + a bundle install + two app recompiles -- so a hub already struggling got
 // five of those inside five minutes, which is load piled onto the exact condition that made the
 // restore fail. Backoff spreads the same five attempts over ~30 minutes and gives a loaded hub
@@ -190,7 +190,7 @@ private boolean retryBackoffPending(Map flag, String trigger) {
     Long lastAt = null
     try { lastAt = flag?.lastAttemptAt as Long } catch (Exception ignore) { lastAt = null }
     if (lastAt == null) return false
-    long waitMs = 60000L * (1L << Math.min(attempts - 1, 4))
+    long waitMs = 60000L * (1L << Math.min(attempts - 1, 3))
     long sinceMs = now() - lastAt
     if (sinceMs < waitMs) {
         logDebug "restore retry ${attempts + 1} (trigger=${trigger}) backing off: ${((waitMs - sinceMs) / 1000) as long}s to go"
@@ -238,10 +238,14 @@ private boolean maybeAutoRebootWedgedHub() {
         log.warn "E2E Dead-Man Watchdog v2: hub still looks wedged but an auto-reboot fired ${((nowMs - lastReboot) / 1000) as long}s ago -- not rebooting again yet. If it is still down, it needs a physical power cycle."
         return true
     }
-    atomicState.lastAutoRebootAt = nowMs
     log.error "E2E Dead-Man Watchdog v2: hub loopback HTTP has been dead for ${(atomicState.loopbackFailStreak ?: 0)} consecutive calls with no success in over 4 minutes -- the web stack is wedged and nothing in-process recovers from that. AUTO-REBOOTING."
     def r = adminRebootHub([confirm: true])
-    if (!r?.success) {
+    if (r?.success) {
+        // Stamped only on a reboot that LANDED: a failed POST must not burn the 30-minute limit --
+        // the next tick should try again, and a human reading the log should not be told a reboot
+        // happened.
+        atomicState.lastAutoRebootAt = nowMs
+    } else {
         log.error "E2E Dead-Man Watchdog v2: auto-reboot POST failed (${r?.error}). The hub needs a physical power cycle."
     }
     return true
@@ -1170,17 +1174,33 @@ def adminForceDeleteInstalledApp(args) {
 // the test hub). resources/hub2-source/README.md records why: the Vue HubVariables component is a
 // non-functional stub and "the classic hubVar wizard is the real variable-CRUD contract". So drive
 // that wizard, the same two clicks the main server's hub_delete_variable uses.
+// Ported from _resolveDirectAppId (hubitat-mcp-server.groovy). Two hops max: direct -> create ->
+// configure, each anchored on its path shape. An earlier revision took the FIRST digits anywhere in
+// the Location -- 127 on an absolute http://127.0.0.1:8080/... Location, or the app TYPE id on a
+// create/<typeId> hop -- and would have driven deleteGV/delConfirm at an unrelated installed app.
 private Integer findHubVariablesAppId() {
-    try {
-        // Name-addressed alias for the singleton; the redirect Location carries the instance id.
-        def r = hubGetStatus("/installedapp/direct/hubVariables", [:])
-        def loc = r?.location?.toString()
-        if (loc) {
-            def m = (loc =~ /(\d+)/)
-            if (m.find()) return m.group(1).toInteger()
+    String path = "/installedapp/direct/hubVariables"
+    for (int hop = 1; hop <= 2; hop++) {
+        Map r = null
+        try { r = hubGetStatus(path, [:]) } catch (Exception e) { mcpAdminLog "findHubVariablesAppId: hop ${hop} GET threw ${e.message}"; return null }
+        Integer st = null
+        try { st = r?.status as Integer } catch (Exception ignore) { st = null }
+        String loc = r?.location?.toString()
+        if (st == null || st < 300 || st >= 400 || !loc) {
+            mcpAdminLog "findHubVariablesAppId: hop ${hop} ${path} status=${st} location=${loc} -- not a redirect"
+            return null
         }
-    } catch (Exception e) {
-        mcpAdminLog "findHubVariablesAppId failed: ${e.message}"
+        def cfg = (loc =~ /\/installedapp\/configure\/(\d+)/)
+        if (cfg.find()) return cfg.group(1).toInteger()
+        def create = (loc =~ /\/installedapp\/create\/(\d+)/)
+        if (create.find() && hop == 1) {
+            // Rebuild hop 2 from the captured type id rather than following the Location verbatim:
+            // normalises an absolute URL and never follows past the expected chain.
+            path = "/installedapp/create/${create.group(1)}"
+            continue
+        }
+        mcpAdminLog "findHubVariablesAppId: hop ${hop} unexpected Location ${loc}"
+        return null
     }
     return null
 }
@@ -1203,27 +1223,36 @@ private Map clickHubVarButton(Integer appId, String buttonName, String stateAttr
 // sequence after a fresh create/edit can be dropped by the hub (a state-machine race that priming
 // alone does not reliably defeat), so the whole sequence is retried once -- the same two-attempt
 // shape hub_delete_variable uses, for the same empirically-observed reason.
-private boolean deleteHubVariable(Integer appId, String varName) {
+// Returns null on success, else a reason. The two click statuses are part of the reason: a 5xx
+// (or a wrong app id) used to be reported as "likely in use by a rule", sending the operator after
+// a referencing rule that did not exist.
+private String deleteHubVariable(Integer appId, String varName) {
+    String lastClicks = "unknown"
     for (int attempt = 0; attempt < 2; attempt++) {
         try {
             hubGet("/installedapp/configure/json/${appId}", [:])
             hubGet("/installedapp/statusJson/${appId}", [:])
         } catch (Exception ignore) { /* priming is best-effort */ }
-        clickHubVarButton(appId, varName, "deleteGV")
-        clickHubVarButton(appId, "delConfirm", null)
+        Integer s1 = null, s2 = null
+        try { s1 = clickHubVarButton(appId, varName, "deleteGV")?.status as Integer } catch (Exception ignore) { s1 = null }
+        try { s2 = clickHubVarButton(appId, "delConfirm", null)?.status as Integer } catch (Exception ignore) { s2 = null }
+        lastClicks = "deleteGV=${s1 ?: 'no response'}, delConfirm=${s2 ?: 'no response'}"
+        boolean clicksOk = s1 != null && s1 < 400 && s2 != null && s2 < 400
         for (int v = 0; v < 8; v++) {
             // A THROW is not evidence of deletion -- only a clean read returning null is. Treating
             // the exception as "gone" (which the enumerate-then-delete flow would let through
             // silently) would report a variable purged that is still on the hub.
             def gone = false
             try { gone = (getGlobalVar(varName) == null) } catch (Exception ignore) { gone = false }
-            if (gone) return true
+            if (gone) return null
             if (v < 7) {
                 try { pauseExecution(300) } catch (Exception ignore) { }
             }
         }
+        if (!clicksOk) return "hubVar wizard click(s) were not accepted (${lastClicks}) and the variable still exists"
     }
-    return false
+    return "hubVar wizard clicks were accepted (${lastClicks}) but the variable still exists after two attempts -- likely still referenced by a rule"
+
 }
 
 // hub_purge_e2e_artifacts: ONE-call LOCAL sweep of leftover test fixtures. Enumerates every installed-app
@@ -1375,8 +1404,9 @@ Map purgeE2eArtifactsLocked(String prefix) {
             } else {
                 targetVars.each { vn ->
                     try {
-                        if (deleteHubVariable(hvAppId, vn)) { varsDeleted << vn }
-                        else { varsFailed << [name: vn, error: "hubVar wizard completed but the variable still exists (likely in use by a rule)"] }
+                        String why = deleteHubVariable(hvAppId, vn)
+                        if (why == null) { varsDeleted << vn }
+                        else { varsFailed << [name: vn, error: why] }
                     } catch (Exception e) { varsFailed << [name: vn, error: e.message] }
                 }
             }
@@ -1981,8 +2011,8 @@ def adminManageVariables(args) {
     def action = args?.action
     if (!action) {
         return [tools: [
-            [name: "hub_get_variable", annotations: [title: "Get Variable", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Read a hub variable by name."],
-            [name: "hub_set_variable", annotations: [title: "Set Variable", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Set a hub variable's value (write)."]
+            [name: "hub_get_variable", annotations: [title: "Get Variable", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [name: [type: "string", description: "Hub variable name."]], required: ["name"]], description: "Read a hub variable by name."],
+            [name: "hub_set_variable", annotations: [title: "Set Variable", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [name: [type: "string", description: "Hub variable name."], value: [description: "New value; must match the variable's declared type."], confirm: [type: "boolean", description: "Must be true."]], required: ["name", "value", "confirm"]], description: "Set a hub variable's value (write)."]
         ]]
     }
     def name = args?.name
@@ -2071,58 +2101,58 @@ private Map _httpFetchUrl(String url) {
 // Minimal MCP tool list for tools/list. Names IDENTICAL to the main server so CI works by URL swap.
 def getAdminToolDefinitions() {
     return [
-        [name: "hub_update_app", annotations: [title: "Update App", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true], inputSchema: [type: "object", properties: [:]], description: "Update an Apps Code class source (deploy). One of source/sourceFile/importUrl/resave; confirm:true required.",
+        [name: "hub_update_app", annotations: [title: "Update App", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true], description: "Update an Apps Code class source (deploy). One of source/sourceFile/importUrl/resave; confirm:true required.",
          inputSchema: [type: "object", properties: [
             appId: [type: "string", description: "Apps Code CLASS id to update."],
             source: [type: "string"], sourceFile: [type: "string"], importUrl: [type: "string"], resave: [type: "boolean"],
             selfUpdate: [type: "boolean", description: "Set true when deploying the MAIN MCP server's own app-code class so the issue #237 lastSelfDeploy outcome is captured."],
             selfClassId: [type: "string", description: "The MAIN server's own Apps Code class id; if it matches appId, the #237 self-deploy capture arms."],
             confirm: [type: "boolean"]], required: ["appId", "confirm"]]],
-        [name: "hub_get_source", annotations: [title: "Get Source", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Read app/driver/library source (chunked); auto-saves the full source to File Manager so a restore can read it.",
+        [name: "hub_get_source", annotations: [title: "Get Source", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "Read app/driver/library source (chunked); auto-saves the full source to File Manager so a restore can read it.",
          inputSchema: [type: "object", properties: [
             type: [type: "string", enum: ["app", "driver", "library"]], id: [type: "string"],
             offset: [type: "integer"], length: [type: "integer"]], required: ["type", "id"]]],
-        [name: "hub_create_library", annotations: [title: "Create Library", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true], inputSchema: [type: "object", properties: [:]], description: "Install a new library. One of source/sourceFile/importUrl; confirm:true required.",
+        [name: "hub_create_library", annotations: [title: "Create Library", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true], description: "Install a new library. One of source/sourceFile/importUrl; confirm:true required.",
          inputSchema: [type: "object", properties: [
             source: [type: "string"], sourceFile: [type: "string"], importUrl: [type: "string"], confirm: [type: "boolean"]], required: ["confirm"]]],
-        [name: "hub_update_library", annotations: [title: "Update Library", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true], inputSchema: [type: "object", properties: [:]], description: "Update an existing library. One of source/sourceFile/importUrl/resave; confirm:true required.",
+        [name: "hub_update_library", annotations: [title: "Update Library", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true], description: "Update an existing library. One of source/sourceFile/importUrl/resave; confirm:true required.",
          inputSchema: [type: "object", properties: [
             libraryId: [type: "string"], source: [type: "string"], sourceFile: [type: "string"], importUrl: [type: "string"], resave: [type: "boolean"], confirm: [type: "boolean"]],
             required: ["libraryId", "confirm"]]],
-        [name: "hub_delete_item", annotations: [title: "Delete Item", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Delete an app/driver/library by id. confirm:true required.",
+        [name: "hub_delete_item", annotations: [title: "Delete Item", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Delete an app/driver/library by id. confirm:true required.",
          inputSchema: [type: "object", properties: [type: [type: "string", enum: ["app", "driver", "library"]], id: [type: "string"], confirm: [type: "boolean"]], required: ["type", "id", "confirm"]]],
-        [name: "hub_force_delete_app", annotations: [title: "Force Delete App", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Force-delete an INSTALLED-APP instance (e.g. an RM rule) via /installedapp/forcedelete/<id>/quiet. confirm:true required.",
+        [name: "hub_force_delete_app", annotations: [title: "Force Delete App", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Force-delete an INSTALLED-APP instance (e.g. an RM rule) via /installedapp/forcedelete/<id>/quiet. confirm:true required.",
          inputSchema: [type: "object", properties: [id: [type: "string"], confirm: [type: "boolean"]], required: ["id", "confirm"]]],
-        [name: "hub_purge_e2e_artifacts", annotations: [title: "Purge E2E Artifacts", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "One-call LOCAL sweep of leftover test fixtures: force-delete every installed-app instance whose name starts with prefix (default BAT_E2E_) AND delete every matching hub variable by driving the classic hubVar wizard (there is no app-facing global-variable delete API), all loopback-local on the hub so CI pays ONE cloud round-trip instead of N. Single-flight: a call arriving while a sweep is running is a no-op, and one arriving just after gets the finished sweep's cached result -- never retry it. Virtual devices are NOT covered (child devices of the main app). Returns per-class {deleted/failed} counts. confirm:true required.",
+        [name: "hub_purge_e2e_artifacts", annotations: [title: "Purge E2E Artifacts", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "One-call LOCAL sweep of leftover test fixtures: force-delete every installed-app instance whose name starts with prefix (default BAT_E2E_) AND delete every matching hub variable by driving the classic hubVar wizard (there is no app-facing global-variable delete API), all loopback-local on the hub so CI pays ONE cloud round-trip instead of N. Single-flight: a call arriving while a sweep is running is a no-op, and one arriving just after gets the finished sweep's cached result -- never retry it. Virtual devices are NOT covered (child devices of the main app). Returns per-class {deleted/failed} counts. confirm:true required.",
          inputSchema: [type: "object", properties: [prefix: [type: "string", description: "Name prefix to purge; default BAT_E2E_."], confirm: [type: "boolean"]], required: ["confirm"]]],
-        [name: "hub_set_app_disabled", annotations: [title: "Set App Disabled", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Toggle an installed app's disabled flag (the admin UI red-X) via POST /installedapp/disable; verified by read-back. confirm:true required.",
+        [name: "hub_set_app_disabled", annotations: [title: "Set App Disabled", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false], description: "Toggle an installed app's disabled flag (the admin UI red-X) via POST /installedapp/disable; verified by read-back. confirm:true required.",
          inputSchema: [type: "object", properties: [appId: [type: "string"], disable: [type: "boolean"], confirm: [type: "boolean"]], required: ["appId", "disable", "confirm"]]],
         [name: "hub_get_metrics", annotations: [title: "Get Metrics", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Current hub metrics (free memory, temp, DB size, uptime) + the hub's own health alerts. Read-only."],
         [name: "hub_reboot", annotations: [title: "Reboot", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Reboot the hub (POST /hub/reboot; 1-3 min downtime). The only in-band recovery from a wedged web stack -- if loopback HTTP is already dead this call cannot land either and the hub needs a physical power cycle. The watchdog also fires this automatically when it detects a wedge (see the autoRebootOnWedge preference). Requires confirm=true.", inputSchema: [type: "object", properties: [confirm: [type: "boolean", description: "Must be true."]], required: ["confirm"]]],
         [name: "hub_update_platform", annotations: [title: "Update Platform", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true], description: "Apply the hub's pending platform update (downloads + installs + REBOOTS the hub; requires confirm=true). statusOnly=true polls update progress without confirm.", inputSchema: [type: "object", properties: [confirm: [type: "boolean", description: "Must be true to apply (the hub reboots itself)."], statusOnly: [type: "boolean", description: "Poll /hub/cloud/checkUpdateStatus only; no confirm needed."]]]],
-        [name: "hub_get_memory_history", annotations: [title: "Get Memory History", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Free-memory / CPU-load history rows from the hub. Args: limit (default 60). Read-only.",
+        [name: "hub_get_memory_history", annotations: [title: "Get Memory History", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "Free-memory / CPU-load history rows from the hub. Args: limit (default 60). Read-only.",
          inputSchema: [type: "object", properties: [limit: [type: "integer"]]]],
-        [name: "hub_get_hub_logs", annotations: [title: "Get Hub Logs", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Most-recent hub system log entries. Args: level (error/warn/info), limit (default 50). Read-only.",
+        [name: "hub_get_hub_logs", annotations: [title: "Get Hub Logs", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "Most-recent hub system log entries. Args: level (error/warn/info), limit (default 50). Read-only.",
          inputSchema: [type: "object", properties: [level: [type: "string"], limit: [type: "integer"]]]],
         [name: "hub_list_app_instances", annotations: [title: "List App Instances", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Every running app INSTANCE (flattened /hub2/appsList with parentId) -- the full app inventory. DISTINCT from hub_list_apps (Apps Code CLASSES, which resolve_class_id depends on). Read-only."],
-        [name: "hub_install_bundle", annotations: [title: "Install Bundle", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true], inputSchema: [type: "object", properties: [:]], description: "Install a code bundle .zip from a URL the hub fetches itself (HPM-style). confirm:true required.",
+        [name: "hub_install_bundle", annotations: [title: "Install Bundle", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true], description: "Install a code bundle .zip from a URL the hub fetches itself (HPM-style). confirm:true required.",
          inputSchema: [type: "object", properties: [importUrl: [type: "string"], primary: [type: "boolean"], confirm: [type: "boolean"]], required: ["importUrl", "confirm"]]],
-        [name: "hub_list_bundles", annotations: [title: "List Bundles", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "List installed code bundle containers (id/name/namespace). Read-only.",
+        [name: "hub_list_bundles", annotations: [title: "List Bundles", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "List installed code bundle containers (id/name/namespace). Read-only.",
          inputSchema: [type: "object", properties: [:]]],
-        [name: "hub_delete_bundle", annotations: [title: "Delete Bundle", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Delete a code bundle container by id (verified by re-list). confirm:true required.",
+        [name: "hub_delete_bundle", annotations: [title: "Delete Bundle", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Delete a code bundle container by id (verified by re-list). confirm:true required.",
          inputSchema: [type: "object", properties: [bundleId: [type: "string"], confirm: [type: "boolean"]], required: ["bundleId", "confirm"]]],
         [name: "hub_get_info", annotations: [title: "Get Info", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Hub model/firmware/memory + the issue #237 lastSelfDeploy record (with ageMs)."],
-        [name: "hub_list_apps", annotations: [title: "List Apps", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "List Apps Code types (scope='types') or installed apps.",
+        [name: "hub_list_apps", annotations: [title: "List Apps", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "List Apps Code types (scope='types') or installed apps.",
          inputSchema: [type: "object", properties: [scope: [type: "string", enum: ["types", "instances"]]]]],
         [name: "hub_list_libraries", annotations: [title: "List Libraries", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "List libraries (id/name/namespace/version summaries)."],
         [name: "hub_get_jobs", annotations: [title: "Get Jobs", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "List scheduled + running hub jobs."],
-        [name: "hub_read_file", annotations: [title: "Read File", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Read a File Manager file (chunked).",
+        [name: "hub_read_file", annotations: [title: "Read File", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "Read a File Manager file (chunked).",
          inputSchema: [type: "object", properties: [fileName: [type: "string"], offset: [type: "integer"], length: [type: "integer"]], required: ["fileName"]]],
-        [name: "hub_write_file", annotations: [title: "Write File", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Write a File Manager file. confirm:true required.",
+        [name: "hub_write_file", annotations: [title: "Write File", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false], description: "Write a File Manager file. confirm:true required.",
          inputSchema: [type: "object", properties: [fileName: [type: "string"], content: [type: "string"], confirm: [type: "boolean"]], required: ["fileName", "content", "confirm"]]],
-        [name: "hub_create_backup", annotations: [title: "Create Backup", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Trigger a hub DB backup. confirm:true required.",
+        [name: "hub_create_backup", annotations: [title: "Create Backup", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false], description: "Trigger a hub DB backup. confirm:true required.",
          inputSchema: [type: "object", properties: [confirm: [type: "boolean"]], required: ["confirm"]]],
-        [name: "hub_manage_variables", annotations: [title: "Manage Variables", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Read/set hub variables for the lease (hub_get_variable / hub_set_variable). Call with no action to list sub-tools.",
+        [name: "hub_manage_variables", annotations: [title: "Manage Variables", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Read/set hub variables for the lease (hub_get_variable / hub_set_variable). Call with no action to list sub-tools.",
          inputSchema: [type: "object", properties: [action: [type: "string", enum: ["hub_get_variable", "hub_set_variable"]], name: [type: "string"], value: [type: "string"], confirm: [type: "boolean"]]]]
     ]
 }
@@ -2302,6 +2332,10 @@ def adminRebootHub(args) {
                 message: "Hub reboot initiated; the hub is unreachable for 1-3 minutes.",
                 response: resp?.data?.toString()?.take(200)]
     }
+    // The window was stamped before the POST (the hub can go the moment it lands); a POST that did
+    // NOT land is not downtime, and leaving the stamp would make the wedge escape stand down for 10
+    // minutes on a false "deliberate reboot in progress".
+    try { atomicState.expectedDownUntil = null } catch (Exception ignore) { }
     return [success: false, status: st,
             error: st == null ? "reboot POST got no response from the hub (transport failure)" : "reboot POST returned status ${st}",
             note: "If loopback HTTP is wedged this call cannot land either -- the hub needs a physical power cycle."]

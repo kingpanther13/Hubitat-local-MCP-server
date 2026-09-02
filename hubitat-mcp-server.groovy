@@ -7761,6 +7761,13 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
             broken = cs.broken
             if (cs.predicate != null) predicate = cs.predicate
             if (cs.actionList != null) compiledActionList = _rmCoerceActionIndices(cs.actionList)
+            // A valid RM record without a usable actionList (older firmware) means the structural
+            // verdict below comes from the whole-settings scan -- the mode #393 proved can
+            // false-positive -- and the orphan scan is disabled. Say so; silence would read as
+            // "no orphans, structure verified".
+            if (compiledActionList == null) {
+                checkErrors << "ruleBuilderJson carried no usable actionList for app ${appId}; structuralIssues came from the settings scan (leftover rows may read as an unclosed block) and orphanedActionRows could not be computed".toString()
+            }
             if (cs.validationErrors) validationErrors = cs.validationErrors
             if (ruleFormat == "rm" && broken == true) {
                 // capabsfalse renders the live false-condition text (with current
@@ -9034,7 +9041,7 @@ Native CRUD (hub admin-layer, additionally requires the Write master):
 - **hub_clone_native_app** — clone any classic SmartApp via Hubitat's first-party appCloner (deep: child apps and pause state copy, so a clone of an ACTIVE app lands ACTIVE). Args: sourceAppId, newName (opt), stageDisabled (opt: disable the clone + every descendant immediately; a staging failure returns success:false with per-app stageFailures -- do NOT re-clone, the app exists), confirm. Returns newAppId. Drives the appCloner's 4-step wizard (cloneRuleButton -> confirmation -> importRule sub-page -> importNow); typical clones complete in tens of seconds.
 - **hub_export_native_app** — export any classic SmartApp to its canonical JSON shape via Hubitat's first-party appCloner. Args: sourceAppId, saveAs (opt File Manager filename). Returns jsonContent. Self-contained document with appReplacements + deviceReplacements + full rule state; round-trips through hub_import_native_app.
 - **hub_import_native_app** — re-create a rule/app from a previously-exported JSON via Hubitat's first-party appCloner (the import lands ACTIVE). Args: jsonContent | fromFile, parentHintAppId, newName (opt), stageDisabled (opt: disable the import + every descendant immediately; failure contract as on clone), confirm. Returns newAppId. The cloner needs an existing rule under the target parent to seed itself (parentHintAppId).
-- **hub_get_rule_health** — read-only health check on any installed app (Rule Machine AND Visual Rules Builder). Args: appId, source (auto|ruleBuilderJson|configPage, default auto). Prefers the compiled-state verdict: the classic RM `broken` boolean (/app/ruleBuilderJson) or a graph Visual Rule's validationErrors (/app/ruleBuilder20Json); for classic RM the HTML render scan is retained as cross-check + fallback. Returns ok / broken / source / ruleFormat / label / configPageError / brokenMarkers / multipleFlagPoison / structuralIssues / validationErrors / issues (+ predicate when read).
+- **hub_get_rule_health** — read-only health check on any installed app (Rule Machine AND Visual Rules Builder). Args: appId, source (auto|ruleBuilderJson|configPage, default auto). Prefers the compiled-state verdict: the classic RM `broken` boolean (/app/ruleBuilderJson) or a graph Visual Rule's validationErrors (/app/ruleBuilder20Json); for classic RM the HTML render scan is retained as cross-check + fallback. Returns ok / broken / source / ruleFormat / label / configPageError / brokenMarkers / multipleFlagPoison / structuralIssues / orphanedActionRows (leftover actType/actSubType rows that are not among the rule's actions -- diagnostic only, never affects ok) / validationErrors / issues (+ predicate when read).
 
 For READING an RM rule's current state, use **hub_get_app_config** in the hub_read_apps_code gateway — it works on any installed app including RM rules and returns the same configPage shape that hub_set_rule expects to see.
 

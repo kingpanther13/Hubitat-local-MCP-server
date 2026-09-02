@@ -4169,15 +4169,25 @@ private List _rmCollectActionIndices(Integer appId) {
 // True only when /installedapp/json/<id> positively reports disabled. An unreadable or
 // unparseable response returns false: a transient read failure must not block an add that
 // would otherwise work, and the wizard's own error still catches the disabled case downstream.
-private boolean _rmIsAppDisabled(Integer appId) {
+// Tri-state: true = positively disabled, false = positively enabled, null = the read could not
+// establish either (empty body, unparseable, key absent, exception). null is NOT folded into
+// false: the ungated paths return success:true on a disabled app having done nothing, so a
+// transient read failure that silently opened the gate would restore exactly that. The caller
+// proceeds on null (a blip must not block edits on a healthy hub) but logs it at WARN, the same
+// separation hub_set_app_disabled makes on the same endpoint.
+private Boolean _rmIsAppDisabled(Integer appId) {
     try {
         def txt = hubInternalGet("/installedapp/json/${appId}")
-        if (!txt) return false
+        if (!txt) { mcpLog("warn", "rm-native", "_rmIsAppDisabled(${appId}): empty /installedapp/json body -- disabled state UNKNOWN, proceeding"); return null }
         def parsed = new groovy.json.JsonSlurper().parseText(txt)
-        return (parsed instanceof Map) && parsed.disabled == true
+        if (!(parsed instanceof Map) || !parsed.containsKey("disabled")) {
+            mcpLog("warn", "rm-native", "_rmIsAppDisabled(${appId}): /installedapp/json carried no 'disabled' key -- disabled state UNKNOWN, proceeding")
+            return null
+        }
+        return parsed.disabled == true
     } catch (Exception e) {
-        mcpLog("debug", "rm-native", "_rmIsAppDisabled(${appId}): read failed (${e.message}) -- treating as enabled")
-        return false
+        mcpLog("warn", "rm-native", "_rmIsAppDisabled(${appId}): read failed (${e.message}) -- disabled state UNKNOWN, proceeding")
+        return null
     }
 }
 
@@ -4200,7 +4210,7 @@ private String _rmEditOpLabel(Map args) {
 // _rmAddAction without passing through _applyNativeAppEdit), so the wording cannot drift between
 // the two sites. IllegalArgumentException: this is caller-recoverable -- re-enable, edit, re-disable.
 private void _rmRejectDisabledAppEdit(Integer appId, String opName) {
-    if (!_rmIsAppDisabled(appId)) return
+    if (_rmIsAppDisabled(appId) != true) return
     throw new IllegalArgumentException("${opName} blocked: rule ${appId} is DISABLED. Hubitat does not allow editing a disabled app -- its configuration page renders only \"App is disabled\", so there is no wizard to drive. This is intended platform behavior, not an error in the rule. To edit it: hub_set_app_disabled(appId=${appId}, disabled=false), make the change, then disable it again if you want it left parked. RM is not touched.")
 }
 
@@ -4213,7 +4223,8 @@ private void _rmRejectDisabledAppEdit(Integer appId, String opName) {
 //
 // After delete, RM does NOT renumber remaining actions — indices are
 // preserved with gaps. Subsequent addAction picks the next free index
-// via _rmCollectActionIndices' max+1 logic.
+// via _rmActionIndicesFromSettings' max+1 logic (the settings scan, deliberately -- it must
+// see un-baked rows the compiled list cannot).
 //
 // Pre-flight refuses three things before the delAct click goes out:
 // (a) the requested index does not exist on the rule,
@@ -4278,6 +4289,9 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
         // it out: a stale closer can absorb the imbalance a real deletion creates,
         // so current and projected both come back clean and the refusal never fires.
         def orderedIndices = _rmOrderedActionIndices(appId)
+        if (orderedIndices == null) {
+            mcpLog("warn", "rm-native", "removeAction(${actionIdx}) on rule ${appId}: compiled actionList unavailable -- the structural pre-flight is scoping by the whole settings scan, where a leftover closer can mask the imbalance this deletion creates")
+        }
         def currentIssues = _rmStructuralIssuesFromSequence(
             _rmStructuralSequenceFromSettings(settingsByName, ([] as Set), orderedIndices))
         def projectedIssues = _rmStructuralIssuesFromSequence(

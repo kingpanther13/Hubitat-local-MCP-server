@@ -1092,15 +1092,15 @@ class WatchdogV2Spec extends Specification {
         script.retryBackoffPending([fireAttempts: attempts, lastAttemptAt: System.currentTimeMillis() - agoMs],
                                    'disarm') == pending
 
-        where: "the schedule is 1, 2, 4 and 8 minutes -- five attempts over ~15 min before the latch; the 16-min cap is defensive and unreachable at latch 5"
+        where: "the schedule is 1, 2, 4 and 8 minutes -- five attempts over ~15 min before the latch"
         scenario                                   | attempts | agoMs      | pending
         'first attempt is never delayed'           | 0        | 0L         | false
         'after 1 failure, attempt 2 waits 1 min'   | 1        | 30_000L    | true
         'attempt 2 proceeds once 1 min has passed' | 1        | 90_000L    | false
         'after 3 failures, attempt 4 waits 4 min'  | 3        | 200_000L   | true
         'attempt 4 proceeds once 4 min has passed' | 3        | 300_000L   | false
-        'the wait is capped at 16 min'             | 8        | 900_000L   | true
-        'and it does proceed past that cap'        | 8        | 1_000_000L | false
+        'after 4 failures, attempt 5 waits 8 min'  | 4        | 400_000L   | true
+        'attempt 5 proceeds once 8 min has passed' | 4        | 500_000L   | false
     }
 
     def "a wedged hub skips the restore attempt entirely rather than adding load"() {
@@ -1587,6 +1587,11 @@ class WatchdogV2Spec extends Specification {
         defs.every { it.inputSchema instanceof Map }
         defs.every { it.inputSchema.type == 'object' }
         defs.every { it.inputSchema.containsKey('properties') }
+
+        and: "every required parameter is a declared property -- a placeholder schema cannot satisfy this"
+        defs.findAll { it.inputSchema.required }.every { d -> d.inputSchema.required.every { d.inputSchema.properties.containsKey(it) } }
+        defs.find { it.name == 'hub_update_app' }.inputSchema.properties.containsKey('appId')
+        defs.find { it.name == 'hub_reboot' }.inputSchema.required == ['confirm']
     }
 
     def "hub_reboot is reachable through the JSON-RPC envelope, not only the direct dispatch"() {
@@ -1733,6 +1738,109 @@ class WatchdogV2Spec extends Specification {
         res.variablesFailedCount == 1
         res.variablesFailed[0].name == '*'
         res.variablesFailed[0].error.contains('could not enumerate')
+    }
+
+    // ---- review round 7 ----------------------------------------------------------------------
+
+    def "findHubVariablesAppId anchors on the configure path and follows the create hop (#scenario)"() {
+        given: "the redirect shapes the hub actually produces"
+        def hops = []
+        script.metaClass.hubGetStatus = { String p, Map q, int t = 30 ->
+            hops << p
+            if (p == '/installedapp/direct/hubVariables') return [status: 302, location: firstLoc, data: null]
+            if (p == '/installedapp/create/555') return [status: 302, location: '/installedapp/configure/9001', data: null]
+            [status: 404, location: null, data: null]
+        }
+
+        expect: "the INSTANCE id -- never 127 from an absolute URL, never the type id from the create hop"
+        script.findHubVariablesAppId() == expected
+
+        where:
+        scenario                          | firstLoc                                                   | expected
+        'relative configure'              | '/installedapp/configure/9001'                             | 9001
+        'absolute configure'              | 'http://127.0.0.1:8080/installedapp/configure/9001'        | 9001
+        'create hop then configure'       | '/installedapp/create/555'                                 | 9001
+        'absolute create hop'             | 'http://127.0.0.1:8080/installedapp/create/555'            | 9001
+        'unexpected shape'                | '/installedapp/list'                                       | null
+    }
+
+    def "findHubVariablesAppId returns null when the alias does not redirect"() {
+        given:
+        script.metaClass.hubGetStatus = { String p, Map q, int t = 30 -> [status: 200, location: null, data: '<html>'] }
+
+        expect:
+        script.findHubVariablesAppId() == null
+    }
+
+    def "a rejected wizard click is reported as such, not as a variable in use"() {
+        given:
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+        script.metaClass.hubGetStatus = { String p, Map q, int t = 30 -> [status: 302, location: '/installedapp/configure/9001', data: null] }
+        script.metaClass.hubPostForm = { String p, Map b -> [status: 500, data: null] }
+        script.metaClass.pauseExecution = { long ms -> }
+        script.metaClass.getAllGlobalVars = { -> [BAT_E2E_x: [value: 1]] }
+        script.metaClass.getGlobalVar = { String n -> [value: 1] }
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then: "the operator is not sent hunting for a referencing rule when the hub refused the click"
+        res.variablesFailed[0].error.contains('not accepted')
+        res.variablesFailed[0].error.contains('deleteGV=500')
+        !res.variablesFailed[0].error.contains('referenced by a rule')
+    }
+
+    def "hub_reboot without confirm is refused and stamps NO downtime window"() {
+        given:
+        String posted = null
+        script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+
+        when:
+        script.adminRebootHub([:])
+
+        then: "the most destructive tool keeps its gate, and a refused call cannot blind the escape"
+        thrown(IllegalArgumentException)
+        posted == null
+        atomicStateMap.expectedDownUntil == null
+    }
+
+    def "a reboot POST that did not land clears the downtime window it had stamped"() {
+        given:
+        script.metaClass.hubPostForm = { String p, Map b -> [status: null, data: null] }
+
+        when:
+        def res = script.adminRebootHub([confirm: true])
+
+        then: "otherwise the escape would stand down for 10 min on a reboot that never happened"
+        res.success == false
+        atomicStateMap.expectedDownUntil == null
+    }
+
+    def "a failed auto-reboot does not burn the 30-minute rate limit"() {
+        given:
+        script.metaClass.readFlag = { -> null }
+        script.metaClass.hubPostForm = { String p, Map b -> [status: null, data: null] }
+        script.metaClass.probeLoopbackAlive = { -> false }
+        atomicStateMap.loopbackFailStreak = 12
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 300_000L
+
+        when:
+        script.checkDeadman()
+
+        then: "the next tick may try again"
+        atomicStateMap.lastAutoRebootAt == null
+    }
+
+    def "hub_manage_variables sub-tools declare their real parameters"() {
+        given:
+        def catalog = script.adminManageVariables([:])
+        def subs = catalog.tools ?: catalog.subTools ?: []
+
+        expect:
+        subs.size() == 2
+        subs.every { it.annotations?.title && it.annotations.containsKey('readOnlyHint') && it.annotations.containsKey('openWorldHint') }
+        subs.find { it.name == 'hub_get_variable' }.inputSchema.required == ['name']
+        subs.find { it.name == 'hub_set_variable' }.inputSchema.required.containsAll(['name', 'value', 'confirm'])
     }
 
 }

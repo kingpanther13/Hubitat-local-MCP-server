@@ -2202,10 +2202,18 @@ class TestRunner:
     @test("devices")
     def test_list_devices_scope_all(self) -> None:
         # Item 1 (#257): scope='all' lists EVERY hub device with an mcpAuthorized flag,
-        # sourced from /device/listWithCapabilities/json (not the authorization-scoped Groovy model).
+        # sourced from the hub-wide inventory (/device/listWithCapabilities/json, or /hub2/devicesList on
+        # platform 2.5.1.173 and later where that endpoint is gone), not the authorization-scoped Groovy model.
         result = self.client.call_tool("hub_list_devices", {"scope": "all"})
         assert isinstance(result, dict), "scope='all' did not return an object"
         assert result.get("scope") == "all", f"scope='all' not echoed: {result}"
+        # The fallback contract: the response names its source, and when that source carries no
+        # capabilities it says so rather than letting an empty list read as "no capabilities".
+        assert result.get("source") in ("/device/listWithCapabilities/json", "/hub2/devicesList"), \
+            f"scope='all' must report which inventory endpoint answered: {result.get('source')!r}"
+        if result.get("source") == "/hub2/devicesList":
+            assert result.get("capabilitiesPartial") is True and result.get("capabilitiesNote"), \
+                f"the /hub2/devicesList fallback must flag partial capabilities: {result}"
         devices = result.get("devices", [])
         assert isinstance(devices, list) and len(devices) > 0, "scope='all' returned no devices"
         assert all("mcpAuthorized" in d for d in devices), \
@@ -2967,7 +2975,7 @@ class TestRunner:
         try:
             # A freshly created REAL device is NOT MCP-selected, so the scoped hub_get_device
             # (selected/child devices only) can't resolve it. Confirm it exists via the
-            # scope='all' list (every hub device, sourced from /device/listWithCapabilities/json).
+            # scope='all' list (every hub device, from the hub-wide inventory -- see test_list_devices_scope_all).
             all_devs = self.client.call_tool("hub_list_devices", {"scope": "all"})
             ids = {str(d.get("id")) for d in all_devs.get("devices", [])} if isinstance(all_devs, dict) else set()
             assert new_id in ids, f"created device {new_id} not present in scope='all' listing"

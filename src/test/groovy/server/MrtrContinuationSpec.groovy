@@ -985,6 +985,14 @@ class MrtrContinuationSpec extends ToolSpecBase {
         and: 'synchronous slices retain half their request budget for actual leaf work'
         script._mrtrContentionWaitMs('hub_call_rule') == 3000L
 
+        when: 'a budget large enough that the caps, not the budget, bind'
+        settingsMap.relayBudgetMs = 12000
+
+        then: 'the detached 4500 and synchronous 4000 caps are the ceiling -- nothing at the default reaches them'
+        script._mrtrContentionWaitMs('hub_set_rule') == 4500L
+        script._mrtrContentionWaitMs('hub_call_rule') == 4000L
+        script._mrtrScheduleObserveWaitMs('hub_set_rule') == 3500L
+
         when: 'an operator configures a smaller cloud leg budget'
         settingsMap.relayBudgetMs = 5000
 
