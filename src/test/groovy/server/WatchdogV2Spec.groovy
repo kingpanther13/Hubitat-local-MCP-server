@@ -1268,6 +1268,7 @@ class WatchdogV2Spec extends Specification {
 
         expect: "no tool may fall back to a client's defaults -- openWorldHint defaults to TRUE when omitted"
         defs.every { it.annotations != null }
+        defs.every { (it.annotations.title instanceof String) && it.annotations.title.trim() }
         defs.every { it.annotations.containsKey('readOnlyHint') }
         defs.every { it.annotations.containsKey('idempotentHint') }
         defs.every { it.annotations.containsKey('openWorldHint') }
@@ -1685,6 +1686,19 @@ class WatchdogV2Spec extends Specification {
         then:
         res.success == true
         atomicStateMap.expectedDownUntil > System.currentTimeMillis()
+    }
+
+    def "hub_update_platform statusOnly reports a failed poll instead of success with no status"() {
+        given: "hubGet swallows the transport error into null"
+        script.metaClass.hubGet = { String p, Map q -> null }
+
+        when:
+        def res = script.adminUpdatePlatform([statusOnly: true])
+
+        then:
+        res.success == false
+        res.error?.contains('No response')
+        res.note?.contains('Retry')
     }
 
 }
