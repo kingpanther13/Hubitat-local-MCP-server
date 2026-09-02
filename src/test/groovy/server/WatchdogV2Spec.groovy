@@ -1843,6 +1843,41 @@ class WatchdogV2Spec extends Specification {
         subs.find { it.name == 'hub_set_variable' }.inputSchema.required.containsAll(['name', 'value', 'confirm'])
     }
 
+    def "retry bookkeeping survives a failed writeFlag -- the next tick still backs off and the cap still advances"() {
+        given: "the restore fails and the flag write fails too (a loaded hub)"
+        script.metaClass.adminUpdateApp = { Map a -> [success: false, error: 'nope'] }
+        script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '7', fireAttempts: 0,
+                                          manifest: [app: [classId: '178', url: 'https://raw.example/main/app.groovy'], libraries: []]] }
+        script.metaClass.writeFlag = { Map fl -> false }
+
+        when:
+        script.checkDeadman()
+
+        then: "the attempt is counted where a loopback write cannot lose it"
+        atomicStateMap.restoreAttempts == 1
+        atomicStateMap.restoreLastAttemptAt != null
+
+        and: "the next tick paces off the mirror even though the stale flag still says zero attempts"
+        script.retryBackoffPending([fireAttempts: 0, lastAttemptAt: null], 'disarm')
+    }
+
+    def "the retry mirror is cleared when the restore succeeds or latches"() {
+        given:
+        script.metaClass.adminUpdateApp = { Map a -> [success: true] }
+        script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '9', fireAttempts: 2,
+                                          manifest: [app: [classId: '178', url: 'https://raw.example/main/app.groovy'], libraries: []]] }
+        script.metaClass.writeFlag = { Map fl -> true }
+        atomicStateMap.restoreAttempts = 2
+        atomicStateMap.restoreLastAttemptAt = System.currentTimeMillis() - 600_000L
+
+        when:
+        script.checkDeadman()
+
+        then: "a stale mirror must not pace the NEXT run's first attempt"
+        atomicStateMap.restoreAttempts == null
+        atomicStateMap.restoreLastAttemptAt == null
+    }
+
 }
 
 class FakeHttpException extends RuntimeException {

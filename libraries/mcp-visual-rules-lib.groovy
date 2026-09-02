@@ -243,7 +243,8 @@ private Map _vrbNormalizeDefinition(def rawDefinition) {
 }
 
 // The rule's name with the hub's paused decoration removed. Only strips when the rule actually
-// reads back paused, so a rule a user genuinely named "... (Paused)" keeps its name.
+// reads back paused, so an UNPAUSED rule a user genuinely named "... (Paused)" keeps its name; a
+// paused one so named is indistinguishable from the decoration and is stripped.
 private String _vrbBareName(Object raw, boolean paused) {
     def s = stripAppConfigHtml(raw)?.toString()
     if (s != null && paused && s.endsWith("(Paused)")) {

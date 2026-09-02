@@ -1424,8 +1424,10 @@ class TestRunner:
         # A structured failure ([success:false,...]) carries no isError, so call_tool returns it as an
         # ordinary dict with no "devices" key. Treating that as "absent" would create a duplicate
         # PERMANENT device on every incident, and nothing ever sweeps E2E_PERM_*.
-        assert found.get("success") is not False,             f"could not look up permanent fixture '{label}' -- refusing to create a duplicate: {found}"
-        assert isinstance(found.get("devices"), list),             f"fixture lookup returned no device list (hub contract drift?) -- refusing to create a duplicate: {found}"
+        assert found.get("success") is not False, \
+                f"could not look up permanent fixture '{label}' -- refusing to create a duplicate: {found}"
+        assert isinstance(found.get("devices"), list), \
+                f"fixture lookup returned no device list (hub contract drift?) -- refusing to create a duplicate: {found}"
         for d in found["devices"]:
             if (d.get("label") or "") == label and d.get("id") is not None:
                 self._perm_fixture_ids[key] = str(d["id"])
@@ -1459,7 +1461,8 @@ class TestRunner:
                     args["cursor"] = cursor
                 page = self.client.call_tool("hub_read_apps_code",
                                              {"tool": "hub_list_drivers", "args": args})
-                assert isinstance(page.get("drivers"), list),                     f"driver catalog read failed (not a driver list) -- this is NOT 'driver absent': {page}"
+                assert isinstance(page.get("drivers"), list), \
+                f"driver catalog read failed (not a driver list) -- this is NOT 'driver absent': {page}"
                 for d in page["drivers"]:
                     name, did, bucket = d.get("name"), d.get("id"), d.get("bucket")
                     # Prefer a BUILT-IN over a user driver of the same name -- the catalog exposes
@@ -2971,7 +2974,8 @@ class TestRunner:
         assert created.get("label") == f"{PREFIX}FromDriver",             ("hub_create_device did not apply the requested label -- /device/updateLabel and the "
              f"wholesale /device/update fallback both missed: label={created.get('label')!r} "
              f"warnings={created.get('warnings')!r}")
-        assert not [w for w in (created.get("warnings") or []) if "label" in str(w).lower()],             f"hub_create_device warned about the label: {created.get('warnings')!r}"
+        assert not [w for w in (created.get("warnings") or []) if "label" in str(w).lower()], \
+                f"hub_create_device warned about the label: {created.get('warnings')!r}"
         try:
             # A freshly created REAL device is NOT MCP-selected, so the scoped hub_get_device
             # (selected/child devices only) can't resolve it. Confirm it exists via the
@@ -4437,8 +4441,10 @@ class TestRunner:
             # response, which is what the live hub returned on 2.5.1.177.
             refused = self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_set_rule", "args": {"appId": app_id, "confirm": True, **shape}})
-            assert refused.get("success") is False,                 f"editing a DISABLED rule via {label} must be refused, got: {refused}"
-            assert "DISABLED" in str(refused.get("error", "")),                 f"the {label} refusal must name the disabled app as the cause, got: {refused}"
+            assert refused.get("success") is False, \
+                f"editing a DISABLED rule via {label} must be refused, got: {refused}"
+            assert "DISABLED" in str(refused.get("error", "")), \
+                f"the {label} refusal must name the disabled app as the cause, got: {refused}"
 
         _status_write("hub_set_app_disabled", {"appId": app_id, "disabled": False},
                       "hub_set_app_disabled(disabled=False)")
@@ -5694,7 +5700,8 @@ class TestRunner:
         tool itself documents as EXPECTED mid-build. Broken markers, page errors, and flag poison
         still fail; structural imbalance alone does not (the caller's reset/closer handles it)."""
         h = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_get_rule_health", "args": {"appId": app_id}})
-        assert not h.get("configPageError") and not h.get("brokenMarkers") and not h.get("multipleFlagPoison"),             f"rule is genuinely broken after the dropped response (not just mid-build imbalance): {h}"
+        assert not h.get("configPageError") and not h.get("brokenMarkers") and not h.get("multipleFlagPoison"), \
+                f"rule is genuinely broken after the dropped response (not just mid-build imbalance): {h}"
         if h.get("ok") is False:
             print(f"    rule {app_id} renders with structural imbalance after the dropped response "
                   "(expected mid-build state; a reset/closer follows)")
@@ -11248,7 +11255,8 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             # restore-OFF -- and leaving it OFF makes every LATER permanent-fixture test fail with
             # "Device not found", burying the real cause under unrelated red.
             back_on = _set_bypass(True)
-            assert back_on.get("success") is True,                 f"could not restore the suite's bypass-ON baseline; later fixture tests would fail: {back_on}"
+            assert back_on.get("success") is True, \
+                f"could not restore the suite's bypass-ON baseline; later fixture tests would fail: {back_on}"
 
     def _bypass_boundary_checks(self, unauth, _set_bypass) -> None:
         """Boundary + bypass-reach assertions for test_bypass_device_allowlist_reaches_unlisted_device.
@@ -13206,7 +13214,8 @@ def main() -> None:
                     cargs["parameters"] = params
                 client.call_tool("hub_call_device_command", cargs)
                 read = client.call_tool("hub_get_device_attribute", {"deviceId": dev_id, "attribute": attr})
-                assert read.get("value") is not None,                     f"fixture '{label}' did not report '{attr}' after priming -- polling tests would throw: {read}"
+                assert read.get("value") is not None, \
+                f"fixture '{label}' did not report '{attr}' after priming -- polling tests would throw: {read}"
             print(f"  {key:<10} id={dev_id:<6} '{label}' ({driver}) -- readable, primed")
         children = client.call_tool("hub_list_devices", {"filter": "virtual"}).get("devices") or []
         child_ids = {str(d.get("id")) for d in children}

@@ -181,7 +181,13 @@ def deadmanKick() { checkDeadman() }
 // room to drain. A wedged hub skips the attempt entirely: the restore cannot possibly land while
 // loopback HTTP is dead, and trying costs load the hub does not have.
 private boolean retryBackoffPending(Map flag, String trigger) {
-    int attempts = (flag?.fireAttempts ?: 0) as int
+    // Read the atomicState mirror too: if the last retry's writeFlag failed, the flag still says
+    // the attempt before it, and pacing off that would restart the schedule from the top.
+    int mirrored = 0
+    Long mirroredAt = null
+    try { mirrored = (atomicState.restoreAttempts ?: 0) as int } catch (Exception ignore) { mirrored = 0 }
+    try { mirroredAt = atomicState.restoreLastAttemptAt as Long } catch (Exception ignore) { mirroredAt = null }
+    int attempts = Math.max((flag?.fireAttempts ?: 0) as int, mirrored)
     if (attempts <= 0) return false
     if (hubLooksWedged()) {
         log.warn "E2E Dead-Man Watchdog v2: hub loopback looks wedged -- skipping restore attempt ${attempts + 1} (trigger=${trigger}); the wedge escape handles recovery."
@@ -189,6 +195,7 @@ private boolean retryBackoffPending(Map flag, String trigger) {
     }
     Long lastAt = null
     try { lastAt = flag?.lastAttemptAt as Long } catch (Exception ignore) { lastAt = null }
+    if (mirroredAt != null && (lastAt == null || mirroredAt > lastAt)) lastAt = mirroredAt
     if (lastAt == null) return false
     long waitMs = 60000L * (1L << Math.min(attempts - 1, 3))
     long sinceMs = now() - lastAt
@@ -291,6 +298,7 @@ private void actAndRecordLocked(Map flag, String trigger) {
         flag.restoredAt = now()
         flag.restoreDetail = res.detail
         flag.fireAttempts = 0
+        try { atomicState.restoreAttempts = null; atomicState.restoreLastAttemptAt = null } catch (Exception ignore) { }
         // Restore confirmed -> the hub is canonical main again. Stamp the SHA marker the PR
         // install cleared so the next run's arm can skip its main refresh. CI's disarm is
         // fire-and-forget (it no longer polls for this restore), so the stamp must happen
@@ -301,8 +309,16 @@ private void actAndRecordLocked(Map flag, String trigger) {
             catch (Exception e) { log.warn "could not stamp the canonical-main marker after restore: ${e.message}" }
         }
     } else {
-        int attempts = ((flag.fireAttempts ?: 0) as int) + 1
+        // The flag is the durable mirror; atomicState is the source of truth for retry pacing.
+        // writeFlag is a File Manager loopback write -- exactly what fails on a LOADED hub (the
+        // gap between healthy and fully wedged) -- and when it failed the next tick re-read
+        // fireAttempts=0 from the old flag: no backoff, no cap, once-a-minute restores forever,
+        // the behaviour the backoff exists to stop. atomicState is a DB write and survives that.
+        int mirrored = 0
+        try { mirrored = (atomicState.restoreAttempts ?: 0) as int } catch (Exception ignore) { mirrored = 0 }
+        int attempts = Math.max((flag.fireAttempts ?: 0) as int, mirrored) + 1
         flag.fireAttempts = attempts
+        try { atomicState.restoreAttempts = attempts; atomicState.restoreLastAttemptAt = now() } catch (Exception ignore) { }
         flag.restoreDetail = res.detail
         // Retry BOTH triggers up to the cap -- a transient miss must not latch the restore "failed".
         // (fire: armed+deadline re-fires next tick; disarm: intent=disarm with restoreFor still
@@ -315,6 +331,7 @@ private void actAndRecordLocked(Map flag, String trigger) {
             }
             return
         }
+        try { atomicState.restoreAttempts = null; atomicState.restoreLastAttemptAt = null } catch (Exception ignore) { }
         flag.armed = false
         flag.restoreFor = flag.runId
         flag.restoreResult = "failed"

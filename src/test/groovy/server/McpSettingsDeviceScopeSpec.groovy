@@ -794,6 +794,24 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
     // Platform 2.5.1.173 and later removed /device/listWithCapabilities/json (confirmed on .173/.174). Id validation falls back to
     // /hub2/devicesList, which carries every device id -- all this check needs.
 
+    def "selectedDevices validation falls back when the capabilities endpoint answers EMPTY (#body)"() {
+        given:
+        enableDevModeAndWrite()
+        hubGet.register('/device/listWithCapabilities/json') { params -> body }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [[key: "DEV-11", data: [id: 11, name: "Eleven"], children: []]]])
+        }
+
+        when:
+        def result = setScope([11])
+
+        then: "an id present only in the fallback inventory validates -- an empty primary body is not an empty hub"
+        result.success == true
+
+        where:
+        body << [null, '', '[]']
+    }
+
     def "selectedDevices validation falls back to hub2 devicesList when the capabilities endpoint is gone"() {
         given:
         enableDevModeAndWrite()

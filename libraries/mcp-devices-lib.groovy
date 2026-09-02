@@ -701,7 +701,8 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
     try {
         def txt = hubInternalGet("/device/listWithCapabilities/json")
         def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "[]")
-        if (parsed instanceof List) raw = parsed
+        // An empty/204 body parses to [] and would otherwise pass as a real (empty) inventory.
+        if (txt && parsed instanceof List && !parsed.isEmpty()) raw = parsed
     } catch (Exception e) {
         mcpLog("debug", "device", "hub_list_devices scope='all': /device/listWithCapabilities/json unavailable (${e.message}) -- falling back to /hub2/devicesList")
     }

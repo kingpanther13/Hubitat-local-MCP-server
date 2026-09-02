@@ -4155,14 +4155,10 @@ private List _rmActionIndicesFromSettings(Map status) {
 // Note action keys use a dot-N suffix (actType.1) vs trigger keys
 // without dot (tCapab1).
 private List _rmCollectActionIndices(Integer appId) {
-    def ordered = _ruleCompiledState(appId)?.actionList
-    if (ordered instanceof List && !ordered.isEmpty()) {
-        def out = []
-        ordered.each { entry ->
-            try { out << entry.toString().toInteger() } catch (NumberFormatException ignored) {}
-        }
-        if (out) return out
-    }
+    // One coercion path (_rmCoerceActionIndices, via _rmOrderedActionIndices) so the two
+    // cannot drift; a null element used to NPE here rather than be skipped.
+    def ordered = _rmOrderedActionIndices(appId)
+    if (ordered) return ordered
     return _rmActionIndicesFromSettings(_rmFetchStatusJson(appId))
 }
 
@@ -4255,6 +4251,10 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
     // independently, tripling the per-delete read load on the hub.
     def status = _rmFetchStatusJson(appId)
     def settingsByName = (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it] }
+    // Set when the structural pre-flight could not scope by the compiled action list and had to
+    // fall back to the whole-settings scan -- the mode where a leftover closer can mask the
+    // imbalance a deletion creates. Carried out on the response so a degraded guard is visible.
+    boolean structuralGuardDegraded = false
     // Existence check reads SETTINGS, not the compiled action list: a row that
     // was written but never baked exists only here, and refusing to delete it
     // would strand it. The status fetch above is reused.
@@ -4290,6 +4290,7 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
         // so current and projected both come back clean and the refusal never fires.
         def orderedIndices = _rmOrderedActionIndices(appId)
         if (orderedIndices == null) {
+            structuralGuardDegraded = true
             mcpLog("warn", "rm-native", "removeAction(${actionIdx}) on rule ${appId}: compiled actionList unavailable -- the structural pre-flight is scoping by the whole settings scan, where a leftover closer can mask the imbalance this deletion creates")
         }
         def currentIssues = _rmStructuralIssuesFromSequence(
@@ -4533,7 +4534,7 @@ private Map _rmModifyTrigger(Integer appId, Integer triggerIdx, Map mods) {
         mcpLog("warn", "rm-native", "_rmModifyTrigger: post-commit configure/json fetch failed for app ${appId} (${verifyExc.message}) -- cannot echo-verify new state; returning verificationFetchFailed=true")
     }
     def success = verificationFetchFailed ? false : (verifiedState != null ? verifiedState == mods.state?.toString() : !applied.isEmpty())
-    return [
+    return [structuralGuardDegraded: structuralGuardDegraded,
         success: success,
         modifiedIndex: triggerIdx,
         verifiedState: verifiedState,

@@ -196,6 +196,44 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
     // a superset of the authorized set, so scope='all' keeps working -- minus capabilities, which
     // that endpoint does not carry and which are unknowable for a device the app cannot see.
 
+    def "scope='all' falls back when the capabilities endpoint answers EMPTY (#body) -- never zero devices with success"() {
+        given: "hubInternalGet returns null on an empty/204 body; parseText(txt ?: '[]') made that a real empty list"
+        settingsMap.selectedDevices = [dev(id: 80)]
+        hubGet.register('/device/listWithCapabilities/json') { params -> body }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [[key: "DEV-80", data: [id: 80, name: "Authorized Switch"], children: []]]])
+        }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then:
+        result.source == "/hub2/devicesList"
+        result.devices.size() == 1
+
+        where:
+        body << [null, '', '[]']
+    }
+
+    def "hub_set_app_disabled(disabled=false) still works on a DISABLED app -- the remedy the edit refusal names"() {
+        given: "the re-enable must never route through the edit engine, or a disabled rule is permanently stuck"
+        settingsMap.enableWrite = true
+        settingsMap.enableRead = true
+        def state5 = [id: 5, name: "Notifier", disabled: true]
+        script.metaClass.hubInternalPostJson = { String path, String jsonBody, int timeout = 420, boolean isRetry = false ->
+            if (path == "/installedapp/disable" && jsonBody.contains('"disable":false')) state5.disabled = false
+            [status: 200]
+        }
+        hubGet.register('/installedapp/json/5') { params -> JsonOutput.toJson(state5) }
+
+        when:
+        def result = script.executeTool("hub_set_app_disabled", [appId: 5, disabled: false])
+
+        then:
+        result.success == true
+        result.disabled == false
+    }
+
     def "scope='all' falls back to hub2 devicesList when the capabilities endpoint is gone"() {
         given:
         settingsMap.selectedDevices = [dev(id: 80)]

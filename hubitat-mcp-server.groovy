@@ -7550,6 +7550,7 @@ private List _rmCoerceActionIndices(List raw) {
     if (raw == null) return null
     def out = []
     raw.each { entry ->
+        if (entry == null) return   // skip, do not NPE
         try { out << (entry.toString() as Integer) } catch (NumberFormatException ignored) {}
     }
     return out
