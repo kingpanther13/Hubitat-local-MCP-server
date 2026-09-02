@@ -1582,6 +1582,30 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.note?.contains("incomplete settings")
     }
 
+    def "a restore whose settings replay commits but whose updateRule click fails says so"() {
+        given: "a rule backup on disk and a replay that lands, followed by a button click that does not"
+        enableWrite()
+        def backupJson = groovy.json.JsonOutput.toJson([
+            schemaVersion: 1, ruleId: 100, appId: 100, appType: "rule_machine", reason: "pre-test",
+            timestamp: 1L, appLabel: "R",
+            configJson: [configPage: [sections: []], settings: [origLabel: "R"]],
+            statusJson: [appSettings: [[name: "origLabel", type: "text", multiple: false, value: "R"]], appState: []]
+        ])
+        script.metaClass.downloadHubFile = { String fn -> backupJson.bytes }
+        script.metaClass._rmFetchConfigJson = { Integer id -> [configPage: [sections: []]] }
+        script.metaClass._rmUpdateAppSettings = { Integer id, Map settings, Map schema = null, Map cache = null -> [status: 200] }
+        script.metaClass._rmClickAppButton = { Object... a -> throw new IllegalStateException("status=500") }
+
+        when:
+        def result = script._rmRestoreFromBackup([backupKey: "rm-rule_100_x", type: "rm-rule", id: 100, fileName: "mcp-rm-backup-100-x.json"])
+
+        then: "the envelope names the step and the recovery, instead of blaming the replay"
+        result.success == false
+        result.failedStep == "the final updateRule click"
+        result.error.contains("failed during the final updateRule click")
+        result.note.contains("Update Rule")
+    }
+
     // ---------- wire-format invariants ----------
     // These tests guard the wire-format fixes documented in the PR. Each is
     // anchored to a specific live-hub failure and the corresponding fix

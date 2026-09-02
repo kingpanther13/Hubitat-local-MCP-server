@@ -815,17 +815,27 @@ private Map _rmRestoreFromBackup(Map entry) {
             ]
         }
     }
+    // Two steps that fail differently: a rejected replay leaves the rule as it was (nothing is
+    // committed on a 4xx/5xx), while a failed updateRule click after a committed replay leaves the
+    // restored settings in place with subscriptions not yet rebuilt. Name the step, and log it --
+    // a caller reading only the envelope could not tell the two apart (seen live: a 500 on rule 37).
+    String step = "settings replay"
     try {
         _rmUpdateAppSettings(ruleId, savedSettings, savedSchema)
+        step = "the final updateRule click"
         _rmClickAppButton(ruleId, "updateRule")
     } catch (Exception e) {
+        mcpLog("error", "rm-native", "restore of rule ${ruleId} from ${fileName} failed during ${step}: ${e.message}")
         return [
             success: false,
             type: "rm-rule",
             ruleId: ruleId,
             originalRuleId: savedId,
-            error: "Restore applied partially; failed during settings replay: ${e.message}",
-            note: "Rule ${ruleId} exists but may have incomplete settings. Inspect with hub_get_app_config."
+            failedStep: step,
+            error: "Restore applied partially; failed during ${step}: ${e.message}",
+            note: (step == "settings replay"
+                ? "Rule ${ruleId} exists but may have incomplete settings. Inspect with hub_get_app_config(appId=${ruleId}) and compare against hub_get_backup(backupKey) before retrying."
+                : "The settings were replayed but the rule's updateRule did not fire, so its subscriptions may still reflect the pre-restore state. Open the rule and click Update Rule, or call hub_set_rule(appId=${ruleId}, button='updateRule').")
         ]
     }
 
