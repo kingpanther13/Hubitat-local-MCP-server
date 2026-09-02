@@ -80,13 +80,6 @@ def toolSearchTools(args) {
     if (!queryTokens) return [results: [], message: "No searchable terms in query"]
 
     // BM25 scoring
-// The ONLY way a corpus token becomes a map key in bm25Score. Every df/tf/query subscript goes
-// through here so the namespacing cannot be dropped at one site and kept at another --
-// tests/sandbox_lint.py checks that bm25Score's body has no bare df[...] / tf[...] subscript.
-// The prefix exists because the platform's SandboxSubscriptGuard rejects a COMPUTED map key that
-// collides with a reflection-ish property name, and one real corpus token ("fields") does.
-private String _bm25Key(String token) { "t_${token}".toString() }
-
     def scores = bm25Score(docTokens, queryTokens)
 
     // Rank and return top results
@@ -262,6 +255,13 @@ private bm25Tokenize(String text) {
 }
 
 // BM25 Okapi scoring
+// The ONLY way a corpus token becomes a map key in bm25Score. Every df/tf/query subscript goes
+// through here so the namespacing cannot be dropped at one site and kept at another --
+// tests/sandbox_lint.py checks that bm25Score's body has no bare df[...] / tf[...] subscript.
+// The prefix exists because the platform's SandboxSubscriptGuard rejects a COMPUTED map key that
+// collides with a reflection-ish property name, and one real corpus token ("fields") does.
+private String _bm25Key(String token) { "t_${token}".toString() }
+
 private bm25Score(List<List<String>> docTokens, List<String> queryTokens) {
     def k1 = 1.5
     def b = 0.75
