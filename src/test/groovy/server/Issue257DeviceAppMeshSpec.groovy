@@ -192,7 +192,7 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
         result.error?.contains("/hub2/devicesList")
     }
 
-    // Platform 2.5.1 removed /device/listWithCapabilities/json (404). /hub2/devicesList is still
+    // Platform 2.5.1.173 and later removed /device/listWithCapabilities/json (404; confirmed on .173/.174). /hub2/devicesList is still
     // a superset of the authorized set, so scope='all' keeps working -- minus capabilities, which
     // that endpoint does not carry and which are unknowable for a device the app cannot see.
 

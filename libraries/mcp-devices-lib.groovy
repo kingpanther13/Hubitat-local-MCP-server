@@ -690,7 +690,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
         throw new IllegalArgumentException("scope='all' supports format 'summary' or 'ids' only (detailed/currentStates require MCP-authorized devices; got '${format}')")
     }
     // Two inventory sources, tried in order. /device/listWithCapabilities/json carried
-    // capabilities for every device but is gone as of platform 2.5.1 (404). /hub2/devicesList
+    // capabilities for every device but is gone as of platform 2.5.1.173 and later (404; confirmed on .173 and .174). /hub2/devicesList
     // survives and is still a superset of the authorized set -- the point of scope='all' -- but
     // exposes no capabilities, so those are filled in from the Groovy model where the app has
     // access and left empty where it does not (an unauthorized device's capabilities are simply
@@ -787,7 +787,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
         // Say it plainly rather than let an empty list read as "this device has no capabilities":
         // capabilityFilter can only match authorized devices on this path.
         result.capabilitiesPartial = true
-        result.capabilitiesNote = "This firmware no longer serves /device/listWithCapabilities/json, so the inventory came from /hub2/devicesList, which carries no capabilities. Capabilities are filled in for mcpAuthorized devices only; an unauthorized device shows an empty list because its capabilities are not visible to the app. capabilityFilter therefore matches authorized devices only."
+        result.capabilitiesNote = "The capabilities endpoint (/device/listWithCapabilities/json) did not answer on this hub -- it was removed in platform 2.5.1.173 and later -- so the inventory came from /hub2/devicesList, which carries no capabilities. Capabilities are filled in for mcpAuthorized devices only; an unauthorized device shows an empty list because its capabilities are not visible to the app. capabilityFilter therefore matches authorized devices only."
     }
     if (labelFilter) result.labelFilter = labelFilter
     if (capabilityFilter) result.capabilityFilter = capabilityFilter

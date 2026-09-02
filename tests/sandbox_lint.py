@@ -4019,6 +4019,41 @@ def _scan_library_block_comments(name: str, text: str) -> list[dict]:
     return findings
 
 
+def check_bm25_key_subscripts() -> list[dict]:
+    """hub_search_tools sandbox fix guard. The platform's SandboxSubscriptGuard rejects a COMPUTED
+    map key that collides with a reflection-ish property name, and one real corpus token
+    ("fields", from hub_list_devices' parameter) does -- so every df/tf/query subscript in
+    bm25Score must go through _bm25Key. The Spock harness is plain Groovy with no such guard, so
+    a test cannot fail on a bare subscript; only a source-level rule can hold this invariant."""
+    findings: list[dict] = []
+    lib = REPO_ROOT / "libraries" / "mcp-discovery-lib.groovy"
+    if not lib.is_file():
+        return findings
+    src = lib.read_text(encoding="utf-8")
+    m = re.search(r"\n[^\n]*bm25Score\([^)]*\)\s*\{", src)
+    if not m:
+        findings.append({"file": str(lib.relative_to(REPO_ROOT)), "line": 1, "severity": "error",
+                         "rule": "bm25-key-subscripts",
+                         "message": "Could not locate bm25Score() -- has the function shape changed?"})
+        return findings
+    # Body = from the opening brace to the matching close at column 0.
+    start = m.end()
+    end = src.find("\n}", start)
+    body = src[start:end if end > 0 else len(src)]
+    base_line = src.count("\n", 0, start) + 1
+    bare = re.compile(r"\b(df|tf)\s*\[\s*(?!_bm25Key\()(?!k\b)(?!qt\b)[^\]]+\]")
+    for i, line in enumerate(body.split("\n")):
+        if bare.search(line):
+            findings.append({"file": str(lib.relative_to(REPO_ROOT)), "line": base_line + i,
+                             "severity": "error", "rule": "bm25-key-subscripts",
+                             "message": "bare df[...]/tf[...] subscript in bm25Score -- route the key through _bm25Key(token); a raw corpus token as a map key trips the platform's SandboxSubscriptGuard (hub_search_tools threw on every call).",
+                             })
+    if "_bm25Key(" not in body:
+        findings.append({"file": str(lib.relative_to(REPO_ROOT)), "line": base_line, "severity": "error",
+                         "rule": "bm25-key-subscripts",
+                         "message": "bm25Score never calls _bm25Key -- the sandbox-safe key namespacing has been removed."})
+    return findings
+
 def check_library_no_file_scope_block_comments() -> list[dict]:
     """BP20 library hygiene: no file-scope /* */ or /** */ block comments in any
     libraries/*.groovy (see _scan_library_block_comments for the rationale)."""
@@ -4266,6 +4301,9 @@ def main() -> int:
 
     # BP20: no file-scope block comments in #include libraries (hub-parser hazard).
     all_findings.extend(check_library_no_file_scope_block_comments())
+
+    # hub_search_tools sandbox fix: every bm25Score map subscript goes through _bm25Key.
+    all_findings.extend(check_bm25_key_subscripts())
 
     # The conformance leg's referee is the vendored MCP JSON Schemas; make the byte hashes
     # their README records ENFORCED, so a loosened or half-refreshed schema fails here

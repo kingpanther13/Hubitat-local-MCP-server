@@ -324,9 +324,12 @@ fi
 # but CI must not lean on that -- not retrying is the fix; the latch is the backstop.
 if PURGE_TEXT=$(mcp_tool_call_text "hub_purge_e2e_artifacts" \
     "$(jq -nc '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_purge_e2e_artifacts",arguments:{confirm:true}}}')" 1 2>/dev/null); then
-  echo "Local purge: $(printf '%s' "$PURGE_TEXT" | jq -c '{deletedCount,failedCount,variablesDeletedCount,variablesFailedCount}' 2>/dev/null | head -c 200)"
+  echo "Local purge: $(printf '%s' "$PURGE_TEXT" | jq -c '{success,busy,inFlight,cached,error,deletedCount,failedCount,variablesDeletedCount,variablesFailedCount}' 2>/dev/null | head -c 300)"
   PURGE_FAILS=$(printf '%s' "$PURGE_TEXT" | jq -r '((.failedCount // 0) + (.variablesFailedCount // 0))' 2>/dev/null || echo "?")
-  if [ "$PURGE_FAILS" != "0" ]; then
+  # A refused sweep (success:false, busy:true -- another prefix is running) carries NO count
+  # fields, so the count sum alone would read it as a clean purge. Gate on success too.
+  PURGE_OK=$(printf '%s' "$PURGE_TEXT" | jq -r 'if .success == false then "no" else "yes" end' 2>/dev/null || echo "?")
+  if [ "$PURGE_FAILS" != "0" ] || [ "$PURGE_OK" != "yes" ]; then
     echo "::warning::Local purge reported ${PURGE_FAILS} failure(s) -- the post-restore --cleanup-only prefix sweep is the backstop. Detail: $(printf '%s' "$PURGE_TEXT" | jq -c '{failed,variablesFailed}' 2>/dev/null | head -c 300)"
   fi
 else

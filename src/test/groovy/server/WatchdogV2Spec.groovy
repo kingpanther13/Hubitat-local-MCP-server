@@ -1092,7 +1092,7 @@ class WatchdogV2Spec extends Specification {
         script.retryBackoffPending([fireAttempts: attempts, lastAttemptAt: System.currentTimeMillis() - agoMs],
                                    'disarm') == pending
 
-        where: "the schedule is 1, 2, 4, 8, 16 minutes -- five attempts spread over ~31 min"
+        where: "the schedule is 1, 2, 4 and 8 minutes -- five attempts over ~15 min before the latch; the 16-min cap is defensive and unreachable at latch 5"
         scenario                                   | attempts | agoMs      | pending
         'first attempt is never delayed'           | 0        | 0L         | false
         'after 1 failure, attempt 2 waits 1 min'   | 1        | 30_000L    | true
@@ -1699,6 +1699,40 @@ class WatchdogV2Spec extends Specification {
         res.success == false
         res.error?.contains('No response')
         res.note?.contains('Retry')
+    }
+
+    def "the expected-downtime window vetoes ONLY the reboot -- the tick still reads the flag"() {
+        given: "wedged-looking counters inside a deliberate downtime window"
+        boolean flagRead = false
+        String posted = null
+        script.metaClass.readFlag = { -> flagRead = true; null }
+        script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+        script.metaClass.probeLoopbackAlive = { -> false }
+        atomicStateMap.loopbackFailStreak = 20
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 900_000L
+        atomicStateMap.expectedDownUntil = System.currentTimeMillis() + 600_000L
+
+        when:
+        script.checkDeadman()
+
+        then: "no reboot, but the flag IS read -- that read is what resets the counters once the hub is back"
+        posted == null
+        flagRead
+    }
+
+    def "a null getAllGlobalVars is reported as an enumeration failure, never as a clean sweep"() {
+        given:
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+        script.metaClass.getAllGlobalVars = { -> null }
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then:
+        res.success == false
+        res.variablesFailedCount == 1
+        res.variablesFailed[0].name == '*'
+        res.variablesFailed[0].error.contains('could not enumerate')
     }
 
 }

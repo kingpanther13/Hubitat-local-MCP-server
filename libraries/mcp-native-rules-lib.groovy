@@ -5582,7 +5582,11 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     // half-driven the wizard and left a condition slot open. Refuse up front with the remedy.
     // _applyNativeAppEdit hoists this same refusal ahead of its snapshot; this copy is what
     // covers the patch / createRule intra-batch callers that reach _rmAddAction directly.
-    _rmRejectDisabledAppEdit(appId, "addAction")
+    // Skipped intra-batch: every intra-batch caller has already passed _applyNativeAppEdit's
+    // hoisted gate (bulk addActions, replaceActions, patches) or is createRule on a rule seconds
+    // old that cannot yet be disabled. Re-checking per action made a 10-action replaceActions
+    // spend 11 loopback GETs answering one question, inside the relay budget this PR tightened.
+    if (!intraBatch) _rmRejectDisabledAppEdit(appId, "addAction")
 
     // Pre-flight: refuse closers (endIf / stopRepeat) and orphan branch
     // keywords (elseIf / else) that would render as orphaned because they
@@ -14178,7 +14182,7 @@ def _applyNativeAppEdit(args) {
                 error: e.message ?: e.toString(),
                 backup: backup,
                 restoreHint: isPreflightRefusal ?
-                    _rmPreflightRestoreHint() :
+                    _rmPreflightRestoreHint(null, backup) :
                     (isRetryExhaustion ?
                         "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}')." :
                         "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain.")

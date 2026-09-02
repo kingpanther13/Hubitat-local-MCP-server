@@ -266,7 +266,7 @@ private Map _validateMcpDeviceScope(scopeValue) {
     // fetch there would block a legitimate cleanup of a since-deleted device.
     if (mode in ["replace", "add"] && !requestedIds.isEmpty()) {
         // Same two-source fallback as hub_list_devices scope='all': the capabilities endpoint is
-        // gone as of platform 2.5.1 (404), and /hub2/devicesList is still a full inventory. Only
+        // gone as of platform 2.5.1.173 and later (404; confirmed on .173 and .174), and /hub2/devicesList is still a full inventory. Only
         // ids are needed here, which that endpoint carries, so validation is unaffected.
         def raw = null
         def sourceEndpoint = "/device/listWithCapabilities/json"

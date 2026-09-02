@@ -6133,6 +6133,21 @@ class TestRunner:
                 (f"expected to strip {sorted(doomed_names)} from the export, removed {dropped} "
                  f"entries -- the export's settings shape is not what the mutation targets")
 
+            # Also plant a LEFTOVER row: an actSubType for an action index the rule does not
+            # have. Health must report it in orphanedActionRows and must NOT count it toward
+            # block structure -- a stale IF was previously reported unclosed forever (#393).
+            def _inject_orphan(node: Any) -> int:
+                if isinstance(node, list):
+                    if any(isinstance(i, dict) and str(i.get("name", "")).startswith("actSubType.") for i in node):
+                        node.append({"name": "actSubType.99", "type": "enum", "multiple": False,
+                                     "value": "getIfThen"})
+                        return 1
+                    return sum(_inject_orphan(i) for i in node)
+                if isinstance(node, dict):
+                    return sum(_inject_orphan(v) for v in node.values())
+                return 0
+            assert _inject_orphan(document) == 1, "could not find the appSettings list to plant the orphan row"
+
             imported = self.client.call_tool("hub_manage_native_rules_and_apps", {
                 "tool": "hub_import_native_app",
                 "args": {"jsonContent": json.dumps(document), "parentHintAppId": int(app_id),
@@ -6168,6 +6183,28 @@ class TestRunner:
                 f"UI-shaped ELSE/END-IF rows were flagged as a structural imbalance: {health}"
             assert "never closed" not in str(health).lower(), \
                 f"a balanced UI-authored IF block was reported as missing its END-IF: {health}"
+
+            # The planted leftover is reported as an orphan, and only as an orphan.
+            orphans = health.get("orphanedActionRows")
+            assert isinstance(orphans, list), f"orphanedActionRows must always be present: {health}"
+            assert any("action 99" in str(row) and "getIfThen" in str(row) for row in orphans), \
+                f"the planted actSubType.99=getIfThen row was not reported as an orphan: {health}"
+            assert health.get("ok") is True, f"an orphan row must not fail health: {health}"
+
+            # Deleting the rule's only END-IF would unbalance it. That refusal never fired on a
+            # UI-shaped closer before (no actType on the row), and a leftover closer elsewhere
+            # could suppress it; both are fixed, so it must refuse here.
+            endif_idx = next(idx for idx in ui_rows
+                             if str(imported_settings.get(f"actSubType.{idx}")) == "getEndIf")
+            refused = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule", "args": {"appId": imported_id, "confirm": True,
+                                                 "removeAction": {"index": int(endif_idx)}}})
+            assert refused.get("success") is False and "blocked" in str(refused.get("error", "")), \
+                f"removing the only END-IF of a UI-shaped rule must be refused: {refused}"
+            after = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_get_rule_health", "args": {"appId": imported_id}})
+            assert after.get("structuralIssues") == [], \
+                f"the refused delete must leave the rule balanced: {after}"
         finally:
             if imported_id:
                 self._delete_native(imported_id)

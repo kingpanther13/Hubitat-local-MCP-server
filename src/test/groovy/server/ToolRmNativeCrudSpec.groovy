@@ -10370,6 +10370,46 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.structuralIssues == [] || result.structuralIssues?.isEmpty()
     }
 
+    def "hub_get_rule_health honours an EMPTY actionList: leftover rows are orphans, not an unclosed block"() {
+        given: "every action was removed but its actType/actSubType rows survived in settings"
+        // The compiled list is [] -- the rule genuinely has no actions. Treating empty as unknown
+        // sent the health walk back down the settings scan, where the stale IF read as an
+        // opened-never-closed block: #393 in its zero-action form.
+        enableReadOnly()
+        def settings = ifStructureSettings([
+            [idx: 7, actType: "condActs", actSubType: "getIfThen"],
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Emptied", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, settings) }
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            JsonOutput.toJson([broken: false, actionList: []])
+        }
+
+        when:
+        def result = script.handleGateway("hub_manage_native_rules_and_apps", "hub_get_rule_health", [appId: 100])
+
+        then: "no structural issue, and the leftover is named as an orphan"
+        result.ok == true
+        result.structuralIssues == [] || result.structuralIssues?.isEmpty()
+        result.orphanedActionRows.any { it.toString().contains("action 7") && it.toString().contains("getIfThen") }
+    }
+
+    def "_rmActTypeForStructuralSubType infers the family for every structural subtype (#subType)"() {
+        expect: "UI-authored rows carry no actType; the walker needs it to pair openers with closers"
+        script._rmActTypeForStructuralSubType(subType) == family
+
+        where:
+        subType         | family
+        'getIfThen'     | 'condActs'
+        'getElseIf'     | 'condActs'
+        'getElse'       | 'condActs'
+        'getEndIf'      | 'condActs'
+        'getRepeat'     | 'repeatActs'
+        'getWhile'      | 'repeatActs'
+        'getStopRepeat' | 'repeatActs'
+        'getLogMsg'     | null
+    }
+
     def "hub_get_rule_health reports ok on a UI-built flat IF ELSE END-IF with no actType on the closers"() {
         given:
         enableReadOnly()

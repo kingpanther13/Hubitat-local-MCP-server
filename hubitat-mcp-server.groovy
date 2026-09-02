@@ -1796,7 +1796,7 @@ def _isCloudRequest() {
 // sum to the millisecond. A hub whose per-app load limiter is tripping (back-to-back runs,
 // no reboot between) adds ~0.9s to the in-flight step, which 7000 could not absorb. 6000
 // lands legs near 8s healthy and ~8.75s throttled, under the bound in both.
-// comfortably under the observed relay ceiling. The budget is a setting, never a
+// The budget is a setting, never a
 // literal elsewhere -- read it here.
 def _relayBudgetMs() {
     return settings.relayBudgetMs != null ? (settings.relayBudgetMs as Long) : 6000L
@@ -7541,13 +7541,18 @@ private String _rmActionSettingText(Map settingsByName, String prefix, Integer i
  * preserving its order. Returns null when there is nothing usable, which
  * every caller reads as "membership unknown".
  */
+// null means the compiled list was UNREADABLE (fall back to the settings scan); an empty list
+// means the rule genuinely has no actions and must be honoured as such. Conflating the two sent
+// a rule whose actions were all removed -- but whose actType/actSubType rows survived -- back
+// down the settings scan, where the leftovers read as an unclosed block: the #393 false
+// positive in its zero-action form.
 private List _rmCoerceActionIndices(List raw) {
-    if (raw == null || raw.isEmpty()) return null
+    if (raw == null) return null
     def out = []
     raw.each { entry ->
         try { out << (entry.toString() as Integer) } catch (NumberFormatException ignored) {}
     }
-    out ?: null
+    return out
 }
 
 /**
@@ -7583,18 +7588,19 @@ private List _rmOrderedActionIndices(Integer appId) {
  * Optional excludeIndices (used by removeAction pre-flight) skip listed
  * action indices so the walker sees the post-deletion state.
  */
-private List _rmStructuralSequenceFromSettings(Map settingsByName, Set excludeIndices = ([] as Set), List orderedIndices = null) {
-    def indices
-    if (orderedIndices != null && !orderedIndices.isEmpty()) {
-        indices = orderedIndices
-    } else {
-        def scanned = [] as TreeSet
-        settingsByName.keySet().each { name ->
-            def m = name?.toString() =~ /^act(?:Type|SubType)\.(\d+)$/
-            if (m.matches()) scanned << ((m[0] as List)[1] as Integer)
-        }
-        indices = scanned as List
+// Every action index that has an actType.<N> or actSubType.<N> settings row, ascending. Shared by
+// the structural walk's settings fallback and the orphan scan so the two cannot drift.
+private TreeSet _rmScannedActionIndices(Map settingsByName) {
+    def scanned = [] as TreeSet
+    settingsByName?.keySet()?.each { name ->
+        def m = name?.toString() =~ /^act(?:Type|SubType)\.(\d+)$/
+        if (m.matches()) scanned << ((m[0] as List)[1] as Integer)
     }
+    return scanned
+}
+
+private List _rmStructuralSequenceFromSettings(Map settingsByName, Set excludeIndices = ([] as Set), List orderedIndices = null) {
+    def indices = (orderedIndices != null) ? orderedIndices : (_rmScannedActionIndices(settingsByName) as List)
     def sequence = []
     indices.each { idx ->
         if (excludeIndices.contains(idx)) return
@@ -7625,13 +7631,9 @@ private List _rmStructuralSequenceFromSettings(Map settingsByName, Set excludeIn
  * no way to tell a leftover from a live row.
  */
 private List _rmOrphanedActionRows(Map settingsByName, List orderedIndices) {
-    if (orderedIndices == null || orderedIndices.isEmpty()) return []
+    if (orderedIndices == null) return []
     def inRule = orderedIndices as Set
-    def scanned = [] as TreeSet
-    settingsByName.keySet().each { name ->
-        def m = name?.toString() =~ /^act(?:Type|SubType)\.(\d+)$/
-        if (m.matches()) scanned << ((m[0] as List)[1] as Integer)
-    }
+    def scanned = _rmScannedActionIndices(settingsByName)
     def out = []
     scanned.each { idx ->
         if (inRule.contains(idx)) return
@@ -9477,7 +9479,7 @@ A VRB rule speaks exactly one of two wire formats, decided by the hub firmware a
 - thenNode example (turn off): `{"actionType": "turnOff", "switches": [122], "deviceIds": [122], "index": 0, "type": "then"}`
 - At least one whenNode must be a REAL trigger (the builder refuses rules whose only triggers are `timeIsBetween`/`daysOfWeek`).
 
-**graph** — `{version: 1, nodes: [...], edges: [...]}` (the dormant 2.0 graph editor):
+**graph** — `{version: 1, nodes: [...], edges: [...]}` (the VRB 2.0 graph editor -- live as of platform 2.5.1.138; new Visual Rules on such hubs are graph-format):
 - Node: `{id, kind, type, config}`. `kind` is the category — `trigger` | `merge` | `decision` | `action`; `type` is the variety within it (trigger `switch`, merge `triggerMerge`, decision `all`, action `turnOff`, ...). Per-node fields live INSIDE `config`, and device ids go in `config.switches` (a non-empty array).
 - A valid graph needs at least one `trigger`, EXACTLY ONE `merge`/`triggerMerge`, and EXACTLY ONE `decision`. A decision's `config.conditions` must be an array — empty means unconditional.
 - Edge: `{from, to, port}`. Ports: `next` (trigger/merge source), `true`/`false` (decision source). Triggers have no incoming edges. No cycles.

@@ -791,7 +791,7 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    // Platform 2.5.1 removed /device/listWithCapabilities/json. Id validation falls back to
+    // Platform 2.5.1.173 and later removed /device/listWithCapabilities/json (confirmed on .173/.174). Id validation falls back to
     // /hub2/devicesList, which carries every device id -- all this check needs.
 
     def "selectedDevices validation falls back to hub2 devicesList when the capabilities endpoint is gone"() {

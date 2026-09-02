@@ -96,6 +96,11 @@ mappings {
 // class, so concurrent /mcp requests into this app instance contend on it properly. Held ONLY
 // across the claim check-and-set, never across the sweep itself.
 @groovy.transform.Field static final Object PURGE_CLAIM_LOCK = new Object()
+// Monitor for the wedge counters. noteLoopback is a read-modify-write on three atomicState keys
+// and concurrent /mcp requests report loopback results at once; without this a failure could
+// overwrite a newer success (a false streak the detector then counts) or two failures could
+// count as one.
+@groovy.transform.Field static final Object LOOPBACK_LOCK = new Object()
 
 def installed() { initialize() }
 def updated()   { unschedule(); initialize() }
@@ -168,7 +173,8 @@ def checkDeadman() {
 def deadmanKick() { checkDeadman() }
 
 // Space out restore RETRIES. Attempt 1 is immediate; after that each failure waits 2^(n-1) minutes
-// before the next try. The old behaviour retried on every 1-minute tick, and each attempt is a
+// before the next try -- 1, 2, 4 and 8 minutes, so the five attempts actAndRecordLocked allows
+// before latching span ~15 min (the 16-min cap is defensive; unreachable while the latch is 5). The old behaviour retried on every 1-minute tick, and each attempt is a
 // 660KB source fetch + a bundle install + two app recompiles -- so a hub already struggling got
 // five of those inside five minutes, which is load piled onto the exact condition that made the
 // restore fail. Backoff spreads the same five attempts over ~30 minutes and gives a loaded hub
@@ -208,7 +214,11 @@ private boolean maybeAutoRebootWedgedHub() {
     try { downUntil = atomicState.expectedDownUntil as Long } catch (Exception ignore) { downUntil = null }
     if (downUntil != null && now() < downUntil) {
         log.warn "E2E Dead-Man Watchdog v2: loopback is down but a deliberate reboot/platform update is in progress for another ${((downUntil - now()) / 1000) as long}s -- NOT rebooting."
-        return true
+        // false, not true: this only vetoes the REBOOT. The tick must go on to readFlag, because
+        // that read is the loopback call whose success resets the wedge counters once the hub is
+        // back -- returning here left the watchdog idle for the whole window (up to 25 min after
+        // a platform update) with a pending disarm/restore untouched.
+        return false
     }
 
     // SUPPRESSION 2 -- never act on accumulated state alone. hubLooksWedged reads counters that
@@ -1176,7 +1186,9 @@ private Integer findHubVariablesAppId() {
 }
 
 // One wizard button click on the hubVar page. Mirrors _rmClickAppButton's body shape from
-// hubitat-mcp-server.groovy, minus the RM-only caching.
+// hubitat-mcp-server.groovy, minus the RM-only page cache, the `version` concurrent-edit token
+// (the hubVar wizard tolerates its absence) and the >=400 throw -- this caller verifies by
+// read-back through getGlobalVar instead.
 private Map clickHubVarButton(Integer appId, String buttonName, String stateAttribute) {
     def body = [id: appId.toString(), name: buttonName,
                 ("settings[${buttonName}]".toString()): "clicked",
@@ -1348,7 +1360,13 @@ Map purgeE2eArtifactsLocked(String prefix) {
     def varsDeleted = []
     def varsFailed = []
     try {
-        def allVars = getAllGlobalVars() ?: [:]
+        def allVars = getAllGlobalVars()
+        if (allVars == null) {
+            // null means the enumeration itself failed -- NOT that there are no variables. Folding
+            // it into an empty map reported a clean sweep with nothing deleted.
+            varsFailed << [name: "*", error: "getAllGlobalVars returned null -- could not enumerate hub variables, so none were purged"]
+            allVars = [:]
+        }
         def targetVars = allVars.keySet().findAll { (it instanceof String) && it.startsWith(prefix) }
         if (targetVars) {
             Integer hvAppId = findHubVariablesAppId()
@@ -2192,6 +2210,10 @@ Integer httpStatusOf(Exception e) {
 // the watchdog has to be able to SEE it. Track consecutive loopback failures plus the last
 // success so "one flaky read" is distinguishable from "the hub is gone".
 private void noteLoopback(boolean ok) {
+    synchronized (LOOPBACK_LOCK) { noteLoopbackLocked(ok) }
+}
+
+private void noteLoopbackLocked(boolean ok) {
     try {
         if (ok) {
             // Every atomicState write is a DB write, and a purge sweep makes 150+ loopback calls.

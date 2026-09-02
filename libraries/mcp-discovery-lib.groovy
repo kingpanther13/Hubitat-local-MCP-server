@@ -80,6 +80,13 @@ def toolSearchTools(args) {
     if (!queryTokens) return [results: [], message: "No searchable terms in query"]
 
     // BM25 scoring
+// The ONLY way a corpus token becomes a map key in bm25Score. Every df/tf/query subscript goes
+// through here so the namespacing cannot be dropped at one site and kept at another --
+// tests/sandbox_lint.py checks that bm25Score's body has no bare df[...] / tf[...] subscript.
+// The prefix exists because the platform's SandboxSubscriptGuard rejects a COMPUTED map key that
+// collides with a reflection-ish property name, and one real corpus token ("fields") does.
+private String _bm25Key(String token) { "t_${token}".toString() }
+
     def scores = bm25Score(docTokens, queryTokens)
 
     // Rank and return top results
@@ -276,7 +283,7 @@ private bm25Score(List<List<String>> docTokens, List<String> queryTokens) {
     def df = [:]
     docTokens.each { tokens ->
         tokens.toSet().each { token ->
-            def k = "t_${token}".toString()
+            def k = _bm25Key(token)
             df[k] = (df[k] ?: 0) + 1
         }
     }
@@ -286,13 +293,13 @@ private bm25Score(List<List<String>> docTokens, List<String> queryTokens) {
     docTokens.eachWithIndex { tokens, docIdx ->
         // Term frequency for this doc
         def tf = [:]
-        tokens.each { t -> def k = "t_${t}".toString(); tf[k] = (tf[k] ?: 0) + 1 }
+        tokens.each { t -> def k = _bm25Key(t); tf[k] = (tf[k] ?: 0) + 1 }
 
         def dl = docLengths[docIdx]
         double score = 0.0
 
         queryTokens.each { rawQt ->
-            def qt = "t_${rawQt}".toString()
+            def qt = _bm25Key(rawQt)
             def termFreq = tf[qt] ?: 0
             if (termFreq > 0) {
                 def docFreq = df[qt] ?: 0
