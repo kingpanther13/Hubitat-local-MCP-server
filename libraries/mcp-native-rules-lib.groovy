@@ -14066,7 +14066,7 @@ def _applyNativeAppEdit(args) {
         if (moveSoftFail && moveResult.verifyHint) {
             repairHints << moveResult.verifyHint.toString()
         }
-        return [
+        def out = [
             success: (addedOk == addedTotal) && _rmHealthGatePass(health) && !updateRuleFailed && !moveSoftFail,
             partial: itemsPartial || updateRuleFailed || (moveResult?.partial == true),
             appId: appId,
@@ -14101,6 +14101,9 @@ def _applyNativeAppEdit(args) {
                 : (moveActionSpec ? (moveSoftFail ? "Move of action ${moveActionSpec.index} ${moveActionSpec.direction} could NOT be confirmed within the verify window -- see verifyHint before retrying." : "Moved action ${moveActionSpec.index} ${moveActionSpec.direction}; updateRule ${updateRuleFailed ? 'FAILED -- subscriptions may not be live' : 'fired'}.")
                 : "Removed action ${removeActionSpec?.index}; updateRule ${updateRuleFailed ? 'FAILED -- subscriptions may not be live' : 'fired'}."))
         ]
+        // Set only when true, as _rmDeleteAction emits it.
+        if (removeResult?.structuralGuardDegraded) out.structuralGuardDegraded = true
+        return out
     }
 
     // Trigger mutation paths — single delete or single field-edit.
