@@ -1575,6 +1575,118 @@ class WatchdogV2Spec extends Specification {
         atomicStateMap.loopbackLastOkAt > stale
     }
 
+
+    // ---- CodeRabbit round 4: contracts and latch edge cases -----------------------------------
+
+    def "every tool definition carries an object-root inputSchema (the MCP spec makes it REQUIRED)"() {
+        given: "tools/list returns these straight to the wire"
+        def defs = script.getAdminToolDefinitions()
+
+        expect: "a spec-validating client rejects the whole list if one tool lacks it"
+        defs.every { it.inputSchema instanceof Map }
+        defs.every { it.inputSchema.type == 'object' }
+        defs.every { it.inputSchema.containsKey('properties') }
+    }
+
+    def "hub_reboot is reachable through the JSON-RPC envelope, not only the direct dispatch"() {
+        given: "the dispatch-envelope leg the repo requires for every new tool"
+        String posted = null
+        script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+
+        when:
+        def env = script.processJsonRpcMessage([jsonrpc: '2.0', id: 7, method: 'tools/call',
+                                                params: [name: 'hub_reboot', arguments: [confirm: true]]])
+
+        then: "a well-formed result envelope whose text payload is the tool's own result"
+        posted == '/hub/reboot'
+        env.jsonrpc == '2.0'
+        env.id == 7
+        env.error == null
+        def payload = new groovy.json.JsonSlurper().parseText(env.result.content[0].text as String)
+        payload.success == true
+        payload.status == 200
+    }
+
+    def "a finished sweep leaves a SUCCESSOR's claim alone"() {
+        given: "this sweep's claim was superseded (it ran past the 15-min staleness escape)"
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+        script.metaClass.getAllGlobalVars = { -> [:] }
+        // Make the sweep body itself install a successor claim mid-flight.
+        script.metaClass.purgeE2eArtifactsLocked = { String prefix ->
+            atomicStateMap.purgeInFlightAt = System.currentTimeMillis()
+            atomicStateMap.purgeClaim = 'purge-successor'
+            atomicStateMap.purgeClaimPrefix = 'BAT_E2E_'
+            [success: true, prefix: prefix, deletedCount: 0, failedCount: 0, deleted: [], failed: [],
+             variablesDeletedCount: 0, variablesFailedCount: 0, variablesDeleted: [], variablesFailed: []]
+        }
+
+        when:
+        script.adminPurgeE2eArtifacts([confirm: true])
+
+        then: "the successor's markers survive -- clearing them would let a third request pile on"
+        atomicStateMap.purgeClaim == 'purge-successor'
+        atomicStateMap.purgeInFlightAt != null
+    }
+
+    def "an in-flight sweep for a DIFFERENT prefix reports busy, never covered"() {
+        given:
+        int enumerations = 0
+        script.metaClass.hubGet = { String p, Map q -> enumerations++; '{"apps":[]}' }
+        atomicStateMap.purgeInFlightAt = System.currentTimeMillis() - 10_000L
+        atomicStateMap.purgeClaim = 'purge-other'
+        atomicStateMap.purgeClaimPrefix = 'BAT_E2E_'
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true, prefix: 'OTHER_'])
+
+        then: "the caller must not be told OTHER_ was swept when only BAT_E2E_ is running"
+        enumerations == 0
+        res.success == false
+        res.busy == true
+        res.activePrefix == 'BAT_E2E_'
+        res.inFlight == null
+    }
+
+    def "an in-flight sweep for the SAME prefix still returns the covered marker"() {
+        given:
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+        atomicStateMap.purgeInFlightAt = System.currentTimeMillis() - 10_000L
+        atomicStateMap.purgeClaim = 'purge-other'
+        atomicStateMap.purgeClaimPrefix = 'BAT_E2E_'
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then:
+        res.success == true
+        res.inFlight == true
+    }
+
+    def "hub_update_platform with no response is a failure and does NOT blind the escape"() {
+        given: "hubGet swallows the transport error and returns null"
+        script.metaClass.hubGet = { String p, Map q -> p.endsWith('checkForUpdate') ? '{"ok":true}' : null }
+
+        when:
+        def res = script.adminUpdatePlatform([confirm: true])
+
+        then: "the hub never accepted the update, so nothing is going down"
+        res.success == false
+        res.error?.contains('did not accept')
+        atomicStateMap.expectedDownUntil == null
+    }
+
+    def "hub_update_platform stamps the downtime window only after the hub accepted it"() {
+        given:
+        script.metaClass.hubGet = { String p, Map q -> '{"ok":true}' }
+
+        when:
+        def res = script.adminUpdatePlatform([confirm: true])
+
+        then:
+        res.success == true
+        atomicStateMap.expectedDownUntil > System.currentTimeMillis()
+    }
+
 }
 
 class FakeHttpException extends RuntimeException {
