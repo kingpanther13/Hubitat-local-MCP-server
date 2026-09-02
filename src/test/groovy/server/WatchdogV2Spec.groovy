@@ -1902,6 +1902,24 @@ class WatchdogV2Spec extends Specification {
         atomicStateMap.expectedDownUntil == existing
     }
 
+    def "the persisted failure streak saturates at the wedge threshold (streak #streak)"() {
+        given:
+        atomicStateMap.loopbackFailStreak = streak
+        atomicStateMap.loopbackStreakStartedAt = System.currentTimeMillis() - 1_000L
+
+        when:
+        script.noteLoopback(false)
+
+        then: "below the threshold it still counts; at or past it nothing is written"
+        atomicStateMap.loopbackFailStreak == expected
+
+        where:
+        streak | expected
+        7      | 8
+        8      | 8
+        40     | 40
+    }
+
 }
 
 class FakeHttpException extends RuntimeException {

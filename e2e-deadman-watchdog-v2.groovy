@@ -101,6 +101,9 @@ mappings {
 // overwrite a newer success (a false streak the detector then counts) or two failures could
 // count as one.
 @groovy.transform.Field static final Object LOOPBACK_LOCK = new Object()
+// Consecutive status-less loopback failures before hubLooksWedged may fire; the persisted streak
+// saturates here so a failing sweep is not one DB write per call.
+@groovy.transform.Field static final int WEDGE_STREAK_MIN = 8
 
 def installed() { initialize() }
 def updated()   { unschedule(); initialize() }
@@ -252,7 +255,7 @@ private boolean maybeAutoRebootWedgedHub() {
         log.warn "E2E Dead-Man Watchdog v2: hub still looks wedged but an auto-reboot fired ${((nowMs - lastReboot) / 1000) as long}s ago -- not rebooting again yet. If it is still down, it needs a physical power cycle."
         return true
     }
-    log.error "E2E Dead-Man Watchdog v2: hub loopback HTTP has been dead for ${(atomicState.loopbackFailStreak ?: 0)} consecutive calls with no success in over 4 minutes -- the web stack is wedged and nothing in-process recovers from that. AUTO-REBOOTING."
+    log.error "E2E Dead-Man Watchdog v2: hub loopback HTTP has been dead for at least ${(atomicState.loopbackFailStreak ?: 0)} consecutive calls with no success in over 4 minutes -- the web stack is wedged and nothing in-process recovers from that. AUTO-REBOOTING."
     def r = adminRebootHub([confirm: true])
     if (r?.success) {
         // Stamped only on a reboot that LANDED: a failed POST must not burn the 30-minute limit --
@@ -1387,10 +1390,11 @@ def adminPurgeE2eArtifacts(args) {
 // to install a competing claim mid-sweep to prove the finally leaves it alone.
 Map purgeE2eArtifactsLocked(String prefix) {
     String raw = hubGet("/hub2/appsList", [:])
-    if (!raw) return [success: false, error: "empty response from /hub2/appsList -- cannot enumerate to purge"]
+    String noSweep = "Nothing was deleted: the hub did not answer /hub2/appsList. Confirm hub_get_info answers, then re-run hub_purge_e2e_artifacts; a repeat points at the hub's web stack, not the purge."
+    if (!raw) return [success: false, error: "empty response from /hub2/appsList -- cannot enumerate to purge", note: noSweep]
     def parsed
     try { parsed = new groovy.json.JsonSlurper().parseText(raw) }
-    catch (Exception e) { return [success: false, error: "unparseable /hub2/appsList: ${e.message}"] }
+    catch (Exception e) { return [success: false, error: "unparseable /hub2/appsList: ${e.message}", note: noSweep] }
     def targets = []
     def recurse
     recurse = { Map node ->
@@ -1625,9 +1629,10 @@ def adminGetHubLogs(args) {
 // watchdogs -- every app type), readable while the main app is busy.
 def adminListAppInstances(args) {
     String raw = hubGet("/hub2/appsList", [:])
-    if (!raw) return [success: false, error: "empty response from /hub2/appsList"]
+    String noList = "Nothing was changed: the hub did not answer /hub2/appsList. Confirm hub_get_info answers, then retry."
+    if (!raw) return [success: false, error: "empty response from /hub2/appsList", note: noList]
     def parsed
-    try { parsed = new groovy.json.JsonSlurper().parseText(raw) } catch (Exception e) { return [success: false, error: "unparseable /hub2/appsList: ${e.message}"] }
+    try { parsed = new groovy.json.JsonSlurper().parseText(raw) } catch (Exception e) { return [success: false, error: "unparseable /hub2/appsList: ${e.message}", note: noList] }
     def flat = []
     def recurse
     recurse = { Map node, parentId ->
@@ -2276,7 +2281,11 @@ private void noteLoopback(boolean ok) {
                 // Stamp when THIS streak began so hubLooksWedged has a baseline even if the
                 // watchdog has never seen a successful loopback call.
                 if (prior == 0) atomicState.loopbackStreakStartedAt = now()
-                atomicState.loopbackFailStreak = prior + 1
+                // Past the threshold the count no longer matters (the start stamp says how long
+                // the hub has been dark), so stop writing it: a purge sweep on a wedged hub makes
+                // 150+ failing calls, and each write here would be a DB write from the app whose
+                // job is to keep the hub unloaded.
+                if (prior < WEDGE_STREAK_MIN) atomicState.loopbackFailStreak = prior + 1
                 return
             }
             // Every atomicState write is a DB write, and a purge sweep makes 150+ loopback calls.
@@ -2303,7 +2312,7 @@ private void noteLoopback(boolean ok) {
 private boolean hubLooksWedged() {
     try {
         int streak = (atomicState.loopbackFailStreak ?: 0) as int
-        if (streak < 8) return false
+        if (streak < WEDGE_STREAK_MIN) return false
         // Fall back to the FIRST failure of the current streak when there has never been a success.
         // A hub already wedged when the watchdog started (or restarted into a wedged hub) has no
         // lastOk at all -- returning false there disabled the escape in exactly the case it exists

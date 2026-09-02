@@ -7332,6 +7332,8 @@ private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
         if (txt && parsed instanceof List && !parsed.isEmpty()) {
             return [source: "/device/listWithCapabilities/json", capabilities: true, records: parsed]
         }
+        // A 200 that is not a device list is contract drift; say so rather than fall through silently.
+        mcpLog("debug", logCategory, "${logPrefix}: /device/listWithCapabilities/json answered with ${txt ? 'an empty or non-list body' : 'no body'} -- falling back to /hub2/devicesList")
     } catch (Exception e) {
         mcpLog("debug", logCategory, "${logPrefix}: /device/listWithCapabilities/json unavailable (${e.message}) -- falling back to /hub2/devicesList")
     }
