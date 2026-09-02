@@ -1313,7 +1313,10 @@ def adminPurgeE2eArtifacts(args) {
     }
 }
 
-private Map purgeE2eArtifactsLocked(String prefix) {
+// NON-PRIVATE deliberately (see probeLoopbackAlive): a private method's internal callers bypass
+// metaClass dispatch, so a spec could not stand in a sweep body -- the successor-claim test needs
+// to install a competing claim mid-sweep to prove the finally leaves it alone.
+Map purgeE2eArtifactsLocked(String prefix) {
     String raw = hubGet("/hub2/appsList", [:])
     if (!raw) return [success: false, error: "empty response from /hub2/appsList -- cannot enumerate to purge"]
     def parsed
