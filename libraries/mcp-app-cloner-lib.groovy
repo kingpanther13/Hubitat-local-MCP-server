@@ -819,9 +819,15 @@ private Map _rmRestoreFromBackup(Map entry) {
     // committed on a 4xx/5xx), while a failed updateRule click after a committed replay leaves the
     // restored settings in place with subscriptions not yet rebuilt. Name the step, and log it --
     // a caller reading only the envelope could not tell the two apart (seen live: a 500 on rule 37).
+    // A button input has no persisted value: RM keeps its row buttons (edit/insert/cut/disable, and
+    // the bare "1"/"2"/"3" condition-row buttons) in settings with an empty value, and replaying
+    // those through the update endpoint is at best a no-op and at worst a press. Seen live on rule
+    // 37: the replay 500'd and left a blank condition behind. Replay only value-bearing inputs.
+    def replaySettings = savedSettings.findAll { k, v -> savedSchema[k.toString()]?.type != "button" }
+    def skippedButtons = (savedSettings.keySet() - replaySettings.keySet()).collect { it.toString() }.sort()
     String step = "settings replay"
     try {
-        _rmUpdateAppSettings(ruleId, savedSettings, savedSchema)
+        _rmUpdateAppSettings(ruleId, replaySettings, savedSchema)
         step = "the final updateRule click"
         _rmClickAppButton(ruleId, "updateRule")
     } catch (Exception e) {
@@ -846,7 +852,8 @@ private Map _rmRestoreFromBackup(Map entry) {
         originalRuleId: savedId,
         recreated: !exists,
         backupFile: fileName,
-        settingsApplied: savedSettings.keySet().toList(),
+        settingsApplied: replaySettings.keySet().toList(),
+        settingsSkipped: skippedButtons,
         note: exists ? "Settings restored in place." : "Rule was deleted; recreated with new id ${ruleId} and replayed settings."
     ]
 }

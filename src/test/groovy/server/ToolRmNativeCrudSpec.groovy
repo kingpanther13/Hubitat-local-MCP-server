@@ -1606,6 +1606,36 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.note.contains("Update Rule")
     }
 
+    def "a restore replays value-bearing inputs only -- RM's button rows are never re-posted"() {
+        given: "a snapshot whose settings carry RM's row buttons alongside real inputs"
+        enableWrite()
+        def backupJson = groovy.json.JsonOutput.toJson([
+            schemaVersion: 1, ruleId: 100, appId: 100, appType: "rule_machine", reason: "pre-test",
+            timestamp: 1L, appLabel: "R",
+            configJson: [configPage: [sections: []], settings: [origLabel: "R", tstate3: "72.5", "3": "", cut1: "", trashAll: ""]],
+            statusJson: [appSettings: [
+                [name: "origLabel", type: "text", multiple: false, value: "R"],
+                [name: "tstate3", type: "decimal", multiple: false, value: "72.5"],
+                [name: "3", type: "button", multiple: false, value: ""],
+                [name: "cut1", type: "button", multiple: false, value: ""],
+                [name: "trashAll", type: "button", multiple: false, value: ""]
+            ], appState: []]
+        ])
+        Map replayed = null
+        script.metaClass.downloadHubFile = { String fn -> backupJson.bytes }
+        script.metaClass._rmFetchConfigJson = { Integer id -> [configPage: [sections: []]] }
+        script.metaClass._rmUpdateAppSettings = { Integer id, Map settings, Map schema = null, Map cache = null -> replayed = settings; [status: 200] }
+        script.metaClass._rmClickAppButton = { Object... a -> [status: 200] }
+
+        when:
+        def result = script._rmRestoreFromBackup([backupKey: "rm-rule_100_x", type: "rm-rule", id: 100, fileName: "mcp-rm-backup-100-x.json"])
+
+        then:
+        result.success == true
+        replayed.keySet() == (["origLabel", "tstate3"] as Set)
+        result.settingsSkipped == ["3", "cut1", "trashAll"]
+    }
+
     // ---------- wire-format invariants ----------
     // These tests guard the wire-format fixes documented in the PR. Each is
     // anchored to a specific live-hub failure and the corresponding fix
