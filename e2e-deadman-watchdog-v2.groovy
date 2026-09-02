@@ -167,9 +167,6 @@ def checkDeadman() {
 // just makes the disarm restore happen ~2s after the flag write instead of on the next minute tick.
 def deadmanKick() { checkDeadman() }
 
-// Run the package restore, then record result + idempotency stamp into the flag (the signal CI
-// polls). BOTH triggers retry up to a 5-tick cap before latching "failed" (a transient miss must not
-// latch the restore failed); a success stamps restoreFor=runId so it runs at most once per run.
 // Space out restore RETRIES. Attempt 1 is immediate; after that each failure waits 2^(n-1) minutes
 // before the next try. The old behaviour retried on every 1-minute tick, and each attempt is a
 // 660KB source fetch + a bundle install + two app recompiles -- so a hub already struggling got
@@ -240,6 +237,9 @@ private boolean maybeAutoRebootWedgedHub() {
     return true
 }
 
+// Run the package restore, then record result + idempotency stamp into the flag (the signal CI
+// polls). BOTH triggers retry up to a 5-tick cap before latching "failed" (a transient miss must not
+// latch the restore failed); a success stamps restoreFor=runId so it runs at most once per run.
 private void actAndRecord(Map flag, String trigger) {
     // SINGLE-FLIGHT LATCH. restoreFor is only stamped at the END of a restore, but a restore takes
     // 3-4 minutes and checkDeadman fires every minute (plus the adminWriteFile kick) -- without this
@@ -1154,12 +1154,6 @@ def adminForceDeleteInstalledApp(args) {
     return [success: false, error: "Force-delete of installed app ${id} returned HTTP ${st} but the gone-check could not read /installedapp/json (status=${cst ?: 'none'}) -- keep the id and re-delete to be safe.", id: id]
 }
 
-// hub_purge_e2e_artifacts: ONE-call LOCAL sweep of leftover test fixtures. Enumerates every installed-app
-// instance whose name starts with the BAT_E2E_ test prefix (via /hub2/appsList, the same read
-// adminListAppInstances uses) and force-deletes each by reusing adminForceDeleteInstalledApp's
-// forcedelete+verify-gone path. The whole loop runs loopback-local on the hub, so CI makes ONE cloud
-// round-trip instead of N -- replacing the disarm's per-item reap loop and the post-restore
-// --cleanup-only RM sweep. Hard-scoped to the prefix (never a real app); confirm:true required.
 // Hub variables have NO app-facing delete API -- there is no removeGlobalVar/removeGlobalVariable on
 // the app class (an earlier revision called removeGlobalVariable and every purge failed with
 // "No signature of method", so the variables leg never once worked and BAT_E2E_ vars accumulated on
@@ -1220,6 +1214,12 @@ private boolean deleteHubVariable(Integer appId, String varName) {
     return false
 }
 
+// hub_purge_e2e_artifacts: ONE-call LOCAL sweep of leftover test fixtures. Enumerates every installed-app
+// instance whose name starts with the BAT_E2E_ test prefix (via /hub2/appsList, the same read
+// adminListAppInstances uses) and force-deletes each by reusing adminForceDeleteInstalledApp's
+// forcedelete+verify-gone path. The whole loop runs loopback-local on the hub, so CI makes ONE cloud
+// round-trip instead of N -- replacing the disarm's per-item reap loop and the post-restore
+// --cleanup-only RM sweep. Hard-scoped to the prefix (never a real app); confirm:true required.
 // SINGLE-FLIGHT LATCH + SHORT RESULT CACHE -- the same protection actAndRecord has, for the same
 // reason. This sweep takes minutes (N apps x forcedelete + verify-gone), which is far longer than
 // the ~10s cloud-relay timeout, so CI's retry-on-dropped-response fires while the FIRST sweep is
@@ -1469,8 +1469,6 @@ def adminUpdatePlatform(args) {
     }
     def check = null
     try { check = hubGet("/hub/cloud/checkForUpdate", [:]) } catch (Exception e) { return [success: false, error: "checkForUpdate failed: ${e.message}"] }
-    // 25 minutes: the note below quotes 5-10 for the download+install+reboot, with headroom for a
-    // slow mirror. Stamped BEFORE the call because the hub can go dark the moment it lands.
     // hubGet swallows transport errors and returns null. A null here means the hub never
     // ACCEPTED the update -- reporting success would be false, and stamping a 25-minute
     // expected-downtime window on a hub that is not going down would blind the wedge escape
@@ -2239,7 +2237,7 @@ private boolean hubLooksWedged() {
 }
 
 // One cheap loopback read used purely as a liveness gate before the destructive escape. Routed
-// through hubGet so a success updates the wedge counters as a side effect.
+// through hubGetStatus so a success updates the wedge counters as a side effect.
 // NON-PRIVATE deliberately: a private method's internal callers bypass metaClass dispatch, so a
 // spec could not override it and the reboot tests would silently pass on the real implementation
 // instead of the stub -- which is exactly how they first passed by accident.

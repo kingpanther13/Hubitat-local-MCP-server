@@ -4166,6 +4166,44 @@ private List _rmCollectActionIndices(Integer appId) {
     return _rmActionIndicesFromSettings(_rmFetchStatusJson(appId))
 }
 
+// True only when /installedapp/json/<id> positively reports disabled. An unreadable or
+// unparseable response returns false: a transient read failure must not block an add that
+// would otherwise work, and the wizard's own error still catches the disabled case downstream.
+private boolean _rmIsAppDisabled(Integer appId) {
+    try {
+        def txt = hubInternalGet("/installedapp/json/${appId}")
+        if (!txt) return false
+        def parsed = new groovy.json.JsonSlurper().parseText(txt)
+        return (parsed instanceof Map) && parsed.disabled == true
+    } catch (Exception e) {
+        mcpLog("debug", "rm-native", "_rmIsAppDisabled(${appId}): read failed (${e.message}) -- treating as enabled")
+        return false
+    }
+}
+
+// Name the operation for the disabled-app refusal so the message says which edit was refused
+// rather than a generic "edit". Same precedence as _applyNativeAppEdit's backupReason chain, so
+// a call carrying more than one key is labelled the way its own backup reason names it; the
+// keys that chain folds into "pre-update" (patches, settings) come last for the same reason.
+private String _rmEditOpLabel(Map args) {
+    if (args == null) return "edit"
+    def first = ["button", "addTrigger", "addAction", "addActions", "addTriggers",
+                 "addRequiredExpression", "replaceRequiredExpression", "addLocalVariable",
+                 "removeLocalVariable", "removeAction", "clearActions", "replaceActions",
+                 "moveAction", "removeTrigger", "modifyTrigger", "modifyAction", "walkStep",
+                 "patches", "settings"].find { args[it] != null }
+    return first ?: "edit"
+}
+
+// Shared disabled-app refusal. Called from BOTH _applyNativeAppEdit's pre-snapshot pre-flight and
+// _rmAddAction's own top-of-function guard (the intra-batch patch / createRule callers reach
+// _rmAddAction without passing through _applyNativeAppEdit), so the wording cannot drift between
+// the two sites. IllegalArgumentException: this is caller-recoverable -- re-enable, edit, re-disable.
+private void _rmRejectDisabledAppEdit(Integer appId, String opName) {
+    if (!_rmIsAppDisabled(appId)) return
+    throw new IllegalArgumentException("${opName} blocked: rule ${appId} is DISABLED. Hubitat does not allow editing a disabled app -- its configuration page renders only \"App is disabled\", so there is no wizard to drive. This is intended platform behavior, not an error in the rule. To edit it: hub_set_app_disabled(appId=${appId}, disabled=false), make the change, then disable it again if you want it left parked. RM is not touched.")
+}
+
 // Delete a single action at a specific index. Verified live
 // by inspecting the live UI HTML on selectActions: the per-row trash
 // button has data-stateAttribute='delAct' and the form-input name is
@@ -4199,42 +4237,6 @@ private List _rmCollectActionIndices(Integer appId) {
 // observed in live-hub runs; on retry exhaustion the throw directs the
 // caller to verify via hub_get_app_config since the deletion may complete
 // post-response. See source comment below for the original race description.
-// True only when /installedapp/json/<id> positively reports disabled. An unreadable or
-// unparseable response returns false: a transient read failure must not block an add that
-// would otherwise work, and the wizard's own error still catches the disabled case downstream.
-private boolean _rmIsAppDisabled(Integer appId) {
-    try {
-        def txt = hubInternalGet("/installedapp/json/${appId}")
-        if (!txt) return false
-        def parsed = new groovy.json.JsonSlurper().parseText(txt)
-        return (parsed instanceof Map) && parsed.disabled == true
-    } catch (Exception e) {
-        mcpLog("debug", "rm-native", "_rmIsAppDisabled(${appId}): read failed (${e.message}) -- treating as enabled")
-        return false
-    }
-}
-
-// Shared disabled-app refusal. Called from BOTH _applyNativeAppEdit's pre-snapshot pre-flight and
-// _rmAddAction's own top-of-function guard (the intra-batch patch / createRule callers reach
-// _rmAddAction without passing through _applyNativeAppEdit), so the wording cannot drift between
-// the two sites. IllegalArgumentException: this is caller-recoverable -- re-enable, edit, re-disable.
-// Name the operation for the disabled-app refusal so the message says which edit was refused
-// rather than a generic "edit". Mirrors the backupReason chain's ordering.
-private String _rmEditOpLabel(Map args) {
-    if (args == null) return "edit"
-    def first = ["addAction", "addActions", "addTrigger", "addTriggers", "addRequiredExpression",
-                 "replaceRequiredExpression", "addLocalVariable", "removeLocalVariable",
-                 "removeAction", "clearActions", "replaceActions", "moveAction", "removeTrigger",
-                 "modifyTrigger", "modifyAction", "walkStep", "patches", "button",
-                 "settings"].find { args[it] != null }
-    return first ?: "edit"
-}
-
-private void _rmRejectDisabledAppEdit(Integer appId, String opName) {
-    if (!_rmIsAppDisabled(appId)) return
-    throw new IllegalArgumentException("${opName} blocked: rule ${appId} is DISABLED. Hubitat does not allow editing a disabled app -- its configuration page renders only \"App is disabled\", so there is no wizard to drive. This is intended platform behavior, not an error in the rule. To edit it: hub_set_app_disabled(appId=${appId}, disabled=false), make the change, then disable it again if you want it left parked. RM is not touched.")
-}
-
 private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
     // Single statusJson fetch shared by all three pre-flight checks below;
     // before the refactor each helper (_rmCollectActionIndices,
