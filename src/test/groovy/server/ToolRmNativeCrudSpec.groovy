@@ -1583,56 +1583,92 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "a restore whose settings replay commits but whose updateRule click fails says so"() {
-        given: "a rule backup on disk and a replay that lands, followed by a button click that does not"
+        given: "the rule exists in place; the replay POST lands, the trailing button click does not"
         enableWrite()
-        def backupJson = groovy.json.JsonOutput.toJson([
-            schemaVersion: 1, ruleId: 100, appId: 100, appType: "rule_machine", reason: "pre-test",
-            timestamp: 1L, appLabel: "R",
-            configJson: [configPage: [sections: []], settings: [origLabel: "R"]],
-            statusJson: [appSettings: [[name: "origLabel", type: "text", multiple: false, value: "R"]], appState: []]
-        ])
-        script.metaClass.downloadHubFile = { String fn -> backupJson.bytes }
-        script.metaClass._rmFetchConfigJson = { Integer id -> [configPage: [sections: []]] }
-        script.metaClass._rmUpdateAppSettings = { Integer id, Map settings, Map schema = null, Map cache = null -> [status: 200] }
-        script.metaClass._rmClickAppButton = { Object... a -> throw new IllegalStateException("status=500") }
+        def snapshot = [
+            schemaVersion: 1, ruleId: 361, reason: "pre-test", timestamp: 1000,
+            timestampIso: "2026-01-01T00:00:00Z", appLabel: "click-err",
+            configJson: [
+                app: [id: 361, label: "click-err"],
+                configPage: [sections: [[title: "", input: [[name: "origLabel", type: "text"]]]]],
+                settings: [origLabel: "click-err"]
+            ],
+            statusJson: [:]
+        ]
+        def snapshotBytes = JsonOutput.toJson(snapshot).getBytes("UTF-8")
+        atomicStateMap.itemBackupManifest = [
+            "rm-rule_361_w": [type: "rm-rule", id: 361, ruleId: 361,
+                              fileName: "mcp-rm-backup-361-w.json", reason: "pre-test",
+                              appLabel: "click-err", timestamp: 1000, sourceLength: snapshotBytes.length]
+        ]
+        script.metaClass.downloadHubFile = { String fn -> snapshotBytes }
+        hubGet.register('/installedapp/configure/json/361') { params ->
+            ruleConfigJson(361, "click-err", [[name: "origLabel", type: "text"]])
+        }
+        hubGet.register('/installedapp/statusJson/361') { params -> statusJson(361) }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn") throw new RuntimeException("status code: 500, reason phrase: Server Error")
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
 
         when:
-        def result = script._rmRestoreFromBackup([backupKey: "rm-rule_100_x", type: "rm-rule", id: 100, fileName: "mcp-rm-backup-100-x.json"])
+        def result = script.toolRestoreItemBackup([backupKey: "rm-rule_361_w", confirm: true])
 
         then: "the envelope names the step and the recovery, instead of blaming the replay"
         result.success == false
         result.failedStep == "the final updateRule click"
-        result.error.contains("failed during the final updateRule click")
-        result.note.contains("Update Rule")
+        result.error?.contains("failed during the final updateRule click")
+        result.note?.contains("Update Rule")
     }
 
     def "a restore replays value-bearing inputs only -- RM's button rows are never re-posted"() {
         given: "a snapshot whose settings carry RM's row buttons alongside real inputs"
         enableWrite()
-        def backupJson = groovy.json.JsonOutput.toJson([
-            schemaVersion: 1, ruleId: 100, appId: 100, appType: "rule_machine", reason: "pre-test",
-            timestamp: 1L, appLabel: "R",
-            configJson: [configPage: [sections: []], settings: [origLabel: "R", tstate3: "72.5", "3": "", cut1: "", trashAll: ""]],
+        def snapshot = [
+            schemaVersion: 1, ruleId: 362, reason: "pre-test", timestamp: 1000,
+            timestampIso: "2026-01-01T00:00:00Z", appLabel: "btn-skip",
+            configJson: [
+                app: [id: 362, label: "btn-skip"],
+                configPage: [sections: [[title: "", input: [[name: "origLabel", type: "text"], [name: "tstate3", type: "decimal"]]]]],
+                settings: [origLabel: "btn-skip", tstate3: "72.5", "3": "", cut1: "", trashAll: ""]
+            ],
             statusJson: [appSettings: [
-                [name: "origLabel", type: "text", multiple: false, value: "R"],
-                [name: "tstate3", type: "decimal", multiple: false, value: "72.5"],
                 [name: "3", type: "button", multiple: false, value: ""],
                 [name: "cut1", type: "button", multiple: false, value: ""],
                 [name: "trashAll", type: "button", multiple: false, value: ""]
-            ], appState: []]
-        ])
-        Map replayed = null
-        script.metaClass.downloadHubFile = { String fn -> backupJson.bytes }
-        script.metaClass._rmFetchConfigJson = { Integer id -> [configPage: [sections: []]] }
-        script.metaClass._rmUpdateAppSettings = { Integer id, Map settings, Map schema = null, Map cache = null -> replayed = settings; [status: 200] }
-        script.metaClass._rmClickAppButton = { Object... a -> [status: 200] }
+            ]]
+        ]
+        def snapshotBytes = JsonOutput.toJson(snapshot).getBytes("UTF-8")
+        atomicStateMap.itemBackupManifest = [
+            "rm-rule_362_w": [type: "rm-rule", id: 362, ruleId: 362,
+                              fileName: "mcp-rm-backup-362-w.json", reason: "pre-test",
+                              appLabel: "btn-skip", timestamp: 1000, sourceLength: snapshotBytes.length]
+        ]
+        script.metaClass.downloadHubFile = { String fn -> snapshotBytes }
+        hubGet.register('/installedapp/configure/json/362') { params ->
+            ruleConfigJson(362, "btn-skip", [[name: "origLabel", type: "text"], [name: "tstate3", type: "decimal"]])
+        }
+        hubGet.register('/installedapp/statusJson/362') { params -> statusJson(362) }
+        def posted = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posted << [path: path, body: body]
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
 
         when:
-        def result = script._rmRestoreFromBackup([backupKey: "rm-rule_100_x", type: "rm-rule", id: 100, fileName: "mcp-rm-backup-100-x.json"])
+        def result = script.toolRestoreItemBackup([backupKey: "rm-rule_362_w", confirm: true])
 
-        then:
+        then: "the real inputs are replayed and every button row is skipped and reported"
         result.success == true
-        replayed.keySet() == (["origLabel", "tstate3"] as Set)
+        def replay = posted.find { it.path == "/installedapp/update/json" }?.body
+        replay != null
+        replay.containsKey("settings[origLabel]")
+        replay.containsKey("settings[tstate3]")
+        !replay.containsKey("settings[3]")
+        !replay.containsKey("settings[cut1]")
+        !replay.containsKey("settings[trashAll]")
         result.settingsSkipped == ["3", "cut1", "trashAll"]
     }
 
