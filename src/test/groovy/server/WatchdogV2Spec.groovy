@@ -992,7 +992,11 @@ class WatchdogV2Spec extends Specification {
         given:
         int enumerations = 0
         script.metaClass.hubGet = { String p, Map q -> enumerations++; '{"apps":[]}' }
+        // A sweep that is genuinely running owns all three keys -- the claim is what says someone
+        // is still working, and a bare timestamp is the trailing edge of a sweep that has finished.
         atomicStateMap.purgeInFlightAt = System.currentTimeMillis() - 30_000L
+        atomicStateMap.purgeClaim = 'purge-running'
+        atomicStateMap.purgeClaimPrefix = 'BAT_E2E_'
 
         when:
         def res = script.adminPurgeE2eArtifacts([confirm: true])

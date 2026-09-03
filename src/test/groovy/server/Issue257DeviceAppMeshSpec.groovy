@@ -246,7 +246,7 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
         }
 
         when: "the ids shape -- the one a caller pages through, where a silent partial is invisible"
-        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, "ids", "all")
+        def result = script.toolListDevices(false, 0, 0, null, null, null, "ids", null, null, "all")
 
         then: "source and the partial-capabilities warning ride it, not just the summary shape"
         result.deviceIds.sort() == [80, 99]
