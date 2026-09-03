@@ -58,6 +58,11 @@
 // clearing it, which is exactly the event the fingerprint exists to catch. updated() clears
 // it too. The only non-final static here; it is assigned, not mutated in place.
 @groovy.transform.Field static String TOOL_SEARCH_CORPUS_FP = null
+// The BM25 search index (corpus + per-doc tokens, keyed by the corpus fingerprint). A class static,
+// NOT atomicState: persisted, the two lists were ~244 KB of app state that Hubitat re-serialised
+// on every execution, so every tool call paid for the search index. Cleared, never reassigned,
+// so the harness can reset it the way it resets the other statics.
+@groovy.transform.Field static final Map TOOL_SEARCH_INDEX = new java.util.HashMap()
 
 definition(
     name: "MCP Rule Server",
@@ -576,6 +581,7 @@ def updated() {
     atomicState.remove("toolSearchCorpusVersion")  // ...and the retired version stamp, so an upgraded hub sheds it
     atomicState.remove("toolSearchCorpusFingerprint")  // ...and the corpus content fingerprint in lockstep
     TOOL_SEARCH_CORPUS_FP = null                  // ...and its in-JVM memo, or the next search reuses a stale key
+    synchronized (TOOL_SEARCH_INDEX) { TOOL_SEARCH_INDEX.clear() }   // ...and the in-JVM index itself
     atomicState.remove("requiredParamsByTool")    // ...and the gateway required-param memo
     atomicState.remove("requiredParamsByToolFingerprint")  // ...and its content fingerprint in lockstep
     initialize()

@@ -46,41 +46,61 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         !(result.results*.tool.contains("hub_manage_mode"))
     }
 
-    def "the corpus + tokens are built once into atomicState and a second identical query is served from cache"() {
+    def "the corpus + tokens are built once into the class static -- never atomicState -- and a second identical query is served from it"() {
         given:
         searchEnabled()
-        atomicStateMap.remove('toolSearchCorpus')
-        atomicStateMap.remove('toolSearchTokens')
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
 
-        when: 'first query builds and caches the corpus + tokens'
+        when: 'first query builds the index'
         def first = script.toolSearchTools([query: 'switch motion contact', maxResults: 5])
-        def cachedCorpus = atomicStateMap.toolSearchCorpus
-        def cachedTokens = atomicStateMap.toolSearchTokens
+        def index = scriptStaticField('TOOL_SEARCH_INDEX') as Map
+        def cachedCorpus = index.corpus
+        def cachedTokens = index.tokens
 
-        then: 'both are populated in atomicState (not state), index-aligned to the full corpus'
+        then: 'the index lives in the static, index-aligned to the full corpus, and nothing lands in app state'
         cachedCorpus != null
         cachedTokens != null
         cachedTokens.size() == cachedCorpus.size()
+        index.fingerprint == script.toolSearchCorpusFingerprint()
+        !atomicStateMap.containsKey('toolSearchCorpus')
+        !atomicStateMap.containsKey('toolSearchTokens')
         !stateMap.containsKey('toolSearchCorpus')
 
         when: 'a second identical query'
         def second = script.toolSearchTools([query: 'switch motion contact', maxResults: 5])
 
-        then: 'the cache was NOT rebuilt (same object) and results are identical'
-        atomicStateMap.toolSearchCorpus.is(cachedCorpus)
-        atomicStateMap.toolSearchTokens.is(cachedTokens)
+        then: 'the index was NOT rebuilt (same objects) and results are identical'
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).corpus.is(cachedCorpus)
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).tokens.is(cachedTokens)
         second.results == first.results
+    }
+
+    def "the first search on an upgraded hub sheds the persisted index an older build left in atomicState"() {
+        given: 'the legacy keys are present, as they are on every hub that ran the previous build'
+        searchEnabled()
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
+        atomicStateMap.toolSearchCorpus = [[name: 'hub_list_rooms', description: 'old', params: '', gateway: 'hub_read_rooms']]
+        atomicStateMap.toolSearchTokens = [['hub', 'list', 'rooms', 'old']]
+        atomicStateMap.toolSearchCorpusFingerprint = 'stale'
+
+        when:
+        def result = script.toolSearchTools([query: 'list rooms', maxResults: 5])
+
+        then: 'served from the freshly built static, and the ~244 KB of dead state is gone without a settings save'
+        result.results.find { it.tool == 'hub_list_rooms' }?.title == 'List Rooms'
+        !atomicStateMap.containsKey('toolSearchCorpus')
+        !atomicStateMap.containsKey('toolSearchTokens')
+        !atomicStateMap.containsKey('toolSearchCorpusFingerprint')
     }
 
     def "a toggle flip hides the right tools per-request without rebuilding the shared full-corpus token cache"() {
         given: 'a clean cache with the custom rule engine ON'
         searchEnabled()
-        atomicStateMap.remove('toolSearchCorpus')
-        atomicStateMap.remove('toolSearchTokens')
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
 
         when: 'search with the engine ON'
         def onResult = script.toolSearchTools([query: 'custom rule create delete clone', maxResults: 25])
-        def fullSize = atomicStateMap.toolSearchTokens.size()
+        def fullSize = (scriptStaticField('TOOL_SEARCH_INDEX') as Map).tokens.size()
 
         then: 'a custom_* tool is visible'
         onResult.results*.tool.contains('hub_create_custom_rule')
@@ -93,8 +113,8 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         !offResult.results*.tool.contains('hub_create_custom_rule')
 
         and: 'the full-corpus token cache is untouched by the toggle'
-        atomicStateMap.toolSearchTokens.size() == fullSize
-        atomicStateMap.toolSearchTokens.size() == atomicStateMap.toolSearchCorpus.size()
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).tokens.size() == fullSize
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).tokens.size() == (scriptStaticField('TOOL_SEARCH_INDEX') as Map).corpus.size()
 
         and: 'results remain well-formed (deduped)'
         offResult.results*.tool == offResult.results*.tool.unique()
@@ -119,15 +139,14 @@ class ToolSearchToolsSpec extends ToolSpecBase {
     def "totalToolsSearched counts DISTINCT tools, not multi-gateway corpus rows"() {
         given: 'a clean cache so the corpus is freshly built'
         searchEnabled()
-        atomicStateMap.remove('toolSearchCorpus')
-        atomicStateMap.remove('toolSearchTokens')
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
 
         when:
         def result = script.toolSearchTools([query: 'list device room variable rule file', maxResults: 5])
         // Mirror the production visibility filter (getHiddenToolNames is the single
         // source of truth toolSearchTools uses) so the expected counts match exactly.
         def hidden = (script.getHiddenToolNames() ?: []) as Set
-        def visibleRows = atomicStateMap.toolSearchCorpus*.name.findAll { !hidden.contains(it) }
+        def visibleRows = (scriptStaticField('TOOL_SEARCH_INDEX') as Map).corpus*.name.findAll { !hidden.contains(it) }
         // unique(false) is the NON-mutating overload -- bare unique() dedups visibleRows
         // in place, which would collapse the visibleRows-vs-visibleDistinct check below.
         def visibleDistinct = visibleRows.unique(false)
@@ -143,8 +162,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
     def "disabling a multi-gateway tool drops totalToolsSearched by exactly one (count is post-dedup, not per-row)"() {
         given: 'hub_get_device lives in BOTH hub_read_devices and hub_manage_devices -- two corpus rows'
         searchEnabled()
-        atomicStateMap.remove('toolSearchCorpus')
-        atomicStateMap.remove('toolSearchTokens')
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
         def before = script.toolSearchTools([query: 'device get attribute', maxResults: 25])
         assert before.results*.tool.contains('hub_get_device')   // precondition: the multi-gateway tool is present
 
@@ -157,8 +175,9 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         !after.results*.tool.contains('hub_get_device')
     }
 
-    def "updated() invalidates both BM25 atomicState entries and the gateway requiredParams memo in lockstep"() {
+    def "updated() invalidates the in-JVM BM25 index, the legacy atomicState entries, and the gateway requiredParams memo in lockstep"() {
         given: 'populated caches and a no-op initialize so updated() does not hit platform APIs'
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).putAll([fingerprint: 'fp-test', corpus: [[name: 'x']], tokens: [['x']]])
         atomicStateMap.toolSearchCorpus = [[name: 'x', description: 'd']]
         atomicStateMap.toolSearchTokens = [['x']]
         atomicStateMap.toolSearchCorpusVersion = 'v-test'
@@ -171,6 +190,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         script.updated()
 
         then: 'all derived caches are cleared (rebuilt lazily on next use)'
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).isEmpty()
         atomicStateMap.toolSearchCorpus == null
         atomicStateMap.toolSearchTokens == null
         atomicStateMap.toolSearchCorpusVersion == null

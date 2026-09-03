@@ -332,6 +332,7 @@ abstract class HarnessSpec extends Specification {
         // Queued slice payloads are class-static too; a leftover item would let a later
         // feature's sweep or cleanup observe work it never scheduled.
         (scriptStaticField('MRTR_WORK_ITEMS') as Map).clear()
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
         // The per-rule baseline mirror is JVM truth beside the manifest; a leftover
         // handle would satisfy reuse for a rule id a later feature reuses.
         (scriptStaticField('RM_BASELINE_HANDLES') as Map).clear()

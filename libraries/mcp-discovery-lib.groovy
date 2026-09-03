@@ -5,31 +5,18 @@ def toolSearchTools(args) {
     if (!query?.trim()) return [error: "query is required"]
     def maxResults = args.maxResults != null ? Math.max(0, args.maxResults as Integer) : 5
 
-    // Build searchable corpus (cached in atomicState for performance on a resource-
-    // constrained hub: build-once/read-many, so the atomicState write cost is negligible
-    // and it stays off the hot state-flush path and survives restart). The full corpus is
-    // always cached; visibility filtering is applied per-request so toggle changes take
-    // effect immediately without invalidating the cache. The per-doc tokenization is cached
-    // in lockstep (atomicState.toolSearchTokens, index-aligned to the FULL corpus) so
-    // queries never re-tokenize; updated() clears the corpus, the tokens and the fingerprint
-    // together. The cache is a pure function of the static tool surface (definitions, gateway
-    // config, display meta), but updated()-only invalidation is NOT sufficient: a code deploy
-    // recompiles the class without firing it, so the content fingerprint below is what
-    // actually catches a changed surface.
-    def corpus = atomicState.toolSearchCorpus
-    def docTokensAll = atomicState.toolSearchTokens
-    // Content fingerprint + shape checks self-heal a cache written by an older build: a code
-    // deploy does NOT fire updated() (that takes a settings save), so without them a stale
-    // corpus -- old titles/summaries/search hints, or the pre-title shape -- would be served
-    // until the next settings save. A version stamp is NOT sufficient: contributors cannot
-    // bump currentVersion() (it is bot-only), so every pre-release change to a description,
-    // title, or search hint carries the SAME version as the cache it needs to invalidate --
-    // which made a discovery change unverifiable on a test hub. The fingerprint is the same
-    // remedy requiredParamsByTool() already uses for its own same-version deploy problem.
-    // On a warm class the fingerprint is memoized, so the cache-HIT path does no catalog
-    // work at all. When it must be computed, the catalog is walked ONCE and handed to both
-    // the fingerprint and the rebuild -- the same reason requiredParamsCatalogFingerprint
-    // takes a pre-fetched defs list rather than re-fetching its own.
+    // The index (full corpus + per-doc tokens, index-aligned) is a pure function of the static
+    // tool surface (definitions, gateway config, display meta) and lives in a class static, not in
+    // atomicState: persisted, the two lists were ~244 KB of app state, and Hubitat re-serialises app
+    // state on every execution, so every tool call paid for the search index. A static rebuilds
+    // once per class load (a code deploy, a hub reboot) and is otherwise free. Visibility filtering
+    // is applied per request so toggle changes take effect without touching the index.
+    //
+    // The content fingerprint is what decides freshness: a code deploy recompiles the class
+    // without firing updated(), contributors cannot bump currentVersion() (bot-only), so a version
+    // stamp cannot tell a changed description from an unchanged one. On a warm class the
+    // fingerprint is memoized, so the hit path does no catalog work at all; when it must be
+    // computed, the catalog is walked ONCE and handed to both the fingerprint and the rebuild.
     def allDefs = null
     String corpusFp = TOOL_SEARCH_CORPUS_FP
     if (corpusFp == null) {
@@ -37,16 +24,31 @@ def toolSearchTools(args) {
         corpusFp = toolSearchCorpusFingerprint(allDefs)
         TOOL_SEARCH_CORPUS_FP = corpusFp
     }
-    if (!corpus || !docTokensAll || docTokensAll.size() != corpus.size() ||
-        !(corpus[0]?.containsKey('title')) || atomicState.toolSearchCorpusFingerprint != corpusFp) {
-        corpus = buildToolSearchCorpus(allDefs)
-        // Tokenize every corpus entry once, in corpus order, so docTokensAll[i] is the
-        // tokenization of corpus[i] (a pure function of that entry). Plain List<List<String>>
-        // (sandbox-safe; whole-value single assignment, no nested-subscript mutation).
-        docTokensAll = corpus.collect { bm25Tokenize(_bm25DocText(it)) }
-        atomicState.toolSearchCorpus = corpus
-        atomicState.toolSearchTokens = docTokensAll
-        atomicState.toolSearchCorpusFingerprint = corpusFp
+    def corpus = null
+    def docTokensAll = null
+    synchronized (TOOL_SEARCH_INDEX) {
+        if (TOOL_SEARCH_INDEX.fingerprint != corpusFp || !(TOOL_SEARCH_INDEX.corpus instanceof List) ||
+                !(TOOL_SEARCH_INDEX.tokens instanceof List) || TOOL_SEARCH_INDEX.tokens.size() != TOOL_SEARCH_INDEX.corpus.size()) {
+            def built = buildToolSearchCorpus(allDefs)
+            // Tokenize every corpus entry once, in corpus order, so tokens[i] is the tokenization
+            // of corpus[i]. Plain List<List<String>> (sandbox-safe; whole-value single assignment).
+            def tokens = built.collect { bm25Tokenize(_bm25DocText(it)) }
+            TOOL_SEARCH_INDEX.clear()
+            TOOL_SEARCH_INDEX.putAll([fingerprint: corpusFp, corpus: built, tokens: tokens])
+            // An upgraded hub still carries the persisted copy an older build wrote, and updated()
+            // only runs on a settings save: shed it here, once, so the dead state does not ride
+            // every execution until someone happens to save settings.
+            try {
+                if (atomicState.toolSearchCorpus != null || atomicState.toolSearchTokens != null || atomicState.toolSearchCorpusFingerprint != null) {
+                    atomicState.remove("toolSearchCorpus")
+                    atomicState.remove("toolSearchTokens")
+                    atomicState.remove("toolSearchCorpusVersion")
+                    atomicState.remove("toolSearchCorpusFingerprint")
+                }
+            } catch (Exception ignore) { }
+        }
+        corpus = TOOL_SEARCH_INDEX.corpus
+        docTokensAll = TOOL_SEARCH_INDEX.tokens
     }
 
     // Apply the SAME visibility filter that getToolDefinitions() uses so that
