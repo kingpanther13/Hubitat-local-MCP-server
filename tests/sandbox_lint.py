@@ -4028,14 +4028,18 @@ OUTPUT_SCHEMA_FROZEN_PER_FILE = {'libraries/mcp-app-cloner-lib.groovy': 3, 'libr
 OUTPUT_SCHEMA_FROZEN_DIGEST = "60ebd94ff3ff93dd"
 
 
+_OUTPUT_SCHEMA_MARKER = re.compile(r"\boutputSchema\s*:\s*\[")
+
+
 def _output_schema_declarations(text: str) -> list[str]:
-    """Every `outputSchema: [ ... ]` block in a Groovy source, bracket-matched with string literals
-    skipped so a bracket inside a description cannot unbalance the walk."""
+    """Every `outputSchema: [ ... ]` block in a Groovy source -- any whitespace around the map-entry
+    colon, since Groovy accepts `outputSchema:[` and `outputSchema : [` too -- bracket-matched with
+    string literals skipped so a bracket inside a description cannot unbalance the walk. The text
+    returned starts at the canonical `outputSchema: [`, so the digest does not move with the spacing."""
     out: list[str] = []
-    marker = "outputSchema: ["
-    i = text.find(marker)
-    while i >= 0:
-        j = i + len(marker) - 1     # the opening bracket
+    m = _OUTPUT_SCHEMA_MARKER.search(text)
+    while m:
+        j = m.end() - 1              # the opening bracket
         depth = 0
         k = j
         n = len(text)
@@ -4053,8 +4057,8 @@ def _output_schema_declarations(text: str) -> list[str]:
                 if depth == 0:
                     break
             k += 1
-        out.append(re.sub(r"\s+", " ", text[i:k + 1]).strip())
-        i = text.find(marker, k + 1)
+        out.append("outputSchema: " + re.sub(r"\s+", " ", text[j:k + 1]).strip())
+        m = _OUTPUT_SCHEMA_MARKER.search(text, k + 1)
     return out
 
 

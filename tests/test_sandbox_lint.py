@@ -775,3 +775,43 @@ def test_extract_canonical_counts_dev_only_name_with_digits(monkeypatch, tmp_pat
     assert c["total"] == 3
     assert c["dev_only_top_level"] == 1  # hub_tool_v2 matched despite the digit
     assert c["core"] == 0              # 3 - 2 - 1
+
+
+# ---------------------------------------------------------------------------
+# outputSchema freeze: declaration extraction
+# ---------------------------------------------------------------------------
+
+_OS_SPACED = 'name: "a", outputSchema: [type: "object", properties: [x: [type: "string", description: "a ] in text"]]], other: 1'
+_OS_TIGHT = 'name: "b", outputSchema:[type: "object"], other: 1'
+_OS_LOOSE = 'name: "c", outputSchema : [type: "object", properties: [y: [type: "number"]]], other: 1'
+
+
+def test_output_schema_declarations_match_every_colon_spacing():
+    """Groovy accepts any whitespace around the map-entry colon, so a declaration written as
+    `outputSchema:[` or `outputSchema : [` must count and digest like the spaced form; a marker that
+    matched only the literal `outputSchema: [` let those slip past the freeze."""
+    decls = sl._output_schema_declarations("\n".join([_OS_SPACED, _OS_TIGHT, _OS_LOOSE]))
+    assert len(decls) == 3
+    assert all(d.startswith("outputSchema: [") for d in decls)
+
+
+def test_output_schema_declarations_bracket_matching_skips_string_literals():
+    decls = sl._output_schema_declarations(_OS_SPACED)
+    assert decls == ['outputSchema: [type: "object", properties: [x: [type: "string", description: "a ] in text"]]]']
+
+
+def test_output_schema_declaration_text_is_independent_of_colon_spacing():
+    """The digest is over the returned text, so re-spacing the colon alone must not move it."""
+    spaced = sl._output_schema_declarations('outputSchema: [type: "object"]')
+    tight = sl._output_schema_declarations('outputSchema:[type: "object"]')
+    loose = sl._output_schema_declarations('outputSchema : [type: "object"]')
+    assert spaced == tight == loose == ['outputSchema: [type: "object"]']
+
+
+def test_output_schema_inventory_matches_the_pinned_baseline():
+    """The pinned constants describe the checked-in sources; a drift here is the freeze firing."""
+    per_file, digest = sl._output_schema_inventory()
+    assert sum(per_file.values()) == sl.OUTPUT_SCHEMA_FROZEN_COUNT
+    assert per_file == sl.OUTPUT_SCHEMA_FROZEN_PER_FILE
+    assert digest == sl.OUTPUT_SCHEMA_FROZEN_DIGEST
+
