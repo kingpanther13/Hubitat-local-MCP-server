@@ -1975,6 +1975,25 @@ class WatchdogV2Spec extends Specification {
         res.failed.any { it.id == 2 && it.error.contains("claim lost") }
     }
 
+    def "hub_get_info exposes the wedge detector's state, so an auto-reboot can be attributed after the log buffer has rolled"() {
+        given: "a stamped auto-reboot and a short streak, on a hub whose loopback answers"
+        script.metaClass.hubGet = { String path, Map q = [:], Integer t = null -> path == "/hub/advanced/freeOSMemory" ? "123456" : null }
+        atomicStateMap.lastAutoRebootAt = 1000L
+        atomicStateMap.loopbackFailStreak = 3
+        atomicStateMap.loopbackLastOkAt = 2000L
+
+        when:
+        def info = script.adminGetInfo([:])
+
+        then: "the stamp, its age, the streak and the wedge verdict ride hub_get_info"
+        info.wedge.lastAutoRebootAt == 1000L
+        (info.wedge.lastAutoRebootAgeMs as Long) > 0L
+        info.wedge.loopbackFailStreak == 3
+        info.wedge.loopbackLastOkAt == 2000L
+        info.wedge.looksWedged == false
+        info.watchdogEndpoint == true
+    }
+
     def "a variable delete renews the claim before every wizard click and stops mid-variable once the claim is lost"() {
         given: "no apps to purge, one variable; the first wizard click hands the claim to a newer sweep"
         script.metaClass.hubGet = { String path, Map q = [:], Integer t = null ->

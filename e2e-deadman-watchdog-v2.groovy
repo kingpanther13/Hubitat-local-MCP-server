@@ -1860,6 +1860,20 @@ def adminGetInfo(args) {
         if (lsd.at instanceof Number) lsd.ageMs = now() - (lsd.at as long)
         info.lastSelfDeploy = lsd
     }
+    // The wedge detector's state, so an unexplained reboot can be attributed to the auto-reboot
+    // or ruled out after the fact: the hub's past-log buffer is short enough that one e2e run
+    // evicts the watchdog's own AUTO-REBOOTING entry, and nothing else records it.
+    def wedge = [:]
+    try {
+        wedge.loopbackFailStreak = (atomicState.loopbackFailStreak ?: 0) as int
+        wedge.loopbackLastOkAt = atomicState.loopbackLastOkAt
+        wedge.loopbackStreakStartedAt = atomicState.loopbackStreakStartedAt
+        wedge.lastAutoRebootAt = atomicState.lastAutoRebootAt
+        if (wedge.lastAutoRebootAt instanceof Number) wedge.lastAutoRebootAgeMs = now() - (wedge.lastAutoRebootAt as long)
+        wedge.expectedDownUntil = atomicState.expectedDownUntil
+        wedge.looksWedged = hubLooksWedged()
+    } catch (Exception e) { wedge.error = e.message }
+    info.wedge = wedge
     return info
 }
 
@@ -2205,7 +2219,7 @@ def getAdminToolDefinitions() {
          inputSchema: [type: "object", properties: [:]]],
         [name: "hub_delete_bundle", annotations: [title: "Delete Bundle", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Delete a code bundle container by id (verified by re-list). confirm:true required.",
          inputSchema: [type: "object", properties: [bundleId: [type: "string"], confirm: [type: "boolean"]], required: ["bundleId", "confirm"]]],
-        [name: "hub_get_info", annotations: [title: "Get Info", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Hub model/firmware/memory + the issue #237 lastSelfDeploy record (with ageMs)."],
+        [name: "hub_get_info", annotations: [title: "Get Info", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Hub model/firmware/memory, the lastSelfDeploy record (with ageMs), and the wedge detector's state (loopback fail streak, last auto-reboot stamp with age, looksWedged)."],
         [name: "hub_list_apps", annotations: [title: "List Apps", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "List Apps Code types (scope='types') or installed apps.",
          inputSchema: [type: "object", properties: [scope: [type: "string", enum: ["types", "instances"]]]]],
         [name: "hub_list_libraries", annotations: [title: "List Libraries", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "List libraries (id/name/namespace/version summaries)."],
