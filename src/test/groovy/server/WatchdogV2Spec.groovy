@@ -1982,7 +1982,11 @@ class WatchdogV2Spec extends Specification {
         }
         script.metaClass.getAllGlobalVars = { -> [BAT_E2E_v1: [type: 'string', value: 'x']] }
         script.metaClass.getGlobalVar = { String n -> [type: 'string', value: 'x'] }   // never deleted
-        script.metaClass.findHubVariablesAppId = { -> 42 }
+        // The Hub Variables app id resolves through the public HTTP seam (the resolver itself is private).
+        script.metaClass.hubGetStatus = { String path, Map q ->
+            path == "/installedapp/direct/hubVariables" ? [status: 302, location: "/installedapp/configure/42", data: null]
+                                                        : [status: 200, location: null, data: null]
+        }
         def clicks = []
         script.metaClass.hubPostForm = { String path, Map body ->
             clicks << body.name
