@@ -5076,11 +5076,16 @@ class TestRunner:
         # so the field can render at tCapab-2 (etc.). The event walker reads the exposed base
         # slot from the schema; pre-fix it hardcoded tCapab-1 and threw ("tCapab-1 not in
         # doActPage schema") whenever the slot was offset. Here a seed log action plus a
-        # Required Expression put the waitEvents past the first slot. Its own small throwaway
-        # rule (a Required Expression conflicts with any other per-concern rule's state),
-        # deleted in the finally. A relay-dropped create is adopted only after an
-        # authoritative config/settings read proves its RE fixture; failed proof raises so
-        # _run_one re-runs the whole test on a fresh rule.
+        # Required Expression push the waitEvents toward a later slot -- but WHICH slot RM
+        # exposes is RM's decision, not the tool's: the same fixture rendered at tCapab-2 on
+        # one run and at tCapab-1 on the next (after the hub had rebooted), both healthy. So
+        # the contract pinned here is slot-consistency, not a slot number: the write binds
+        # exactly one tstate-<N>, the tCapab/tDev of that same N ride along, and that N is
+        # the one the rule persists. Its own small throwaway rule (a Required Expression
+        # conflicts with any other per-concern rule's state), deleted in the finally. A
+        # relay-dropped create is adopted only after an authoritative config/settings read
+        # proves its RE fixture; failed proof raises so _run_one re-runs the whole test on a
+        # fresh rule.
         switch_id = int(self.get_test_switch_id())
         app_id, created = self._create_native_rule("WaitEvtOffset", {
             "addActions": [
@@ -5102,24 +5107,27 @@ class TestRunner:
             else:
                 self._assert_switch_required_expression(app_id, switch_id)
 
-            # THE fix: the second bundled action must use the offset slot (tCapab-2),
-            # rather than hardcoding tCapab-1. Retain response-field proof when the relay
-            # delivered it; a 504-adopted create is proved by exact persisted settings below.
+            # THE fix: the bundled wait-event action binds the slot RM exposes rather than
+            # hardcoding tCapab-1. Retain response-field proof when the relay delivered it; a
+            # 504-adopted create is proved by exact persisted settings below.
+            bound_slot = None
             if created is not None:
                 created_actions = created.get("actions") or []
                 assert len(created_actions) == 2, f"create did not return both bundled actions: {created}"
                 we_res = created_actions[1]
                 assert we_res.get("success") is True, \
                     f"waitEvents add on an offset action slot should commit, got: {we_res}"
-                # Exact membership in settingsApplied, not substring-in-JSON. The old
-                # positive half searched the whole serialized envelope, where "tstate-2"
-                # also matches "tstate-20".."tstate-29" and appears in the schema key
-                # lists and hint strings the response carries -- so it could pass on a
-                # response that never wrote the slot at all. A false GREEN on exactly the
-                # offset-slot contract this test exists to pin.
-                applied_keys = we_res.get("settingsApplied") or []
-                assert "tstate-2" in applied_keys and "tstate-1" not in applied_keys, \
-                    f"the wait event response should bind to offset slot tstate-2: {we_res}"
+                # Exact membership in settingsApplied, not substring-in-JSON: the whole
+                # serialized envelope also carries schema key lists and hint strings where
+                # "tstate-2" matches "tstate-20".."tstate-29", so a substring search could
+                # pass on a response that never wrote the slot at all.
+                applied_keys = [str(k) for k in (we_res.get("settingsApplied") or [])]
+                state_keys = [k for k in applied_keys if re.fullmatch(r"tstate-\d+", k)]
+                assert len(state_keys) == 1, \
+                    f"the wait event response should bind exactly one tstate-<N> slot: {we_res}"
+                bound_slot = int(state_keys[0].split("-")[1])
+                assert f"tCapab-{bound_slot}" in applied_keys and f"tDev-{bound_slot}" in applied_keys, \
+                    f"the wait event's capability/device fields should ride the same slot {bound_slot}: {we_res}"
 
             # The committed rule is structurally sound (no broken markers from a half-written event row).
             health = self.client.call_tool("hub_manage_rule_machine", {
@@ -5129,10 +5137,13 @@ class TestRunner:
 
             cfg = self._get_persisted_rule_config(app_id)
             settings = cfg.get("settings") or {}
-            assert str(settings.get("tstate-2")).lower() == "on", \
-                f"the offset wait-event state did not persist at tstate-2: {settings}"
-            assert str(settings.get("tstate-1")).lower() != "on", \
-                f"the event was miswritten to non-offset tstate-1: {settings}"
+            persisted_on = sorted(k for k, v in settings.items()
+                                  if re.fullmatch(r"tstate-\d+", str(k)) and str(v).lower() == "on")
+            assert len(persisted_on) == 1, \
+                f"exactly one wait-event state should persist as 'on', got {persisted_on}: {settings}"
+            if bound_slot is not None:
+                assert persisted_on == [f"tstate-{bound_slot}"], \
+                    f"the persisted wait-event slot {persisted_on} is not the one the response bound ({bound_slot}): {settings}"
             # Prove the Wait-for-events ACTION committed, by its persisted subtype. The
             # old check ("wait" in the config JSON) was vacuous: the seed log action's
             # message is "E2E waitEvents offset base", so it matched whether or not the
