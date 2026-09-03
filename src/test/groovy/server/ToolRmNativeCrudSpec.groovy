@@ -8631,6 +8631,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Nested", []) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, nestedIfThenSettings()) }
+        // The compiled order is readable, so the balance guard -- not the unreadable-order
+        // refusal -- is what decides here. A refusal is a static pre-flight: the list never moves.
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            JsonOutput.toJson([broken: false, actionList: (9..16).collect { it.toString() }])
+        }
 
         when:
         def result = script.toolSetRule([appId: 100, removeAction: [index: 12], confirm: true])
@@ -8662,6 +8667,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Nested", []) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, nestedIfThenSettings()) }
+        // The compiled order is readable, so the balance guard -- not the unreadable-order
+        // refusal -- is what decides here. A refusal is a static pre-flight: the list never moves.
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            JsonOutput.toJson([broken: false, actionList: (9..16).collect { it.toString() }])
+        }
 
         when:
         def result = script.toolSetRule([appId: 100, removeAction: [index: 9], confirm: true])
@@ -8764,6 +8774,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             } else {
                 statusJson(100, alreadyBroken)
             }
+        }
+        // Compiled order readable and mirroring the settings on both sides of the click.
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            def idx = delActFired ? ["10", "11", "13", "14", "15", "16"] : ["9", "10", "11", "13", "14", "15", "16"]
+            JsonOutput.toJson([broken: false, actionList: idx])
         }
 
         when:
@@ -8993,6 +9008,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ])
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Repeat", []) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, repeatSettings) }
+        hubGet.register('/app/ruleBuilderJson/100') { params -> JsonOutput.toJson([broken: false, actionList: ["1", "2", "3"]]) }
 
         when:
         def result = script.toolSetRule([appId: 100, removeAction: [index: 1], confirm: true])
@@ -9021,6 +9037,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ])
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Repeat", []) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, repeatSettings) }
+        hubGet.register('/app/ruleBuilderJson/100') { params -> JsonOutput.toJson([broken: false, actionList: ["1", "2", "3"]]) }
 
         when:
         def result = script.toolSetRule([appId: 100, removeAction: [index: 3], confirm: true])
@@ -9053,6 +9070,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params ->
             delActFired ? statusJson(100, chain.findAll { !it.name?.endsWith(".3") }) : statusJson(100, chain)
         }
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            JsonOutput.toJson([broken: false, actionList: delActFired ? ["1", "2", "4", "5"] : ["1", "2", "3", "4", "5"]])
+        }
 
         when:
         def result = script.toolSetRule([appId: 100, removeAction: [index: 3], confirm: true])
@@ -9062,9 +9082,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         delActFired == true
     }
 
-    // The structural pre-flight's degraded marker: set by _rmDeleteAction when the compiled
-    // actionList is unreadable, and forwarded by BOTH dispatch paths, which copy named fields
-    // off the delete result rather than the whole map.
+    // The structural pre-flight when the compiled actionList is UNREADABLE: the settings scan is
+    // the only guard left there and a leftover closer can mask the imbalance a deletion creates,
+    // so a structural row is refused outright (as moveAction/modifyAction are) on both dispatch
+    // paths. A non-structural row is unaffected.
 
     private Map structuralDeleteFixture(Closure<Boolean> fired) {
         def chain = ifStructureSettings([
@@ -11192,6 +11213,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params ->
             def rows = delActFired ? liveRows.findAll { it.idx != 3 } : liveRows
             statusJson(100, ifStructureSettings(rows))
+        }
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            JsonOutput.toJson([broken: false, actionList: delActFired ? ["1", "2", "4", "5"] : ["1", "2", "3", "4", "5"]])
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
