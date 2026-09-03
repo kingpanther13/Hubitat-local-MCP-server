@@ -48,6 +48,13 @@ class WatchdogV2Spec extends Specification {
         )
     }
 
+    /** An atomicState whose writes of ONE key vanish -- a hub dropping state writes under load. */
+    private static class DroppingMap extends HashMap {
+        String dropKey
+        DroppingMap(String dropKey) { super(); this.dropKey = dropKey }
+        @Override Object put(Object k, Object v) { k?.toString() == dropKey ? null : super.put(k, v) }
+    }
+
     /** A second script instance whose user settings differ from the shared one built in setup(). */
     private HubitatAppScript scriptWithSettings(Map extraSettings) {
         Map settings = [hubSecurityEnabled: false, debugLogging: false] + extraSettings
@@ -1180,14 +1187,17 @@ class WatchdogV2Spec extends Specification {
 
         then:
         res.success == false
-        res.note?.contains('physical power cycle')
         res.error?.contains(errFragment)
+        res.note?.contains(noteFragment)
+
+        and: "only an unanswered POST is ambiguous -- a status the hub returned proves it did not reboot"
+        (res.ambiguous == true) == (st == null)
 
         where:
-        scenario                        | st   | errFragment
-        'transport failure, no status'  | null | 'no response'
-        'hub refused the reboot'        | 500  | '500'
-        'not found'                     | 404  | '404'
+        scenario                        | st   | errFragment  | noteFragment
+        'transport failure, no status'  | null | 'no response' | 'physical power cycle'
+        'hub refused the reboot'        | 500  | '500'         | 'The hub answered'
+        'not found'                     | 404  | '404'         | 'The hub answered'
     }
 
     // ---- hub-variable purge drives the classic hubVar wizard --------------------------------
@@ -1711,17 +1721,18 @@ class WatchdogV2Spec extends Specification {
         res.inFlight == true
     }
 
-    def "hub_update_platform with no response is a failure and does NOT blind the escape"() {
-        given: "hubGet swallows the transport error and returns null"
+    def "hub_update_platform with no response reports UNKNOWN and holds the escape down"() {
+        given: "hubGet returns null for a transport failure, a dropped response AND an empty 200 body alike"
         script.metaClass.hubGet = { String p, Map q -> p.endsWith('checkForUpdate') ? '{"ok":true}' : null }
 
         when:
         def res = script.adminUpdatePlatform([confirm: true])
 
-        then: "the hub never accepted the update, so nothing is going down"
+        then: "whether the hub accepted it is unknowable here, and a reboot into a firmware install is the worse error"
         res.success == false
-        res.error?.contains('did not accept')
-        atomicStateMap.expectedDownUntil == null
+        res.updateMayHaveStarted == true
+        res.error?.contains('UNKNOWN')
+        (atomicStateMap.expectedDownUntil as Long) > System.currentTimeMillis()
     }
 
     def "hub_update_platform stamps the downtime window only after the hub accepted it"() {
@@ -1847,22 +1858,23 @@ class WatchdogV2Spec extends Specification {
         atomicStateMap.expectedDownUntil == null
     }
 
-    def "a reboot POST that did not land clears the downtime window it had stamped"() {
-        given:
-        script.metaClass.hubPostForm = { String p, Map b -> [status: null, data: null] }
+    def "a REJECTED reboot POST clears the downtime window it had stamped"() {
+        given: "the hub answered, so it certainly did not reboot"
+        script.metaClass.hubPostForm = { String p, Map b -> [status: 500, data: null] }
 
         when:
         def res = script.adminRebootHub([confirm: true])
 
         then: "otherwise the escape would stand down for 10 min on a reboot that never happened"
         res.success == false
+        res.ambiguous == null
         atomicStateMap.expectedDownUntil == null
     }
 
-    def "a failed auto-reboot does not burn the 30-minute rate limit"() {
-        given:
+    def "an auto-reboot the hub REJECTED does not burn the 30-minute rate limit"() {
+        given: "the hub answered the POST, so nothing rebooted"
         script.metaClass.readFlag = { -> null }
-        script.metaClass.hubPostForm = { String p, Map b -> [status: null, data: null] }
+        script.metaClass.hubPostForm = { String p, Map b -> [status: 500, data: null] }
         script.metaClass.probeLoopbackAlive = { -> false }
         atomicStateMap.loopbackFailStreak = 12
         atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 300_000L
@@ -1931,11 +1943,11 @@ class WatchdogV2Spec extends Specification {
         !script.retryBackoffPending([runId: '7', fireAttempts: 0, lastAttemptAt: null], 'disarm')
     }
 
-    def "a failed reboot POST restores the downtime window it found, rather than clearing it"() {
-        given: "a platform update already has a window open"
+    def "a rejected reboot POST restores the downtime window it found, rather than clearing it"() {
+        given: "a platform update already has a window open; the hub then answers the reboot"
         long existing = System.currentTimeMillis() + 900_000L
         atomicStateMap.expectedDownUntil = existing
-        script.metaClass.hubPostForm = { String p, Map b -> [status: null, data: null] }
+        script.metaClass.hubPostForm = { String p, Map b -> [status: 500, data: null] }
 
         when:
         def res = script.adminRebootHub([confirm: true])
@@ -2080,30 +2092,14 @@ class WatchdogV2Spec extends Specification {
         atomicStateMap.expectedDownReason == 'hub_update_platform'
     }
 
-    def "an unanswered platform-update request HOLDS the window -- a null is not proof the hub did not accept"() {
-        given: "hubGet returns null for a transport failure, a dropped response AND an empty 200 body alike"
-        script.metaClass.hubGet = { String path, Map q = [:], Integer t = null ->
-            path == "/hub/cloud/checkForUpdate" ? '{"status":"ok"}' : null
-        }
-
-        when:
-        def r = script.adminUpdatePlatform([confirm: true])
-
-        then: "reported as unknown, not as failed -- and the wedge escape stays suppressed in case it IS installing"
-        r.success == false
-        r.updateMayHaveStarted == true
-        (atomicStateMap.expectedDownUntil as Long) > System.currentTimeMillis()
-        atomicStateMap.expectedDownReason == 'hub_update_platform'
-    }
-
     def "a platform update is NOT requested when its downtime window could not be persisted"() {
-        given: "state writes fail, so the window the update needs cannot be stamped"
+        given: "the hub drops writes of the window key, so the stamp cannot be made durable"
+        atomicStateMap = new DroppingMap('expectedDownUntil')
         def paths = []
         script.metaClass.hubGet = { String path, Map q = [:], Integer t = null ->
             paths << path
             path == "/hub/cloud/checkForUpdate" ? '{"status":"ok"}' : '{"ok":true}'
         }
-        script.metaClass.markExpectedDowntime = { long ms, String reason -> false }
 
         when:
         def r = script.adminUpdatePlatform([confirm: true])
@@ -2351,18 +2347,18 @@ class WatchdogV2Spec extends Specification {
         probes == 1
     }
 
-    def "a failed auto-reboot POST gives its rate-limit slot back"() {
+    def "an auto-reboot POST the hub answered gives its rate-limit slot back"() {
         given:
         script.metaClass.readFlag = { -> null }
         script.metaClass.probeLoopbackAlive = { -> false }
-        script.metaClass.hubPostForm = { String p, Map b -> [status: null, data: null] }
+        script.metaClass.hubPostForm = { String p, Map b -> [status: 503, data: null] }
         atomicStateMap.loopbackFailStreak = 20
         atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 900_000L
 
         when:
         script.checkDeadman()
 
-        then: "the slot claimed under the lock is released when the POST did not land"
+        then: "the slot claimed under the lock is released when the hub proved the POST did not land"
         atomicStateMap.lastAutoRebootAt == null
     }
 

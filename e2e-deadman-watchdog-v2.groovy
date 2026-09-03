@@ -1467,8 +1467,12 @@ def adminPurgeE2eArtifacts(args) {
     boolean claimed = false
     synchronized (PURGE_CLAIM_LOCK) {
         Long held = null
-        try { held = atomicState.purgeInFlightAt as Long } catch (Exception ignore) { held = null }
-        if (held == null || (nowMs - held) >= 900000L) {
+        String heldClaim = null
+        try { held = atomicState.purgeInFlightAt as Long; heldClaim = atomicState.purgeClaim?.toString() } catch (Exception ignore) { held = null }
+        // A stamp nobody owns is not a running sweep: the owner clears its three keys together, so
+        // a fresh timestamp with no claim is the trailing edge of a sweep that has finished. Left
+        // as a blocker it would stall every purge for 15 minutes after a normal completion.
+        if (held == null || heldClaim == null || (nowMs - held) >= 900000L) {
             atomicState.purgeInFlightAt = nowMs
             atomicState.purgeClaim = claim
             atomicState.purgeClaimPrefix = prefix
