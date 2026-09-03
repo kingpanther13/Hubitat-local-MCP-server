@@ -50,10 +50,14 @@ class ToolVisualRulesSpec extends ToolSpecBase {
          elseNodes: []]
     }
 
+    // The Rule Builder 2.0 node shape ({id, kind, type, config}; ports on edges), as the platform
+    // 2.5.1.177 validator accepts it -- the tool passes the graph through untouched, so the fixture
+    // carries the real shape rather than the retired {id, type, deviceIds} one.
     private static Map graphDefinition() {
         [version: 1,
-         nodes: [[id: 'n1', type: 'trigger', deviceIds: [59]], [id: 'n2', type: 'action', command: 'off']],
-         edges: [[from: 'n1', to: 'n2']]]
+         nodes: [[id: 'n1', kind: 'trigger', type: 'switch', config: [switches: [59], switchEvent: 'Turns off']],
+                 [id: 'n2', kind: 'action', type: 'turnOff', config: [switches: [59]]]],
+         edges: [[from: 'n1', to: 'n2', port: 'next']]]
     }
 
     private void registerAppsList(List children) {
@@ -638,10 +642,10 @@ class ToolVisualRulesSpec extends ToolSpecBase {
             [name: b.name, ruleJson: b.ruleJson, validationErrors: []]
         }
         def newDefinition = [version: 1,
-                             nodes: [[id: 'n1', type: 'trigger', deviceIds: [60]],
-                                     [id: 'n2', type: 'action', command: 'on'],
-                                     [id: 'n3', type: 'action', command: 'off']],
-                             edges: [[from: 'n1', to: 'n2'], [from: 'n2', to: 'n3']]]
+                             nodes: [[id: 'n1', kind: 'trigger', type: 'switch', config: [switches: [60], switchEvent: 'Turns on']],
+                                     [id: 'n2', kind: 'action', type: 'turnOn', config: [switches: [60]]],
+                                     [id: 'n3', kind: 'action', type: 'turnOff', config: [switches: [60]]]],
+                             edges: [[from: 'n1', to: 'n2', port: 'next'], [from: 'n2', to: 'n3', port: 'next']]]
 
         when:
         def result = script.toolSetVisualRule([appId: 900, definition: newDefinition, confirm: true])
@@ -862,11 +866,14 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         when:
         def result = script.toolSetVisualRule([appId: 901, name: 'Now named', confirm: true])
 
-        then: 'the builder-UI default template rode the rename instead of an empty string'
+        then: 'the graph the 2.0 builder saves for an empty rule rode the rename instead of an empty string'
         def body = new JsonSlurper().parseText(posts[0].body as String)
         body.ruleJson instanceof String
-        body.ruleJson.contains('sampleTrigger')
-        new JsonSlurper().parseText(body.ruleJson as String).nodes.size() == 2
+        def blank = new JsonSlurper().parseText(body.ruleJson as String)
+        blank.nodes*.kind == ['merge', 'decision']
+        blank.nodes.find { it.kind == 'decision' }.config.conditions == []
+        blank.edges == [[from: 'trigger-merge', to: 'decision', port: 'next']]
+        !body.ruleJson.contains('sampleTrigger')
 
         and:
         result.success == true

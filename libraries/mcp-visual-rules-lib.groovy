@@ -442,9 +442,13 @@ private Map _toolSetVisualRuleImpl(args) {
         def requestedName = (name ?: _vrbBareName(detected.data?.name, detected.data?.rulePaused == true))?.toString()
         def classicBodyCarriedPause = false
         if (name && name != detected.data.name?.toString()) {
-            // A never-saved graph rule reads back a blank ruleJson; the builder UI would save
-            // the default empty template in that case, so mirror it rather than POSTing "".
-            def emptyTemplate = '{"version":1,"nodes":[{"id":"trigger-1","type":"trigger","triggerCondition":"trigger","triggerType":"sampleTrigger","deviceIds":[]},{"id":"action-1","type":"action","actionType":"sample","deviceIds":[]}],"edges":[{"from":"trigger-1","to":"action-1","port":"next"}]}'
+            // A never-saved graph rule reads back a blank ruleJson. Mirror what the Rule Builder 2.0
+            // UI saves for a rule with nothing in it rather than POSTing "": its graph composer
+            // (vue-hub2-visual-rule-builder-20, platform 2.5.1.177) always emits the trigger-merge
+            // and decision structure nodes -- with no triggers, conditions or actions that is the
+            // whole graph. The older builder's `sampleTrigger` placeholder template is not a saved
+            // shape on this platform; the validator rejects its `{id, type, deviceIds}` nodes.
+            def emptyTemplate = '{"version":1,"nodes":[{"id":"trigger-merge","kind":"merge","type":"triggerMerge","config":{}},{"id":"decision","kind":"decision","type":"all","config":{"conditions":[]}}],"edges":[{"from":"trigger-merge","to":"decision","port":"next"}]}'
             if (detected.format == "graph") {
                 def existing = detected.data.ruleJson?.toString()?.trim() ?: emptyTemplate
                 def saved = _vrbSaveGraph(appId, name, existing)
