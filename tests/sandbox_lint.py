@@ -4064,7 +4064,12 @@ def _output_schema_declarations(text: str) -> list[str]:
 
 def _output_schema_inventory() -> tuple[dict, str]:
     import glob as _glob
-    files = ["hubitat-mcp-server.groovy", "e2e-deadman-watchdog-v2.groovy", *sorted(_glob.glob("libraries/*.groovy"))]
+    # Rooted at REPO_ROOT, not the current directory: pytest imports this module and calls the
+    # inventory from wherever it was started, and a cwd-relative glob would find no libraries
+    # there and report every declaration as removed.
+    libs = sorted(os.path.relpath(path, str(REPO_ROOT))
+                  for path in _glob.glob(os.path.join(str(REPO_ROOT), "libraries", "*.groovy")))
+    files = ["hubitat-mcp-server.groovy", "e2e-deadman-watchdog-v2.groovy", *libs]
     per_file: dict = {}
     digest = hashlib.sha256()
     for rel in files:

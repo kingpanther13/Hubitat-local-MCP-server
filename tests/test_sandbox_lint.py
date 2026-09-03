@@ -815,3 +815,12 @@ def test_output_schema_inventory_matches_the_pinned_baseline():
     assert per_file == sl.OUTPUT_SCHEMA_FROZEN_PER_FILE
     assert digest == sl.OUTPUT_SCHEMA_FROZEN_DIGEST
 
+
+def test_output_schema_inventory_is_cwd_independent(monkeypatch, tmp_path):
+    """The inventory is rooted at REPO_ROOT: started from another directory (as pytest may be),
+    it must still see every library, or the freeze reports false drift."""
+    monkeypatch.chdir(tmp_path)
+    per_file, digest = sl._output_schema_inventory()
+    assert per_file == sl.OUTPUT_SCHEMA_FROZEN_PER_FILE
+    assert digest == sl.OUTPUT_SCHEMA_FROZEN_DIGEST
+
