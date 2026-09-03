@@ -2043,6 +2043,24 @@ class WatchdogV2Spec extends Specification {
         'no response'      | null            || false
     }
 
+    def "a failed reboot POST hands back the window it borrowed WITH its reason, so a platform update still refuses later reboots"() {
+        given: "a platform-update window is open; a forced reboot POST then fails"
+        long updateUntil = System.currentTimeMillis() + 1400000L
+        atomicStateMap.expectedDownUntil = updateUntil
+        atomicStateMap.expectedDownReason = 'hub_update_platform'
+        script.metaClass.hubPostForm = { String path, Map body -> [status: null, data: null] }   // dropped POST
+
+        when:
+        def failed = script.adminRebootHub([confirm: true, force: true])
+        def afterwards = script.adminRebootHub([confirm: true])
+
+        then: "the update's window AND its reason are back, so the next unforced reboot is refused again"
+        failed.success == false
+        (atomicStateMap.expectedDownUntil as Long) == updateUntil
+        atomicStateMap.expectedDownReason == 'hub_update_platform'
+        afterwards.refused == true
+    }
+
     def "hub_reboot is refused while an accepted platform update is installing, unless forced"() {
         given: "the update window claimed by hub_update_platform"
         atomicStateMap.expectedDownUntil = System.currentTimeMillis() + 1400000L

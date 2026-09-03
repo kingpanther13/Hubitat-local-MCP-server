@@ -1635,17 +1635,18 @@ def adminUpdatePlatform(args) {
     // window back: a 25-minute window on a hub that is not going down would blind the wedge
     // escape for nothing. The download takes minutes, so the hub is still up when this returns.
     Long priorWindow = null
+    String priorReason = null
     Long ourStamp = null
     synchronized (REBOOT_LOCK) {
-        try { priorWindow = atomicState.expectedDownUntil as Long } catch (Exception ignore) { priorWindow = null }
+        try { priorWindow = atomicState.expectedDownUntil as Long; priorReason = atomicState.expectedDownReason?.toString() } catch (Exception ignore) { priorWindow = null }
         markExpectedDowntime(1500000L, "hub_update_platform")
         try { ourStamp = atomicState.expectedDownUntil as Long } catch (Exception ignore) { ourStamp = null }
     }
     def resp = null
     try { resp = hubGet("/hub/cloud/updatePlatform", [:]) }
-    catch (Exception e) { releaseExpectedDowntime(ourStamp, priorWindow); return [success: false, error: "updatePlatform failed: ${e.message}", checkForUpdate: check] }
+    catch (Exception e) { releaseExpectedDowntime(ourStamp, priorWindow, priorReason); return [success: false, error: "updatePlatform failed: ${e.message}", checkForUpdate: check] }
     if (resp == null) {
-        releaseExpectedDowntime(ourStamp, priorWindow)
+        releaseExpectedDowntime(ourStamp, priorWindow, priorReason)
         return [success: false, error: "No response from /hub/cloud/updatePlatform -- the hub did not accept the update request.",
                 note: "Loopback HTTP may be down, or the endpoint is unavailable on this firmware. Check hub_update_platform(statusOnly:true) and hub_get_info; nothing was scheduled and the auto-reboot escape is NOT suppressed.",
                 checkForUpdate: check]
@@ -2450,12 +2451,15 @@ private void markExpectedDowntime(long ms, String reason) {
 
 // Give a claimed downtime window back when the request it covered did not land -- only if the
 // stamp is still ours, so a window a later caller claimed in the meantime is left alone.
-private void releaseExpectedDowntime(Long ourStamp, Long priorWindow) {
+private void releaseExpectedDowntime(Long ourStamp, Long priorWindow, String priorReason) {
     try {
         Long current = atomicState.expectedDownUntil as Long
         if (current == ourStamp) {
+            // Restore the REASON with the window: leaving ours behind on someone else's window
+            // would mislabel it -- a platform-update window relabelled "hub_reboot" would stop
+            // refusing the reboots it exists to refuse.
             atomicState.expectedDownUntil = priorWindow
-            if (priorWindow == null) atomicState.expectedDownReason = null
+            atomicState.expectedDownReason = priorWindow == null ? null : priorReason
         }
     } catch (Exception ignore) { }
 }
@@ -2479,7 +2483,8 @@ def adminRebootHub(args) {
     // Remember any window already open (a platform update in progress, say) so a POST that does
     // not land restores THAT rather than clearing it.
     Long priorWindow = null
-    try { priorWindow = atomicState.expectedDownUntil as Long } catch (Exception ignore) { priorWindow = null }
+    String priorReason = null
+    try { priorWindow = atomicState.expectedDownUntil as Long; priorReason = atomicState.expectedDownReason?.toString() } catch (Exception ignore) { priorWindow = null }
     // Before the POST: once it lands the hub may go before we get to run again.
     markExpectedDowntime(600000L, "hub_reboot")
     Long ourStamp = null
@@ -2501,7 +2506,7 @@ def adminRebootHub(args) {
     // minutes on a false "deliberate reboot in progress".
     // Only undo our own stamp: a platform update that opened a NEWER window while the POST was in
     // flight must keep it, or the escape could reboot into the install.
-    releaseExpectedDowntime(ourStamp, priorWindow)
+    releaseExpectedDowntime(ourStamp, priorWindow, priorReason)
     return [success: false, status: st,
             error: st == null ? "reboot POST got no response from the hub (transport failure)" : "reboot POST returned status ${st}",
             note: "If loopback HTTP is wedged this call cannot land either -- the hub needs a physical power cycle."]
