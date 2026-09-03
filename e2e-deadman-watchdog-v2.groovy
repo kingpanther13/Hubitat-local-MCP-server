@@ -476,7 +476,9 @@ private void clearRunScopedRestoreState() {
         atomicState.restoreAttemptsRun = null
         atomicState.restorePendingFlag = null
         atomicState.restorePendingFor = null
-        atomicState.restoreInFlightClaim = null
+        // NOT restoreInFlightClaim: that is the lease token, and the finally in actAndRecord
+        // compares it to decide whether the lease is still ours. Nulling it here made every
+        // successful restore look like someone else's lease, so the latch was never released.
     } catch (Exception ignore) { }
 }
 

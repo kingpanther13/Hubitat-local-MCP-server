@@ -1926,8 +1926,14 @@ class WatchdogV2Spec extends Specification {
         atomicStateMap.restoreAttempts == 1
         atomicStateMap.restoreLastAttemptAt != null
 
+        and: "the mirror is stamped with the flag's GENERATION, not its run id (GitHub reuses that on a re-run)"
+        atomicStateMap.restoreAttemptsRun == "7|null|disarm|false"
+
         and: "the next tick paces off the mirror even though the stale flag still says zero attempts"
-        script.retryBackoffPending([runId: '7', fireAttempts: 0, lastAttemptAt: null], 'disarm')
+        script.retryBackoffPending([armed: false, intent: 'disarm', runId: '7', fireAttempts: 0, lastAttemptAt: null], 'disarm')
+
+        and: "a re-run of the SAME run id writes a new flag, whose generation the mirror must not pace"
+        !script.retryBackoffPending([armed: true, intent: null, runId: '7', deadline: 999L, fireAttempts: 0, lastAttemptAt: null], 'fire')
     }
 
     def "the retry mirror is cleared when the restore succeeds or latches"() {
