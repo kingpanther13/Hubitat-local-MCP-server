@@ -4946,7 +4946,7 @@ private Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
             direction: direction,
             beforePosition: beforePosition,
             indicesAfter: null,
-            verifyHint: "moveAction(${actionIdx}, ${direction}): the click was sent but the compiled action order (ruleBuilderJson actionList) could not be re-read afterwards, so whether it landed is unverified. Check the order with hub_get_app_config(appId=${appId}) before retrying -- a blind retry double-shifts the action."
+            verifyHint: "moveAction(${actionIdx}, ${direction}) could not confirm the position shifted: the click was sent but the compiled action order (ruleBuilderJson actionList) could not be re-read afterwards. VERIFY before retrying -- read the order with hub_get_app_config(appId=${appId}); a blind retry double-shifts the action."
         ]
     }
     def cfg = null
