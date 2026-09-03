@@ -2399,7 +2399,7 @@ def getAdminToolDefinitions() {
             selfUpdate: [type: "boolean", description: "Set true when deploying the MAIN MCP server's own app-code class so the issue #237 lastSelfDeploy outcome is captured."],
             selfClassId: [type: "string", description: "The MAIN server's own Apps Code class id; if it matches appId, the #237 self-deploy capture arms."],
             confirm: [type: "boolean"]], required: ["appId", "confirm"]]],
-        [name: "hub_get_source", annotations: [title: "Get Source", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "Read app/driver/library source (chunked); auto-saves the full source to File Manager so a restore can read it.",
+        [name: "hub_get_source", annotations: [title: "Get Source", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "Read app/driver/library source (chunked); auto-saves the full source to File Manager so a restore can read it. The auto-save fires only for sources over 64,000 characters, and noSave:true skips it (the deploy probes pass it so a PR source cannot overwrite the dead-man restore cache).",
          inputSchema: [type: "object", properties: [
             type: [type: "string", enum: ["app", "driver", "library"]], id: [type: "string"],
             offset: [type: "integer"], length: [type: "integer"]], required: ["type", "id"]]],
@@ -2414,7 +2414,7 @@ def getAdminToolDefinitions() {
          inputSchema: [type: "object", properties: [type: [type: "string", enum: ["app", "driver", "library"]], id: [type: "string"], confirm: [type: "boolean"]], required: ["type", "id", "confirm"]]],
         [name: "hub_force_delete_app", annotations: [title: "Force Delete App", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Force-delete an INSTALLED-APP instance (e.g. an RM rule) via /installedapp/forcedelete/<id>/quiet. confirm:true required.",
          inputSchema: [type: "object", properties: [id: [type: "string"], confirm: [type: "boolean"]], required: ["id", "confirm"]]],
-        [name: "hub_purge_e2e_artifacts", annotations: [title: "Purge E2E Artifacts", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "One-call LOCAL sweep of leftover test fixtures: force-delete every installed-app instance whose name starts with prefix (default BAT_E2E_) AND delete every matching hub variable by driving the classic hubVar wizard (there is no app-facing global-variable delete API), all loopback-local on the hub so CI pays ONE cloud round-trip instead of N. Single-flight: a call arriving while a sweep is running is a no-op, and one arriving just after gets the finished sweep's cached result -- never retry it. Virtual devices are NOT covered (child devices of the main app). Returns per-class {deleted/failed} counts. confirm:true required.",
+        [name: "hub_purge_e2e_artifacts", annotations: [title: "Purge E2E Artifacts", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "One-call LOCAL sweep of leftover test fixtures: force-delete every installed-app instance whose name starts with prefix (default BAT_E2E_) AND delete every matching hub variable by driving the classic hubVar wizard (there is no app-facing global-variable delete API), all loopback-local on the hub so CI pays ONE cloud round-trip instead of N. Single-flight: a call arriving while a sweep is running is a no-op, and one arriving just after gets the finished sweep's cached result -- never retry it. Virtual devices are NOT covered (child devices of the main app). Returns per-class {deleted/failed} counts. confirm:true required. Every in-flight/cached guarantee here is PER PREFIX: a call for a DIFFERENT prefix while a sweep runs returns success:false, busy:true and SHOULD be retried once that sweep finishes.",
          inputSchema: [type: "object", properties: [prefix: [type: "string", description: "Name prefix to purge; default BAT_E2E_."], confirm: [type: "boolean"]], required: ["confirm"]]],
         [name: "hub_set_app_disabled", annotations: [title: "Set App Disabled", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false], description: "Toggle an installed app's disabled flag (the admin UI red-X) via POST /installedapp/disable; verified by read-back. confirm:true required.",
          inputSchema: [type: "object", properties: [appId: [type: "string"], disable: [type: "boolean"], confirm: [type: "boolean"]], required: ["appId", "disable", "confirm"]]],
@@ -2605,6 +2605,9 @@ private boolean markExpectedDowntime(long ms, String reason) {
     // Returns whether the window is actually READABLE afterwards. Every atomicState write can fail
     // under hub load, and this one is a safety window: a caller that goes on to reboot or start a
     // platform update believing it is suppressed, when it is not, is the failure this guards.
+    Long priorUntil = null
+    String priorReason = null
+    try { priorUntil = atomicState.expectedDownUntil as Long; priorReason = atomicState.expectedDownReason?.toString() } catch (Exception ignore) { priorUntil = null }
     try {
         long until = now() + ms
         atomicState.expectedDownUntil = until
@@ -2615,6 +2618,14 @@ private boolean markExpectedDowntime(long ms, String reason) {
         Long readBack = atomicState.expectedDownUntil as Long
         String reasonBack = atomicState.expectedDownReason?.toString()
         if (readBack != until || reasonBack != reason) {
+            // Put the pair back the way it was. The reason is written before the deadline is
+            // verified, so a half-landed claim can leave OUR reason sitting on the PRIOR caller's
+            // still-open window -- and a later hub_reboot would then refuse itself, citing a
+            // platform update that was never requested.
+            try {
+                atomicState.expectedDownUntil = priorUntil
+                atomicState.expectedDownReason = priorReason
+            } catch (Exception ignore) { }
             log.error "E2E Dead-Man Watchdog v2: the expected-downtime window (${reason}) did not persist -- state holds ${readBack}/${reasonBack}. The auto-reboot escape is NOT suppressed."
             return false
         }
@@ -2664,7 +2675,8 @@ def adminRebootHub(args) {
     // Read the window, decide, and claim it in ONE step under the lock every claimant takes:
     // checking outside it and stamping after lets a platform update slip in between, and the
     // reboot then overwrites the window it was supposed to respect and POSTs into the install.
-    // Remembering the prior window here also means a POST that does not land restores THAT.
+    // The prior window is remembered for the REJECTED path only -- a POST the hub answered proves
+    // nothing rebooted, so its window goes back. An unanswered POST keeps ours (see below).
     Long updateWindow = null
     String windowReason = null
     Long priorWindow = null

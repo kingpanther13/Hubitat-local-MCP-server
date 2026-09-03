@@ -683,10 +683,12 @@ def _buildContextJson() {
     return result
 }
 
-// scope='all' implementation: every hub device + an mcpAuthorized flag. Sourced from the admin
-// endpoint /device/listWithCapabilities/json (id/label/capabilities) -- the ONLY way the app sees
-// devices it isn't granted; the Groovy device model is authorization-scoped. Lightweight uniform
-// records (no attributes/commands/currentStates -- those need an MCP-authorized Groovy device).
+// scope='all' implementation: every hub device + an mcpAuthorized flag. The Groovy device model is
+// authorization-scoped, so an admin endpoint is the only way the app sees devices it isn't granted:
+// /device/listWithCapabilities/json (id/label/capabilities) where it still exists, else the
+// /hub2/devicesList fallback, which lists the same devices WITHOUT capabilities (filled in for
+// authorized ones only, and reported as source + capabilitiesPartial). Lightweight uniform records
+// (no attributes/commands/currentStates -- those need an MCP-authorized Groovy device).
 private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, format, cursor) {
     if (labelFilter != null && !(labelFilter instanceof String)) {
         throw new IllegalArgumentException("labelFilter must be a string")

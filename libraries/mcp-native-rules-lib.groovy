@@ -4253,15 +4253,20 @@ private void _rmRejectDisabledAppEdit(Integer appId, String opName) {
 // Post-click verification uses a retry loop to absorb RM 5.1's
 // asynchronous button-handler dispatch. The click returns HTTP 200 before
 // the deletion has propagated to appSettings, so a single immediate fetch
-// can falsely report the action still present. Up to 4 attempts are made
-// with increasing delays (1s, 3s, 6s) for a max sleep budget of 10s
-// (wall-clock ~10.5s on the failure path including four HTTP fetches) and
-// near-zero extra latency on the common success path (first check passes
-// immediately). The 10s budget covers typical and slow hub propagation
+// can falsely report the action still present. Up to 5 attempts are made
+// with increasing delays (1s, 1.5s, 2s, 3s) for a max sleep budget of
+// 7.5s (wall-clock under the relay ceiling including the five HTTP
+// fetches), with ONE verified re-click at the third attempt when the row
+// is still present, and near-zero extra latency on the common success
+// path (first check passes immediately). That budget covers typical and slow hub propagation
 // observed in live-hub runs; on retry exhaustion the throw directs the
 // caller to verify via hub_get_app_config since the deletion may complete
 // post-response. See source comment below for the original race description.
-private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
+// `rollbackOwnRow` is set ONLY by the in-flight rollback below, for a row this same call just
+// wrote and never committed. Its structural pre-flight is skipped: the row is not part of the
+// rule's block structure (it never reached the compiled list), and refusing to remove it would
+// strand exactly the orphan the rollback exists to clear.
+private Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean rollbackOwnRow = false) {
     // Single statusJson fetch shared by all three pre-flight checks below;
     // before the refactor each helper (_rmCollectActionIndices,
     // _rmGetStateEditAct, structural pre-flight) called _rmFetchStatusJson
@@ -4296,7 +4301,7 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
     // UI-built closer skip the refusal and silently unbalance the rule.
     def sType = settingsByName["actSubType.${actionIdx}".toString()]?.value?.toString()
     def structuralSubTypes = ["getIfThen", "getElseIf", "getElse", "getEndIf", "getRepeat", "getWhile", "getStopRepeat"]
-    if (sType in structuralSubTypes) {
+    if (sType in structuralSubTypes && !rollbackOwnRow) {
         // Both sides walk the rule's OWN actions. A leftover settings row is not
         // part of the rule's structure, and the set-diff does not reliably cancel
         // it out: a stale closer can absorb the imbalance a real deletion creates,
@@ -5591,7 +5596,7 @@ private boolean _rmRollbackInFlightExpressionAction(Integer appId, Integer idx, 
         // Settings, not the compiled list: an un-baked orphan row never reaches
         // ruleBuilderJson.actionList, so a compiled read would call it already gone.
         if (!_rmActionIndicesFromSettings(_rmFetchStatusJson(appId)).contains(idx)) return true
-        _rmDeleteAction(appId, idx)
+        _rmDeleteAction(appId, idx, true)   // our own uncommitted row: skip the structural pre-flight
         return !_rmActionIndicesFromSettings(_rmFetchStatusJson(appId)).contains(idx)
     } catch (Exception delExc) {
         mcpLog("warn", "rm-native", "_rmAddAction: rollback of orphan action ${idx} failed for app ${appId} (${delExc.message ?: delExc.toString()}) -- the expression block opener may persist; caller surfaces a stuck-orphan marker so the response points at recovery")

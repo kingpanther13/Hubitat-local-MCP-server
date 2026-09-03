@@ -7499,12 +7499,12 @@ private Map _ruleCompiledState(Integer appId) {
  * follow-up step the caller would naturally do next.
  *
  * Partial-commit handling: an entry with `actType` set but `actSubType`
- * null is treated as a leaf (skipped from the walk), and a `partial:
- * true` flag on the entry is also accepted as a hint that the writer
- * knew the entry is incomplete. The intent is to keep the walker silent
- * on the actType-only halfway state that the add-action false-fail race can
- * leave behind, rather than treating it as a leaf and silently masking
- * the imbalance.
+ * null -- or one carrying an explicit `partial: true` -- is REPORTED as a
+ * partial-commit issue and then skipped as an opaque block boundary. It is
+ * not walked into and not silently treated as a leaf: the actType-only
+ * halfway state the add-action false-fail race leaves behind is exactly
+ * what a caller needs told, since walking past it would mask a real
+ * imbalance and treating it as a leaf would invent one.
  *
  * Groovy's List.pop() removes from the FRONT of a List; the walker uses
  * `<<` for append and `removeAt(size-1)` for tail-pop to preserve the
