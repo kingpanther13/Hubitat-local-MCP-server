@@ -4173,6 +4173,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "modifyAction passes validation on a committed runRule action and reaches the mutation leg (sentinel)"() {
         given: "committed runRule actions at indices 1 and 2; the first mutating POST throws a sentinel"
+        hubGet.register('/app/ruleBuilderJson/100') { params -> JsonOutput.toJson([broken: false, actionList: ["1", "2"]]) }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [], null, ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"], "actType.2": "rulesActs", "actSubType.2": "getRuleActions", "ruleAct.2": ["201"]]) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "actType.1", value: "rulesActs"], [name: "actType.2", value: "rulesActs"]]) }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -8442,10 +8443,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
-        // ruleBuilderJson is deliberately UNSTUBBED here: _ruleCompiledState swallows
-        // its own read failures, so a flake injected there could never reach the
-        // re-check catch. Leaving the compiled tier unavailable routes ordering
-        // through the settings scan, which is where the flake can be injected.
+        // The compiled order must read once (the positional pre-flight refuses without it); every
+        // LATER compiled read fails and _ruleCompiledState swallows that, which routes the post-click
+        // ordering through the settings scan -- where the flake below can reach the re-check catch.
+        def compiledReads = 0
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            compiledReads++
+            if (compiledReads == 1) return JsonOutput.toJson([broken: false, actionList: ["1", "2", "3"]])
+            throw new RuntimeException("compiled read unavailable after the click")
+        }
         hubGet.register('/installedapp/statusJson/100') { params ->
             if (!clickFired) return makeStatus()
             postClickReads++
@@ -8529,6 +8535,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 200, location: null, data: '']
         }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/app/ruleBuilderJson/100') { params -> JsonOutput.toJson([broken: false, actionList: ["1", "2"]]) }
         // Two actions present so moveAction(1, "down") is not a boundary move.
         // editAct=2 is stuck from a prior interrupted edit.
         hubGet.register('/installedapp/statusJson/100') { params ->
@@ -40463,6 +40470,19 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             def trigs = preTriggers.findAll { !deletedTriggers.contains(it.name) }
             statusJson(100, acts + trigs)
         }
+        // The compiled order mirrors the statusJson toggles: the positional pre-flight needs it
+        // readable, and the AFTER fetch of a move must see the same shift the settings show.
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            def idx = preActions.collect { (it.name.toString() =~ /\.(\d+)$/)[0][1] }.unique()
+            if (cleared) {
+                idx = []
+            } else if (actionOrderShifted) {
+                idx = [idx[1], idx[0]]
+            } else {
+                idx = idx.findAll { !deletedActions.contains("actType.${it}".toString()) }
+            }
+            JsonOutput.toJson([broken: false, actionList: idx])
+        }
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
@@ -40611,6 +40631,19 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             }
             def trigs = preTriggers.findAll { !deletedTriggers.contains(it.name) }
             statusJson(100, acts + trigs)
+        }
+        // The compiled order mirrors the statusJson toggles: the positional pre-flight needs it
+        // readable, and the AFTER fetch of a move must see the same shift the settings show.
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            def idx = preActions.collect { (it.name.toString() =~ /\.(\d+)$/)[0][1] }.unique()
+            if (cleared) {
+                idx = []
+            } else if (actionOrderShifted) {
+                idx = [idx[1], idx[0]]
+            } else {
+                idx = idx.findAll { !deletedActions.contains("actType.${it}".toString()) }
+            }
+            JsonOutput.toJson([broken: false, actionList: idx])
         }
         hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }

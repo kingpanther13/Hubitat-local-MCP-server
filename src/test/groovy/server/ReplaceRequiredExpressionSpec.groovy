@@ -1437,8 +1437,7 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
             reason: "pre-replaceRequiredExpression", timestamp: 1L, appLabel: "r",
             configJson: [app: [id: 100, appType: [name: "Rule-5.1", namespace: "hubitat"]],
                          configPage: [name: "mainPage", sections: [[input: []]]],
-                         settings: [useST: [type: "bool", value: true],
-                                    rCapab_1: [type: "enum", value: "Switch"]]],
+                         settings: [useST: "true", rCapab_1: "Switch"]],
             statusJson: [appSettings: [[name: "useST", value: "true", type: "bool"],
                                        [name: "rCapab_1", value: "Switch", type: "enum"]]]
         ]).getBytes("UTF-8")
@@ -1479,8 +1478,7 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
             reason: "pre-replaceRequiredExpression", timestamp: 1L, appLabel: "r",
             configJson: [app: [id: 100, appType: [name: "Rule-5.1", namespace: "hubitat"]],
                          configPage: [name: "mainPage", sections: [[input: []]]],
-                         settings: [useST: [type: "bool", value: true],
-                                    rCapab_1: [type: "enum", value: "Switch"]]],
+                         settings: [useST: "true", rCapab_1: "Switch"]],
             statusJson: [appSettings: [[name: "useST", value: "true", type: "bool"],
                                        [name: "rCapab_1", value: "Switch", type: "enum"]]]
         ]).getBytes("UTF-8")

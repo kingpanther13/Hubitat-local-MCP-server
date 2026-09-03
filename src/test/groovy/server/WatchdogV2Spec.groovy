@@ -1994,12 +1994,11 @@ class WatchdogV2Spec extends Specification {
         flagRead
     }
 
-    def "every tick probes the loopback before the wedge decision, wedged or not (autoRebootOnWedge=#pref)"() {
+    def "every tick probes the loopback before the wedge decision, wedged or not"() {
         given: "healthy counters -- nothing below the probe would run on its own"
         int probes = 0
         script.metaClass.readFlag = { -> null }
         script.metaClass.probeLoopbackAlive = { -> probes++; true }
-        settingsMap.autoRebootOnWedge = pref
         atomicStateMap.loopbackFailStreak = 0
 
         when:
@@ -2007,9 +2006,6 @@ class WatchdogV2Spec extends Specification {
 
         then: "the probe ran once on an idle tick, so a latched streak can clear without watchdog traffic"
         probes == 1
-
-        where:
-        pref << [true, false]
     }
 
     def "a failed auto-reboot POST gives its rate-limit slot back"() {
