@@ -4256,10 +4256,6 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
     // independently, tripling the per-delete read load on the hub.
     def status = _rmFetchStatusJson(appId)
     def settingsByName = (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it] }
-    // Set when the structural pre-flight could not scope by the compiled action list and had to
-    // fall back to the whole-settings scan -- the mode where a leftover closer can mask the
-    // imbalance a deletion creates. Carried out on the response so a degraded guard is visible.
-    boolean structuralGuardDegraded = false
     // Existence check reads SETTINGS, not the compiled action list: a row that
     // was written but never baked exists only here, and refusing to delete it
     // would strand it. The status fetch above is reused.
@@ -4295,8 +4291,11 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
         // so current and projected both come back clean and the refusal never fires.
         def orderedIndices = _rmOrderedActionIndices(appId)
         if (orderedIndices == null) {
-            structuralGuardDegraded = true
-            mcpLog("warn", "rm-native", "removeAction(${actionIdx}) on rule ${appId}: compiled actionList unavailable -- the structural pre-flight is scoping by the whole settings scan, where a leftover closer can mask the imbalance this deletion creates")
+            // Without the compiled order the only guard left is the whole-settings scan, where a
+            // leftover closer can mask the imbalance this deletion creates -- a structural row
+            // could be deleted past a check that never saw the real block structure. Refuse, as
+            // moveAction and modifyAction do; a non-structural row (above) is unaffected.
+            throw new IllegalStateException("removeAction(${actionIdx}) blocked: action ${actionIdx} is a structural ${sType.replaceFirst(/^get/, '')} row and the rule's compiled action order (ruleBuilderJson actionList) is unavailable, so the deletion's effect on block balance cannot be verified -- the settings scan can be masked by leftover rows. Retry once ruleBuilderJson answers (hub_get_rule_health lists the read failure under checkErrors), or use replaceActions to rebuild the action list atomically. RM is not touched.")
         }
         def currentIssues = _rmStructuralIssuesFromSequence(
             _rmStructuralSequenceFromSettings(settingsByName, ([] as Set), orderedIndices))
@@ -4348,7 +4347,6 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
         if (!afterIndices.contains(actionIdx)) {
             def out = [success: true, removedIndex: actionIdx, beforeIndices: beforeIndices.sort(), afterIndices: afterIndices.sort()]
             if (reclicked) out.reclicked = true
-            if (structuralGuardDegraded) out.structuralGuardDegraded = true   // only when true, like reclicked
             return out
         }
         if (!reclicked && attempt == 2) {
@@ -14148,8 +14146,6 @@ def _applyNativeAppEdit(args) {
                 : (moveActionSpec ? (moveSoftFail ? "Move of action ${moveActionSpec.index} ${moveActionSpec.direction} could NOT be confirmed within the verify window -- see verifyHint before retrying." : "Moved action ${moveActionSpec.index} ${moveActionSpec.direction}; updateRule ${updateRuleFailed ? 'FAILED -- subscriptions may not be live' : 'fired'}.")
                 : "Removed action ${removeActionSpec?.index}; updateRule ${updateRuleFailed ? 'FAILED -- subscriptions may not be live' : 'fired'}."))
         ]
-        // Set only when true, as _rmDeleteAction emits it.
-        if (removeResult?.structuralGuardDegraded) out.structuralGuardDegraded = true
         return out
     }
 
@@ -14615,7 +14611,6 @@ def _applyNativeAppEdit(args) {
                             beforeIndices: rmRes?.beforeIndices,
                             afterIndices: rmRes?.afterIndices
                         ]
-                        if (rmRes?.structuralGuardDegraded) rmEntry.structuralGuardDegraded = true
                         patchResults << rmEntry
                     } else if (pm.containsKey("clearActions")) {
                         def cleared
@@ -14842,7 +14837,6 @@ def _applyNativeAppEdit(args) {
             repairHints: repairHints,
             note: "Applied ${opsOk}/${patchResults.size()} patch ops; updateRule ${updateRuleFailed ? 'FAILED -- patches may not be live' : 'fired once'}."
         ]
-        if (patchResults.any { it instanceof Map && it.structuralGuardDegraded == true }) out.structuralGuardDegraded = true
         return out
     }
 

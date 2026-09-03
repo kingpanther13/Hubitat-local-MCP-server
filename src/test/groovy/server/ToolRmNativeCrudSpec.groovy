@@ -9081,7 +9081,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         return [chain: chain]
     }
 
-    def "removeAction carries structuralGuardDegraded on the single-op envelope when ruleBuilderJson is unreadable"() {
+    def "removeAction refuses a structural row when ruleBuilderJson is unreadable -- the settings-scan guard alone is not trusted"() {
         given:
         enableWrite()
         def delActFired = false
@@ -9096,13 +9096,44 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         when:
         def result = script.toolSetRule([appId: 100, removeAction: [index: 3], confirm: true])
 
-        then: "the delete lands and the caller can see the guard ran on the settings scan"
-        result.success == true
-        delActFired == true
-        result.structuralGuardDegraded == true
+        then: "refused before any click, naming the missing compiled order; RM untouched"
+        result.success == false
+        result.error.contains("compiled action order")
+        result.error.contains("RM is not touched")
+        delActFired == false
     }
 
-    def "removeAction omits structuralGuardDegraded when the compiled actionList scopes the guard"() {
+    def "removeAction still deletes a NON-structural row when ruleBuilderJson is unreadable"() {
+        given: "index 2 is a lock action inside the IF block, not a structural row"
+        enableWrite()
+        def delActFired = false
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body?.get("stateAttribute") == "delAct") delActFired = true
+            [status: 200, location: null, data: '']
+        }
+        def chain = ifStructureSettings([
+            [idx: 1, actType: "condActs", actSubType: "getIfThen"],
+            [idx: 2, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 3, actType: "condActs", actSubType: "getElseIf"],
+            [idx: 4, actType: "lockActs", actSubType: "getLULock"],
+            [idx: 5, actType: "condActs", actSubType: "getEndIf"]
+        ])
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "Chain", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, delActFired ? chain.findAll { !(it.name.toString() ==~ /.*\.2$/) } : chain)
+        }
+        hubGet.register('/app/ruleBuilderJson/100') { params -> throw new RuntimeException('404') }
+
+        when:
+        def result = script.toolSetRule([appId: 100, removeAction: [index: 2], confirm: true])
+
+        then:
+        result.success == true
+        delActFired == true
+    }
+
+    def "removeAction deletes a structural row when the compiled actionList scopes the guard"() {
         given:
         enableWrite()
         def delActFired = false
@@ -9119,13 +9150,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         when:
         def result = script.toolSetRule([appId: 100, removeAction: [index: 3], confirm: true])
 
-        then: "no marker: the key is absent, not null"
+        then:
         result.success == true
         delActFired == true
-        !result.containsKey("structuralGuardDegraded")
     }
 
-    def "a patches removeAction entry carries structuralGuardDegraded when ruleBuilderJson is unreadable"() {
+    def "a patches removeAction entry records the structural refusal when ruleBuilderJson is unreadable"() {
         given:
         enableWrite()
         def delActFired = false
@@ -9140,11 +9170,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         when:
         def result = script.toolSetRule([appId: 100, patches: [[removeAction: [index: 3]]], confirm: true])
 
-        then:
-        delActFired == true
+        then: "the op failed closed inside the batch; nothing was clicked"
+        delActFired == false
         def entry = (result.patches as List).find { it instanceof Map && it.op == "removeAction" }
-        entry.success == true
-        entry.structuralGuardDegraded == true
+        entry.success == false
+        entry.error.toString().contains("compiled action order")
     }
 
     // Coverage for elseIf/else orphan refusal in _rmAddAction (the closer-or-
