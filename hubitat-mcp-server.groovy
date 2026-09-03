@@ -2212,7 +2212,9 @@ def _mrtrMaxContinuationSlices() { 8 }
 // native writes need only enough headroom to render the observed worker state.
 // Live cloud proof put a 6s worker wait at 9.057s end-to-end and a second
 // standards-identical client crossed the relay ceiling. Keep 2s of the known
-// relay budget plus a lower absolute cap for dispatch/rendering jitter.
+// relay budget plus a lower absolute cap for dispatch/rendering jitter. At the 6000 ms default
+// that is min(cap, 3000) for a synchronous slice and min(cap, 4000) detached; the caps only bind
+// once the budget is raised past 9000 ms.
 def _mrtrContentionWaitMs(String leafTool = null) {
     boolean cloud = _isCloudRequest()
     boolean detached = _mrtrDetachedWorkerTools().contains(leafTool)
@@ -7351,6 +7353,12 @@ private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
         mcpLog("warn", logCategory, "${logPrefix}: /hub2/devicesList returned an unexpected shape")
         return [source: "/hub2/devicesList", capabilities: false, records: null, failure: "shape"]
     }
+    // The same guard the primary has: an empty inventory from a hub that runs this app is a failed
+    // read, not zero devices -- passed through, it would reject every real id in selectedDevices.
+    if (records.isEmpty()) {
+        mcpLog("warn", logCategory, "${logPrefix}: /hub2/devicesList answered with an empty inventory -- treated as a failed read")
+        return [source: "/hub2/devicesList", capabilities: false, records: null, failure: "empty"]
+    }
     return [source: "/hub2/devicesList", capabilities: false, records: records]
 }
 
@@ -7475,7 +7483,7 @@ private Map _ruleCompiledState(Integer appId) {
  * null is treated as a leaf (skipped from the walk), and a `partial:
  * true` flag on the entry is also accepted as a hint that the writer
  * knew the entry is incomplete. The intent is to keep the walker silent
- * on the actType-only halfway state that the #172 false-fail race can
+ * on the actType-only halfway state that the add-action false-fail race can
  * leave behind, rather than treating it as a leaf and silently masking
  * the imbalance.
  *
@@ -7572,16 +7580,19 @@ private String _rmActionSettingText(Map settingsByName, String prefix, Integer i
  * null means UNREADABLE (callers fall back to the settings scan); an EMPTY list means the rule
  * genuinely has no actions and must be honoured as such. Conflating the two sent a rule whose
  * actions were all removed -- but whose actType/actSubType rows survived -- back down the settings
- * scan, where the leftovers read as an unclosed block: #393 in its zero-action form.
+ * scan, where the leftovers read as an unclosed block: the UI-built false positive in its zero-action form.
  */
 private List _rmCoerceActionIndices(List raw) {
     if (raw == null) return null
     def out = []
+    boolean uncoercible = false
     raw.each { entry ->
         if (entry == null) return   // skip, do not NPE
-        try { out << (entry.toString() as Integer) } catch (NumberFormatException ignored) {}
+        try { out << (entry.toString() as Integer) } catch (NumberFormatException ignored) { uncoercible = true }
     }
-    return out
+    // A list this code cannot read is "unreadable", never "no actions": dropping the entries that
+    // failed would pass the structural check vacuously and report every real action as an orphan.
+    return uncoercible ? null : out
 }
 
 /**
@@ -7625,7 +7636,7 @@ private List _rmStructuralSequenceFromSettings(Map settingsByName, Set excludeIn
         // RM's UI writes no actType on ELSE / ELSE-IF / END-IF -- infer it or the walker sees a leaf.
         if (aType == null && sType != null) aType = _rmActTypeForStructuralSubType(sType)
         def entry = [idx: idx, actType: aType, actSubType: sType]
-        // The reverse half-pair is a #172-class half-commit, not a leaf; mark it for the walker.
+        // The reverse half-pair is an add-action half-commit, not a leaf; mark it for the walker.
         if (aType in ["condActs", "repeatActs"] && sType == null) entry.partial = true
         sequence << entry
     }
@@ -7771,15 +7782,6 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
             broken = cs.broken
             if (cs.predicate != null) predicate = cs.predicate
             if (cs.actionList != null) compiledActionList = _rmCoerceActionIndices(cs.actionList)
-            // A valid RM record without a usable actionList (older firmware) means the structural
-            // verdict below comes from the whole-settings scan -- the mode #393 proved can
-            // false-positive -- and the orphan scan is disabled. Say so; silence would read as
-            // "no orphans, structure verified".
-            // Only where the settings scan actually runs: an RM rule on the config-page path. A
-            // Visual Rule has no actionList by design, and source='ruleBuilderJson' skips the scan.
-            if (compiledActionList == null && ruleFormat == "rm" && useConfigPage) {
-                checkErrors << "ruleBuilderJson carried no usable actionList for app ${appId}; structuralIssues came from the settings scan (leftover rows may read as an unclosed block) and orphanedActionRows could not be computed".toString()
-            }
             if (cs.validationErrors) validationErrors = cs.validationErrors
             if (ruleFormat == "rm" && broken == true) {
                 // capabsfalse renders the live false-condition text (with current
@@ -7807,6 +7809,17 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     // actType settings), so their validationErrors above ARE the health signal — skip the RM
     // scans for a known VRB rule.
     boolean runHtml = useConfigPage && ruleFormat != "vrb-classic" && ruleFormat != "vrb-graph"
+    // The structural verdict scopes by the compiled actionList when there is one. Without it -- an
+    // RM record that carried none, a compiled read that failed, or source='configPage', which skips
+    // that read -- the walk is the whole-settings scan, where leftover rows can read as an unclosed
+    // block, and orphanedActionRows cannot be computed. Say so wherever that scan runs; silence
+    // would read as "no orphans, structure verified". A Visual Rule has no actionList by design and
+    // never reaches the scan.
+    if (runHtml && compiledActionList == null && (ruleFormat == "rm" || compiledReadError != null || !useRuleBuilder)) {
+        String why = !useRuleBuilder ? "source='configPage' skips ruleBuilderJson" :
+                     (compiledReadError != null ? "ruleBuilderJson could not be read" : "ruleBuilderJson carried no usable actionList")
+        checkErrors << "no compiled actionList was available for app ${appId} (${why}); structuralIssues came from the settings scan (leftover rows may read as an unclosed block) and orphanedActionRows could not be computed".toString()
+    }
     if (runHtml) {
         try {
             def cfg = _rmFetchConfigJson(appId)

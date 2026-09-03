@@ -1,5 +1,14 @@
 library(name: "McpDevicesLib", namespace: "mcp", author: "kingpanther13", description: "Device tool implementations (list/get/attribute/events/command/update/delete) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
+// Capability names off whatever the source hands over: the Groovy device model's Capability
+// objects (read `.name`, as every other reader in this library does), a spec's `[name:]` map, or
+// a bare string from a JSON inventory.
+private List _capabilityNames(def caps) {
+    (caps instanceof List ? caps : []).collect { c ->
+        (c instanceof CharSequence) ? c.toString() : (c?.name?.toString() ?: c?.toString())
+    }.findAll { it != null }
+}
+
 def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, capabilityFilter = null, format = null, fields = null, cursor = null, scope = null, roomFilter = null, onlyOn = null, changedSince = null, attributeNames = null) {
     // Opt-in cursor pagination decodes onto the existing offset/limit mechanics. The
     // real range check against the filtered total happens further down (the
@@ -712,7 +721,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
         // authorized yet unmatchable by capabilityFilter.
         (((selectedDevices ?: []) as List) + ((getChildDevices() ?: []) as List)).each { dev ->
             def did = dev?.id?.toString()
-            if (did != null) capsById[did] = (dev.capabilities ?: []).collect { it?.toString() }
+            if (did != null) capsById[did] = _capabilityNames(dev.capabilities)
         }
     }
 
@@ -721,7 +730,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
     // to match the outputSchema and the scope='authorized' path.
     def devices = raw.findAll { it instanceof Map }.collect { d ->
         def idStr = d.id?.toString()
-        def caps = (d.capabilities instanceof List) ? d.capabilities.collect { it?.toString() }
+        def caps = (d.capabilities instanceof List) ? _capabilityNames(d.capabilities)
                                                    : (idStr != null ? (capsById[idStr] ?: []) : [])
         [id: idStr, label: d.label, capabilities: caps, mcpAuthorized: idStr != null && authorizedIds.contains(idStr)]
     }

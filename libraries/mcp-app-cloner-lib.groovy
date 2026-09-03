@@ -778,6 +778,9 @@ private Map _rmRestoreFromBackup(Map entry) {
     def ruleId
     if (exists) {
         ruleId = savedId
+        // A disabled app renders no page, and a settings write against it reports success having
+        // changed nothing -- the restore would then claim "restored in place". Same gate as an edit.
+        _rmRejectDisabledAppEdit(ruleId, "restore")
     } else {
         def parentId = _discoverParentAppId(savedAppType)
         ruleId = _rmCreateChildApp(parentId, reg.namespace, reg.appName)
@@ -831,15 +834,23 @@ private Map _rmRestoreFromBackup(Map entry) {
     // ("[9:MSHeatMode]") and the hub answers 500 -- every rule with a device picker failed to
     // restore in place. statusJson's deviceIdsForDeviceList is the live id list; the map's keys
     // are the fallback for a snapshot that has no statusJson.
+    // An EMPTY id list is not authoritative (every sibling reader falls back on empty or absent):
+    // trusting it would post an empty picker and report the key applied.
     def liveDeviceIds = [:]
     snapshot?.statusJson?.appSettings?.each { st ->
         def n = st?.name?.toString()
-        if (n && st?.deviceIdsForDeviceList instanceof List) liveDeviceIds[n] = st.deviceIdsForDeviceList
+        if (n && st?.deviceIdsForDeviceList instanceof List && st.deviceIdsForDeviceList) liveDeviceIds[n] = st.deviceIdsForDeviceList
     }
+    def skippedMaps = []
     replaySettings = replaySettings.collectEntries { k, v ->
         String key = k.toString()
-        boolean isPicker = savedSchema[key]?.type?.toString()?.startsWith("capability.") || v instanceof Map
-        if (!isPicker) return [(key): v]
+        boolean isPicker = savedSchema[key]?.type?.toString()?.startsWith("capability.") == true
+        if (!isPicker) {
+            // A Map that is NOT a device picker cannot be replayed through the settings endpoint as
+            // its keys; rewriting it silently would be a value change reported as applied.
+            if (v instanceof Map) { skippedMaps << key; return [:] }
+            return [(key): v]
+        }
         def ids = liveDeviceIds.containsKey(key) ? liveDeviceIds[key] : ((v instanceof Map) ? v.keySet().toList() : v)
         return [(key): (ids instanceof List ? ids.collect { it?.toString() } : ids)]
     }
@@ -871,7 +882,8 @@ private Map _rmRestoreFromBackup(Map entry) {
         recreated: !exists,
         backupFile: fileName,
         settingsApplied: replaySettings.keySet().toList(),
-        settingsSkipped: skippedButtons.collect { key -> [key: key, reason: "button input excluded from replay"] },
+        settingsSkipped: skippedButtons.collect { key -> [key: key, reason: "button input excluded from replay"] }
+            + skippedMaps.collect { key -> [key: key, reason: "map value without a device-picker schema; not replayable through the settings endpoint"] },
         note: exists ? "Settings restored in place." : "Rule was deleted; recreated with new id ${ruleId} and replayed settings."
     ]
 }

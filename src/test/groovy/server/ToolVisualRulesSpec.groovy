@@ -569,6 +569,30 @@ class ToolVisualRulesSpec extends ToolSpecBase {
 
     // ==================== hub_set_visual_rule: edit ====================
 
+    def "a definition edit with no name on a PAUSED rule sends the rule's own name, not the hub's decoration"() {
+        given: 'a paused classic rule whose stored name carries the HTML-wrapped (Paused) decoration'
+        enableWrite()
+        def state43 = [name: "Door alert <span class='text-red'>(Paused)</span>", rulePaused: true, promptHistory: []] + classicDefinition()
+        hubGet.register('/app/ruleBuilder20Json/43') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/43') { params -> json(state43) }
+        stubPostJson { path, body -> state43.putAll(new JsonSlurper().parseText(body) as Map); null }
+        def newDefinition = [whenNodes: [[result: true, deviceIds: [60], switches: [60], switchEvent: 'Turns on',
+                                          index: 0, triggerType: 'switch', type: 'when']],
+                             thenNodes: [[actionType: 'turnOn', deviceIds: [123], switches: [123], index: 0, type: 'then']],
+                             elseNodes: []]
+
+        when:
+        def result = script.toolSetVisualRule([appId: 43, definition: newDefinition, confirm: true])
+
+        then: 'the save carried the bare name -- echoing the decoration renamed the rule to it and then failed the read-back'
+        def body = new JsonSlurper().parseText(posts[0].body as String)
+        body.name == 'Door alert'
+        result.success == true
+        result.verified == true
+        result.name == 'Door alert'
+        result.rulePaused == true
+    }
+
     def "edit full replacement (classic) preserves the rule's CURRENT rulePaused=true when paused is not passed"() {
         given: 'an existing paused classic rule'
         enableWrite()

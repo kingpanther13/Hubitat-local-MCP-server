@@ -1223,7 +1223,12 @@ private Map sendRmActionFallback(List<Integer> ruleIds, String rmAction, String 
 // the render (e.g. Basic Rule's "For input string: updateRule").
 private String _resolveCommitButton(String configAppName) {
     if (!configAppName) return "updateRule"
-    def match = _appTypeRegistry().find { typeKey, reg -> reg.appName == configAppName }
+    // The hub reports Visual Rule children versioned ("Visual Rule Builder 2.0"); the registry holds
+    // the bare family name. Exact match first, then the version-stripped name.
+    def versioned = (configAppName.toString() =~ /^(.+) [0-9]+(?:\.[0-9]+)*$/)
+    def bare = versioned.matches() ? (versioned[0] as List)[1].toString() : null
+    def match = _appTypeRegistry().find { typeKey, reg -> reg.appName == configAppName } ?:
+                (bare != null ? _appTypeRegistry().find { typeKey, reg -> reg.appName == bare } : null)
     if (match != null && match.value.containsKey("commitButton")) return match.value.commitButton
     return "updateRule"
 }
@@ -4133,6 +4138,23 @@ private List _rmActionIndicesFromSettings(Map status) {
     return out
 }
 
+// Rows that hold an action or a structural keyword -- actType.<N> or actSubType.<N> with a value.
+// Excludes the blank-both rows RM's UI leaves behind after a delete. Used where the question is
+// "what is on this rule at the settings level" (clearActions): a row the compiled actionList never
+// listed still occupies its index, and a clear that ignores it leaves a permanent orphan.
+private List _rmLiveActionIndicesFromSettings(Map status) {
+    def live = [:]
+    (status?.appSettings ?: []).each { s ->
+        def n = s?.name?.toString()
+        if (!n) return
+        def m = (n =~ /^act(?:Type|SubType)\.(\d+)$/)
+        if (!m.matches()) return
+        def idx = (m[0][1] as Integer)
+        if (s?.value?.toString()?.trim()) live[idx] = true
+    }
+    return live.keySet().sort()
+}
+
 // Action indices in RM's DISPLAY ORDER, read positionally by _rmMoveAction (to verify a position
 // shift) and _rmModifyAction (to walk a rebuilt action back to its original slot). Primary source
 // is /app/ruleBuilderJson's `actionList`, the only display-ordered source the hub exposes, read
@@ -4186,10 +4208,8 @@ private String _rmEditOpLabel(Map args) {
     return first ?: "edit"
 }
 
-// Shared disabled-app refusal. Called from BOTH _applyNativeAppEdit's pre-snapshot pre-flight and
-// _rmAddAction's own top-of-function guard (the intra-batch patch / createRule callers reach
-// _rmAddAction without passing through _applyNativeAppEdit), so the wording cannot drift between
-// the two sites. IllegalArgumentException: this is caller-recoverable -- re-enable, edit, re-disable.
+// Shared disabled-app refusal, so the wording cannot drift between the sites that need it.
+// IllegalArgumentException: this is caller-recoverable -- re-enable, edit, re-disable.
 private void _rmRejectDisabledAppEdit(Integer appId, String opName) {
     if (_rmIsAppDisabled(appId) != true) return
     throw new IllegalArgumentException("${opName} blocked: rule ${appId} is DISABLED. Hubitat does not allow editing a disabled app -- its configuration page renders only \"App is disabled\", so there is no wizard to drive. This is intended platform behavior, not an error in the rule. To edit it: hub_set_app_disabled(appId=${appId}, disabled=false), make the change, then disable it again if you want it left parked. RM is not touched.")
@@ -4635,7 +4655,12 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
     // action -- rebuilding would land it at an arbitrary position, so refuse
     // pre-delete rather than reorder the rule (the delete leg would throw
     // not-found anyway, but with a misleading roll-back hint).
-    def beforeIndices = _rmCollectActionIndices(appId)
+    def beforeIndices = _rmOrderedActionIndices(appId)
+    if (beforeIndices == null) {
+        // movesUp is a display-order distance; from the unordered settings scan it walks the rebuilt
+        // action to the wrong slot and reorders the rule silently. Refuse before the remove.
+        throw new IllegalStateException("modifyAction(${actionIdx}) refused: the compiled action order (ruleBuilderJson actionList) is unavailable for rule ${appId}, so the rebuilt action could not be walked back to its position reliably. Retry once ruleBuilderJson reads, or rebuild with removeAction + addAction. RM is not touched.")
+    }
     def pos = beforeIndices.indexOf(actionIdx)
     if (pos < 0) {
         throw new IllegalArgumentException("modifyAction.index ${actionIdx} exists in the rule's settings but not in its display order (${beforeIndices.join(', ')}) -- the index sources disagree, so a rebuild cannot preserve position. Inspect the rule via hub_get_app_config and repair via removeAction + addAction. RM is not touched.")
@@ -4773,7 +4798,11 @@ private String _rmModifyPostDeleteMsg(Integer actionIdx, String leg, Exception e
 //
 // Returns the list of indices that were marked for deletion.
 private List _rmClearActions(Integer appId) {
-    def indices = _rmCollectActionIndices(appId)
+    // Trash and verify against every row that EXISTS, not only the compiled view: an un-baked row
+    // never listed in actionList still occupies its index, and clearing only the compiled list
+    // would report success while it survived -- a permanent orphan that every later add stacks above.
+    def liveBefore = _rmLiveActionIndicesFromSettings(_rmFetchStatusJson(appId))
+    def indices = ((_rmOrderedActionIndices(appId) ?: []) + liveBefore).collect { it as Integer }.unique().sort()
     if (!indices) return []
     // The page can be in two states:
     //   normal: trashAll button visible, trashActs NOT in schema yet.
@@ -4823,7 +4852,7 @@ private List _rmClearActions(Integer appId) {
     def retryDelaysMs = [1000, 3000, 6000]
     for (int attempt = 0; attempt < 4; attempt++) {
         if (attempt > 0) pauseExecution(retryDelaysMs[attempt - 1] as Integer)
-        remaining = _rmCollectActionIndices(appId)
+        remaining = _rmLiveActionIndicesFromSettings(_rmFetchStatusJson(appId))
         stillThere = remaining.intersect(indices)
         if (!stillThere) return indices
     }
@@ -4858,7 +4887,12 @@ private Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
     // POSITION moved, not just that the index set is unchanged -- a mid-list
     // silent no-op leaves both before- and after-sets identical AND positions
     // identical, but a real move shifts position by exactly one slot.
-    def beforeOrderRaw = _rmCollectActionIndices(appId)
+    def beforeOrderRaw = _rmOrderedActionIndices(appId)
+    if (beforeOrderRaw == null) {
+        // The settings scan is not display order; a position computed from it can misclassify a
+        // boundary move or verify the wrong shift, and the rule reorders silently. Refuse pre-write.
+        throw new IllegalStateException("moveAction(${actionIdx}) refused: the compiled action order (ruleBuilderJson actionList) is unavailable for rule ${appId}, and positions computed from the settings scan are not display order -- a move verified against them could silently reorder the rule. Retry once ruleBuilderJson reads, or rebuild with removeAction + addAction. RM is not touched.")
+    }
     if (!beforeOrderRaw.contains(actionIdx)) {
         throw new IllegalArgumentException("moveAction.index ${actionIdx} not found in rule ${appId}. Existing indices: ${beforeOrderRaw.sort().join(', ')}")
     }
@@ -9307,9 +9341,11 @@ Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
         def name = configAppName.toString()
         def versioned = (name =~ /^(.+) [0-9]+(?:\.[0-9]+)*$/)
         def bare = versioned.matches() ? (versioned[0] as List)[1].toString() : null
-        _appTypeRegistry().each { typeKey, reg ->
-            if (reg.appName == name || (bare != null && reg.appName == bare)) detectedAppType = typeKey
-        }
+        // Exact match outranks the stripped one, and the first hit wins -- a `.each` that kept
+        // assigning would let the last registry entry override an earlier exact match.
+        def exactKey = _appTypeRegistry().find { typeKey, reg -> reg.appName == name }?.key
+        def bareKey = (exactKey == null && bare != null) ? _appTypeRegistry().find { typeKey, reg -> reg.appName == bare }?.key : null
+        detectedAppType = exactKey ?: bareKey ?: detectedAppType
     }
 
     def snapshot = [
@@ -14777,7 +14813,7 @@ def _applyNativeAppEdit(args) {
         if (patchResults.any { it instanceof Map && it.partial == true } && !updateRuleFailed) {
             repairHints << "One or more patch ops reported partial. Drill into patches[] for per-op settingsSkipped + repairHints. The patch ops landed but some inner fields didn't; address the per-op partials directly or re-issue the patches batch."
         }
-        return [
+        def out = [
             success: (patchErr == null) && (opsOk == patchResults.size()) && _rmHealthGatePass(health) && !updateRuleFailed,
             // `partial` is ORTHOGONAL to success: a patches call where every op
             // landed but one carried partial:true (e.g. trailing-updateRule
@@ -14800,6 +14836,8 @@ def _applyNativeAppEdit(args) {
             repairHints: repairHints,
             note: "Applied ${opsOk}/${patchResults.size()} patch ops; updateRule ${updateRuleFailed ? 'FAILED -- patches may not be live' : 'fired once'}."
         ]
+        if (patchResults.any { it instanceof Map && it.structuralGuardDegraded == true }) out.structuralGuardDegraded = true
+        return out
     }
 
     if (addLocalVariableSpec) {

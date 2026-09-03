@@ -132,11 +132,18 @@ def initialize() {
 
 // ---- the dead-man check (runs every minute) ----
 def checkDeadman() {
-    // WEDGE ESCAPE -- runs BEFORE readFlag() on purpose. readFlag() is itself a loopback call, so on
-    // a wedged hub it returns null and every path below exits at "no flag file -- idle": the watchdog
-    // would tick quietly forever while the hub is dead, which is exactly what happened on 2026-09-01
-    // (3h32m of heartbeats and nothing else, until a human power-cycled it). This is the one thing
-    // that can still act, because a reboot needs no working web stack on the way in.
+    // WEDGE ESCAPE -- runs BEFORE readFlag() on purpose. readFlag() goes through the File Manager
+    // API, which on a wedged hub returns null, so every path below exits at "no flag file -- idle":
+    // the watchdog would tick quietly forever while the hub is dead, which is exactly what happened
+    // on 2026-09-01 (3h32m of heartbeats and nothing else, until a human power-cycled it). This is
+    // the one thing that can still act, because a reboot needs no working web stack on the way in.
+    //
+    // The counters the escape reads are written only by the watchdog's OWN loopback HTTP calls, and
+    // readFlag() is not one of them, so an idle tick never moved them: the escape armed only when a
+    // wedge coincided with watchdog-driven traffic (true on 09-01, when the purge was running). One
+    // cheap probe per tick keeps them live both ways -- it also clears a latched streak on a hub
+    // that recovered, which is what lets the restore run again with autoRebootOnWedge off.
+    probeLoopbackAlive()
     if (maybeAutoRebootWedgedHub()) return
 
     def flag = readFlag()
@@ -223,61 +230,46 @@ private boolean retryBackoffPending(Map flag, String trigger) {
 // the condition cannot become a boot loop, and gated behind the autoRebootOnWedge preference for a
 // maintainer who would rather inspect the wedged hub than have it recycled underneath them.
 private boolean maybeAutoRebootWedgedHub() {
-    synchronized (REBOOT_LOCK) { return autoRebootDecisionLocked() }
-}
-
-private boolean autoRebootDecisionLocked() {
     if (settings?.autoRebootOnWedge == false) return false
     if (!hubLooksWedged()) return false
-
-    // SUPPRESSION 1 -- deliberate downtime. A platform update takes the hub dark for 5-10 minutes
-    // BY DESIGN, and an operator reboot for 1-3. Both look exactly like a wedge from in here, and
-    // rebooting mid platform-install is the worst thing this app could possibly do. Both entry
-    // points stamp expectedDownUntil; until it passes, the escape stands down.
     Long downUntil = null
     try { downUntil = atomicState.expectedDownUntil as Long } catch (Exception ignore) { downUntil = null }
     if (downUntil != null && now() < downUntil) {
-        log.warn "E2E Dead-Man Watchdog v2: loopback is down but a deliberate reboot/platform update is in progress for another ${((downUntil - now()) / 1000) as long}s -- NOT rebooting."
-        // false, not true: this only vetoes the REBOOT. The tick must go on to readFlag, because
-        // that read is the loopback call whose success resets the wedge counters once the hub is
-        // back -- returning here left the watchdog idle for the whole window (up to 25 min after
-        // a platform update) with a pending disarm/restore untouched.
+        // false, not true: this only vetoes the REBOOT. The tick must go on to readFlag -- a disarm
+        // or an expired deadline is still actionable the moment the hub answers again.
+        log.warn "E2E Dead-Man Watchdog v2: loopback is down but a deliberate reboot/platform update is in progress for another ${((downUntil - now()) / 1000) as long}s -- not rebooting into it."
         return false
     }
-
-    // SUPPRESSION 2 -- never act on accumulated state alone. hubLooksWedged reads counters that
-    // survive a hub restart, and this runs BEFORE readFlag (so a dead hub does not exit early),
-    // so the first tick after the hub comes back would otherwise see a stale streak plus an old
-    // lastOk and reboot a healthy hub -- then again, and again. Prove it live first. A successful
-    // probe also resets the streak through noteLoopback, so recovery is self-clearing.
+    // Never act on accumulated counters alone: a live probe must ALSO fail right now. Outside the
+    // monitor on purpose -- a 10s probe under it would hold every queued tick.
     if (probeLoopbackAlive()) {
         log.warn "E2E Dead-Man Watchdog v2: the wedge counters were stale -- a live probe answered, so the hub is healthy. NOT rebooting."
         return false
     }
-
     long nowMs = now()
-    Long lastReboot = null
-    try { lastReboot = atomicState.lastAutoRebootAt as Long } catch (Exception ignore) { lastReboot = null }
-    if (lastReboot != null && (nowMs - lastReboot) < 1800000L) {
-        log.warn "E2E Dead-Man Watchdog v2: hub still looks wedged but an auto-reboot fired ${((nowMs - lastReboot) / 1000) as long}s ago -- not rebooting again yet. If it is still down, it needs a physical power cycle."
-        return true
+    synchronized (REBOOT_LOCK) {
+        Long lastReboot = null
+        try { lastReboot = atomicState.lastAutoRebootAt as Long } catch (Exception ignore) { lastReboot = null }
+        if (lastReboot != null && (nowMs - lastReboot) < 1800000L) {
+            // A veto, not an exit: the tick still reads the flag, so a disarm/restore is not left
+            // untouched for the whole window (the same property the downtime veto has).
+            log.warn "E2E Dead-Man Watchdog v2: hub still looks wedged but an auto-reboot fired ${((nowMs - lastReboot) / 1000) as long}s ago -- not rebooting again within 30 minutes. The hub may need a physical power cycle."
+            return false
+        }
+        // Claim the slot under the lock so an overlapping tick cannot also reach the POST; the POST
+        // itself runs outside the lock so a hung request holds nothing but its own thread.
+        atomicState.lastAutoRebootAt = nowMs
     }
     log.error "E2E Dead-Man Watchdog v2: hub loopback HTTP has been dead for at least ${(atomicState.loopbackFailStreak ?: 0)} consecutive calls with no success in over 4 minutes -- the web stack is wedged and nothing in-process recovers from that. AUTO-REBOOTING."
     def r = adminRebootHub([confirm: true])
-    if (r?.success) {
-        // Stamped only on a reboot that LANDED: a failed POST must not burn the 30-minute limit --
-        // the next tick should try again, and a human reading the log should not be told a reboot
-        // happened.
-        atomicState.lastAutoRebootAt = nowMs
-    } else {
+    if (!r?.success) {
         log.error "E2E Dead-Man Watchdog v2: auto-reboot POST failed (${r?.error}). The hub needs a physical power cycle."
+        // Give the slot back: a POST that did not land must not burn the 30-minute limit.
+        try { atomicState.lastAutoRebootAt = null } catch (Exception ignore) { }
     }
     return true
 }
 
-// Run the package restore, then record result + idempotency stamp into the flag (the signal CI
-// polls). BOTH triggers retry up to a 5-tick cap before latching "failed" (a transient miss must not
-// latch the restore failed); a success stamps restoreFor=runId so it runs at most once per run.
 private void actAndRecord(Map flag, String trigger) {
     // SINGLE-FLIGHT LATCH. restoreFor is only stamped at the END of a restore, but a restore takes
     // 3-4 minutes and checkDeadman fires every minute (plus the adminWriteFile kick) -- without this
@@ -2449,11 +2441,16 @@ Map hubGetStatus(String path, Map query, int timeoutSec = 30) {
     return out
 }
 
+// The reboot POST either lands within seconds or the web stack is wedged; the 420s a 1.6MB source
+// restore needs would hold the auto-reboot path -- and every tick queued behind its claim -- for
+// seven minutes on exactly the hub state it exists to recover.
+private int hubPostTimeoutSec(String path) { path == "/hub/reboot" ? 20 : 420 }
+
 Map hubPostForm(String path, Map body) {
     // 420s: restoring the ~1.6MB MCP server source is a large form POST that can be slow.
     def params = [uri: "http://127.0.0.1:8080", path: path, body: body,
                   requestContentType: "application/x-www-form-urlencoded",
-                  textParser: true, ignoreSSLIssues: true, timeout: 420]
+                  textParser: true, ignoreSSLIssues: true, timeout: hubPostTimeoutSec(path)]
     def headers = [Connection: "keep-alive"]
     def cookie = secCookie()
     if (cookie) headers.Cookie = cookie

@@ -4019,6 +4019,36 @@ def _scan_library_block_comments(name: str, text: str) -> list[dict]:
     return findings
 
 
+OUTPUT_SCHEMA_FROZEN_COUNT = 117
+
+
+def check_output_schema_freeze() -> list[dict]:
+    """outputSchema is legacy and frozen (AGENTS.md § Schema design): the declarations that exist stay,
+    a new tool declares none. Pin the number of declarations across the app sources so a new one
+    fails here with the policy, the way the tool-count guard pins the catalog."""
+    import glob as _glob
+    files = ["hubitat-mcp-server.groovy", "e2e-deadman-watchdog-v2.groovy"] + sorted(_glob.glob("libraries/*.groovy"))
+    total = 0
+    per_file = {}
+    for rel in files:
+        path = os.path.join(REPO_ROOT, rel)
+        if not os.path.isfile(path):
+            continue
+        with open(path, encoding="utf-8") as fh:
+            n = fh.read().count("outputSchema: [")
+        if n:
+            per_file[rel] = n
+        total += n
+    if total == OUTPUT_SCHEMA_FROZEN_COUNT:
+        return []
+    direction = "added" if total > OUTPUT_SCHEMA_FROZEN_COUNT else "removed"
+    return [{"file": "AGENTS.md", "line": 0, "severity": "error", "rule": "output-schema-frozen",
+             "message": (f"outputSchema is frozen (AGENTS.md § Schema design): {total} declarations found, the frozen set "
+                         f"has {OUTPUT_SCHEMA_FROZEN_COUNT} ({direction}). A new tool must not declare one; if a tool "
+                         f"was deleted, lower OUTPUT_SCHEMA_FROZEN_COUNT in tests/sandbox_lint.py. Per file: {per_file}"),
+             "source": ""}]
+
+
 def check_bm25_key_subscripts() -> list[dict]:
     """hub_search_tools sandbox fix guard. The platform's SandboxSubscriptGuard rejects a COMPUTED
     map key that collides with a reflection-ish property name, and one real corpus token
@@ -4329,6 +4359,9 @@ def main() -> int:
 
     # hub_search_tools sandbox fix: every bm25Score map subscript goes through _bm25Key.
     all_findings.extend(check_bm25_key_subscripts())
+
+    # outputSchema is frozen: no new declarations (AGENTS.md § Schema design).
+    all_findings.extend(check_output_schema_freeze())
 
     # The conformance leg's referee is the vendored MCP JSON Schemas; make the byte hashes
     # their README records ENFORCED, so a loosened or half-refreshed schema fails here

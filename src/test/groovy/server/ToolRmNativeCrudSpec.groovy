@@ -1685,11 +1685,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             configJson: [
                 app: [id: 363, label: "picker"],
                 configPage: [sections: [[title: "", input: [[name: "origLabel", type: "text"]]]]],
-                settings: [origLabel: "picker", "onOffSwitch.2": ["9": "MSHeatMode"], "tDev3": ["54": "T&H Sensor"]]
+                settings: [origLabel: "picker", "onOffSwitch.2": ["9": "MSHeatMode"], "tDev3": ["54": "T&H Sensor"],
+                           "rDev_1": ["9": "MSHeatMode"], "notAPicker": ["k": "v"]]
             ],
             statusJson: [appSettings: [
                 [name: "onOffSwitch.2", type: "capability.switch", multiple: true, value: null, deviceIdsForDeviceList: [9]],
-                [name: "tDev3", type: "capability.temperatureMeasurement", multiple: true, value: null, deviceIdsForDeviceList: [54, 55]]
+                [name: "tDev3", type: "capability.temperatureMeasurement", multiple: true, value: null, deviceIdsForDeviceList: [54, 55]],
+                [name: "rDev_1", type: "capability.switch", multiple: true, value: null, deviceIdsForDeviceList: []],
+                [name: "notAPicker", type: "text", multiple: false, value: null]
             ]]
         ]
         def snapshotBytes = JsonOutput.toJson(snapshot).getBytes("UTF-8")
@@ -1725,6 +1728,69 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         replay["settings[tDev3]"] == "54,55"
         replay["onOffSwitch.2.multiple"] == "true"
         !replay.values().any { it?.toString()?.contains("MSHeatMode") }
+
+        and: "an EMPTY live id list is not authoritative -- the map's keys are used, so the picker is not wiped"
+        replay["settings[rDev_1]"] == "9"
+
+        and: "a Map that is not a device picker is skipped with a reason, never rewritten as its keys"
+        !replay.containsKey("settings[notAPicker]")
+        result.settingsSkipped.find { it.key == "notAPicker" }?.reason?.contains("device-picker schema")
+    }
+
+    def "a restore into a DISABLED rule is refused before any write, like an edit"() {
+        given:
+        enableWrite()
+        def snapshot = [
+            schemaVersion: 1, ruleId: 364, reason: "pre-test", timestamp: 1000,
+            timestampIso: "2026-01-01T00:00:00Z", appLabel: "parked",
+            configJson: [app: [id: 364, label: "parked"], configPage: [sections: [[title: "", input: [[name: "origLabel", type: "text"]]]]], settings: [origLabel: "parked"]],
+            statusJson: [:]
+        ]
+        def snapshotBytes = JsonOutput.toJson(snapshot).getBytes("UTF-8")
+        atomicStateMap.itemBackupManifest = [
+            "rm-rule_364_w": [type: "rm-rule", id: 364, ruleId: 364, fileName: "mcp-rm-backup-364-w.json",
+                              reason: "pre-test", appLabel: "parked", timestamp: 1000, sourceLength: snapshotBytes.length]
+        ]
+        script.metaClass.downloadHubFile = { String fn -> snapshotBytes }
+        hubGet.register('/installedapp/configure/json/364') { params -> ruleConfigJson(364, "parked", [[name: "origLabel", type: "text"]]) }
+        hubGet.register('/installedapp/statusJson/364') { params -> statusJson(364) }
+        hubGet.register('/installedapp/json/364') { params -> JsonOutput.toJson([id: 364, name: "Rule-5.1", type: "Rule-5.1", disabled: true]) }
+        def posted = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posted << path; [status: 200, location: null, data: ''] }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        when:
+        def result = null
+        def refusal = null
+        try { result = script.toolRestoreItemBackup([backupKey: "rm-rule_364_w", confirm: true]) }
+        catch (IllegalArgumentException e) { refusal = e }
+
+        then: "refused naming the disabled app, and nothing was posted"
+        ((refusal?.message ?: result?.error ?: "") as String).toUpperCase().contains("DISABLED")
+        posted.isEmpty()
+    }
+
+    def "moveAction refuses pre-write when the compiled action order is unreadable"() {
+        given: "a rule whose ruleBuilderJson cannot be read -- the settings scan is not display order"
+        enableWrite()
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << path; [status: 200, location: null, data: ''] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "actType.1", value: "switchActs"], [name: "actSubType.1", value: "getOnOff"],
+                             [name: "actType.2", value: "switchActs"], [name: "actSubType.2", value: "getOnOff"]])
+        }
+        hubGet.register('/app/ruleBuilderJson/100') { params -> throw new RuntimeException('404') }
+
+        when:
+        def result = script.toolSetRule([appId: 100, moveAction: [index: 1, direction: "down"], confirm: true])
+
+        then: "no click was sent and the error names the missing compiled order"
+        result.success == false
+        result.error.contains("compiled action order")
+        !posts.any { it == "/installedapp/btn" }
     }
 
     // ---------- wire-format invariants ----------

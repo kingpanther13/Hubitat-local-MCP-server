@@ -1975,6 +1975,58 @@ class WatchdogV2Spec extends Specification {
         res.failed.any { it.id == 2 && it.error.contains("claim lost") }
     }
 
+    def "the 30-minute auto-reboot rate limit vetoes only the reboot -- the tick still reads the flag"() {
+        given: "a hub that still looks wedged 60s after an auto-reboot fired"
+        boolean flagRead = false
+        String posted = null
+        script.metaClass.readFlag = { -> flagRead = true; null }
+        script.metaClass.probeLoopbackAlive = { -> false }
+        script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+        atomicStateMap.loopbackFailStreak = 20
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 900_000L
+        atomicStateMap.lastAutoRebootAt = System.currentTimeMillis() - 60_000L
+
+        when:
+        script.checkDeadman()
+
+        then: "no second POST, and the flag was still read -- a disarm is not left untouched for half an hour"
+        posted == null
+        flagRead
+    }
+
+    def "every tick probes the loopback before the wedge decision, wedged or not (autoRebootOnWedge=#pref)"() {
+        given: "healthy counters -- nothing below the probe would run on its own"
+        int probes = 0
+        script.metaClass.readFlag = { -> null }
+        script.metaClass.probeLoopbackAlive = { -> probes++; true }
+        settingsMap.autoRebootOnWedge = pref
+        atomicStateMap.loopbackFailStreak = 0
+
+        when:
+        script.checkDeadman()
+
+        then: "the probe ran once on an idle tick, so a latched streak can clear without watchdog traffic"
+        probes == 1
+
+        where:
+        pref << [true, false]
+    }
+
+    def "a failed auto-reboot POST gives its rate-limit slot back"() {
+        given:
+        script.metaClass.readFlag = { -> null }
+        script.metaClass.probeLoopbackAlive = { -> false }
+        script.metaClass.hubPostForm = { String p, Map b -> [status: null, data: null] }
+        atomicStateMap.loopbackFailStreak = 20
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 900_000L
+
+        when:
+        script.checkDeadman()
+
+        then: "the slot claimed under the lock is released when the POST did not land"
+        atomicStateMap.lastAutoRebootAt == null
+    }
+
 }
 
 class FakeHttpException extends RuntimeException {

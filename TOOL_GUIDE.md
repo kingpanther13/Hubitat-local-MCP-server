@@ -948,9 +948,9 @@ A VRB rule speaks exactly one of two wire formats, decided by the hub firmware a
 - thenNode example (turn off): `{"actionType": "turnOff", "switches": [122], "deviceIds": [122], "index": 0, "type": "then"}`
 - At least one whenNode must be a REAL trigger (the builder refuses rules whose only triggers are `timeIsBetween`/`daysOfWeek`).
 
-**graph** — `{version: 1, nodes: [...], edges: [...]}` (the dormant 2.0 graph editor):
-- Node: `{id, type: "trigger"|"condition"|"action", deviceIds: [...]}` + `triggerType`/`actionType` + per-type fields. Stored graph nodes put the node KIND in `triggerCondition` and the sub-condition in `condition`.
-- Edge: `{from, to, port}`. Ports: `next` (trigger/action source), `true`/`false` (condition source). Triggers have no incoming edges; conditions/actions exactly one. No cycles.
+**graph** — `{version: 1, nodes: [...], edges: [...]}` (the Rule Builder 2.0 graph editor, what platform 2.5.1.138+ creates; confirmed against the hub's own validator):
+- Node: `{id, kind, type, config}`. `kind` is the node CATEGORY (`trigger` | `merge` | `decision` | `action` | `condition`), `type` the variety within it (`switch`, `triggerMerge`, `all`/`any`, `turnOn`, ...), and every device id lives in `config` (`config.switches: [59]`, `config.switchEvent: "Turns off"`). A valid rule carries exactly one `merge`/`triggerMerge` node and exactly one `decision` node whose `config.conditions` is an array (empty = unconditional); the decision exits to actions on the `true` port. A graph built the older `{id, type, deviceIds}` way saves but fails validation.
+- Edge: `{from, to, port}`. Ports: `next` (trigger → merge → decision), `true`/`false` (decision → action). Triggers have no incoming edges; the merge, decision and action nodes exactly one each. No cycles.
 - On the wire the graph travels as a JSON STRING inside `{name, ruleJson}` — the tool handles the double-encoding for you; always pass `definition` as a normal JSON object.
 
 ### Field catalog (classic + graph dialogs share these)

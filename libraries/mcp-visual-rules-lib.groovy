@@ -77,10 +77,22 @@ private Map _vrbDetect(Integer appId) {
     // Resolve which serialization a VRB rule speaks: graph (2.0 editor, /app/ruleBuilder20Json)
     // or classic (when/then/else editor, /app/ruleBuilderJson). Null = neither (not a VRB rule).
     def graph = _vrbFetchGraph(appId)
-    if (graph != null) return [format: "graph", data: graph]
+    if (graph != null) return [format: "graph", data: _vrbWithBareName(graph)]
     def classic = _vrbFetchClassic(appId)
-    if (classic != null) return [format: "classic", data: classic]
+    if (classic != null) return [format: "classic", data: _vrbWithBareName(classic)]
     return null
+}
+
+// The hub decorates a paused rule's name ("Name <span class='text-red'>(Paused)</span>"). Every
+// consumer wants the rule's OWN name -- a save that echoed the decoration renamed the rule to it
+// and then failed its own read-back -- so strip it once at the single reader and keep the raw form
+// alongside for anything that needs to show what the hub said.
+private Map _vrbWithBareName(Map data) {
+    if (data?.name != null) {
+        data.rawName = data.name
+        data.name = _vrbBareName(data.name, data.rulePaused == true)
+    }
+    return data
 }
 
 private List _vrbListRules() {
@@ -615,12 +627,10 @@ private Map _vrbRestoreFromSnapshot(Map snapshot, String fileName) {
                 note: "Recreate the rule manually with hub_set_visual_rule -- see hub_get_tool_guide(section='visual_rule_reference')."]
     }
     def name = snapshot.appLabel?.toString()?.trim() ?: "restored-visual-rule-${savedId}"
-    // The hub decorates a paused rule's installed-app label with " (Paused)"; capture
-    // prefers the rule's own undecorated name, but strip the suffix defensively so a
-    // decorated-label snapshot can't bake the decoration into the restored rule's name.
-    if (snapshot.vrbRulePaused == true && name.endsWith(" (Paused)")) {
-        name = name.substring(0, name.length() - " (Paused)".length()).trim() ?: name
-    }
+    // The hub decorates a paused rule's label with an HTML-wrapped "(Paused)"; capture prefers the
+    // rule's own undecorated name, but strip the decoration defensively (HTML or plain) so an older
+    // decorated-label snapshot can't bake it into the restored rule's name.
+    if (snapshot.vrbRulePaused == true) name = _vrbBareName(name, true) ?: name
     // Always restore the SNAPSHOT's pause state (a Boolean, never null) -- an in-place
     // restore must not inherit whatever pause state the live rule drifted to.
     Boolean pausedRequested = snapshot.vrbRulePaused == true
