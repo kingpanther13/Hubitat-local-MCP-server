@@ -7331,7 +7331,9 @@ private List _flattenHub2DeviceTree(nodes, List acc = null) {
 // later (404; confirmed on .173 and .174). /hub2/devicesList survives and is still a superset of
 // the authorized set, but exposes no capabilities.
 // Returns [source, capabilities, records]. On failure records is null and `failure` is "fetch"
-// (with the exception message in fetchError) or "shape"; the caller owns the wording.
+// (with the exception message in fetchError) or "shape" -- which covers a missing body and a
+// missing `devices` key, both of which flatten to null. A well-formed inventory with no devices is
+// NOT a failure: it is a hub with no devices. The caller owns the wording.
 private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
     try {
         def txt = hubInternalGet("/device/listWithCapabilities/json")
@@ -7359,11 +7361,13 @@ private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
         mcpLog("warn", logCategory, "${logPrefix}: /hub2/devicesList returned an unexpected shape")
         return [source: "/hub2/devicesList", capabilities: false, records: null, failure: "shape"]
     }
-    // The same guard the primary has: an empty inventory from a hub that runs this app is a failed
-    // read, not zero devices -- passed through, it would reject every real id in selectedDevices.
+    // An empty list here is a hub with no devices, and is reported as one: the read failures are
+    // already separated above -- no body or a missing `devices` key flattens to null and returns
+    // "shape", so nothing ambiguous reaches this point. (The PRIMARY endpoint's empty answer is
+    // different: it is dead on 2.5.1.173+ and answers empty, so that path falls through to here
+    // rather than passing zero devices off as the truth.)
     if (records.isEmpty()) {
-        mcpLog("warn", logCategory, "${logPrefix}: /hub2/devicesList answered with an empty inventory -- treated as a failed read")
-        return [source: "/hub2/devicesList", capabilities: false, records: null, failure: "empty"]
+        mcpLog("debug", logCategory, "${logPrefix}: /hub2/devicesList reports no devices on this hub")
     }
     return [source: "/hub2/devicesList", capabilities: false, records: records]
 }
@@ -7821,9 +7825,15 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     // block, and orphanedActionRows cannot be computed. Say so wherever that scan runs; silence
     // would read as "no orphans, structure verified". A Visual Rule has no actionList by design and
     // never reaches the scan.
-    if (runHtml && compiledActionList == null && (ruleFormat == "rm" || compiledReadError != null || !useRuleBuilder)) {
+    // The condition is the SCAN's own state -- it ran (runHtml) with no compiled list -- not a
+    // guess at why. Keying it on ruleFormat=='rm' missed the case that motivates the note most: a
+    // compiled read that came back empty without erroring leaves ruleFormat null, and the
+    // config-page leg then identifies an RM rule and scans anyway.
+    if (runHtml && compiledActionList == null) {
         String why = !useRuleBuilder ? "source='configPage' skips ruleBuilderJson" :
-                     (compiledReadError != null ? "ruleBuilderJson could not be read" : "ruleBuilderJson carried no usable actionList")
+                     (compiledReadError != null ? "ruleBuilderJson could not be read" :
+                      (ruleFormat == "rm" ? "ruleBuilderJson carried no usable actionList"
+                                          : "ruleBuilderJson returned no usable record for this app"))
         checkErrors << "no compiled actionList was available for app ${appId} (${why}); structuralIssues came from the settings scan (leftover rows may read as an unclosed block) and orphanedActionRows could not be computed".toString()
     }
     if (runHtml) {

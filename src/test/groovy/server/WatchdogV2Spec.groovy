@@ -48,6 +48,45 @@ class WatchdogV2Spec extends Specification {
         )
     }
 
+    /** A second script instance whose user settings differ from the shared one built in setup(). */
+    private HubitatAppScript scriptWithSettings(Map extraSettings) {
+        Map settings = [hubSecurityEnabled: false, debugLogging: false] + extraSettings
+        def sandbox = new HubitatAppSandbox(new File('e2e-deadman-watchdog-v2.groovy').getText('UTF-8'))
+        return sandbox.run(
+            api: Mock(AppExecutor) {
+                _ * getLog() >> new PermissiveLog()
+                _ * getSettings() >> settings
+                _ * getAtomicState() >> { atomicStateMap }
+                _ * now() >> { System.currentTimeMillis() }
+                _ * runIn(*_) >> { args -> runInCalls << (args as List) }
+            },
+            userSettingValues: settings,
+            validator: new PassThroughAppValidator([
+                Flags.DontValidatePreferences,
+                Flags.DontValidateDefinition,
+                Flags.DontRestrictGroovy,
+                Flags.DontRunScript
+            ])
+        )
+    }
+
+    def "autoRebootOnWedge=false stops the escape before any reboot POST, however wedged the hub looks"() {
+        given: "a hub that looks thoroughly wedged, and the preference turned OFF"
+        def optedOut = scriptWithSettings([autoRebootOnWedge: false])
+        atomicStateMap.loopbackFailStreak = 99
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 3600000L
+        def posts = []
+        optedOut.metaClass.hubPostForm = { String path, Map body -> posts << path; [status: 200, data: ''] }
+        optedOut.metaClass.readFlag = { -> null }
+
+        when:
+        optedOut.checkDeadman()
+
+        then: "nothing was posted and no slot was claimed -- the opt-out is the first thing checked"
+        posts == []
+        atomicStateMap.lastAutoRebootAt == null
+    }
+
     @Unroll
     def "adminUpdateLibrary fails CLOSED on a dropped/invalid POST (#scenario)"() {
         given:
@@ -1592,6 +1631,10 @@ class WatchdogV2Spec extends Specification {
         defs.findAll { it.inputSchema.required }.every { d -> d.inputSchema.required.every { d.inputSchema.properties.containsKey(it) } }
         defs.find { it.name == 'hub_update_app' }.inputSchema.properties.containsKey('appId')
         defs.find { it.name == 'hub_reboot' }.inputSchema.required == ['confirm']
+
+        and: "hub_reboot advertises the force override -- without it the platform-update refusal has no escape a client can find"
+        defs.find { it.name == 'hub_reboot' }.inputSchema.properties.containsKey('force')
+        defs.find { it.name == 'hub_reboot' }.annotations.idempotentHint == false
     }
 
     def "hub_reboot is reachable through the JSON-RPC envelope, not only the direct dispatch"() {
@@ -2022,43 +2065,143 @@ class WatchdogV2Spec extends Specification {
         atomicStateMap.lastAutoRebootAt == null
     }
 
-    @Unroll
-    def "a platform update claims the downtime window before its request and hands it back when the hub does not accept (#scenario)"() {
+    def "a platform update claims the downtime window BEFORE its request"() {
         given:
         script.metaClass.hubGet = { String path, Map q = [:], Integer t = null ->
-            path == "/hub/cloud/checkForUpdate" ? '{"status":"ok"}' : (path == "/hub/cloud/updatePlatform" ? updateResp : null)
+            path == "/hub/cloud/checkForUpdate" ? '{"status":"ok"}' : (path == "/hub/cloud/updatePlatform" ? '{"ok":true}' : null)
         }
 
         when:
         def r = script.adminUpdatePlatform([confirm: true])
 
         then:
-        r.success == accepted
-        (atomicStateMap.expectedDownUntil != null) == accepted
-        (atomicStateMap.expectedDownReason == 'hub_update_platform') == accepted
-
-        where:
-        scenario           | updateResp      || accepted
-        'accepted'         | '{"ok":true}'   || true
-        'no response'      | null            || false
+        r.success == true
+        (atomicStateMap.expectedDownUntil as Long) > System.currentTimeMillis()
+        atomicStateMap.expectedDownReason == 'hub_update_platform'
     }
 
-    def "a failed reboot POST hands back the window it borrowed WITH its reason, so a platform update still refuses later reboots"() {
-        given: "a platform-update window is open; a forced reboot POST then fails"
+    def "an unanswered platform-update request HOLDS the window -- a null is not proof the hub did not accept"() {
+        given: "hubGet returns null for a transport failure, a dropped response AND an empty 200 body alike"
+        script.metaClass.hubGet = { String path, Map q = [:], Integer t = null ->
+            path == "/hub/cloud/checkForUpdate" ? '{"status":"ok"}' : null
+        }
+
+        when:
+        def r = script.adminUpdatePlatform([confirm: true])
+
+        then: "reported as unknown, not as failed -- and the wedge escape stays suppressed in case it IS installing"
+        r.success == false
+        r.updateMayHaveStarted == true
+        (atomicStateMap.expectedDownUntil as Long) > System.currentTimeMillis()
+        atomicStateMap.expectedDownReason == 'hub_update_platform'
+    }
+
+    def "a platform update is NOT requested when its downtime window could not be persisted"() {
+        given: "state writes fail, so the window the update needs cannot be stamped"
+        def paths = []
+        script.metaClass.hubGet = { String path, Map q = [:], Integer t = null ->
+            paths << path
+            path == "/hub/cloud/checkForUpdate" ? '{"status":"ok"}' : '{"ok":true}'
+        }
+        script.metaClass.markExpectedDowntime = { long ms, String reason -> false }
+
+        when:
+        def r = script.adminUpdatePlatform([confirm: true])
+
+        then: "the request never went out: an install the wedge escape cannot see is what gets a hub rebooted mid-write"
+        r.success == false
+        r.error.contains("was NOT requested")
+        !paths.contains("/hub/cloud/updatePlatform")
+    }
+
+    def "a REJECTED reboot POST hands back the window it borrowed WITH its reason, so a platform update still refuses later reboots"() {
+        given: "a platform-update window is open; a forced reboot POST is then rejected by the hub"
         long updateUntil = System.currentTimeMillis() + 1400000L
         atomicStateMap.expectedDownUntil = updateUntil
         atomicStateMap.expectedDownReason = 'hub_update_platform'
-        script.metaClass.hubPostForm = { String path, Map body -> [status: null, data: null] }   // dropped POST
+        script.metaClass.hubPostForm = { String path, Map body -> [status: 500, data: 'nope'] }
 
         when:
         def failed = script.adminRebootHub([confirm: true, force: true])
         def afterwards = script.adminRebootHub([confirm: true])
 
-        then: "the update's window AND its reason are back, so the next unforced reboot is refused again"
+        then: "the hub answered, so nothing rebooted: the update's window AND its reason are back"
         failed.success == false
+        failed.ambiguous == null
         (atomicStateMap.expectedDownUntil as Long) == updateUntil
         atomicStateMap.expectedDownReason == 'hub_update_platform'
         afterwards.refused == true
+    }
+
+    def "an UNANSWERED reboot POST keeps its window -- a hub that accepted the reboot goes down before answering"() {
+        given:
+        script.metaClass.hubPostForm = { String path, Map body -> [status: null, data: null] }
+
+        when:
+        def r = script.adminRebootHub([confirm: true])
+
+        then: "reported ambiguous, and the window stands so the wedge escape does not reboot a hub that is already rebooting"
+        r.success == false
+        r.ambiguous == true
+        (atomicStateMap.expectedDownUntil as Long) > System.currentTimeMillis()
+        atomicStateMap.expectedDownReason == 'hub_reboot'
+    }
+
+    @Unroll
+    def "the auto-reboot frees its 30-minute slot only when the hub ANSWERED the POST (status=#status -> slot kept: #keptSlot)"() {
+        given: "a wedged hub, so the escape claims the slot and posts"
+        script.metaClass.readFlag = { -> null }
+        script.metaClass.probeLoopbackAlive = { -> false }
+        atomicStateMap.loopbackFailStreak = 8
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 300000L
+        script.metaClass.hubPostForm = { String path, Map body -> [status: status, data: null] }
+
+        when:
+        script.checkDeadman()
+
+        then: "an unanswered POST may have landed, so the rate limit is HELD; an answered rejection frees it for a real retry"
+        (atomicStateMap.lastAutoRebootAt != null) == keptSlot
+
+        where:
+        status || keptSlot
+        null   || true
+        503    || false
+    }
+
+    def "a fresh purge stamp that no claim owns is not treated as cover for this sweep"() {
+        given: "the timestamp of a sweep that has finished and cleared its claim"
+        atomicStateMap.purgeInFlightAt = System.currentTimeMillis()
+        atomicStateMap.purgeClaim = null
+        atomicStateMap.purgeClaimPrefix = null
+        def swept = false
+        script.metaClass.purgeE2eArtifactsLocked = { String prefix, String claim = null -> swept = true; [success: true, prefix: prefix, deleted: [], failed: []] }
+
+        when:
+        def r = script.adminPurgeE2eArtifacts([confirm: true, prefix: 'BAT_E2E_'])
+
+        then: "an unowned stamp covers nothing -- this call sweeps instead of reporting itself done"
+        swept == true
+        r.inFlight != true
+    }
+
+    def "a parked terminal outcome is discarded when the live flag is the SAME run re-armed (a workflow re-run)"() {
+        given: "a park from attempt 1, and the re-run's fresh armed flag under the same GITHUB_RUN_ID"
+        atomicStateMap.restorePendingFlag = [runId: '7', deadline: 111L, intent: 'disarm', armed: false, restoreResult: 'restored']
+        atomicStateMap.restorePendingFor = '7|111|disarm|false'
+        int restores = 0
+        script.metaClass.adminUpdateApp = { Map a -> restores++; [success: true] }
+        def written = []
+        script.metaClass.writeFlag = { Map fl -> written << fl; true }
+        script.metaClass.readFlag = { -> [armed: true, runId: '7', deadline: System.currentTimeMillis() + 600000L,
+                                          manifest: [app: [classId: '178', url: 'https://raw.example/main/app.groovy'], libraries: []]] }
+
+        when:
+        script.checkDeadman()
+
+        then: "the stale park is dropped, not written over the re-run's armed flag"
+        atomicStateMap.restorePendingFlag == null
+        !written.any { it.restoreResult == 'restored' }
+        restores == 0
     }
 
     def "hub_reboot is refused while an accepted platform update is installing, unless forced"() {

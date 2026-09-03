@@ -290,8 +290,11 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
         settingsMap.selectedDevices = []
         // Label deliberately shares no substring with the capability, so a filter applied to
         // the wrong field cannot make this pass.
+        // Capability entries as the Groovy device model hands them over -- objects with a `name`,
+        // not bare strings. A reader that falls back to toString() passes on strings and fails
+        // here, which is the whole point of reading `.name`.
         childDevicesList << new TestDevice(id: 77, name: "D77", label: "Porch Lamp",
-            roomName: null, capabilities: ["Switch"], supportedAttributes: [],
+            roomName: null, capabilities: [[name: "Switch"]], supportedAttributes: [],
             supportedCommands: [], attributeValues: [:])
         hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
         hubGet.register('/hub2/devicesList') { params ->

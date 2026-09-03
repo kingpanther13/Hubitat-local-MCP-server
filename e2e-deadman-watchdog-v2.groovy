@@ -56,7 +56,7 @@ preferences {
         section("Watchdog") {
             input "flagFileName", "text", title: "Flag file name (File Manager)", defaultValue: "e2e-deadman-v2.json", required: false
             input "debugLogging", "bool", title: "Debug logging", defaultValue: true, required: false
-            input "autoRebootOnWedge", "bool", title: "Auto-reboot when the hub wedges (loopback HTTP dead + restore latched failed)", defaultValue: true, required: false
+            input "autoRebootOnWedge", "bool", title: "Auto-reboot when the hub's loopback HTTP stays dead for 4+ minutes (the web stack is wedged)", defaultValue: true, required: false
             paragraph statusText()
         }
         section("MCP Deploy Endpoint") {
@@ -136,7 +136,10 @@ def checkDeadman() {
     // API, which on a wedged hub returns null, so every path below exits at "no flag file -- idle":
     // the watchdog would tick quietly forever while the hub is dead, which is exactly what happened
     // on 2026-09-01 (3h32m of heartbeats and nothing else, until a human power-cycled it). This is
-    // the one thing that can still act, because a reboot needs no working web stack on the way in.
+    // the one thing that can still act: the reboot POST goes through the same loopback stack, so it
+    // lands only while that stack still answers writes -- but the restore path needs the File
+    // Manager API to READ a flag first, and that is already gone by then. A POST the hub never
+    // answers is reported ambiguous, not failed, and only a physical power cycle recovers from it.
     //
     // The counters the escape reads are written only by the watchdog's OWN loopback HTTP calls, and
     // readFlag() is not one of them, so an idle tick never moved them: the escape armed only when a
@@ -276,9 +279,15 @@ private boolean maybeAutoRebootWedgedHub() {
     log.error "E2E Dead-Man Watchdog v2: hub loopback HTTP has been dead for at least ${(atomicState.loopbackFailStreak ?: 0)} consecutive calls with no success in over 4 minutes -- the web stack is wedged and nothing in-process recovers from that. AUTO-REBOOTING."
     def r = adminRebootHub([confirm: true])
     if (!r?.success) {
-        log.error "E2E Dead-Man Watchdog v2: auto-reboot POST failed (${r?.error}). The hub needs a physical power cycle."
-        // Give the slot back: a POST that did not land must not burn the 30-minute limit.
-        try { atomicState.lastAutoRebootAt = null } catch (Exception ignore) { }
+        log.error "E2E Dead-Man Watchdog v2: auto-reboot POST did not confirm (${r?.error})."
+        if (r?.ambiguous == true) {
+            // The POST may have landed. Keeping the stamp holds the 30-minute rate limit, so the
+            // next tick cannot fire a SECOND reboot into a hub that is already coming back.
+            log.warn "E2E Dead-Man Watchdog v2: the reboot may have landed -- holding the 30-minute rate limit rather than freeing it."
+        } else {
+            // The hub answered with a status, so nothing rebooted: free the slot for a real retry.
+            try { atomicState.lastAutoRebootAt = null } catch (Exception ignore) { }
+        }
     }
     return true
 }
@@ -302,15 +311,34 @@ private void actAndRecord(Map flag, String trigger) {
     }
     atomicState.restoreInFlightFor = flag.runId
     atomicState.restoreInFlightAt = nowMs
+    boolean holdClaim = false
     try {
-        actAndRecordLocked(flag, trigger)
+        holdClaim = actAndRecordLocked(flag, trigger)
     } finally {
-        atomicState.restoreInFlightFor = null
-        atomicState.restoreInFlightAt = null
+        // Normally the claim is released here so the next tick can act. It is HELD only when a
+        // terminal outcome could be persisted NOWHERE (neither the flag file nor app state): the
+        // durable flag still says "act", so releasing would let the next tick re-run a restore
+        // that already succeeded. The latch's own 10-minute staleness escape bounds the hold.
+        if (!holdClaim) {
+            atomicState.restoreInFlightFor = null
+            atomicState.restoreInFlightAt = null
+        }
     }
 }
 
-private void actAndRecordLocked(Map flag, String trigger) {
+// The identity of the flag a parked terminal outcome belongs to. runId alone is not enough: GitHub
+// reuses GITHUB_RUN_ID when a workflow is RE-RUN, so a park left by the first attempt would match
+// the re-run's fresh flag and overwrite it -- disarming the re-run's dead-man protection. The
+// deadline and intent move whenever CI writes a new flag, which is exactly the event that must
+// invalidate a park.
+private String flagIdentity(Map flag) {
+    return "${flag?.runId}|${flag?.deadline}|${flag?.intent}|${flag?.armed}".toString()
+}
+
+// Returns true when the caller must HOLD the in-flight claim: a terminal outcome that could not be
+// persisted anywhere, where releasing would invite a repeat of the restore that already ran.
+private boolean actAndRecordLocked(Map flag, String trigger) {
+    String identityBefore = flagIdentity(flag)
     Map res = restorePackage(flag)
     if (res.ok) {
         flag.armed = false
@@ -353,7 +381,7 @@ private void actAndRecordLocked(Map flag, String trigger) {
             if (!writeFlag(flag)) {
                 log.error "E2E Dead-Man Watchdog v2: could not persist retry state (attempt ${attempts}); will retry next check regardless."
             }
-            return
+            return false
         }
         flag.armed = false
         flag.restoreFor = flag.runId
@@ -367,13 +395,28 @@ private void actAndRecordLocked(Map flag, String trigger) {
     // otherwise re-run the restore -- redeploying the whole package after a success, or counting a
     // sixth failure after the latch -- so a failed write parks the terminal flag instead and the
     // next tick retries the write alone.
+    boolean holdClaim = false
     if (!writeFlag(flag)) {
-        try { atomicState.restorePendingFlag = flag } catch (Exception ignore) { }
-        log.error "E2E Dead-Man Watchdog v2: FAILED to persist flag after ${trigger} (restoreResult=${flag.restoreResult}); the write is retried next check without re-running the restore."
+        boolean parked = false
+        try {
+            atomicState.restorePendingFlag = flag
+            atomicState.restorePendingFor = identityBefore
+            parked = (atomicState.restorePendingFlag != null && atomicState.restorePendingFor != null)
+        } catch (Exception ignore) { parked = false }
+        if (parked) {
+            log.error "E2E Dead-Man Watchdog v2: FAILED to persist flag after ${trigger} (restoreResult=${flag.restoreResult}); the write is retried next check without re-running the restore."
+        } else {
+            // Nothing durable records that this ran. Hold the in-flight claim so the next ticks
+            // skip instead of repeating a destructive restore; the 10-minute staleness escape
+            // still lets a genuinely crashed restore retry.
+            holdClaim = true
+            log.error "E2E Dead-Man Watchdog v2: FAILED to persist the ${flag.restoreResult} outcome after ${trigger} in EITHER the flag file or app state; holding the in-flight claim so the next ticks do not repeat the restore. Hub state writes are failing -- check the hub."
+        }
     } else {
         clearRunScopedRestoreState()
     }
     log.warn "E2E Dead-Man Watchdog v2 ${trigger} complete: ${flag.restoreResult}."
+    return holdClaim
 }
 
 private void clearRunScopedRestoreState() {
@@ -382,6 +425,7 @@ private void clearRunScopedRestoreState() {
         atomicState.restoreLastAttemptAt = null
         atomicState.restoreAttemptsRun = null
         atomicState.restorePendingFlag = null
+        atomicState.restorePendingFor = null
     } catch (Exception ignore) { }
 }
 
@@ -389,11 +433,18 @@ private void clearRunScopedRestoreState() {
 // retries the write alone (the restore already ran). Returns true when this tick was spent on it.
 private boolean persistPendingTerminal(Map flag) {
     Map pending = null
-    try { pending = atomicState.restorePendingFlag as Map } catch (Exception ignore) { pending = null }
+    String pendingFor = null
+    try {
+        pending = atomicState.restorePendingFlag as Map
+        pendingFor = atomicState.restorePendingFor?.toString()
+    } catch (Exception ignore) { pending = null }
     if (pending == null) return false
-    if (pending.runId?.toString() != flag?.runId?.toString()) {
-        // A different run's flag is live now; the parked outcome belongs to a run that is over.
-        try { atomicState.restorePendingFlag = null } catch (Exception ignore) { }
+    if (pendingFor == null || pendingFor != flagIdentity(flag)) {
+        // The live flag is not the one this outcome belongs to -- a later run, or the SAME run id
+        // re-armed by a workflow re-run. Writing the parked terminal state over it would disarm a
+        // watchdog that is meant to be armed.
+        logInfo "discarding a parked '${pending.restoreResult}' outcome: the live flag is no longer the one it belongs to."
+        clearRunScopedRestoreState()
         return false
     }
     if (writeFlag(pending)) {
@@ -1371,9 +1422,20 @@ def adminPurgeE2eArtifacts(args) {
     try { purgeAt = atomicState.purgeInFlightAt as Long } catch (Exception ignore) { purgeAt = null }
     // 15-minute staleness escape: a sweep killed mid-flight (app recompile, hub restart) must not
     // wedge the latch permanently. Matches the observed worst-case sweep of ~11.5 minutes.
-    if (purgeAt != null && (nowMs - purgeAt) < 900000L) {
+    // Read the whole claim as ONE snapshot under the claim lock: the owner clears its three keys
+    // together, so reading them separately can pair a fresh timestamp with an already-cleared
+    // owner -- and an unowned timestamp is nobody's sweep, so it covers nothing.
+    String activeClaim = null
+    String activePrefix = null
+    synchronized (PURGE_CLAIM_LOCK) {
+        try {
+            purgeAt = atomicState.purgeInFlightAt as Long
+            activeClaim = atomicState.purgeClaim?.toString()
+            activePrefix = atomicState.purgeClaimPrefix?.toString()
+        } catch (Exception ignore) { purgeAt = null }
+    }
+    if (purgeAt != null && (nowMs - purgeAt) < 900000L && activeClaim != null) {
         // A sweep for a DIFFERENT prefix is not cover for this one. Say busy, not done.
-        String activePrefix = atomicState.purgeClaimPrefix?.toString()
         if (activePrefix != null && activePrefix != prefix) {
             return [success: false, busy: true, prefix: prefix, activePrefix: activePrefix,
                     error: "A purge for prefix '${activePrefix}' has been running for ${((nowMs - purgeAt) / 1000) as long}s; it does not cover '${prefix}'.",
@@ -1637,18 +1699,30 @@ def adminUpdatePlatform(args) {
     Long priorWindow = null
     String priorReason = null
     Long ourStamp = null
+    boolean windowHeld = false
     synchronized (REBOOT_LOCK) {
         try { priorWindow = atomicState.expectedDownUntil as Long; priorReason = atomicState.expectedDownReason?.toString() } catch (Exception ignore) { priorWindow = null }
-        markExpectedDowntime(1500000L, "hub_update_platform")
+        windowHeld = markExpectedDowntime(1500000L, "hub_update_platform")
         try { ourStamp = atomicState.expectedDownUntil as Long } catch (Exception ignore) { ourStamp = null }
     }
+    if (!windowHeld) {
+        // Never send the request the window exists to cover. An update installing with no window
+        // is exactly the state where the wedge escape reboots the hub mid-firmware-write.
+        return [success: false, error: "the expected-downtime window could not be persisted, so the update was NOT requested -- starting an install the wedge escape cannot see could get the hub rebooted mid-firmware-write.",
+                note: "Retry in a minute; hub state writes fail under load. Nothing was scheduled.",
+                checkForUpdate: check]
+    }
     def resp = null
-    try { resp = hubGet("/hub/cloud/updatePlatform", [:]) }
-    catch (Exception e) { releaseExpectedDowntime(ourStamp, priorWindow, priorReason); return [success: false, error: "updatePlatform failed: ${e.message}", checkForUpdate: check] }
+    Exception thrown = null
+    try { resp = hubGet("/hub/cloud/updatePlatform", [:]) } catch (Exception e) { thrown = e }
     if (resp == null) {
-        releaseExpectedDowntime(ourStamp, priorWindow, priorReason)
-        return [success: false, error: "No response from /hub/cloud/updatePlatform -- the hub did not accept the update request.",
-                note: "Loopback HTTP may be down, or the endpoint is unavailable on this firmware. Check hub_update_platform(statusOnly:true) and hub_get_info; nothing was scheduled and the auto-reboot escape is NOT suppressed.",
+        // AMBIGUOUS, never "did not land": hubGet returns null for a transport failure, a dropped
+        // response AND an empty 200 body, so a request the hub accepted and is already acting on
+        // looks identical to one it never saw. The window is HELD -- 25 minutes of a suppressed
+        // wedge escape costs a late recovery; releasing it costs a reboot into a firmware install.
+        return [success: false, updateMayHaveStarted: true, expectedDownUntil: ourStamp,
+                error: thrown != null ? "updatePlatform failed: ${thrown.message}" : "No response from /hub/cloud/updatePlatform -- whether the hub accepted the update is UNKNOWN.",
+                note: "The 25-minute downtime window is HELD because the update may be installing: the auto-reboot escape stays suppressed until it expires. Poll hub_update_platform(statusOnly:true) and hub_get_info.firmwareVersion. If you know the update did not start, hub_reboot(force:true) overrides the window.",
                 checkForUpdate: check]
     }
     // 25 minutes: the note below quotes 5-10 for the download+install+reboot, with headroom for a
@@ -2264,7 +2338,7 @@ def getAdminToolDefinitions() {
         [name: "hub_set_app_disabled", annotations: [title: "Set App Disabled", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false], description: "Toggle an installed app's disabled flag (the admin UI red-X) via POST /installedapp/disable; verified by read-back. confirm:true required.",
          inputSchema: [type: "object", properties: [appId: [type: "string"], disable: [type: "boolean"], confirm: [type: "boolean"]], required: ["appId", "disable", "confirm"]]],
         [name: "hub_get_metrics", annotations: [title: "Get Metrics", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Current hub metrics (free memory, temp, DB size, uptime) + the hub's own health alerts. Read-only."],
-        [name: "hub_reboot", annotations: [title: "Reboot", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Reboot the hub (POST /hub/reboot; 1-3 min downtime). The only in-band recovery from a wedged web stack -- if loopback HTTP is already dead this call cannot land either and the hub needs a physical power cycle. The watchdog also fires this automatically when it detects a wedge (see the autoRebootOnWedge preference). Requires confirm=true.", inputSchema: [type: "object", properties: [confirm: [type: "boolean", description: "Must be true."], force: [type: "boolean", description: "Reboot even while a platform update the hub accepted is still installing (refused otherwise)."]], required: ["confirm"]]],
+        [name: "hub_reboot", annotations: [title: "Reboot", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false], description: "Reboot the hub (POST /hub/reboot; 1-3 min downtime). The only in-band recovery from a wedged web stack -- if loopback HTTP is already dead this call cannot land either and the hub needs a physical power cycle. The watchdog also fires this automatically when it detects a wedge (see the autoRebootOnWedge preference). Requires confirm=true.", inputSchema: [type: "object", properties: [confirm: [type: "boolean", description: "Must be true."], force: [type: "boolean", description: "Reboot even while a platform update the hub accepted is still installing (refused otherwise)."]], required: ["confirm"]]],
         [name: "hub_update_platform", annotations: [title: "Update Platform", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true], description: "Apply the hub's pending platform update (downloads + installs + REBOOTS the hub; requires confirm=true). statusOnly=true polls update progress without confirm.", inputSchema: [type: "object", properties: [confirm: [type: "boolean", description: "Must be true to apply (the hub reboots itself)."], statusOnly: [type: "boolean", description: "Poll /hub/cloud/checkUpdateStatus only; no confirm needed."]]]],
         [name: "hub_get_memory_history", annotations: [title: "Get Memory History", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "Free-memory / CPU-load history rows from the hub. Args: limit (default 60). Read-only.",
          inputSchema: [type: "object", properties: [limit: [type: "integer"]]]],
@@ -2412,6 +2486,10 @@ private void noteLoopback(boolean ok) {
 // calls. Together they describe only the observed wedge: many consecutive failures AND no
 // successful loopback read for minutes.
 private boolean hubLooksWedged() {
+    // Under the lock the success path writes: the streak and its baseline are two atomicState keys
+    // and noteLoopback updates them together, so reading them outside it can pair a stale streak
+    // with a stale baseline and call a hub that just answered wedged.
+    synchronized (LOOPBACK_LOCK) {
     try {
         int streak = (atomicState.loopbackFailStreak ?: 0) as int
         if (streak < WEDGE_STREAK_MIN) return false
@@ -2423,6 +2501,7 @@ private boolean hubLooksWedged() {
         if (baseline == null) return false
         return (now() - baseline) > 240000L
     } catch (Exception ignore) { return false }
+    }
 }
 
 // One cheap loopback read used purely as a liveness gate before the destructive escape. Routed
@@ -2441,17 +2520,33 @@ def probeLoopbackAlive() {
 
 // Mark a window in which the hub is EXPECTED to be unreachable, so the auto-reboot escape does not
 // fire on downtime we caused ourselves.
-private void markExpectedDowntime(long ms, String reason) {
+private boolean markExpectedDowntime(long ms, String reason) {
+    // Returns whether the window is actually READABLE afterwards. Every atomicState write can fail
+    // under hub load, and this one is a safety window: a caller that goes on to reboot or start a
+    // platform update believing it is suppressed, when it is not, is the failure this guards.
     try {
-        atomicState.expectedDownUntil = now() + ms
+        long until = now() + ms
+        atomicState.expectedDownUntil = until
         atomicState.expectedDownReason = reason
+        Long readBack = atomicState.expectedDownUntil as Long
+        if (readBack == null) {
+            log.error "E2E Dead-Man Watchdog v2: could not persist the expected-downtime window (${reason}) -- the auto-reboot escape is NOT suppressed."
+            return false
+        }
         mcpAdminLog "Expecting the hub to be unreachable for up to ${(ms / 60000) as long} min (${reason}); the auto-reboot escape is suppressed until then."
-    } catch (Exception ignore) { }
+        return true
+    } catch (Exception e) {
+        log.error "E2E Dead-Man Watchdog v2: could not persist the expected-downtime window (${reason}): ${e.message}"
+        return false
+    }
 }
 
 // Give a claimed downtime window back when the request it covered did not land -- only if the
 // stamp is still ours, so a window a later caller claimed in the meantime is left alone.
 private void releaseExpectedDowntime(Long ourStamp, Long priorWindow, String priorReason) {
+    // Compare-and-restore under the SAME lock every claim takes, or a successor that stamped its
+    // own window between the read and the write here has that window silently erased.
+    synchronized (REBOOT_LOCK) {
     try {
         Long current = atomicState.expectedDownUntil as Long
         if (current == ourStamp) {
@@ -2462,6 +2557,7 @@ private void releaseExpectedDowntime(Long ourStamp, Long priorWindow, String pri
             atomicState.expectedDownReason = priorWindow == null ? null : priorReason
         }
     } catch (Exception ignore) { }
+    }
 }
 
 // hub_reboot: POST /hub/reboot. Copied from hubitat-mcp-server.groovy's toolRebootHub
@@ -2472,23 +2568,33 @@ def adminRebootHub(args) {
     requireConfirm(args)
     // A platform update the hub accepted is downloading and installing for up to 25 minutes; a
     // reboot in that window can interrupt the install. Refuse unless the caller forces it.
+    // Read the window, decide, and claim it in ONE step under the lock every claimant takes:
+    // checking outside it and stamping after lets a platform update slip in between, and the
+    // reboot then overwrites the window it was supposed to respect and POSTs into the install.
+    // Remembering the prior window here also means a POST that does not land restores THAT.
     Long updateWindow = null
     String windowReason = null
-    try { updateWindow = atomicState.expectedDownUntil as Long; windowReason = atomicState.expectedDownReason?.toString() } catch (Exception ignore) { updateWindow = null }
-    if (windowReason == "hub_update_platform" && updateWindow != null && now() < updateWindow && args?.force != true) {
+    Long priorWindow = null
+    String priorReason = null
+    Long ourStamp = null
+    boolean refuse = false
+    synchronized (REBOOT_LOCK) {
+        try { updateWindow = atomicState.expectedDownUntil as Long; windowReason = atomicState.expectedDownReason?.toString() } catch (Exception ignore) { updateWindow = null }
+        if (windowReason == "hub_update_platform" && updateWindow != null && now() < updateWindow && args?.force != true) {
+            refuse = true
+        } else {
+            priorWindow = updateWindow
+            priorReason = windowReason
+            // Before the POST: once it lands the hub may go before we get to run again.
+            markExpectedDowntime(600000L, "hub_reboot")
+            try { ourStamp = atomicState.expectedDownUntil as Long } catch (Exception ignore) { ourStamp = null }
+        }
+    }
+    if (refuse) {
         return [success: false, refused: true, expectedDownUntil: updateWindow,
                 error: "a platform update was accepted ${((now() - (updateWindow - 1500000L)) / 1000) as long}s ago and the hub is downloading/installing it -- a reboot now could interrupt the install. Pass force:true to reboot anyway."]
     }
     mcpAdminLog "Rebooting the hub (POST /hub/reboot)."
-    // Remember any window already open (a platform update in progress, say) so a POST that does
-    // not land restores THAT rather than clearing it.
-    Long priorWindow = null
-    String priorReason = null
-    try { priorWindow = atomicState.expectedDownUntil as Long; priorReason = atomicState.expectedDownReason?.toString() } catch (Exception ignore) { priorWindow = null }
-    // Before the POST: once it lands the hub may go before we get to run again.
-    markExpectedDowntime(600000L, "hub_reboot")
-    Long ourStamp = null
-    try { ourStamp = atomicState.expectedDownUntil as Long } catch (Exception ignore) { ourStamp = null }
     // hubPostForm SWALLOWS transport exceptions and returns [status: null, data: null], so the
     // status is the ONLY success signal -- a try/catch around it can never fire, and reporting
     // success unconditionally would make the auto-reboot escape log "rebooted" for a POST that
@@ -2501,15 +2607,22 @@ def adminRebootHub(args) {
                 message: "Hub reboot initiated; the hub is unreachable for 1-3 minutes.",
                 response: resp?.data?.toString()?.take(200)]
     }
-    // The window was stamped before the POST (the hub can go the moment it lands); a POST that did
-    // NOT land is not downtime, and leaving the stamp would make the wedge escape stand down for 10
-    // minutes on a false "deliberate reboot in progress".
-    // Only undo our own stamp: a platform update that opened a NEWER window while the POST was in
-    // flight must keep it, or the escape could reboot into the install.
+    if (st == null) {
+        // AMBIGUOUS: a hub that accepted the reboot goes down mid-response, so "no status" is the
+        // signature of a reboot that LANDED as much as of one that never did. Keep the window --
+        // releasing it invites the escape to reboot a hub that is already rebooting, and the
+        // caller to retry a reboot that already happened.
+        return [success: false, ambiguous: true, status: null, expectedDownUntil: ourStamp,
+                error: "reboot POST got no response from the hub -- whether it landed is UNKNOWN (a hub that accepted it goes down before answering).",
+                note: "The downtime window is HELD, so the wedge escape stands down. Check hub_get_info in a few minutes: a rising uptime means it rebooted. If loopback HTTP is wedged the POST never landed and the hub needs a physical power cycle."]
+    }
+    // A status the hub actually returned is proof it did NOT reboot: the window would otherwise
+    // make the wedge escape stand down for 10 minutes on a reboot that never happened. Only undo
+    // our own stamp -- a platform update that opened a NEWER window meanwhile must keep it.
     releaseExpectedDowntime(ourStamp, priorWindow, priorReason)
     return [success: false, status: st,
-            error: st == null ? "reboot POST got no response from the hub (transport failure)" : "reboot POST returned status ${st}",
-            note: "If loopback HTTP is wedged this call cannot land either -- the hub needs a physical power cycle."]
+            error: "reboot POST returned status ${st}",
+            note: "The hub answered, so it did not reboot; the downtime window was released."]
 }
 
 // Status-aware loopback GET. Unlike hubGet (text body, swallows every exception -> null), this

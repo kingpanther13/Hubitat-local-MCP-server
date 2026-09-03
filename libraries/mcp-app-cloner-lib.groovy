@@ -874,7 +874,10 @@ private Map _rmRestoreFromBackup(Map entry) {
         ]
     }
 
-    return [
+    // A skipped BUTTON is nothing lost -- a button input holds no state. A skipped MAP is saved
+    // state this restore did not put back, so the envelope says partial: a caller that reads
+    // success:true and stops would leave the rule short of its snapshot without being told.
+    def out = [
         success: true,
         type: "rm-rule",
         ruleId: ruleId,
@@ -886,6 +889,11 @@ private Map _rmRestoreFromBackup(Map entry) {
             + skippedMaps.collect { key -> [key: key, reason: "map value without a device-picker schema; not replayable through the settings endpoint"] },
         note: exists ? "Settings restored in place." : "Rule was deleted; recreated with new id ${ruleId} and replayed settings."
     ]
+    if (skippedMaps) {
+        out.partial = true
+        out.note = "${out.note} ${skippedMaps.size()} saved setting(s) could NOT be replayed (see settingsSkipped): ${skippedMaps.join(', ')}. Inspect with hub_get_app_config(appId=${ruleId}) and set them by hand if the rule needs them.".toString()
+    }
+    return out
 }
 
 def _getAllToolDefinitions_partAppCloner() {

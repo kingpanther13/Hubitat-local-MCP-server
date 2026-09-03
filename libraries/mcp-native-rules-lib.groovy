@@ -4118,7 +4118,10 @@ private Map _rmCollectTriggerCapabilities(Integer appId) {
 // only the subtype, so an actType-only scan misses it; `seen` collapses an action's two keys.
 //
 // appSettings key order is ARBITRARY -- neither display nor lexical (live capture: actSubType.7,
-// .8, .2, ... actType.11, .14, .13), so callers needing ORDER must use _rmCollectActionIndices.
+// .8, .2, ... actType.11, .14, .13), so callers needing ORDER must use _rmCollectActionIndices,
+// which prefers the compiled list and falls back to THIS arbitrary order when it cannot be read.
+// A caller that must not act on a guessed order (removeAction on a structural row, moveAction,
+// modifyAction) reads _rmOrderedActionIndices directly and refuses on null instead.
 // What this sees and the compiled action list does not is a row that exists ONLY in settings -- a
 // wizard write that landed but was never baked -- which is why the add path's index allocation and
 // orphan rollback read this and not the compiled list.
@@ -4341,10 +4344,13 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
     def retryDelaysMs = [1000, 1500, 2000, 3000]
     for (int attempt = 0; attempt < 5; attempt++) {
         if (attempt > 0) pauseExecution(retryDelaysMs[attempt - 1] as Integer)
-        // Settings, matching beforeIndices above. Polling the compiled list instead
-        // would report success the instant a row that was never in it is asked about
-        // -- a leftover row would read as "already deleted" before the click landed.
-        afterIndices = _rmActionIndicesFromSettings(_rmFetchStatusJson(appId))
+        // Settings, like beforeIndices above: polling the compiled list instead would report
+        // success the instant a row that was never in it is asked about -- a leftover row would
+        // read as "already deleted" before the click landed. But the LIVE view (a row whose
+        // actType/actSubType still carries a VALUE), because RM's UI leaves the emptied keys
+        // behind on some firmware: keyed on presence alone a landed delete reads as still-present,
+        // and this loop re-clicks a deleted row and then reports a failure that did not happen.
+        afterIndices = _rmLiveActionIndicesFromSettings(_rmFetchStatusJson(appId))
         if (!afterIndices.contains(actionIdx)) {
             def out = [success: true, removedIndex: actionIdx, beforeIndices: beforeIndices.sort(), afterIndices: afterIndices.sort()]
             if (reclicked) out.reclicked = true
@@ -5633,7 +5639,10 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         def settingsByName = _rmFetchSettingsByName(appId)
         // Scoped to the rule's own actions for the same reason as the delete
         // pre-flight: a leftover settings row must not decide whether a closer
-        // is orphaned.
+        // is orphaned. When the compiled list is unreadable the scan widens to
+        // every settings row -- unlike the delete path, which refuses there,
+        // because an add's worst case is a rejected or extra row the caller can
+        // remove, while a delete's is a structural row that is simply gone.
         def currentSeq = _rmStructuralSequenceFromSettings(settingsByName, ([] as Set), _rmOrderedActionIndices(appId))
         // The projected idx only matters for issue-message construction;
         // any value not in current works for the walker.

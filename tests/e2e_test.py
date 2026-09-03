@@ -8160,11 +8160,10 @@ class TestRunner:
             else:
                 assert rp["response"].get("success") is True, f"rename+pause reported failure: {rp['response']}"
             got = self._get_visual_rule(app_id)
-            # A paused rule's name carries the builder's own decoration -- the literal constant
-            # " <span class='text-red'>(Paused)</span>". Strip markup and that one suffix before
-            # comparing, or a rename that landed reads as a failure.
-            # The reported name is the rule's OWN name: the hub's "(Paused)" decoration is stripped at
-            # the single reader, so a paused rule must never surface it (the raw form travels as rawName).
+            # The reported name is the rule's OWN name: the hub decorates a paused rule's name with
+            # the literal " <span class='text-red'>(Paused)</span>", and that decoration is stripped
+            # at the single reader, so a paused rule must never surface it (the raw form travels as
+            # rawName). The strip below is belt-and-braces for that contract, not the contract.
             assert "(Paused)" not in str(got.get("name") or ""), \
                 f"the hub's paused decoration leaked into the reported name: {got.get('name')!r}"
             got_name = re.sub(r"<[^>]+>", "", str(got.get("name") or "")).strip()

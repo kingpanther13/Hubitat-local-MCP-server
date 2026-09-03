@@ -227,7 +227,7 @@ Rules:
 - `inputSchema` root is always `type: "object"` with `properties`
 - `required` array is only present when there are required params
 - No-argument tools use `properties: [:]`
-- No `outputSchema`: legacy and frozen; existing declarations are neither extended nor tested (AGENTS.md § Schema design)
+- No `outputSchema`: legacy and frozen; existing declarations are neither extended nor asserted on for content -- the sandbox lint pins the frozen set so a new or edited one fails CI (AGENTS.md § Schema design)
 - Descriptions should include usage guidance for the AI (this text is what the LLM sees when deciding which tool to call)
 - Write tools must have strong safety warnings in their descriptions with mandatory pre-flight checklists
 

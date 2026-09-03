@@ -130,8 +130,12 @@ class TestDevice {
     void setPosition(Integer position) { invokeCommand('setPosition', [position]) }
     void setSpeed(String speed) { invokeCommand('setSpeed', [speed]) }
 
-    /** Capability check for capture_state action (filters which attrs to snapshot). */
-    boolean hasCapability(String cap) { capabilities?.contains(cap) }
+    /** Capability check for capture_state action (filters which attrs to snapshot).
+     *  Accepts both fixture shapes: bare strings and the `name`-bearing objects the real Groovy
+     *  device model hands over, so a spec can use the production shape without breaking this. */
+    boolean hasCapability(String cap) {
+        capabilities?.any { c -> (c instanceof CharSequence ? c.toString() : c?.name?.toString()) == cap }
+    }
     /** Command-presence check for loop-guard notifyLoopGuard fallback. */
     boolean hasCommand(String cmd) { supportedCommands?.contains(cmd) }
 

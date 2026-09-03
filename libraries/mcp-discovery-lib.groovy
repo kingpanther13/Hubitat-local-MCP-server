@@ -9,8 +9,9 @@ def toolSearchTools(args) {
     // tool surface (definitions, gateway config, display meta) and lives in a class static, not in
     // atomicState: persisted, the two lists were ~244 KB of app state, and Hubitat re-serialises app
     // state on every execution, so every tool call paid for the search index. A static rebuilds
-    // once per class load (a code deploy, a hub reboot) and is otherwise free. Visibility filtering
-    // is applied per request so toggle changes take effect without touching the index.
+    // once per class load (a code deploy, a hub reboot) or when updated() clears it on a settings
+    // save, and is otherwise free. Visibility filtering is applied per request so toggle changes
+    // take effect without touching the index.
     //
     // The content fingerprint is what decides freshness: a code deploy recompiles the class
     // without firing updated(), contributors cannot bump currentVersion() (bot-only), so a version
