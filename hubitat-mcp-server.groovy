@@ -7314,13 +7314,22 @@ private List _flattenHub2DeviceTree(nodes, List acc = null) {
     // legitimately arrive absent, so those recurse into the accumulator.
     if (!(nodes instanceof List)) return acc
     if (acc == null) acc = []
+    // A node that is not a Map is contract drift. Skipping it would hand back a SHORTER inventory
+    // that reads as authoritative -- and since an empty inventory now means "this hub has no
+    // devices", devices:[null] would read as an empty hub. Fail the whole read instead; the caller
+    // reports "shape" and callers of THAT keep their existing behaviour for an unreadable source.
+    boolean malformed = false
     nodes.each { node ->
-        if (!(node instanceof Map)) return
+        if (!(node instanceof Map)) { malformed = true; return }
         def data = node.data
         if (data instanceof Map && data.id != null) {
             acc << [id: data.id, label: data.name]
         }
         _flattenHub2DeviceTree(node.children, acc)
+    }
+    if (malformed) {
+        mcpLog("warn", "devices", "_flattenHub2DeviceTree: /hub2/devicesList carried a non-map node -- treating the inventory as unreadable rather than returning a short list")
+        return null
     }
     return acc
 }
@@ -7597,7 +7606,11 @@ private List _rmCoerceActionIndices(List raw) {
     def out = []
     boolean uncoercible = false
     raw.each { entry ->
-        if (entry == null) return   // skip, do not NPE
+        // A null entry is as unreadable as a non-numeric one, and MUST NOT be skipped: skipping
+        // turns actionList:[null] into [], which every caller reads as "this rule genuinely has no
+        // actions" -- the structural pre-flight would then walk an empty list, see no imbalance,
+        // and allow deleting the closer of an IF block that is still in settings.
+        if (entry == null) { uncoercible = true; return }
         try { out << (entry.toString() as Integer) } catch (NumberFormatException ignored) { uncoercible = true }
     }
     // A list this code cannot read is "unreadable", never "no actions": dropping the entries that

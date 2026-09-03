@@ -253,6 +253,17 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         scriptStaticField('TOOL_SEARCH_CORPUS_FP') == script.toolSearchCorpusFingerprint()
     }
 
+    def "the BM25 map key is NAMESPACED, not the bare token"() {
+        // The lint pins that every df/tf subscript goes through _bm25Key; nothing pinned what
+        // _bm25Key RETURNS. Making it `return token` passes the lint and the search tests alike,
+        // and the platform's SandboxSubscriptGuard rejection of the real corpus token "fields"
+        // comes straight back -- with it, every hub_search_tools call throws.
+        expect:
+        script._bm25Key('fields') != 'fields'
+        script._bm25Key('fields').startsWith('t_')
+        script._bm25Key('switch') == 't_switch'
+    }
+
     def "the corpus fingerprint actually discriminates -- a content change moves it"() {
         given: 'the sibling requiredParams memo ships this exact guard, because every other fingerprint test passes just as well against a function that returns a constant'
         searchEnabled()

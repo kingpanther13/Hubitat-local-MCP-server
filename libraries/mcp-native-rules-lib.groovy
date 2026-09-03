@@ -4923,7 +4923,11 @@ private Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
     def isBoundary = (direction == "up" && beforePosition == 0) ||
                      (direction == "down" && beforePosition == beforeOrderRaw.size() - 1)
     _rmClickAppButton(appId, actionIdx.toString(), stateAttr, "selectActions")
-    def afterOrderRaw = _rmCollectActionIndices(appId)
+    // The compiled order ONLY: the settings fallback is arbitrary key order, and a position taken
+    // from it compared against a compiled-order position can coincidentally show the expected
+    // one-slot shift and report a move that never happened. Unreadable here means unconfirmed,
+    // which the soft asyncCommitLikely return below already expresses.
+    def afterOrderRaw = _rmOrderedActionIndices(appId) ?: []
     def afterPosition = afterOrderRaw.indexOf(actionIdx)
     def cfg = null
     try { cfg = _rmFetchConfigJson(appId, "selectActions") }
@@ -4956,7 +4960,7 @@ private Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
             // unconfirmed -- fall through to the soft asyncCommitLikely return
             // rather than hard-throwing out of the function.
             try {
-                afterOrderRaw = _rmCollectActionIndices(appId)
+                afterOrderRaw = _rmOrderedActionIndices(appId) ?: []
                 afterPosition = afterOrderRaw.indexOf(actionIdx)
                 actualShift = afterPosition - beforePosition
             } catch (Exception recheckExc) {

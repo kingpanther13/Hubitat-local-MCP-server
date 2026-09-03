@@ -77,6 +77,16 @@ class WatchdogV2Spec extends Specification {
         )
     }
 
+    def "the reboot POST gets a SHORT timeout, every other form POST the long one"() {
+        // The wedge escape's whole value is acting while the web stack is dying: a reboot POST
+        // that inherits the 420s form timeout holds the tick for seven minutes and the escape
+        // never gets to report. Stubbing hubPostForm in the reboot specs hides this entirely.
+        expect:
+        script.hubPostTimeoutSec('/hub/reboot') == 20
+        script.hubPostTimeoutSec('/installedapp/btn') == 420
+        script.hubPostTimeoutSec('/hub/cloud/updatePlatform') == 420
+    }
+
     def "autoRebootOnWedge=false stops the escape before any reboot POST, however wedged the hub looks"() {
         given: "a hub that looks thoroughly wedged, and the preference turned OFF"
         def optedOut = scriptWithSettings([autoRebootOnWedge: false])

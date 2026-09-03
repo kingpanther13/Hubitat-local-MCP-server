@@ -200,7 +200,10 @@ def deadmanKick() { checkDeadman() }
 // pace a new run's first attempt; a missing or different run id means no mirror.
 private int mirroredAttemptsFor(Map flag) {
     try {
-        if (atomicState.restoreAttemptsRun?.toString() != flag?.runId?.toString()) return 0
+        // The GENERATION, not the run id: GitHub reuses GITHUB_RUN_ID on a workflow re-run, so a
+        // run id match would hand the previous attempt's retry count to a freshly armed run --
+        // pacing its first restore, or starting it at the cap and latching after one failure.
+        if (atomicState.restoreAttemptsRun?.toString() != flagIdentity(flag)) return 0
         return (atomicState.restoreAttempts ?: 0) as int
     } catch (Exception ignore) { return 0 }
 }
@@ -275,6 +278,22 @@ private boolean maybeAutoRebootWedgedHub() {
         // Claim the slot under the lock so an overlapping tick cannot also reach the POST; the POST
         // itself runs outside the lock so a hung request holds nothing but its own thread.
         atomicState.lastAutoRebootAt = nowMs
+        // Read back inside the lock: this stamp is the 30-minute brake, and a dropped write would
+        // let the next tick fire a second reboot. A hub this wedged still needs the reboot, so a
+        // failed stamp does not veto it -- it is logged loudly instead.
+        Long stampBack = null
+        try { stampBack = atomicState.lastAutoRebootAt as Long } catch (Exception ignore) { stampBack = null }
+        if (stampBack != nowMs) {
+            log.error "E2E Dead-Man Watchdog v2: the auto-reboot rate-limit stamp did NOT persist (state holds ${stampBack}); rebooting anyway, but a following tick could fire a second reboot."
+        }
+    }
+    // C7: one last look before the POST. The checks above ran under the lock, and a loopback call
+    // that was already in flight can answer in the gap -- rebooting a hub that just came back is
+    // the one outcome this escape must never produce.
+    if (!hubLooksWedged()) {
+        log.warn "E2E Dead-Man Watchdog v2: the hub answered while the reboot was being prepared -- NOT rebooting, and the rate-limit slot is given back."
+        try { atomicState.lastAutoRebootAt = null } catch (Exception ignore) { }
+        return false
     }
     log.error "E2E Dead-Man Watchdog v2: hub loopback HTTP has been dead for at least ${(atomicState.loopbackFailStreak ?: 0)} consecutive calls with no success in over 4 minutes -- the web stack is wedged and nothing in-process recovers from that. AUTO-REBOOTING."
     def r = adminRebootHub([confirm: true])
@@ -309,8 +328,14 @@ private void actAndRecord(Map flag, String trigger) {
         logInfo "restore for run ${flag.runId} already in flight (${((nowMs - inFlightAt) / 1000) as long}s, trigger=${trigger}) -- skipping duplicate tick"
         return
     }
+    // A unique token per attempt. A restore can outlive the 10-minute staleness escape (one bundle
+    // GET plus one app POST can approach it on a loaded hub), and when it does a successor starts;
+    // clearing the shared fields unconditionally on the way out would then erase the SUCCESSOR's
+    // claim and let a third restore pile on -- the same race the purge claim solves with a token.
+    String claim = "restore-${nowMs}-${Math.abs(new Random().nextInt())}".toString()
     atomicState.restoreInFlightFor = flag.runId
     atomicState.restoreInFlightAt = nowMs
+    atomicState.restoreInFlightClaim = claim
     boolean holdClaim = false
     try {
         holdClaim = actAndRecordLocked(flag, trigger)
@@ -320,8 +345,13 @@ private void actAndRecord(Map flag, String trigger) {
         // durable flag still says "act", so releasing would let the next tick re-run a restore
         // that already succeeded. The latch's own 10-minute staleness escape bounds the hold.
         if (!holdClaim) {
-            atomicState.restoreInFlightFor = null
-            atomicState.restoreInFlightAt = null
+            try {
+                if (atomicState.restoreInFlightClaim?.toString() == claim) {
+                    atomicState.restoreInFlightFor = null
+                    atomicState.restoreInFlightAt = null
+                    atomicState.restoreInFlightClaim = null
+                }
+            } catch (Exception ignore) { }
         }
     }
 }
@@ -369,7 +399,7 @@ private boolean actAndRecordLocked(Map flag, String trigger) {
         try {
             atomicState.restoreAttempts = attempts
             atomicState.restoreLastAttemptAt = now()
-            atomicState.restoreAttemptsRun = flag.runId?.toString()
+            atomicState.restoreAttemptsRun = identityBefore
         } catch (Exception ignore) { }
         flag.restoreDetail = res.detail
         // Retry BOTH triggers up to the cap -- a transient miss must not latch the restore "failed".
@@ -378,8 +408,18 @@ private boolean actAndRecordLocked(Map flag, String trigger) {
         if (attempts < 5) {
             flag.lastAttemptAt = now()
             log.warn "E2E Dead-Man Watchdog v2 restore attempt ${attempts} (trigger=${trigger}) FAILED; will retry next check. ${res.detail}"
-            if (!writeFlag(flag)) {
-                log.error "E2E Dead-Man Watchdog v2: could not persist retry state (attempt ${attempts}); will retry next check regardless."
+            boolean flagWritten = writeFlag(flag)
+            boolean mirrorWritten = false
+            try { mirrorWritten = ((atomicState.restoreAttempts ?: 0) as int) == attempts } catch (Exception ignore) { mirrorWritten = false }
+            if (!flagWritten && !mirrorWritten) {
+                // Neither record of this attempt survived, so the next tick would see attempt 0:
+                // no backoff, no five-attempt cap, and a failing restore repeating forever. Hold
+                // the claim so the ticks skip until the 10-minute staleness escape lets one retry.
+                log.error "E2E Dead-Man Watchdog v2: attempt ${attempts} could not be recorded in EITHER the flag file or app state; holding the in-flight claim so the restore is not repeated unpaced."
+                return true
+            }
+            if (!flagWritten) {
+                log.error "E2E Dead-Man Watchdog v2: could not persist retry state (attempt ${attempts}) to the flag; the app-state mirror carries it."
             }
             return false
         }
@@ -395,6 +435,16 @@ private boolean actAndRecordLocked(Map flag, String trigger) {
     // otherwise re-run the restore -- redeploying the whole package after a success, or counting a
     // sixth failure after the latch -- so a failed write parks the terminal flag instead and the
     // next tick retries the write alone.
+    // The restore takes minutes. If CI re-armed the flag while it ran, the live file is a NEW
+    // generation and this outcome belongs to the old one: writing it would disarm the dead-man for
+    // a run that is still going. Re-read and compare before the write, not just at the park.
+    Map liveNow = null
+    try { liveNow = readFlag() } catch (Exception ignore) { liveNow = null }
+    if (liveNow != null && flagIdentity(liveNow) != identityBefore) {
+        log.warn "E2E Dead-Man Watchdog v2: the flag was re-armed while the ${trigger} restore ran -- discarding this outcome rather than overwriting the live one. The restore itself completed (${flag.restoreResult})."
+        clearRunScopedRestoreState()
+        return false
+    }
     boolean holdClaim = false
     if (!writeFlag(flag)) {
         boolean parked = false
@@ -426,6 +476,7 @@ private void clearRunScopedRestoreState() {
         atomicState.restoreAttemptsRun = null
         atomicState.restorePendingFlag = null
         atomicState.restorePendingFor = null
+        atomicState.restoreInFlightClaim = null
     } catch (Exception ignore) { }
 }
 
@@ -439,6 +490,8 @@ private boolean persistPendingTerminal(Map flag) {
         pendingFor = atomicState.restorePendingFor?.toString()
     } catch (Exception ignore) { pending = null }
     if (pending == null) return false
+    // Compared against the flag THIS tick read, which is the live file: a generation that no longer
+    // matches means CI re-armed, and the parked outcome must be dropped, never written over it.
     if (pendingFor == null || pendingFor != flagIdentity(flag)) {
         // The live flag is not the one this outcome belongs to -- a later run, or the SAME run id
         // re-armed by a workflow re-run. Writing the parked terminal state over it would disarm a
@@ -1515,7 +1568,15 @@ private boolean renewPurgeClaim(String claim) {
     synchronized (PURGE_CLAIM_LOCK) {
         try {
             if (claim != null && atomicState.purgeClaim?.toString() != claim) return false
-            atomicState.purgeInFlightAt = now()
+            long stamp = now()
+            atomicState.purgeInFlightAt = stamp
+            // Read back: an unrenewed stamp goes stale, a successor takes the claim, and this sweep
+            // would carry on deleting alongside it believing it still owns the lease.
+            Long back = atomicState.purgeInFlightAt as Long
+            if (back != stamp) {
+                log.error "E2E Dead-Man Watchdog v2: the purge lease renewal did not persist (state holds ${back}) -- stopping this sweep rather than racing a successor."
+                return false
+            }
             return true
         } catch (Exception ignore) { return false }
     }
@@ -1702,11 +1763,28 @@ def adminUpdatePlatform(args) {
     // escape for nothing. The download takes minutes, so the hub is still up when this returns.
     Long ourStamp = null
     boolean windowHeld = false
+    boolean rebootInFlight = false
+    Long rebootWindow = null
     synchronized (REBOOT_LOCK) {
-        // No prior window is remembered: every exit from here HOLDS the window (an update the hub
-        // may have accepted must keep the escape suppressed), so there is nothing to hand back.
-        windowHeld = markExpectedDowntime(1500000L, "hub_update_platform")
+        // A reboot claimed the window moments ago and its POST may still be in flight: starting a
+        // firmware download into a hub that is going down is the mirror image of the refusal
+        // hub_reboot makes, and the two must be decided under the SAME lock or each slips past
+        // the other's check. No prior window is remembered: every exit below HOLDS the window (an
+        // update the hub may have accepted must keep the escape suppressed).
+        try {
+            if (atomicState.expectedDownReason?.toString() == "hub_reboot") rebootWindow = atomicState.expectedDownUntil as Long
+        } catch (Exception ignore) { rebootWindow = null }
+        if (rebootWindow != null && now() < rebootWindow) {
+            rebootInFlight = true
+        } else {
+            windowHeld = markExpectedDowntime(1500000L, "hub_update_platform")
+        }
         try { ourStamp = atomicState.expectedDownUntil as Long } catch (Exception ignore) { ourStamp = null }
+    }
+    if (rebootInFlight) {
+        return [success: false, refused: true, expectedDownUntil: rebootWindow,
+                error: "a hub reboot was initiated ${((now() - (rebootWindow - 600000L)) / 1000) as long}s ago and the hub may be going down -- starting a platform update into a reboot risks a half-written install. Retry once the hub is back (hub_get_info).",
+                checkForUpdate: check]
     }
     if (!windowHeld) {
         // Never send the request the window exists to cover. An update installing with no window
@@ -2531,9 +2609,13 @@ private boolean markExpectedDowntime(long ms, String reason) {
         long until = now() + ms
         atomicState.expectedDownUntil = until
         atomicState.expectedDownReason = reason
+        // The EXACT values, not merely non-null: a stale window left by an earlier action reads back
+        // non-null, so a null-check would accept a dropped write and report a suppression that does
+        // not exist. The reason matters as much as the deadline -- hub_reboot's refusal keys on it.
         Long readBack = atomicState.expectedDownUntil as Long
-        if (readBack == null) {
-            log.error "E2E Dead-Man Watchdog v2: could not persist the expected-downtime window (${reason}) -- the auto-reboot escape is NOT suppressed."
+        String reasonBack = atomicState.expectedDownReason?.toString()
+        if (readBack != until || reasonBack != reason) {
+            log.error "E2E Dead-Man Watchdog v2: the expected-downtime window (${reason}) did not persist -- state holds ${readBack}/${reasonBack}. The auto-reboot escape is NOT suppressed."
             return false
         }
         mcpAdminLog "Expecting the hub to be unreachable for up to ${(ms / 60000) as long} min (${reason}); the auto-reboot escape is suppressed until then."
@@ -2546,7 +2628,7 @@ private boolean markExpectedDowntime(long ms, String reason) {
 
 // Give a claimed downtime window back when the request it covered did not land -- only if the
 // stamp is still ours, so a window a later caller claimed in the meantime is left alone.
-private void releaseExpectedDowntime(Long ourStamp, Long priorWindow, String priorReason) {
+private boolean releaseExpectedDowntime(Long ourStamp, Long priorWindow, String priorReason) {
     // Compare-and-restore under the SAME lock every claim takes, or a successor that stamped its
     // own window between the read and the write here has that window silently erased.
     synchronized (REBOOT_LOCK) {
@@ -2558,8 +2640,16 @@ private void releaseExpectedDowntime(Long ourStamp, Long priorWindow, String pri
             // refusing the reboots it exists to refuse.
             atomicState.expectedDownUntil = priorWindow
             atomicState.expectedDownReason = priorWindow == null ? null : priorReason
+            // Report the outcome: a caller that says "the window was released" when the write threw
+            // would leave a stale window suppressing the wedge escape with nobody the wiser.
+            Long back = atomicState.expectedDownUntil as Long
+            return back == priorWindow
         }
-    } catch (Exception ignore) { }
+        return true      // someone else's window: correctly left alone
+    } catch (Exception e) {
+        log.error "E2E Dead-Man Watchdog v2: could not release the expected-downtime window: ${e.message}"
+        return false
+    }
     }
 }
 
@@ -2581,6 +2671,7 @@ def adminRebootHub(args) {
     String priorReason = null
     Long ourStamp = null
     boolean refuse = false
+    boolean windowHeld = false
     synchronized (REBOOT_LOCK) {
         try { updateWindow = atomicState.expectedDownUntil as Long; windowReason = atomicState.expectedDownReason?.toString() } catch (Exception ignore) { updateWindow = null }
         if (windowReason == "hub_update_platform" && updateWindow != null && now() < updateWindow && args?.force != true) {
@@ -2589,7 +2680,7 @@ def adminRebootHub(args) {
             priorWindow = updateWindow
             priorReason = windowReason
             // Before the POST: once it lands the hub may go before we get to run again.
-            markExpectedDowntime(600000L, "hub_reboot")
+            windowHeld = markExpectedDowntime(600000L, "hub_reboot")
             try { ourStamp = atomicState.expectedDownUntil as Long } catch (Exception ignore) { ourStamp = null }
         }
     }
@@ -2606,9 +2697,16 @@ def adminRebootHub(args) {
     Integer st = null
     try { st = resp?.status as Integer } catch (Exception ignore) { st = null }
     if (st != null && st >= 200 && st < 400) {
-        return [success: true, status: st,
-                message: "Hub reboot initiated; the hub is unreachable for 1-3 minutes.",
-                response: resp?.data?.toString()?.take(200)]
+        // A reboot whose suppression window did not persist still rebooted -- but the wedge escape
+        // cannot see it, so say so rather than let the caller assume it is covered.
+        def ok = [success: true, status: st,
+                  message: "Hub reboot initiated; the hub is unreachable for 1-3 minutes.",
+                  response: resp?.data?.toString()?.take(200)]
+        if (!windowHeld) {
+            ok.windowPersisted = false
+            ok.note = "The reboot landed, but the expected-downtime window could not be persisted: the wedge escape does not know this reboot is deliberate and may count the downtime as a wedge."
+        }
+        return ok
     }
     if (st == null) {
         // AMBIGUOUS: a hub that accepted the reboot goes down mid-response, so "no status" is the
@@ -2622,10 +2720,12 @@ def adminRebootHub(args) {
     // A status the hub actually returned is proof it did NOT reboot: the window would otherwise
     // make the wedge escape stand down for 10 minutes on a reboot that never happened. Only undo
     // our own stamp -- a platform update that opened a NEWER window meanwhile must keep it.
-    releaseExpectedDowntime(ourStamp, priorWindow, priorReason)
+    boolean released = releaseExpectedDowntime(ourStamp, priorWindow, priorReason)
     return [success: false, status: st,
             error: "reboot POST returned status ${st}",
-            note: "The hub answered, so it did not reboot; the downtime window was released."]
+            windowReleased: released,
+            note: released ? "The hub answered, so it did not reboot; the downtime window was released."
+                           : "The hub answered, so it did not reboot, but the downtime window could NOT be cleared -- it will suppress the wedge escape until it expires."]
 }
 
 // Status-aware loopback GET. Unlike hubGet (text body, swallows every exception -> null), this
