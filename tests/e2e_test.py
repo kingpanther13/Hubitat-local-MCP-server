@@ -8152,6 +8152,10 @@ class TestRunner:
             # A paused rule's name carries the builder's own decoration -- the literal constant
             # " <span class='text-red'>(Paused)</span>". Strip markup and that one suffix before
             # comparing, or a rename that landed reads as a failure.
+            # The reported name is the rule's OWN name: the hub's "(Paused)" decoration is stripped at
+            # the single reader, so a paused rule must never surface it (the raw form travels as rawName).
+            assert "(Paused)" not in str(got.get("name") or ""), \
+                f"the hub's paused decoration leaked into the reported name: {got.get('name')!r}"
             got_name = re.sub(r"<[^>]+>", "", str(got.get("name") or "")).strip()
             if got.get("rulePaused") is True and got_name.endswith("(Paused)"):
                 got_name = got_name[: -len("(Paused)")].strip()
