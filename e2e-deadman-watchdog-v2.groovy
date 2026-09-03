@@ -1476,7 +1476,8 @@ def adminPurgeE2eArtifacts(args) {
         }
     }
     if (!claimed) {
-        String activePrefix = atomicState.purgeClaimPrefix?.toString()
+        // Re-read: this is the WINNER's prefix, not the snapshot taken before the race.
+        activePrefix = atomicState.purgeClaimPrefix?.toString()
         if (activePrefix != null && activePrefix != prefix) {
             return [success: false, busy: true, prefix: prefix, activePrefix: activePrefix,
                     error: "A concurrent purge for prefix '${activePrefix}' won the claim; it does not cover '${prefix}'.",
