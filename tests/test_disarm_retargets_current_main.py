@@ -129,3 +129,23 @@ def test_disarm_every_retarget_fetch_blocks_redirects():
         assert ln.count("--max-redirs 0") >= ln.count("curl"), (
             f"{SCRIPT.name}: a re-target fetch lacks --max-redirs 0 (redirect-based SSRF):\n  {ln.strip()}"
         )
+
+
+def test_disarm_purge_is_called_exactly_once_never_retried():
+    """The sweep outlives the ~10s relay timeout by minutes, so a dropped response means it is
+    still RUNNING on the hub. Retrying would start overlapping multi-minute sweeps."""
+    text = SCRIPT.read_text()
+    call = text.split('mcp_tool_call_text "hub_purge_e2e_artifacts"')[1].split("\n\n")[0]
+    assert "hub_purge_e2e_artifacts" in call
+    # the retry-count argument on the call is 1
+    assert "\" 1 2>/dev/null" in call or "' 1 2>/dev/null" in call, call[:400]
+
+
+def test_disarm_gates_the_purge_verdict_on_success_not_just_counts():
+    """A refused sweep (success:false, busy:true) carries no count fields, so summing the counts
+    alone reads it as a clean purge."""
+    text = SCRIPT.read_text()
+    assert "PURGE_OK=" in text
+    assert 'if .success == false then "no" else "yes" end' in text
+    assert '[ "$PURGE_OK" != "yes" ]' in text
+

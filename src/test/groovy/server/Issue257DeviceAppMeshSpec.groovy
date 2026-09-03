@@ -234,6 +234,27 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
         result.disabled == false
     }
 
+    def "the ids shape carries the same fallback metadata as the summary shape"() {
+        given: "the capabilities endpoint is gone, so capabilityFilter can only match authorized devices"
+        settingsMap.selectedDevices = [dev(id: 80)]
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [
+                [key: "DEV-80", data: [id: 80, name: "Authorized Switch"], children: []],
+                [key: "DEV-99", data: [id: 99, name: "Unauthorized Motion"], children: []]
+            ]])
+        }
+
+        when: "the ids shape -- the one a caller pages through, where a silent partial is invisible"
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, "ids", "all")
+
+        then: "source and the partial-capabilities warning ride it, not just the summary shape"
+        result.deviceIds.sort() == [80, 99]
+        result.source == "/hub2/devicesList"
+        result.capabilitiesPartial == true
+        result.capabilitiesNote?.contains("capabilityFilter therefore matches authorized devices only")
+    }
+
     def "scope='all' falls back to hub2 devicesList when the capabilities endpoint is gone"() {
         given:
         settingsMap.selectedDevices = [dev(id: 80)]

@@ -4608,6 +4608,101 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         posts.isEmpty()
     }
 
+    def "clearActions removes a live settings row the compiled actionList never listed"() {
+        given: "an un-baked row (actSubType.99, no actType) that actionList does not carry"
+        enableWrite()
+        def live = [[name: "actType.1", value: "switchActs"], [name: "actSubType.1", value: "getOnOffSwitch"],
+                    [name: "actSubType.99", value: "getIfThen"]]
+        def trashed = [] as Set
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true, version: 7,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectActions", title: "Actions", error: null,
+                             sections: [[title: "", input: [[name: "actType.1", type: "enum", options: ["switchActs"]],
+                                                            [name: "cancelTrash", type: "button"],
+                                                            [name: "trashActs", type: "enum", multiple: true]]]]],
+                settings: ["actType.1": "switchActs"],
+                childApps: []
+            ])
+        }
+        // The compiled list knows only action 1 -- exactly the divergence that makes a
+        // compiled-only clear leave the orphan behind for good.
+        hubGet.register('/app/ruleBuilderJson/100') { params -> JsonOutput.toJson([broken: false, actionList: ["1"]]) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, live.findAll { !trashed.contains((it.name.toString() =~ /\.(\d+)$/)[0][1]) })
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json" && body?.containsKey("settings[trashActs]")) {
+                body["settings[trashActs]"].toString().findAll(/\d+/).each { trashed << it }
+            }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, clearActions: true, confirm: true])
+
+        then: "both the compiled action and the settings-only row are gone"
+        result.success == true
+        (result.removedIndices ?: []).collect { it.toString() }.sort() == ["1", "99"]
+    }
+
+    def "addAction allocates above a settings-only row the compiled actionList does not carry"() {
+        given: "action 1 is baked; row 5 exists in settings only -- allocating from the compiled view would reuse 2"
+        enableWrite()
+        def written = [:]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/app/ruleBuilderJson/100') { params -> JsonOutput.toJson([broken: false, actionList: ["1"]]) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "actType.1", value: "switchActs"], [name: "actSubType.1", value: "getOnOffSwitch"],
+                             [name: "actSubType.5", value: "getComment"]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            JsonOutput.toJson([app: [id: 100, name: "Rule-5.1", label: "r", installed: true],
+                               configPage: [name: "doActPage", title: "Actions", error: null,
+                                            sections: [[title: "", input: [[name: "actType.6", type: "enum", options: ["messageActs"]],
+                                                                           [name: "actSubType.6", type: "enum", options: ["getLogMsg"]],
+                                                                           [name: "logmsg.6", type: "text"]]]]],
+                               settings: [:], childApps: []])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            body?.each { k, v -> if (k.toString().startsWith("settings[")) written[k.toString()] = v }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addAction: [capability: "log", message: "x"], confirm: true])
+
+        then: "the new action takes 6, above the un-baked row, instead of overwriting index 2"
+        result.actionIndex == 6
+        written.keySet().any { it.contains("actType.6") }
+    }
+
+    def "addAction refuses an ELSE whose only opener is a settings row outside the compiled action list"() {
+        given: "actionList is empty -- the IF row in settings was never baked, so the rule has no open block"
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/app/ruleBuilderJson/100') { params -> JsonOutput.toJson([broken: false, actionList: []]) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, [[name: "actType.1", value: "condActs"], [name: "actSubType.1", value: "getIfThen"]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << path; [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addAction: [capability: "else"], confirm: true])
+
+        then: "scoped by the compiled list the stale opener does not count, so the ELSE is an orphan"
+        result.success == false
+        result.error?.toString()?.toLowerCase()?.contains("else")
+    }
+
     def "clearActions plus a non-empty replaceActions is rejected fail-loud"() {
         // Both are action-family WRITES sharing one dispatcher branch, so before the fix
         // they BOTH executed: the clear wiped the rule, then replaceActions re-added its
