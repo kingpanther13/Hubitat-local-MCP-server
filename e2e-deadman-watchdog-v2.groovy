@@ -1254,7 +1254,13 @@ private Map clickHubVarButton(Integer appId, String buttonName, String stateAttr
 // Returns null on success, else a reason. The two click statuses are part of the reason: a 5xx
 // (or a wrong app id) used to be reported as "likely in use by a rule", sending the operator after
 // a referencing rule that did not exist.
-private String deleteHubVariable(Integer appId, String varName) {
+// `claim` is the purge sweep's claim token when this runs inside a sweep: the claim is renewed and
+// re-checked before EVERY wizard click, not only on entry. Each click is a form POST with the
+// 420-second hub timeout, and there are up to four per variable, so a helper that renewed only on
+// entry could outlive the 15-minute staleness escape and keep clicking after a newer sweep had
+// taken the claim. A null claim (a caller outside a sweep) skips the check and never touches the
+// claim stamp.
+private String deleteHubVariable(Integer appId, String varName, String claim = null) {
     String lastClicks = "unknown"
     for (int attempt = 0; attempt < 2; attempt++) {
         try {
@@ -1262,7 +1268,9 @@ private String deleteHubVariable(Integer appId, String varName) {
             hubGet("/installedapp/statusJson/${appId}", [:])
         } catch (Exception ignore) { /* priming is best-effort */ }
         Integer s1 = null, s2 = null
+        if (claim != null && !renewPurgeClaim(claim)) return "purge claim lost to a newer sweep -- stopped before the deleteGV click (${lastClicks})"
         try { s1 = clickHubVarButton(appId, varName, "deleteGV")?.status as Integer } catch (Exception ignore) { s1 = null }
+        if (claim != null && !renewPurgeClaim(claim)) return "purge claim lost to a newer sweep -- stopped before the delConfirm click (deleteGV=${s1 ?: 'no response'})"
         try { s2 = clickHubVarButton(appId, "delConfirm", null)?.status as Integer } catch (Exception ignore) { s2 = null }
         lastClicks = "deleteGV=${s1 ?: 'no response'}, delConfirm=${s2 ?: 'no response'}"
         boolean clicksOk = s1 != null && s1 < 400 && s2 != null && s2 < 400
@@ -1459,7 +1467,7 @@ Map purgeE2eArtifactsLocked(String prefix, String claim = null) {
                         return
                     }
                     try {
-                        String why = deleteHubVariable(hvAppId, vn)
+                        String why = deleteHubVariable(hvAppId, vn, claim)
                         if (why == null) { varsDeleted << vn }
                         else { varsFailed << [name: vn, error: why] }
                     } catch (Exception e) { varsFailed << [name: vn, error: e.message] }

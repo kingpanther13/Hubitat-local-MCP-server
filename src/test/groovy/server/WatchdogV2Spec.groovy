@@ -1975,6 +1975,33 @@ class WatchdogV2Spec extends Specification {
         res.failed.any { it.id == 2 && it.error.contains("claim lost") }
     }
 
+    def "a variable delete renews the claim before every wizard click and stops mid-variable once the claim is lost"() {
+        given: "no apps to purge, one variable; the first wizard click hands the claim to a newer sweep"
+        script.metaClass.hubGet = { String path, Map q = [:], Integer t = null ->
+            path == "/hub2/appsList" ? groovy.json.JsonOutput.toJson([apps: []]) : null
+        }
+        script.metaClass.getAllGlobalVars = { -> [BAT_E2E_v1: [type: 'string', value: 'x']] }
+        script.metaClass.getGlobalVar = { String n -> [type: 'string', value: 'x'] }   // never deleted
+        script.metaClass.findHubVariablesAppId = { -> 42 }
+        def clicks = []
+        script.metaClass.hubPostForm = { String path, Map body ->
+            clicks << body.name
+            atomicStateMap.purgeClaim = 'purge-newer'
+            [status: 200, data: '']
+        }
+        atomicStateMap.purgeClaim = 'purge-mine'
+        atomicStateMap.purgeInFlightAt = 1L
+
+        when:
+        def res = script.purgeE2eArtifactsLocked("BAT_E2E_", 'purge-mine')
+
+        then: "only the deleteGV click ran -- the delConfirm click and the second attempt did not, and the loss is reported"
+        clicks == ['BAT_E2E_v1']
+        (atomicStateMap.purgeInFlightAt as Long) > 1L
+        res.variablesFailed.any { it.name == 'BAT_E2E_v1' && it.error.contains('claim lost') && it.error.contains('delConfirm') }
+        res.variablesDeleted == []
+    }
+
     def "the 30-minute auto-reboot rate limit vetoes only the reboot -- the tick still reads the flag"() {
         given: "a hub that still looks wedged 60s after an auto-reboot fired"
         boolean flagRead = false
