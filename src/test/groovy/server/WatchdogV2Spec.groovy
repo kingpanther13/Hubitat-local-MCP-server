@@ -1975,6 +1975,138 @@ class WatchdogV2Spec extends Specification {
         res.failed.any { it.id == 2 && it.error.contains("claim lost") }
     }
 
+    def "an auto-reboot is vetoed under the lock when a concurrent probe cleared the streak between the checks and the claim"() {
+        given: "a wedged-looking hub; the tick's own probes fail, and a concurrent probe's success lands after the pre-lock checks"
+        script.metaClass.readFlag = { -> null }
+        atomicStateMap.loopbackFailStreak = 8
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 300000L
+        int probes = 0
+        script.metaClass.probeLoopbackAlive = { ->
+            probes++
+            // The 2nd call is the reboot path's own pre-lock probe: it fails, but a concurrent
+            // probe answered at the same moment and reset the streak -- the hub is healthy now.
+            if (probes == 2) atomicStateMap.loopbackFailStreak = 0
+            false
+        }
+        def posts = []
+        script.metaClass.hubPostForm = { String path, Map body -> posts << path; [status: 200, data: ''] }
+
+        when:
+        script.checkDeadman()
+
+        then: "the claim re-validated the state under the lock: no reboot POST, no slot stamped"
+        probes == 2
+        posts == []
+        atomicStateMap.lastAutoRebootAt == null
+    }
+
+    def "an auto-reboot is vetoed under the lock when a platform update was accepted while the slot was being claimed"() {
+        given:
+        script.metaClass.readFlag = { -> null }
+        atomicStateMap.loopbackFailStreak = 8
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 300000L
+        int probes = 0
+        script.metaClass.probeLoopbackAlive = { ->
+            probes++
+            if (probes == 2) atomicStateMap.expectedDownUntil = System.currentTimeMillis() + 1500000L   // hub_update_platform landed meanwhile
+            false
+        }
+        def posts = []
+        script.metaClass.hubPostForm = { String path, Map body -> posts << path; [status: 200, data: ''] }
+
+        when:
+        script.checkDeadman()
+
+        then:
+        posts == []
+        atomicStateMap.lastAutoRebootAt == null
+    }
+
+    @Unroll
+    def "a platform update claims the downtime window before its request and hands it back when the hub does not accept (#scenario)"() {
+        given:
+        script.metaClass.hubGet = { String path, Map q = [:], Integer t = null ->
+            path == "/hub/cloud/checkForUpdate" ? '{"status":"ok"}' : (path == "/hub/cloud/updatePlatform" ? updateResp : null)
+        }
+
+        when:
+        def r = script.adminUpdatePlatform([confirm: true])
+
+        then:
+        r.success == accepted
+        (atomicStateMap.expectedDownUntil != null) == accepted
+        (atomicStateMap.expectedDownReason == 'hub_update_platform') == accepted
+
+        where:
+        scenario           | updateResp      || accepted
+        'accepted'         | '{"ok":true}'   || true
+        'no response'      | null            || false
+    }
+
+    def "hub_reboot is refused while an accepted platform update is installing, unless forced"() {
+        given: "the update window claimed by hub_update_platform"
+        atomicStateMap.expectedDownUntil = System.currentTimeMillis() + 1400000L
+        atomicStateMap.expectedDownReason = 'hub_update_platform'
+        def posts = []
+        script.metaClass.hubPostForm = { String path, Map body -> posts << path; [status: 200, data: ''] }
+
+        when:
+        def refused = script.adminRebootHub([confirm: true])
+        def forced = script.adminRebootHub([confirm: true, force: true])
+
+        then:
+        refused.success == false
+        refused.refused == true
+        refused.error.contains('platform update')
+        forced.success == true
+        posts == ['/hub/reboot']
+    }
+
+    def "a successful restore whose flag write fails is not re-run: the next tick retries only the write"() {
+        given: "the restore lands, the flag write fails once"
+        int restores = 0
+        script.metaClass.adminUpdateApp = { Map a -> restores++; [success: true] }
+        script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '7',
+                                          manifest: [app: [classId: '178', url: 'https://raw.example/main/app.groovy'], libraries: []]] }
+        int writes = 0
+        Map written = null
+        script.metaClass.writeFlag = { Map fl -> writes++; if (writes == 1) return false; written = fl; true }
+
+        when: "tick 1 restores and cannot persist; tick 2 finds the durable flag still pre-terminal"
+        script.checkDeadman()
+        def parked = atomicStateMap.restorePendingFlag
+        script.checkDeadman()
+
+        then: "the restore ran once; the parked outcome was written on the second tick"
+        restores == 1
+        parked?.restoreResult == 'restored'
+        writes == 2
+        written?.restoreResult == 'restored'
+        atomicStateMap.restorePendingFlag == null
+    }
+
+    def "a fifth failed restore whose flag write fails stays latched: the next tick retries only the write"() {
+        given: "four failures on the durable flag; the fifth fails too, then the flag write fails"
+        int restores = 0
+        script.metaClass.adminUpdateApp = { Map a -> restores++; [success: false, error: 'nope'] }
+        script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '7', fireAttempts: 4,
+                                          manifest: [app: [classId: '178', url: 'https://raw.example/main/app.groovy'], libraries: []]] }
+        int writes = 0
+        Map written = null
+        script.metaClass.writeFlag = { Map fl -> writes++; if (writes == 1) return false; written = fl; true }
+
+        when:
+        script.checkDeadman()
+        script.checkDeadman()
+
+        then: "no sixth restore; the latched 'failed' outcome is persisted on the retry and the attempt state cleared only then"
+        restores == 1
+        written?.restoreResult == 'failed'
+        written?.fireAttempts == 5
+        atomicStateMap.restorePendingFlag == null
+        atomicStateMap.restoreAttempts == null
+    }
+
     def "hub_get_info exposes the wedge detector's state, so an auto-reboot can be attributed after the log buffer has rolled"() {
         given: "a stamped auto-reboot and a short streak, on a hub whose loopback answers"
         script.metaClass.hubGet = { String path, Map q = [:], Integer t = null -> path == "/hub/advanced/freeOSMemory" ? "123456" : null }
