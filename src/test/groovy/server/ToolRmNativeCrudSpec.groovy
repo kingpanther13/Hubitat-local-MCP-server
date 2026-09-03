@@ -9117,8 +9117,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         when:
         def result = script.toolSetRule([appId: 100, removeAction: [index: 3], confirm: true])
 
-        then: "refused before any click, naming the missing compiled order; RM untouched"
+        then: "refused before any click, naming the row in the same words the balance refusal uses"
         result.success == false
+        result.error.contains("structural ELSE-IF row")
         result.error.contains("compiled action order")
         result.error.contains("RM is not touched")
         delActFired == false

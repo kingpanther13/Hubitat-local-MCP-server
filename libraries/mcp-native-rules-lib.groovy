@@ -4289,13 +4289,23 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
         // part of the rule's structure, and the set-diff does not reliably cancel
         // it out: a stale closer can absorb the imbalance a real deletion creates,
         // so current and projected both come back clean and the refusal never fires.
+        // One spelling for both structural refusals below.
+        def humanKind = [
+            "getIfThen": "IF",
+            "getElseIf": "ELSE-IF",
+            "getElse": "ELSE",
+            "getEndIf": "END-IF",
+            "getRepeat": "Repeat",
+            "getWhile": "Repeat-While",
+            "getStopRepeat": "End-Repeat"
+        ][sType] ?: sType
         def orderedIndices = _rmOrderedActionIndices(appId)
         if (orderedIndices == null) {
             // Without the compiled order the only guard left is the whole-settings scan, where a
             // leftover closer can mask the imbalance this deletion creates -- a structural row
             // could be deleted past a check that never saw the real block structure. Refuse, as
             // moveAction and modifyAction do; a non-structural row (above) is unaffected.
-            throw new IllegalStateException("removeAction(${actionIdx}) blocked: action ${actionIdx} is a structural ${sType.replaceFirst(/^get/, '')} row and the rule's compiled action order (ruleBuilderJson actionList) is unavailable, so the deletion's effect on block balance cannot be verified -- the settings scan can be masked by leftover rows. Retry once ruleBuilderJson answers (hub_get_rule_health lists the read failure under checkErrors), or use replaceActions to rebuild the action list atomically. RM is not touched.")
+            throw new IllegalStateException("removeAction(${actionIdx}) blocked: action ${actionIdx} is a structural ${humanKind} row and the rule's compiled action order (ruleBuilderJson actionList) is unavailable, so the deletion's effect on block balance cannot be verified -- the settings scan can be masked by leftover rows. Retry once ruleBuilderJson answers (hub_get_rule_health lists the read failure under checkErrors), or use replaceActions to rebuild the action list atomically. RM is not touched.")
         }
         def currentIssues = _rmStructuralIssuesFromSequence(
             _rmStructuralSequenceFromSettings(settingsByName, ([] as Set), orderedIndices))
@@ -4303,15 +4313,6 @@ private Map _rmDeleteAction(Integer appId, Integer actionIdx) {
             _rmStructuralSequenceFromSettings(settingsByName, ([actionIdx] as Set), orderedIndices))
         def newIssues = projectedIssues - currentIssues
         if (newIssues) {
-            def humanKind = [
-                "getIfThen": "IF",
-                "getElseIf": "ELSE-IF",
-                "getElse": "ELSE",
-                "getEndIf": "END-IF",
-                "getRepeat": "Repeat",
-                "getWhile": "Repeat-While",
-                "getStopRepeat": "End-Repeat"
-            ][sType] ?: sType
             throw new IllegalArgumentException("removeAction(${actionIdx}) blocked: action ${actionIdx} is a structural ${humanKind}; removing it would introduce a new structural-balance issue (${newIssues.first()}). Remove the matching opener/closer first, or use replaceActions to rebuild the action list atomically. RM is not touched.")
         }
     }
