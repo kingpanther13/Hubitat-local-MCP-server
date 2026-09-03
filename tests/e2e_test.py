@@ -8167,8 +8167,6 @@ class TestRunner:
             assert "(Paused)" not in str(got.get("name") or ""), \
                 f"the hub's paused decoration leaked into the reported name: {got.get('name')!r}"
             got_name = re.sub(r"<[^>]+>", "", str(got.get("name") or "")).strip()
-            if got.get("rulePaused") is True and got_name.endswith("(Paused)"):
-                got_name = got_name[: -len("(Paused)")].strip()
             assert got_name == renamed, f"rename did not land: {got.get('name')!r}"
             assert got.get("rulePaused") is True, f"pause did not land: {got}"
 

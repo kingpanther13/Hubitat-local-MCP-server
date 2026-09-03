@@ -1419,7 +1419,6 @@ def adminPurgeE2eArtifacts(args) {
 
     long nowMs = now()
     Long purgeAt = null
-    try { purgeAt = atomicState.purgeInFlightAt as Long } catch (Exception ignore) { purgeAt = null }
     // 15-minute staleness escape: a sweep killed mid-flight (app recompile, hub restart) must not
     // wedge the latch permanently. Matches the observed worst-case sweep of ~11.5 minutes.
     // Read the whole claim as ONE snapshot under the claim lock: the owner clears its three keys
@@ -1701,12 +1700,11 @@ def adminUpdatePlatform(args) {
     // returns null, and a null means the hub never ACCEPTED the update -- so that path hands the
     // window back: a 25-minute window on a hub that is not going down would blind the wedge
     // escape for nothing. The download takes minutes, so the hub is still up when this returns.
-    Long priorWindow = null
-    String priorReason = null
     Long ourStamp = null
     boolean windowHeld = false
     synchronized (REBOOT_LOCK) {
-        try { priorWindow = atomicState.expectedDownUntil as Long; priorReason = atomicState.expectedDownReason?.toString() } catch (Exception ignore) { priorWindow = null }
+        // No prior window is remembered: every exit from here HOLDS the window (an update the hub
+        // may have accepted must keep the escape suppressed), so there is nothing to hand back.
         windowHeld = markExpectedDowntime(1500000L, "hub_update_platform")
         try { ourStamp = atomicState.expectedDownUntil as Long } catch (Exception ignore) { ourStamp = null }
     }

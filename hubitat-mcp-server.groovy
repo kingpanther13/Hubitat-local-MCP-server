@@ -7791,7 +7791,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
             sourcesUsed << cs.endpoint
             broken = cs.broken
             if (cs.predicate != null) predicate = cs.predicate
-            if (cs.actionList != null) compiledActionList = _rmCoerceActionIndices(cs.actionList)
+            compiledActionList = _rmCoerceActionIndices(cs.actionList)   // null in -> null out
             if (cs.validationErrors) validationErrors = cs.validationErrors
             if (ruleFormat == "rm" && broken == true) {
                 // capabsfalse renders the live false-condition text (with current
