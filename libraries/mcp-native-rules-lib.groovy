@@ -4930,10 +4930,25 @@ private Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
     _rmClickAppButton(appId, actionIdx.toString(), stateAttr, "selectActions")
     // The compiled order ONLY: the settings fallback is arbitrary key order, and a position taken
     // from it compared against a compiled-order position can coincidentally show the expected
-    // one-slot shift and report a move that never happened. Unreadable here means unconfirmed,
-    // which the soft asyncCommitLikely return below already expresses.
-    def afterOrderRaw = _rmOrderedActionIndices(appId) ?: []
+    // one-slot shift and report a move that never happened. Unreadable is UNCONFIRMED, and is kept
+    // distinct from a genuinely empty list -- collapsing the two reported a boundary no-op as a
+    // confirmed success carrying indicesAfter:[] and afterPosition:-1, i.e. "the rule has no
+    // actions", for a click nobody could verify.
+    def afterOrderFetched = _rmOrderedActionIndices(appId)
+    def afterOrderRaw = afterOrderFetched ?: []
     def afterPosition = afterOrderRaw.indexOf(actionIdx)
+    if (afterOrderFetched == null) {
+        return [
+            success: false,
+            asyncCommitLikely: true,
+            partial: true,
+            index: actionIdx,
+            direction: direction,
+            beforePosition: beforePosition,
+            indicesAfter: null,
+            verifyHint: "moveAction(${actionIdx}, ${direction}): the click was sent but the compiled action order (ruleBuilderJson actionList) could not be re-read afterwards, so whether it landed is unverified. Check the order with hub_get_app_config(appId=${appId}) before retrying -- a blind retry double-shifts the action."
+        ]
+    }
     def cfg = null
     try { cfg = _rmFetchConfigJson(appId, "selectActions") }
     catch (Exception verifyExc) {

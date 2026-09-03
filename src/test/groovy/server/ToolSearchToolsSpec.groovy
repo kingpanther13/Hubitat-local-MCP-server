@@ -5,11 +5,13 @@ import support.ToolSpecBase
 /**
  * Direct-call coverage for the BM25 hub_search_tools path after the PR2c perf change
  * (bm25-corpus-state-not-atomicstate + bm25-df-table-rebuild-Q15): the corpus and the
- * per-doc tokenization are cached in atomicState (index-aligned to the FULL corpus) and
- * served from cache; df/avgDl are recomputed over the visible subset so ranking stays
- * byte-identical. These pin: a stable ranked shape, cache-hit (no rebuild), per-request
- * visibility filtering over the shared full-corpus token cache, and updated() invalidation
- * of both BM25 entries (and the gateway requiredParams memo) in lockstep.
+ * per-doc tokenization are cached in the class-static TOOL_SEARCH_INDEX, keyed by the corpus
+ * fingerprint (index-aligned to the FULL corpus) and served from there -- NOT in atomicState,
+ * where the two lists were ~244 KB the hub re-serialised on every execution. df/avgDl are
+ * recomputed over the visible subset so ranking stays byte-identical. These pin: a stable
+ * ranked shape, cache-hit (no rebuild), per-request visibility filtering over the shared
+ * full-corpus token cache, updated() invalidation in lockstep with the gateway requiredParams
+ * memo, and the shedding of the legacy atomicState keys an older build left behind.
  */
 class ToolSearchToolsSpec extends ToolSpecBase {
 
@@ -82,6 +84,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         atomicStateMap.toolSearchCorpus = [[name: 'hub_list_rooms', description: 'old', params: '', gateway: 'hub_read_rooms']]
         atomicStateMap.toolSearchTokens = [['hub', 'list', 'rooms', 'old']]
         atomicStateMap.toolSearchCorpusFingerprint = 'stale'
+        atomicStateMap.toolSearchCorpusVersion = 'stale'
 
         when:
         def result = script.toolSearchTools([query: 'list rooms', maxResults: 5])
@@ -91,6 +94,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         !atomicStateMap.containsKey('toolSearchCorpus')
         !atomicStateMap.containsKey('toolSearchTokens')
         !atomicStateMap.containsKey('toolSearchCorpusFingerprint')
+        !atomicStateMap.containsKey('toolSearchCorpusVersion')
     }
 
     def "a toggle flip hides the right tools per-request without rebuilding the shared full-corpus token cache"() {
@@ -101,6 +105,8 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         when: 'search with the engine ON'
         def onResult = script.toolSearchTools([query: 'custom rule create delete clone', maxResults: 25])
         def fullSize = (scriptStaticField('TOOL_SEARCH_INDEX') as Map).tokens.size()
+        def cachedCorpus = (scriptStaticField('TOOL_SEARCH_INDEX') as Map).corpus
+        def cachedTokens = (scriptStaticField('TOOL_SEARCH_INDEX') as Map).tokens
 
         then: 'a custom_* tool is visible'
         onResult.results*.tool.contains('hub_create_custom_rule')
@@ -112,7 +118,9 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         then: 'the custom_* tool is now hidden (per-request visibility filter, NOT a cache rebuild)'
         !offResult.results*.tool.contains('hub_create_custom_rule')
 
-        and: 'the full-corpus token cache is untouched by the toggle'
+        and: 'the full-corpus cache is the SAME objects, not a rebuild that happens to match in size'
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).corpus.is(cachedCorpus)
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).tokens.is(cachedTokens)
         (scriptStaticField('TOOL_SEARCH_INDEX') as Map).tokens.size() == fullSize
         (scriptStaticField('TOOL_SEARCH_INDEX') as Map).tokens.size() == (scriptStaticField('TOOL_SEARCH_INDEX') as Map).corpus.size()
 

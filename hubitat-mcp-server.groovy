@@ -7325,7 +7325,11 @@ private List _flattenHub2DeviceTree(nodes, List acc = null) {
         if (data instanceof Map && data.id != null) {
             acc << [id: data.id, label: data.name]
         }
-        _flattenHub2DeviceTree(node.children, acc)
+        // Propagate the child frame's verdict: it returns null when IT saw a malformed node, and
+        // discarding that let a bad node nested under a valid parent produce a short list that
+        // still read as authoritative -- the exact failure the top-level check exists to stop.
+        // An absent `children` is not malformed: the recursion returns the accumulator unchanged.
+        if (_flattenHub2DeviceTree(node.children, acc) == null) malformed = true
     }
     if (malformed) {
         mcpLog("warn", "devices", "_flattenHub2DeviceTree: /hub2/devicesList carried a non-map node -- treating the inventory as unreadable rather than returning a short list")

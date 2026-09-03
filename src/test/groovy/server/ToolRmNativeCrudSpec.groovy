@@ -5149,7 +5149,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def result = script.toolSetRule([appId: 100, removeAction: [index: 1], confirm: true])
 
         then: "the retry found the truth, so the edit is refused instead of reported as applied"
-        reads >= 2
+        reads == 2      // exactly one retry: more reads would be a different contract
         result.success == false
         result.error?.toString()?.contains("DISABLED")
     }

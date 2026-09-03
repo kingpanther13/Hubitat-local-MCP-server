@@ -1569,7 +1569,11 @@ def adminPurgeE2eArtifacts(args) {
 private boolean renewPurgeClaim(String claim) {
     synchronized (PURGE_CLAIM_LOCK) {
         try {
-            if (claim != null && atomicState.purgeClaim?.toString() != claim) return false
+            // A caller with no claim (the spec seam) holds no lease, so it has none to renew:
+            // writing the stamp here would extend whatever lease IS held, including another
+            // sweep's, which is precisely what the claim exists to prevent.
+            if (claim == null) return true
+            if (atomicState.purgeClaim?.toString() != claim) return false
             long stamp = now()
             atomicState.purgeInFlightAt = stamp
             // Read back: an unrenewed stamp goes stale, a successor takes the claim, and this sweep
@@ -2634,6 +2638,13 @@ private boolean markExpectedDowntime(long ms, String reason) {
         mcpAdminLog "Expecting the hub to be unreachable for up to ${(ms / 60000) as long} min (${reason}); the auto-reboot escape is suppressed until then."
         return true
     } catch (Exception e) {
+        // Same restore as the mismatch path above: the deadline is written before the reason, so a
+        // throw between them leaves OUR deadline beside the PRIOR reason -- a pair that suppresses
+        // the wedge escape and misdirects hub_reboot's refusal, on a call that reported failure.
+        try {
+            atomicState.expectedDownUntil = priorUntil
+            atomicState.expectedDownReason = priorReason
+        } catch (Exception ignore) { }
         log.error "E2E Dead-Man Watchdog v2: could not persist the expected-downtime window (${reason}): ${e.message}"
         return false
     }
