@@ -1424,8 +1424,10 @@ class TestRunner:
         # A structured failure ([success:false,...]) carries no isError, so call_tool returns it as an
         # ordinary dict with no "devices" key. Treating that as "absent" would create a duplicate
         # PERMANENT device on every incident, and nothing ever sweeps E2E_PERM_*.
-        assert found.get("success") is not False,             f"could not look up permanent fixture '{label}' -- refusing to create a duplicate: {found}"
-        assert isinstance(found.get("devices"), list),             f"fixture lookup returned no device list (hub contract drift?) -- refusing to create a duplicate: {found}"
+        assert found.get("success") is not False, \
+            f"could not look up permanent fixture '{label}' -- refusing to create a duplicate: {found}"
+        assert isinstance(found.get("devices"), list), \
+            f"fixture lookup returned no device list (hub contract drift?) -- refusing to create a duplicate: {found}"
         for d in found["devices"]:
             if (d.get("label") or "") == label and d.get("id") is not None:
                 self._perm_fixture_ids[key] = str(d["id"])
@@ -1459,7 +1461,8 @@ class TestRunner:
                     args["cursor"] = cursor
                 page = self.client.call_tool("hub_read_apps_code",
                                              {"tool": "hub_list_drivers", "args": args})
-                assert isinstance(page.get("drivers"), list),                     f"driver catalog read failed (not a driver list) -- this is NOT 'driver absent': {page}"
+                assert isinstance(page.get("drivers"), list), \
+                    f"driver catalog read failed (not a driver list) -- this is NOT 'driver absent': {page}"
                 for d in page["drivers"]:
                     name, did, bucket = d.get("name"), d.get("id"), d.get("bucket")
                     # Prefer a BUILT-IN over a user driver of the same name -- the catalog exposes
@@ -2202,10 +2205,18 @@ class TestRunner:
     @test("devices")
     def test_list_devices_scope_all(self) -> None:
         # Item 1 (#257): scope='all' lists EVERY hub device with an mcpAuthorized flag,
-        # sourced from /device/listWithCapabilities/json (not the authorization-scoped Groovy model).
+        # sourced from the hub-wide inventory (/device/listWithCapabilities/json, or /hub2/devicesList on
+        # platform 2.5.1.173 and later where that endpoint is gone), not the authorization-scoped Groovy model.
         result = self.client.call_tool("hub_list_devices", {"scope": "all"})
         assert isinstance(result, dict), "scope='all' did not return an object"
         assert result.get("scope") == "all", f"scope='all' not echoed: {result}"
+        # The fallback contract: the response names its source, and when that source carries no
+        # capabilities it says so rather than letting an empty list read as "no capabilities".
+        assert result.get("source") in ("/device/listWithCapabilities/json", "/hub2/devicesList"), \
+            f"scope='all' must report which inventory endpoint answered: {result.get('source')!r}"
+        if result.get("source") == "/hub2/devicesList":
+            assert result.get("capabilitiesPartial") is True and result.get("capabilitiesNote"), \
+                f"the /hub2/devicesList fallback must flag partial capabilities: {result}"
         devices = result.get("devices", [])
         assert isinstance(devices, list) and len(devices) > 0, "scope='all' returned no devices"
         assert all("mcpAuthorized" in d for d in devices), \
@@ -2963,11 +2974,12 @@ class TestRunner:
         assert created.get("label") == f"{PREFIX}FromDriver",             ("hub_create_device did not apply the requested label -- /device/updateLabel and the "
              f"wholesale /device/update fallback both missed: label={created.get('label')!r} "
              f"warnings={created.get('warnings')!r}")
-        assert not [w for w in (created.get("warnings") or []) if "label" in str(w).lower()],             f"hub_create_device warned about the label: {created.get('warnings')!r}"
+        assert not [w for w in (created.get("warnings") or []) if "label" in str(w).lower()], \
+            f"hub_create_device warned about the label: {created.get('warnings')!r}"
         try:
             # A freshly created REAL device is NOT MCP-selected, so the scoped hub_get_device
             # (selected/child devices only) can't resolve it. Confirm it exists via the
-            # scope='all' list (every hub device, sourced from /device/listWithCapabilities/json).
+            # scope='all' list (every hub device, from the hub-wide inventory -- see test_list_devices_scope_all).
             all_devs = self.client.call_tool("hub_list_devices", {"scope": "all"})
             ids = {str(d.get("id")) for d in all_devs.get("devices", [])} if isinstance(all_devs, dict) else set()
             assert new_id in ids, f"created device {new_id} not present in scope='all' listing"
@@ -4413,6 +4425,27 @@ class TestRunner:
         assert disabled.get("status") == "disabled" and disabled.get("disabled") is True, \
             f"disabled rule should read status disabled + disabled:true, got: {disabled}"
 
+        # While it IS disabled: every edit shape must be REFUSED, not silently no-op'd. Hubitat
+        # renders no configuration page for a disabled app, so the wizard has nothing to drive.
+        # Verified live on fw 2.5.1.177 that the unguarded paths were worse than a refusal --
+        # walkStep and a settings write both returned success:true having done nothing, and
+        # removeAction burned ~8s of clicks then told the caller it was safe to retry. Two shapes
+        # here (one wizard shortcut, one raw settings write) so a gate that covers only the
+        # shortcut family cannot pass this.
+        for shape, label in ((
+            {"addAction": {"capability": "log", "message": "must not land"}}, "addAction"),
+            ({"settings": {"logmsg.1": "must not land"}}, "settings"),
+        ):
+            # Envelope, not a raise: the gate throws IllegalArgumentException but
+            # _applyNativeAppEdit's pre-flight catch converts it to the structured refusal
+            # response, which is what the live hub returned on 2.5.1.177.
+            refused = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule", "args": {"appId": app_id, "confirm": True, **shape}})
+            assert refused.get("success") is False, \
+                f"editing a DISABLED rule via {label} must be refused, got: {refused}"
+            assert "DISABLED" in str(refused.get("error", "")), \
+                f"the {label} refusal must name the disabled app as the cause, got: {refused}"
+
         _status_write("hub_set_app_disabled", {"appId": app_id, "disabled": False},
                       "hub_set_app_disabled(disabled=False)")
         reenabled = _rule_status_when(app_id, lambda s: s.get("status") == "active" and s.get("disabled") is False)
@@ -5043,11 +5076,16 @@ class TestRunner:
         # so the field can render at tCapab-2 (etc.). The event walker reads the exposed base
         # slot from the schema; pre-fix it hardcoded tCapab-1 and threw ("tCapab-1 not in
         # doActPage schema") whenever the slot was offset. Here a seed log action plus a
-        # Required Expression put the waitEvents past the first slot. Its own small throwaway
-        # rule (a Required Expression conflicts with any other per-concern rule's state),
-        # deleted in the finally. A relay-dropped create is adopted only after an
-        # authoritative config/settings read proves its RE fixture; failed proof raises so
-        # _run_one re-runs the whole test on a fresh rule.
+        # Required Expression push the waitEvents toward a later slot -- but WHICH slot RM
+        # exposes is RM's decision, not the tool's: the same fixture rendered at tCapab-2 on
+        # one run and at tCapab-1 on the next (after the hub had rebooted), both healthy. So
+        # the contract pinned here is slot-consistency, not a slot number: the write binds
+        # exactly one tstate-<N>, the tCapab/tDev of that same N ride along, and that N is
+        # the one the rule persists. Its own small throwaway rule (a Required Expression
+        # conflicts with any other per-concern rule's state), deleted in the finally. A
+        # relay-dropped create is adopted only after an authoritative config/settings read
+        # proves its RE fixture; failed proof raises so _run_one re-runs the whole test on a
+        # fresh rule.
         switch_id = int(self.get_test_switch_id())
         app_id, created = self._create_native_rule("WaitEvtOffset", {
             "addActions": [
@@ -5069,24 +5107,27 @@ class TestRunner:
             else:
                 self._assert_switch_required_expression(app_id, switch_id)
 
-            # THE fix: the second bundled action must use the offset slot (tCapab-2),
-            # rather than hardcoding tCapab-1. Retain response-field proof when the relay
-            # delivered it; a 504-adopted create is proved by exact persisted settings below.
+            # THE fix: the bundled wait-event action binds the slot RM exposes rather than
+            # hardcoding tCapab-1. Retain response-field proof when the relay delivered it; a
+            # 504-adopted create is proved by exact persisted settings below.
+            bound_slot = None
             if created is not None:
                 created_actions = created.get("actions") or []
                 assert len(created_actions) == 2, f"create did not return both bundled actions: {created}"
                 we_res = created_actions[1]
                 assert we_res.get("success") is True, \
                     f"waitEvents add on an offset action slot should commit, got: {we_res}"
-                # Exact membership in settingsApplied, not substring-in-JSON. The old
-                # positive half searched the whole serialized envelope, where "tstate-2"
-                # also matches "tstate-20".."tstate-29" and appears in the schema key
-                # lists and hint strings the response carries -- so it could pass on a
-                # response that never wrote the slot at all. A false GREEN on exactly the
-                # offset-slot contract this test exists to pin.
-                applied_keys = we_res.get("settingsApplied") or []
-                assert "tstate-2" in applied_keys and "tstate-1" not in applied_keys, \
-                    f"the wait event response should bind to offset slot tstate-2: {we_res}"
+                # Exact membership in settingsApplied, not substring-in-JSON: the whole
+                # serialized envelope also carries schema key lists and hint strings where
+                # "tstate-2" matches "tstate-20".."tstate-29", so a substring search could
+                # pass on a response that never wrote the slot at all.
+                applied_keys = [str(k) for k in (we_res.get("settingsApplied") or [])]
+                state_keys = [k for k in applied_keys if re.fullmatch(r"tstate-\d+", k)]
+                assert len(state_keys) == 1, \
+                    f"the wait event response should bind exactly one tstate-<N> slot: {we_res}"
+                bound_slot = int(state_keys[0].split("-")[1])
+                assert f"tCapab-{bound_slot}" in applied_keys and f"tDev-{bound_slot}" in applied_keys, \
+                    f"the wait event's capability/device fields should ride the same slot {bound_slot}: {we_res}"
 
             # The committed rule is structurally sound (no broken markers from a half-written event row).
             health = self.client.call_tool("hub_manage_rule_machine", {
@@ -5096,10 +5137,13 @@ class TestRunner:
 
             cfg = self._get_persisted_rule_config(app_id)
             settings = cfg.get("settings") or {}
-            assert str(settings.get("tstate-2")).lower() == "on", \
-                f"the offset wait-event state did not persist at tstate-2: {settings}"
-            assert str(settings.get("tstate-1")).lower() != "on", \
-                f"the event was miswritten to non-offset tstate-1: {settings}"
+            persisted_on = sorted(k for k, v in settings.items()
+                                  if re.fullmatch(r"tstate-\d+", str(k)) and str(v).lower() == "on")
+            assert len(persisted_on) == 1, \
+                f"exactly one wait-event state should persist as 'on', got {persisted_on}: {settings}"
+            if bound_slot is not None:
+                assert persisted_on == [f"tstate-{bound_slot}"], \
+                    f"the persisted wait-event slot {persisted_on} is not the one the response bound ({bound_slot}): {settings}"
             # Prove the Wait-for-events ACTION committed, by its persisted subtype. The
             # old check ("wait" in the config JSON) was vacuous: the seed log action's
             # message is "E2E waitEvents offset base", so it matched whether or not the
@@ -5667,7 +5711,8 @@ class TestRunner:
         tool itself documents as EXPECTED mid-build. Broken markers, page errors, and flag poison
         still fail; structural imbalance alone does not (the caller's reset/closer handles it)."""
         h = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_get_rule_health", "args": {"appId": app_id}})
-        assert not h.get("configPageError") and not h.get("brokenMarkers") and not h.get("multipleFlagPoison"),             f"rule is genuinely broken after the dropped response (not just mid-build imbalance): {h}"
+        assert not h.get("configPageError") and not h.get("brokenMarkers") and not h.get("multipleFlagPoison"), \
+            f"rule is genuinely broken after the dropped response (not just mid-build imbalance): {h}"
         if h.get("ok") is False:
             print(f"    rule {app_id} renders with structural imbalance after the dropped response "
                   "(expected mid-build state; a reset/closer follows)")
@@ -6042,6 +6087,191 @@ class TestRunner:
             assert "ruleBuilderJson" in str(h.get("source") or ""), \
                 f"the broken verdict should come from the compiled-state source: {h}"
         finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_rm_rule_restore_in_place_with_device_picker(self) -> None:
+        # In-place hub_restore_backup on a Rule Machine rule that carries a device picker. The
+        # snapshot stores a picker as the {id: label} map configure/json renders, and the replay
+        # used to post that map's toString as the device list: the hub answered 500 and every
+        # such restore reported "applied partially". No other e2e restores an RM rule with a
+        # device in it, so this was invisible until a live home hub showed it.
+        sw = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("RestorePicker", {
+            "addActions": [{"capability": "switch", "action": "off", "deviceIds": [sw]}],
+        })
+        try:
+            added = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule",
+                "args": {"appId": int(app_id), "confirm": True,
+                         "addAction": {"capability": "log", "message": "restore-picker probe"}}})
+            assert added.get("success") is True, f"addAction that takes the snapshot failed: {added}"
+            backup_key = (added.get("backup") or {}).get("backupKey")
+            assert backup_key, f"addAction returned no backupKey: {added}"
+            restored = self.client.call_tool("hub_manage_backup", {
+                "tool": "hub_restore_backup",
+                "args": {"scope": "source", "backupKey": backup_key, "confirm": True}})
+            assert restored.get("success") is True, \
+                f"in-place restore of a rule with a device picker failed: {restored}"
+            assert restored.get("failedStep") is None, restored
+            applied = restored.get("settingsApplied") or []
+            assert any(str(k).startswith("onOffSwitch.") for k in applied), \
+                f"the switch picker was not part of the replay: {restored}"
+            cfg = self._get_persisted_rule_config(app_id).get("settings") or {}
+            picker = next((v for k, v in cfg.items() if str(k).startswith("onOffSwitch.")), None)
+            assert isinstance(picker, dict) and str(sw) in {str(k) for k in picker}, \
+                f"the switch picker does not carry the test switch after the restore: {picker!r}"
+            health = self.client.call_tool("hub_read_rules", {
+                "tool": "hub_get_rule_health", "args": {"appId": int(app_id)}})
+            assert health.get("ok") is True, f"rule unhealthy after restore: {health}"
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_rule_health_ui_shaped_else_endif_rows(self) -> None:
+        # Structural balance on a rule whose ELSE / END-IF rows carry ONLY actSubType.<N>
+        # and no actType.<N> -- the settings shape Rule Machine's own UI leaves behind for
+        # a branch keyword and a block closer. Every other health test builds its rule
+        # through OUR writer, which always writes BOTH keys, so this shape was never
+        # exercised live: while the structural walker discovered action rows from the
+        # actType.<N> keys alone, a UI-authored ELSE/END-IF was invisible to it and the
+        # balanced IF it belongs to read as "opened a block that was never closed".
+        #
+        # The shape is produced through the documented edit-as-text round trip
+        # (hub_export_native_app -> mutate the exported JSON -> hub_import_native_app).
+        # It cannot be produced any other way through the tool surface: the writer never
+        # emits an actType-less row, and nothing DELETES an app setting -- a raw `settings`
+        # write only writes, and only the keys the current page schema already carries.
+        sw = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("RuleHealthUIShape", {
+            "addActions": [
+                {"capability": "ifThen", "expression": {"conditions": [
+                    {"capability": "Switch", "deviceIds": [sw], "state": "on"}]}},
+                {"capability": "log", "message": "then-branch"},
+                {"capability": "else"},
+                {"capability": "log", "message": "else-branch"},
+                {"capability": "endIf"},
+            ],
+        })
+        imported_id = None
+        try:
+            source_settings = self._get_persisted_rule_config(app_id).get("settings") or {}
+            branch_rows = sorted(str(key).split(".", 1)[1] for key, value in source_settings.items()
+                                 if str(key).startswith("actSubType.")
+                                 and str(value) in ("getElse", "getEndIf"))
+            assert len(branch_rows) == 2, \
+                f"fixture should carry exactly one ELSE and one END-IF row: {source_settings}"
+
+            exported = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_export_native_app", "args": {"sourceAppId": int(app_id)}})
+            assert exported.get("success") is True and exported.get("jsonContent"), \
+                f"appCloner export did not return the rule JSON: {exported}"
+            document = json.loads(exported["jsonContent"])
+
+            doomed_names = {f"actType.{idx}" for idx in branch_rows}
+
+            def _drop_named_settings(node: Any) -> int:
+                """Remove appSettings entries named in doomed_names, wherever they sit.
+
+                A canonical appCloner export carries them as
+                appData.<sourceId>.appSettings[] = [{name, type, multiple, value}, ...].
+                The walk is shape-agnostic on purpose: a nesting change then surfaces as
+                the removal-count mismatch below instead of a silent no-op that would
+                health-check an unmutated rule and pass green."""
+                removed = 0
+                if isinstance(node, dict):
+                    for value in node.values():
+                        removed += _drop_named_settings(value)
+                elif isinstance(node, list):
+                    doomed = [item for item in node if isinstance(item, dict)
+                              and str(item.get("name")) in doomed_names]
+                    for item in doomed:
+                        node.remove(item)
+                    removed += len(doomed)
+                    for item in node:
+                        removed += _drop_named_settings(item)
+                return removed
+
+            dropped = _drop_named_settings(document)
+            assert dropped == len(doomed_names), \
+                (f"expected to strip {sorted(doomed_names)} from the export, removed {dropped} "
+                 f"entries -- the export's settings shape is not what the mutation targets")
+
+            # Also plant a LEFTOVER row: an actSubType for an action index the rule does not
+            # have. Health must report it in orphanedActionRows and must NOT count it toward
+            # block structure -- a stale IF was previously reported unclosed forever (#393).
+            def _inject_orphan(node: Any) -> int:
+                if isinstance(node, list):
+                    if any(isinstance(i, dict) and str(i.get("name", "")).startswith("actSubType.") for i in node):
+                        node.append({"name": "actSubType.99", "type": "enum", "multiple": False,
+                                     "value": "getIfThen"})
+                        return 1
+                    return sum(_inject_orphan(i) for i in node)
+                if isinstance(node, dict):
+                    return sum(_inject_orphan(v) for v in node.values())
+                return 0
+            assert _inject_orphan(document) == 1, "could not find the appSettings list to plant the orphan row"
+
+            imported = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                "tool": "hub_import_native_app",
+                "args": {"jsonContent": json.dumps(document), "parentHintAppId": int(app_id),
+                         "newName": f"{PREFIX}RuleHealthUIShapeImp_{_run_artifact_suffix()}",
+                         "confirm": True}})
+            imported_id = imported.get("newAppId")
+            assert imported.get("success") is True and imported_id, \
+                f"importing the mutated rule did not create a new app: {imported}"
+            self.created_native_app_ids.append(str(imported_id))
+
+            # The imported rule must actually be UI-shaped, else an all-clear health verdict
+            # below would prove nothing. Re-derive the rows from the IMPORT (the cloner owns
+            # the indices), then pin actSubType present / actType absent on exactly those.
+            imported_settings = self._get_persisted_rule_config(imported_id).get("settings") or {}
+            ui_rows = sorted(str(key).split(".", 1)[1] for key, value in imported_settings.items()
+                             if str(key).startswith("actSubType.")
+                             and str(value) in ("getElse", "getEndIf"))
+            assert len(ui_rows) == len(branch_rows), \
+                f"the import did not carry the ELSE/END-IF rows over: {imported_settings}"
+            assert not any(f"actType.{idx}" in imported_settings for idx in ui_rows), \
+                ("the import re-materialized actType.<N> on the branch/closer rows, so the "
+                 f"UI-authored settings shape never reached the hub: {imported_settings}")
+            assert any(str(key).startswith("actType.") for key in imported_settings), \
+                f"the strip took more than the branch/closer rows: {imported_settings}"
+
+            health = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_get_rule_health", "args": {"appId": imported_id}})
+            # An unread configPage leg leaves structuralIssues vacuously empty -- assert the
+            # structural walk actually ran before trusting its all-clear.
+            assert not health.get("checkErrors") and "configPage" in str(health.get("source") or ""), \
+                f"the structural walk did not run, so an empty verdict proves nothing: {health}"
+            assert health.get("structuralIssues") == [], \
+                f"UI-shaped ELSE/END-IF rows were flagged as a structural imbalance: {health}"
+            assert "never closed" not in str(health).lower(), \
+                f"a balanced UI-authored IF block was reported as missing its END-IF: {health}"
+
+            # The planted leftover is reported as an orphan, and only as an orphan.
+            orphans = health.get("orphanedActionRows")
+            assert isinstance(orphans, list), f"orphanedActionRows must always be present: {health}"
+            assert any("action 99" in str(row) and "getIfThen" in str(row) for row in orphans), \
+                f"the planted actSubType.99=getIfThen row was not reported as an orphan: {health}"
+            assert health.get("ok") is True, f"an orphan row must not fail health: {health}"
+
+            # Deleting the rule's only END-IF would unbalance it. That refusal never fired on a
+            # UI-shaped closer before (no actType on the row), and a leftover closer elsewhere
+            # could suppress it; both are fixed, so it must refuse here.
+            endif_idx = next(idx for idx in ui_rows
+                             if str(imported_settings.get(f"actSubType.{idx}")) == "getEndIf")
+            refused = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule", "args": {"appId": imported_id, "confirm": True,
+                                                 "removeAction": {"index": int(endif_idx)}}})
+            assert refused.get("success") is False and "blocked" in str(refused.get("error", "")), \
+                f"removing the only END-IF of a UI-shaped rule must be refused: {refused}"
+            after = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_get_rule_health", "args": {"appId": imported_id}})
+            assert after.get("structuralIssues") == [], \
+                f"the refused delete must leave the rule balanced: {after}"
+        finally:
+            if imported_id:
+                self._delete_native(imported_id)
             self._delete_native(app_id)
 
     @test("native_apps")
@@ -7779,16 +8009,47 @@ class TestRunner:
                                "index": 0, "type": "then"}],
                 "elseNodes": [],
             }
+        # Platform 2.5.1 graph schema, confirmed against the hub's own validator: every node
+        # carries `kind` (category) AND `type` (variety) at node level plus a `config` object;
+        # device ids live in config.switches. A valid rule needs exactly one merge/triggerMerge
+        # and exactly one decision node, and the decision's config.conditions must be an array
+        # (empty == unconditional). The decision exits to actions on the "true" port.
         return {
             "version": 1,
             "nodes": [
-                {"id": "t1", "type": "trigger", "triggerCondition": "trigger", "triggerType": "switch",
-                 "switches": [switch_id], "deviceIds": [switch_id], "switchEvent": switch_event},
-                {"id": "a1", "type": "action", "actionType": action,
-                 "switches": [switch_id], "deviceIds": [switch_id]},
+                {"id": "t1", "kind": "trigger", "type": "switch",
+                 "config": {"switches": [switch_id], "switchEvent": switch_event}},
+                {"id": "tm", "kind": "merge", "type": "triggerMerge", "config": {}},
+                {"id": "d1", "kind": "decision", "type": "all", "config": {"conditions": []}},
+                {"id": "a1", "kind": "action", "type": action,
+                 "config": {"switches": [switch_id]}},
             ],
-            "edges": [{"from": "t1", "to": "a1", "port": "next"}],
+            "edges": [
+                {"from": "t1", "to": "tm", "port": "next"},
+                {"from": "tm", "to": "d1", "port": "next"},
+                {"from": "d1", "to": "a1", "port": "true"},
+            ],
         }
+
+    @staticmethod
+    def _assert_trigger_device(got: Any, fmt: str, switch_id: Any, where: str = "") -> None:
+        """Assert the test switch's id is on the rule's trigger node, in whichever shape it speaks.
+
+        A blob substring match would false-pass on any field that happens to contain the digits.
+        Classic keeps device ids on the node; graph moves them into config.switches and puts the
+        node CATEGORY in `kind` (`type` there is the variety, e.g. "switch")."""
+        if fmt == "classic":
+            trigger_node = (got.get("whenNodes") or [None])[0]
+        else:
+            trigger_node = next(
+                (n for n in (got.get("definition") or {}).get("nodes", [])
+                 if n.get("kind") == "trigger"), None)
+        assert isinstance(trigger_node, dict), \
+            f"no trigger node in the {where}{fmt} read-back: {got}"
+        trigger_devices = (trigger_node.get("deviceIds")
+                           or (trigger_node.get("config") or {}).get("switches") or [])
+        assert int(switch_id) in trigger_devices, \
+            f"trigger device {switch_id} not on the {where}trigger node: {trigger_node}"
 
     def _get_visual_rule(self, app_id: Any = None) -> Any:
         """hub_get_visual_rule through the PURE-READ gateway (hub_read_rules cross-listing)."""
@@ -7861,19 +8122,7 @@ class TestRunner:
             assert got.get("success") is True, f"read-back of new VRB rule {app_id} failed: {got}"
             assert got.get("name") == name, f"read-back name mismatch: {got.get('name')!r} != {name!r}"
             assert got.get("format") == fmt, f"read-back format {got.get('format')!r} != create format {fmt!r}"
-            # Pull the trigger node in whichever shape the rule speaks and assert
-            # the test switch's id is in its deviceIds array -- a blob substring
-            # match would false-pass on any field that happens to contain the digits.
-            if fmt == "classic":
-                trigger_node = (got.get("whenNodes") or [None])[0]
-            else:
-                trigger_node = next(
-                    (n for n in (got.get("definition") or {}).get("nodes", [])
-                     if n.get("type") == "trigger"), None)
-            assert isinstance(trigger_node, dict), \
-                f"no trigger node in the {fmt} read-back: {got}"
-            assert int(switch_id) in (trigger_node.get("deviceIds") or []), \
-                f"trigger device {switch_id} not in the trigger node's deviceIds: {trigger_node}"
+            self._assert_trigger_device(got, fmt, switch_id)
 
             # HEALTH on a Visual Rule (issue #254): hub_get_rule_health must NOT reject a VRB
             # rule -- it reports the engine-native verdict. ruleFormat identifies which engine
@@ -7911,7 +8160,14 @@ class TestRunner:
             else:
                 assert rp["response"].get("success") is True, f"rename+pause reported failure: {rp['response']}"
             got = self._get_visual_rule(app_id)
-            assert got.get("name") == renamed, f"rename did not land: {got.get('name')!r}"
+            # The reported name is the rule's OWN name: the hub decorates a paused rule's name with
+            # the literal " <span class='text-red'>(Paused)</span>", and that decoration is stripped
+            # at the single reader, so a paused rule must never surface it (the raw form travels as
+            # rawName). The strip below is belt-and-braces for that contract, not the contract.
+            assert "(Paused)" not in str(got.get("name") or ""), \
+                f"the hub's paused decoration leaked into the reported name: {got.get('name')!r}"
+            got_name = re.sub(r"<[^>]+>", "", str(got.get("name") or "")).strip()
+            assert got_name == renamed, f"rename did not land: {got.get('name')!r}"
             assert got.get("rulePaused") is True, f"pause did not land: {got}"
 
             # LIST-MODE paused (issue #359): the no-args listing surfaces a suffix-detected
@@ -8113,16 +8369,7 @@ class TestRunner:
                 f"restored name mismatch: {got.get('name')!r} != {name!r}"
             assert got.get("format") == fmt, \
                 f"restored rule format {got.get('format')!r} != {fmt!r}"
-            if fmt == "classic":
-                trigger_node = (got.get("whenNodes") or [None])[0]
-            else:
-                trigger_node = next(
-                    (n for n in (got.get("definition") or {}).get("nodes", [])
-                     if n.get("type") == "trigger"), None)
-            assert isinstance(trigger_node, dict), \
-                f"no trigger node in the restored {fmt} read-back: {got}"
-            assert int(switch_id) in (trigger_node.get("deviceIds") or []), \
-                f"trigger device {switch_id} not in the restored trigger node's deviceIds: {trigger_node}"
+            self._assert_trigger_device(got, fmt, switch_id, "restored ")
         finally:
             # Cleanup the RESTORED rule (the original is already gone). Same delete
             # contract + untrack-after-gone-assert discipline as the lifecycle test.
@@ -11049,7 +11296,8 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             # restore-OFF -- and leaving it OFF makes every LATER permanent-fixture test fail with
             # "Device not found", burying the real cause under unrelated red.
             back_on = _set_bypass(True)
-            assert back_on.get("success") is True,                 f"could not restore the suite's bypass-ON baseline; later fixture tests would fail: {back_on}"
+            assert back_on.get("success") is True, \
+                f"could not restore the suite's bypass-ON baseline; later fixture tests would fail: {back_on}"
 
     def _bypass_boundary_checks(self, unauth, _set_bypass) -> None:
         """Boundary + bypass-reach assertions for test_bypass_device_allowlist_reaches_unlisted_device.
@@ -13007,7 +13255,8 @@ def main() -> None:
                     cargs["parameters"] = params
                 client.call_tool("hub_call_device_command", cargs)
                 read = client.call_tool("hub_get_device_attribute", {"deviceId": dev_id, "attribute": attr})
-                assert read.get("value") is not None,                     f"fixture '{label}' did not report '{attr}' after priming -- polling tests would throw: {read}"
+                assert read.get("value") is not None, \
+                    f"fixture '{label}' did not report '{attr}' after priming -- polling tests would throw: {read}"
             print(f"  {key:<10} id={dev_id:<6} '{label}' ({driver}) -- readable, primed")
         children = client.call_tool("hub_list_devices", {"filter": "virtual"}).get("devices") or []
         child_ids = {str(d.get("id")) for d in children}

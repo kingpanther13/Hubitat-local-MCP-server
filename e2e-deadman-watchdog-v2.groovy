@@ -56,6 +56,7 @@ preferences {
         section("Watchdog") {
             input "flagFileName", "text", title: "Flag file name (File Manager)", defaultValue: "e2e-deadman-v2.json", required: false
             input "debugLogging", "bool", title: "Debug logging", defaultValue: true, required: false
+            input "autoRebootOnWedge", "bool", title: "Auto-reboot when the hub's loopback HTTP stays dead for 4+ minutes (the web stack is wedged)", defaultValue: true, required: false
             paragraph statusText()
         }
         section("MCP Deploy Endpoint") {
@@ -90,6 +91,23 @@ mappings {
     }
 }
 
+// Monitor for the purge claim. Same primitive the main server uses for its write reservations
+// (WRITE_RESERVATION_LOCK in hubitat-mcp-server.groovy): a static field is one object per compiled
+// class, so concurrent /mcp requests into this app instance contend on it properly. Held ONLY
+// across the claim check-and-set, never across the sweep itself.
+@groovy.transform.Field static final Object PURGE_CLAIM_LOCK = new Object()
+// Monitor for the wedge counters. noteLoopback is a read-modify-write on three atomicState keys
+// and concurrent /mcp requests report loopback results at once; without this a failure could
+// overwrite a newer success (a false streak the detector then counts) or two failures could
+// count as one.
+@groovy.transform.Field static final Object LOOPBACK_LOCK = new Object()
+// Consecutive status-less loopback failures before hubLooksWedged may fire; the persisted streak
+// saturates here so a failing sweep is not one DB write per call.
+@groovy.transform.Field static final int WEDGE_STREAK_MIN = 8
+// The scheduled tick and deadmanKick both reach the auto-reboot decision; without a monitor two
+// overlapping runs could each pass the rate-limit check before either recorded its POST.
+@groovy.transform.Field static final Object REBOOT_LOCK = new Object()
+
 def installed() { initialize() }
 def updated()   { unschedule(); initialize() }
 
@@ -114,12 +132,31 @@ def initialize() {
 
 // ---- the dead-man check (runs every minute) ----
 def checkDeadman() {
+    // WEDGE ESCAPE -- runs BEFORE readFlag() on purpose. readFlag() goes through the File Manager
+    // API, which on a wedged hub returns null, so every path below exits at "no flag file -- idle":
+    // the watchdog would tick quietly forever while the hub is dead, which is exactly what happened
+    // on 2026-09-01 (3h32m of heartbeats and nothing else, until a human power-cycled it). This is
+    // the one thing that can still act: the reboot POST goes through the same loopback stack, so it
+    // lands only while that stack still answers writes -- but the restore path needs the File
+    // Manager API to READ a flag first, and that is already gone by then. A POST the hub never
+    // answers is reported ambiguous, not failed, and only a physical power cycle recovers from it.
+    //
+    // The counters the escape reads are written only by the watchdog's OWN loopback HTTP calls, and
+    // readFlag() is not one of them, so an idle tick never moved them: the escape armed only when a
+    // wedge coincided with watchdog-driven traffic (true on 09-01, when the purge was running). One
+    // cheap probe per tick keeps them live both ways -- it also clears a latched streak on a hub
+    // that recovered, which is what lets the restore run again with autoRebootOnWedge off.
+    probeLoopbackAlive()
+    if (maybeAutoRebootWedgedHub()) return
+
     def flag = readFlag()
     if (flag == null) { logDebug "no flag file -- idle"; return }
+    if (persistPendingTerminal(flag)) return
 
     // Clean-finish restore: CI wrote intent=disarm for a run that finished. Restore main once
     // per runId (idempotency stamp restoreFor) even though armed is already false.
     if (flag.intent == "disarm" && (flag.restoreFor?.toString() != flag.runId?.toString())) {
+        if (retryBackoffPending(flag, "disarm")) return
         logInfo "disarm received for run ${flag.runId} -- restoring main package from cache."
         actAndRecord(flag, "disarm")
         return
@@ -141,6 +178,7 @@ def checkDeadman() {
     }
 
     // Armed AND past deadline -> the session never disarmed -> FIRE (crash/brick recovery).
+    if (retryBackoffPending(flag, "fire")) return
     log.warn "E2E Dead-Man Watchdog v2 FIRING: armed flag expired ${((now() - deadline) / 1000) as long}s ago. Restoring main package for run ${flag.runId}."
     actAndRecord(flag, "fire")
 }
@@ -151,9 +189,128 @@ def checkDeadman() {
 // just makes the disarm restore happen ~2s after the flag write instead of on the next minute tick.
 def deadmanKick() { checkDeadman() }
 
-// Run the package restore, then record result + idempotency stamp into the flag (the signal CI
-// polls). BOTH triggers retry up to a 5-tick cap before latching "failed" (a transient miss must not
-// latch the restore failed); a success stamps restoreFor=runId so it runs at most once per run.
+// Space out restore RETRIES: attempt 1 is immediate, then each failure waits 2^(n-1) minutes
+// (1, 2, 4, 8), so the five attempts actAndRecordLocked allows before latching span ~15 min.
+// Every attempt is a 660KB source fetch + a bundle install + two app recompiles, and the old
+// once-a-minute retry piled five of those onto the exact condition that made the restore fail.
+// A wedged hub skips the attempt entirely -- the restore cannot land while loopback HTTP is dead,
+// and trying costs load the hub does not have.
+// The atomicState retry mirror is valid only for the run that wrote it. A mirror left behind by
+// a previous run (a restore that never reached success or latch -- app restart mid-run) must not
+// pace a new run's first attempt; a missing or different run id means no mirror.
+private int mirroredAttemptsFor(Map flag) {
+    try {
+        // The GENERATION, not the run id: GitHub reuses GITHUB_RUN_ID on a workflow re-run, so a
+        // run id match would hand the previous attempt's retry count to a freshly armed run --
+        // pacing its first restore, or starting it at the cap and latching after one failure.
+        if (atomicState.restoreAttemptsRun?.toString() != flagIdentity(flag)) return 0
+        return (atomicState.restoreAttempts ?: 0) as int
+    } catch (Exception ignore) { return 0 }
+}
+
+private boolean retryBackoffPending(Map flag, String trigger) {
+    // Read the atomicState mirror too: if the last retry's writeFlag failed, the flag still says
+    // the attempt before it, and pacing off that would restart the schedule from the top.
+    int mirrored = mirroredAttemptsFor(flag)
+    Long mirroredAt = null
+    if (mirrored > 0) { try { mirroredAt = atomicState.restoreLastAttemptAt as Long } catch (Exception ignore) { mirroredAt = null } }
+    int attempts = Math.max((flag?.fireAttempts ?: 0) as int, mirrored)
+    if (attempts <= 0) return false
+    if (hubLooksWedged()) {
+        log.warn "E2E Dead-Man Watchdog v2: hub loopback looks wedged -- skipping restore attempt ${attempts + 1} (trigger=${trigger}); the wedge escape handles recovery."
+        return true
+    }
+    Long lastAt = null
+    try { lastAt = flag?.lastAttemptAt as Long } catch (Exception ignore) { lastAt = null }
+    if (mirroredAt != null && (lastAt == null || mirroredAt > lastAt)) lastAt = mirroredAt
+    if (lastAt == null) return false
+    long waitMs = 60000L * (1L << Math.min(attempts - 1, 3))
+    long sinceMs = now() - lastAt
+    if (sinceMs < waitMs) {
+        logDebug "restore retry ${attempts + 1} (trigger=${trigger}) backing off: ${((waitMs - sinceMs) / 1000) as long}s to go"
+        return true
+    }
+    return false
+}
+
+// Reboot a wedged hub. Rate-limited to one attempt per 30 minutes so a reboot that does not clear
+// the condition cannot become a boot loop, and gated behind the autoRebootOnWedge preference for a
+// maintainer who would rather inspect the wedged hub than have it recycled underneath them.
+private boolean maybeAutoRebootWedgedHub() {
+    if (settings?.autoRebootOnWedge == false) return false
+    if (!hubLooksWedged()) return false
+    Long downUntil = null
+    try { downUntil = atomicState.expectedDownUntil as Long } catch (Exception ignore) { downUntil = null }
+    if (downUntil != null && now() < downUntil) {
+        // false, not true: this only vetoes the REBOOT. The tick must go on to readFlag -- a disarm
+        // or an expired deadline is still actionable the moment the hub answers again.
+        log.warn "E2E Dead-Man Watchdog v2: loopback is down but a deliberate reboot/platform update is in progress for another ${((downUntil - now()) / 1000) as long}s -- not rebooting into it."
+        return false
+    }
+    // Never act on accumulated counters alone: a live probe must ALSO fail right now. Outside the
+    // monitor on purpose -- a 10s probe under it would hold every queued tick.
+    if (probeLoopbackAlive()) {
+        log.warn "E2E Dead-Man Watchdog v2: the wedge counters were stale -- a live probe answered, so the hub is healthy. NOT rebooting."
+        return false
+    }
+    long nowMs = now()
+    synchronized (REBOOT_LOCK) {
+        Long lastReboot = null
+        try { lastReboot = atomicState.lastAutoRebootAt as Long } catch (Exception ignore) { lastReboot = null }
+        if (lastReboot != null && (nowMs - lastReboot) < 1800000L) {
+            // A veto, not an exit: the tick still reads the flag, so a disarm/restore is not left
+            // untouched for the whole window (the same property the downtime veto has).
+            log.warn "E2E Dead-Man Watchdog v2: hub still looks wedged but an auto-reboot fired ${((nowMs - lastReboot) / 1000) as long}s ago -- not rebooting again within 30 minutes. The hub may need a physical power cycle."
+            return false
+        }
+        // Re-validate under the lock: between the checks above and this claim another tick's
+        // probe may have answered (resetting the streak), or an operator may have started a
+        // reboot or platform update. Both are state reads -- no HTTP is done while holding the lock.
+        if (!hubLooksWedged()) {
+            log.warn "E2E Dead-Man Watchdog v2: the hub recovered while the reboot slot was being claimed -- NOT rebooting."
+            return false
+        }
+        try { downUntil = atomicState.expectedDownUntil as Long } catch (Exception ignore) { downUntil = null }
+        if (downUntil != null && nowMs < downUntil) {
+            log.warn "E2E Dead-Man Watchdog v2: a deliberate reboot/platform update began while the reboot slot was being claimed -- not rebooting into it."
+            return false
+        }
+        // Claim the slot under the lock so an overlapping tick cannot also reach the POST; the POST
+        // itself runs outside the lock so a hung request holds nothing but its own thread.
+        atomicState.lastAutoRebootAt = nowMs
+        // Read back inside the lock: this stamp is the 30-minute brake, and a dropped write would
+        // let the next tick fire a second reboot. A hub this wedged still needs the reboot, so a
+        // failed stamp does not veto it -- it is logged loudly instead.
+        Long stampBack = null
+        try { stampBack = atomicState.lastAutoRebootAt as Long } catch (Exception ignore) { stampBack = null }
+        if (stampBack != nowMs) {
+            log.error "E2E Dead-Man Watchdog v2: the auto-reboot rate-limit stamp did NOT persist (state holds ${stampBack}); rebooting anyway, but a following tick could fire a second reboot."
+        }
+    }
+    // C7: one last look before the POST. The checks above ran under the lock, and a loopback call
+    // that was already in flight can answer in the gap -- rebooting a hub that just came back is
+    // the one outcome this escape must never produce.
+    if (!hubLooksWedged()) {
+        log.warn "E2E Dead-Man Watchdog v2: the hub answered while the reboot was being prepared -- NOT rebooting, and the rate-limit slot is given back."
+        try { atomicState.lastAutoRebootAt = null } catch (Exception ignore) { }
+        return false
+    }
+    log.error "E2E Dead-Man Watchdog v2: hub loopback HTTP has been dead for at least ${(atomicState.loopbackFailStreak ?: 0)} consecutive calls with no success in over 4 minutes -- the web stack is wedged and nothing in-process recovers from that. AUTO-REBOOTING."
+    def r = adminRebootHub([confirm: true])
+    if (!r?.success) {
+        log.error "E2E Dead-Man Watchdog v2: auto-reboot POST did not confirm (${r?.error})."
+        if (r?.ambiguous == true) {
+            // The POST may have landed. Keeping the stamp holds the 30-minute rate limit, so the
+            // next tick cannot fire a SECOND reboot into a hub that is already coming back.
+            log.warn "E2E Dead-Man Watchdog v2: the reboot may have landed -- holding the 30-minute rate limit rather than freeing it."
+        } else {
+            // The hub answered with a status, so nothing rebooted: free the slot for a real retry.
+            try { atomicState.lastAutoRebootAt = null } catch (Exception ignore) { }
+        }
+    }
+    return true
+}
+
 private void actAndRecord(Map flag, String trigger) {
     // SINGLE-FLIGHT LATCH. restoreFor is only stamped at the END of a restore, but a restore takes
     // 3-4 minutes and checkDeadman fires every minute (plus the adminWriteFile kick) -- without this
@@ -171,17 +328,47 @@ private void actAndRecord(Map flag, String trigger) {
         logInfo "restore for run ${flag.runId} already in flight (${((nowMs - inFlightAt) / 1000) as long}s, trigger=${trigger}) -- skipping duplicate tick"
         return
     }
+    // A unique token per attempt. A restore can outlive the 10-minute staleness escape (one bundle
+    // GET plus one app POST can approach it on a loaded hub), and when it does a successor starts;
+    // clearing the shared fields unconditionally on the way out would then erase the SUCCESSOR's
+    // claim and let a third restore pile on -- the same race the purge claim solves with a token.
+    String claim = "restore-${nowMs}-${Math.abs(new Random().nextInt())}".toString()
     atomicState.restoreInFlightFor = flag.runId
     atomicState.restoreInFlightAt = nowMs
+    atomicState.restoreInFlightClaim = claim
+    boolean holdClaim = false
     try {
-        actAndRecordLocked(flag, trigger)
+        holdClaim = actAndRecordLocked(flag, trigger)
     } finally {
-        atomicState.restoreInFlightFor = null
-        atomicState.restoreInFlightAt = null
+        // Normally the claim is released here so the next tick can act. It is HELD only when a
+        // terminal outcome could be persisted NOWHERE (neither the flag file nor app state): the
+        // durable flag still says "act", so releasing would let the next tick re-run a restore
+        // that already succeeded. The latch's own 10-minute staleness escape bounds the hold.
+        if (!holdClaim) {
+            try {
+                if (atomicState.restoreInFlightClaim?.toString() == claim) {
+                    atomicState.restoreInFlightFor = null
+                    atomicState.restoreInFlightAt = null
+                    atomicState.restoreInFlightClaim = null
+                }
+            } catch (Exception ignore) { }
+        }
     }
 }
 
-private void actAndRecordLocked(Map flag, String trigger) {
+// The identity of the flag a parked terminal outcome belongs to. runId alone is not enough: GitHub
+// reuses GITHUB_RUN_ID when a workflow is RE-RUN, so a park left by the first attempt would match
+// the re-run's fresh flag and overwrite it -- disarming the re-run's dead-man protection. The
+// deadline and intent move whenever CI writes a new flag, which is exactly the event that must
+// invalidate a park.
+private String flagIdentity(Map flag) {
+    return "${flag?.runId}|${flag?.deadline}|${flag?.intent}|${flag?.armed}".toString()
+}
+
+// Returns true when the caller must HOLD the in-flight claim: a terminal outcome that could not be
+// persisted anywhere, where releasing would invite a repeat of the restore that already ran.
+private boolean actAndRecordLocked(Map flag, String trigger) {
+    String identityBefore = flagIdentity(flag)
     Map res = restorePackage(flag)
     if (res.ok) {
         flag.armed = false
@@ -201,8 +388,19 @@ private void actAndRecordLocked(Map flag, String trigger) {
             catch (Exception e) { log.warn "could not stamp the canonical-main marker after restore: ${e.message}" }
         }
     } else {
-        int attempts = ((flag.fireAttempts ?: 0) as int) + 1
+        // The flag is the durable mirror; atomicState is the source of truth for retry pacing.
+        // writeFlag is a File Manager loopback write -- exactly what fails on a LOADED hub (the
+        // gap between healthy and fully wedged) -- and when it failed the next tick re-read
+        // fireAttempts=0 from the old flag: no backoff, no cap, once-a-minute restores forever,
+        // the behaviour the backoff exists to stop. atomicState is a DB write and survives that.
+        int mirrored = mirroredAttemptsFor(flag)
+        int attempts = Math.max((flag.fireAttempts ?: 0) as int, mirrored) + 1
         flag.fireAttempts = attempts
+        try {
+            atomicState.restoreAttempts = attempts
+            atomicState.restoreLastAttemptAt = now()
+            atomicState.restoreAttemptsRun = identityBefore
+        } catch (Exception ignore) { }
         flag.restoreDetail = res.detail
         // Retry BOTH triggers up to the cap -- a transient miss must not latch the restore "failed".
         // (fire: armed+deadline re-fires next tick; disarm: intent=disarm with restoreFor still
@@ -210,10 +408,20 @@ private void actAndRecordLocked(Map flag, String trigger) {
         if (attempts < 5) {
             flag.lastAttemptAt = now()
             log.warn "E2E Dead-Man Watchdog v2 restore attempt ${attempts} (trigger=${trigger}) FAILED; will retry next check. ${res.detail}"
-            if (!writeFlag(flag)) {
-                log.error "E2E Dead-Man Watchdog v2: could not persist retry state (attempt ${attempts}); will retry next check regardless."
+            boolean flagWritten = writeFlag(flag)
+            boolean mirrorWritten = false
+            try { mirrorWritten = ((atomicState.restoreAttempts ?: 0) as int) == attempts } catch (Exception ignore) { mirrorWritten = false }
+            if (!flagWritten && !mirrorWritten) {
+                // Neither record of this attempt survived, so the next tick would see attempt 0:
+                // no backoff, no five-attempt cap, and a failing restore repeating forever. Hold
+                // the claim so the ticks skip until the 10-minute staleness escape lets one retry.
+                log.error "E2E Dead-Man Watchdog v2: attempt ${attempts} could not be recorded in EITHER the flag file or app state; holding the in-flight claim so the restore is not repeated unpaced."
+                return true
             }
-            return
+            if (!flagWritten) {
+                log.error "E2E Dead-Man Watchdog v2: could not persist retry state (attempt ${attempts}) to the flag; the app-state mirror carries it."
+            }
+            return false
         }
         flag.armed = false
         flag.restoreFor = flag.runId
@@ -222,10 +430,85 @@ private void actAndRecordLocked(Map flag, String trigger) {
         flag.restoredAt = now()
         log.error "E2E Dead-Man Watchdog v2: restore FAILED (trigger=${trigger}, attempts=${attempts}); latching. ${res.detail}"
     }
+    // The outcome is terminal either way. The run-scoped attempt state is cleared only once the
+    // flag write has made it durable: with the durable flag still pre-terminal, the next tick would
+    // otherwise re-run the restore -- redeploying the whole package after a success, or counting a
+    // sixth failure after the latch -- so a failed write parks the terminal flag instead and the
+    // next tick retries the write alone.
+    // The restore takes minutes. If CI re-armed the flag while it ran, the live file is a NEW
+    // generation and this outcome belongs to the old one: writing it would disarm the dead-man for
+    // a run that is still going. Re-read and compare before the write, not just at the park.
+    Map liveNow = null
+    try { liveNow = readFlag() } catch (Exception ignore) { liveNow = null }
+    if (liveNow != null && flagIdentity(liveNow) != identityBefore) {
+        log.warn "E2E Dead-Man Watchdog v2: the flag was re-armed while the ${trigger} restore ran -- discarding this outcome rather than overwriting the live one. The restore itself completed (${flag.restoreResult})."
+        clearRunScopedRestoreState()
+        return false
+    }
+    boolean holdClaim = false
     if (!writeFlag(flag)) {
-        log.error "E2E Dead-Man Watchdog v2: FAILED to persist flag after ${trigger} (restoreResult=${flag.restoreResult}); the flag will be re-evaluated next check."
+        boolean parked = false
+        try {
+            atomicState.restorePendingFlag = flag
+            atomicState.restorePendingFor = identityBefore
+            parked = (atomicState.restorePendingFlag != null && atomicState.restorePendingFor != null)
+        } catch (Exception ignore) { parked = false }
+        if (parked) {
+            log.error "E2E Dead-Man Watchdog v2: FAILED to persist flag after ${trigger} (restoreResult=${flag.restoreResult}); the write is retried next check without re-running the restore."
+        } else {
+            // Nothing durable records that this ran. Hold the in-flight claim so the next ticks
+            // skip instead of repeating a destructive restore; the 10-minute staleness escape
+            // still lets a genuinely crashed restore retry.
+            holdClaim = true
+            log.error "E2E Dead-Man Watchdog v2: FAILED to persist the ${flag.restoreResult} outcome after ${trigger} in EITHER the flag file or app state; holding the in-flight claim so the next ticks do not repeat the restore. Hub state writes are failing -- check the hub."
+        }
+    } else {
+        clearRunScopedRestoreState()
     }
     log.warn "E2E Dead-Man Watchdog v2 ${trigger} complete: ${flag.restoreResult}."
+    return holdClaim
+}
+
+private void clearRunScopedRestoreState() {
+    try {
+        atomicState.restoreAttempts = null
+        atomicState.restoreLastAttemptAt = null
+        atomicState.restoreAttemptsRun = null
+        atomicState.restorePendingFlag = null
+        atomicState.restorePendingFor = null
+        // NOT restoreInFlightClaim: that is the lease token, and the finally in actAndRecord
+        // compares it to decide whether the lease is still ours. Nulling it here made every
+        // successful restore look like someone else's lease, so the latch was never released.
+    } catch (Exception ignore) { }
+}
+
+// A terminal restore outcome whose flag write failed is parked in restorePendingFlag; the next tick
+// retries the write alone (the restore already ran). Returns true when this tick was spent on it.
+private boolean persistPendingTerminal(Map flag) {
+    Map pending = null
+    String pendingFor = null
+    try {
+        pending = atomicState.restorePendingFlag as Map
+        pendingFor = atomicState.restorePendingFor?.toString()
+    } catch (Exception ignore) { pending = null }
+    if (pending == null) return false
+    // Compared against the flag THIS tick read, which is the live file: a generation that no longer
+    // matches means CI re-armed, and the parked outcome must be dropped, never written over it.
+    if (pendingFor == null || pendingFor != flagIdentity(flag)) {
+        // The live flag is not the one this outcome belongs to -- a later run, or the SAME run id
+        // re-armed by a workflow re-run. Writing the parked terminal state over it would disarm a
+        // watchdog that is meant to be armed.
+        logInfo "discarding a parked '${pending.restoreResult}' outcome: the live flag is no longer the one it belongs to."
+        clearRunScopedRestoreState()
+        return false
+    }
+    if (writeFlag(pending)) {
+        logInfo "persisted the parked '${pending.restoreResult}' outcome for run ${pending.runId} (the restore itself had already run)."
+        clearRunScopedRestoreState()
+    } else {
+        log.error "E2E Dead-Man Watchdog v2: still cannot persist the '${pending.restoreResult}' outcome for run ${pending.runId}; retrying next check without re-running the restore."
+    }
+    return true
 }
 
 // ---- restore the whole package from the manifest's canonical install URLs: drop the PR's stale bundle,
@@ -587,6 +870,7 @@ def executeAdminTool(String toolName, Map args) {
         case "hub_delete_item":     return adminDeleteItem(args)
         case "hub_force_delete_app": return adminForceDeleteInstalledApp(args)
         case "hub_purge_e2e_artifacts": return adminPurgeE2eArtifacts(args)
+        case "hub_reboot": return adminRebootHub(args)
         case "hub_set_app_disabled": return adminSetAppDisabled(args)
         case "hub_get_metrics":      return adminGetMetrics(args)
         case "hub_update_platform":  return adminUpdatePlatform(args)
@@ -1067,20 +1351,253 @@ def adminForceDeleteInstalledApp(args) {
     return [success: false, error: "Force-delete of installed app ${id} returned HTTP ${st} but the gone-check could not read /installedapp/json (status=${cst ?: 'none'}) -- keep the id and re-delete to be safe.", id: id]
 }
 
+// Hub variables have NO app-facing delete API -- there is no removeGlobalVar/removeGlobalVariable
+// on the app class (an earlier revision called removeGlobalVariable, every purge failed with "No
+// signature of method", and BAT_E2E_ vars accumulated on the test hub). resources/hub2-source's
+// README records the classic hubVar wizard as the real variable-CRUD contract, so drive that.
+//
+// Resolver ported from _resolveDirectAppId (hubitat-mcp-server.groovy). Two hops max: direct ->
+// create -> configure, each ANCHORED on its path shape, because taking the first digits anywhere
+// in the Location picks up 127 from an absolute http://127.0.0.1:8080/... URL, or the app TYPE id
+// on a create/<typeId> hop -- either of which drives deleteGV/delConfirm at an unrelated app.
+private Integer findHubVariablesAppId() {
+    String path = "/installedapp/direct/hubVariables"
+    for (int hop = 1; hop <= 2; hop++) {
+        Map r = null
+        try { r = hubGetStatus(path, [:]) } catch (Exception e) { mcpAdminLog "findHubVariablesAppId: hop ${hop} GET threw ${e.message}"; return null }
+        Integer st = null
+        try { st = r?.status as Integer } catch (Exception ignore) { st = null }
+        String loc = r?.location?.toString()
+        if (st == null || st < 300 || st >= 400 || !loc) {
+            mcpAdminLog "findHubVariablesAppId: hop ${hop} ${path} status=${st} location=${loc} -- not a redirect"
+            return null
+        }
+        def cfg = (loc =~ /\/installedapp\/configure\/(\d+)/)
+        if (cfg.find()) return cfg.group(1).toInteger()
+        def create = (loc =~ /\/installedapp\/create\/(\d+)/)
+        if (create.find() && hop == 1) {
+            // Rebuild hop 2 from the captured type id rather than following the Location verbatim:
+            // normalises an absolute URL and never follows past the expected chain.
+            path = "/installedapp/create/${create.group(1)}"
+            continue
+        }
+        mcpAdminLog "findHubVariablesAppId: hop ${hop} unexpected Location ${loc}"
+        return null
+    }
+    return null
+}
+
+// One wizard button click on the hubVar page. Mirrors _rmClickAppButton's body shape from
+// hubitat-mcp-server.groovy, minus the RM-only page cache, the `version` concurrent-edit token
+// (the hubVar wizard tolerates its absence) and the >=400 throw -- this caller verifies by
+// read-back through getGlobalVar instead.
+private Map clickHubVarButton(Integer appId, String buttonName, String stateAttribute) {
+    def body = [id: appId.toString(), name: buttonName,
+                ("settings[${buttonName}]".toString()): "clicked",
+                ("${buttonName}.type".toString()): "button",
+                formAction: "update", currentPage: "hubVar",
+                pageBreadcrumbs: '["mainPage"]']
+    if (stateAttribute) body.stateAttribute = stateAttribute
+    return hubPostForm("/installedapp/btn", body)
+}
+
+// deleteGV opens the confirm prompt keyed on the variable name; delConfirm commits. The first click
+// sequence after a fresh create/edit can be dropped by the hub (a state-machine race that priming
+// alone does not reliably defeat), so the whole sequence is retried once -- the same two-attempt
+// shape hub_delete_variable uses, for the same empirically-observed reason.
+// Returns null on success, else a reason. The two click statuses are part of the reason: a 5xx
+// (or a wrong app id) used to be reported as "likely in use by a rule", sending the operator after
+// a referencing rule that did not exist.
+// `claim` is the purge sweep's claim token when this runs inside a sweep: the claim is renewed and
+// re-checked before EVERY wizard click, not only on entry. Each click is a form POST with the
+// 420-second hub timeout, and there are up to four per variable, so a helper that renewed only on
+// entry could outlive the 15-minute staleness escape and keep clicking after a newer sweep had
+// taken the claim. A null claim (a caller outside a sweep) skips the check and never touches the
+// claim stamp.
+private String deleteHubVariable(Integer appId, String varName, String claim = null) {
+    String lastClicks = "unknown"
+    for (int attempt = 0; attempt < 2; attempt++) {
+        try {
+            hubGet("/installedapp/configure/json/${appId}", [:])
+            hubGet("/installedapp/statusJson/${appId}", [:])
+        } catch (Exception ignore) { /* priming is best-effort */ }
+        Integer s1 = null, s2 = null
+        if (claim != null && !renewPurgeClaim(claim)) return "purge claim lost to a newer sweep -- stopped before the deleteGV click (${lastClicks})"
+        try { s1 = clickHubVarButton(appId, varName, "deleteGV")?.status as Integer } catch (Exception ignore) { s1 = null }
+        if (claim != null && !renewPurgeClaim(claim)) return "purge claim lost to a newer sweep -- stopped before the delConfirm click (deleteGV=${s1 ?: 'no response'})"
+        try { s2 = clickHubVarButton(appId, "delConfirm", null)?.status as Integer } catch (Exception ignore) { s2 = null }
+        lastClicks = "deleteGV=${s1 ?: 'no response'}, delConfirm=${s2 ?: 'no response'}"
+        boolean clicksOk = s1 != null && s1 < 400 && s2 != null && s2 < 400
+        for (int v = 0; v < 8; v++) {
+            // A THROW is not evidence of deletion -- only a clean read returning null is. Treating
+            // the exception as "gone" (which the enumerate-then-delete flow would let through
+            // silently) would report a variable purged that is still on the hub.
+            def gone = false
+            try { gone = (getGlobalVar(varName) == null) } catch (Exception ignore) { gone = false }
+            if (gone) return null
+            if (v < 7) {
+                try { pauseExecution(300) } catch (Exception ignore) { }
+            }
+        }
+        if (!clicksOk) return "hubVar wizard click(s) were not accepted (${lastClicks}) and the variable still exists"
+    }
+    return "hubVar wizard clicks were accepted (${lastClicks}) but the variable still exists after two attempts -- likely still referenced by a rule"
+}
+
+// A purge call that yielded to a sweep already running. Carries the same zero-count shape a real
+// sweep returns so a caller reading the count fields is not tripped by a missing key.
+private Map purgeNoOpResult(String prefix, String note) {
+    return [success: true, inFlight: true, prefix: prefix,
+            deletedCount: 0, failedCount: 0, deleted: [], failed: [],
+            variablesDeletedCount: 0, variablesFailedCount: 0, variablesDeleted: [], variablesFailed: [],
+            note: note]
+}
+
 // hub_purge_e2e_artifacts: ONE-call LOCAL sweep of leftover test fixtures. Enumerates every installed-app
 // instance whose name starts with the BAT_E2E_ test prefix (via /hub2/appsList, the same read
 // adminListAppInstances uses) and force-deletes each by reusing adminForceDeleteInstalledApp's
 // forcedelete+verify-gone path. The whole loop runs loopback-local on the hub, so CI makes ONE cloud
 // round-trip instead of N -- replacing the disarm's per-item reap loop and the post-restore
 // --cleanup-only RM sweep. Hard-scoped to the prefix (never a real app); confirm:true required.
+// SINGLE-FLIGHT LATCH + SHORT RESULT CACHE -- the same protection actAndRecord has, for the same
+// reason. This sweep takes minutes (N apps x forcedelete + verify-gone), which is far longer than
+// the ~10s cloud-relay timeout, so CI's retry-on-dropped-response fires while the FIRST sweep is
+// still running. Observed live 2026-09-01: five overlapping invocations, each re-enumerating the
+// same app list and racing on the same ids (three hit forcedelete/30839 in the same millisecond),
+// each running 11+ minutes. That pile-on is what exhausted the hub's web thread pool and wedged
+// it for 3h32m. A duplicate call now returns the in-flight marker instead of starting a sweep,
+// and a call arriving just after one finished gets the real result from the cache -- so a relay
+// drop costs CI nothing and costs the hub nothing.
 def adminPurgeE2eArtifacts(args) {
     requireConfirm(args)
     String prefix = (args?.prefix instanceof String && args.prefix.trim()) ? args.prefix.trim() : "BAT_E2E_"
+
+    long nowMs = now()
+    Long purgeAt = null
+    // 15-minute staleness escape: a sweep killed mid-flight (app recompile, hub restart) must not
+    // wedge the latch permanently. Matches the observed worst-case sweep of ~11.5 minutes.
+    // Read the whole claim as ONE snapshot under the claim lock: the owner clears its three keys
+    // together, so reading them separately can pair a fresh timestamp with an already-cleared
+    // owner -- and an unowned timestamp is nobody's sweep, so it covers nothing.
+    String activeClaim = null
+    String activePrefix = null
+    synchronized (PURGE_CLAIM_LOCK) {
+        try {
+            purgeAt = atomicState.purgeInFlightAt as Long
+            activeClaim = atomicState.purgeClaim?.toString()
+            activePrefix = atomicState.purgeClaimPrefix?.toString()
+        } catch (Exception ignore) { purgeAt = null }
+    }
+    if (purgeAt != null && (nowMs - purgeAt) < 900000L && activeClaim != null) {
+        // A sweep for a DIFFERENT prefix is not cover for this one. Say busy, not done.
+        if (activePrefix != null && activePrefix != prefix) {
+            return [success: false, busy: true, prefix: prefix, activePrefix: activePrefix,
+                    error: "A purge for prefix '${activePrefix}' has been running for ${((nowMs - purgeAt) / 1000) as long}s; it does not cover '${prefix}'.",
+                    note: "Retry after the running sweep completes (its results are cached for 5 minutes, so the retry will not re-run it)."]
+        }
+        mcpAdminLog "Purge already in flight (${((nowMs - purgeAt) / 1000) as long}s) -- returning the in-flight marker instead of starting a second sweep."
+        return purgeNoOpResult(prefix, "A purge started ${((nowMs - purgeAt) / 1000) as long}s ago is still running; this call was a no-op. Do NOT retry -- the running sweep covers the same prefix. The post-restore --cleanup-only sweep remains the backstop.")
+    }
+    Long cachedAt = null
+    try { cachedAt = atomicState.purgeResultAt as Long } catch (Exception ignore) { cachedAt = null }
+    if (cachedAt != null && (nowMs - cachedAt) < 300000L && atomicState.purgeResult instanceof Map
+            && atomicState.purgeResult?.prefix?.toString() == prefix) {
+        def cached = [:] + (atomicState.purgeResult as Map)
+        cached.cached = true
+        cached.note = "Result of the sweep that completed ${((nowMs - cachedAt) / 1000) as long}s ago (cached; this call did NOT re-run it). ${cached.note ?: ''}"
+        mcpAdminLog "Purge result served from cache (${((nowMs - cachedAt) / 1000) as long}s old)."
+        return cached
+    }
+    // ATOMIC claim. The staleness check above is a plain read, so two requests arriving together
+    // can both pass it -- and atomicState has no compare-and-set. Take the monitor for the
+    // check-and-set ONLY: whoever writes purgeInFlightAt inside it owns the sweep, and the loser
+    // sees the marker and yields. The lock is released before the sweep runs, so a multi-minute
+    // purge never holds it.
+    //
+    // Deliberately NOT definition(singleThreaded: true): that serialises the mapped /mcp endpoint
+    // WITH the dead-man timer, so a long purge would block checkDeadman -- disabling the wedge
+    // escape during exactly the incident it guards. Lock the claim, not the whole app.
+    String claim = "purge-${java.util.UUID.randomUUID()}".toString()
+    boolean claimed = false
+    synchronized (PURGE_CLAIM_LOCK) {
+        Long held = null
+        String heldClaim = null
+        try { held = atomicState.purgeInFlightAt as Long; heldClaim = atomicState.purgeClaim?.toString() } catch (Exception ignore) { held = null }
+        // A stamp nobody owns is not a running sweep: the owner clears its three keys together, so
+        // a fresh timestamp with no claim is the trailing edge of a sweep that has finished. Left
+        // as a blocker it would stall every purge for 15 minutes after a normal completion.
+        if (held == null || heldClaim == null || (nowMs - held) >= 900000L) {
+            atomicState.purgeInFlightAt = nowMs
+            atomicState.purgeClaim = claim
+            atomicState.purgeClaimPrefix = prefix
+            claimed = true
+        }
+    }
+    if (!claimed) {
+        // Re-read: this is the WINNER's prefix, not the snapshot taken before the race.
+        activePrefix = atomicState.purgeClaimPrefix?.toString()
+        if (activePrefix != null && activePrefix != prefix) {
+            return [success: false, busy: true, prefix: prefix, activePrefix: activePrefix,
+                    error: "A concurrent purge for prefix '${activePrefix}' won the claim; it does not cover '${prefix}'.",
+                    note: "Retry after the running sweep completes."]
+        }
+        mcpAdminLog "Purge claim lost to a concurrent request -- yielding rather than sweeping twice."
+        return purgeNoOpResult(prefix, "A concurrent purge for the same prefix won the claim; this call was a no-op. Do NOT retry.")
+    }
+    try {
+        return purgeE2eArtifactsLocked(prefix, claim)
+    } finally {
+        // Release ONLY if the claim is still ours. If this sweep ran past the 15-minute staleness
+        // escape and a newer sweep took the claim, clearing purgeInFlightAt here would drop the
+        // NEWER sweep's marker and let a third request pile on -- the exact race the latch exists
+        // to prevent. The successor releases its own markers when it finishes.
+        synchronized (PURGE_CLAIM_LOCK) {
+            if (atomicState.purgeClaim?.toString() == claim) {
+                atomicState.purgeInFlightAt = null
+                atomicState.purgeClaim = null
+                atomicState.purgeClaimPrefix = null
+            }
+        }
+    }
+}
+
+// The 15-minute stale-claim escape must measure a sweep that STOPPED, not one that is long: a sweep
+// is one loopback call per artifact, so its length is unbounded. Renewing the stamp before every
+// destructive step keeps a live sweep's claim exclusive; a sweep that did lose its claim to the
+// escape stops rather than race the successor. Ownership check and renewal are ONE section under the
+// claim lock: split, a successor could take the claim between them and both sweeps would delete.
+private boolean renewPurgeClaim(String claim) {
+    synchronized (PURGE_CLAIM_LOCK) {
+        try {
+            // A caller with no claim (the spec seam) holds no lease, so it has none to renew:
+            // writing the stamp here would extend whatever lease IS held, including another
+            // sweep's, which is precisely what the claim exists to prevent.
+            if (claim == null) return true
+            if (atomicState.purgeClaim?.toString() != claim) return false
+            long stamp = now()
+            atomicState.purgeInFlightAt = stamp
+            // Read back: an unrenewed stamp goes stale, a successor takes the claim, and this sweep
+            // would carry on deleting alongside it believing it still owns the lease.
+            Long back = atomicState.purgeInFlightAt as Long
+            if (back != stamp) {
+                log.error "E2E Dead-Man Watchdog v2: the purge lease renewal did not persist (state holds ${back}) -- stopping this sweep rather than racing a successor."
+                return false
+            }
+            return true
+        } catch (Exception ignore) { return false }
+    }
+}
+
+// NON-PRIVATE deliberately (see probeLoopbackAlive): a private method's internal callers bypass
+// metaClass dispatch, so a spec could not stand in a sweep body -- the successor-claim test needs
+// to install a competing claim mid-sweep to prove the finally leaves it alone.
+Map purgeE2eArtifactsLocked(String prefix, String claim = null) {
     String raw = hubGet("/hub2/appsList", [:])
-    if (!raw) return [success: false, error: "empty response from /hub2/appsList -- cannot enumerate to purge"]
+    String noSweep = "Nothing was deleted: the hub did not answer /hub2/appsList. Confirm hub_get_info answers, then re-run hub_purge_e2e_artifacts; a repeat points at the hub's web stack, not the purge."
+    if (!raw) return [success: false, error: "empty response from /hub2/appsList -- cannot enumerate to purge", note: noSweep]
     def parsed
     try { parsed = new groovy.json.JsonSlurper().parseText(raw) }
-    catch (Exception e) { return [success: false, error: "unparseable /hub2/appsList: ${e.message}"] }
+    catch (Exception e) { return [success: false, error: "unparseable /hub2/appsList: ${e.message}", note: noSweep] }
     def targets = []
     def recurse
     recurse = { Map node ->
@@ -1095,35 +1612,73 @@ def adminPurgeE2eArtifacts(args) {
     def deleted = []
     def failed = []
     targets.each { t ->
+        if (!renewPurgeClaim(claim)) {
+            failed << [id: t.id, name: t.name, error: "purge claim lost to a newer sweep -- stopped before this delete"]
+            return
+        }
         def r
         try { r = adminForceDeleteInstalledApp([id: t.id, confirm: true]) }
         catch (Exception e) { r = [success: false, error: e.message] }
         if (r?.success) { deleted << [id: t.id, name: t.name] }
         else { failed << [id: t.id, name: t.name, error: r?.error] }
     }
-    // Variables are hub-GLOBAL, so the watchdog (any app) can enumerate + remove them via DSL --
-    // local, no relay, no classic-wizard (the main server's wizard exists only for in-use/connector
-    // safety, which is moot for a BAT_E2E_ purge that runs AFTER the referencing rules are gone).
+    // Variables are hub-GLOBAL, so any app can ENUMERATE them via getAllGlobalVars -- but there is
+    // no app-facing DELETE (the belief that there was is what left this leg silently broken), so
+    // removal drives the classic hubVar wizard through findHubVariablesAppId / deleteHubVariable
+    // above, the same two clicks the main server's hub_delete_variable uses. Loopback-local; no relay.
     def varsDeleted = []
     def varsFailed = []
     try {
-        def allVars = getAllGlobalVars() ?: [:]
-        allVars.keySet().findAll { (it instanceof String) && it.startsWith(prefix) }.each { vn ->
-            try {
-                if (removeGlobalVariable(vn)) { varsDeleted << vn }
-                else { varsFailed << [name: vn, error: "removeGlobalVariable returned false (in use or already gone)"] }
-            } catch (Exception e) { varsFailed << [name: vn, error: e.message] }
+        def allVars = getAllGlobalVars()
+        if (allVars == null) {
+            // null means the enumeration itself failed -- NOT that there are no variables. Folding
+            // it into an empty map reported a clean sweep with nothing deleted.
+            varsFailed << [name: "*", error: "getAllGlobalVars returned null -- could not enumerate hub variables, so none were purged"]
+            allVars = [:]
+        }
+        def targetVars = allVars.keySet().findAll { (it instanceof String) && it.startsWith(prefix) }
+        if (targetVars) {
+            Integer hvAppId = findHubVariablesAppId()
+            if (hvAppId == null) {
+                varsFailed << [name: "*", error: "could not resolve the Hub Variables app id via /installedapp/direct/hubVariables"]
+            } else {
+                targetVars.each { vn ->
+                    if (!renewPurgeClaim(claim)) {
+                        varsFailed << [name: vn, error: "purge claim lost to a newer sweep -- stopped before this delete"]
+                        return
+                    }
+                    try {
+                        String why = deleteHubVariable(hvAppId, vn, claim)
+                        if (why == null) { varsDeleted << vn }
+                        else { varsFailed << [name: vn, error: why] }
+                    } catch (Exception e) { varsFailed << [name: vn, error: e.message] }
+                }
+            }
         }
     } catch (Exception e) {
         varsFailed << [name: "*", error: "getAllGlobalVars failed: ${e.message}"]
     }
     mcpAdminLog "Purge complete: ${deleted.size()} app(s), ${varsDeleted.size()} variable(s) deleted; " +
                 "${failed.size()} app + ${varsFailed.size()} var failure(s)."
-    return [success: failed.isEmpty() && varsFailed.isEmpty(), prefix: prefix,
+    // Runtime-failure contract: a caller must not have to diff two count fields to notice the
+    // sweep failed. Aggregate what broke into a top-level error + an actionable note.
+    def problems = []
+    if (!failed.isEmpty()) problems << "${failed.size()} app(s)"
+    if (!varsFailed.isEmpty()) problems << "${varsFailed.size()} variable(s)"
+    def deviceNote = "Virtual DEVICES are NOT purged here (they are child devices of the main app and the hub's admin device-delete endpoint is not yet mirrored into the watchdog); the post-restore --cleanup-only sweep still reaps ${prefix} devices."
+    def result = [success: failed.isEmpty() && varsFailed.isEmpty(), prefix: prefix,
             deletedCount: deleted.size(), failedCount: failed.size(), deleted: deleted, failed: failed,
             variablesDeletedCount: varsDeleted.size(), variablesFailedCount: varsFailed.size(),
             variablesDeleted: varsDeleted, variablesFailed: varsFailed,
-            note: "Virtual DEVICES are NOT purged here (they are child devices of the main app and the hub's admin device-delete endpoint is not yet mirrored into the watchdog); the post-restore --cleanup-only sweep still reaps BAT_E2E_ devices."]
+            note: deviceNote]
+    if (problems) {
+        result.error = "Purge of ${prefix}* completed with failures: ${problems.join(' and ')} could not be removed."
+        result.note = "Inspect the failed / variablesFailed entries for the per-item reason. A variable that will not delete is usually still referenced by a rule -- delete the rule first. Do NOT blind-retry the sweep; re-run it only after addressing the listed items. ${deviceNote}"
+    }
+    // Cache BEFORE returning so a CI retry that lost the response to a relay drop reads the real
+    // outcome rather than re-running the sweep.
+    try { atomicState.purgeResult = result; atomicState.purgeResultAt = now() } catch (Exception ignore) { }
+    return result
 }
 
 // hub_set_app_disabled: toggle an installed app's disabled flag (the admin UI's red-X) via
@@ -1194,6 +1749,11 @@ def adminUpdatePlatform(args) {
     if (args?.statusOnly == true) {
         def st = null
         try { st = hubGet("/hub/cloud/checkUpdateStatus", [:]) } catch (Exception e) { return [success: false, error: "checkUpdateStatus failed: ${e.message}"] }
+        // hubGet swallows transport errors into null; that is a failed poll, not a status.
+        if (st == null) {
+            return [success: false, error: "No response from /hub/cloud/checkUpdateStatus.",
+                    note: "Loopback HTTP may be down or the hub is mid-reboot. Retry in a minute; if the hub was updating, expect it to go dark for 5-10 min, then confirm firmwareVersion via hub_get_info."]
+        }
         return [success: true, status: st]
     }
     if (args?.confirm != true) {
@@ -1201,8 +1761,59 @@ def adminUpdatePlatform(args) {
     }
     def check = null
     try { check = hubGet("/hub/cloud/checkForUpdate", [:]) } catch (Exception e) { return [success: false, error: "checkForUpdate failed: ${e.message}"] }
+    // Claim the downtime window BEFORE the update request goes out, under the reboot lock: an
+    // auto-reboot deciding at the same moment re-checks the window under that lock, and a manual
+    // hub_reboot is refused while the install is in flight. hubGet swallows transport errors and
+    // returns null, and a null means the hub never ACCEPTED the update -- so that path hands the
+    // window back: a 25-minute window on a hub that is not going down would blind the wedge
+    // escape for nothing. The download takes minutes, so the hub is still up when this returns.
+    Long ourStamp = null
+    boolean windowHeld = false
+    boolean rebootInFlight = false
+    Long rebootWindow = null
+    synchronized (REBOOT_LOCK) {
+        // A reboot claimed the window moments ago and its POST may still be in flight: starting a
+        // firmware download into a hub that is going down is the mirror image of the refusal
+        // hub_reboot makes, and the two must be decided under the SAME lock or each slips past
+        // the other's check. No prior window is remembered: every exit below HOLDS the window (an
+        // update the hub may have accepted must keep the escape suppressed).
+        try {
+            if (atomicState.expectedDownReason?.toString() == "hub_reboot") rebootWindow = atomicState.expectedDownUntil as Long
+        } catch (Exception ignore) { rebootWindow = null }
+        if (rebootWindow != null && now() < rebootWindow) {
+            rebootInFlight = true
+        } else {
+            windowHeld = markExpectedDowntime(1500000L, "hub_update_platform")
+        }
+        try { ourStamp = atomicState.expectedDownUntil as Long } catch (Exception ignore) { ourStamp = null }
+    }
+    if (rebootInFlight) {
+        return [success: false, refused: true, expectedDownUntil: rebootWindow,
+                error: "a hub reboot was initiated ${((now() - (rebootWindow - 600000L)) / 1000) as long}s ago and the hub may be going down -- starting a platform update into a reboot risks a half-written install. Retry once the hub is back (hub_get_info).",
+                checkForUpdate: check]
+    }
+    if (!windowHeld) {
+        // Never send the request the window exists to cover. An update installing with no window
+        // is exactly the state where the wedge escape reboots the hub mid-firmware-write.
+        return [success: false, error: "the expected-downtime window could not be persisted, so the update was NOT requested -- starting an install the wedge escape cannot see could get the hub rebooted mid-firmware-write.",
+                note: "Retry in a minute; hub state writes fail under load. Nothing was scheduled.",
+                checkForUpdate: check]
+    }
     def resp = null
-    try { resp = hubGet("/hub/cloud/updatePlatform", [:]) } catch (Exception e) { return [success: false, error: "updatePlatform failed: ${e.message}", checkForUpdate: check] }
+    Exception thrown = null
+    try { resp = hubGet("/hub/cloud/updatePlatform", [:]) } catch (Exception e) { thrown = e }
+    if (resp == null) {
+        // AMBIGUOUS, never "did not land": hubGet returns null for a transport failure, a dropped
+        // response AND an empty 200 body, so a request the hub accepted and is already acting on
+        // looks identical to one it never saw. The window is HELD -- 25 minutes of a suppressed
+        // wedge escape costs a late recovery; releasing it costs a reboot into a firmware install.
+        return [success: false, updateMayHaveStarted: true, expectedDownUntil: ourStamp,
+                error: thrown != null ? "updatePlatform failed: ${thrown.message}" : "No response from /hub/cloud/updatePlatform -- whether the hub accepted the update is UNKNOWN.",
+                note: "The 25-minute downtime window is HELD because the update may be installing: the auto-reboot escape stays suppressed until it expires. Poll hub_update_platform(statusOnly:true) and hub_get_info.firmwareVersion. If you know the update did not start, hub_reboot(force:true) overrides the window.",
+                checkForUpdate: check]
+    }
+    // 25 minutes: the note below quotes 5-10 for the download+install+reboot, with headroom for a
+    // slow mirror.
     return [success: true, checkForUpdate: check, updateResponse: resp,
             note: "The hub downloads, installs, then reboots itself. Poll hub_update_platform(statusOnly:true) for progress; expect the endpoint to go dark during the reboot (~5-10 min total), then verify firmwareVersion via hub_get_info."]
 }
@@ -1267,9 +1878,10 @@ def adminGetHubLogs(args) {
 // watchdogs -- every app type), readable while the main app is busy.
 def adminListAppInstances(args) {
     String raw = hubGet("/hub2/appsList", [:])
-    if (!raw) return [success: false, error: "empty response from /hub2/appsList"]
+    String noList = "Nothing was changed: the hub did not answer /hub2/appsList. Confirm hub_get_info answers, then retry."
+    if (!raw) return [success: false, error: "empty response from /hub2/appsList", note: noList]
     def parsed
-    try { parsed = new groovy.json.JsonSlurper().parseText(raw) } catch (Exception e) { return [success: false, error: "unparseable /hub2/appsList: ${e.message}"] }
+    try { parsed = new groovy.json.JsonSlurper().parseText(raw) } catch (Exception e) { return [success: false, error: "unparseable /hub2/appsList: ${e.message}", note: noList] }
     def flat = []
     def recurse
     recurse = { Map node, parentId ->
@@ -1467,6 +2079,20 @@ def adminGetInfo(args) {
         if (lsd.at instanceof Number) lsd.ageMs = now() - (lsd.at as long)
         info.lastSelfDeploy = lsd
     }
+    // The wedge detector's state, so an unexplained reboot can be attributed to the auto-reboot
+    // or ruled out after the fact: the hub's past-log buffer is short enough that one e2e run
+    // evicts the watchdog's own AUTO-REBOOTING entry, and nothing else records it.
+    def wedge = [:]
+    try {
+        wedge.loopbackFailStreak = (atomicState.loopbackFailStreak ?: 0) as int
+        wedge.loopbackLastOkAt = atomicState.loopbackLastOkAt
+        wedge.loopbackStreakStartedAt = atomicState.loopbackStreakStartedAt
+        wedge.lastAutoRebootAt = atomicState.lastAutoRebootAt
+        if (wedge.lastAutoRebootAt instanceof Number) wedge.lastAutoRebootAgeMs = now() - (wedge.lastAutoRebootAt as long)
+        wedge.expectedDownUntil = atomicState.expectedDownUntil
+        wedge.looksWedged = hubLooksWedged()
+    } catch (Exception e) { wedge.error = e.message }
+    info.wedge = wedge
     return info
 }
 
@@ -1682,8 +2308,8 @@ def adminManageVariables(args) {
     def action = args?.action
     if (!action) {
         return [tools: [
-            [name: "hub_get_variable", description: "Read a hub variable by name."],
-            [name: "hub_set_variable", description: "Set a hub variable's value (write)."]
+            [name: "hub_get_variable", annotations: [title: "Get Variable", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [name: [type: "string", description: "Hub variable name."]], required: ["name"]], description: "Read a hub variable by name."],
+            [name: "hub_set_variable", annotations: [title: "Set Variable", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [name: [type: "string", description: "Hub variable name."], value: [description: "New value; must match the variable's declared type."], confirm: [type: "boolean", description: "Must be true."]], required: ["name", "value", "confirm"]], description: "Set a hub variable's value (write)."]
         ]]
     }
     def name = args?.name
@@ -1772,57 +2398,58 @@ private Map _httpFetchUrl(String url) {
 // Minimal MCP tool list for tools/list. Names IDENTICAL to the main server so CI works by URL swap.
 def getAdminToolDefinitions() {
     return [
-        [name: "hub_update_app", description: "Update an Apps Code class source (deploy). One of source/sourceFile/importUrl/resave; confirm:true required.",
+        [name: "hub_update_app", annotations: [title: "Update App", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true], description: "Update an Apps Code class source (deploy). One of source/sourceFile/importUrl/resave; confirm:true required.",
          inputSchema: [type: "object", properties: [
             appId: [type: "string", description: "Apps Code CLASS id to update."],
             source: [type: "string"], sourceFile: [type: "string"], importUrl: [type: "string"], resave: [type: "boolean"],
             selfUpdate: [type: "boolean", description: "Set true when deploying the MAIN MCP server's own app-code class so the issue #237 lastSelfDeploy outcome is captured."],
             selfClassId: [type: "string", description: "The MAIN server's own Apps Code class id; if it matches appId, the #237 self-deploy capture arms."],
             confirm: [type: "boolean"]], required: ["appId", "confirm"]]],
-        [name: "hub_get_source", description: "Read app/driver/library source (chunked); auto-saves the full source to File Manager so a restore can read it.",
+        [name: "hub_get_source", annotations: [title: "Get Source", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "Read app/driver/library source (chunked); auto-saves the full source to File Manager so a restore can read it. The auto-save fires only for sources over 64,000 characters, and noSave:true skips it (the deploy probes pass it so a PR source cannot overwrite the dead-man restore cache).",
          inputSchema: [type: "object", properties: [
             type: [type: "string", enum: ["app", "driver", "library"]], id: [type: "string"],
             offset: [type: "integer"], length: [type: "integer"]], required: ["type", "id"]]],
-        [name: "hub_create_library", description: "Install a new library. One of source/sourceFile/importUrl; confirm:true required.",
+        [name: "hub_create_library", annotations: [title: "Create Library", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true], description: "Install a new library. One of source/sourceFile/importUrl; confirm:true required.",
          inputSchema: [type: "object", properties: [
             source: [type: "string"], sourceFile: [type: "string"], importUrl: [type: "string"], confirm: [type: "boolean"]], required: ["confirm"]]],
-        [name: "hub_update_library", description: "Update an existing library. One of source/sourceFile/importUrl/resave; confirm:true required.",
+        [name: "hub_update_library", annotations: [title: "Update Library", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true], description: "Update an existing library. One of source/sourceFile/importUrl/resave; confirm:true required.",
          inputSchema: [type: "object", properties: [
             libraryId: [type: "string"], source: [type: "string"], sourceFile: [type: "string"], importUrl: [type: "string"], resave: [type: "boolean"], confirm: [type: "boolean"]],
             required: ["libraryId", "confirm"]]],
-        [name: "hub_delete_item", description: "Delete an app/driver/library by id. confirm:true required.",
+        [name: "hub_delete_item", annotations: [title: "Delete Item", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Delete an app/driver/library by id. confirm:true required.",
          inputSchema: [type: "object", properties: [type: [type: "string", enum: ["app", "driver", "library"]], id: [type: "string"], confirm: [type: "boolean"]], required: ["type", "id", "confirm"]]],
-        [name: "hub_force_delete_app", description: "Force-delete an INSTALLED-APP instance (e.g. an RM rule) via /installedapp/forcedelete/<id>/quiet. confirm:true required.",
+        [name: "hub_force_delete_app", annotations: [title: "Force Delete App", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Force-delete an INSTALLED-APP instance (e.g. an RM rule) via /installedapp/forcedelete/<id>/quiet. confirm:true required.",
          inputSchema: [type: "object", properties: [id: [type: "string"], confirm: [type: "boolean"]], required: ["id", "confirm"]]],
-        [name: "hub_purge_e2e_artifacts", description: "One-call LOCAL sweep of leftover test fixtures: force-delete every installed-app instance whose name starts with prefix (default BAT_E2E_) AND removeGlobalVariable every matching hub variable, all loopback-local on the hub so CI pays ONE cloud round-trip instead of N. Virtual devices are NOT covered (child devices of the main app). Returns per-class {deleted/failed} counts. confirm:true required.",
+        [name: "hub_purge_e2e_artifacts", annotations: [title: "Purge E2E Artifacts", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "One-call LOCAL sweep of leftover test fixtures: force-delete every installed-app instance whose name starts with prefix (default BAT_E2E_) AND delete every matching hub variable by driving the classic hubVar wizard (there is no app-facing global-variable delete API), all loopback-local on the hub so CI pays ONE cloud round-trip instead of N. Single-flight: a call arriving while a sweep is running is a no-op, and one arriving just after gets the finished sweep's cached result -- never retry it. Virtual devices are NOT covered (child devices of the main app). Returns per-class {deleted/failed} counts. confirm:true required. Every in-flight/cached guarantee here is PER PREFIX: a call for a DIFFERENT prefix while a sweep runs returns success:false, busy:true and SHOULD be retried once that sweep finishes.",
          inputSchema: [type: "object", properties: [prefix: [type: "string", description: "Name prefix to purge; default BAT_E2E_."], confirm: [type: "boolean"]], required: ["confirm"]]],
-        [name: "hub_set_app_disabled", description: "Toggle an installed app's disabled flag (the admin UI red-X) via POST /installedapp/disable; verified by read-back. confirm:true required.",
+        [name: "hub_set_app_disabled", annotations: [title: "Set App Disabled", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false], description: "Toggle an installed app's disabled flag (the admin UI red-X) via POST /installedapp/disable; verified by read-back. confirm:true required.",
          inputSchema: [type: "object", properties: [appId: [type: "string"], disable: [type: "boolean"], confirm: [type: "boolean"]], required: ["appId", "disable", "confirm"]]],
-        [name: "hub_get_metrics", description: "Current hub metrics (free memory, temp, DB size, uptime) + the hub's own health alerts. Read-only."],
-        [name: "hub_update_platform", description: "Apply the hub's pending platform update (downloads + installs + REBOOTS the hub; requires confirm=true). statusOnly=true polls update progress without confirm.", inputSchema: [type: "object", properties: [confirm: [type: "boolean", description: "Must be true to apply (the hub reboots itself)."], statusOnly: [type: "boolean", description: "Poll /hub/cloud/checkUpdateStatus only; no confirm needed."]]]],
-        [name: "hub_get_memory_history", description: "Free-memory / CPU-load history rows from the hub. Args: limit (default 60). Read-only.",
+        [name: "hub_get_metrics", annotations: [title: "Get Metrics", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Current hub metrics (free memory, temp, DB size, uptime) + the hub's own health alerts. Read-only."],
+        [name: "hub_reboot", annotations: [title: "Reboot", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false], description: "Reboot the hub (POST /hub/reboot; 1-3 min downtime). The only in-band recovery from a wedged web stack -- if loopback HTTP is already dead this call cannot land either and the hub needs a physical power cycle. The watchdog also fires this automatically when it detects a wedge (see the autoRebootOnWedge preference). Requires confirm=true.", inputSchema: [type: "object", properties: [confirm: [type: "boolean", description: "Must be true."], force: [type: "boolean", description: "Reboot even while a platform update the hub accepted is still installing (refused otherwise)."]], required: ["confirm"]]],
+        [name: "hub_update_platform", annotations: [title: "Update Platform", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true], description: "Apply the hub's pending platform update (downloads + installs + REBOOTS the hub; requires confirm=true). statusOnly=true polls update progress without confirm.", inputSchema: [type: "object", properties: [confirm: [type: "boolean", description: "Must be true to apply (the hub reboots itself)."], statusOnly: [type: "boolean", description: "Poll /hub/cloud/checkUpdateStatus only; no confirm needed."]]]],
+        [name: "hub_get_memory_history", annotations: [title: "Get Memory History", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "Free-memory / CPU-load history rows from the hub. Args: limit (default 60). Read-only.",
          inputSchema: [type: "object", properties: [limit: [type: "integer"]]]],
-        [name: "hub_get_hub_logs", description: "Most-recent hub system log entries. Args: level (error/warn/info), limit (default 50). Read-only.",
+        [name: "hub_get_hub_logs", annotations: [title: "Get Hub Logs", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "Most-recent hub system log entries. Args: level (error/warn/info), limit (default 50). Read-only.",
          inputSchema: [type: "object", properties: [level: [type: "string"], limit: [type: "integer"]]]],
-        [name: "hub_list_app_instances", description: "Every running app INSTANCE (flattened /hub2/appsList with parentId) -- the full app inventory. DISTINCT from hub_list_apps (Apps Code CLASSES, which resolve_class_id depends on). Read-only."],
-        [name: "hub_install_bundle", description: "Install a code bundle .zip from a URL the hub fetches itself (HPM-style). confirm:true required.",
+        [name: "hub_list_app_instances", annotations: [title: "List App Instances", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Every running app INSTANCE (flattened /hub2/appsList with parentId) -- the full app inventory. DISTINCT from hub_list_apps (Apps Code CLASSES, which resolve_class_id depends on). Read-only."],
+        [name: "hub_install_bundle", annotations: [title: "Install Bundle", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true], description: "Install a code bundle .zip from a URL the hub fetches itself (HPM-style). confirm:true required.",
          inputSchema: [type: "object", properties: [importUrl: [type: "string"], primary: [type: "boolean"], confirm: [type: "boolean"]], required: ["importUrl", "confirm"]]],
-        [name: "hub_list_bundles", description: "List installed code bundle containers (id/name/namespace). Read-only.",
+        [name: "hub_list_bundles", annotations: [title: "List Bundles", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "List installed code bundle containers (id/name/namespace). Read-only.",
          inputSchema: [type: "object", properties: [:]]],
-        [name: "hub_delete_bundle", description: "Delete a code bundle container by id (verified by re-list). confirm:true required.",
+        [name: "hub_delete_bundle", annotations: [title: "Delete Bundle", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Delete a code bundle container by id (verified by re-list). confirm:true required.",
          inputSchema: [type: "object", properties: [bundleId: [type: "string"], confirm: [type: "boolean"]], required: ["bundleId", "confirm"]]],
-        [name: "hub_get_info", description: "Hub model/firmware/memory + the issue #237 lastSelfDeploy record (with ageMs)."],
-        [name: "hub_list_apps", description: "List Apps Code types (scope='types') or installed apps.",
+        [name: "hub_get_info", annotations: [title: "Get Info", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "Hub model/firmware/memory, the lastSelfDeploy record (with ageMs), and the wedge detector's state (loopback fail streak, last auto-reboot stamp with age, looksWedged)."],
+        [name: "hub_list_apps", annotations: [title: "List Apps", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "List Apps Code types (scope='types') or installed apps.",
          inputSchema: [type: "object", properties: [scope: [type: "string", enum: ["types", "instances"]]]]],
-        [name: "hub_list_libraries", description: "List libraries (id/name/namespace/version summaries)."],
-        [name: "hub_get_jobs", description: "List scheduled + running hub jobs."],
-        [name: "hub_read_file", description: "Read a File Manager file (chunked).",
+        [name: "hub_list_libraries", annotations: [title: "List Libraries", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "List libraries (id/name/namespace/version summaries)."],
+        [name: "hub_get_jobs", annotations: [title: "Get Jobs", readOnlyHint: true, idempotentHint: true, openWorldHint: false], inputSchema: [type: "object", properties: [:]], description: "List scheduled + running hub jobs."],
+        [name: "hub_read_file", annotations: [title: "Read File", readOnlyHint: true, idempotentHint: true, openWorldHint: false], description: "Read a File Manager file (chunked).",
          inputSchema: [type: "object", properties: [fileName: [type: "string"], offset: [type: "integer"], length: [type: "integer"]], required: ["fileName"]]],
-        [name: "hub_write_file", description: "Write a File Manager file. confirm:true required.",
+        [name: "hub_write_file", annotations: [title: "Write File", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false], description: "Write a File Manager file. confirm:true required.",
          inputSchema: [type: "object", properties: [fileName: [type: "string"], content: [type: "string"], confirm: [type: "boolean"]], required: ["fileName", "content", "confirm"]]],
-        [name: "hub_create_backup", description: "Trigger a hub DB backup. confirm:true required.",
+        [name: "hub_create_backup", annotations: [title: "Create Backup", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false], description: "Trigger a hub DB backup. confirm:true required.",
          inputSchema: [type: "object", properties: [confirm: [type: "boolean"]], required: ["confirm"]]],
-        [name: "hub_manage_variables", description: "Read/set hub variables for the lease (hub_get_variable / hub_set_variable). Call with no action to list sub-tools.",
+        [name: "hub_manage_variables", annotations: [title: "Manage Variables", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Read/set hub variables for the lease (hub_get_variable / hub_set_variable). Call with no action to list sub-tools.",
          inputSchema: [type: "object", properties: [action: [type: "string", enum: ["hub_get_variable", "hub_set_variable"]], name: [type: "string"], value: [type: "string"], confirm: [type: "boolean"]]]]
     ]
 }
@@ -1879,9 +2506,251 @@ String hubGet(String path, Map query, int timeoutSec = 30) {
     def cookie = secCookie()
     if (cookie) params.headers = [Cookie: cookie]
     String out = null
-    try { httpGet(params) { resp -> out = respText(resp) } }
-    catch (Exception e) { log.error "hubGet ${path}: ${e.message}" }
+    try { httpGet(params) { resp -> out = respText(resp) }; noteLoopback(true) }
+    catch (Exception e) {
+        // A 4xx/5xx THROWS here, but the hub answered -- that is a served response, not a dead web
+        // stack. Counting it as a loopback failure would inflate the wedge streak on a perfectly
+        // responsive hub (e.g. a probe for a file that does not exist) and could auto-reboot it.
+        noteLoopback(httpStatusOf(e) != null)
+        log.error "hubGet ${path}: ${e.message}"
+    }
     return out
+}
+
+// The response status carried on a thrown Hubitat HTTP exception, or null on a real transport
+// failure. Mirrors the e.response.status capture hubGetStatus already does. Non-private so specs
+// can exercise it directly -- the harness supplies httpGet/httpPost, so the surrounding helpers'
+// catch paths are not otherwise reachable from a test.
+Integer httpStatusOf(Exception e) {
+    try {
+        def resp = e.response
+        return resp?.status as Integer
+    } catch (Exception ignore) { return null }
+}
+
+// ---- wedge detection ------------------------------------------------------
+// Loopback reads to 127.0.0.1:8080 normally answer in milliseconds. When the platform's web
+// thread pool is exhausted -- the failure mode that concurrent purges + restores produce, see the
+// single-flight latch note on actAndRecord -- EVERY loopback read starts returning "Read timed
+// out" and the hub stops serving its own admin UI. Observed live 2026-09-01: wedged 06:01, still
+// dead at 09:33, recovered only by a manual power cycle. Nothing in-process recovers from it, so
+// the watchdog has to be able to SEE it. Track consecutive loopback failures plus the last
+// success so "one flaky read" is distinguishable from "the hub is gone".
+private void noteLoopback(boolean ok) {
+    synchronized (LOOPBACK_LOCK) {
+        try {
+            int prior = (atomicState.loopbackFailStreak ?: 0) as int
+            if (!ok) {
+                // Stamp when THIS streak began so hubLooksWedged has a baseline even if the
+                // watchdog has never seen a successful loopback call.
+                if (prior == 0) atomicState.loopbackStreakStartedAt = now()
+                // Past the threshold the count no longer matters (the start stamp says how long
+                // the hub has been dark), so stop writing it: a purge sweep on a wedged hub makes
+                // 150+ failing calls, and each write here would be a DB write from the app whose
+                // job is to keep the hub unloaded.
+                if (prior < WEDGE_STREAK_MIN) atomicState.loopbackFailStreak = prior + 1
+                return
+            }
+            // Every atomicState write is a DB write, and a purge sweep makes 150+ loopback calls.
+            // The success path is the steady state, so it writes only when something CHANGED: a
+            // streak to clear, or a lastOk older than 30s. That keeps the bookkeeping at ~2 writes
+            // a minute on a healthy hub instead of one per call on the app whose job is to keep
+            // the hub unloaded.
+            if (prior != 0) {
+                atomicState.loopbackFailStreak = 0
+                atomicState.loopbackStreakStartedAt = null
+            }
+            Long lastOk = null
+            try { lastOk = atomicState.loopbackLastOkAt as Long } catch (Exception ignore) { lastOk = null }
+            long nowMs = now()
+            if (lastOk == null || (nowMs - lastOk) > 30000L) atomicState.loopbackLastOkAt = nowMs
+        } catch (Exception ignore) { /* never let bookkeeping break a hub call */ }
+    }
+}
+
+// Both conditions are required on purpose. The streak alone fires on a burst of slow reads from a
+// busy-but-alive hub; the silence window alone fires on an idle watchdog that simply made no
+// calls. Together they describe only the observed wedge: many consecutive failures AND no
+// successful loopback read for minutes.
+private boolean hubLooksWedged() {
+    // Under the lock the success path writes: the streak and its baseline are two atomicState keys
+    // and noteLoopback updates them together, so reading them outside it can pair a stale streak
+    // with a stale baseline and call a hub that just answered wedged.
+    synchronized (LOOPBACK_LOCK) {
+    try {
+        int streak = (atomicState.loopbackFailStreak ?: 0) as int
+        if (streak < WEDGE_STREAK_MIN) return false
+        // Fall back to the FIRST failure of the current streak when there has never been a success.
+        // A hub already wedged when the watchdog started (or restarted into a wedged hub) has no
+        // lastOk at all -- returning false there disabled the escape in exactly the case it exists
+        // for, leaving the app to tick silently forever the way it did on 2026-09-01.
+        Long baseline = (atomicState.loopbackLastOkAt ?: atomicState.loopbackStreakStartedAt) as Long
+        if (baseline == null) return false
+        return (now() - baseline) > 240000L
+    } catch (Exception ignore) { return false }
+    }
+}
+
+// One cheap loopback read used purely as a liveness gate before the destructive escape. Routed
+// through hubGetStatus so a success updates the wedge counters as a side effect.
+// NON-PRIVATE deliberately: a private method's internal callers bypass metaClass dispatch, so a
+// spec could not override it and the reboot tests would silently pass on the real implementation
+// instead of the stub -- which is exactly how they first passed by accident.
+def probeLoopbackAlive() {
+    // hubGetStatus, NOT hubGet: hubGet returns null on ANY exception, and Hubitat THROWS on a
+    // served 4xx/5xx -- so a hub answering 404 on this endpoint (a firmware that moved it, say)
+    // would read as DEAD and get rebooted. The question here is only "did the web stack serve
+    // us", so any status at all is a live hub; only a null status is a dead one.
+    try { return hubGetStatus("/hub/advanced/freeOSMemory", [:], 10)?.status != null }
+    catch (Exception ignore) { return false }
+}
+
+// Mark a window in which the hub is EXPECTED to be unreachable, so the auto-reboot escape does not
+// fire on downtime we caused ourselves.
+private boolean markExpectedDowntime(long ms, String reason) {
+    // Returns whether the window is actually READABLE afterwards. Every atomicState write can fail
+    // under hub load, and this one is a safety window: a caller that goes on to reboot or start a
+    // platform update believing it is suppressed, when it is not, is the failure this guards.
+    Long priorUntil = null
+    String priorReason = null
+    try { priorUntil = atomicState.expectedDownUntil as Long; priorReason = atomicState.expectedDownReason?.toString() } catch (Exception ignore) { priorUntil = null }
+    try {
+        long until = now() + ms
+        atomicState.expectedDownUntil = until
+        atomicState.expectedDownReason = reason
+        // The EXACT values, not merely non-null: a stale window left by an earlier action reads back
+        // non-null, so a null-check would accept a dropped write and report a suppression that does
+        // not exist. The reason matters as much as the deadline -- hub_reboot's refusal keys on it.
+        Long readBack = atomicState.expectedDownUntil as Long
+        String reasonBack = atomicState.expectedDownReason?.toString()
+        if (readBack != until || reasonBack != reason) {
+            // Put the pair back the way it was. The reason is written before the deadline is
+            // verified, so a half-landed claim can leave OUR reason sitting on the PRIOR caller's
+            // still-open window -- and a later hub_reboot would then refuse itself, citing a
+            // platform update that was never requested.
+            try {
+                atomicState.expectedDownUntil = priorUntil
+                atomicState.expectedDownReason = priorReason
+            } catch (Exception ignore) { }
+            log.error "E2E Dead-Man Watchdog v2: the expected-downtime window (${reason}) did not persist -- state holds ${readBack}/${reasonBack}. The auto-reboot escape is NOT suppressed."
+            return false
+        }
+        mcpAdminLog "Expecting the hub to be unreachable for up to ${(ms / 60000) as long} min (${reason}); the auto-reboot escape is suppressed until then."
+        return true
+    } catch (Exception e) {
+        // Same restore as the mismatch path above: the deadline is written before the reason, so a
+        // throw between them leaves OUR deadline beside the PRIOR reason -- a pair that suppresses
+        // the wedge escape and misdirects hub_reboot's refusal, on a call that reported failure.
+        try {
+            atomicState.expectedDownUntil = priorUntil
+            atomicState.expectedDownReason = priorReason
+        } catch (Exception ignore) { }
+        log.error "E2E Dead-Man Watchdog v2: could not persist the expected-downtime window (${reason}): ${e.message}"
+        return false
+    }
+}
+
+// Give a claimed downtime window back when the request it covered did not land -- only if the
+// stamp is still ours, so a window a later caller claimed in the meantime is left alone.
+private boolean releaseExpectedDowntime(Long ourStamp, Long priorWindow, String priorReason) {
+    // Compare-and-restore under the SAME lock every claim takes, or a successor that stamped its
+    // own window between the read and the write here has that window silently erased.
+    synchronized (REBOOT_LOCK) {
+    try {
+        Long current = atomicState.expectedDownUntil as Long
+        if (current == ourStamp) {
+            // Restore the REASON with the window: leaving ours behind on someone else's window
+            // would mislabel it -- a platform-update window relabelled "hub_reboot" would stop
+            // refusing the reboots it exists to refuse.
+            atomicState.expectedDownUntil = priorWindow
+            atomicState.expectedDownReason = priorWindow == null ? null : priorReason
+            // Report the outcome: a caller that says "the window was released" when the write threw
+            // would leave a stale window suppressing the wedge escape with nobody the wiser.
+            Long back = atomicState.expectedDownUntil as Long
+            return back == priorWindow
+        }
+        return true      // someone else's window: correctly left alone
+    } catch (Exception e) {
+        log.error "E2E Dead-Man Watchdog v2: could not release the expected-downtime window: ${e.message}"
+        return false
+    }
+    }
+}
+
+// hub_reboot: POST /hub/reboot. Copied from hubitat-mcp-server.groovy's toolRebootHub
+// (libraries/mcp-system-lib.groovy) -- same endpoint, minus the 24h-backup gate the watchdog
+// deliberately drops (see the SECURITY banner). This is the ONLY in-band recovery from a wedged
+// web stack, so it is also what the auto-reboot escape calls.
+def adminRebootHub(args) {
+    requireConfirm(args)
+    // A platform update the hub accepted is downloading and installing for up to 25 minutes; a
+    // reboot in that window can interrupt the install. Refuse unless the caller forces it.
+    // Read the window, decide, and claim it in ONE step under the lock every claimant takes:
+    // checking outside it and stamping after lets a platform update slip in between, and the
+    // reboot then overwrites the window it was supposed to respect and POSTs into the install.
+    // The prior window is remembered for the REJECTED path only -- a POST the hub answered proves
+    // nothing rebooted, so its window goes back. An unanswered POST keeps ours (see below).
+    Long updateWindow = null
+    String windowReason = null
+    Long priorWindow = null
+    String priorReason = null
+    Long ourStamp = null
+    boolean refuse = false
+    boolean windowHeld = false
+    synchronized (REBOOT_LOCK) {
+        try { updateWindow = atomicState.expectedDownUntil as Long; windowReason = atomicState.expectedDownReason?.toString() } catch (Exception ignore) { updateWindow = null }
+        if (windowReason == "hub_update_platform" && updateWindow != null && now() < updateWindow && args?.force != true) {
+            refuse = true
+        } else {
+            priorWindow = updateWindow
+            priorReason = windowReason
+            // Before the POST: once it lands the hub may go before we get to run again.
+            windowHeld = markExpectedDowntime(600000L, "hub_reboot")
+            try { ourStamp = atomicState.expectedDownUntil as Long } catch (Exception ignore) { ourStamp = null }
+        }
+    }
+    if (refuse) {
+        return [success: false, refused: true, expectedDownUntil: updateWindow,
+                error: "a platform update was accepted ${((now() - (updateWindow - 1500000L)) / 1000) as long}s ago and the hub is downloading/installing it -- a reboot now could interrupt the install. Pass force:true to reboot anyway."]
+    }
+    mcpAdminLog "Rebooting the hub (POST /hub/reboot)."
+    // hubPostForm SWALLOWS transport exceptions and returns [status: null, data: null], so the
+    // status is the ONLY success signal -- a try/catch around it can never fire, and reporting
+    // success unconditionally would make the auto-reboot escape log "rebooted" for a POST that
+    // never landed, which is precisely the case (a wedged web stack) this exists to handle.
+    def resp = hubPostForm("/hub/reboot", [:])
+    Integer st = null
+    try { st = resp?.status as Integer } catch (Exception ignore) { st = null }
+    if (st != null && st >= 200 && st < 400) {
+        // A reboot whose suppression window did not persist still rebooted -- but the wedge escape
+        // cannot see it, so say so rather than let the caller assume it is covered.
+        def ok = [success: true, status: st,
+                  message: "Hub reboot initiated; the hub is unreachable for 1-3 minutes.",
+                  response: resp?.data?.toString()?.take(200)]
+        if (!windowHeld) {
+            ok.windowPersisted = false
+            ok.note = "The reboot landed, but the expected-downtime window could not be persisted: the wedge escape does not know this reboot is deliberate and may count the downtime as a wedge."
+        }
+        return ok
+    }
+    if (st == null) {
+        // AMBIGUOUS: a hub that accepted the reboot goes down mid-response, so "no status" is the
+        // signature of a reboot that LANDED as much as of one that never did. Keep the window --
+        // releasing it invites the escape to reboot a hub that is already rebooting, and the
+        // caller to retry a reboot that already happened.
+        return [success: false, ambiguous: true, status: null, expectedDownUntil: ourStamp,
+                error: "reboot POST got no response from the hub -- whether it landed is UNKNOWN (a hub that accepted it goes down before answering).",
+                note: "The downtime window is HELD, so the wedge escape stands down. Check hub_get_info in a few minutes: a rising uptime means it rebooted. If loopback HTTP is wedged the POST never landed and the hub needs a physical power cycle."]
+    }
+    // A status the hub actually returned is proof it did NOT reboot: the window would otherwise
+    // make the wedge escape stand down for 10 minutes on a reboot that never happened. Only undo
+    // our own stamp -- a platform update that opened a NEWER window meanwhile must keep it.
+    boolean released = releaseExpectedDowntime(ourStamp, priorWindow, priorReason)
+    return [success: false, status: st,
+            error: "reboot POST returned status ${st}",
+            windowReleased: released,
+            note: released ? "The hub answered, so it did not reboot; the downtime window was released."
+                           : "The hub answered, so it did not reboot, but the downtime window could NOT be cleared -- it will suppress the wedge escape until it expires."]
 }
 
 // Status-aware loopback GET. Unlike hubGet (text body, swallows every exception -> null), this
@@ -1910,24 +2779,41 @@ Map hubGetStatus(String path, Map query, int timeoutSec = 30) {
             log.error "hubGetStatus ${path}: ${e.message}"
         }
     }
+    // A status of any kind (incl. the 302 the forcedelete endpoints answer with) means the web
+    // stack served us; only a null status is the wedge signature.
+    noteLoopback(out.status != null)
     return out
 }
+
+// The reboot POST either lands within seconds or the web stack is wedged; the 420s a 1.6MB source
+// restore needs would hold the auto-reboot path -- and every tick queued behind its claim -- for
+// seven minutes on exactly the hub state it exists to recover.
+private int hubPostTimeoutSec(String path) { path == "/hub/reboot" ? 20 : 420 }
 
 Map hubPostForm(String path, Map body) {
     // 420s: restoring the ~1.6MB MCP server source is a large form POST that can be slow.
     def params = [uri: "http://127.0.0.1:8080", path: path, body: body,
                   requestContentType: "application/x-www-form-urlencoded",
-                  textParser: true, ignoreSSLIssues: true, timeout: 420]
+                  textParser: true, ignoreSSLIssues: true, timeout: hubPostTimeoutSec(path)]
     def headers = [Connection: "keep-alive"]
     def cookie = secCookie()
     if (cookie) headers.Cookie = cookie
     params.headers = headers
     Map out = [status: null, data: null]
     try { httpPost(params) { resp -> out = [status: resp.status, data: respText(resp)] } }
-    catch (Exception e) { log.error "hubPostForm ${path}: ${e.message}" }
+    catch (Exception e) {
+        // Same as hubGet: a thrown 4xx/5xx still means the hub served us. Keep the status so the
+        // caller sees it AND so the wedge streak is not inflated by an answered error.
+        Integer st = httpStatusOf(e)
+        if (st != null) out = [status: st, data: null]
+        log.error "hubPostForm ${path}: ${e.message}"
+    }
+    noteLoopback(out.status != null)
     return out
 }
 
+// noteLoopback here too: without it a watchdog doing mostly JSON POSTs could accumulate a false
+// failure streak from the other helpers and trip the wedge detector while the hub is answering.
 Map hubPostJson(String path, String jsonBody) {
     def params = [uri: "http://127.0.0.1:8080", path: path, body: jsonBody,
                   requestContentType: "application/json",
@@ -1938,7 +2824,12 @@ Map hubPostJson(String path, String jsonBody) {
     params.headers = headers
     Map out = [status: null, data: null]
     try { httpPost(params) { resp -> out = [status: resp.status, data: respText(resp)] } }
-    catch (Exception e) { log.error "hubPostJson ${path}: ${e.message}" }
+    catch (Exception e) {
+        Integer st = httpStatusOf(e)
+        if (st != null) out = [status: st, data: null]
+        log.error "hubPostJson ${path}: ${e.message}"
+    }
+    noteLoopback(out.status != null)
     return out
 }
 

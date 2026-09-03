@@ -72,9 +72,14 @@ mcp_call() {
 
 RPC_ATTEMPTS=5
 RPC_RETRY_SLEEP=6
+# $3 (optional) caps attempts for this call. Pass 1 for a NON-IDEMPOTENT write: a relay timeout
+# means the hub is still RUNNING the operation, not that it never started, so retrying stacks a
+# second copy on top of the first. That is what wedged the hub on 2026-09-01 -- five overlapping
+# hub_purge_e2e_artifacts sweeps, each 11+ minutes, from five retries of one dropped response.
+# Reads stay at RPC_ATTEMPTS; re-reading is free and a dropped read is genuinely worth retrying.
 mcp_tool_call_text() {
-  local label="$1" rpc="$2" attempt=1 resp text err
-  while [ "$attempt" -le "$RPC_ATTEMPTS" ]; do
+  local label="$1" rpc="$2" max="${3:-$RPC_ATTEMPTS}" attempt=1 resp text err
+  while [ "$attempt" -le "$max" ]; do
     resp=$(mcp_call "$rpc" || true)
     if printf '%s' "$resp" | jq -e . >/dev/null 2>&1; then
       err=$(printf '%s' "$resp" | jq -r '.error.message // (.error | strings) // empty' 2>/dev/null || true)
@@ -86,9 +91,9 @@ mcp_tool_call_text() {
       printf '%s' "$text"
       return 0
     fi
-    echo "::warning::${label}: non-JSON gateway response (attempt ${attempt}/${RPC_ATTEMPTS}; likely the ~10s cloud-gateway timeout). Body head: $(printf '%s' "$resp" | head -c 120 | tr '\n' ' ')" >&2
+    echo "::warning::${label}: non-JSON gateway response (attempt ${attempt}/${max}; likely the ~10s cloud-gateway timeout). Body head: $(printf '%s' "$resp" | head -c 120 | tr '\n' ' ')" >&2
     attempt=$((attempt + 1))
-    [ "$attempt" -le "$RPC_ATTEMPTS" ] && sleep "$RPC_RETRY_SLEEP"
+    [ "$attempt" -le "$max" ] && sleep "$RPC_RETRY_SLEEP"
   done
   return 1
 }
@@ -314,11 +319,17 @@ fi
 # backstop (and is what reaps BAT_E2E_ DEVICES, which the watchdog can't delete). The test step still
 # defers rule deletes (E2E_DEFER_NATIVE_DELETES) so they stay off the test critical path; this one
 # call cleans the whole accumulation at once.
+# ONE attempt, never retried: the sweep outlives the ~10s relay timeout by minutes, so a dropped
+# response means it is still RUNNING on the hub. The watchdog now also latches concurrent sweeps,
+# but CI must not lean on that -- not retrying is the fix; the latch is the backstop.
 if PURGE_TEXT=$(mcp_tool_call_text "hub_purge_e2e_artifacts" \
-    "$(jq -nc '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_purge_e2e_artifacts",arguments:{confirm:true}}}')" 2>/dev/null); then
-  echo "Local purge: $(printf '%s' "$PURGE_TEXT" | jq -c '{deletedCount,failedCount,variablesDeletedCount,variablesFailedCount}' 2>/dev/null | head -c 200)"
+    "$(jq -nc '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"hub_purge_e2e_artifacts",arguments:{confirm:true}}}')" 1 2>/dev/null); then
+  echo "Local purge: $(printf '%s' "$PURGE_TEXT" | jq -c '{success,busy,inFlight,cached,error,deletedCount,failedCount,variablesDeletedCount,variablesFailedCount}' 2>/dev/null | head -c 300)"
   PURGE_FAILS=$(printf '%s' "$PURGE_TEXT" | jq -r '((.failedCount // 0) + (.variablesFailedCount // 0))' 2>/dev/null || echo "?")
-  if [ "$PURGE_FAILS" != "0" ]; then
+  # A refused sweep (success:false, busy:true -- another prefix is running) carries NO count
+  # fields, so the count sum alone would read it as a clean purge. Gate on success too.
+  PURGE_OK=$(printf '%s' "$PURGE_TEXT" | jq -r 'if .success == false then "no" else "yes" end' 2>/dev/null || echo "?")
+  if [ "$PURGE_FAILS" != "0" ] || [ "$PURGE_OK" != "yes" ]; then
     echo "::warning::Local purge reported ${PURGE_FAILS} failure(s) -- the post-restore --cleanup-only prefix sweep is the backstop. Detail: $(printf '%s' "$PURGE_TEXT" | jq -c '{failed,variablesFailed}' 2>/dev/null | head -c 300)"
   fi
 else

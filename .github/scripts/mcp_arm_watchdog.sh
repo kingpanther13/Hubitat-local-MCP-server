@@ -78,9 +78,14 @@ mcp_call() {
 # hub answers on attempt 1, so the extra patience costs nothing when things are fine.
 RPC_ATTEMPTS=12
 RPC_RETRY_SLEEP=10
+# $3 (optional) caps attempts for this call. Pass 1 for a NON-IDEMPOTENT write: a relay timeout
+# means the hub is still RUNNING the operation, not that it never started, so retrying stacks a
+# second copy on top of the first. That is what wedged the hub on 2026-09-01 -- five overlapping
+# hub_purge_e2e_artifacts sweeps, each 11+ minutes, from five retries of one dropped response.
+# Reads stay at RPC_ATTEMPTS; re-reading is free and a dropped read is genuinely worth retrying.
 mcp_tool_call_text() {
-  local label="$1" rpc="$2" attempt=1 resp text err
-  while [ "$attempt" -le "$RPC_ATTEMPTS" ]; do
+  local label="$1" rpc="$2" max="${3:-$RPC_ATTEMPTS}" attempt=1 resp text err
+  while [ "$attempt" -le "$max" ]; do
     resp=$(mcp_call "$rpc" || true)
     if printf '%s' "$resp" | jq -e . >/dev/null 2>&1; then
       err=$(printf '%s' "$resp" | jq -r '.error.message // (.error | strings) // empty' 2>/dev/null || true)
@@ -92,9 +97,9 @@ mcp_tool_call_text() {
       printf '%s' "$text"
       return 0
     fi
-    echo "::warning::${label}: non-JSON gateway response (attempt ${attempt}/${RPC_ATTEMPTS}; likely the ~10s cloud-gateway timeout). Body head: $(printf '%s' "$resp" | head -c 120 | tr '\n' ' ')" >&2
+    echo "::warning::${label}: non-JSON gateway response (attempt ${attempt}/${max}; likely the ~10s cloud-gateway timeout). Body head: $(printf '%s' "$resp" | head -c 120 | tr '\n' ' ')" >&2
     attempt=$((attempt + 1))
-    [ "$attempt" -le "$RPC_ATTEMPTS" ] && sleep "$RPC_RETRY_SLEEP"
+    [ "$attempt" -le "$max" ] && sleep "$RPC_RETRY_SLEEP"
   done
   return 1
 }

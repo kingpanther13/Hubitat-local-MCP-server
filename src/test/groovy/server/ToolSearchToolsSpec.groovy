@@ -5,11 +5,13 @@ import support.ToolSpecBase
 /**
  * Direct-call coverage for the BM25 hub_search_tools path after the PR2c perf change
  * (bm25-corpus-state-not-atomicstate + bm25-df-table-rebuild-Q15): the corpus and the
- * per-doc tokenization are cached in atomicState (index-aligned to the FULL corpus) and
- * served from cache; df/avgDl are recomputed over the visible subset so ranking stays
- * byte-identical. These pin: a stable ranked shape, cache-hit (no rebuild), per-request
- * visibility filtering over the shared full-corpus token cache, and updated() invalidation
- * of both BM25 entries (and the gateway requiredParams memo) in lockstep.
+ * per-doc tokenization are cached in the class-static TOOL_SEARCH_INDEX, keyed by the corpus
+ * fingerprint (index-aligned to the FULL corpus) and served from there -- NOT in atomicState,
+ * where the two lists were ~244 KB the hub re-serialised on every execution. df/avgDl are
+ * recomputed over the visible subset so ranking stays byte-identical. These pin: a stable
+ * ranked shape, cache-hit (no rebuild), per-request visibility filtering over the shared
+ * full-corpus token cache, updated() invalidation in lockstep with the gateway requiredParams
+ * memo, and the shedding of the legacy atomicState keys an older build left behind.
  */
 class ToolSearchToolsSpec extends ToolSpecBase {
 
@@ -46,41 +48,65 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         !(result.results*.tool.contains("hub_manage_mode"))
     }
 
-    def "the corpus + tokens are built once into atomicState and a second identical query is served from cache"() {
+    def "the corpus + tokens are built once into the class static -- never atomicState -- and a second identical query is served from it"() {
         given:
         searchEnabled()
-        atomicStateMap.remove('toolSearchCorpus')
-        atomicStateMap.remove('toolSearchTokens')
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
 
-        when: 'first query builds and caches the corpus + tokens'
+        when: 'first query builds the index'
         def first = script.toolSearchTools([query: 'switch motion contact', maxResults: 5])
-        def cachedCorpus = atomicStateMap.toolSearchCorpus
-        def cachedTokens = atomicStateMap.toolSearchTokens
+        def index = scriptStaticField('TOOL_SEARCH_INDEX') as Map
+        def cachedCorpus = index.corpus
+        def cachedTokens = index.tokens
 
-        then: 'both are populated in atomicState (not state), index-aligned to the full corpus'
+        then: 'the index lives in the static, index-aligned to the full corpus, and nothing lands in app state'
         cachedCorpus != null
         cachedTokens != null
         cachedTokens.size() == cachedCorpus.size()
+        index.fingerprint == script.toolSearchCorpusFingerprint()
+        !atomicStateMap.containsKey('toolSearchCorpus')
+        !atomicStateMap.containsKey('toolSearchTokens')
         !stateMap.containsKey('toolSearchCorpus')
 
         when: 'a second identical query'
         def second = script.toolSearchTools([query: 'switch motion contact', maxResults: 5])
 
-        then: 'the cache was NOT rebuilt (same object) and results are identical'
-        atomicStateMap.toolSearchCorpus.is(cachedCorpus)
-        atomicStateMap.toolSearchTokens.is(cachedTokens)
+        then: 'the index was NOT rebuilt (same objects) and results are identical'
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).corpus.is(cachedCorpus)
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).tokens.is(cachedTokens)
         second.results == first.results
+    }
+
+    def "the first search on an upgraded hub sheds the persisted index an older build left in atomicState"() {
+        given: 'the legacy keys are present, as they are on every hub that ran the previous build'
+        searchEnabled()
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
+        atomicStateMap.toolSearchCorpus = [[name: 'hub_list_rooms', description: 'old', params: '', gateway: 'hub_read_rooms']]
+        atomicStateMap.toolSearchTokens = [['hub', 'list', 'rooms', 'old']]
+        atomicStateMap.toolSearchCorpusFingerprint = 'stale'
+        atomicStateMap.toolSearchCorpusVersion = 'stale'
+
+        when:
+        def result = script.toolSearchTools([query: 'list rooms', maxResults: 5])
+
+        then: 'served from the freshly built static, and the ~244 KB of dead state is gone without a settings save'
+        result.results.find { it.tool == 'hub_list_rooms' }?.title == 'List Rooms'
+        !atomicStateMap.containsKey('toolSearchCorpus')
+        !atomicStateMap.containsKey('toolSearchTokens')
+        !atomicStateMap.containsKey('toolSearchCorpusFingerprint')
+        !atomicStateMap.containsKey('toolSearchCorpusVersion')
     }
 
     def "a toggle flip hides the right tools per-request without rebuilding the shared full-corpus token cache"() {
         given: 'a clean cache with the custom rule engine ON'
         searchEnabled()
-        atomicStateMap.remove('toolSearchCorpus')
-        atomicStateMap.remove('toolSearchTokens')
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
 
         when: 'search with the engine ON'
         def onResult = script.toolSearchTools([query: 'custom rule create delete clone', maxResults: 25])
-        def fullSize = atomicStateMap.toolSearchTokens.size()
+        def fullSize = (scriptStaticField('TOOL_SEARCH_INDEX') as Map).tokens.size()
+        def cachedCorpus = (scriptStaticField('TOOL_SEARCH_INDEX') as Map).corpus
+        def cachedTokens = (scriptStaticField('TOOL_SEARCH_INDEX') as Map).tokens
 
         then: 'a custom_* tool is visible'
         onResult.results*.tool.contains('hub_create_custom_rule')
@@ -92,9 +118,11 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         then: 'the custom_* tool is now hidden (per-request visibility filter, NOT a cache rebuild)'
         !offResult.results*.tool.contains('hub_create_custom_rule')
 
-        and: 'the full-corpus token cache is untouched by the toggle'
-        atomicStateMap.toolSearchTokens.size() == fullSize
-        atomicStateMap.toolSearchTokens.size() == atomicStateMap.toolSearchCorpus.size()
+        and: 'the full-corpus cache is the SAME objects, not a rebuild that happens to match in size'
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).corpus.is(cachedCorpus)
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).tokens.is(cachedTokens)
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).tokens.size() == fullSize
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).tokens.size() == (scriptStaticField('TOOL_SEARCH_INDEX') as Map).corpus.size()
 
         and: 'results remain well-formed (deduped)'
         offResult.results*.tool == offResult.results*.tool.unique()
@@ -119,15 +147,14 @@ class ToolSearchToolsSpec extends ToolSpecBase {
     def "totalToolsSearched counts DISTINCT tools, not multi-gateway corpus rows"() {
         given: 'a clean cache so the corpus is freshly built'
         searchEnabled()
-        atomicStateMap.remove('toolSearchCorpus')
-        atomicStateMap.remove('toolSearchTokens')
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
 
         when:
         def result = script.toolSearchTools([query: 'list device room variable rule file', maxResults: 5])
         // Mirror the production visibility filter (getHiddenToolNames is the single
         // source of truth toolSearchTools uses) so the expected counts match exactly.
         def hidden = (script.getHiddenToolNames() ?: []) as Set
-        def visibleRows = atomicStateMap.toolSearchCorpus*.name.findAll { !hidden.contains(it) }
+        def visibleRows = (scriptStaticField('TOOL_SEARCH_INDEX') as Map).corpus*.name.findAll { !hidden.contains(it) }
         // unique(false) is the NON-mutating overload -- bare unique() dedups visibleRows
         // in place, which would collapse the visibleRows-vs-visibleDistinct check below.
         def visibleDistinct = visibleRows.unique(false)
@@ -143,8 +170,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
     def "disabling a multi-gateway tool drops totalToolsSearched by exactly one (count is post-dedup, not per-row)"() {
         given: 'hub_get_device lives in BOTH hub_read_devices and hub_manage_devices -- two corpus rows'
         searchEnabled()
-        atomicStateMap.remove('toolSearchCorpus')
-        atomicStateMap.remove('toolSearchTokens')
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
         def before = script.toolSearchTools([query: 'device get attribute', maxResults: 25])
         assert before.results*.tool.contains('hub_get_device')   // precondition: the multi-gateway tool is present
 
@@ -157,8 +183,9 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         !after.results*.tool.contains('hub_get_device')
     }
 
-    def "updated() invalidates both BM25 atomicState entries and the gateway requiredParams memo in lockstep"() {
+    def "updated() invalidates the in-JVM BM25 index, the legacy atomicState entries, and the gateway requiredParams memo in lockstep"() {
         given: 'populated caches and a no-op initialize so updated() does not hit platform APIs'
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).putAll([fingerprint: 'fp-test', corpus: [[name: 'x']], tokens: [['x']]])
         atomicStateMap.toolSearchCorpus = [[name: 'x', description: 'd']]
         atomicStateMap.toolSearchTokens = [['x']]
         atomicStateMap.toolSearchCorpusVersion = 'v-test'
@@ -171,6 +198,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         script.updated()
 
         then: 'all derived caches are cleared (rebuilt lazily on next use)'
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).isEmpty()
         atomicStateMap.toolSearchCorpus == null
         atomicStateMap.toolSearchTokens == null
         atomicStateMap.toolSearchCorpusVersion == null
@@ -231,6 +259,17 @@ class ToolSearchToolsSpec extends ToolSpecBase {
 
         then: 'the memo warmed, and holds the live catalog fingerprint'
         scriptStaticField('TOOL_SEARCH_CORPUS_FP') == script.toolSearchCorpusFingerprint()
+    }
+
+    def "the BM25 map key is NAMESPACED, not the bare token"() {
+        // The lint pins that every df/tf subscript goes through _bm25Key; nothing pinned what
+        // _bm25Key RETURNS. Making it `return token` passes the lint and the search tests alike,
+        // and the platform's SandboxSubscriptGuard rejection of the real corpus token "fields"
+        // comes straight back -- with it, every hub_search_tools call throws.
+        expect:
+        script._bm25Key('fields') != 'fields'
+        script._bm25Key('fields').startsWith('t_')
+        script._bm25Key('switch') == 't_switch'
     }
 
     def "the corpus fingerprint actually discriminates -- a content change moves it"() {
@@ -294,5 +333,29 @@ class ToolSearchToolsSpec extends ToolSpecBase {
 
         and: 'and BOTH hub_list_files rows are specifically in scope: a bare total is satisfied by two unrelated summaries while the rows this PR edited are skipped by the regex'
         listFilesChecked == 2
+    }
+
+    // The BM25 maps are subscripted with a COMPUTED key -- a corpus token -- and the platform
+    // sandbox rejects a computed key that collides with a reflection-ish property name. The
+    // catalog really does produce one: hub_list_devices' `fields` parameter is joined into the
+    // corpus text, so an unprefixed key made every search throw. These pin that the token is
+    // present AND that searching for it still scores, which is what the prefix buys.
+
+    def "the live corpus contains the sandbox-reserved token that broke raw-key scoring"() {
+        when:
+        def corpus = script.buildToolSearchCorpus(null)
+        def tokens = corpus.collectMany { script.bm25Tokenize(script._bm25DocText(it)) } as Set
+
+        then: 'the token is real, so a regression here is not hypothetical'
+        tokens.contains('fields')
+    }
+
+    def "a query for a sandbox-reserved token still ranks its tool"() {
+        when:
+        def result = script.toolSearchTools([query: 'fields', maxResults: 25])
+
+        then: 'scoring completes and the tool whose parameter contributes the token is found'
+        result.results != null
+        result.results*.tool.contains('hub_list_devices')
     }
 }

@@ -51,11 +51,13 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
          edges: [[from: 'n1', to: 'n2']]]
     }
 
-    /** configure/json body for a VRB child -- appType.name reverse-maps to "visual_rule" in _appTypeRegistry. */
-    private static String vrbChildConfigJson(int appId, String label) {
+    /** configure/json body for a VRB child -- appType.name reverse-maps to "visual_rule" in
+     *  _appTypeRegistry. The hub reports the child type VERSIONED ("Visual Rule Builder 1.0" /
+     *  "... 2.0"), never the bare family name the registry stores, so that is the default here. */
+    private static String vrbChildConfigJson(int appId, String label, String typeName = "Visual Rule Builder 1.0") {
         JsonOutput.toJson([
-            app: [id: appId, name: "Visual Rule Builder", label: label, trueLabel: label, installed: true,
-                  appType: [name: "Visual Rule Builder", namespace: "hubitat"]],
+            app: [id: appId, name: typeName, label: label, trueLabel: label, installed: true,
+                  appType: [name: typeName, namespace: "hubitat"]],
             configPage: [name: "mainPage", title: "", install: true, error: null, sections: []],
             settings: [:],
             childApps: []
@@ -105,6 +107,52 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
     }
 
     // ==================== _rmBackupRuleSnapshot: VRB capture ====================
+
+    // The registry holds the bare family name; the hub reports the child type with a version
+    // suffix. An exact-only reverse map classified every real Visual Rule as rule_machine, so
+    // the snapshot skipped the definition capture and a restore recreated it as an RM rule.
+    def "backup capture maps a VERSIONED Visual Rule type name to visual_rule"() {
+        given:
+        stubUploads()
+        hubGet.register('/installedapp/configure/json/711') { params ->
+            vrbChildConfigJson(711, 'Versioned', typeName) }
+        hubGet.register('/installedapp/statusJson/711') { params -> vrbStatusJson(711) }
+        hubGet.register('/app/ruleBuilder20Json/711') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/711') { params ->
+            json(classicDefinition() + [name: 'Versioned', rulePaused: false, promptHistory: []])
+        }
+
+        when:
+        script._rmBackupRuleSnapshot(711, 'pre-delete')
+
+        then: 'the definition is captured, which only happens on the visual_rule branch'
+        def snap = parsedUpload()
+        snap.appType == 'visual_rule'
+        snap.vrbFormat == 'classic'
+        snap.vrbDefinition != null
+
+        where:
+        typeName << ['Visual Rule Builder', 'Visual Rule Builder 1.0', 'Visual Rule Builder 2.0']
+    }
+
+    def "backup capture does NOT map the parent app or an unrelated suffix to visual_rule"() {
+        given:
+        stubUploads()
+        hubGet.register('/installedapp/configure/json/712') { params ->
+            vrbChildConfigJson(712, 'Impostor', typeName) }
+        hubGet.register('/installedapp/statusJson/712') { params -> vrbStatusJson(712) }
+        hubGet.register('/app/ruleBuilder20Json/712') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/712') { params -> GRAPH_NOT_FOUND }
+
+        when:
+        script._rmBackupRuleSnapshot(712, 'pre-delete')
+
+        then: 'a plural parent name and a non-version suffix both stay rule_machine'
+        parsedUpload().appType == 'rule_machine'
+
+        where:
+        typeName << ['Visual Rules Builder', 'Visual Rule Builder Deluxe']
+    }
 
     def "backup capture (classic VRB child): snapshot carries appType, vrbFormat, vrbDefinition and vrbRulePaused"() {
         given: 'configure/json answers as a Visual Rule Builder child; rule endpoints speak classic'

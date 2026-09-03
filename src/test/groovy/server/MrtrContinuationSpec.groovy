@@ -158,6 +158,17 @@ class MrtrContinuationSpec extends ToolSpecBase {
         'numeric-string appId'      | 'hub_manage_rule_machine'          | 'hub_set_rule'       | [appId: '777', addAction: [capability: 'switch', state: 'on'], confirm: true]                               | 'action:'
     }
 
+    def "the pre-flight restore hint names a reused baseline for what it is (#label)"() {
+        expect:
+        script._rmPreflightRestoreHint("x", backup).contains(expected)
+
+        where:
+        label            | backup                                              | expected
+        'no backup'      | null                                                | 'No backup was taken'
+        'fresh snapshot' | [backupKey: 'rm-rule_1_a', baselineReused: false]   | 'unused snapshot taken before the refusal'
+        'reused'         | [backupKey: 'rm-rule_1_a', baselineReused: true]    | 'baseline reused from an earlier edit'
+    }
+
     def "direct flat-mode native preflight still returns a terminal refusal"() {
         given:
         settingsMap.enableWrite = true
@@ -959,8 +970,8 @@ class MrtrContinuationSpec extends ToolSpecBase {
         given:
         script.metaClass._isCloudRequest = { -> true }
 
-        expect:
-        script._mrtrContentionWaitMs() == 4000L
+        expect: 'half of the 6000ms default'
+        script._mrtrContentionWaitMs() == 3000L
 
         when:
         settingsMap.relayBudgetMs = 3000
@@ -974,15 +985,24 @@ class MrtrContinuationSpec extends ToolSpecBase {
         script.metaClass._isCloudRequest = { -> true }
 
         expect: 'detached writes wait in-leg but preserve measured cloud-relay jitter headroom'
-        script._mrtrContentionWaitMs('hub_set_rule') == 4500L
-        script._mrtrContentionWaitMs('hub_set_native_app') == 4500L
+        // budget - 2000ms headroom = 4000, now under the 4500 detached cap
+        script._mrtrContentionWaitMs('hub_set_rule') == 4000L
+        script._mrtrContentionWaitMs('hub_set_native_app') == 4000L
 
         and: 'the scheduling observer has one more second of cloud-relay headroom'
         script._mrtrScheduleObserveWaitMs('hub_set_rule') == 3500L
         script._mrtrScheduleObserveWaitMs('hub_set_native_app') == 3500L
 
         and: 'synchronous slices retain half their request budget for actual leaf work'
+        script._mrtrContentionWaitMs('hub_call_rule') == 3000L
+
+        when: 'a budget large enough that the caps, not the budget, bind'
+        settingsMap.relayBudgetMs = 12000
+
+        then: 'the detached 4500 and synchronous 4000 caps are the ceiling -- nothing at the default reaches them'
+        script._mrtrContentionWaitMs('hub_set_rule') == 4500L
         script._mrtrContentionWaitMs('hub_call_rule') == 4000L
+        script._mrtrScheduleObserveWaitMs('hub_set_rule') == 3500L
 
         when: 'an operator configures a smaller cloud leg budget'
         settingsMap.relayBudgetMs = 5000

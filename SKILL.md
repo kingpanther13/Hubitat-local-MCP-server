@@ -195,7 +195,7 @@ For write tools, include safety warnings and mandatory pre-flight checklists."""
 ]
 ```
 
-**Canonical example with annotations + outputSchema (new tools should follow this shape):**
+**Canonical example with annotations (new tools follow this shape; no `outputSchema` — that field is legacy and frozen, see AGENTS.md § Schema design):**
 
 ```groovy
 [
@@ -212,15 +212,6 @@ in the room — it surfaces stale-state warnings the device-level tools don't.""
         ],
         required: ["room_id"]
     ],
-    outputSchema: [
-        type: "object",
-        properties: [
-            healthy: [type: "boolean", description: "True if every device in the room reported within the freshness window."],
-            stale_devices: [type: "array", items: [type: "string"], description: "device IDs with no recent activity"],
-            warnings: [type: "array", items: [type: "string"], description: "human-readable warnings, empty when healthy"]
-        ],
-        required: ["healthy", "stale_devices", "warnings"]
-    ],
     annotations: [
         readOnlyHint: true,
         destructiveHint: false,
@@ -236,6 +227,7 @@ Rules:
 - `inputSchema` root is always `type: "object"` with `properties`
 - `required` array is only present when there are required params
 - No-argument tools use `properties: [:]`
+- No `outputSchema`: legacy and frozen; a new tool declares none and an existing one is not extended. The sandbox lint pins the frozen set so a new or edited declaration fails CI (AGENTS.md § Schema design)
 - Descriptions should include usage guidance for the AI (this text is what the LLM sees when deciding which tool to call)
 - Write tools must have strong safety warnings in their descriptions with mandatory pre-flight checklists
 
@@ -581,7 +573,8 @@ These are undocumented endpoints on the Hubitat hub at `http://127.0.0.1:8080`:
 | `/device/updateRoom?deviceId=<id>&room=<roomName>` | Assigns a device to a room by room NAME (verified live -- passing an id makes the hub CREATE a spurious room named after the number; an unknown name is silently created too). Returns the literal text `true`. Used by the device-allowlist bypass branch of `hub_update_device`, which validates the name exists first; unassign routes through `/device/update` with `roomId=0` instead. |
 | `/installedapp/configure/json/<id>[/<pageName>]` | SDK-level config-page serialization for any installed app using `dynamicPage()`. Returns `{app, configPage: {name, title, sections: [{title, input: [...], body: [...]}]}, settings, childApps}`. `app` carries identity (label, name, appType, disabled, parentAppId). Sections hold typed inputs with current values. The Web UI itself consumes this endpoint. Used by `hub_get_app_config`. |
 | `/installedapp/statusJson/<id>` | Raw Groovy `state` map for any installed app. Returns `{id, appState: [{name, value}, ...], appSettings: [...]}`. `appState[].value` shape varies: live hubs typically return the value already parsed as a Map (JsonSlurper recursively decoded the inner JSON); older firmwares or large payloads may leave it as a JSON-encoded String requiring a second parse. The implementation handles both: if value is already a Map, use it directly; if String, parse again. Used by `hub_list_hpm_packages` (including its `includeDrift=true` mode) to read HPM's `state.manifests` package registry. Gated by the Read master. |
-| `/device/listWithCapabilities/json` | Every hub device as a JSON array (`{id, label, capabilities}`) regardless of MCP authorization — the only view of devices the app isn't granted (the Groovy device model is authorization-scoped). Used by `hub_list_devices` (`scope='all'`, tagging each `mcpAuthorized`) and by `hub_update_mcp_settings` (the `selectedDevices` scope key) to validate requested device ids against the full hub set. |
+| `/device/listWithCapabilities/json` | **Removed in platform 2.5.1.173 and later (404); `hub_list_devices scope='all'` falls back to `/hub2/devicesList`, which carries no capabilities.** Before that: every hub device as a JSON array (`{id, label, capabilities}`) regardless of MCP authorization — the only view of devices the app isn't granted (the Groovy device model is authorization-scoped). Used by `hub_list_devices` (`scope='all'`, tagging each `mcpAuthorized`) and by `hub_update_mcp_settings` (the `selectedDevices` scope key) to validate requested device ids against the full hub set. |
+| `/hub2/devicesList` | Every device on the hub as a nested tree `{devices: [{key, data: {id, name, secondaryName}, children: [...]}]}` -- no capabilities. The only all-hub inventory on platform 2.5.1.173 and later: `hub_list_devices scope='all'` falls back to it (capabilities filled in for MCP-authorized devices only, reported via `source` + `capabilitiesPartial`) and `hub_update_mcp_settings` validates `selectedDevices` ids against it. A well-formed inventory with no devices means a hub with no devices; the unreadable cases (no body, no `devices` key) fail as a shape error. |
 
 **Write endpoints (POST):**
 | Path | Body | Purpose |

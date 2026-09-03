@@ -30,7 +30,7 @@ class HandleGatewaySpec extends ToolSpecBase {
         result.tools.every { !it.containsKey('outputSchema') }
     }
 
-    def "catalog mode forwards outputSchema for each tool when publishOutputSchemas is on"() {
+    def "catalog mode forwards outputSchema for each declaring tool when publishOutputSchemas is on"() {
         given:
         settingsMap.publishOutputSchemas = true
 
@@ -41,11 +41,16 @@ class HandleGatewaySpec extends ToolSpecBase {
         // Non-vacuity guard: the catalog actually lists the room tools, so the every{}
         // below cannot pass on an empty list.
         result.tools*.name == ['hub_list_rooms', 'hub_get_room', 'hub_create_room', 'hub_delete_room', 'hub_update_room']
-        // With the opt-in toggle ON, the catalog disclosure forwards each tool's
+        // With the opt-in toggle ON, the catalog disclosure forwards each declaring tool's
         // outputSchema (the flat tools/list path still strips it for size), in WIRE form:
         // required arrays stripped so spec-validating clients accept both the success and
-        // the error result shape (issue #342).
-        result.tools.every { it.outputSchema instanceof Map && it.outputSchema.type == 'object' && !it.outputSchema.containsKey('required') }
+        // the error result shape (issue #342). outputSchema is legacy and frozen, so a tool
+        // without one is simply forwarded without one.
+        result.tools.any { it.containsKey('outputSchema') }
+        result.tools.findAll { it.containsKey('outputSchema') }.every { it.outputSchema instanceof Map && it.outputSchema.type == 'object' && !it.outputSchema.containsKey('required') }
+        // Presence follows the DEFINITION exactly: the catalog neither invents a schema for a tool
+        // that declares none nor drops one that does.
+        result.tools.every { t -> t.containsKey('outputSchema') == script.getAllToolDefinitions().find { it.name == t.name }.containsKey('outputSchema') }
     }
 
     def "throws IllegalArgumentException for unknown gateway"() {

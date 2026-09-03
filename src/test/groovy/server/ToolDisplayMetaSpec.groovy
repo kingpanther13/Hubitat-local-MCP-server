@@ -142,35 +142,34 @@ class ToolDisplayMetaSpec extends ToolSpecBase {
         given: 'a clean cache'
         settingsMap.useGateways = true
         settingsMap.enableCustomRuleEngine = true
-        atomicStateMap.remove('toolSearchCorpus')
-        atomicStateMap.remove('toolSearchTokens')
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
 
         when: 'a query phrased like the friendly name, not the bare name'
         def result = script.toolSearchTools([query: 'force garbage collection', maxResults: 5])
 
         then: 'the corpus was enriched with titles and the arcane bare name ranks'
-        atomicStateMap.toolSearchCorpus.every { it.title }
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).corpus.every { it.title }
         result.results*.tool.contains('hub_call_gc')
 
         and: 'results surface the friendly title alongside the bare name'
         result.results.find { it.tool == 'hub_call_gc' }.title == 'Force Garbage Collection'
 
         and: 'the TITLE itself is tokenized into the BM25 doc: hub_set_rule gains the token "author", which appears nowhere in its corpus text (only "authoring" does, and the tokenizer does not stem)'
-        def corpus = atomicStateMap.toolSearchCorpus
+        def corpus = (scriptStaticField('TOOL_SEARCH_INDEX') as Map).corpus
         def idx = corpus.findIndexOf { it.name == 'hub_set_rule' }
         idx >= 0
-        atomicStateMap.toolSearchTokens[idx].contains('author')
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).tokens[idx].contains('author')
     }
 
-    def "a pre-title cached corpus (deployed-over previous version) self-heals on the first search"() {
-        // On a live hub this change lands on an atomicState corpus cached by the
-        // previous version (entries have no title key). A code deploy does NOT fire
-        // updated() (that takes a settings save), so the size-only rebuild guard
-        // would serve the stale shape indefinitely -- the shape check in
-        // toolSearchTools rebuilds it on first use instead.
-        given: 'an old-shape cache: entries lack the title key, tokens size-aligned'
+    def "a pre-title persisted corpus (deployed-over previous version) is ignored and shed on the first search"() {
+        // On a live hub this change lands on an atomicState corpus written by a previous build
+        // (entries have no title key). The index now lives in the class static, so the persisted
+        // copy is never served -- and the first search removes it, since a code deploy does not
+        // fire updated() (that takes a settings save).
+        given: 'an old-shape persisted cache: entries lack the title key, tokens size-aligned'
         settingsMap.useGateways = true
         settingsMap.enableCustomRuleEngine = true
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
         atomicStateMap.toolSearchCorpus = [
             [name: 'hub_list_rooms', description: 'List all rooms with IDs, names, and device counts', params: 'cursor', gateway: 'hub_read_rooms']
         ]
@@ -181,9 +180,11 @@ class ToolDisplayMetaSpec extends ToolSpecBase {
         when:
         def result = script.toolSearchTools([query: 'list rooms', maxResults: 5])
 
-        then: 'the stale cache was rebuilt with titles on every entry'
-        atomicStateMap.toolSearchCorpus.size() > 1
-        atomicStateMap.toolSearchCorpus.every { it.containsKey('title') }
+        then: 'the static index was built with titles on every entry, and the persisted copy is gone'
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).corpus.size() > 1
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).corpus.every { it.containsKey('title') }
+        !atomicStateMap.containsKey('toolSearchCorpus')
+        !atomicStateMap.containsKey('toolSearchTokens')
 
         and: 'the result carries the friendly title'
         result.results.find { it.tool == 'hub_list_rooms' }?.title == 'List Rooms'
@@ -196,18 +197,19 @@ class ToolDisplayMetaSpec extends ToolSpecBase {
         given: 'a title-bearing, token-aligned cache whose content no longer matches the catalog -- the SAME-VERSION drift a version stamp could not see, and the only shape a contributor can produce since version bumps are bot-only'
         settingsMap.useGateways = true
         settingsMap.enableCustomRuleEngine = true
-        atomicStateMap.toolSearchCorpus = [
-            [name: 'hub_list_rooms', title: 'Old Title', description: 'List all rooms', params: 'cursor', gateway: 'hub_read_rooms']
-        ]
-        atomicStateMap.toolSearchTokens = [['hub', 'list', 'rooms', 'old', 'title', 'cursor']]
-        atomicStateMap.toolSearchCorpusFingerprint = 'stale-content-fingerprint'
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).putAll([
+            fingerprint: 'stale-content-fingerprint',
+            corpus: [[name: 'hub_list_rooms', title: 'Old Title', description: 'List all rooms', params: 'cursor', gateway: 'hub_read_rooms']],
+            tokens: [['hub', 'list', 'rooms', 'old', 'title', 'cursor']]
+        ])
 
         when:
         def result = script.toolSearchTools([query: 'list rooms', maxResults: 5])
 
-        then: 'the cache was rebuilt and re-stamped with the live catalog fingerprint'
-        atomicStateMap.toolSearchCorpus.size() > 1
-        atomicStateMap.toolSearchCorpusFingerprint == script.toolSearchCorpusFingerprint()
+        then: 'the index was rebuilt and re-stamped with the live catalog fingerprint'
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).corpus.size() > 1
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).fingerprint == script.toolSearchCorpusFingerprint()
         result.results.find { it.tool == 'hub_list_rooms' }?.title == 'List Rooms'
     }
 

@@ -50,10 +50,14 @@ class ToolVisualRulesSpec extends ToolSpecBase {
          elseNodes: []]
     }
 
+    // The Rule Builder 2.0 node shape ({id, kind, type, config}; ports on edges), as the platform
+    // 2.5.1.177 validator accepts it -- the tool passes the graph through untouched, so the fixture
+    // carries the real shape rather than the retired {id, type, deviceIds} one.
     private static Map graphDefinition() {
         [version: 1,
-         nodes: [[id: 'n1', type: 'trigger', deviceIds: [59]], [id: 'n2', type: 'action', command: 'off']],
-         edges: [[from: 'n1', to: 'n2']]]
+         nodes: [[id: 'n1', kind: 'trigger', type: 'switch', config: [switches: [59], switchEvent: 'Turns off']],
+                 [id: 'n2', kind: 'action', type: 'turnOff', config: [switches: [59]]]],
+         edges: [[from: 'n1', to: 'n2', port: 'next']]]
     }
 
     private void registerAppsList(List children) {
@@ -569,6 +573,30 @@ class ToolVisualRulesSpec extends ToolSpecBase {
 
     // ==================== hub_set_visual_rule: edit ====================
 
+    def "a definition edit with no name on a PAUSED rule sends the rule's own name, not the hub's decoration"() {
+        given: 'a paused classic rule whose stored name carries the HTML-wrapped (Paused) decoration'
+        enableWrite()
+        def state43 = [name: "Door alert <span class='text-red'>(Paused)</span>", rulePaused: true, promptHistory: []] + classicDefinition()
+        hubGet.register('/app/ruleBuilder20Json/43') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/43') { params -> json(state43) }
+        stubPostJson { path, body -> state43.putAll(new JsonSlurper().parseText(body) as Map); null }
+        def newDefinition = [whenNodes: [[result: true, deviceIds: [60], switches: [60], switchEvent: 'Turns on',
+                                          index: 0, triggerType: 'switch', type: 'when']],
+                             thenNodes: [[actionType: 'turnOn', deviceIds: [123], switches: [123], index: 0, type: 'then']],
+                             elseNodes: []]
+
+        when:
+        def result = script.toolSetVisualRule([appId: 43, definition: newDefinition, confirm: true])
+
+        then: 'the save carried the bare name -- echoing the decoration renamed the rule to it and then failed the read-back'
+        def body = new JsonSlurper().parseText(posts[0].body as String)
+        body.name == 'Door alert'
+        result.success == true
+        result.verified == true
+        result.name == 'Door alert'
+        result.rulePaused == true
+    }
+
     def "edit full replacement (classic) preserves the rule's CURRENT rulePaused=true when paused is not passed"() {
         given: 'an existing paused classic rule'
         enableWrite()
@@ -614,10 +642,10 @@ class ToolVisualRulesSpec extends ToolSpecBase {
             [name: b.name, ruleJson: b.ruleJson, validationErrors: []]
         }
         def newDefinition = [version: 1,
-                             nodes: [[id: 'n1', type: 'trigger', deviceIds: [60]],
-                                     [id: 'n2', type: 'action', command: 'on'],
-                                     [id: 'n3', type: 'action', command: 'off']],
-                             edges: [[from: 'n1', to: 'n2'], [from: 'n2', to: 'n3']]]
+                             nodes: [[id: 'n1', kind: 'trigger', type: 'switch', config: [switches: [60], switchEvent: 'Turns on']],
+                                     [id: 'n2', kind: 'action', type: 'turnOn', config: [switches: [60]]],
+                                     [id: 'n3', kind: 'action', type: 'turnOff', config: [switches: [60]]]],
+                             edges: [[from: 'n1', to: 'n2', port: 'next'], [from: 'n2', to: 'n3', port: 'next']]]
 
         when:
         def result = script.toolSetVisualRule([appId: 900, definition: newDefinition, confirm: true])
@@ -681,6 +709,125 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.note.contains('hub_get_visual_rule')
     }
 
+    // The hub decorates a paused rule's name with its own "(Paused)" suffix, usually inside a
+    // red span. Comparing the decorated read-back literally reported verified:false on a
+    // rename+pause that had actually landed.
+    def "rename+pause verifies against the hub's own (Paused) decoration on the read-back name"() {
+        given:
+        enableWrite()
+        def state44 = [name: 'Old name', rulePaused: false, promptHistory: []] + classicDefinition()
+        hubGet.register('/app/ruleBuilder20Json/44') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/44') { params -> json(state44) }
+        stubPostJson { path, body ->
+            // The hub applies the rename AND decorates the stored name, as it does live.
+            state44.name = "New name <span class='text-red'>(Paused)</span>"
+            state44.rulePaused = true
+            null
+        }
+
+        when:
+        def result = script.toolSetVisualRule([appId: 44, name: 'New name', paused: true, confirm: true])
+
+        then: 'the decoration is not treated as a failed rename'
+        result.success == true
+        result.verified == true
+        result.rulePaused == true
+    }
+
+    def "rename-only on an ALREADY-paused rule verifies past the standing decoration"() {
+        given: 'the rule is already paused, so the decoration is present before this call'
+        enableWrite()
+        def state46 = [name: "Old name <span class='text-red'>(Paused)</span>", rulePaused: true,
+                       promptHistory: []] + classicDefinition()
+        hubGet.register('/app/ruleBuilder20Json/46') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/46') { params -> json(state46) }
+        stubPostJson { path, body ->
+            state46.name = "New name <span class='text-red'>(Paused)</span>"
+            null
+        }
+
+        when: 'no paused flag is passed -- this call only renames'
+        def result = script.toolSetVisualRule([appId: 46, name: 'New name', confirm: true])
+
+        then:
+        result.success == true
+        result.verified == true
+    }
+
+    def "RESUME of a paused rule verifies, despite the decoration on the pre-write name"() {
+        given: 'paused, so the name the fallback reads carries the hub decoration'
+        enableWrite()
+        def state48 = [name: "BAT_E2E_VisualRuleRenamed <span class='text-red'>(Paused)</span>",
+                       rulePaused: true, promptHistory: []] + classicDefinition()
+        hubGet.register('/app/ruleBuilder20Json/48') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/48') { params -> json(state48) }
+        // Resume rides its OWN endpoint (a GET), not the save POST, and clearing the pause is what
+        // removes the decoration -- so the read-back name goes BARE here.
+        hubGet.register('/app/ruleBuilderPause/48/false') { params ->
+            state48.name = 'BAT_E2E_VisualRuleRenamed'
+            state48.rulePaused = false
+            '{"success":true}'
+        }
+
+        when: 'resume only -- no name is passed, so requestedName falls back to the pre-write name'
+        def result = script.toolSetVisualRule([appId: 48, paused: false, confirm: true])
+
+        then: 'the decorated fallback must not be compared against the bare read-back'
+        // Before the fix requestedName kept the "(Paused)" decoration while `actual` was stripped,
+        // and the decoration-tolerant branch needs rulePaused==true -- which the resume had just
+        // made false. So every resume of a paused rule reported a failure on a write that landed.
+        result.success == true
+        result.verified == true
+        result.rulePaused == false
+
+        and: 'and it went through the dedicated pause endpoint, not the save POST'
+        hubGet.calls*.path.contains('/app/ruleBuilderPause/48/false')
+    }
+
+    def "full replacement with paused=true verifies past the decoration"() {
+        given:
+        enableWrite()
+        def state47 = [name: 'Old name', rulePaused: false, promptHistory: []] + classicDefinition()
+        hubGet.register('/app/ruleBuilder20Json/47') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/47') { params ->
+            json(state47) }
+        stubPostJson { path, body ->
+            def sent = new JsonSlurper().parseText(body) as Map
+            state47.putAll(sent)
+            state47.name = "New name <span class='text-red'>(Paused)</span>"
+            state47.rulePaused = true
+            null
+        }
+
+        when: 'the save path (_vrbApplySave), not the rename-only path'
+        def result = script.toolSetVisualRule([appId: 47, name: 'New name',
+                                               definition: classicDefinition(), paused: true, confirm: true])
+
+        then:
+        result.success == true
+        result.verified == true
+    }
+
+    def "rename+pause still fails when the read-back name differs beyond the decoration"() {
+        given:
+        enableWrite()
+        def state45 = [name: 'Old name', rulePaused: false, promptHistory: []] + classicDefinition()
+        hubGet.register('/app/ruleBuilder20Json/45') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/45') { params -> json(state45) }
+        stubPostJson { path, body ->
+            state45.name = "Something else <span class='text-red'>(Paused)</span>"
+            state45.rulePaused = true
+            null
+        }
+
+        when:
+        def result = script.toolSetVisualRule([appId: 45, name: 'New name', paused: true, confirm: true])
+
+        then: 'stripping the decoration must not turn a genuinely wrong name into a pass'
+        result.success == false
+        result.verified == false
+    }
+
     def "edit full replacement (classic) with paused=true commits the pause inside the save POST body"() {
         given:
         enableWrite()
@@ -719,11 +866,14 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         when:
         def result = script.toolSetVisualRule([appId: 901, name: 'Now named', confirm: true])
 
-        then: 'the builder-UI default template rode the rename instead of an empty string'
+        then: 'the graph the 2.0 builder saves for an empty rule rode the rename instead of an empty string'
         def body = new JsonSlurper().parseText(posts[0].body as String)
         body.ruleJson instanceof String
-        body.ruleJson.contains('sampleTrigger')
-        new JsonSlurper().parseText(body.ruleJson as String).nodes.size() == 2
+        def blank = new JsonSlurper().parseText(body.ruleJson as String)
+        blank.nodes*.kind == ['merge', 'decision']
+        blank.nodes.find { it.kind == 'decision' }.config.conditions == []
+        blank.edges == [[from: 'trigger-merge', to: 'decision', port: 'next']]
+        !body.ruleJson.contains('sampleTrigger')
 
         and:
         result.success == true

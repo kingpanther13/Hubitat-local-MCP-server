@@ -26,7 +26,11 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         def base = [
             installed: true, running: false, broken: false, condOper: "cond",
             trigCustoms: ["switch"], capabstrue: [:], capabsfalse: [:],
-            eval: [:], parens: [:], inUseConds: [], unusedConds: []
+            eval: [:], parens: [:], inUseConds: [], unusedConds: [],
+            // Current firmware carries the rule's action membership; a fixture without it is the
+            // degraded (settings-scan) mode and is reported as such in checkErrors. Override with
+            // [actionList: null] to model that firmware explicitly.
+            actionList: []
         ]
         JsonOutput.toJson(base + overrides)
     }
@@ -319,6 +323,19 @@ class ToolRuleHealthSpec extends ToolSpecBase {
 
         then:
         h.checkErrors == []
+    }
+
+    def "auto: a ruleBuilderJson with NO actionList is reported as the degraded settings-scan mode"() {
+        given: "a valid RM record from firmware that does not carry action membership"
+        seedHealthy(100, [actionList: null])
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then: "non-gating, but named -- silence here read as 'structure verified, no orphans'"
+        h.ok == true
+        h.checkErrors.any { it.toString().contains("no usable actionList") }
+        h.orphanedActionRows == []
     }
 
     def "auto: ruleBuilderJson broken:true AND an HTML marker agree -> no cross-check issue"() {

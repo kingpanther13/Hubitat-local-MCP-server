@@ -778,6 +778,9 @@ private Map _rmRestoreFromBackup(Map entry) {
     def ruleId
     if (exists) {
         ruleId = savedId
+        // A disabled app renders no page, and a settings write against it reports success having
+        // changed nothing -- the restore would then claim "restored in place". Same gate as an edit.
+        _rmRejectDisabledAppEdit(ruleId, "restore")
     } else {
         def parentId = _discoverParentAppId(savedAppType)
         ruleId = _rmCreateChildApp(parentId, reg.namespace, reg.appName)
@@ -815,30 +818,82 @@ private Map _rmRestoreFromBackup(Map entry) {
             ]
         }
     }
+    // Two steps that fail differently: a rejected replay leaves the rule as it was (nothing is
+    // committed on a 4xx/5xx), while a failed updateRule click after a committed replay leaves the
+    // restored settings in place with subscriptions not yet rebuilt. Name the step, and log it --
+    // a caller reading only the envelope could not tell the two apart (seen live: a 500 on rule 37).
+    // A button input has no persisted value: RM keeps its row buttons (edit/insert/cut/disable, and
+    // the bare "1"/"2"/"3" condition-row buttons) in settings with an empty value, and replaying
+    // those through the update endpoint is at best a no-op and at worst a press. The replay of one
+    // such snapshot answered 500 on a live 2.5.1.177 hub; the same shapes replay cleanly without
+    // the button rows. Replay only value-bearing inputs.
+    def replaySettings = savedSettings.findAll { k, v -> savedSchema[k.toString()]?.type != "button" }
+    def skippedButtons = (savedSettings.keySet() - replaySettings.keySet()).collect { it.toString() }.sort()
+    // A device picker is snapshotted as configure/json renders it, an {id: label} map, but the
+    // update endpoint takes ids. Left as a map it reaches the body as Groovy's map toString
+    // ("[9:MSHeatMode]") and the hub answers 500 -- every rule with a device picker failed to
+    // restore in place. statusJson's deviceIdsForDeviceList is the live id list; the map's keys
+    // are the fallback for a snapshot that has no statusJson.
+    // An EMPTY id list is not authoritative (every sibling reader falls back on empty or absent):
+    // trusting it would post an empty picker and report the key applied.
+    def liveDeviceIds = [:]
+    snapshot?.statusJson?.appSettings?.each { st ->
+        def n = st?.name?.toString()
+        if (n && st?.deviceIdsForDeviceList instanceof List && st.deviceIdsForDeviceList) liveDeviceIds[n] = st.deviceIdsForDeviceList
+    }
+    def skippedMaps = []
+    replaySettings = replaySettings.collectEntries { k, v ->
+        String key = k.toString()
+        boolean isPicker = savedSchema[key]?.type?.toString()?.startsWith("capability.") == true
+        if (!isPicker) {
+            // A Map that is NOT a device picker cannot be replayed through the settings endpoint as
+            // its keys; rewriting it silently would be a value change reported as applied.
+            if (v instanceof Map) { skippedMaps << key; return [:] }
+            return [(key): v]
+        }
+        def ids = liveDeviceIds.containsKey(key) ? liveDeviceIds[key] : ((v instanceof Map) ? v.keySet().toList() : v)
+        return [(key): (ids instanceof List ? ids.collect { it?.toString() } : ids)]
+    }
+    String step = "settings replay"
     try {
-        _rmUpdateAppSettings(ruleId, savedSettings, savedSchema)
+        _rmUpdateAppSettings(ruleId, replaySettings, savedSchema)
+        step = "the final updateRule click"
         _rmClickAppButton(ruleId, "updateRule")
     } catch (Exception e) {
+        mcpLog("error", "rm-native", "restore of rule ${ruleId} from ${fileName} failed during ${step}: ${e.message}")
         return [
             success: false,
             type: "rm-rule",
             ruleId: ruleId,
             originalRuleId: savedId,
-            error: "Restore applied partially; failed during settings replay: ${e.message}",
-            note: "Rule ${ruleId} exists but may have incomplete settings. Inspect with hub_get_app_config."
+            failedStep: step,
+            error: "Restore applied partially; failed during ${step}: ${e.message}",
+            note: (step == "settings replay"
+                ? "Rule ${ruleId} exists but may have incomplete settings. Inspect with hub_get_app_config(appId=${ruleId}) and compare against hub_get_backup(backupKey) before retrying."
+                : "The settings were replayed but the rule's updateRule did not fire, so its subscriptions may still reflect the pre-restore state. Open the rule and click Update Rule, or call hub_set_rule(appId=${ruleId}, button='updateRule').")
         ]
     }
 
-    return [
+    // A skipped BUTTON is nothing lost -- a button input holds no state. A skipped MAP is saved
+    // state this restore did not put back, so the envelope says partial: a caller that reads
+    // success:true and stops would leave the rule short of its snapshot without being told.
+    def out = [
         success: true,
         type: "rm-rule",
         ruleId: ruleId,
         originalRuleId: savedId,
         recreated: !exists,
         backupFile: fileName,
-        settingsApplied: savedSettings.keySet().toList(),
+        settingsApplied: replaySettings.keySet().toList(),
+        settingsSkipped: skippedButtons.collect { key -> [key: key, reason: "button input excluded from replay"] }
+            + skippedMaps.collect { key -> [key: key, reason: "map value without a device-picker schema; not replayable through the settings endpoint"] },
         note: exists ? "Settings restored in place." : "Rule was deleted; recreated with new id ${ruleId} and replayed settings."
     ]
+    if (skippedMaps) {
+        out.partial = true
+        out.note = "${out.note} ${skippedMaps.size()} saved setting(s) could NOT be replayed (see settingsSkipped): ${skippedMaps.join(', ')}. Inspect with hub_get_app_config(appId=${ruleId}) and set them by hand if the rule needs them.".toString()
+    }
+    return out
 }
 
 def _getAllToolDefinitions_partAppCloner() {

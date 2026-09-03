@@ -259,27 +259,26 @@ private Map _validateMcpDeviceScope(scopeValue) {
     }
 
     // ATOMIC validation: for replace/add, every requested id must resolve to a real hub device
-    // (validated against /device/listWithCapabilities/json -- the only view of every device,
+    // (validated against the hub-wide device inventory -- the only view of every device,
     // authorized or not). Validate ALL before any write so a single bad id can't leave a
     // half-applied scope. remove does NOT validate membership BECAUSE removing an id that isn't
     // present (or no longer exists on the hub) is a harmless no-op, and forcing an unknown-id read
     // fetch there would block a legitimate cleanup of a since-deleted device.
     if (mode in ["replace", "add"] && !requestedIds.isEmpty()) {
-        def raw
-        try {
-            def txt = hubInternalGet("/device/listWithCapabilities/json")
-            raw = new groovy.json.JsonSlurper().parseText(txt ?: "[]")
-        } catch (Exception e) {
-            mcpLog("warn", "developer-mode", "hub_update_mcp_settings selectedDevices: /device/listWithCapabilities/json fetch/parse failed: ${e.message}")
-            // isError:true so handleToolsCall hoists this onto the JSON-RPC envelope -- a failed
-            // validation that wrote nothing must reach the client AS an error, not a quiet result.
-            return [success: false, isError: true, error: "Failed to fetch the all-hub device list (/device/listWithCapabilities/json) to validate selectedDevices: ${e.message}", note: "Endpoint may be unavailable on this firmware; nothing was changed."]
+        // Same two-source fallback as hub_list_devices scope='all' (_fetchAllHubDeviceRecords).
+        // Only ids are needed here, which both endpoints carry, so the missing capabilities on the
+        // fallback source do not affect validation.
+        // isError:true on the failure paths so handleToolsCall hoists them onto the JSON-RPC
+        // envelope -- a failed validation that wrote nothing must reach the client AS an error,
+        // not a quiet result.
+        def inventory = _fetchAllHubDeviceRecords("developer-mode", "hub_update_mcp_settings selectedDevices")
+        if (inventory.failure == "fetch") {
+            return [success: false, isError: true, error: "Failed to fetch the all-hub device list (${inventory.source}) to validate selectedDevices: ${inventory.fetchError}", note: "Endpoint may be unavailable on this firmware; nothing was changed."]
         }
-        if (!(raw instanceof List)) {
-            mcpLog("warn", "developer-mode", "hub_update_mcp_settings selectedDevices: /device/listWithCapabilities/json returned a non-array response")
-            return [success: false, isError: true, error: "Unexpected /device/listWithCapabilities/json response (expected a JSON array); cannot validate selectedDevices.", note: "Hub firmware may have changed the endpoint contract; nothing was changed."]
+        if (inventory.failure) {
+            return [success: false, isError: true, error: "Unexpected ${inventory.source} response; cannot validate selectedDevices.", note: "Hub firmware may have changed the endpoint contract; nothing was changed."]
         }
-        def hubDeviceIds = (raw.findAll { it instanceof Map }.collect { it.id?.toString() }.findAll { it != null }) as Set
+        def hubDeviceIds = (inventory.records.findAll { it instanceof Map }.collect { it.id?.toString() }.findAll { it != null }) as Set
         def unknown = requestedIds.findAll { !hubDeviceIds.contains(it) }
         if (!unknown.isEmpty()) {
             throw new IllegalArgumentException("Unknown device id(s): ${unknown.join(', ')}. Use hub_list_devices(scope='all') to see valid ids. Nothing was changed.")

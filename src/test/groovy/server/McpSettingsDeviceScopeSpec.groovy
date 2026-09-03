@@ -662,14 +662,16 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
         given:
         enableDevModeAndWrite()
         settingsMap.selectedDevices = [dev(80)]
+        // BOTH sources must fail: the primary alone falls through to the fallback.
         hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException('boom') }
+        hubGet.register('/hub2/devicesList') { params -> throw new RuntimeException('boom too') }
 
         when:
         def result = setScope(['81'])
 
         then: 'a runtime failure returns [success:false] rather than throwing -- nothing written'
         result.success == false
-        result.error.contains('listWithCapabilities')
+        result.error.contains('/hub2/devicesList')
         result.note != null
 
         and: 'isError:true so handleToolsCall hoists it onto the JSON-RPC envelope (not a quiet result)'
@@ -680,18 +682,20 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
     }
 
     def "returns a structured error when the all-hub device list is not a JSON array"() {
-        // The endpoint parsed to a non-List (firmware contract drift -- a Map instead of an array).
+        // Both sources parsed to a non-List (firmware contract drift -- a Map instead of an array).
+        // A non-List primary falls through to the fallback, so the error names the fallback.
         given:
         enableDevModeAndWrite()
         settingsMap.selectedDevices = [dev(80)]
         hubGet.register('/device/listWithCapabilities/json') { params -> JsonOutput.toJson([oops: 'not an array']) }
+        hubGet.register('/hub2/devicesList') { params -> JsonOutput.toJson([devices: 'not a list']) }
 
         when:
         def result = setScope(['81'])
 
         then:
         result.success == false
-        result.error.contains('expected a JSON array')
+        result.error.contains('/hub2/devicesList')
         result.note != null
 
         and: 'isError:true so the client sees this no-op AS an error'
@@ -785,5 +789,76 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
 
         where:
         useGateways << [true, false]
+    }
+
+    // Platform 2.5.1.173 and later removed /device/listWithCapabilities/json (confirmed on .173/.174). Id validation falls back to
+    // /hub2/devicesList, which carries every device id -- all this check needs.
+
+    def "selectedDevices validation falls back when the capabilities endpoint answers EMPTY (#body)"() {
+        given:
+        enableDevModeAndWrite()
+        hubGet.register('/device/listWithCapabilities/json') { params -> body }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [[key: "DEV-11", data: [id: 11, name: "Eleven"], children: []]]])
+        }
+
+        when:
+        def result = setScope([11])
+
+        then: "an id present only in the fallback inventory validates -- an empty primary body is not an empty hub"
+        result.success == true
+
+        where:
+        body << [null, '', '[]']
+    }
+
+    def "selectedDevices validation falls back to hub2 devicesList when the capabilities endpoint is gone"() {
+        given:
+        enableDevModeAndWrite()
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [
+                [key: "DEV-11", data: [id: 11, name: "Eleven"], children: [
+                    [key: "DEV-12", data: [id: 12, name: "Twelve"], children: []]
+                ]]
+            ]])
+        }
+
+        when:
+        def result = setScope([11, 12])
+
+        then: "ids present in the fallback inventory validate, children included"
+        result.success == true
+    }
+
+    def "selectedDevices validation still names an unknown id on the fallback path"() {
+        given:
+        enableDevModeAndWrite()
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [[key: "DEV-11", data: [id: 11, name: "Eleven"], children: []]]])
+        }
+
+        when:
+        setScope([11, 999])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("999")
+    }
+
+    def "selectedDevices validation errors when BOTH inventory endpoints fail"() {
+        given:
+        enableDevModeAndWrite()
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("boom") }
+        hubGet.register('/hub2/devicesList') { params -> throw new RuntimeException("boom too") }
+
+        when:
+        def result = setScope([11])
+
+        then: "nothing is written and the failure reaches the client as an error"
+        result.success == false
+        result.isError == true
+        result.error.contains("/hub2/devicesList")
     }
 }

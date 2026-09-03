@@ -48,6 +48,62 @@ class WatchdogV2Spec extends Specification {
         )
     }
 
+    /** An atomicState whose writes of ONE key vanish -- a hub dropping state writes under load. */
+    private static class DroppingMap extends HashMap {
+        String dropKey
+        DroppingMap(String dropKey) { super(); this.dropKey = dropKey }
+        @Override Object put(Object k, Object v) { k?.toString() == dropKey ? null : super.put(k, v) }
+    }
+
+    /** A second script instance whose user settings differ from the shared one built in setup(). */
+    private HubitatAppScript scriptWithSettings(Map extraSettings) {
+        Map settings = [hubSecurityEnabled: false, debugLogging: false] + extraSettings
+        def sandbox = new HubitatAppSandbox(new File('e2e-deadman-watchdog-v2.groovy').getText('UTF-8'))
+        return sandbox.run(
+            api: Mock(AppExecutor) {
+                _ * getLog() >> new PermissiveLog()
+                _ * getSettings() >> settings
+                _ * getAtomicState() >> { atomicStateMap }
+                _ * now() >> { System.currentTimeMillis() }
+                _ * runIn(*_) >> { args -> runInCalls << (args as List) }
+            },
+            userSettingValues: settings,
+            validator: new PassThroughAppValidator([
+                Flags.DontValidatePreferences,
+                Flags.DontValidateDefinition,
+                Flags.DontRestrictGroovy,
+                Flags.DontRunScript
+            ])
+        )
+    }
+
+    def "the reboot POST gets a SHORT timeout, every other form POST the long one"() {
+        // The wedge escape's whole value is acting while the web stack is dying: a reboot POST
+        // that inherits the 420s form timeout holds the tick for seven minutes and the escape
+        // never gets to report. Stubbing hubPostForm in the reboot specs hides this entirely.
+        expect:
+        script.hubPostTimeoutSec('/hub/reboot') == 20
+        script.hubPostTimeoutSec('/installedapp/btn') == 420
+        script.hubPostTimeoutSec('/hub/cloud/updatePlatform') == 420
+    }
+
+    def "autoRebootOnWedge=false stops the escape before any reboot POST, however wedged the hub looks"() {
+        given: "a hub that looks thoroughly wedged, and the preference turned OFF"
+        def optedOut = scriptWithSettings([autoRebootOnWedge: false])
+        atomicStateMap.loopbackFailStreak = 99
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 3600000L
+        def posts = []
+        optedOut.metaClass.hubPostForm = { String path, Map body -> posts << path; [status: 200, data: ''] }
+        optedOut.metaClass.readFlag = { -> null }
+
+        when:
+        optedOut.checkDeadman()
+
+        then: "nothing was posted and no slot was claimed -- the opt-out is the first thing checked"
+        posts == []
+        atomicStateMap.lastAutoRebootAt == null
+    }
+
     @Unroll
     def "adminUpdateLibrary fails CLOSED on a dropped/invalid POST (#scenario)"() {
         given:
@@ -338,11 +394,20 @@ class WatchdogV2Spec extends Specification {
         script.metaClass.hubGet = { String path, Map q -> path == "/hub2/appsList" ? appsJson : "" }
         script.metaClass.hubGetStatus = { String path, Map q ->
             if (path.startsWith("/installedapp/forcedelete/")) { forced << path; [status: 302, location: "/installedapp/list", data: null] }
+            else if (path == "/installedapp/direct/hubVariables") { [status: 302, location: "/installedapp/configure/9001", data: null] }
             else { [status: 404, location: null, data: null] }   // gone-check: absent
         }
-        def removedVars = []
+        // Variables are deleted by driving the classic hubVar wizard -- there is no app-facing
+        // global-variable delete API. This test previously stubbed removeGlobalVariable(), a method
+        // that does not exist on the app class, so it passed against a mock of nothing while the
+        // real sweep failed on every run. Assert the wizard clicks instead.
+        def deleteClicks = []
+        script.metaClass.hubPostForm = { String path, Map b ->
+            if (path == "/installedapp/btn" && b.stateAttribute == "deleteGV") { deleteClicks << b.name }
+            [status: 200, data: 'ok']
+        }
         script.metaClass.getAllGlobalVars = { -> [BAT_E2E_v1: [type: "string"], RealVar: [type: "string"], BAT_E2E_v2: [type: "integer"]] }
-        script.metaClass.removeGlobalVariable = { String n -> removedVars << n; true }
+        script.metaClass.getGlobalVar = { String n -> null }   // gone after the wizard commits
 
         when:
         def r = script.adminPurgeE2eArtifacts([confirm: true])
@@ -353,7 +418,10 @@ class WatchdogV2Spec extends Specification {
         (r.deleted*.id).collect { it as Integer }.sort() == [100, 201]
         forced.sort() == ["/installedapp/forcedelete/100/quiet", "/installedapp/forcedelete/201/quiet"]
         r.variablesDeletedCount == 2
-        removedVars.sort() == ["BAT_E2E_v1", "BAT_E2E_v2"]
+        (r.variablesDeleted as List).sort() == ["BAT_E2E_v1", "BAT_E2E_v2"]
+
+        and: "the real hub variable is never clicked -- the prefix is the only safety scope"
+        deleteClicks.sort() == ["BAT_E2E_v1", "BAT_E2E_v2"]
     }
 
     def "adminPurgeE2eArtifacts requires confirm (never deletes without it)"() {
@@ -923,5 +991,1406 @@ class WatchdogV2Spec extends Specification {
         then:
         r.success == false
         r.error.contains("updatePlatform failed")
+    }
+
+    // ---- purge single-flight latch (the 2026-09-01 hub wedge) --------------------------------
+    // Five overlapping hub_purge_e2e_artifacts sweeps -- CI retrying one dropped relay response --
+    // each re-enumerated the same app list and raced on the same ids for 11+ minutes, exhausting
+    // the hub's web thread pool and leaving it unresponsive for 3h32m until a manual power cycle.
+
+    def "a purge landing during an in-flight purge is a no-op, not a second sweep"() {
+        given:
+        int enumerations = 0
+        script.metaClass.hubGet = { String p, Map q -> enumerations++; '{"apps":[]}' }
+        // A sweep that is genuinely running owns all three keys -- the claim is what says someone
+        // is still working, and a bare timestamp is the trailing edge of a sweep that has finished.
+        atomicStateMap.purgeInFlightAt = System.currentTimeMillis() - 30_000L
+        atomicStateMap.purgeClaim = 'purge-running'
+        atomicStateMap.purgeClaimPrefix = 'BAT_E2E_'
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then: 'the duplicate call never enumerates, so it cannot race the running sweep'
+        enumerations == 0
+        res.inFlight == true
+        res.success == true
+        res.note?.contains('Do NOT retry')
+    }
+
+    def "a STALE purge latch (sweep killed mid-flight) does not block the next purge"() {
+        given:
+        int enumerations = 0
+        script.metaClass.hubGet = { String p, Map q -> enumerations++; '{"apps":[]}' }
+        atomicStateMap.purgeInFlightAt = System.currentTimeMillis() - 1_000_000L
+
+        when:
+        script.adminPurgeE2eArtifacts([confirm: true])
+
+        then: 'the stale latch is overridden and the sweep runs'
+        enumerations == 1
+    }
+
+    def "the purge latch is released once the sweep completes"() {
+        given:
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+
+        when:
+        script.adminPurgeE2eArtifacts([confirm: true])
+
+        then:
+        atomicStateMap.purgeInFlightAt == null
+    }
+
+    def "a purge arriving just after one finished is served from cache, not re-run"() {
+        given:
+        int enumerations = 0
+        script.metaClass.hubGet = { String p, Map q -> enumerations++; '{"apps":[]}' }
+        atomicStateMap.purgeResult = [success: true, prefix: 'BAT_E2E_', deletedCount: 12, failedCount: 0]
+        atomicStateMap.purgeResultAt = System.currentTimeMillis() - 10_000L
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then: 'CI gets the real outcome of the sweep it lost the response to'
+        enumerations == 0
+        res.cached == true
+        res.deletedCount == 12
+    }
+
+    def "a purge cache older than the window re-runs instead of serving a stale result"() {
+        given:
+        int enumerations = 0
+        script.metaClass.hubGet = { String p, Map q -> enumerations++; '{"apps":[]}' }
+        atomicStateMap.purgeResult = [success: true, prefix: 'BAT_E2E_', deletedCount: 12, failedCount: 0]
+        atomicStateMap.purgeResultAt = System.currentTimeMillis() - 400_000L
+
+        when:
+        script.adminPurgeE2eArtifacts([confirm: true])
+
+        then:
+        enumerations == 1
+    }
+
+    // ---- wedge detection + auto-reboot escape -------------------------------------------------
+
+    def "a wedged hub is auto-rebooted, and the escape runs BEFORE readFlag"() {
+        given: 'loopback dead: 8+ consecutive failures and no success for over four minutes'
+        boolean flagRead = false
+        String posted = null
+        script.metaClass.readFlag = { -> flagRead = true; null }
+        script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+        script.metaClass.probeLoopbackAlive = { -> false }   // the live gate agrees: still dead
+        atomicStateMap.loopbackFailStreak = 12
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 300_000L
+
+        when:
+        script.checkDeadman()
+
+        then: 'the reboot lands, and the tick never reaches the flag read (itself a loopback call)'
+        posted == '/hub/reboot'
+        !flagRead
+    }
+
+    def "a healthy hub is never auto-rebooted (#scenario)"() {
+        given:
+        String posted = null
+        script.metaClass.readFlag = { -> null }
+        script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+        atomicStateMap.loopbackFailStreak = streak
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - sinceOkMs
+
+        when:
+        script.checkDeadman()
+
+        then:
+        posted == null
+
+        where:
+        scenario                                   | streak | sinceOkMs
+        'no failures at all'                       | 0      | 1_000L
+        'a burst of failures but a recent success' | 20     | 30_000L
+        'stale silence but too few failures'       | 3      | 600_000L
+    }
+
+    def "auto-reboot is rate-limited so it cannot become a boot loop"() {
+        given:
+        String posted = null
+        script.metaClass.readFlag = { -> null }
+        script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+        atomicStateMap.loopbackFailStreak = 12
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 300_000L
+        atomicStateMap.lastAutoRebootAt = System.currentTimeMillis() - 60_000L
+        script.metaClass.probeLoopbackAlive = { -> false }
+
+        when:
+        script.checkDeadman()
+
+        then: 'a hub that did not come back is left for a human, not rebooted again'
+        posted == null
+    }
+
+    def "a successful loopback call clears the wedge streak"() {
+        given:
+        atomicStateMap.loopbackFailStreak = 12
+
+        when:
+        script.noteLoopback(true)
+
+        then:
+        atomicStateMap.loopbackFailStreak == 0
+        atomicStateMap.loopbackLastOkAt != null
+    }
+
+    // ---- restore retry backoff ----------------------------------------------------------------
+    // Each restore attempt is a 660KB source fetch + a bundle install + two app recompiles. The old
+    // code retried on every 1-minute tick, piling that load onto the condition that made the
+    // restore fail in the first place.
+
+    def "restore retries back off instead of firing on every tick (#scenario)"() {
+        expect:
+        script.retryBackoffPending([fireAttempts: attempts, lastAttemptAt: System.currentTimeMillis() - agoMs],
+                                   'disarm') == pending
+
+        where: "the schedule is 1, 2, 4 and 8 minutes -- five attempts over ~15 min before the latch"
+        scenario                                   | attempts | agoMs      | pending
+        'first attempt is never delayed'           | 0        | 0L         | false
+        'after 1 failure, attempt 2 waits 1 min'   | 1        | 30_000L    | true
+        'attempt 2 proceeds once 1 min has passed' | 1        | 90_000L    | false
+        'after 3 failures, attempt 4 waits 4 min'  | 3        | 200_000L   | true
+        'attempt 4 proceeds once 4 min has passed' | 3        | 300_000L   | false
+        'after 4 failures, attempt 5 waits 8 min'  | 4        | 400_000L   | true
+        'attempt 5 proceeds once 8 min has passed' | 4        | 500_000L   | false
+    }
+
+    def "a wedged hub skips the restore attempt entirely rather than adding load"() {
+        given:
+        atomicStateMap.loopbackFailStreak = 12
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 300_000L
+
+        expect: 'the restore cannot land while loopback is dead; trying costs load the hub lacks'
+        script.retryBackoffPending([fireAttempts: 1, lastAttemptAt: System.currentTimeMillis() - 600_000L],
+                                   'disarm')
+    }
+
+    // ---- hub_reboot admin tool ---------------------------------------------------------------
+
+    def "hub_reboot posts to /hub/reboot and is reachable through the tool dispatch"() {
+        given:
+        String posted = null
+        script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+
+        when:
+        def res = script.executeAdminTool('hub_reboot', [confirm: true])
+
+        then:
+        posted == '/hub/reboot'
+        res.success == true
+    }
+
+    def "hub_reboot reports a failure rather than claiming a reboot that did not happen (#scenario)"() {
+        given: "hubPostForm SWALLOWS transport errors and returns status null -- it never throws,"
+        // so the status is the only success signal. An earlier revision wrapped the call in a
+        // try/catch and returned success:true unconditionally: the catch could never fire, and the
+        // auto-reboot escape would have logged a successful reboot for a POST that never landed --
+        // exactly the wedged-web-stack case the escape exists for.
+        script.metaClass.hubPostForm = { String p, Map b -> [status: st, data: null] }
+
+        when:
+        def res = script.adminRebootHub([confirm: true])
+
+        then:
+        res.success == false
+        res.error?.contains(errFragment)
+        res.note?.contains(noteFragment)
+
+        and: "only an unanswered POST is ambiguous -- a status the hub returned proves it did not reboot"
+        (res.ambiguous == true) == (st == null)
+
+        where:
+        scenario                        | st   | errFragment  | noteFragment
+        'transport failure, no status'  | null | 'no response' | 'physical power cycle'
+        'hub refused the reboot'        | 500  | '500'         | 'The hub answered'
+        'not found'                     | 404  | '404'         | 'The hub answered'
+    }
+
+    // ---- hub-variable purge drives the classic hubVar wizard --------------------------------
+    // There is no removeGlobalVar/removeGlobalVariable on the app class. An earlier revision called
+    // one, so every purge failed with "No signature of method" and the variables leg never worked.
+
+    def "purging a hub variable drives the deleteGV then delConfirm wizard clicks"() {
+        given:
+        List<Map> posts = []
+        int getGlobalCalls = 0
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+        script.metaClass.hubGetStatus = { String p, Map q ->
+            [status: 302, location: '/installedapp/configure/9001', data: null]
+        }
+        script.metaClass.hubPostForm = { String p, Map b -> posts << [path: p, body: b]; [status: 200, data: 'ok'] }
+        script.metaClass.getAllGlobalVars = { -> [BAT_E2E_leftover: [value: 1]] }
+        // Gone after the wizard commits, so the verify loop succeeds on its first check.
+        script.metaClass.getGlobalVar = { String n -> getGlobalCalls++; null }
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then: "both clicks land on /installedapp/btn, keyed the way the hubVar page expects"
+        posts.size() == 2
+        posts.every { it.path == '/installedapp/btn' }
+        posts[0].body.name == 'BAT_E2E_leftover'
+        posts[0].body.stateAttribute == 'deleteGV'
+        posts[0].body.currentPage == 'hubVar'
+        posts[1].body.name == 'delConfirm'
+
+        and: "and it is reported as deleted, not as a failure"
+        res.variablesDeletedCount == 1
+        res.variablesFailedCount == 0
+        res.variablesDeleted == ['BAT_E2E_leftover']
+    }
+
+    def "a hub variable that survives the wizard is reported failed, never as deleted"() {
+        given:
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+        script.metaClass.hubGetStatus = { String p, Map q ->
+            [status: 302, location: '/installedapp/configure/9001', data: null]
+        }
+        script.metaClass.hubPostForm = { String p, Map b -> [status: 200, data: 'ok'] }
+        script.metaClass.pauseExecution = { long ms -> }
+        script.metaClass.getAllGlobalVars = { -> [BAT_E2E_inuse: [value: 1]] }
+        script.metaClass.getGlobalVar = { String n -> [value: 1] }   // never goes away
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then: "an in-use variable the wizard refuses is surfaced, not silently counted as gone"
+        res.variablesDeletedCount == 0
+        res.variablesFailedCount == 1
+        res.variablesFailed[0].name == 'BAT_E2E_inuse'
+        res.success == false
+    }
+
+    def "an unresolvable Hub Variables app is reported once, not per variable"() {
+        given:
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+        script.metaClass.hubGetStatus = { String p, Map q -> [status: null, location: null, data: null] }
+        script.metaClass.getAllGlobalVars = { -> [BAT_E2E_a: [value: 1], BAT_E2E_b: [value: 2]] }
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then:
+        res.variablesFailedCount == 1
+        res.variablesFailed[0].name == '*'
+        res.variablesFailed[0].error.contains('Hub Variables app id')
+    }
+
+    def "variables that do not match the prefix are never touched"() {
+        given:
+        List<Map> posts = []
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+        script.metaClass.hubGetStatus = { String p, Map q ->
+            [status: 302, location: '/installedapp/configure/9001', data: null]
+        }
+        script.metaClass.hubPostForm = { String p, Map b -> posts << [path: p, body: b]; [status: 200, data: 'ok'] }
+        script.metaClass.getAllGlobalVars = { -> [HomeMode: [value: 'x'], Thermostat_Target: [value: 70]] }
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then: "a prefix-scoped sweep must never reach a real hub variable"
+        posts.isEmpty()
+        res.variablesDeletedCount == 0
+        res.variablesFailedCount == 0
+    }
+
+    def "a throwing getGlobalVar is never mistaken for a deleted variable"() {
+        given: "the read fails rather than reporting absence -- that is unknown, not gone"
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+        script.metaClass.hubGetStatus = { String p, Map q ->
+            [status: 302, location: '/installedapp/configure/9001', data: null]
+        }
+        script.metaClass.hubPostForm = { String p, Map b -> [status: 200, data: 'ok'] }
+        script.metaClass.pauseExecution = { long ms -> }
+        script.metaClass.getAllGlobalVars = { -> [BAT_E2E_unreadable: [value: 1]] }
+        script.metaClass.getGlobalVar = { String n -> throw new RuntimeException('read failed') }
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then: "reported as a failure, so a variable still on the hub is never claimed purged"
+        res.variablesDeletedCount == 0
+        res.variablesFailedCount == 1
+        res.variablesFailed[0].name == 'BAT_E2E_unreadable'
+    }
+
+    // ---- annotation completeness ------------------------------------------------------------
+
+    def "every watchdog tool definition carries explicit annotation hints"() {
+        given: "tools/list returns getAdminToolDefinitions() directly, so these reach the wire"
+        def defs = script.getAdminToolDefinitions()
+
+        expect: "no tool may fall back to a client's defaults -- openWorldHint defaults to TRUE when omitted"
+        defs.every { it.annotations != null }
+        defs.every { (it.annotations.title instanceof String) && it.annotations.title.trim() }
+        defs.every { it.annotations.containsKey('readOnlyHint') }
+        defs.every { it.annotations.containsKey('idempotentHint') }
+        defs.every { it.annotations.containsKey('openWorldHint') }
+
+        and: "destructiveHint is emitted on every write and omitted on reads (spec: only meaningful when readOnlyHint is false)"
+        defs.findAll { it.annotations.readOnlyHint == false }.every { it.annotations.containsKey('destructiveHint') }
+        defs.findAll { it.annotations.readOnlyHint == true }.every { !it.annotations.containsKey('destructiveHint') }
+    }
+
+    def "the tools that reach the open internet are the ones that fetch by URL"() {
+        given: "openWorldHint is an accuracy statement: the hub is the closed-world system"
+        def defs = script.getAdminToolDefinitions()
+
+        expect: "only the importUrl/zip-fetch/platform-download tools leave the hub"
+        (defs.findAll { it.annotations?.openWorldHint == true }*.name as Set) ==
+            ['hub_update_app', 'hub_create_library', 'hub_update_library',
+             'hub_update_platform', 'hub_install_bundle'] as Set
+    }
+
+    def "hub_reboot is declared a destructive write"() {
+        given:
+        def rb = script.getAdminToolDefinitions().find { it.name == 'hub_reboot' }
+
+        expect:
+        rb.annotations.readOnlyHint == false
+        rb.annotations.destructiveHint == true
+        rb.annotations.openWorldHint == false
+    }
+
+
+    // ---- served errors are not a wedge -------------------------------------------------------
+    // Hubitat's httpGet/httpPost THROW on 4xx/5xx, so the catch-all counted an ANSWERED error as a
+    // loopback failure. That inflated the wedge streak on a healthy hub and could auto-reboot it.
+
+    def "an ANSWERED error carries its status, so it is not read as a dead web stack (#code)"() {
+        expect: "httpGet/httpPost THROW on 4xx/5xx, but the hub served us -- the status proves it"
+        script.httpStatusOf(new FakeHttpException(code)) == code
+
+        where:
+        code << [404, 500, 302]
+    }
+
+    def "a real transport failure carries no status"() {
+        expect: "only this shape is a dead web stack"
+        script.httpStatusOf(new RuntimeException('Read timed out')) == null
+    }
+
+    def "the wedge streak advances only on a status-less failure"() {
+        given:
+        atomicStateMap.loopbackFailStreak = 3
+
+        when: 'the caller passes the answered/unanswered decision noteLoopback is given'
+        script.noteLoopback(answered)
+
+        then:
+        atomicStateMap.loopbackFailStreak == expected
+
+        where:
+        answered | expected
+        true     | 0
+        false    | 4
+    }
+
+    def "a fresh failure streak stamps its own baseline, and a success clears it"() {
+        given: 'explicitly no prior streak -- the baseline is only stamped on the FIRST failure'
+        atomicStateMap.loopbackFailStreak = 0
+        atomicStateMap.loopbackStreakStartedAt = null
+        atomicStateMap.loopbackLastOkAt = null
+
+        when:
+        script.noteLoopback(false)
+
+        then: 'this is what gives hubLooksWedged a baseline when there has never been a success'
+        atomicStateMap.loopbackFailStreak == 1
+        atomicStateMap.loopbackStreakStartedAt != null
+
+        when: 'the hub answers again'
+        script.noteLoopback(true)
+
+        then: 'the streak and its baseline are both released'
+        atomicStateMap.loopbackFailStreak == 0
+        atomicStateMap.loopbackStreakStartedAt == null
+        atomicStateMap.loopbackLastOkAt != null
+    }
+
+    def "a watchdog that has never had a successful loopback call can still detect a wedge"() {
+        given: "no loopbackLastOkAt at all -- the hub was wedged before this app ever ran"
+        atomicStateMap.loopbackFailStreak = 12
+        atomicStateMap.loopbackLastOkAt = null
+        atomicStateMap.loopbackStreakStartedAt = System.currentTimeMillis() - 300_000L
+        String posted = null
+        script.metaClass.readFlag = { -> null }
+        script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+        script.metaClass.probeLoopbackAlive = { -> false }
+
+        when:
+        script.checkDeadman()
+
+        then: "the streak-start timestamp is the baseline, so the escape still fires"
+        posted == '/hub/reboot'
+    }
+
+    // ---- purge failures carry an aggregate error + recovery note ------------------------------
+
+    def "a purge with failures reports a top-level error and actionable note"() {
+        given: "one variable the wizard will not remove"
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+        script.metaClass.hubGetStatus = { String p, Map q ->
+            [status: 302, location: '/installedapp/configure/9001', data: null]
+        }
+        script.metaClass.hubPostForm = { String p, Map b -> [status: 200, data: 'ok'] }
+        script.metaClass.pauseExecution = { long ms -> }
+        script.metaClass.getAllGlobalVars = { -> [BAT_E2E_stuck: [value: 1]] }
+        script.metaClass.getGlobalVar = { String n -> [value: 1] }   // never goes away
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then: "a caller must not have to diff count fields to notice the sweep failed"
+        res.success == false
+        res.error?.contains('1 variable(s)')
+        res.note?.contains('Do NOT blind-retry')
+    }
+
+    def "a clean purge carries no error field"() {
+        given:
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+        script.metaClass.getAllGlobalVars = { -> [:] }
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then:
+        res.success == true
+        res.error == null
+    }
+
+
+    // ---- the auto-reboot must NOT fire on downtime we caused, or on stale counters -------------
+    // These are the misfire modes that matter: rebooting mid platform-install, and boot-looping a
+    // hub that has already come back. Both are worse than the wedge the escape exists to clear.
+
+    def "a live probe that answers stands the escape down, even with a wedged-looking streak"() {
+        given: "counters survive a hub restart, and this runs BEFORE readFlag -- so the first tick"
+        // after recovery would otherwise see a stale streak plus an old lastOk and reboot a
+        // healthy hub, then do it again on the next tick.
+        String posted = null
+        script.metaClass.readFlag = { -> null }
+        script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+        script.metaClass.probeLoopbackAlive = { -> true }   // the hub is actually back
+        atomicStateMap.loopbackFailStreak = 12
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 600_000L
+
+        when:
+        script.checkDeadman()
+
+        then: 'no reboot -- accumulated state alone is never enough to act'
+        posted == null
+    }
+
+    def "a deliberate reboot/platform-update window suppresses the escape (#reason)"() {
+        given: "the hub is dark because WE took it down; rebooting into that is the worst outcome"
+        String posted = null
+        script.metaClass.readFlag = { -> null }
+        script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+        script.metaClass.probeLoopbackAlive = { -> false }   // genuinely unreachable, as expected
+        atomicStateMap.loopbackFailStreak = 20
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 900_000L
+        atomicStateMap.expectedDownUntil = System.currentTimeMillis() + remainingMs
+
+        when:
+        script.checkDeadman()
+
+        then: 'no reboot while the expected-downtime window is open'
+        posted == null
+
+        where:
+        reason                       | remainingMs
+        'platform update, 20 min left' | 1_200_000L
+        'operator reboot, 2 min left'  | 120_000L
+    }
+
+    def "once the expected-downtime window expires a genuine wedge is still caught"() {
+        given:
+        String posted = null
+        script.metaClass.readFlag = { -> null }
+        script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+        script.metaClass.probeLoopbackAlive = { -> false }
+        atomicStateMap.loopbackFailStreak = 20
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 900_000L
+        atomicStateMap.expectedDownUntil = System.currentTimeMillis() - 1_000L   // already elapsed
+
+        when:
+        script.checkDeadman()
+
+        then: 'the suppression is a window, not a permanent disable'
+        posted == '/hub/reboot'
+    }
+
+    def "hub_reboot stamps the downtime window so it cannot trigger its own escape"() {
+        given:
+        script.metaClass.hubPostForm = { String p, Map b -> [status: 200, data: 'ok'] }
+
+        when:
+        script.adminRebootHub([confirm: true])
+
+        then:
+        atomicStateMap.expectedDownUntil != null
+        atomicStateMap.expectedDownUntil > System.currentTimeMillis()
+    }
+
+    def "hub_update_platform stamps a longer window before the hub can go dark"() {
+        given: "the update takes the hub down for 5-10 min by design"
+        script.metaClass.hubGet = { String p, Map q -> '{"ok":true}' }
+
+        when:
+        script.adminUpdatePlatform([confirm: true])
+
+        then: 'stamped generously -- a reboot mid firmware-install is unrecoverable'
+        atomicStateMap.expectedDownUntil != null
+        (atomicStateMap.expectedDownUntil - System.currentTimeMillis()) > 1_000_000L
+    }
+
+    def "statusOnly platform polling does NOT stamp a downtime window"() {
+        given: "polling progress takes nothing down, so it must not blind the escape"
+        script.metaClass.hubGet = { String p, Map q -> '{"state":"downloading"}' }
+
+        when:
+        script.adminUpdatePlatform([statusOnly: true])
+
+        then:
+        atomicStateMap.expectedDownUntil == null
+    }
+
+    def "the liveness probe treats ANY served status as alive (#code)"() {
+        given: "the question is only whether the web stack served us"
+        script.metaClass.hubGetStatus = { String p, Map q, int t = 30 -> [status: code, location: null, data: null] }
+
+        expect: "a hub answering 404 on the probe endpoint is alive -- rebooting it would be the misfire"
+        script.probeLoopbackAlive()
+
+        where:
+        code << [200, 404, 500]
+    }
+
+    def "the liveness probe reports dead only when nothing answered"() {
+        given:
+        script.metaClass.hubGetStatus = { String p, Map q, int t = 30 -> [status: null, location: null, data: null] }
+
+        expect:
+        !script.probeLoopbackAlive()
+    }
+
+    def "a held purge claim makes a second caller yield without sweeping"() {
+        given:
+        int enumerations = 0
+        script.metaClass.hubGet = { String p, Map q -> enumerations++; '{"apps":[]}' }
+        atomicStateMap.purgeInFlightAt = System.currentTimeMillis() - 5_000L
+        atomicStateMap.purgeClaim = 'purge-someone-else'
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then:
+        enumerations == 0
+        res.inFlight == true
+    }
+
+    def "the claim and its marker are both released once the sweep finishes"() {
+        given:
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+        script.metaClass.getAllGlobalVars = { -> [:] }
+
+        when:
+        script.adminPurgeE2eArtifacts([confirm: true])
+
+        then: 'a stranded claim would lock out every later sweep for 15 minutes'
+        atomicStateMap.purgeInFlightAt == null
+        atomicStateMap.purgeClaim == null
+    }
+
+    def "steady-state successes do not rewrite atomicState on every loopback call"() {
+        given: "a healthy hub: streak already 0, lastOk stamped moments ago"
+        long recent = System.currentTimeMillis() - 5_000L
+        atomicStateMap.loopbackFailStreak = 0
+        atomicStateMap.loopbackLastOkAt = recent
+
+        when: "a purge sweep makes 150+ loopback calls in a minute -- each is a DB write if unthrottled"
+        script.noteLoopback(true)
+
+        then: "nothing changed, so nothing was written"
+        atomicStateMap.loopbackLastOkAt == recent
+    }
+
+    def "a success refreshes lastOk once it is older than the throttle window"() {
+        given:
+        long stale = System.currentTimeMillis() - 60_000L
+        atomicStateMap.loopbackFailStreak = 0
+        atomicStateMap.loopbackLastOkAt = stale
+
+        when:
+        script.noteLoopback(true)
+
+        then: "the wedge detector's baseline still advances, just not on every call"
+        atomicStateMap.loopbackLastOkAt > stale
+    }
+
+
+    // ---- CodeRabbit round 4: contracts and latch edge cases -----------------------------------
+
+    def "every tool definition carries an object-root inputSchema (the MCP spec makes it REQUIRED)"() {
+        given: "tools/list returns these straight to the wire"
+        def defs = script.getAdminToolDefinitions()
+
+        expect: "a spec-validating client rejects the whole list if one tool lacks it"
+        defs.every { it.inputSchema instanceof Map }
+        defs.every { it.inputSchema.type == 'object' }
+        defs.every { it.inputSchema.containsKey('properties') }
+
+        and: "every required parameter is a declared property -- a placeholder schema cannot satisfy this"
+        defs.findAll { it.inputSchema.required }.every { d -> d.inputSchema.required.every { d.inputSchema.properties.containsKey(it) } }
+        defs.find { it.name == 'hub_update_app' }.inputSchema.properties.containsKey('appId')
+        defs.find { it.name == 'hub_reboot' }.inputSchema.required == ['confirm']
+
+        and: "hub_reboot advertises the force override -- without it the platform-update refusal has no escape a client can find"
+        defs.find { it.name == 'hub_reboot' }.inputSchema.properties.containsKey('force')
+        defs.find { it.name == 'hub_reboot' }.annotations.idempotentHint == false
+    }
+
+    def "hub_reboot is reachable through the JSON-RPC envelope, not only the direct dispatch"() {
+        given: "the dispatch-envelope leg the repo requires for every new tool"
+        String posted = null
+        script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+
+        when:
+        def env = script.processJsonRpcMessage([jsonrpc: '2.0', id: 7, method: 'tools/call',
+                                                params: [name: 'hub_reboot', arguments: [confirm: true]]])
+
+        then: "a well-formed result envelope whose text payload is the tool's own result"
+        posted == '/hub/reboot'
+        env.jsonrpc == '2.0'
+        env.id == 7
+        env.error == null
+        def payload = new groovy.json.JsonSlurper().parseText(env.result.content[0].text as String)
+        payload.success == true
+        payload.status == 200
+    }
+
+    def "a finished sweep leaves a SUCCESSOR's claim alone"() {
+        given: "this sweep's claim was superseded (it ran past the 15-min staleness escape)"
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+        script.metaClass.getAllGlobalVars = { -> [:] }
+        // Make the sweep body itself install a successor claim mid-flight.
+        script.metaClass.purgeE2eArtifactsLocked = { String prefix, String claim = null ->
+            atomicStateMap.purgeInFlightAt = System.currentTimeMillis()
+            atomicStateMap.purgeClaim = 'purge-successor'
+            atomicStateMap.purgeClaimPrefix = 'BAT_E2E_'
+            [success: true, prefix: prefix, deletedCount: 0, failedCount: 0, deleted: [], failed: [],
+             variablesDeletedCount: 0, variablesFailedCount: 0, variablesDeleted: [], variablesFailed: []]
+        }
+
+        when:
+        script.adminPurgeE2eArtifacts([confirm: true])
+
+        then: "the successor's markers survive -- clearing them would let a third request pile on"
+        atomicStateMap.purgeClaim == 'purge-successor'
+        atomicStateMap.purgeInFlightAt != null
+    }
+
+    def "an in-flight sweep for a DIFFERENT prefix reports busy, never covered"() {
+        given:
+        int enumerations = 0
+        script.metaClass.hubGet = { String p, Map q -> enumerations++; '{"apps":[]}' }
+        atomicStateMap.purgeInFlightAt = System.currentTimeMillis() - 10_000L
+        atomicStateMap.purgeClaim = 'purge-other'
+        atomicStateMap.purgeClaimPrefix = 'BAT_E2E_'
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true, prefix: 'OTHER_'])
+
+        then: "the caller must not be told OTHER_ was swept when only BAT_E2E_ is running"
+        enumerations == 0
+        res.success == false
+        res.busy == true
+        res.activePrefix == 'BAT_E2E_'
+        res.inFlight == null
+    }
+
+    def "an in-flight sweep for the SAME prefix still returns the covered marker"() {
+        given:
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+        atomicStateMap.purgeInFlightAt = System.currentTimeMillis() - 10_000L
+        atomicStateMap.purgeClaim = 'purge-other'
+        atomicStateMap.purgeClaimPrefix = 'BAT_E2E_'
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then:
+        res.success == true
+        res.inFlight == true
+    }
+
+    def "hub_update_platform with no response reports UNKNOWN and holds the escape down"() {
+        given: "hubGet returns null for a transport failure, a dropped response AND an empty 200 body alike"
+        script.metaClass.hubGet = { String p, Map q -> p.endsWith('checkForUpdate') ? '{"ok":true}' : null }
+
+        when:
+        def res = script.adminUpdatePlatform([confirm: true])
+
+        then: "whether the hub accepted it is unknowable here, and a reboot into a firmware install is the worse error"
+        res.success == false
+        res.updateMayHaveStarted == true
+        res.error?.contains('UNKNOWN')
+        (atomicStateMap.expectedDownUntil as Long) > System.currentTimeMillis()
+    }
+
+    def "hub_update_platform stamps the downtime window only after the hub accepted it"() {
+        given:
+        script.metaClass.hubGet = { String p, Map q -> '{"ok":true}' }
+
+        when:
+        def res = script.adminUpdatePlatform([confirm: true])
+
+        then:
+        res.success == true
+        atomicStateMap.expectedDownUntil > System.currentTimeMillis()
+    }
+
+    def "hub_update_platform statusOnly reports a failed poll instead of success with no status"() {
+        given: "hubGet swallows the transport error into null"
+        script.metaClass.hubGet = { String p, Map q -> null }
+
+        when:
+        def res = script.adminUpdatePlatform([statusOnly: true])
+
+        then:
+        res.success == false
+        res.error?.contains('No response')
+        res.note?.contains('Retry')
+    }
+
+    def "the expected-downtime window vetoes ONLY the reboot -- the tick still reads the flag"() {
+        given: "wedged-looking counters inside a deliberate downtime window"
+        boolean flagRead = false
+        String posted = null
+        script.metaClass.readFlag = { -> flagRead = true; null }
+        script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+        script.metaClass.probeLoopbackAlive = { -> false }
+        atomicStateMap.loopbackFailStreak = 20
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 900_000L
+        atomicStateMap.expectedDownUntil = System.currentTimeMillis() + 600_000L
+
+        when:
+        script.checkDeadman()
+
+        then: "no reboot, but the flag IS read -- that read is what resets the counters once the hub is back"
+        posted == null
+        flagRead
+    }
+
+    def "a null getAllGlobalVars is reported as an enumeration failure, never as a clean sweep"() {
+        given:
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+        script.metaClass.getAllGlobalVars = { -> null }
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then:
+        res.success == false
+        res.variablesFailedCount == 1
+        res.variablesFailed[0].name == '*'
+        res.variablesFailed[0].error.contains('could not enumerate')
+    }
+
+    // ---- review round 7 ----------------------------------------------------------------------
+
+    def "findHubVariablesAppId anchors on the configure path and follows the create hop (#scenario)"() {
+        given: "the redirect shapes the hub actually produces"
+        def hops = []
+        script.metaClass.hubGetStatus = { String p, Map q, int t = 30 ->
+            hops << p
+            if (p == '/installedapp/direct/hubVariables') return [status: 302, location: firstLoc, data: null]
+            if (p == '/installedapp/create/555') return [status: 302, location: '/installedapp/configure/9001', data: null]
+            [status: 404, location: null, data: null]
+        }
+
+        expect: "the INSTANCE id -- never 127 from an absolute URL, never the type id from the create hop"
+        script.findHubVariablesAppId() == expected
+
+        where:
+        scenario                          | firstLoc                                                   | expected
+        'relative configure'              | '/installedapp/configure/9001'                             | 9001
+        'absolute configure'              | 'http://127.0.0.1:8080/installedapp/configure/9001'        | 9001
+        'create hop then configure'       | '/installedapp/create/555'                                 | 9001
+        'absolute create hop'             | 'http://127.0.0.1:8080/installedapp/create/555'            | 9001
+        'unexpected shape'                | '/installedapp/list'                                       | null
+    }
+
+    def "findHubVariablesAppId returns null when the alias does not redirect"() {
+        given:
+        script.metaClass.hubGetStatus = { String p, Map q, int t = 30 -> [status: 200, location: null, data: '<html>'] }
+
+        expect:
+        script.findHubVariablesAppId() == null
+    }
+
+    def "a rejected wizard click is reported as such, not as a variable in use"() {
+        given:
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+        script.metaClass.hubGetStatus = { String p, Map q, int t = 30 -> [status: 302, location: '/installedapp/configure/9001', data: null] }
+        script.metaClass.hubPostForm = { String p, Map b -> [status: 500, data: null] }
+        script.metaClass.pauseExecution = { long ms -> }
+        script.metaClass.getAllGlobalVars = { -> [BAT_E2E_x: [value: 1]] }
+        script.metaClass.getGlobalVar = { String n -> [value: 1] }
+
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+
+        then: "the operator is not sent hunting for a referencing rule when the hub refused the click"
+        res.variablesFailed[0].error.contains('not accepted')
+        res.variablesFailed[0].error.contains('deleteGV=500')
+        !res.variablesFailed[0].error.contains('referenced by a rule')
+    }
+
+    def "hub_reboot without confirm is refused and stamps NO downtime window"() {
+        given:
+        String posted = null
+        script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+
+        when:
+        script.adminRebootHub([:])
+
+        then: "the most destructive tool keeps its gate, and a refused call cannot blind the escape"
+        thrown(IllegalArgumentException)
+        posted == null
+        atomicStateMap.expectedDownUntil == null
+    }
+
+    def "a REJECTED reboot POST clears the downtime window it had stamped"() {
+        given: "the hub answered, so it certainly did not reboot"
+        script.metaClass.hubPostForm = { String p, Map b -> [status: 500, data: null] }
+
+        when:
+        def res = script.adminRebootHub([confirm: true])
+
+        then: "otherwise the escape would stand down for 10 min on a reboot that never happened"
+        res.success == false
+        res.ambiguous == null
+        atomicStateMap.expectedDownUntil == null
+    }
+
+    def "an auto-reboot the hub REJECTED does not burn the 30-minute rate limit"() {
+        given: "the hub answered the POST, so nothing rebooted"
+        script.metaClass.readFlag = { -> null }
+        script.metaClass.hubPostForm = { String p, Map b -> [status: 500, data: null] }
+        script.metaClass.probeLoopbackAlive = { -> false }
+        atomicStateMap.loopbackFailStreak = 12
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 300_000L
+
+        when:
+        script.checkDeadman()
+
+        then: "the next tick may try again"
+        atomicStateMap.lastAutoRebootAt == null
+    }
+
+    def "hub_manage_variables sub-tools declare their real parameters"() {
+        given:
+        def catalog = script.adminManageVariables([:])
+        def subs = catalog.tools ?: catalog.subTools ?: []
+
+        expect:
+        subs.size() == 2
+        subs.every { it.annotations?.title && it.annotations.containsKey('readOnlyHint') && it.annotations.containsKey('openWorldHint') }
+        subs.find { it.name == 'hub_get_variable' }.inputSchema.required == ['name']
+        subs.find { it.name == 'hub_set_variable' }.inputSchema.required.containsAll(['name', 'value', 'confirm'])
+    }
+
+    def "retry bookkeeping survives a failed writeFlag -- the next tick still backs off and the cap still advances"() {
+        given: "the restore fails and the flag write fails too (a loaded hub)"
+        script.metaClass.adminUpdateApp = { Map a -> [success: false, error: 'nope'] }
+        script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '7', fireAttempts: 0,
+                                          manifest: [app: [classId: '178', url: 'https://raw.example/main/app.groovy'], libraries: []]] }
+        script.metaClass.writeFlag = { Map fl -> false }
+
+        when:
+        script.checkDeadman()
+
+        then: "the attempt is counted where a loopback write cannot lose it"
+        atomicStateMap.restoreAttempts == 1
+        atomicStateMap.restoreLastAttemptAt != null
+
+        and: "the mirror is stamped with the flag's GENERATION, not its run id (GitHub reuses that on a re-run)"
+        atomicStateMap.restoreAttemptsRun == "7|null|disarm|false"
+
+        and: "the next tick paces off the mirror even though the stale flag still says zero attempts"
+        script.retryBackoffPending([armed: false, intent: 'disarm', runId: '7', fireAttempts: 0, lastAttemptAt: null], 'disarm')
+
+        and: "a re-run of the SAME run id writes a new flag, whose generation the mirror must not pace"
+        !script.retryBackoffPending([armed: true, intent: null, runId: '7', deadline: 999L, fireAttempts: 0, lastAttemptAt: null], 'fire')
+    }
+
+    def "the retry mirror is cleared when the restore succeeds or latches"() {
+        given:
+        script.metaClass.adminUpdateApp = { Map a -> [success: true] }
+        script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '9', fireAttempts: 2,
+                                          manifest: [app: [classId: '178', url: 'https://raw.example/main/app.groovy'], libraries: []]] }
+        script.metaClass.writeFlag = { Map fl -> true }
+        atomicStateMap.restoreAttempts = 2
+        atomicStateMap.restoreLastAttemptAt = System.currentTimeMillis() - 600_000L
+
+        when:
+        script.checkDeadman()
+
+        then: "a stale mirror must not pace the NEXT run's first attempt"
+        atomicStateMap.restoreAttempts == null
+        atomicStateMap.restoreLastAttemptAt == null
+    }
+
+    def "a retry mirror left by a DIFFERENT run does not pace this run"() {
+        given: "a stale mirror from run 6; this tick is run 7"
+        atomicStateMap.restoreAttempts = 3
+        atomicStateMap.restoreLastAttemptAt = System.currentTimeMillis() - 30_000L
+        atomicStateMap.restoreAttemptsRun = '6'
+
+        expect: "the new run's first attempt is immediate"
+        !script.retryBackoffPending([runId: '7', fireAttempts: 0, lastAttemptAt: null], 'disarm')
+    }
+
+    def "a rejected reboot POST restores the downtime window it found, rather than clearing it"() {
+        given: "a platform update already has a window open; the hub then answers the reboot"
+        long existing = System.currentTimeMillis() + 900_000L
+        atomicStateMap.expectedDownUntil = existing
+        script.metaClass.hubPostForm = { String p, Map b -> [status: 500, data: null] }
+
+        when:
+        def res = script.adminRebootHub([confirm: true])
+
+        then: "the platform update's suppression survives a reboot attempt that did not land"
+        res.success == false
+        atomicStateMap.expectedDownUntil == existing
+    }
+
+    def "the persisted failure streak saturates at the wedge threshold (streak #streak)"() {
+        given:
+        atomicStateMap.loopbackFailStreak = streak
+        atomicStateMap.loopbackStreakStartedAt = System.currentTimeMillis() - 1_000L
+
+        when:
+        script.noteLoopback(false)
+
+        then: "below the threshold it still counts; at or past it nothing is written"
+        atomicStateMap.loopbackFailStreak == expected
+
+        where:
+        streak | expected
+        7      | 8
+        8      | 8
+        40     | 40
+    }
+
+    def "two overlapping wedge checks issue exactly one reboot POST"() {
+        given: "a wedged hub whose reboot POST is slow enough for the second check to overlap"
+        def posts = new java.util.concurrent.atomic.AtomicInteger(0)
+        script.metaClass.readFlag = { -> null }
+        script.metaClass.probeLoopbackAlive = { -> false }
+        script.metaClass.hubPostForm = { String p, Map b -> posts.incrementAndGet(); Thread.sleep(300); [status: 200, data: 'ok'] }
+        atomicStateMap.loopbackFailStreak = 20
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 900_000L
+
+        when: "the scheduled tick and a kick arrive together"
+        def threads = (1..2).collect { Thread.start { script.checkDeadman() } }
+        threads*.join()
+
+        then: "the second decision saw the first's timestamp"
+        posts.get() == 1
+        atomicStateMap.lastAutoRebootAt != null
+    }
+
+    def "a failed reboot leaves a NEWER downtime window alone"() {
+        given: "a platform update stamps its window while the reboot POST is in flight"
+        long newer = System.currentTimeMillis() + 1_500_000L
+        script.metaClass.hubPostForm = { String p, Map b -> atomicStateMap.expectedDownUntil = newer; [status: null, data: null] }
+
+        when:
+        def res = script.adminRebootHub([confirm: true])
+
+        then: "the reboot's own stamp is not restored over the update's"
+        res.success == false
+        atomicStateMap.expectedDownUntil == newer
+    }
+
+    def "a purge sweep renews its claim under the lock before every delete and stops once the claim is lost"() {
+        given: "two apps to purge; the first delete hands the claim to a newer sweep"
+        script.metaClass.hubGet = { String path, Map q = [:], Integer t = null ->
+            path == "/hub2/appsList" ? groovy.json.JsonOutput.toJson([apps: [[data: [id: 1, name: "BAT_E2E_a"]], [data: [id: 2, name: "BAT_E2E_b"]]]]) : null
+        }
+        script.metaClass.getAllGlobalVars = { -> [:] }
+        def deletes = []
+        script.metaClass.adminForceDeleteInstalledApp = { Map a ->
+            deletes << a.id
+            atomicStateMap.purgeClaim = 'purge-newer'
+            [success: true]
+        }
+        atomicStateMap.purgeClaim = 'purge-mine'
+        atomicStateMap.purgeInFlightAt = 1L
+
+        when:
+        def res = script.purgeE2eArtifactsLocked("BAT_E2E_", 'purge-mine')
+
+        then: "the claim stamp was renewed for the delete that ran, and the second target was not touched"
+        deletes == [1]
+        (atomicStateMap.purgeInFlightAt as Long) > 1L
+        res.failed.any { it.id == 2 && it.error.contains("claim lost") }
+    }
+
+    def "an auto-reboot is vetoed under the lock when a concurrent probe cleared the streak between the checks and the claim"() {
+        given: "a wedged-looking hub; the tick's own probes fail, and a concurrent probe's success lands after the pre-lock checks"
+        script.metaClass.readFlag = { -> null }
+        atomicStateMap.loopbackFailStreak = 8
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 300000L
+        int probes = 0
+        script.metaClass.probeLoopbackAlive = { ->
+            probes++
+            // The 2nd call is the reboot path's own pre-lock probe: it fails, but a concurrent
+            // probe answered at the same moment and reset the streak -- the hub is healthy now.
+            if (probes == 2) atomicStateMap.loopbackFailStreak = 0
+            false
+        }
+        def posts = []
+        script.metaClass.hubPostForm = { String path, Map body -> posts << path; [status: 200, data: ''] }
+
+        when:
+        script.checkDeadman()
+
+        then: "the claim re-validated the state under the lock: no reboot POST, no slot stamped"
+        probes == 2
+        posts == []
+        atomicStateMap.lastAutoRebootAt == null
+    }
+
+    def "an auto-reboot is vetoed under the lock when a platform update was accepted while the slot was being claimed"() {
+        given:
+        script.metaClass.readFlag = { -> null }
+        atomicStateMap.loopbackFailStreak = 8
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 300000L
+        int probes = 0
+        script.metaClass.probeLoopbackAlive = { ->
+            probes++
+            if (probes == 2) atomicStateMap.expectedDownUntil = System.currentTimeMillis() + 1500000L   // hub_update_platform landed meanwhile
+            false
+        }
+        def posts = []
+        script.metaClass.hubPostForm = { String path, Map body -> posts << path; [status: 200, data: ''] }
+
+        when:
+        script.checkDeadman()
+
+        then:
+        posts == []
+        atomicStateMap.lastAutoRebootAt == null
+    }
+
+    def "a platform update claims the downtime window BEFORE its request"() {
+        given:
+        script.metaClass.hubGet = { String path, Map q = [:], Integer t = null ->
+            path == "/hub/cloud/checkForUpdate" ? '{"status":"ok"}' : (path == "/hub/cloud/updatePlatform" ? '{"ok":true}' : null)
+        }
+
+        when:
+        def r = script.adminUpdatePlatform([confirm: true])
+
+        then:
+        r.success == true
+        (atomicStateMap.expectedDownUntil as Long) > System.currentTimeMillis()
+        atomicStateMap.expectedDownReason == 'hub_update_platform'
+    }
+
+    def "a platform update is NOT requested when its downtime window could not be persisted"() {
+        given: "the hub drops writes of the window key, so the stamp cannot be made durable"
+        atomicStateMap = new DroppingMap('expectedDownUntil')
+        def paths = []
+        script.metaClass.hubGet = { String path, Map q = [:], Integer t = null ->
+            paths << path
+            path == "/hub/cloud/checkForUpdate" ? '{"status":"ok"}' : '{"ok":true}'
+        }
+
+        when:
+        def r = script.adminUpdatePlatform([confirm: true])
+
+        then: "the request never went out: an install the wedge escape cannot see is what gets a hub rebooted mid-write"
+        r.success == false
+        r.error.contains("was NOT requested")
+        !paths.contains("/hub/cloud/updatePlatform")
+    }
+
+    def "a REJECTED reboot POST hands back the window it borrowed WITH its reason, so a platform update still refuses later reboots"() {
+        given: "a platform-update window is open; a forced reboot POST is then rejected by the hub"
+        long updateUntil = System.currentTimeMillis() + 1400000L
+        atomicStateMap.expectedDownUntil = updateUntil
+        atomicStateMap.expectedDownReason = 'hub_update_platform'
+        script.metaClass.hubPostForm = { String path, Map body -> [status: 500, data: 'nope'] }
+
+        when:
+        def failed = script.adminRebootHub([confirm: true, force: true])
+        def afterwards = script.adminRebootHub([confirm: true])
+
+        then: "the hub answered, so nothing rebooted: the update's window AND its reason are back"
+        failed.success == false
+        failed.ambiguous == null
+        (atomicStateMap.expectedDownUntil as Long) == updateUntil
+        atomicStateMap.expectedDownReason == 'hub_update_platform'
+        afterwards.refused == true
+    }
+
+    def "an UNANSWERED reboot POST keeps its window -- a hub that accepted the reboot goes down before answering"() {
+        given:
+        script.metaClass.hubPostForm = { String path, Map body -> [status: null, data: null] }
+
+        when:
+        def r = script.adminRebootHub([confirm: true])
+
+        then: "reported ambiguous, and the window stands so the wedge escape does not reboot a hub that is already rebooting"
+        r.success == false
+        r.ambiguous == true
+        (atomicStateMap.expectedDownUntil as Long) > System.currentTimeMillis()
+        atomicStateMap.expectedDownReason == 'hub_reboot'
+    }
+
+    @Unroll
+    def "the auto-reboot frees its 30-minute slot only when the hub ANSWERED the POST (status=#status -> slot kept: #keptSlot)"() {
+        given: "a wedged hub, so the escape claims the slot and posts"
+        script.metaClass.readFlag = { -> null }
+        script.metaClass.probeLoopbackAlive = { -> false }
+        atomicStateMap.loopbackFailStreak = 8
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 300000L
+        script.metaClass.hubPostForm = { String path, Map body -> [status: status, data: null] }
+
+        when:
+        script.checkDeadman()
+
+        then: "an unanswered POST may have landed, so the rate limit is HELD; an answered rejection frees it for a real retry"
+        (atomicStateMap.lastAutoRebootAt != null) == keptSlot
+
+        where:
+        status || keptSlot
+        null   || true
+        503    || false
+    }
+
+    def "a fresh purge stamp that no claim owns is not treated as cover for this sweep"() {
+        given: "the timestamp of a sweep that has finished and cleared its claim"
+        atomicStateMap.purgeInFlightAt = System.currentTimeMillis()
+        atomicStateMap.purgeClaim = null
+        atomicStateMap.purgeClaimPrefix = null
+        def swept = false
+        script.metaClass.purgeE2eArtifactsLocked = { String prefix, String claim = null -> swept = true; [success: true, prefix: prefix, deleted: [], failed: []] }
+
+        when:
+        def r = script.adminPurgeE2eArtifacts([confirm: true, prefix: 'BAT_E2E_'])
+
+        then: "an unowned stamp covers nothing -- this call sweeps instead of reporting itself done"
+        swept == true
+        r.inFlight != true
+    }
+
+    def "a parked terminal outcome is discarded when the live flag is the SAME run re-armed (a workflow re-run)"() {
+        given: "a park from attempt 1, and the re-run's fresh armed flag under the same GITHUB_RUN_ID"
+        atomicStateMap.restorePendingFlag = [runId: '7', deadline: 111L, intent: 'disarm', armed: false, restoreResult: 'restored']
+        atomicStateMap.restorePendingFor = '7|111|disarm|false'
+        int restores = 0
+        script.metaClass.adminUpdateApp = { Map a -> restores++; [success: true] }
+        def written = []
+        script.metaClass.writeFlag = { Map fl -> written << fl; true }
+        script.metaClass.readFlag = { -> [armed: true, runId: '7', deadline: System.currentTimeMillis() + 600000L,
+                                          manifest: [app: [classId: '178', url: 'https://raw.example/main/app.groovy'], libraries: []]] }
+
+        when:
+        script.checkDeadman()
+
+        then: "the stale park is dropped, not written over the re-run's armed flag"
+        atomicStateMap.restorePendingFlag == null
+        !written.any { it.restoreResult == 'restored' }
+        restores == 0
+    }
+
+    def "hub_reboot is refused while an accepted platform update is installing, unless forced"() {
+        given: "the update window claimed by hub_update_platform"
+        atomicStateMap.expectedDownUntil = System.currentTimeMillis() + 1400000L
+        atomicStateMap.expectedDownReason = 'hub_update_platform'
+        def posts = []
+        script.metaClass.hubPostForm = { String path, Map body -> posts << path; [status: 200, data: ''] }
+
+        when:
+        def refused = script.adminRebootHub([confirm: true])
+        def forced = script.adminRebootHub([confirm: true, force: true])
+
+        then:
+        refused.success == false
+        refused.refused == true
+        refused.error.contains('platform update')
+        forced.success == true
+        posts == ['/hub/reboot']
+    }
+
+    def "a successful restore whose flag write fails is not re-run: the next tick retries only the write"() {
+        given: "the restore lands, the flag write fails once"
+        int restores = 0
+        script.metaClass.adminUpdateApp = { Map a -> restores++; [success: true] }
+        script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '7',
+                                          manifest: [app: [classId: '178', url: 'https://raw.example/main/app.groovy'], libraries: []]] }
+        int writes = 0
+        Map written = null
+        script.metaClass.writeFlag = { Map fl -> writes++; if (writes == 1) return false; written = fl; true }
+
+        when: "tick 1 restores and cannot persist; tick 2 finds the durable flag still pre-terminal"
+        script.checkDeadman()
+        def parked = atomicStateMap.restorePendingFlag
+        script.checkDeadman()
+
+        then: "the restore ran once; the parked outcome was written on the second tick"
+        restores == 1
+        parked?.restoreResult == 'restored'
+        writes == 2
+        written?.restoreResult == 'restored'
+        atomicStateMap.restorePendingFlag == null
+    }
+
+    def "a fifth failed restore whose flag write fails stays latched: the next tick retries only the write"() {
+        given: "four failures on the durable flag; the fifth fails too, then the flag write fails"
+        int restores = 0
+        script.metaClass.adminUpdateApp = { Map a -> restores++; [success: false, error: 'nope'] }
+        script.metaClass.readFlag = { -> [armed: false, intent: 'disarm', runId: '7', fireAttempts: 4,
+                                          manifest: [app: [classId: '178', url: 'https://raw.example/main/app.groovy'], libraries: []]] }
+        int writes = 0
+        Map written = null
+        script.metaClass.writeFlag = { Map fl -> writes++; if (writes == 1) return false; written = fl; true }
+
+        when:
+        script.checkDeadman()
+        script.checkDeadman()
+
+        then: "no sixth restore; the latched 'failed' outcome is persisted on the retry and the attempt state cleared only then"
+        restores == 1
+        written?.restoreResult == 'failed'
+        written?.fireAttempts == 5
+        atomicStateMap.restorePendingFlag == null
+        atomicStateMap.restoreAttempts == null
+    }
+
+    def "hub_get_info exposes the wedge detector's state, so an auto-reboot can be attributed after the log buffer has rolled"() {
+        given: "a stamped auto-reboot and a short streak, on a hub whose loopback answers"
+        script.metaClass.hubGet = { String path, Map q = [:], Integer t = null -> path == "/hub/advanced/freeOSMemory" ? "123456" : null }
+        atomicStateMap.lastAutoRebootAt = 1000L
+        atomicStateMap.loopbackFailStreak = 3
+        atomicStateMap.loopbackLastOkAt = 2000L
+
+        when:
+        def info = script.adminGetInfo([:])
+
+        then: "the stamp, its age, the streak and the wedge verdict ride hub_get_info"
+        info.wedge.lastAutoRebootAt == 1000L
+        (info.wedge.lastAutoRebootAgeMs as Long) > 0L
+        info.wedge.loopbackFailStreak == 3
+        info.wedge.loopbackLastOkAt == 2000L
+        info.wedge.looksWedged == false
+        info.watchdogEndpoint == true
+    }
+
+    def "a variable delete renews the claim before every wizard click and stops mid-variable once the claim is lost"() {
+        given: "no apps to purge, one variable; the first wizard click hands the claim to a newer sweep"
+        script.metaClass.hubGet = { String path, Map q = [:], Integer t = null ->
+            path == "/hub2/appsList" ? groovy.json.JsonOutput.toJson([apps: []]) : null
+        }
+        script.metaClass.getAllGlobalVars = { -> [BAT_E2E_v1: [type: 'string', value: 'x']] }
+        script.metaClass.getGlobalVar = { String n -> [type: 'string', value: 'x'] }   // never deleted
+        // The Hub Variables app id resolves through the public HTTP seam (the resolver itself is private).
+        script.metaClass.hubGetStatus = { String path, Map q ->
+            path == "/installedapp/direct/hubVariables" ? [status: 302, location: "/installedapp/configure/42", data: null]
+                                                        : [status: 200, location: null, data: null]
+        }
+        def clicks = []
+        script.metaClass.hubPostForm = { String path, Map body ->
+            clicks << body.name
+            atomicStateMap.purgeClaim = 'purge-newer'
+            [status: 200, data: '']
+        }
+        atomicStateMap.purgeClaim = 'purge-mine'
+        atomicStateMap.purgeInFlightAt = 1L
+
+        when:
+        def res = script.purgeE2eArtifactsLocked("BAT_E2E_", 'purge-mine')
+
+        then: "only the deleteGV click ran -- the delConfirm click and the second attempt did not, and the loss is reported"
+        clicks == ['BAT_E2E_v1']
+        (atomicStateMap.purgeInFlightAt as Long) > 1L
+        res.variablesFailed.any { it.name == 'BAT_E2E_v1' && it.error.contains('claim lost') && it.error.contains('delConfirm') }
+        res.variablesDeleted == []
+    }
+
+    def "the 30-minute auto-reboot rate limit vetoes only the reboot -- the tick still reads the flag"() {
+        given: "a hub that still looks wedged 60s after an auto-reboot fired"
+        boolean flagRead = false
+        String posted = null
+        script.metaClass.readFlag = { -> flagRead = true; null }
+        script.metaClass.probeLoopbackAlive = { -> false }
+        script.metaClass.hubPostForm = { String p, Map b -> posted = p; [status: 200, data: 'ok'] }
+        atomicStateMap.loopbackFailStreak = 20
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 900_000L
+        atomicStateMap.lastAutoRebootAt = System.currentTimeMillis() - 60_000L
+
+        when:
+        script.checkDeadman()
+
+        then: "no second POST, and the flag was still read -- a disarm is not left untouched for half an hour"
+        posted == null
+        flagRead
+    }
+
+    def "every tick probes the loopback before the wedge decision, wedged or not"() {
+        given: "healthy counters -- nothing below the probe would run on its own"
+        int probes = 0
+        script.metaClass.readFlag = { -> null }
+        script.metaClass.probeLoopbackAlive = { -> probes++; true }
+        atomicStateMap.loopbackFailStreak = 0
+
+        when:
+        script.checkDeadman()
+
+        then: "the probe ran once on an idle tick, so a latched streak can clear without watchdog traffic"
+        probes == 1
+    }
+
+    def "an auto-reboot POST the hub answered gives its rate-limit slot back"() {
+        given:
+        script.metaClass.readFlag = { -> null }
+        script.metaClass.probeLoopbackAlive = { -> false }
+        script.metaClass.hubPostForm = { String p, Map b -> [status: 503, data: null] }
+        atomicStateMap.loopbackFailStreak = 20
+        atomicStateMap.loopbackLastOkAt = System.currentTimeMillis() - 900_000L
+
+        when:
+        script.checkDeadman()
+
+        then: "the slot claimed under the lock is released when the hub proved the POST did not land"
+        atomicStateMap.lastAutoRebootAt == null
+    }
+
+}
+
+class FakeHttpException extends RuntimeException {
+    // Hubitat's httpGet/httpPost throw an exception carrying the response on a 4xx/5xx; the
+    // watchdog reads e.response.status off it. A metaClass-patched RuntimeException does not
+    // present the property to the script, so model it as a real type.
+    def response
+    FakeHttpException(Integer status) {
+        super("HTTP ${status}")
+        this.response = [status: status]
     }
 }

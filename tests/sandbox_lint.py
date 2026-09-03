@@ -4019,6 +4019,159 @@ def _scan_library_block_comments(name: str, text: str) -> list[dict]:
     return findings
 
 
+OUTPUT_SCHEMA_FROZEN_COUNT = 117
+# Per-file declaration counts and a digest of the declarations' text: the total alone cannot see an
+# edit to an existing declaration, or one removed here and added there. Recompute both with
+# `python tests/sandbox_lint.py --output-schema-baseline` ONLY when a declaration is deliberately
+# removed with its tool; an edit to an existing one is what the freeze forbids.
+OUTPUT_SCHEMA_FROZEN_PER_FILE = {'libraries/mcp-app-cloner-lib.groovy': 3, 'libraries/mcp-bundles-lib.groovy': 4, 'libraries/mcp-code-management-lib.groovy': 14, 'libraries/mcp-custom-rules-lib.groovy': 8, 'libraries/mcp-dashboards-lib.groovy': 6, 'libraries/mcp-debug-logging-lib.groovy': 4, 'libraries/mcp-devices-lib.groovy': 11, 'libraries/mcp-diagnostics-lib.groovy': 16, 'libraries/mcp-discovery-lib.groovy': 2, 'libraries/mcp-files-lib.groovy': 4, 'libraries/mcp-hpm-lib.groovy': 1, 'libraries/mcp-item-backups-lib.groovy': 5, 'libraries/mcp-native-rules-lib.groovy': 10, 'libraries/mcp-rooms-lib.groovy': 5, 'libraries/mcp-self-admin-lib.groovy': 2, 'libraries/mcp-system-lib.groovy': 10, 'libraries/mcp-variables-lib.groovy': 8, 'libraries/mcp-virtual-devices-lib.groovy': 1, 'libraries/mcp-visual-rules-lib.groovy': 3}
+OUTPUT_SCHEMA_FROZEN_DIGEST = "60ebd94ff3ff93dd"
+
+
+_OUTPUT_SCHEMA_MARKER = re.compile(r"\boutputSchema\s*:\s*\[")
+
+
+def _output_schema_declarations(text: str) -> list[str]:
+    """Every `outputSchema: [ ... ]` block in a Groovy source -- any whitespace around the map-entry
+    colon, since Groovy accepts `outputSchema:[` and `outputSchema : [` too -- bracket-matched with
+    string literals skipped so a bracket inside a description cannot unbalance the walk. The text
+    returned starts at the canonical `outputSchema: [`, so the digest does not move with the spacing."""
+    out: list[str] = []
+    m = _OUTPUT_SCHEMA_MARKER.search(text)
+    while m:
+        j = m.end() - 1              # the opening bracket
+        depth = 0
+        k = j
+        n = len(text)
+        while k < n:
+            c = text[k]
+            if c in ("'", '"'):
+                q = c
+                k += 1
+                while k < n and text[k] != q:
+                    k += 2 if text[k] == "\\" else 1
+            elif c == "[":
+                depth += 1
+            elif c == "]":
+                depth -= 1
+                if depth == 0:
+                    break
+            k += 1
+        out.append("outputSchema: " + re.sub(r"\s+", " ", text[j:k + 1]).strip())
+        m = _OUTPUT_SCHEMA_MARKER.search(text, k + 1)
+    return out
+
+
+def _output_schema_inventory() -> tuple[dict, str]:
+    import glob as _glob
+    # Rooted at REPO_ROOT, not the current directory: pytest imports this module and calls the
+    # inventory from wherever it was started, and a cwd-relative glob would find no libraries
+    # there and report every declaration as removed.
+    libs = sorted(os.path.relpath(path, str(REPO_ROOT))
+                  for path in _glob.glob(os.path.join(str(REPO_ROOT), "libraries", "*.groovy")))
+    files = ["hubitat-mcp-server.groovy", "e2e-deadman-watchdog-v2.groovy", *libs]
+    per_file: dict = {}
+    digest = hashlib.sha256()
+    for rel in files:
+        path = os.path.join(REPO_ROOT, rel)
+        if not os.path.isfile(path):
+            continue
+        rel = rel.replace(os.sep, "/")      # one spelling on every platform, or the pin drifts by OS
+        with open(path, encoding="utf-8") as fh:
+            decls = _output_schema_declarations(fh.read())
+        if decls:
+            per_file[rel] = len(decls)
+        for d in decls:
+            digest.update(rel.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(d.encode("utf-8"))
+            digest.update(b"\0")
+    return per_file, digest.hexdigest()[:16]
+
+
+def check_output_schema_freeze() -> list[dict]:
+    """outputSchema is legacy and frozen (AGENTS.md § Schema design): the declarations that exist stay
+    as they are, a new tool declares none. Pin the count per file and a digest of the declarations
+    across the app sources so a new one, a moved one, or an edited one fails here with the policy,
+    the way the tool-count guard pins the catalog."""
+    per_file, digest = _output_schema_inventory()
+    total = sum(per_file.values())
+    if total == OUTPUT_SCHEMA_FROZEN_COUNT and per_file == OUTPUT_SCHEMA_FROZEN_PER_FILE and digest == OUTPUT_SCHEMA_FROZEN_DIGEST:
+        return []
+    if total != OUTPUT_SCHEMA_FROZEN_COUNT or per_file != OUTPUT_SCHEMA_FROZEN_PER_FILE:
+        direction = "added" if total > OUTPUT_SCHEMA_FROZEN_COUNT else ("removed" if total < OUTPUT_SCHEMA_FROZEN_COUNT else "moved between files")
+        message = (f"outputSchema is frozen (AGENTS.md § Schema design): {total} declarations found, the frozen set "
+                   f"has {OUTPUT_SCHEMA_FROZEN_COUNT} ({direction}). A new tool must not declare one; if a tool was "
+                   f"deleted with its declaration, re-pin with `python tests/sandbox_lint.py --output-schema-baseline`. "
+                   f"Per file now: {per_file}")
+    else:
+        message = ("outputSchema is frozen (AGENTS.md § Schema design): the count is unchanged but an existing "
+                   f"declaration's text changed (digest {digest}, frozen {OUTPUT_SCHEMA_FROZEN_DIGEST}). Revert the "
+                   "edit; the frozen declarations are not maintained.")
+    return [{"file": "AGENTS.md", "line": 0, "severity": "error", "rule": "output-schema-frozen",
+             "message": message, "source": ""}]
+
+
+def check_bm25_key_subscripts() -> list[dict]:
+    """hub_search_tools sandbox fix guard. The platform's SandboxSubscriptGuard rejects a COMPUTED
+    map key that collides with a reflection-ish property name, and one real corpus token
+    ("fields", from hub_list_devices' parameter) does -- so every key used to subscript the
+    df/tf maps in bm25Score must be derived through _bm25Key. The Spock harness is plain Groovy
+    with no such guard, so a test cannot fail on a bare token key; only a source-level rule can
+    hold this invariant. Checked at the DERIVATION: a subscript variable assigned from anything
+    but _bm25Key(...) fails, as does a literal subscript, as does a body with no _bm25Key call."""
+    findings: list[dict] = []
+    lib = REPO_ROOT / "libraries" / "mcp-discovery-lib.groovy"
+    if not lib.is_file():
+        return findings
+    src = lib.read_text(encoding="utf-8")
+    m = re.search(r"\n[^\n]*\bbm25Score\([^)]*\)\s*\{", src)
+    if not m:
+        findings.append({"file": str(lib.relative_to(REPO_ROOT)), "line": 1, "severity": "error",
+                         "rule": "bm25-key-subscripts",
+                         "message": "Could not locate bm25Score() -- has the function shape changed?"})
+        return findings
+    start = m.end()
+    end = src.find("\n}", start)
+    body = src[start:end if end > 0 else len(src)]
+    base_line = src.count("\n", 0, start) + 1
+    rel = str(lib.relative_to(REPO_ROOT))
+
+    body_lines = body.split("\n")
+
+    def flag(i: int, msg: str) -> None:
+        findings.append({"file": rel, "line": base_line + i, "severity": "error",
+                         "rule": "bm25-key-subscripts", "message": msg,
+                         "source": body_lines[i].strip() if 0 <= i < len(body_lines) else ""})
+
+    # Which local names are used as df/tf subscripts, and where each is assigned.
+    subscript_vars: set[str] = set()
+    for i, line in enumerate(body.split("\n")):
+        for sm in re.finditer(r"\b(?:df|tf)\s*\[\s*([^\]]+?)\s*\]", line):
+            key = sm.group(1).strip()
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+                subscript_vars.add(key)
+            elif key.startswith("_bm25Key("):
+                continue
+            else:
+                flag(i, f"df/tf subscripted with a non-variable key `{key}` in bm25Score -- route it through _bm25Key(token).")
+    derived: set[str] = set()
+    for i, line in enumerate(body.split("\n")):
+        for am in re.finditer(r"\bdef\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;]+?)(?:;|$)", line):
+            name, rhs = am.group(1), am.group(2).strip()
+            if name in subscript_vars:
+                if rhs.startswith("_bm25Key("):
+                    derived.add(name)
+                else:
+                    flag(i, f"`{name}` is used as a df/tf subscript but is assigned from `{rhs}` -- it must be _bm25Key(...); a raw corpus token as a map key trips the platform's SandboxSubscriptGuard (hub_search_tools threw on every call).")
+    # Positive evidence required: a subscript variable with NO _bm25Key assignment in the body is a
+    # closure parameter or an outer binding carrying the raw token straight into the map.
+    for name in sorted(subscript_vars - derived):
+        flag(0, f"`{name}` subscripts df/tf but is never assigned from _bm25Key(...) in bm25Score -- a raw corpus token as a map key trips the platform's SandboxSubscriptGuard.")
+    if "_bm25Key(" not in body:
+        flag(0, "bm25Score never calls _bm25Key -- the sandbox-safe key namespacing has been removed.")
+    return findings
+
 def check_library_no_file_scope_block_comments() -> list[dict]:
     """BP20 library hygiene: no file-scope /* */ or /** */ block comments in any
     libraries/*.groovy (see _scan_library_block_comments for the rationale)."""
@@ -4267,6 +4420,12 @@ def main() -> int:
     # BP20: no file-scope block comments in #include libraries (hub-parser hazard).
     all_findings.extend(check_library_no_file_scope_block_comments())
 
+    # hub_search_tools sandbox fix: every bm25Score map subscript goes through _bm25Key.
+    all_findings.extend(check_bm25_key_subscripts())
+
+    # outputSchema is frozen: no new declarations (AGENTS.md § Schema design).
+    all_findings.extend(check_output_schema_freeze())
+
     # The conformance leg's referee is the vendored MCP JSON Schemas; make the byte hashes
     # their README records ENFORCED, so a loosened or half-refreshed schema fails here
     # instead of quietly weakening every McpWireSchemaConformanceSpec verdict.
@@ -4293,6 +4452,13 @@ def main() -> int:
 
     return 1 if errors else 0
 
+
+if __name__ == "__main__" and "--output-schema-baseline" in sys.argv:
+    _pf, _dg = _output_schema_inventory()
+    print(f"OUTPUT_SCHEMA_FROZEN_COUNT = {sum(_pf.values())}")
+    print(f"OUTPUT_SCHEMA_FROZEN_PER_FILE = {_pf!r}")
+    print(f'OUTPUT_SCHEMA_FROZEN_DIGEST = "{_dg}"')
+    sys.exit(0)
 
 if __name__ == "__main__":
     sys.exit(main())
