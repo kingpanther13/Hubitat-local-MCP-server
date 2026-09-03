@@ -16464,6 +16464,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "thermostat"| "noSetting"       | [capability: "thermostat", deviceIds: [8]]                          | "at least one setting"
         "delay"     | "noDuration"      | [capability: "delay"]                                               | "requires a duration"
         "repeat"    | "noInterval"      | [capability: "repeat"]                                              | "requires an interval"
+        "comment"   | "noText"          | [capability: "comment"]                                             | "requires 'text'"
+        "comment"   | "blankText"       | [capability: "comment", text: "   "]                                | "requires 'text'"
     }
 
     def "addAction returns success=false when selectActions finalConfig has configPage error"() {

@@ -6746,9 +6746,15 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         actSubType = "getExitRule"
         fields = [:]
     } else if (cap == "comment") {
+        // Verified live (2.5.1.177): RM does not bake a comment with empty text -- the row registers
+        // (actType/actSubType land) and never becomes an action, so the write would report success
+        // and leave an orphaned row behind. Fail fast, the way repeat does without an interval.
+        if (!(actionSpec.text?.toString()?.trim())) {
+            throw new IllegalArgumentException("comment action requires 'text' (the comment itself). RM does not bake an empty comment: the row would register but never become an action.")
+        }
         actType = "delayActs"
         actSubType = "getComment"
-        fields = ["comment.@N": (actionSpec.text ?: "")]
+        fields = ["comment.@N": actionSpec.text.toString()]
     } else if (cap == "repeat") {
         // Verified live: a repeat with no interval (hours/minutes/seconds) registers
         // but never bakes -- 'times' alone is NOT enough. Fail fast.
