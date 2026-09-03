@@ -4181,19 +4181,28 @@ private List _rmCollectActionIndices(Integer appId) {
 // hub_set_app_disabled makes on this endpoint.
 private Boolean _rmIsAppDisabled(Integer appId) {
     String why
-    try {
-        def txt = hubInternalGet("/installedapp/json/${appId}")
-        if (!txt) {
-            why = "empty /installedapp/json body"
-        } else {
-            def parsed = new groovy.json.JsonSlurper().parseText(txt)
-            if (parsed instanceof Map && parsed.containsKey("disabled")) return parsed.disabled == true
-            why = "/installedapp/json carried no 'disabled' key"
+    // Two attempts. A caller that gets null PROCEEDS (a blip must not block edits on a healthy
+    // hub), so an unreadable first attempt is the one case where the gate silently stops
+    // protecting: on a rule that really is disabled, RM then no-ops the write and the caller
+    // reports success having changed nothing. One cheap retry closes the transient-blip window
+    // without turning a hiccup into a refusal.
+    for (int attempt = 0; attempt < 2; attempt++) {
+        if (attempt > 0) { try { pauseExecution(250) } catch (Exception ignore) { } }
+        why = null
+        try {
+            def txt = hubInternalGet("/installedapp/json/${appId}")
+            if (!txt) {
+                why = "empty /installedapp/json body"
+            } else {
+                def parsed = new groovy.json.JsonSlurper().parseText(txt)
+                if (parsed instanceof Map && parsed.containsKey("disabled")) return parsed.disabled == true
+                why = "/installedapp/json carried no 'disabled' key"
+            }
+        } catch (Exception e) {
+            why = "read failed (${e.message})"
         }
-    } catch (Exception e) {
-        why = "read failed (${e.message})"
     }
-    mcpLog("warn", "rm-native", "_rmIsAppDisabled(${appId}): ${why} -- disabled state UNKNOWN, proceeding")
+    mcpLog("warn", "rm-native", "_rmIsAppDisabled(${appId}): ${why} on two attempts -- disabled state UNKNOWN, proceeding")
     return null
 }
 

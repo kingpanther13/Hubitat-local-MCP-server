@@ -5136,6 +5136,23 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         'button'        | [button: "updateRule"]
     }
 
+    def "an unreadable disabled-state read is retried once before the gate gives up"() {
+        given: "the first read fails, the second says the rule IS disabled"
+        int reads = 0
+        hubGet.register('/installedapp/json/100') { params ->
+            reads++
+            reads == 1 ? null : '{"id":100,"disabled":true}'
+        }
+
+        when: "a gated edit -- proceeding on the blip would let RM silently no-op the write"
+        def result = script.toolSetRule([appId: 100, removeAction: [index: 1], confirm: true])
+
+        then: "the retry found the truth, so the edit is refused instead of reported as applied"
+        reads >= 2
+        result.success == false
+        result.error?.toString()?.contains("DISABLED")
+    }
+
     def "addAction is NOT blocked when the disabled read-back says enabled or is unreadable"() {
         given: "an unreadable flag must not block an add that would otherwise work"
         def posts = []
