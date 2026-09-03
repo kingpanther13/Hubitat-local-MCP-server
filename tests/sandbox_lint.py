@@ -4027,7 +4027,7 @@ def check_output_schema_freeze() -> list[dict]:
     a new tool declares none. Pin the number of declarations across the app sources so a new one
     fails here with the policy, the way the tool-count guard pins the catalog."""
     import glob as _glob
-    files = ["hubitat-mcp-server.groovy", "e2e-deadman-watchdog-v2.groovy"] + sorted(_glob.glob("libraries/*.groovy"))
+    files = ["hubitat-mcp-server.groovy", "e2e-deadman-watchdog-v2.groovy", *sorted(_glob.glob("libraries/*.groovy"))]
     total = 0
     per_file = {}
     for rel in files:
