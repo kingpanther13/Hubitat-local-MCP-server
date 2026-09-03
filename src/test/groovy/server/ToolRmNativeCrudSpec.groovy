@@ -5138,6 +5138,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "an unreadable disabled-state read is retried once before the gate gives up"() {
         given: "the first read fails, the second says the rule IS disabled"
+        enableWrite()
         int reads = 0
         hubGet.register('/installedapp/json/100') { params ->
             reads++
