@@ -958,6 +958,16 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected**: Calls `hub_manage_logs` -> `hub_get_logs` with `since='1h'` and `pattern='error|failed'` (or equivalent `patterns` array). Demonstrates pattern filter + time-window together.
 
+
+### T47c — hub_get_jobs and hub_get_performance_stats on a large hub (relay-safe, paged)
+
+```json
+{
+  "test_prompt": "List the hub's scheduled jobs a page at a time, then tell me the three busiest devices. Do this over the cloud connector."
+}
+```
+
+**Expected**: Discovers `hub_manage_logs` (or `hub_read_diagnostics`) → `hub_get_jobs` with `cursor=''` and follows `nextCursor`; `runningJobs` and `hubActions` are present on every page. Then `hub_get_performance_stats` with a small `limit`. On a large hub the first call may return `status: "in_progress"` (legacy client) or continue automatically (modern client); the agent repeats the identical call and gets data, never a 502. Both reads are served from one cached `/logs/json` snapshot, so the second is fast. Read-only — makes no changes.
 ### T47c — hub_get_logs patterns + patternMode all (AND-mode)
 
 ```json

@@ -249,6 +249,7 @@ abstract class HarnessSpec extends Specification {
         // feature's claimId collide with a stale one.
         (scriptStaticField('MRTR_WORK_ITEMS') as Map).clear()
         (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
+        (scriptStaticField('LOGS_JSON_SNAPSHOT') as Map).clear()
         // The per-rule baseline mirror is JVM truth beside the manifest; a leftover
         // handle would satisfy reuse for a rule id a later feature reuses.
         (scriptStaticField('RM_BASELINE_HANDLES') as Map).clear()

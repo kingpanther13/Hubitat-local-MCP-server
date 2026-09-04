@@ -2171,4 +2171,118 @@ class MrtrContinuationSpec extends ToolSpecBase {
         workItems['c1'] == null
     }
 
+
+    // -------- slow reads --------
+
+    private void registerLogsJson(AtomicInteger fetches, int jobCount) {
+        hubGet.register('/logs/json') { params ->
+            fetches.incrementAndGet()
+            groovy.json.JsonOutput.toJson([
+                uptime: '2d',
+                jobs: (1..jobCount).collect { [id: it, name: "Job${it}".toString(), recurring: false, methodName: 'run', nextRun: 'soon'] },
+                runningJobs: [], hubCommands: []
+            ])
+        }
+    }
+
+    def "a relay-bound hub_get_jobs continues through requestState while its background fetch runs, holding no write slot"() {
+        given: 'the Write master is OFF (a read must not need it) and the write cap is already full'
+        settingsMap.enableRead = true
+        settingsMap.enableWrite = false
+        settingsMap.useGateways = true
+        settingsMap.maxConcurrentWrites = 1
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        def fetches = new AtomicInteger(0)
+        registerLogsJson(fetches, 120)
+        def virtualNow = new AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
+        assert script._writeReserveRequest('hub_set_rule', 'legacy').accepted == true
+        def args = [tool: 'hub_get_jobs', args: [cursor: '']]
+
+        when: 'round zero'
+        def preflight = modernCall('hub_read_diagnostics', args)
+        String stateId = preflight.result.requestState
+
+        then: 'a mutation-free preflight, accepted despite the full write cap'
+        preflight.error == null
+        preflight.result.resultType == 'input_required'
+        stateId?.startsWith('mrtr-')
+        fetches.get() == 0
+        runInMillisCalls.isEmpty()
+
+        when: 'the first resumed leg'
+        def leg1 = modernCall('hub_read_diagnostics', args, stateId)
+
+        then: 'the fetch was scheduled, nothing ran on the request thread, and the read is not an active write'
+        leg1.error == null
+        leg1.result.resultType == 'input_required'
+        leg1.result.requestState == stateId
+        fetches.get() == 0
+        runInMillisCalls.size() == 1
+        runInMillisCalls[0][0..1] == [200, 'runLogsJsonFetch']
+        script._activeWrites()*.tool == ['hub_set_rule']
+
+        when: 'the worker lands the snapshot and the client continues'
+        script.runLogsJsonFetch()
+        def leg2 = modernCall('hub_read_diagnostics', args, stateId)
+        def inner = mcpDriver.parseInner(leg2)
+
+        then: 'one normal complete result, paged, carrying the continuation provenance'
+        leg2.error == null
+        leg2.result.resultType == 'complete'
+        !leg2.result.isError
+        fetches.get() == 1
+        inner.scheduledJobs.count == 100
+        inner.scheduledJobs.total == 120
+        inner.nextCursor == '100'
+        inner.mrtr.continued == true
+        inner.mrtr.rounds == 2
+
+        when: 'the final response is replayed under the same state'
+        def replay = mcpDriver.parseInner(modernCall('hub_read_diagnostics', args, stateId))
+        def rec = (atomicStateMap.mrtrRequests as Map)[stateId] as Map
+
+        then: 'the retained terminal answers without another fetch and expires on the short read TTL'
+        replay.scheduledJobs.total == 120
+        fetches.get() == 1
+        rec.status == 'terminal'
+        rec.expiresAt == (rec.finishedAt as Long) + (script._mrtrReadTerminalTtlMs() as Long)
+    }
+
+    def "a read preflight is refused when the Read master is off and reserves no request state"() {
+        given:
+        settingsMap.enableRead = false
+        settingsMap.enableWrite = true
+        script.metaClass._isCloudRequest = { -> true }
+
+        when:
+        def refused = modernCall('hub_get_performance_stats', [limit: 5])
+
+        then:
+        refused.error.code == -32602
+        refused.error.message.contains('Read tools are disabled')
+        !(atomicStateMap.mrtrRequests instanceof Map) || (atomicStateMap.mrtrRequests as Map).isEmpty()
+    }
+
+    def "an unbudgeted LAN read completes on its first resumed leg with an inline fetch and no worker"() {
+        given:
+        settingsMap.enableRead = true
+        def fetches = new AtomicInteger(0)
+        registerLogsJson(fetches, 2)
+        def args = [type: 'app', limit: 1]
+
+        when:
+        def preflight = modernCall('hub_get_performance_stats', args)
+        def leg1 = modernCall('hub_get_performance_stats', args, preflight.result.requestState)
+
+        then:
+        preflight.result.resultType == 'input_required'
+        leg1.result.resultType == 'complete'
+        fetches.get() == 1
+        runInMillisCalls.isEmpty()
+        mcpDriver.parseInner(leg1).uptime == '2d'
+    }
+
 }

@@ -743,11 +743,159 @@ def toolGetHubLogs(args) {
     return result
 }
 
-// Shared helper: fetch /logs/json from hub internal API
-def fetchLogsJson() {
+// /logs/json is the hub's whole live Logs page in one document: every device and app stat, the
+// job tables and the current log buffer. It grows with device and app count, so on a large hub
+// one fetch outruns the cloud relay's ceiling and the client sees a 502 with nothing to retry.
+// The fetch therefore runs in a scheduled worker whenever the request is relay-bound, and its
+// trimmed result is held in the JVM for a short window so both tools built on it, and their
+// cursor pages, answer from one fetch. hub_get_jobs and hub_get_performance_stats are the only
+// readers; keep any new /logs/json consumer on _logsJsonSnapshot (sandbox_lint enforces it).
+def _logsJsonSnapshotTtlMs() { 30000L }
+// An in-flight marker older than this belongs to a worker that died; schedule again.
+def _logsJsonFetchStaleMs() { 45000L }
+
+// How long a relay-bound request may wait for the worker before handing back in_progress.
+// Cloud: the same headroom the scheduled write observer keeps under relayBudgetMs. LAN with a
+// budget: the same shape under lanBudgetMs. LAN without a budget never reaches this.
+def _logsJsonObserveWaitMs() {
+    boolean cloud = _isCloudRequest()
+    long cap = cloud ? 3500L : 6000L
+    long budget = cloud ? _relayBudgetMs() : _lanBudgetMs()
+    if (budget <= 0L) return cap
+    return Math.max(1L, Math.min(cap, budget - 2000L))
+}
+
+def _logsJsonRelayBound() {
+    return _isCloudRequest() ? _relayBudgetMs() > 0L : _lanBudgetMs() > 0L
+}
+
+private List _logsJsonTrimStats(statsList) {
+    if (!(statsList instanceof List)) return []
+    return statsList.findAll { it instanceof Map }.collect { e ->
+        def t = [id: e.id, name: e.name, count: e.count, pct: e.pct, total: e.total, average: e.average,
+                 stateSize: e.stateSize, formattedPct: e.formattedPct, formattedPctTotal: e.formattedPctTotal,
+                 hubActionCount: e.hubActionCount, pendingEventsCount: e.pendingEventsCount,
+                 cloudCallCount: e.cloudCallCount]
+        if (e.customAttributes instanceof Map) {
+            t.customAttributes = [eventsCount: e.customAttributes.eventsCount,
+                                  statesCount: e.customAttributes.statesCount]
+        }
+        if (e.largeState) t.largeState = true
+        return t
+    }
+}
+
+// Fetch, trim to the fields the tools read, and publish. Runs inline on an unbudgeted LAN
+// request and inside runLogsJsonFetch for relay-bound ones.
+def _logsJsonFetchAndPublish() {
+    long t0 = now()
     def responseText = hubInternalGet("/logs/json", null, 30)
     if (!responseText) throw new RuntimeException("No data returned from /logs/json")
-    return new groovy.json.JsonSlurper().parseText(responseText)
+    def data = new groovy.json.JsonSlurper().parseText(responseText)
+    def snap = [
+        at: now(), fetchMs: now() - t0,
+        uptime: data.uptime,
+        totalDevicesRuntime: data.totalDevicesRuntime, devicePct: data.devicePct,
+        totalAppsRuntime: data.totalAppsRuntime, appPct: data.appPct,
+        deviceStats: _logsJsonTrimStats(data.deviceStats),
+        appStats: _logsJsonTrimStats(data.appStats),
+        jobs: ((data.jobs instanceof List) ? data.jobs : []).findAll { it instanceof Map }.collect { job ->
+            [id: job.id, name: job.name, recurring: job.recurring, method: job.methodName, nextRun: job.nextRun]
+        },
+        runningJobs: ((data.runningJobs instanceof List) ? data.runningJobs : []).findAll { it instanceof Map }.collect { job ->
+            [id: job.id, name: job.name, method: job.methodName]
+        },
+        hubCommands: (data.hubCommands instanceof List) ? data.hubCommands : []
+    ]
+    synchronized (LOGS_JSON_SNAPSHOT) {
+        LOGS_JSON_SNAPSHOT.snapshot = snap
+        LOGS_JSON_SNAPSHOT.remove("fetchError")
+    }
+    return snap
+}
+
+private Map _logsJsonFreshSnapshot() {
+    synchronized (LOGS_JSON_SNAPSHOT) {
+        def snap = LOGS_JSON_SNAPSHOT.snapshot
+        if (snap instanceof Map && snap.at instanceof Long
+                && now() - (snap.at as Long) < _logsJsonSnapshotTtlMs()) return snap
+        return null
+    }
+}
+
+// True when this call scheduled the worker; false when one is already in flight.
+private boolean _logsJsonEnsureFetchScheduled() {
+    synchronized (LOGS_JSON_SNAPSHOT) {
+        def startedAt = LOGS_JSON_SNAPSHOT.fetchStartedAt
+        if (startedAt instanceof Long && now() - (startedAt as Long) < _logsJsonFetchStaleMs()) return false
+        LOGS_JSON_SNAPSHOT.fetchStartedAt = now()
+    }
+    runInMillis(200, "runLogsJsonFetch", [overwrite: false])
+    return true
+}
+
+def runLogsJsonFetch(Map job = [:]) {
+    try {
+        _logsJsonFetchAndPublish()
+    } catch (Exception e) {
+        mcpLogError("monitoring", "Background /logs/json fetch failed", e)
+        synchronized (LOGS_JSON_SNAPSHOT) {
+            LOGS_JSON_SNAPSHOT.fetchError = [at: now(), message: e.message?.toString()]
+        }
+    } finally {
+        synchronized (LOGS_JSON_SNAPSHOT) { LOGS_JSON_SNAPSHOT.remove("fetchStartedAt") }
+    }
+}
+
+// A worker failure is reported exactly once, to the first request that observes it, so a
+// legacy client repeating the call sees the error and stops instead of re-scheduling the same
+// failing fetch on every repeat. The request after that schedules a fresh fetch.
+private Map _logsJsonTakeFetchError() {
+    synchronized (LOGS_JSON_SNAPSHOT) {
+        def failure = LOGS_JSON_SNAPSHOT.remove("fetchError")
+        return (failure instanceof Map) ? failure : null
+    }
+}
+
+// Resolve the snapshot for one request. Returns [ready: true, snapshot: ...],
+// [ready: false] while a relay-bound fetch is still running, or [ready: false, error: ...]
+// when the background fetch failed.
+def _logsJsonSnapshot(Map args) {
+    def fresh = _logsJsonFreshSnapshot()
+    if (fresh != null) return [ready: true, snapshot: fresh]
+    if (!_logsJsonRelayBound()) return [ready: true, snapshot: _logsJsonFetchAndPublish()]
+    def failure = _logsJsonTakeFetchError()
+    if (failure != null) return [ready: false, error: failure.message]
+    long t0 = (args?.__reqT0 instanceof Number) ? (args.__reqT0 as Long) : now()
+    _logsJsonEnsureFetchScheduled()
+    long deadline = t0 + _logsJsonObserveWaitMs()
+    // remainingBudget bounds the loop even when the clock does not advance between pauses.
+    long remainingBudget = Math.max(0L, deadline - now())
+    while (true) {
+        fresh = _logsJsonFreshSnapshot()
+        if (fresh != null) return [ready: true, snapshot: fresh]
+        failure = _logsJsonTakeFetchError()
+        if (failure != null) return [ready: false, error: failure.message]
+        long remaining = Math.min(remainingBudget, Math.max(0L, deadline - now()))
+        if (remaining <= 0L) return [ready: false]
+        long sleepMs = Math.min(250L, remaining)
+        try {
+            pauseExecution(sleepMs as Long)
+        } catch (Exception waitErr) {
+            mcpLog("debug", "monitoring", "Snapshot wait interrupted: ${waitErr.message}")
+            return [ready: false]
+        }
+        remainingBudget -= sleepMs
+    }
+}
+
+// The remainder envelope for a relay-bound request whose fetch is still running. A modern
+// client continues it through requestState; a legacy client repeats the identical call.
+private Map _logsJsonInProgress(String tool) {
+    return [
+        status: "in_progress", tool: tool, retryable: true,
+        note: "The hub is still producing its Logs page payload (every device and app stat plus the job tables, which grows with hub size). Call ${tool} again with the same arguments; once the fetch finishes, its result is served from a ${(_logsJsonSnapshotTtlMs() / 1000L) as Long} s cache."
+    ]
 }
 
 def toolGetPerformanceStats(args) {
@@ -759,7 +907,10 @@ def toolGetPerformanceStats(args) {
 
     def data
     try {
-        data = fetchLogsJson()
+        def snap = _logsJsonSnapshot(args)
+        if (snap.error != null) return [error: "Failed to fetch performance stats: ${snap.error}"]
+        if (snap.ready != true) return _logsJsonInProgress("hub_get_performance_stats")
+        data = snap.snapshot
     } catch (Exception e) {
         mcpLogError("monitoring", "Failed to fetch performance stats", e)
         return [error: "Failed to fetch performance stats: ${e.message}"]
@@ -834,41 +985,32 @@ def toolGetPerformanceStats(args) {
 }
 
 def toolGetHubJobs(args) {
+    def cursor = args?.cursor
     mcpLog("info", "monitoring", "Fetching hub jobs")
 
     def data
     try {
-        data = fetchLogsJson()
+        def snap = _logsJsonSnapshot(args)
+        if (snap.error != null) return [error: "Failed to fetch hub jobs: ${snap.error}"]
+        if (snap.ready != true) return _logsJsonInProgress("hub_get_jobs")
+        data = snap.snapshot
     } catch (Exception e) {
         mcpLogError("monitoring", "Failed to fetch hub jobs", e)
         return [error: "Failed to fetch hub jobs: ${e.message}"]
     }
 
-    def scheduledJobs = (data.jobs ?: []).collect { job ->
-        [
-            id: job.id,
-            name: job.name,
-            recurring: job.recurring,
-            method: job.methodName,
-            nextRun: job.nextRun
-        ]
-    }
+    def scheduledJobs = (data.jobs instanceof List) ? data.jobs : []
+    def runningJobs = (data.runningJobs instanceof List) ? data.runningJobs : []
+    def hubActions = (data.hubCommands instanceof List) ? data.hubCommands : []
 
-    def runningJobs = (data.runningJobs ?: []).collect { job ->
-        [
-            id: job.id,
-            name: job.name,
-            method: job.methodName
-        ]
-    }
-
-    def hubActions = data.hubCommands ?: []
-
-    return [
+    // Only scheduledJobs pages: it is the table that grows with app count. The other
+    // two are short by nature and stay in full on every page.
+    def paged = _paginateList(scheduledJobs, cursor, 100, "hub_get_jobs")
+    def result = [
         uptime: data.uptime,
         scheduledJobs: [
-            count: scheduledJobs.size(),
-            jobs: scheduledJobs
+            count: paged.page.size(),
+            jobs: paged.page
         ],
         runningJobs: [
             count: runningJobs.size(),
@@ -879,6 +1021,11 @@ def toolGetHubJobs(args) {
             actions: hubActions
         ]
     ]
+    if (cursor != null) {
+        result.scheduledJobs.total = scheduledJobs.size()
+        if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
+    }
+    return result
 }
 
 def toolGetHubPerformance(args) {
@@ -2081,7 +2228,9 @@ def _getAllToolDefinitions_partDiagnostics() {
             description: "Get scheduled jobs, running jobs, and hub actions from the hub's logs page. Requires Read master.",
             inputSchema: [
                 type: "object",
-                properties: [:]
+                properties: [
+                    cursor: [type: "string", description: "Opaque pagination cursor for scheduledJobs. Omit for the full list; pass '' for the first page of 100, then the returned nextCursor. runningJobs and hubActions stay in full on every page."]
+                ]
             ],
             outputSchema: [
                 type: "object",

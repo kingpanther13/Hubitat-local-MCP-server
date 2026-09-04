@@ -10212,6 +10212,44 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             assert "name" in job, "Job missing 'name'"
 
     @test("system_tools")
+    def test_get_hub_jobs_cursor(self) -> None:
+        """hub_get_jobs pages scheduledJobs through the universal cursor; runningJobs and
+        hubActions stay in full on every page, and the pages add up to the reported total."""
+        first = self.client.call_tool("hub_manage_logs", {
+            "tool": "hub_get_jobs",
+            "args": {"cursor": ""},
+        })
+        assert isinstance(first, dict), f"hub_get_jobs returned {type(first)}"
+        sj = first["scheduledJobs"]
+        assert sj["count"] == len(sj["jobs"]), \
+            f"scheduledJobs.count {sj['count']} != len(jobs) {len(sj['jobs'])}"
+        assert sj["count"] <= 100, f"page holds {sj['count']} jobs; page size is 100"
+        assert "total" in sj, "cursor mode must report scheduledJobs.total"
+        assert sj["total"] >= sj["count"], f"total {sj['total']} < page count {sj['count']}"
+        assert "runningJobs" in first and "hubActions" in first, \
+            "runningJobs / hubActions must stay in full on a paged response"
+        seen = list(sj["jobs"])
+        cursor = first.get("nextCursor")
+        pages = 1
+        while cursor is not None:
+            pages += 1
+            assert pages <= 50, "nextCursor never ended"
+            page = self.client.call_tool("hub_manage_logs", {
+                "tool": "hub_get_jobs",
+                "args": {"cursor": cursor},
+            })
+            seen.extend(page["scheduledJobs"]["jobs"])
+            cursor = page.get("nextCursor")
+        assert len(seen) == sj["total"], \
+            f"pages summed to {len(seen)} jobs but total is {sj['total']}"
+        # Both Logs-page reads come from one cached snapshot; back to back they must both answer.
+        stats = self.client.call_tool("hub_manage_logs", {
+            "tool": "hub_get_performance_stats",
+            "args": {"limit": 1},
+        })
+        assert isinstance(stats, dict) and "uptime" in stats, f"performance stats after jobs: {stats}"
+
+    @test("system_tools")
     def test_manage_rooms_list(self) -> None:
         result = self.client.call_tool("hub_manage_rooms", {
             "tool": "hub_list_rooms",

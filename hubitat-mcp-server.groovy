@@ -31,6 +31,9 @@
 @groovy.transform.Field static final Map WRITE_REQUEST_LEASES = new java.util.HashMap()
 @groovy.transform.Field static final Map MRTR_WORK_ITEMS = new java.util.HashMap()
 @groovy.transform.Field static final Map MRTR_TERMINAL_EVIDENCE = new java.util.HashMap()
+// JVM-live /logs/json snapshot shared by hub_get_jobs and hub_get_performance_stats (see
+// _logsJsonSnapshot in McpDiagnosticsLib). Keys: snapshot, fetchStartedAt, fetchError.
+@groovy.transform.Field static final Map LOGS_JSON_SNAPSHOT = new java.util.HashMap()
 // Newest same-rule edit baseline per ruleId ([key:, entry:]), mirrored at snapshot
 // time. The reuse decision consults this beside the atomicState manifest because a
 // freshly scheduled worker execution can read an atomicState snapshot that predates
@@ -474,7 +477,7 @@ def advancedOverridesPage() {
                   required: false
         }
         section("Slow-write time budgets") {
-            paragraph "The cloud relay severs a slow /mcp call at a fixed ceiling while the hub keeps running the operation to completion. Modern MCP clients continue slow writes automatically with requestState; legacy clients receive the existing resumable in_progress envelope. The concurrency cap protects the hub from overlapping writes by clients or parallel agents and requires no client token. The relay budget defaults ON (under the relay ceiling); the LAN budget defaults OFF."
+            paragraph "The cloud relay severs a slow /mcp call at a fixed ceiling while the hub keeps running the operation to completion. Modern MCP clients continue slow writes, and the two Logs-page reads that grow with hub size (hub_get_jobs, hub_get_performance_stats), automatically with requestState; legacy clients receive the existing resumable in_progress envelope. The concurrency cap protects the hub from overlapping writes by clients or parallel agents and requires no client token. The relay budget defaults ON (under the relay ceiling); the LAN budget defaults OFF."
             input "maxConcurrentWrites", "number", title: "Maximum concurrent writes (0 = unlimited)",
                   description: "Refuse a new write while this many live write requests are active (default: 2; 1 = fully serial; 0 disables the cap). Reads and read-shaped tool modes do not count; abandoned leases expire automatically.",
                   defaultValue: 2, range: "0..100", required: false
@@ -1822,7 +1825,8 @@ def _maxConcurrentWrites() {
 // unknown keys).
 def _budgetAwareTools() {
     return ["hub_set_rule", "hub_set_native_app", "hub_call_rule", "hub_clone_native_app",
-            "hub_import_native_app", "hub_call_device_command"] as Set
+            "hub_import_native_app", "hub_call_device_command",
+            "hub_get_jobs", "hub_get_performance_stats"] as Set
 }
 
 // ==================== MCP 2026-07-28 request-to-request continuation ====================
@@ -1833,6 +1837,14 @@ def _mrtrEligibleTools() {
             "hub_create_driver", "hub_update_driver", "hub_delete_item"] as Set
 }
 
+// Reads whose single hub fetch grows with hub size and can outrun the relay. They continue
+// under the same requestState contract as the writes above but never hold a write lease, never
+// count toward the write cap, and keep their terminal result only briefly (it is re-runnable).
+// The leaf itself answers status: "in_progress" while its background fetch is still running.
+def _mrtrReadTools() {
+    return ["hub_get_jobs", "hub_get_performance_stats"] as Set
+}
+
 private Set _mrtrDetachedWorkerTools() {
     return ["hub_set_rule", "hub_set_native_app",
             "hub_create_driver", "hub_update_driver", "hub_delete_item"] as Set
@@ -1840,7 +1852,8 @@ private Set _mrtrDetachedWorkerTools() {
 
 def _mrtrEligibleCall(outerToolName, leafToolName, args) {
     String leaf = leafToolName?.toString()
-    if (!_mrtrEligibleTools().contains(leaf) || !(args instanceof Map)) return false
+    if (!(_mrtrEligibleTools().contains(leaf) || _mrtrReadTools().contains(leaf))
+            || !(args instanceof Map)) return false
     // A mis-routed gateway call (a leaf outside this gateway's tool set) must refuse
     // through ordinary dispatch, never enter the MRTR path: round zero would reserve
     // an active record that pins a cap slot for its full TTL before the route is
@@ -2031,6 +2044,7 @@ private List _activeWritesLocked() {
     def active = []
     _writeStateMapLocked("mrtrRequests").values().each { rec ->
         if (rec instanceof Map && rec.status == "active" &&
+                !_mrtrReadTools().contains(rec.leafTool?.toString()) &&
                 (_writeExecutionLiveLocked(rec.claimId) ||
                  (rec.expiresAt != null && (rec.expiresAt as Long) > at))) {
             active << [tool: rec.leafTool, startedAt: rec.startedAt, transport: "mrtr"]
@@ -2148,7 +2162,11 @@ private void _mrtrValidateAccess(outerToolName, leafToolName, Map outerArgs) {
     String outer = outerToolName?.toString()
     String leaf = leafToolName?.toString()
     def leafArgs = _mrtrLeafArguments(outer, leaf, outerArgs)
-    if (settings.enableWrite == false) {
+    boolean readLeaf = _mrtrReadTools().contains(leaf)
+    if (readLeaf && settings.enableRead == false) {
+        throw new IllegalArgumentException("Read tools are disabled. Enable 'Read Tools' in MCP Rule Server app settings to use ${leaf}.")
+    }
+    if (!readLeaf && settings.enableWrite == false) {
         throw new IllegalArgumentException("Write tools are disabled. Enable 'Write Tools' in MCP Rule Server app settings to use ${leaf}.")
     }
     if ((settings.disabled_gateways ?: []).contains(outer)) {
@@ -2157,7 +2175,7 @@ private void _mrtrValidateAccess(outerToolName, leafToolName, Map outerArgs) {
     if (getEffectiveDisabledTools().contains(leaf)) {
         throw new IllegalArgumentException("${leaf} is disabled in Advanced settings (Per-tool Overrides). Re-enable it in MCP Rule Server app settings.")
     }
-    if (settings.enableMandatoryBPS != false && leafArgs?.bestPracticeKey?.toString() != hubBpsGuideKey()) {
+    if (!readLeaf && settings.enableMandatoryBPS != false && leafArgs?.bestPracticeKey?.toString() != hubBpsGuideKey()) {
         throw new IllegalArgumentException("Mandatory best-practice acknowledgment is enabled for write tools. Read hub_get_tool_guide(section='best_practice_reference') to obtain the required acknowledgment key, then pass it as the bestPracticeKey argument on this call. The key appears only in that guide section.")
     }
 }
@@ -2208,6 +2226,9 @@ private boolean _mrtrBindingMatches(Map rec, Map binding) {
 
 def _mrtrActiveTtlMs() { _writeLeaseMs() }
 def _mrtrTerminalTtlMs() { 10L * 60L * 1000L }
+// A read terminal only needs to survive a lost final HTTP response; it is re-runnable and
+// its payload is the part of the record worth not keeping in atomicState for ten minutes.
+def _mrtrReadTerminalTtlMs() { 60L * 1000L }
 def _mrtrMaxRecords() { 16 }
 def _mrtrMaxContinuationSlices() { 8 }
 
@@ -2422,7 +2443,8 @@ def _mrtrReserve(outerTool, leafTool, Map binding) {
             // unchanged, so this cannot schedule or execute the write twice.
             outcome = [accepted: true, stateId: duplicate.stateId, rejoined: true]
         } else {
-            def capacityRefusal = _writeCapacityRefusalLocked()
+            def capacityRefusal = _mrtrReadTools().contains(leafTool?.toString())
+                ? null : _writeCapacityRefusalLocked()
             if (capacityRefusal != null) {
                 outcome = [accepted: false, refusal: capacityRefusal]
             } else if (!_mrtrMakeRoomLocked()) {
@@ -2623,6 +2645,9 @@ private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map re
             else nextLeaf.patches = result.patchesRemaining
             kind = "patches"
         }
+    } else if (_mrtrReadTools().contains(leafTool) && result.status == "in_progress") {
+        // The background fetch is still running; the next leg re-runs the identical read.
+        kind = "slow_read"
     }
     if (kind == null) return null
     return [kind: kind, nextArguments: _mrtrWithLeafArguments(rec, executionArgs, nextLeaf)]
@@ -2856,7 +2881,8 @@ private boolean _mrtrStoreTerminal(String stateId, Map originalRec, Map claim, r
             rec.terminalIsError = isError
             rec.finishedAt = now()
             rec.updatedAt = rec.finishedAt
-            rec.expiresAt = rec.finishedAt + _mrtrTerminalTtlMs()
+            rec.expiresAt = rec.finishedAt + (_mrtrReadTools().contains(rec.leafTool?.toString())
+                ? _mrtrReadTerminalTtlMs() : _mrtrTerminalTtlMs())
             _mrtrPutLocked(stateId, rec)
             // Record proof only AFTER the durable terminal write returned. If a
             // subsequent app disable/enable exposes the older claimed-active
@@ -3547,9 +3573,11 @@ def _responseTooLargeSuggestion(String toolName) {
             return "Narrow with deviceId/appId/level/source/pattern, set a smaller limit, or filter by time window (since/until). The tool already truncates per-entry messages but cannot trim the entry count below the requested limit."
         case "hub_export_native_app":
             return "Large app payloads can exceed the inline cap. Pass saveAs=<filename.json> to write the export to the hub File Manager instead of returning it inline."
-        case "hub_get_info":
         case "hub_get_jobs":
+            return "Pass cursor='' to page scheduledJobs 100 at a time (then follow nextCursor); runningJobs and hubActions stay in full on every page."
         case "hub_get_performance_stats":
+            return "Pass a smaller limit (default 20; limit=0 returns every device and app) or narrow type to device or app."
+        case "hub_get_info":
         case "hub_get_metrics":
             return "Hub status payload is unusually large -- consider polling at a lower frequency or fetching a single subsection via the matching sub-tool if available."
         case "hub_get_source":
@@ -3773,7 +3801,7 @@ def getGatewayConfig() {
             summaries: [
                 hub_get_logs: "Get Hubitat system logs, most recent first. Args: level (trace/debug/info/warn/error), source (substring), pattern (regex), patterns + patternMode (multi-regex any/all), since/until (ISO-8601 or '30m'/'2h'/'1d'), deviceId or appId (server-side scope), limit",
                 hub_get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events, large state flag). Args: type (device/app/both), sortBy (pct/count/stateSize/totalMs/name), limit",
-                hub_get_jobs: "Get scheduled jobs, running jobs, and hub actions",
+                hub_get_jobs: "Get scheduled jobs, running jobs, and hub actions. Args: cursor? (pages scheduledJobs, 100 per page)",
                 hub_get_debug_logs: "Get MCP internal debug logs (mode='logs', default) or logging status (mode='status'). Args: mode, level, component (e.g. server/rule), ruleId, limit",
                 hub_delete_debug_logs: "Clear all MCP debug log entries",
                 hub_set_log_level: "Set minimum log level threshold. Args: level (debug/info/warn/error)"
@@ -3851,7 +3879,7 @@ def getGatewayConfig() {
             summaries: [
                 hub_get_logs: "Get Hubitat system logs, most recent first. Args: level, source, pattern/patterns, since/until, deviceId|appId, limit",
                 hub_get_performance_stats: "Get device/app performance stats (count, % busy, total ms, state size, events). Args: type, sortBy, limit",
-                hub_get_jobs: "Get scheduled jobs, running jobs, and hub actions",
+                hub_get_jobs: "Get scheduled jobs, running jobs, and hub actions. Args: cursor? (pages scheduledJobs, 100 per page)",
                 hub_get_debug_logs: "Get MCP internal debug logs (mode='logs') or logging status (mode='status'). Args: mode, level, component (e.g. server/rule), ruleId, limit",
                 hub_get_metrics: "Get hub metrics (memory, temp, DB) with CSV trend history + the hub's own health alerts (radio offline, backup failures, low memory, DB bloat, safeMode). Read-only by default; pass recordSnapshot=true to also append a snapshot to the File Manager. Args: recordSnapshot?, trendPoints?",
                 hub_get_memory_history: "Get free OS memory and CPU load history with summary stats. Args: limit",
@@ -6010,7 +6038,15 @@ private _hubRequest(String method, String path, Map opts = [:]) {
         // [hubrt] per-call diagnostic: every internal hub round-trip funnels through here, so one
         // debug line profiles a heavy RM wizard build (count + latency of each GET/POST). Debug-gated.
         // Path is secret-redacted so the WiFi-join leg's psk is never written to the hub log.
-        logDebug("[hubrt] ${method} ${_redactSecretsInPath(path)} (${now() - _hubRtT0}ms)")
+        long _hubRtMs = now() - _hubRtT0
+        logDebug("[hubrt] ${method} ${_redactSecretsInPath(path)} (${_hubRtMs}ms)")
+        // A single internal round-trip that already exceeds the relay budget cannot be
+        // answered synchronously over the relay from any caller; surface it whether or not
+        // the caller happened to be relay-bound, so a slow endpoint shows up before a 502 does.
+        long _hubRtBudget = _relayBudgetMs()
+        if (_hubRtBudget > 0L && _hubRtMs >= _hubRtBudget) {
+            mcpLog("warn", "hub-admin", "[hubrt] slow internal ${method} ${_redactSecretsInPath(path)} took ${_hubRtMs}ms, over the ${_hubRtBudget}ms cloud-relay budget -- a relay-bound caller must run this fetch off-request (see hub_get_tool_guide(section='slow_ops'))")
+        }
     } catch (Exception e) {
         // hubInternalGetRaw path: a 3xx with followRedirects=false is the success case (read the
         // Location header), not an error.
@@ -9768,6 +9804,8 @@ Every actual write obtains a server-side lease, whether it uses MRTR or complete
 ### Older clients
 
 Clients negotiated below MCP 2026-07-28 do not understand requestState. They retain the existing `status: "in_progress"` remainder envelope for bounded multi-step writes. Completed steps are already committed; reissue only the returned remaining work. This is a compatibility fallback, not a second polling protocol.
+
+Two reads use the same continuation: `hub_get_jobs` and `hub_get_performance_stats` both come from the hub's `/logs/json` page, one document that carries every device and app stat plus the job tables, so its fetch time grows with hub size and on a large hub outruns the relay. Over the relay the fetch runs in a background worker and the result is cached for 30 s; a modern client continues automatically, a legacy client that receives `status: "in_progress"` repeats the identical call. Reads never hold a write lease or count toward `maxConcurrentWrites`. On the LAN with `lanBudgetMs` unset the fetch runs inline as before.
 
 The advanced `relayBudgetMs` setting (default 6000 ms, 0 disables) controls cloud slices. `lanBudgetMs` defaults to 0; set it just below a LAN client's request timeout only when needed.
 

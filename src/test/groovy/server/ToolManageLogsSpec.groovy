@@ -1207,6 +1207,165 @@ class ToolManageLogsSpec extends ToolSpecBase {
         e.message.contains("Read tools are disabled")
     }
 
+    // -------- /logs/json snapshot + hub_get_jobs cursor --------
+
+    private String logsJsonWithJobs(int jobCount) {
+        JsonOutput.toJson([
+            uptime: '1d',
+            jobs: (1..jobCount).collect { [id: it, name: "Job${it}".toString(), recurring: true, methodName: 'run', nextRun: '2026-04-21 02:00:00'] },
+            runningJobs: [[id: 900, name: 'HubCheck', methodName: 'checkHealth']],
+            hubCommands: ['cmd1']
+        ])
+    }
+
+    def "hub_get_jobs cursor pages scheduledJobs 100 at a time while the other tables stay in full"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/logs/json') { params -> logsJsonWithJobs(150) }
+
+        when: 'no cursor'
+        def full = script.toolGetHubJobs([:])
+
+        then: 'the whole-list shape, count matching the array, no cursor fields'
+        full.scheduledJobs.count == 150
+        full.scheduledJobs.jobs.size() == 150
+        !full.scheduledJobs.containsKey('total')
+        !full.containsKey('nextCursor')
+
+        when: 'first page'
+        def first = script.toolGetHubJobs([cursor: ''])
+
+        then:
+        first.scheduledJobs.count == 100
+        first.scheduledJobs.jobs*.id == (1..100).toList()
+        first.scheduledJobs.total == 150
+        first.nextCursor == '100'
+        first.runningJobs.count == 1
+        first.hubActions.count == 1
+
+        when: 'second page'
+        def second = script.toolGetHubJobs([cursor: first.nextCursor])
+
+        then:
+        second.scheduledJobs.count == 50
+        second.scheduledJobs.jobs*.id == (101..150).toList()
+        second.scheduledJobs.total == 150
+        !second.containsKey('nextCursor')
+        second.runningJobs.count == 1
+        second.hubActions.count == 1
+    }
+
+    def "both Logs-page reads share one /logs/json fetch inside the snapshot TTL and refetch after it"() {
+        given:
+        settingsMap.enableRead = true
+        def fetches = new java.util.concurrent.atomic.AtomicInteger(0)
+        hubGet.register('/logs/json') { params -> fetches.incrementAndGet(); logsJsonWithJobs(2) }
+        def virtualNow = new java.util.concurrent.atomic.AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+
+        when: 'jobs, then performance stats, then a jobs page'
+        def jobs = script.toolGetHubJobs([:])
+        def stats = script.toolGetPerformanceStats([type: 'both'])
+        def paged = script.toolGetHubJobs([cursor: ''])
+
+        then: 'one inline fetch served all three; no worker on an unbudgeted LAN request'
+        fetches.get() == 1
+        jobs.scheduledJobs.count == 2
+        stats.uptime == '1d'
+        stats.deviceSummary.deviceCount == 0
+        paged.scheduledJobs.total == 2
+        runInMillisCalls.isEmpty()
+
+        when: 'the TTL passes'
+        virtualNow.addAndGet(script._logsJsonSnapshotTtlMs() as Long)
+        script.toolGetHubJobs([:])
+
+        then:
+        fetches.get() == 2
+    }
+
+    def "a relay-bound legacy hub_get_jobs schedules the background fetch, answers in_progress, then serves the landed snapshot"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        def fetches = new java.util.concurrent.atomic.AtomicInteger(0)
+        hubGet.register('/logs/json') { params -> fetches.incrementAndGet(); logsJsonWithJobs(3) }
+        def virtualNow = new java.util.concurrent.atomic.AtomicLong(1234567890000L)
+        def waitedMs = new java.util.concurrent.atomic.AtomicLong(0L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> waitedMs.addAndGet(ms); virtualNow.addAndGet(ms) })
+
+        when: 'the legacy dispatch path runs the read'
+        def response = mcpDriver.callTool('hub_get_jobs', [:])
+        def inner = mcpDriver.parseInner(response)
+
+        then: 'nothing was fetched on the request thread; one worker was scheduled; the call waited out its observe window'
+        response.error == null
+        !response.result.isError
+        inner.status == 'in_progress'
+        inner.tool == 'hub_get_jobs'
+        inner.retryable == true
+        fetches.get() == 0
+        runInMillisCalls.size() == 1
+        runInMillisCalls[0][0..1] == [200, 'runLogsJsonFetch']
+        runInMillisCalls[0][2].overwrite == false
+        waitedMs.get() == (script._logsJsonObserveWaitMs() as Long)
+
+        when: 'the same call arrives again while the worker is still queued'
+        def again = mcpDriver.parseInner(mcpDriver.callTool('hub_get_jobs', [:]))
+
+        then: 'no second worker'
+        again.status == 'in_progress'
+        runInMillisCalls.size() == 1
+
+        when: 'Hubitat runs the worker and the client repeats the identical call'
+        script.runLogsJsonFetch()
+        def served = mcpDriver.parseInner(mcpDriver.callTool('hub_get_jobs', [:]))
+
+        then:
+        fetches.get() == 1
+        served.scheduledJobs.count == 3
+        served.uptime == '1d'
+        runInMillisCalls.size() == 1
+    }
+
+    def "a failed background /logs/json fetch is reported once, then the next call schedules a fresh fetch"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        def attempts = new java.util.concurrent.atomic.AtomicInteger(0)
+        hubGet.register('/logs/json') { params ->
+            if (attempts.incrementAndGet() == 1) throw new RuntimeException('logs page timed out')
+            logsJsonWithJobs(1)
+        }
+        def virtualNow = new java.util.concurrent.atomic.AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
+
+        when: 'the first call schedules the worker, which fails; the repeat observes the failure'
+        def first = script.toolGetPerformanceStats([__reqT0: virtualNow.get()])
+        script.runLogsJsonFetch()
+        def second = script.toolGetPerformanceStats([__reqT0: virtualNow.get()])
+
+        then: 'a structured error, not another in_progress, and no extra worker'
+        first.status == 'in_progress'
+        second.error == 'Failed to fetch performance stats: logs page timed out'
+        runInMillisCalls.size() == 1
+
+        when: 'the call after that retries'
+        def third = script.toolGetPerformanceStats([__reqT0: virtualNow.get()])
+        script.runLogsJsonFetch()
+        def fourth = script.toolGetPerformanceStats([__reqT0: virtualNow.get()])
+
+        then: 'a fresh worker ran and the data landed'
+        third.status == 'in_progress'
+        runInMillisCalls.size() == 2
+        attempts.get() == 2
+        fourth.uptime == '1d'
+    }
+
     // -------- toolGetDebugLogs --------
 
     def "hub_get_debug_logs returns recent entries with metadata"() {
