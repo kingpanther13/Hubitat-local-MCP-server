@@ -1118,7 +1118,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
     }
 
     def "hub_get_performance_stats is blocked by the central Read master gate"() {
-        // The read gate is now central (executeTool), not inside fetchLogsJson.
+        // The read gate is now central (executeTool), not inside the /logs/json fetch.
         given:
         settingsMap.enableRead = false
 

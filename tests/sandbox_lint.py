@@ -4186,7 +4186,7 @@ def check_logs_json_snapshot_guard() -> list[dict]:
     server = REPO_ROOT / "hubitat-mcp-server.groovy"
     if not server.is_file():
         return findings
-    sources = [server] + sorted((REPO_ROOT / "libraries").glob("*.groovy"))
+    sources = [server, *sorted((REPO_ROOT / "libraries").glob("*.groovy"))]
     fn_re = re.compile(r"^(?:private\s+|static\s+)*(?:def|void|boolean|Map|List|String|Set|Long|long|int|Integer)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", re.M)
 
     def enclosing_fn(src: str, pos: int) -> str | None:
@@ -4218,7 +4218,7 @@ def check_logs_json_snapshot_guard() -> list[dict]:
     server_src = server.read_text(encoding="utf-8")
 
     def set_literal(name: str) -> set[str] | None:
-        m = re.search(r"def %s\(\)\s*\{\s*return\s*\[(.*?)\]\s*as\s+Set" % re.escape(name), server_src, re.S)
+        m = re.search(rf"def {re.escape(name)}\(\)\s*\{{\s*return\s*\[(.*?)\]\s*as\s+Set", server_src, re.S)
         if not m:
             return None
         return set(re.findall(r'"([^"]+)"', m.group(1)))
