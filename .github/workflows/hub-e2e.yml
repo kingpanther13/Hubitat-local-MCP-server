@@ -439,11 +439,25 @@ jobs:
             echo "available=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # LIVE PR labels, fetched once: the e2e:skip backstop here, the lane pick further down.
-          # `|| true`: the step runs under `-eo pipefail`, so a transient gh-api failure here would abort
-          # the whole gate; an empty label list just means "no label" -> not skipped, focused lane (the
-          # safe lane, which only HOLDS the merge pending -- it can't green-wash).
-          labels="$( { gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}" --jq '.labels[].name' 2>/dev/null || true; } | tr '\n' ' ')"
+          # LIVE PR labels, fetched once: the e2e:skip backstop here, the lane pick further down. Retried
+          # 3x and then FAIL-CLOSED: a read failure is NOT an empty list -- it cannot rule out e2e:skip,
+          # so the hub stays off and the gate posts PENDING (cheap: no hub time spent; a re-run recovers).
+          # The `if` keeps `-eo pipefail` from aborting the step on a failed attempt.
+          labels=""; labels_ok=false
+          for attempt in 1 2 3; do
+            if labels="$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}" --jq '.labels[].name' 2>/dev/null | tr '\n' ' ')"; then
+              labels_ok=true; break
+            fi
+            echo "::warning::PR label read attempt ${attempt}/3 failed; retrying in 5s..."
+            sleep 5
+          done
+          if [ "$labels_ok" != "true" ]; then
+            echo "::warning::Could not read PR labels (3 attempts) — cannot rule out e2e:skip; keeping the hub off and the gate PENDING. Re-run once the API is back."
+            echo "E2E NOT RUN — PR label read failed, so e2e:skip could not be ruled out. Gate posted PENDING; re-run to retry." >> "$GITHUB_STEP_SUMMARY"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "lane=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           # LIVE e2e:skip backstop (see E2E:SKIP at top): lane-gate already skipped on the frozen payload,
           # so this only fires for a manual re-run of an older run or a run the label add couldn't
           # cancel. lane=skipped makes the gate-status step post PENDING (never success) -- the label
@@ -476,7 +490,7 @@ jobs:
           if [ "$relevant" = "true" ]; then
             echo "available=true" >> "$GITHUB_OUTPUT"
             # LANE: full if a release:*/e2e:full label is on the PR, else focused (see TWO-LANE FLOW at top).
-            # `$labels` is the live list fetched above (empty on an API blip -> focused, the safe lane).
+            # `$labels` is the live list fetched above (a read failure never reaches here).
             lane=focused
             for L in release:patch release:minor release:major e2e:full; do
               case " $labels " in *" $L "*) lane=full ;; esac
@@ -810,8 +824,9 @@ jobs:
       #   docs-only / no secret  -> success (the gate skip path; e2e not required to run).
       #   e2e:skip on the PR     -> pending, whatever ran: checked LIVE right here, so a run that outlived
       #                             the label add (isolated group / manual re-run) can't post over the
-      #                             lane-gate job's pending. Fails open (a label-read blip posts the real
-      #                             result) -- the frozen-payload skip already covers the common path.
+      #                             lane-gate job's pending. A label read that fails 3x also posts
+      #                             PENDING (fail-closed: it can't rule the label out); the status POST
+      #                             below uses the same API, so it would most likely fail too.
       - name: Post e2e gate status
         # always() EXCEPT on cancel: a focused run cancelled by the FIRST-full-label promote shares the
         # PR head SHA with the full run it spawned (a label add doesn't change the SHA, unlike a commit),
@@ -827,14 +842,25 @@ jobs:
           AVAIL="${{ steps.gate.outputs.available }}"
           LANE="${{ steps.gate.outputs.lane }}"
           PR="${{ github.event.pull_request.number }}"
-          live_labels=""
-          if [ -n "$PR" ]; then   # dispatch has no PR -> the label can't apply
-            live_labels="$( { gh api "repos/${{ github.repository }}/pulls/$PR" --jq '.labels[].name' 2>/dev/null || true; } | tr '\n' ' ')"
+          SKIPPED=false; LABELS_OK=true
+          if [ "$LANE" = "skipped" ]; then
+            SKIPPED=true
+          elif [ -n "$PR" ]; then   # dispatch has no PR -> the label can't apply
+            LABELS_OK=false
+            for attempt in 1 2 3; do
+              if live_labels="$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq '.labels[].name' 2>/dev/null | tr '\n' ' ')"; then
+                LABELS_OK=true; break
+              fi
+              echo "::warning::PR label read attempt ${attempt}/3 failed; retrying in 5s..."
+              sleep 5
+            done
+            case " $live_labels " in *" e2e:skip "*) SKIPPED=true ;; esac
           fi
-          SKIPPED=false
-          case " $live_labels " in *" e2e:skip "*) SKIPPED=true ;; esac
-          if [ "$LANE" = "skipped" ] || [ "$SKIPPED" = "true" ]; then
+          if [ "$SKIPPED" = "true" ]; then
             STATE=pending; DESC="e2e disabled by the e2e:skip label; remove it to run"
+          elif [ "$LABELS_OK" != "true" ]; then
+            echo "::warning::Could not read PR labels (3 attempts) — cannot rule out e2e:skip; posting the gate PENDING instead of the run result."
+            STATE=pending; DESC="e2e result withheld: PR label read failed (could not rule out e2e:skip); re-run"
           elif [ "$AVAIL" != "true" ]; then
             STATE=success; DESC="e2e skipped (no hub-relevant change / no test-hub secret); not required to run"
           elif [ "$LANE" = "full" ]; then
