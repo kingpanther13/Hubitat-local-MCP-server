@@ -7981,16 +7981,21 @@ class TestRunner:
     # GROUP 4b2: visual_rules -- the Visual Rules Builder tools
     # (hub_get_visual_rule / hub_set_visual_rule / hub_delete_visual_rule).
     # VRB rules are Vue-JSON apps (NOT classic dynamicPage apps), saved over the
-    # /app/ruleBuilderJson endpoint family in one of two wire formats the hub
-    # FIRMWARE picks at creation: 'classic' ({whenNodes, thenNodes, elseNodes})
-    # or 'graph' ({version, nodes, edges}).
+    # /app/ruleBuilderJson endpoint family in one of two wire formats: 'classic'
+    # ({whenNodes, thenNodes, elseNodes}), which creates a Visual Rule Builder 1.0
+    # child, or 'graph' ({version, nodes, edges}), which creates a 2.0 child. The
+    # DEFINITION chooses; a hub too old for 2.0 can only host the classic one.
+    # hub_set_visual_rule also accepts the 2.0 EDITOR form
+    # ({triggers, conditions, decisionType, thenActions, elseActions, commonActions})
+    # and composes it into the graph document -- see the editor-form test below.
     # -----------------------------------------------------------------------
 
     def _vrb_definition(self, fmt: str, switch_id: int, switch_event: str) -> dict:
         """Equivalent VRB definition in either wire format: when the test switch
-        fires `switch_event`, re-assert that same state. The firmware (not the
-        caller) decides which format newly-created rules speak, so the lifecycle
-        test needs the same semantic rule expressible both ways.
+        fires `switch_event`, re-assert that same state. A classic definition creates
+        a Visual Rule Builder 1.0 child and a graph one a 2.0 child, so the lifecycle
+        test needs the same semantic rule expressible both ways -- it falls back to
+        the graph form on a hub that will not host a 1.0 rule at all.
 
         HARMLESS-STRAND INVARIANT: the action always MATCHES the trigger event
         ('Turns off' -> turnOff, 'Turns on' -> turnOn). These fixtures live on the
@@ -8069,9 +8074,9 @@ class TestRunner:
 
     @test("visual_rules")
     def test_visual_rule_classic_lifecycle(self) -> None:
-        # Full VRB round-trip: create (classic-first, one graph retry -- the hub
-        # firmware decides the native format), read back via the pure-read gateway,
-        # list, rename+pause, resume, wholesale replace, delete-with-verify.
+        # Full VRB round-trip: create (classic-first, with one graph retry for a hub
+        # that will not host a 1.0 rule), read back via the pure-read gateway, list,
+        # rename+pause, resume, wholesale replace, delete-with-verify.
         switch_id = int(self.get_test_switch_id())
         name = f"{PREFIX}VisualRule"
 
@@ -8081,9 +8086,10 @@ class TestRunner:
                 "args": {"name": name, "confirm": True,
                          "definition": self._vrb_definition("classic", switch_id, "Turns off")}})
             if r.get("success") is False and r.get("hubNativeFormat") == "graph":
-                # This firmware's builder creates graph-format rules (the tool already
-                # force-deleted the orphan shell); retry once with the equivalent graph
-                # definition so the lifecycle still executes deterministically.
+                # This hub's builder refused the classic definition and reports graph as
+                # its native format (the tool already force-deleted the orphan shell);
+                # retry once with the equivalent graph definition so the lifecycle still
+                # executes deterministically.
                 r = self.client.call_tool("hub_manage_rule_machine", {
                     "tool": "hub_set_visual_rule",
                     "args": {"name": name, "confirm": True,
@@ -8261,8 +8267,8 @@ class TestRunner:
                 "args": {"name": name, "confirm": True,
                          "definition": self._vrb_definition("classic", switch_id, "Turns off")}})
             if r.get("success") is False and r.get("hubNativeFormat") == "graph":
-                # Same firmware-decides-the-format adaptation as the lifecycle test
-                # (the tool already force-deleted the orphan classic shell).
+                # Same graph fallback as the lifecycle test, for a hub that will not
+                # host a 1.0 rule (the tool already force-deleted the orphan shell).
                 r = self.client.call_tool("hub_manage_rule_machine", {
                     "tool": "hub_set_visual_rule",
                     "args": {"name": name, "confirm": True,
@@ -8500,6 +8506,192 @@ class TestRunner:
                 f"RM rule {rm_id} unhealthy after the refused delete: {health}"
         finally:
             self._delete_native(rm_id)
+
+    @test("visual_rules")
+    def test_visual_rule_editor_form_lifecycle(self) -> None:
+        # VRB 2.0 EDITOR form -- the recommended input. The caller sends
+        # {triggers, conditions, decisionType, thenActions, elseActions, commonActions} and the
+        # tool COMPOSES the graph document: triggers -> triggerMerge -> decision -> then/else ->
+        # branchMerge -> common tail. Three legs: the STRUCTURAL pre-flight (a graph with no
+        # triggerMerge is refused BEFORE any child app exists, so a malformed definition can
+        # never strand an empty shell), the editor create + decomposed read-back, and the
+        # documented edit flow (read `editor`, change it, send it back).
+        #
+        # HARMLESS-STRAND INVARIANT (see _vrb_definition): every trigger is 'Turns on' and every
+        # action a turnOn on the same switch, with the condition matching ('Turned on'), so a
+        # stranded copy can only re-assert the state the switch already reached -- it can never
+        # revert another test's command.
+        switch_id = int(self.get_test_switch_id())
+        name = f"{PREFIX}VrbEditor"
+        preflight_name = f"{PREFIX}VrbPreflight"
+
+        # (a) PRE-FLIGHT REFUSAL: no triggerMerge node -> refused before the create.
+        try:
+            refused = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_visual_rule",
+                "args": {"name": preflight_name, "confirm": True, "definition": {
+                    "version": 1,
+                    "nodes": [
+                        {"id": "t1", "kind": "trigger", "type": "switch",
+                         "config": {"switches": [switch_id], "switchEvent": "Turns on"}},
+                        {"id": "d1", "kind": "decision", "type": "all", "config": {"conditions": []}},
+                        {"id": "a1", "kind": "action", "type": "turnOn",
+                         "config": {"switches": [switch_id]}},
+                    ],
+                    "edges": [{"from": "t1", "to": "d1", "port": "next"},
+                              {"from": "d1", "to": "a1", "port": "true"}],
+                }}})
+        except (McpError, McpToolError, requests.HTTPError) as exc:
+            # Expected-refusal call: a relay 504 can't distinguish "refused" from "response
+            # dropped", so skip rather than soft-pass the contract.
+            if "504" not in str(exc):
+                raise
+            raise SkipTest("pre-flight refusal contract lost to relay 504 -- cannot tell a "
+                           "refusal from a dropped response") from exc
+        if isinstance(refused, dict) and refused.get("appId"):
+            # The pre-flight regressed and a rule exists -- track it for the cleanup sweep.
+            # The assertions below still fail the test.
+            self.created_native_app_ids.append(str(refused["appId"]))
+        assert refused.get("success") is False, \
+            f"a graph with no triggerMerge node must be refused: {refused}"
+        assert any("triggerMerge" in str(e) for e in (refused.get("validationErrors") or [])), \
+            f"the refusal must name the missing triggerMerge node: {refused}"
+        assert "appId" not in refused, \
+            f"a pre-flight refusal must not create a child app, so it carries no appId: {refused}"
+        assert not any(r.get("name") == preflight_name
+                       for r in (self._get_visual_rule().get("rules") or [])), \
+            f"the refused create left an orphan shell named {preflight_name!r} behind"
+
+        # (b) CREATE from the editor form.
+        editor = {
+            "triggers": [{"type": "switch",
+                          "config": {"switches": [switch_id], "switchEvent": "Turns on"}}],
+            "conditions": [{"type": "switchCondition",
+                            "config": {"switches": [switch_id], "switchState": "Turned on"}}],
+            "decisionType": "any",
+            "thenActions": [{"type": "turnOn", "config": {"switches": [switch_id]}}],
+            "elseActions": [],
+            "commonActions": [{"type": "turnOn", "config": {"switches": [switch_id]}}],
+        }
+        cw = self._soft_write(
+            lambda: self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_visual_rule",
+                "args": {"name": name, "confirm": True, "definition": editor}}),
+            lambda: self._find_visual_rule_id_by_name(name),
+            "hub_set_visual_rule create (editor form)",
+        )
+        if cw["relayDropped"]:
+            assert cw["committed"], \
+                f"editor-form create lost to relay 504 and never committed ({name})"
+            app_id = cw["evidence"]
+            self.created_native_app_ids.append(str(app_id))
+            print("    hub_set_visual_rule create (editor form): success/format/activated "
+                  f"assertions skipped (relay 504); adopted appId {app_id}")
+        else:
+            created = cw["response"]
+            if created.get("hubNativeFormat") == "classic":
+                # A hub too old for Visual Rules Builder 2.0 cannot host a composed graph at
+                # all (it answers with the format-mismatch envelope, its shell already
+                # force-deleted). A hub-vintage fact, not a regression.
+                raise SkipTest("this hub's Visual Rules Builder cannot create 2.0 (graph) "
+                               "rules -- the editor form does not apply")
+            app_id = created.get("appId")
+            assert app_id, f"editor-form create did not return an appId: {created}"
+            self.created_native_app_ids.append(str(app_id))
+            assert created.get("success") is True, f"editor-form create did not verify: {created}"
+            assert created.get("format") == "graph", \
+                f"an editor definition must compose to a graph document: {created}"
+            assert created.get("activated") is True, \
+                f"a valid editor definition must ACTIVATE, not land as an inactive draft: {created}"
+            assert not created.get("validationErrors"), \
+                f"a valid editor definition must come back with no validationErrors: {created}"
+
+        try:
+            # READ BACK: the composed graph AND its decomposition.
+            got = self._get_visual_rule(app_id)
+            assert got.get("success") is True, \
+                f"read-back of editor-form rule {app_id} failed: {got}"
+            assert got.get("format") == "graph", \
+                f"editor-form rule did not store as a graph: {got}"
+            nodes = (got.get("definition") or {}).get("nodes") or []
+            merge_types = [n.get("type") for n in nodes if n.get("kind") == "merge"]
+            assert merge_types.count("triggerMerge") == 1, \
+                f"composed graph must carry exactly one triggerMerge node: {nodes}"
+            assert merge_types.count("branchMerge") == 1, \
+                f"commonActions must compose a branchMerge tail: {nodes}"
+            decisions = [n for n in nodes if n.get("kind") == "decision"]
+            assert len(decisions) == 1, \
+                f"composed graph must carry exactly one decision node: {nodes}"
+            assert decisions[0].get("type") == "any", \
+                f"decisionType 'any' (OR) must reach the decision node: {decisions[0]}"
+
+            ed = got.get("editor")
+            assert isinstance(ed, dict), \
+                f"a graph read must decompose into an `editor` block for round-trip edits: {got}"
+            assert ed.get("decisionType") == "any", f"decomposed decisionType mismatch: {ed}"
+            assert len(ed.get("commonActions") or []) == 1, \
+                f"decomposed editor lost the common tail action: {ed}"
+            assert len(ed.get("thenActions") or []) == 1, \
+                f"decomposed editor lost the THEN action: {ed}"
+            assert ed.get("elseActions") == [], \
+                f"an empty ELSE branch must decompose back to []: {ed}"
+
+            # LIST mode reports the builder VERSION parsed from the child's app type.
+            entry = next((r for r in (self._get_visual_rule().get("rules") or [])
+                          if str(r.get("appId")) == str(app_id)), None)
+            assert entry is not None, f"editor-form rule {app_id} missing from the listing"
+            assert entry.get("version") == "2.0", \
+                f"a rule created from the editor form must list as version 2.0: {entry}"
+
+            # (c) EDIT via the documented flow: send the read-back editor back with changes --
+            # OR decision -> AND, plus an ELSE action (same switch, same 'on' state, so the
+            # harmless-strand invariant holds on both branches).
+            edited = dict(ed)
+            edited["decisionType"] = "all"
+            edited["elseActions"] = [{"type": "turnOn", "config": {"switches": [switch_id]}}]
+            ew = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_set_visual_rule",
+                    "args": {"appId": app_id, "confirm": True, "definition": edited}}),
+                lambda: True,  # verified by the read-back below
+                "hub_set_visual_rule edit (editor form)",
+            )
+            if ew["relayDropped"]:
+                print("    hub_set_visual_rule edit (editor form): success assertion skipped "
+                      "(relay 504); verified via read-back")
+            else:
+                assert ew["response"].get("success") is True, \
+                    f"editor-form edit reported failure: {ew['response']}"
+            after = self._get_visual_rule(app_id)
+            after_editor = after.get("editor") or {}
+            assert after_editor.get("decisionType") == "all", \
+                f"the decisionType edit did not land: {after_editor}"
+            assert len(after_editor.get("elseActions") or []) == 1, \
+                f"the added ELSE action did not land: {after_editor}"
+            after_decisions = [n for n in ((after.get("definition") or {}).get("nodes") or [])
+                               if n.get("kind") == "decision"]
+            assert len(after_decisions) == 1 and after_decisions[0].get("type") == "all", \
+                f"the edited decision node did not recompose as 'all': {after_decisions}"
+        finally:
+            # DELETE, same contract the lifecycle test asserts: on a relay 504 the response is
+            # gone so absence is the evidence, and the id stays tracked until an independent
+            # gone-read passes (a false-verified delete is then reaped by the cleanup sweep).
+            dw = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_delete_visual_rule", "args": {"appId": app_id, "confirm": True}}),
+                lambda: self._get_visual_rule(app_id).get("success") is False,
+                "hub_delete_visual_rule (editor form)",
+            )
+            if dw["relayDropped"]:
+                assert dw["committed"], \
+                    f"VRB rule {app_id} still readable after a relay-504 delete"
+            else:
+                assert dw["response"].get("success") is True, \
+                    f"hub_delete_visual_rule reported failure: {dw['response']}"
+            gone = self._get_visual_rule(app_id)
+            assert gone.get("success") is False, \
+                f"rule {app_id} still readable after delete: {gone}"
+            self._untrack_native_app(app_id)
 
     # -----------------------------------------------------------------------
     # GROUP 4c: deadman (1 test) -- the issue #243 install-commit fix, the exact

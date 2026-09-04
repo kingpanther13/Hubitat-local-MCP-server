@@ -32,6 +32,10 @@ class ToolVisualRulesSpec extends ToolSpecBase {
 
     private static final String GRAPH_NOT_FOUND = '{"success":false,"message":"Rule builder instance not found"}'
 
+    // The per-version child-create routes the VRB parent (id 700 in registerAppsList) exposes.
+    private static final String CREATE_1_0 = '/installedapp/createchild/hubitat/Visual Rule Builder 1.0/parent/700'
+    private static final String CREATE_2_0 = '/installedapp/createchild/hubitat/Visual Rule Builder 2.0/parent/700'
+
     // Fresh per feature (Spock builds a new spec instance per feature method).
     List rawPaths = []
     List posts = []
@@ -52,13 +56,21 @@ class ToolVisualRulesSpec extends ToolSpecBase {
 
     // The Rule Builder 2.0 node shape ({id, kind, type, config}; ports on edges), as the platform
     // 2.5.1.177 validator accepts it -- the tool passes the graph through untouched, so the fixture
-    // carries the real shape rather than the retired {id, type, deviceIds} one.
+    // carries the real shape rather than the retired {id, type, deviceIds} one. It also carries the
+    // mandatory triggerMerge + decision structure nodes: a graph without them is refused by the
+    // pre-flight before any hub call.
     private static Map graphDefinition() {
         [version: 1,
          nodes: [[id: 'n1', kind: 'trigger', type: 'switch', config: [switches: [59], switchEvent: 'Turns off']],
+                 [id: 'trigger-merge', kind: 'merge', type: 'triggerMerge', config: [:]],
+                 [id: 'decision', kind: 'decision', type: 'all', config: [conditions: []]],
                  [id: 'n2', kind: 'action', type: 'turnOff', config: [switches: [59]]]],
-         edges: [[from: 'n1', to: 'n2', port: 'next']]]
+         edges: [[from: 'n1', to: 'trigger-merge', port: 'next'],
+                 [from: 'trigger-merge', to: 'decision', port: 'next'],
+                 [from: 'decision', to: 'n2', port: 'true']]]
     }
+
+    private static final List GRAPH_IDS = ['n1', 'trigger-merge', 'decision', 'n2']
 
     private void registerAppsList(List children) {
         hubGet.register('/hub2/appsList') { params ->
@@ -70,11 +82,29 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         }
     }
 
-    /** hubInternalGetRaw stub: records every path, serves the builder page HTML (forcedelete callers ignore the body). */
-    private void stubRawPage(String html) {
+    /** hubInternalGetRaw stub for the VERSIONED child-create route: records every path and answers
+     *  createchild with the hub's 302 to the new child's configure page. Other raw paths (forcedelete)
+     *  get the live delete shape. */
+    private void stubCreateChild(int newId) {
         def paths = rawPaths
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
             paths << path
+            if (path.startsWith('/installedapp/createchild/')) {
+                return [status: 302, location: "/installedapp/configure/${newId}", data: null]
+            }
+            [status: 302, location: '/installedapp/list', data: null]
+        }
+    }
+
+    /** hubInternalGetRaw stub for firmware WITHOUT the versioned child types: createchild answers with
+     *  no Location, so the create fails and the legacy builder-page route is what actually runs. */
+    private void stubLegacyCreateOnly(String html) {
+        def paths = rawPaths
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            paths << path
+            if (path.startsWith('/installedapp/createchild/')) {
+                return [status: 500, location: null, data: 'No such app type']
+            }
             [status: 200, location: null, data: html]
         }
     }
@@ -207,7 +237,7 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.name == 'Graph rule'
         result.rulePaused == true
         result.validationErrors == ['edge n1->n2 dangling']
-        result.definition.nodes*.id == ['n1', 'n2']
+        result.definition.nodes*.id == GRAPH_IDS
         result.definition.edges[0].from == 'n1'
     }
 
@@ -289,10 +319,11 @@ class ToolVisualRulesSpec extends ToolSpecBase {
 
     // ==================== hub_set_visual_rule: create ====================
 
-    def "create golden path (classic hub): saves nodes, defaults rulePaused=false, verifies via read-back"() {
+    def "create golden path (classic definition): creates a 1.0 child, saves nodes, verifies via read-back"() {
         given:
         enableWrite()
-        stubRawPage('<html><script>window.HubitatRuleBuilderAppId = 1234;</script></html>')
+        registerAppsList([])
+        stubCreateChild(1234)
         def savedState = [:]
         stubPostJson { path, body -> savedState.putAll(new JsonSlurper().parseText(body) as Map); null }
         hubGet.register('/app/ruleBuilder20Json/1234') { params -> GRAPH_NOT_FOUND }
@@ -301,8 +332,8 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         when:
         def result = script.toolSetVisualRule([name: 'Hall light', definition: classicDefinition(), confirm: true])
 
-        then: 'the hub-create page was fetched and the save POSTed to the classic endpoint'
-        rawPaths == ['/app/createVisualRuleBuilderRule']
+        then: 'a Visual Rule Builder 1.0 child was created and the save POSTed to the classic endpoint'
+        rawPaths == [CREATE_1_0]
         posts.size() == 1
         posts[0].path == '/app/ruleBuilderJson/1234'
 
@@ -318,6 +349,7 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.success == true
         result.created == true
         result.format == 'classic'
+        result.version == '1.0'
         result.verified == true
         result.appId == 1234
         result.name == 'Hall light'
@@ -325,10 +357,11 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.definition.whenNodes[0].triggerType == 'switch'
     }
 
-    def "create golden path (graph hub): ruleJson is POSTed as a JSON STRING (double-encoded)"() {
+    def "create golden path (graph definition): creates a 2.0 child, ruleJson POSTed as a JSON STRING"() {
         given:
         enableWrite()
-        stubRawPage('<html><script>window.HubitatRuleBuilder20AppId = 777;</script></html>')
+        registerAppsList([])
+        stubCreateChild(777)
         def savedGraph = [:]
         stubPostJson { path, body ->
             def b = new JsonSlurper().parseText(body)
@@ -343,28 +376,32 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         when:
         def result = script.toolSetVisualRule([name: 'Graph rule', definition: graphDefinition(), confirm: true])
 
-        then: 'POSTed to the graph endpoint with ruleJson double-encoded'
+        then: 'a 2.0 child was created and POSTed to the graph endpoint with ruleJson double-encoded'
+        rawPaths == [CREATE_2_0]
         posts[0].path == '/app/ruleBuilder20Json/777'
         def body = new JsonSlurper().parseText(posts[0].body as String)
         body.name == 'Graph rule'
         body.ruleJson instanceof String
         def innerGraph = new JsonSlurper().parseText(body.ruleJson as String)
-        innerGraph.nodes*.id == ['n1', 'n2']
+        innerGraph.nodes*.id == GRAPH_IDS
         innerGraph.version == 1
 
         and:
         result.success == true
         result.created == true
         result.format == 'graph'
+        result.version == '2.0'
         result.verified == true
         result.appId == 777
-        result.definition.nodes*.id == ['n1', 'n2']
+        result.definition.nodes*.id == GRAPH_IDS
+        result.activated == true
     }
 
     def "create (graph) echoes hub-side validationErrors with a saved-but note"() {
         given:
         enableWrite()
-        stubRawPage('<html>window.HubitatRuleBuilder20AppId = 778</html>')
+        registerAppsList([])
+        stubCreateChild(778)
         def savedGraph = [:]
         stubPostJson { path, body ->
             def b = new JsonSlurper().parseText(body)
@@ -383,12 +420,15 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.success == true
         result.verified == true
         result.validationErrors == ['node n2 has no device']
+        result.activated == false
         result.note.contains('validation errors')
+        result.note.contains('INACTIVE DRAFT')
     }
 
-    def "create follows the one-redirect shape of createVisualRuleBuilderRule (absolute location URL)"() {
-        given:
+    def "create falls back to the legacy builder-page route, following its absolute redirect, when the versioned child type is missing"() {
+        given: 'no versioned child type: createchild answers the same 302 the builder page does'
         enableWrite()
+        registerAppsList([])
         def paths = rawPaths
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
             paths << path
@@ -403,16 +443,18 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         when:
         def result = script.toolSetVisualRule([name: 'Redirected', definition: classicDefinition(), confirm: true])
 
-        then: 'the redirect target was fetched as a hub-relative path and the create completed'
+        then: 'the versioned route was tried first, then the legacy one, whose redirect was followed'
+        rawPaths == [CREATE_1_0, '/app/createVisualRuleBuilderRule']
         hubGet.calls*.path.contains('/app/ruleBuilder/1234')
         result.success == true
         result.appId == 1234
     }
 
-    def "create with a definition format that mismatches the hub-native format force-deletes the orphan shell"() {
-        given: 'hub creates classic-format children, but the caller supplies a graph definition'
+    def "a graph definition on a hub that can only create 1.0 children is refused and the orphan shell force-deleted"() {
+        given: 'no versioned child type, and the legacy route creates a classic child'
         enableWrite()
-        stubRawPage('<html>window.HubitatRuleBuilderAppId = 555</html>')
+        registerAppsList([])
+        stubLegacyCreateOnly('<html>window.HubitatRuleBuilderAppId = 555</html>')
         hubGet.register('/installedapp/json/555') { params -> '' }  // post-cleanup existence probe: gone
 
         when:
@@ -421,19 +463,20 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         then:
         result.success == false
         result.hubNativeFormat == 'classic'
-        result.error.contains('classic-format rules')
+        result.error.contains('Visual Rule Builder 1.0')
         result.error.contains('graph-format')
         result.note.contains('appId 555')
         result.note.contains('cleaned up')
 
         and: 'the empty child created during the attempt was force-deleted'
-        rawPaths == ['/app/createVisualRuleBuilderRule', '/installedapp/forcedelete/555/quiet']
+        rawPaths == [CREATE_2_0, '/app/createVisualRuleBuilderRule', '/installedapp/forcedelete/555/quiet']
     }
 
     def "create (graph) with paused=true pauses via the dedicated endpoint and verifies the pause state"() {
         given: 'graph hub; the pause endpoint succeeds and the read-back reflects the pause'
         enableWrite()
-        stubRawPage('<html>window.HubitatRuleBuilder20AppId = 800</html>')
+        registerAppsList([])
+        stubCreateChild(800)
         def state800 = [name: null, rulePaused: false, ruleJson: null]
         stubPostJson { path, body ->
             def b = new JsonSlurper().parseText(body)
@@ -462,7 +505,8 @@ class ToolVisualRulesSpec extends ToolSpecBase {
     def "create (graph) with paused=true surfaces a pause-endpoint failure through the verification"() {
         given: 'the save succeeds but the pause endpoint reports failure and the rule reads back unpaused'
         enableWrite()
-        stubRawPage('<html>window.HubitatRuleBuilder20AppId = 802</html>')
+        registerAppsList([])
+        stubCreateChild(802)
         def state802 = [name: null, rulePaused: false, ruleJson: null]
         stubPostJson { path, body ->
             def b = new JsonSlurper().parseText(body)
@@ -488,7 +532,8 @@ class ToolVisualRulesSpec extends ToolSpecBase {
     def "create (graph) whose save the hub rejects cleans up the shell and names the orphan appId"() {
         given:
         enableWrite()
-        stubRawPage('<html>window.HubitatRuleBuilder20AppId = 801</html>')
+        registerAppsList([])
+        stubCreateChild(801)
         stubPostJson { path, body -> [success: false, errorMessage: 'bad graph'] }
         hubGet.register('/installedapp/json/801') { params -> '' }  // post-cleanup existence probe: gone
 
@@ -500,13 +545,14 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.error.contains('Hub rejected the graph save')
         result.error.contains('bad graph')
         result.note.contains('appId 801')
-        rawPaths == ['/app/createVisualRuleBuilderRule', '/installedapp/forcedelete/801/quiet']
+        rawPaths == [CREATE_2_0, '/installedapp/forcedelete/801/quiet']
     }
 
-    def "create returns a structured error when the builder page carries no appId window global"() {
-        given: 'firmware-shape drift: the create page has neither window global'
+    def "create returns a structured error when neither the versioned route nor the builder page yields an appId"() {
+        given: 'firmware-shape drift: no versioned child type, and the create page has neither window global'
         enableWrite()
-        stubRawPage('<html><body>maintenance mode</body></html>')
+        registerAppsList([])
+        stubLegacyCreateOnly('<html><body>maintenance mode</body></html>')
 
         when:
         def result = script.toolSetVisualRule([name: 'X', definition: classicDefinition(), confirm: true])
@@ -521,7 +567,8 @@ class ToolVisualRulesSpec extends ToolSpecBase {
     def "create accepts the definition as a JSON string and round-trips it end-to-end"() {
         given:
         enableWrite()
-        stubRawPage('<html>window.HubitatRuleBuilderAppId = 1300</html>')
+        registerAppsList([])
+        stubCreateChild(1300)
         def savedState = [:]
         stubPostJson { path, body -> savedState.putAll(new JsonSlurper().parseText(body) as Map); null }
         hubGet.register('/app/ruleBuilder20Json/1300') { params -> GRAPH_NOT_FOUND }
@@ -567,7 +614,7 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         'missing name'                         | [definition: [whenNodes: [], thenNodes: [], elseNodes: []], confirm: true]             | 'name is required'
         'missing definition'                   | [name: 'X', confirm: true]                                                              | 'definition is required'
         'definition mixes graph+classic keys'  | [name: 'X', definition: [nodes: [], whenNodes: []], confirm: true]                     | 'mixes graph keys'
-        'definition has neither format'        | [name: 'X', definition: [foo: 'bar'], confirm: true]                                   | 'must be either a graph'
+        'definition has neither format'        | [name: 'X', definition: [foo: 'bar'], confirm: true]                                   | 'must be the editor form'
         'definition string is invalid JSON'    | [name: 'X', definition: 'not json {{{', confirm: true]                                 | 'not valid JSON'
     }
 
@@ -643,9 +690,15 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         }
         def newDefinition = [version: 1,
                              nodes: [[id: 'n1', kind: 'trigger', type: 'switch', config: [switches: [60], switchEvent: 'Turns on']],
+                                     [id: 'trigger-merge', kind: 'merge', type: 'triggerMerge', config: [:]],
+                                     [id: 'decision', kind: 'decision', type: 'all', config: [conditions: []]],
                                      [id: 'n2', kind: 'action', type: 'turnOn', config: [switches: [60]]],
                                      [id: 'n3', kind: 'action', type: 'turnOff', config: [switches: [60]]]],
-                             edges: [[from: 'n1', to: 'n2', port: 'next'], [from: 'n2', to: 'n3', port: 'next']]]
+                             edges: [[from: 'n1', to: 'trigger-merge', port: 'next'],
+                                     [from: 'trigger-merge', to: 'decision', port: 'next'],
+                                     [from: 'decision', to: 'n2', port: 'true'],
+                                     [from: 'n2', to: 'n3', port: 'next']]]
+        def newIds = ['n1', 'trigger-merge', 'decision', 'n2', 'n3']
 
         when:
         def result = script.toolSetVisualRule([appId: 900, definition: newDefinition, confirm: true])
@@ -654,15 +707,15 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         posts[0].path == '/app/ruleBuilder20Json/900'
         def body = new JsonSlurper().parseText(posts[0].body as String)
         body.ruleJson instanceof String
-        new JsonSlurper().parseText(body.ruleJson as String).nodes*.id == ['n1', 'n2', 'n3']
+        new JsonSlurper().parseText(body.ruleJson as String).nodes*.id == newIds
 
         and: 'verified replacement with the prior graph returned as a recovery aid'
         result.success == true
         result.verified == true
         result.created == false
         result.format == 'graph'
-        result.definition.nodes*.id == ['n1', 'n2', 'n3']
-        result.previousDefinition.nodes*.id == ['n1', 'n2']
+        result.definition.nodes*.id == newIds
+        result.previousDefinition.nodes*.id == GRAPH_IDS
     }
 
     def "edit of a never-saved graph omits the unavailable previousDefinition"() {
@@ -1027,20 +1080,25 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.health.ok == false
     }
 
-    def "set attaches health on a FAILURE response that still resolves a rule id (format mismatch) -- issue #254"() {
+    def "set attaches health on a FAILURE response that still resolves a rule id (pre-flight refusal) -- issue #254"() {
         given:
         enableWrite()
         def graphState = [name: 'Hall light', rulePaused: false, ruleJson: '{"version":1,"nodes":[],"edges":[]}',
                           validationErrors: []]
         hubGet.register('/app/ruleBuilder20Json/9') { params -> json(graphState) }
         hubGet.register('/app/ruleBuilderJson/9') { params -> json([graphAppState: true]) }
+        stubPostJson()
 
-        when: "editing a graph rule with a classic-format definition -> success:false but appId is known"
-        def result = script.toolSetVisualRule([appId: 9, definition: classicDefinition(), confirm: true])
+        when: "editing a graph rule with a structurally invalid graph -> success:false but appId is known"
+        def result = script.toolSetVisualRule([appId: 9, definition: [version: 1, nodes: [], edges: []], confirm: true])
 
         then:
         result.success == false
         result.appId == 9
+        result.format == 'graph'
+        result.error.contains('pre-flight validation')
+        result.validationErrors.any { it.contains('at least one trigger') }
+        posts.isEmpty()                  // refused before any hub write
         result.health != null            // health attaches on the failure response too
         result.health.ruleFormat == 'vrb-graph'
     }
@@ -1080,7 +1138,7 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         then:
         result.success == false
         result.format == 'classic'
-        result.error.contains('classic-format')
+        result.error.contains('Visual Rule Builder 1.0')
         result.error.contains('graph-format')
         result.note.contains('hub_get_visual_rule')
         posts.isEmpty()
