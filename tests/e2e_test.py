@@ -2204,19 +2204,26 @@ class TestRunner:
 
     @test("devices")
     def test_list_devices_scope_all(self) -> None:
-        # Item 1 (#257): scope='all' lists EVERY hub device with an mcpAuthorized flag,
-        # sourced from the hub-wide inventory (/device/listWithCapabilities/json, or /hub2/devicesList on
-        # platform 2.5.1.173 and later where that endpoint is gone), not the authorization-scoped Groovy model.
+        # Item 1 (#257): scope='all' lists EVERY hub device with an mcpAuthorized flag, sourced from
+        # the hub-wide inventory, not the authorization-scoped Groovy model. Three tiers:
+        # /device/listWithCapabilities/json, its successor /hub2/vrb/devices on platform 2.5.1.173
+        # and later where that endpoint is gone, then the capability-less /hub2/devicesList.
         result = self.client.call_tool("hub_list_devices", {"scope": "all"})
         assert isinstance(result, dict), "scope='all' did not return an object"
         assert result.get("scope") == "all", f"scope='all' not echoed: {result}"
-        # The fallback contract: the response names its source, and when that source carries no
-        # capabilities it says so rather than letting an empty list read as "no capabilities".
-        assert result.get("source") in ("/device/listWithCapabilities/json", "/hub2/devicesList"), \
-            f"scope='all' must report which inventory endpoint answered: {result.get('source')!r}"
+        # The fallback contract: the response names its source, and only the capability-less last
+        # resort flags partial capabilities rather than letting an empty list read as "none".
+        assert result.get("source") in (
+            "/device/listWithCapabilities/json",
+            "/hub2/vrb/devices",
+            "/hub2/devicesList",
+        ), f"scope='all' must report which inventory endpoint answered: {result.get('source')!r}"
         if result.get("source") == "/hub2/devicesList":
             assert result.get("capabilitiesPartial") is True and result.get("capabilitiesNote"), \
                 f"the /hub2/devicesList fallback must flag partial capabilities: {result}"
+        elif result.get("source") == "/hub2/vrb/devices":
+            assert result.get("capabilitiesPartial") is None, \
+                f"/hub2/vrb/devices carries capabilities, so nothing may be flagged partial: {result}"
         devices = result.get("devices", [])
         assert isinstance(devices, list) and len(devices) > 0, "scope='all' returned no devices"
         assert all("mcpAuthorized" in d for d in devices), \

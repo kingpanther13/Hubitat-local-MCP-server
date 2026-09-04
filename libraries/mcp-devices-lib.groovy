@@ -685,8 +685,9 @@ def _buildContextJson() {
 
 // scope='all' implementation: every hub device + an mcpAuthorized flag. The Groovy device model is
 // authorization-scoped, so an admin endpoint is the only way the app sees devices it isn't granted:
-// /device/listWithCapabilities/json (id/label/capabilities) where it still exists, else the
-// /hub2/devicesList fallback, which lists the same devices WITHOUT capabilities (filled in for
+// /device/listWithCapabilities/json (id/label/capabilities) where it still exists, else its
+// successor /hub2/vrb/devices, which carries the same triple on 2.5.1.173+, else the
+// /hub2/devicesList last resort, which lists the same devices WITHOUT capabilities (filled in for
 // authorized ones only, and reported as source + capabilitiesPartial). Lightweight uniform records
 // (no attributes/commands/currentStates -- those need an MCP-authorized Groovy device).
 private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, format, cursor) {
@@ -700,7 +701,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
     if (format && !["summary", "ids"].contains(resolvedFormat)) {
         throw new IllegalArgumentException("scope='all' supports format 'summary' or 'ids' only (detailed/currentStates require MCP-authorized devices; got '${format}')")
     }
-    // The fallback source exposes no capabilities, so those are filled in from the Groovy model
+    // The last-resort source exposes no capabilities, so those are filled in from the Groovy model
     // where the app has access and left empty where it does not (an unauthorized device's
     // capabilities are simply not knowable from inside the sandbox).
     def inventory = _fetchAllHubDeviceRecords("device", "hub_list_devices scope='all'")
@@ -715,7 +716,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
     def capabilitiesComplete = inventory.capabilities
     def authorizedIds = ((selectedDevices ?: []).collect { it.id?.toString() }.findAll { it != null } as Set)
     (getChildDevices() ?: []).each { def cid = it.id?.toString(); if (cid != null) authorizedIds.add(cid) }
-    // Capability lookup for the fallback source, built once from the authorization-scoped model.
+    // Capability lookup for the capability-less source, built once from the authorization-scoped model.
     def capsById = [:]
     if (!capabilitiesComplete) {
         // Both sources that feed authorizedIds above, so every device tagged mcpAuthorized
@@ -759,7 +760,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
         r.source = sourceEndpoint
         if (!capabilitiesComplete) {
             r.capabilitiesPartial = true
-            r.capabilitiesNote = "The capabilities endpoint (/device/listWithCapabilities/json) did not answer on this hub -- it was removed in platform 2.5.1.173 and later -- so the inventory came from /hub2/devicesList, which carries no capabilities. Capabilities are filled in for mcpAuthorized devices only; an unauthorized device shows an empty list because its capabilities are not visible to the app. capabilityFilter therefore matches authorized devices only."
+            r.capabilitiesNote = "Neither capability-bearing endpoint answered on this hub -- /device/listWithCapabilities/json was removed in platform 2.5.1.173 and later, and its successor /hub2/vrb/devices did not answer either -- so the inventory came from /hub2/devicesList, which carries no capabilities. Capabilities are filled in for mcpAuthorized devices only; an unauthorized device shows an empty list because its capabilities are not visible to the app. capabilityFilter therefore matches authorized devices only."
         }
         if (labelFilter) r.labelFilter = labelFilter
         if (capabilityFilter) r.capabilityFilter = capabilityFilter
@@ -786,7 +787,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
         // Say it plainly rather than let an empty list read as "this device has no capabilities":
         // capabilityFilter can only match authorized devices on this path.
         result.capabilitiesPartial = true
-        result.capabilitiesNote = "The capabilities endpoint (/device/listWithCapabilities/json) did not answer on this hub -- it was removed in platform 2.5.1.173 and later -- so the inventory came from /hub2/devicesList, which carries no capabilities. Capabilities are filled in for mcpAuthorized devices only; an unauthorized device shows an empty list because its capabilities are not visible to the app. capabilityFilter therefore matches authorized devices only."
+        result.capabilitiesNote = "Neither capability-bearing endpoint answered on this hub -- /device/listWithCapabilities/json was removed in platform 2.5.1.173 and later, and its successor /hub2/vrb/devices did not answer either -- so the inventory came from /hub2/devicesList, which carries no capabilities. Capabilities are filled in for mcpAuthorized devices only; an unauthorized device shows an empty list because its capabilities are not visible to the app. capabilityFilter therefore matches authorized devices only."
     }
     if (labelFilter) result.labelFilter = labelFilter
     if (capabilityFilter) result.capabilityFilter = capabilityFilter

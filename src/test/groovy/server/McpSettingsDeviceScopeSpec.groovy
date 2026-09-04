@@ -791,8 +791,27 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    // Platform 2.5.1.173 and later removed /device/listWithCapabilities/json (confirmed on .173/.174). Id validation falls back to
-    // /hub2/devicesList, which carries every device id -- all this check needs.
+    // Platform 2.5.1.173 and later removed /device/listWithCapabilities/json (confirmed on .173/.174).
+    // Id validation falls back to its successor /hub2/vrb/devices, then to /hub2/devicesList -- all
+    // three carry every device id, which is all this check needs.
+
+    def "selectedDevices validation accepts an id known only via the vrb tier"() {
+        given:
+        enableDevModeAndWrite()
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params ->
+            JsonOutput.toJson([[id: 11, label: "Eleven", capabilities: ["Switch"]]])
+        }
+        hubGet.register('/hub2/devicesList') { params -> throw new RuntimeException("must not be reached") }
+
+        when:
+        def result = setScope([11])
+
+        then: "the successor endpoint carries ids, so validation never reaches devicesList"
+        result.success == true
+        sharedAppStub.settingsStore['selectedDevices'] == [type: 'capability.*', value: ['11']]
+        hubGet.calls.any { it.path == '/hub2/vrb/devices' }
+    }
 
     def "selectedDevices validation falls back when the capabilities endpoint answers EMPTY (#body)"() {
         given:

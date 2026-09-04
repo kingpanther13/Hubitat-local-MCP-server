@@ -7340,9 +7340,12 @@ private List _flattenHub2DeviceTree(nodes, List acc = null) {
 
 // Every hub device, authorized or not -- shared by hub_list_devices(scope='all') and the
 // selectedDevices validation, which is why it lives here and not in either library.
-// /device/listWithCapabilities/json carries capabilities but is gone as of platform 2.5.1.173 and
-// later (404; confirmed on .173 and .174). /hub2/devicesList survives and is still a superset of
-// the authorized set, but exposes no capabilities.
+// Three tiers, capability-bearing first. /device/listWithCapabilities/json carries capabilities but
+// is gone as of platform 2.5.1.173 and later (404; confirmed on .173, .174 and .181).
+// /hub2/vrb/devices is its successor -- the VRB 2.0 device picker feed, a flat array whose
+// {id, label, capabilities} triple is the same shape over the same full (not authorization-scoped)
+// inventory, child devices included. /hub2/devicesList is the last resort: still a superset of the
+// authorized set, but it exposes no capabilities.
 // Returns [source, capabilities, records]. On failure records is null and `failure` is "fetch"
 // (with the exception message in fetchError) or "shape" -- which covers a missing body and a
 // missing `devices` key, both of which flatten to null. A well-formed inventory with no devices is
@@ -7356,9 +7359,27 @@ private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
             return [source: "/device/listWithCapabilities/json", capabilities: true, records: parsed]
         }
         // A 200 that is not a device list is contract drift; say so rather than fall through silently.
-        mcpLog("debug", logCategory, "${logPrefix}: /device/listWithCapabilities/json answered with ${txt ? 'an empty or non-list body' : 'no body'} -- falling back to /hub2/devicesList")
+        mcpLog("debug", logCategory, "${logPrefix}: /device/listWithCapabilities/json answered with ${txt ? 'an empty or non-list body' : 'no body'} -- trying /hub2/vrb/devices")
     } catch (Exception e) {
-        mcpLog("debug", logCategory, "${logPrefix}: /device/listWithCapabilities/json unavailable (${e.message}) -- falling back to /hub2/devicesList")
+        mcpLog("debug", logCategory, "${logPrefix}: /device/listWithCapabilities/json unavailable (${e.message}) -- trying /hub2/vrb/devices")
+    }
+    try {
+        def txt = hubInternalGet("/hub2/vrb/devices")
+        def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "[]")
+        // Every entry must be a Map with an id before this counts as the device feed: anything
+        // else (an error object, an HTML body that happens to parse, a firmware contract move) is
+        // safer read as "absent" than as a short inventory, since callers treat the records as the
+        // whole hub. The feed also carries temperature/lightEffects/supportedFanSpeeds/buttonCount,
+        // which are projected away so the records match the removed primary's shape exactly.
+        if (txt && parsed instanceof List && !parsed.isEmpty() && parsed.every { it instanceof Map && it.id != null }) {
+            def projected = parsed.collect {
+                [id: it.id, label: it.label, capabilities: (it.capabilities instanceof List ? it.capabilities : [])]
+            }
+            return [source: "/hub2/vrb/devices", capabilities: true, records: projected]
+        }
+        mcpLog("debug", logCategory, "${logPrefix}: /hub2/vrb/devices answered with ${txt ? 'an empty or unrecognized body' : 'no body'} -- falling back to /hub2/devicesList")
+    } catch (Exception e) {
+        mcpLog("debug", logCategory, "${logPrefix}: /hub2/vrb/devices unavailable (${e.message}) -- falling back to /hub2/devicesList")
     }
     def records
     try {
@@ -7376,9 +7397,9 @@ private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
     }
     // An empty list here is a hub with no devices, and is reported as one: the read failures are
     // already separated above -- no body or a missing `devices` key flattens to null and returns
-    // "shape", so nothing ambiguous reaches this point. (The PRIMARY endpoint's empty answer is
-    // different: it is dead on 2.5.1.173+ and answers empty, so that path falls through to here
-    // rather than passing zero devices off as the truth.)
+    // "shape", so nothing ambiguous reaches this point. (The two capability-bearing tiers above
+    // treat an empty answer differently: a dead endpoint on 2.5.1.173+ can answer empty, so those
+    // paths fall through to here rather than passing zero devices off as the truth.)
     if (records.isEmpty()) {
         mcpLog("debug", logCategory, "${logPrefix}: /hub2/devicesList reports no devices on this hub")
     }

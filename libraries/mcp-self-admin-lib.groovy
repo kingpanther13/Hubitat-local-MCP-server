@@ -265,9 +265,9 @@ private Map _validateMcpDeviceScope(scopeValue) {
     // present (or no longer exists on the hub) is a harmless no-op, and forcing an unknown-id read
     // fetch there would block a legitimate cleanup of a since-deleted device.
     if (mode in ["replace", "add"] && !requestedIds.isEmpty()) {
-        // Same two-source fallback as hub_list_devices scope='all' (_fetchAllHubDeviceRecords).
-        // Only ids are needed here, which both endpoints carry, so the missing capabilities on the
-        // fallback source do not affect validation.
+        // Same three-source fallback as hub_list_devices scope='all' (_fetchAllHubDeviceRecords).
+        // Only ids are needed here, which all three endpoints carry, so the missing capabilities on
+        // the last-resort source do not affect validation.
         // isError:true on the failure paths so handleToolsCall hoists them onto the JSON-RPC
         // envelope -- a failed validation that wrote nothing must reach the client AS an error,
         // not a quiet result.
