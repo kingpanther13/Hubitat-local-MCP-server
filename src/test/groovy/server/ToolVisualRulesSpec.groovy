@@ -1134,7 +1134,7 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         then:
         result.success == false
         result.format == 'classic'
-        result.error.contains('Visual Rule Builder 1.0')
+        result.error.startsWith('Rule 42 is a Visual Rule Builder 1.0 rule')
         result.error.contains('graph-format')
         result.note.contains('hub_get_visual_rule')
         posts.isEmpty()

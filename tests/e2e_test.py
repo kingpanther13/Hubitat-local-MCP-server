@@ -2222,8 +2222,14 @@ class TestRunner:
             assert result.get("capabilitiesPartial") is True and result.get("capabilitiesNote"), \
                 f"the /hub2/devicesList fallback must flag partial capabilities: {result}"
         elif result.get("source") == "/hub2/vrb/devices":
-            assert result.get("capabilitiesPartial") is None, \
-                f"/hub2/vrb/devices carries capabilities, so nothing may be flagged partial: {result}"
+            # The feed carries capabilities; partial is flagged only when the devicesList
+            # cross-check found devices the feed omitted, and then the note must say so.
+            if result.get("capabilitiesPartial"):
+                assert "/hub2/vrb/devices" in (result.get("capabilitiesNote") or ""), \
+                    f"a partial /hub2/vrb/devices inventory must explain the omission: {result}"
+            else:
+                assert result.get("capabilitiesPartial") is None, \
+                    f"/hub2/vrb/devices carries capabilities, so nothing may be flagged partial: {result}"
         devices = result.get("devices", [])
         assert isinstance(devices, list) and len(devices) > 0, "scope='all' returned no devices"
         assert all("mcpAuthorized" in d for d in devices), \
@@ -8081,30 +8087,23 @@ class TestRunner:
 
     @test("visual_rules")
     def test_visual_rule_classic_lifecycle(self) -> None:
-        # Full VRB round-trip: create (classic-first, with one graph retry for a hub
-        # that will not host a 1.0 rule), read back via the pure-read gateway, list,
-        # rename+pause, resume, wholesale replace, delete-with-verify.
+        # Full VRB round-trip: create from a classic definition (a 1.0 rule, or a translated
+        # 2.0 rule on a hub that only builds 2.0 children), read back via the pure-read
+        # gateway, list, rename+pause, resume, wholesale replace, delete-with-verify.
         switch_id = int(self.get_test_switch_id())
         name = f"{PREFIX}VisualRule"
 
-        def _create_with_retry() -> Any:
-            r = self.client.call_tool("hub_manage_rule_machine", {
+        def _create() -> Any:
+            # A classic definition creates a 1.0 rule where the hub offers that builder; on a
+            # 2.0-only hub the tool translates it up (format 'graph', translatedFrom 'classic')
+            # rather than refusing, so there is no retry branch -- every outcome is a rule.
+            return self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_set_visual_rule",
                 "args": {"name": name, "confirm": True,
                          "definition": self._vrb_definition("classic", switch_id, "Turns off")}})
-            if r.get("success") is False and r.get("hubNativeFormat") == "graph":
-                # This hub's builder refused the classic definition and reports graph as
-                # its native format (the tool already force-deleted the orphan shell);
-                # retry once with the equivalent graph definition so the lifecycle still
-                # executes deterministically.
-                r = self.client.call_tool("hub_manage_rule_machine", {
-                    "tool": "hub_set_visual_rule",
-                    "args": {"name": name, "confirm": True,
-                             "definition": self._vrb_definition("graph", switch_id, "Turns off")}})
-            return r
 
         cw = self._soft_write(
-            _create_with_retry,
+            _create,
             lambda: self._find_visual_rule_id_by_name(name),
             "hub_set_visual_rule create",
         )
@@ -8268,22 +8267,16 @@ class TestRunner:
         switch_id = int(self.get_test_switch_id())
         name = f"{PREFIX}VrbRestore"
 
-        def _create_with_retry() -> Any:
-            r = self.client.call_tool("hub_manage_rule_machine", {
+        def _create() -> Any:
+            # Same contract as the lifecycle test: classic -> 1.0 rule, or translated to 2.0 on a
+            # hub that can only build 2.0 children. No retry branch exists.
+            return self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_set_visual_rule",
                 "args": {"name": name, "confirm": True,
                          "definition": self._vrb_definition("classic", switch_id, "Turns off")}})
-            if r.get("success") is False and r.get("hubNativeFormat") == "graph":
-                # Same graph fallback as the lifecycle test, for a hub that will not
-                # host a 1.0 rule (the tool already force-deleted the orphan shell).
-                r = self.client.call_tool("hub_manage_rule_machine", {
-                    "tool": "hub_set_visual_rule",
-                    "args": {"name": name, "confirm": True,
-                             "definition": self._vrb_definition("graph", switch_id, "Turns off")}})
-            return r
 
         cw = self._soft_write(
-            _create_with_retry,
+            _create,
             lambda: self._find_visual_rule_id_by_name(name),
             "hub_set_visual_rule create (backup-restore fixture)",
         )

@@ -329,8 +329,6 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         'a missing triggerMerge'         | { it.nodes.remove(1) }                      | 'exactly one triggerMerge node'
         'a missing decision'             | { it.nodes.remove(2) }                      | 'exactly one decision node'
         'zero triggers'                  | { it.nodes.remove(0) }                      | 'at least one trigger node'
-        'an unknown action type'         | { it.nodes[3].type = 'bogusAction' }        | "Action node 'a1' has unsupported type 'bogusAction'."
-        'an unknown trigger type'        | { it.nodes[0].type = 'bogusTrigger' }       | "Trigger node 't1' has unsupported type 'bogusTrigger'."
         'a 1.0-shaped node'              | { it.nodes[0] = [id: 't1', type: 'switch', deviceIds: [59]] } | "Node 't1' has unsupported kind 'null'."
         'a missing config'               | { it.nodes[0].remove('config') }            | "Node 't1' config must be an object."
         'a duplicate node id'            | { it.nodes[3].id = 't1' }                   | "Duplicate node id 't1'."
@@ -411,10 +409,168 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         when:
         def errors = script._vrb2Validate(graph)
 
-        then:
-        errors.any { it == "Condition 'c1' has unsupported type 'bogusCondition'." }
+        then: 'the structural problem is an error; the unknown type name is only advisory'
+        !errors.any { it.contains('bogusCondition') }
         errors.any { it == "Duplicate condition id 'c1'." }
+        script._vrb2CatalogWarnings(graph).any { it.contains("Condition 'c1' has type 'bogusCondition'") }
     }
+
+    def "unknown type names and an action-less rule are advisory warnings, never pre-flight errors"() {
+        given: 'firmware may know a type this build does not -- the hub is the oracle'
+        def graph = validGraph()
+        graph.nodes[0].type = 'newFirmwareTrigger'
+        graph.nodes[3].type = 'newFirmwareAction'
+
+        expect:
+        script._vrb2Validate(graph).isEmpty()
+        script._vrb2CatalogWarnings(graph).any { it.startsWith("Trigger node 't1' has type 'newFirmwareTrigger'") }
+        script._vrb2CatalogWarnings(graph).any { it.startsWith("Action node 'a1' has type 'newFirmwareAction'") }
+
+        and: 'a valid rule with no action anywhere is flagged too (the hub activates it; it does nothing)'
+        def idle = validGraph()
+        idle.nodes.remove(3)
+        idle.edges.remove(2)
+        script._vrb2Validate(idle).isEmpty()
+        script._vrb2CatalogWarnings(idle).any { it.contains('no action on any branch') }
+    }
+
+    def "one bad hop in a chain is reported once, not as every downstream node being disconnected"() {
+        given: 'THEN chain routed into the trigger merge; a2 hangs off a1 and is perfectly wired'
+        def graph = validGraph()
+        graph.nodes << [id: 'a2', kind: 'action', type: 'turnOn', config: [switches: [59]]]
+        graph.edges << [from: 'a1', to: 'a2', port: 'next']
+        graph.edges[2].to = 'tm'
+
+        when:
+        def errors = script._vrb2Validate(graph)
+
+        then:
+        errors.any { it == "Expected action node 'tm'." }
+        !errors.any { it.contains('is not connected') }
+    }
+
+    def "compose refuses unknown top-level editor keys instead of silently reading them as empty"() {
+        when: 'a typo that would otherwise turn a gated rule into an unconditional one'
+        script._vrb2Compose([triggers: [[type: 'switch', config: [switches: [1], switchEvent: 'Turns on']]],
+                             conditons: [[type: 'switchCondition', config: [switches: [2], switchState: 'Turned on']]],
+                             decisionTyp: 'any',
+                             thenActions: [[type: 'turnOn', config: [switches: [9]]]]])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('Unknown editor key(s): conditons, decisionTyp')
+    }
+
+    def "compose refuses a node that mixes the 2.0 and 1.0 item shapes instead of composing an empty config"() {
+        when:
+        script._vrb2Compose([triggers: [[triggerType: 'switch', config: [switches: [7], switchEvent: 'Turns on']]],
+                             thenActions: [[type: 'turnOn', config: [switches: [9]]]]])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("triggers[0] mixes the 2.0 shape")
+    }
+
+    def "a hub-authored graph with a branchMerge and an EMPTY common tail round-trips unchanged"() {
+        given: 'not something compose emits on its own -- the hub accepts it (live-verified), so read -> edit -> write must keep it'
+        def graph = validGraph()
+        graph.nodes << [id: 'bm', kind: 'merge', type: 'branchMerge', config: [:]]
+        graph.edges << [from: 'a1', to: 'bm', port: 'next']
+        graph.edges << [from: 'd1', to: 'bm', port: 'false']
+
+        when:
+        def editor = script._vrb2Decompose(graph)
+        def back = script._vrb2Compose(editor)
+
+        then:
+        editor.commonActions == []
+        editor.structureIds.branchMerge == 'bm'
+        back.nodes.find { it.type == 'branchMerge' }?.id == 'bm'
+        back.edges.find { it.from == 'a1' }.to == 'bm'
+        back.edges.find { it.from == 'd1' && it.port == 'false' }.to == 'bm'
+        script._vrb2Validate(back).isEmpty()
+    }
+
+    def "classic translation orders nodes by their index, not by array position"() {
+        given:
+        def classic = [whenNodes: [[triggerType: 'switch', switches: [1], deviceIds: [1], switchEvent: 'Turns on', index: 0, type: 'when']],
+                       thenNodes: [[actionType: 'turnOff', switches: [2], deviceIds: [2], index: 1, type: 'then'],
+                                   [actionType: 'turnOn', switches: [3], deviceIds: [3], index: 0, type: 'then']],
+                       elseNodes: []]
+
+        when:
+        def graph = script._vrbClassicToGraph(classic)
+
+        then:
+        graph.nodes.findAll { it.kind == 'action' }*.type == ['turnOn', 'turnOff']
+    }
+
+    def "a graph read prefers the hub's parsed graphDocument and refuses a ruleJson that is not an object"() {
+        given:
+        def graph = script._vrb2Compose(editorDefinition())
+        hubGet.register('/app/ruleBuilder20Json/843') { params ->
+            json([name: 'Doc first', rulePaused: false, ruleJson: '{"version":1,"nodes":[],"edges":[]}', graphDocument: graph, validationErrors: []])
+        }
+        hubGet.register('/app/ruleBuilder20Json/844') { params ->
+            json([name: 'Array body', rulePaused: false, ruleJson: '[1,2,3]', validationErrors: []])
+        }
+
+        expect: 'graphDocument wins over the string'
+        script.toolGetVisualRule([appId: 843]).definition.nodes.size() == graph.nodes.size()
+
+        and: 'an array is reported, not handed back as a success with nothing in it'
+        def arr = script.toolGetVisualRule([appId: 844])
+        arr.success == true
+        !arr.containsKey('definition')
+        !arr.containsKey('editor')
+        arr.definitionParseError.contains('not a JSON object')
+    }
+
+    def "a create whose read-back finds no rule reports activated=false, never true beside verified=false"() {
+        given: 'the POST is accepted but the read-back answers not-found'
+        enableWrite()
+        registerAppsList([])
+        stubCreateChild(845)
+        stubPostJson { path, body -> [name: 'Vanished', ruleJson: '{}', validationErrors: []] }
+        hubGet.register('/app/ruleBuilder20Json/845') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/845') { params -> '{}' }
+
+        when:
+        def result = script.toolSetVisualRule([name: 'Vanished', definition: editorDefinition(), confirm: true])
+
+        then:
+        result.success == false
+        result.verified == false
+        result.activated == false
+    }
+
+    def "a create surfaces catalog warnings and the route that made the child"() {
+        given: 'an action type this build does not know -- the hub decides, we only warn'
+        enableWrite()
+        registerAppsList([])
+        stubCreateChild(846)
+        def state = [name: null, ruleJson: null]
+        stubPostJson { path, body ->
+            def b = new JsonSlurper().parseText(body)
+            state.name = b.name
+            state.ruleJson = b.ruleJson
+            [name: b.name, ruleJson: b.ruleJson, validationErrors: []]
+        }
+        hubGet.register('/app/ruleBuilder20Json/846') { params ->
+            json([name: state.name, rulePaused: false, ruleJson: state.ruleJson, validationErrors: []])
+        }
+
+        when:
+        def result = script.toolSetVisualRule([name: 'Future type', confirm: true, definition: [
+            triggers: [[type: 'switch', config: [switches: [1], switchEvent: 'Turns on']]],
+            thenActions: [[type: 'brandNewAction', config: [switches: [9]]]]]])
+
+        then:
+        result.success == true
+        result.createRoute == 'createchild'
+        result.preflightWarnings.any { it.contains("has type 'brandNewAction'") }
+    }
+
 
     def "_vrb2Validate requires at least one condition on an OR decision"() {
         given:

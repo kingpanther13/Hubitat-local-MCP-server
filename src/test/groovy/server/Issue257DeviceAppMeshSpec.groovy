@@ -335,6 +335,49 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
     // {id, label, capabilities} triple over the same full inventory, so capabilities survive the
     // removal of /device/listWithCapabilities/json on 2.5.1.173+.
 
+    def "scope='all' appends devices the vrb feed omits from /hub2/devicesList and flags the result partial"() {
+        given: 'a picker feed that filtered one device out'
+        settingsMap.selectedDevices = [dev(id: 80)]
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params ->
+            JsonOutput.toJson([[id: 80, label: "Authorized Switch", capabilities: ["Switch"]]])
+        }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [
+                [key: "DEV-80", data: [id: 80, name: "Authorized Switch"], children: []],
+                [key: "DEV-77", data: [id: 77, name: "Filtered Out"], children: []]]])
+        }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then: 'the omitted device is still an inventory member, without capabilities, and the caller is told why'
+        result.source == "/hub2/vrb/devices"
+        result.total == 2
+        result.devices.find { it.id == "77" }.label == "Filtered Out"
+        result.devices.find { it.id == "77" }.capabilities == []
+        result.capabilitiesPartial == true
+        result.capabilitiesNote.contains("/hub2/vrb/devices")
+        result.capabilitiesNote.contains("omitted 1 device")
+    }
+
+    def "scope='all' falls past a vrb feed whose entries carry no capabilities list"() {
+        given:
+        settingsMap.selectedDevices = [dev(id: 80)]
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 80, label: "Authorized Switch"]]) }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [[key: "DEV-80", data: [id: 80, name: "Authorized Switch"], children: []]]])
+        }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then: 'a feed that cannot vouch for capabilities is not adopted as the capability source'
+        result.source == "/hub2/devicesList"
+        result.capabilitiesPartial == true
+    }
+
     def "scope='all' takes the vrb tier when the capabilities endpoint is gone"() {
         given:
         settingsMap.selectedDevices = [dev(id: 80)]
@@ -348,7 +391,12 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
                 [id: 99, label: "Unauthorized Motion", capabilities: ["MotionSensor"], temperature: 71, lightEffects: null, supportedFanSpeeds: null, buttonCount: null]
             ])
         }
-        hubGet.register('/hub2/devicesList') { params -> throw new RuntimeException("must not be reached") }
+        // The tier cross-checks the feed against the full tree; here they agree.
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [
+                [key: "DEV-80", data: [id: 80, name: "Authorized Switch"], children: [[key: "DEV-81", data: [id: 81, name: "Child Of 80"], children: []]]],
+                [key: "DEV-99", data: [id: 99, name: "Unauthorized Motion"], children: []]]])
+        }
 
         when:
         def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")

@@ -7371,9 +7371,28 @@ private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
         // safer read as "absent" than as a short inventory, since callers treat the records as the
         // whole hub. The feed also carries temperature/lightEffects/supportedFanSpeeds/buttonCount,
         // which are projected away so the records match the removed primary's shape exactly.
-        if (txt && parsed instanceof List && !parsed.isEmpty() && parsed.every { it instanceof Map && it.id != null }) {
-            def projected = parsed.collect {
-                [id: it.id, label: it.label, capabilities: (it.capabilities instanceof List ? it.capabilities : [])]
+        if (txt && parsed instanceof List && !parsed.isEmpty() && parsed.every { it instanceof Map && it.id != null && it.capabilities instanceof List }) {
+            def projected = parsed.collect { [id: it.id, label: it.label, capabilities: it.capabilities] }
+            // This is a picker feed adopted as the whole-hub inventory. Cross-check it against
+            // /hub2/devicesList: a device the feed omits is appended without capabilities and
+            // the result is flagged partial, so selectedDevices validation can never call a real
+            // device "unknown" because the picker filtered it. A failed cross-check keeps the feed.
+            def extras = []
+            try {
+                def dl = new groovy.json.JsonSlurper().parseText(hubInternalGet("/hub2/devicesList") ?: "{}")
+                def flat = _flattenHub2DeviceTree(dl instanceof Map ? dl.devices : null)
+                if (flat instanceof List) {
+                    def known = (projected.collect { it.id?.toString() }) as Set
+                    extras = flat.findAll { it.id != null && !known.contains(it.id.toString()) }
+                            .collect { [id: it.id, label: it.label, capabilities: []] }
+                }
+            } catch (Exception e) {
+                mcpLog("debug", logCategory, "${logPrefix}: /hub2/devicesList cross-check of /hub2/vrb/devices failed (${e.message}); using the feed as-is")
+            }
+            if (extras) {
+                mcpLog("warn", logCategory, "${logPrefix}: /hub2/vrb/devices omitted ${extras.size()} device(s) present in /hub2/devicesList; appended without capabilities")
+                return [source: "/hub2/vrb/devices", capabilities: false, records: projected + extras,
+                        partialNote: "The Visual Rule Builder device feed (/hub2/vrb/devices) omitted ${extras.size()} device(s) that /hub2/devicesList lists; those were appended without capabilities, so capabilityFilter cannot match them."]
             }
             return [source: "/hub2/vrb/devices", capabilities: true, records: projected]
         }
@@ -9609,7 +9628,7 @@ hub_set_visual_rule(name="Hall light", confirm=true, definition={
 })
 ```
 
-**Edit flow** — read, modify, send back. `hub_get_visual_rule(appId=N)` returns `editor` alongside `definition`; change that map and pass it as `definition`. Keep its `structureIds` if you want the merge/decision node ids preserved across the edit. The definition always replaces the rule WHOLESALE; there is no partial patch.
+**Edit flow** — read, modify, send back. `hub_get_visual_rule(appId=N)` returns `editor` alongside `definition`; change that map and pass it as `definition`. Keep its `structureIds` so the merge/decision node ids (and a `branchMerge` whose common tail you emptied) survive the edit unchanged. The definition always replaces the rule WHOLESALE; there is no partial patch.
 
 ### The graph document (what actually goes on the wire)
 
@@ -9629,7 +9648,7 @@ trigger --+                              --false-> linear ELSE chain --+--> opti
 
 Ports by source: trigger `next`, `triggerMerge` `next`, decision `true` / `false`, action `next`, `branchMerge` `next`. Default structure ids are `trigger-merge`, `decision`, `branch-merge`. `branchMerge` is merge-any continuation, not a synchronization barrier — only the branch that ran continues through it.
 
-Pre-flight validation runs BEFORE anything is created or saved; on failure the call is rejected as an invalid-params error (JSON-RPC -32602) whose message lists every problem, and no child app is created. (Only the legacy-create fallback, where a shell already exists, answers `success: false` + `validationErrors` after cleaning that shell up.) It rejects a `version` other than the integer 1; a non-array `nodes`/`edges`; a blank, duplicate, or unknown-in-an-edge node id; a `kind` outside trigger/merge/decision/action; a missing or non-object `config`; a `type` outside the catalogs below; zero triggers; anything but exactly one `triggerMerge` and one decision; a second `branchMerge`; an `any` decision with no conditions; duplicate condition ids; a wrong or duplicated port, or two edges leaving one node on the same port (fan-out); a node reached by more than one path (the two structural exceptions: trigger paths converge only at the triggerMerge, and the then/else branches rejoin only at the branchMerge); a declared node the flow never reaches; a branch that fails to reach the branchMerge when one exists; a trigger not wired to the trigger merge, or a trigger merge not wired to the decision; a non-action node in a branch chain; and cycles. It does NOT check config CONTENTS (device ids, enum spelling, ranges) — the hub validator owns that and answers with its own `validationErrors` on the save.
+Pre-flight validation runs BEFORE anything is created or saved; on failure the call is rejected as an invalid-params error (JSON-RPC -32602) whose message lists every problem, and no child app is created. (Only the legacy-create fallback, where a shell already exists, answers `success: false` + `validationErrors` after cleaning that shell up.) It rejects a `version` other than the integer 1; a non-array `nodes`/`edges`; a blank, duplicate, or unknown-in-an-edge node id; a `kind` outside trigger/merge/decision/action; a missing or non-object `config`; a `type` outside the catalogs below; zero triggers; anything but exactly one `triggerMerge` and one decision; a second `branchMerge`; an `any` decision with no conditions; duplicate condition ids; a wrong or duplicated port, or two edges leaving one node on the same port (fan-out); a node reached by more than one path (the two structural exceptions: trigger paths converge only at the triggerMerge, and the then/else branches rejoin only at the branchMerge); a declared node the flow never reaches; a branch that fails to reach the branchMerge when one exists; a trigger not wired to the trigger merge, or a trigger merge not wired to the decision; a non-action node in a branch chain; and cycles. It does NOT check config CONTENTS (device ids, enum spelling, ranges), and it does not refuse a trigger/condition/action `type` outside the catalogs below — newer firmware may know it, so that comes back as `preflightWarnings` (so does a rule with no action on any branch) and the hub validator owns the verdict, answering with its own `validationErrors` on the save. The editor form's key set is closed: a misspelled key (`conditons`) is refused rather than silently read as "none".
 
 ### Trigger catalog (2.0)
 
@@ -9735,7 +9754,7 @@ The serialized document is capped at 100,000 UTF-8 bytes; an oversized one is no
 
 ### Classic 1.0 (legacy hubs)
 
-`{whenNodes: [...], thenNodes: [...], elseNodes: [...]}`. Every node is flat: `triggerType` (or `actionType`), the per-type field keys (the same ones the 2.0 tables list), `deviceIds` mirroring the device array, `index` (0-based per list), `type` ("when"/"then"/"else"), optional `description`. Example: `{"triggerType": "switch", "switches": [59], "deviceIds": [59], "switchEvent": "Turns off", "index": 0, "type": "when"}` / `{"actionType": "turnOff", "switches": [122], "deviceIds": [122], "index": 0, "type": "then"}`. At least one whenNode must be a REAL trigger — a rule whose only whenNodes are `timeIsBetween`/`daysOfWeek` is refused.
+`{whenNodes: [...], thenNodes: [...], elseNodes: [...]}`. Every node is flat: `triggerType` (or `actionType`), the per-type field keys, `deviceIds` mirroring the device array, `index` (0-based per list), `type` ("when"/"then"/"else"), optional `description`. The 1.0 field keys match the 2.0 tables with two differences: 1.0 `controlThermostat` uses `setMode`/`mode`, `setFanMode`/`fanMode`, `setHeatingSetpoint`/`heatingSetpoint`, `setCoolingSetpoint`/`coolingSetpoint` (2.0 accepts these legacy names too), and 1.0 has none of the 2.0-only types — the `alarm` trigger, `thermostatModeCondition`, `turnOnAlarm`/`turnOffAlarm`, `setLightEffect`, `setFanSpeed`, `runRule`, and `pushButton`'s `buttonAction`. Example: `{"triggerType": "switch", "switches": [59], "deviceIds": [59], "switchEvent": "Turns off", "index": 0, "type": "when"}` / `{"actionType": "turnOff", "switches": [122], "deviceIds": [122], "index": 0, "type": "then"}`. At least one whenNode must be a REAL trigger — a rule whose only whenNodes are `timeIsBetween`/`daysOfWeek` is refused.
 
 Sending a classic definition to CREATE a rule on a hub that offers both builders makes a 1.0 rule; it is not translated. Translation happens in exactly two places: EDITING an existing 2.0 rule with a classic definition, and the create fallback on firmware whose Visual Rules Builder can make nothing but 2.0 children. The conversion is the same either way — whenNodes whose `triggerType` is in the condition catalog become nested conditions, the rest become triggers, thenNodes/elseNodes become the two branches, the decision is `all` — and the response carries `translatedFrom: 'classic'`. The reverse never happens: 2.0-only structure (an OR decision, a common tail) has no 1.0 expression, so an editor or graph document aimed at 1.0 is refused, not downgraded.
 

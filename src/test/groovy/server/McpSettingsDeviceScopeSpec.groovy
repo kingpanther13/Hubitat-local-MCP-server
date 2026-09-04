@@ -866,10 +866,11 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
         e.message.contains("999")
     }
 
-    def "selectedDevices validation errors when BOTH inventory endpoints fail"() {
+    def "selectedDevices validation errors when ALL THREE inventory endpoints fail"() {
         given:
         enableDevModeAndWrite()
         hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("boom") }
+        hubGet.register('/hub2/vrb/devices') { params -> throw new RuntimeException("boom as well") }
         hubGet.register('/hub2/devicesList') { params -> throw new RuntimeException("boom too") }
 
         when:

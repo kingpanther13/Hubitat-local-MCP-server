@@ -62,10 +62,21 @@ private Map _vrbFetchGraph(Integer appId) {
     if (parsed.runtimeGraph != null) out.runtimeGraph = parsed.runtimeGraph
     // ruleJson is a STRING on the wire (double-encoded graph). Parse it for the tool response;
     // blank means a freshly-created empty rule.
+    // The hub's own loader prefers the already-parsed `graphDocument` when it is present
+    // (`n.graphDocument || parseRuleJson(n.ruleJson)`), so do the same.
     def raw = parsed.ruleJson?.toString()
-    if (raw?.trim()) {
+    if (parsed.graphDocument instanceof Map) {
+        out.definition = parsed.graphDocument
+    } else if (raw?.trim()) {
         try {
-            out.definition = new groovy.json.JsonSlurper().parseText(raw)
+            def doc = new groovy.json.JsonSlurper().parseText(raw)
+            if (doc instanceof Map) {
+                out.definition = doc
+            } else {
+                // A stored array/scalar is not a rule document; say so rather than hand back a
+                // success with no definition, no editor and no note.
+                out.definitionParseError = "ruleJson is not a JSON object (got ${doc instanceof List ? 'an array' : 'a scalar'})."
+            }
         } catch (Exception e) {
             out.definitionParseError = "ruleJson did not parse as JSON: ${e.message}"
         }
@@ -400,6 +411,11 @@ private Map _vrb2EditorItem(def raw, String typeKey, String label) {
     Map node = (Map) raw
     Map out
     if (node.containsKey(typeKey)) {
+        if (node.containsKey("config")) {
+            // {triggerType, config:{...}} would strip `config` as dialog bookkeeping and lose
+            // the whole node; refuse the mix instead of composing an empty node.
+            throw new IllegalArgumentException("${label} mixes the 2.0 shape ({type, config}) with the 1.0 dialog shape ('${typeKey}' plus flat fields) -- use one or the other.")
+        }
         out = _vrb2NodeFromDialog(node, typeKey)
     } else {
         if (node.config != null && !(node.config instanceof Map)) {
@@ -458,10 +474,20 @@ private void _vrb2ChainEdges(List edges, String from, String port, List chain, S
     }
 }
 
+private List _vrb2EditorKeys() {
+    return ["triggers", "conditions", "decisionType", "thenActions", "elseActions", "commonActions", "structureIds"]
+}
+
 private Map _vrb2Compose(Map editor) {
     // Editor form -> 2.0 graph document, with exactly the topology the hub's own Vue builder
     // composes, so a rule authored here is indistinguishable from one drawn in the UI.
     if (editor == null) throw new IllegalArgumentException("The editor definition must be a JSON object.")
+    // A typo such as `conditons` must not silently become "no conditions" (an unconditional
+    // rule that reports verified:true). The key set is closed, so refuse anything outside it.
+    def unknownKeys = editor.keySet().collect { it.toString() }.findAll { !(it in _vrb2EditorKeys()) }
+    if (unknownKeys) {
+        throw new IllegalArgumentException("Unknown editor key(s): ${unknownKeys.join(', ')}. The editor form takes only ${_vrb2EditorKeys().join(', ')}.")
+    }
     def decisionType = editor.decisionType?.toString()?.trim() ?: "all"
     if (!(decisionType in ["all", "any"])) {
         throw new IllegalArgumentException("Unsupported decision type '${decisionType}'. Use 'all' (AND) or 'any' (OR).")
@@ -492,8 +518,12 @@ private Map _vrb2Compose(Map editor) {
     used << triggerMergeId
     def decisionId = structureIds.decision?.toString()?.trim() ?: _vrb2UniqueId("decision", used)
     used << decisionId
+    // The builder emits a branchMerge only when there is a common tail. A DECOMPOSED graph may
+    // carry a branchMerge with an empty tail (the hub accepts one -- live-verified), and sending
+    // that back must not drop the node and re-wire both branches, so an explicit structure id
+    // keeps it.
     def branchMergeId = null
-    if (!commonActions.isEmpty()) {
+    if (!commonActions.isEmpty() || structureIds.branchMerge?.toString()?.trim()) {
         branchMergeId = structureIds.branchMerge?.toString()?.trim() ?: _vrb2UniqueId("branch-merge", used)
         used << branchMergeId
     }
@@ -648,11 +678,10 @@ private List _vrb2Validate(Map graph) {
         if (!(node.config instanceof Map)) errors << "Node '${id}' config must be an object."
         def type = node.type?.toString()
         types[id] = type
-        if (kind == "trigger" && !(type in _vrb2TriggerTypes())) {
-            errors << "Trigger node '${id}' has unsupported type '${node.type}'."
-        } else if (kind == "action" && !(type in _vrb2ActionTypes())) {
-            errors << "Action node '${id}' has unsupported type '${node.type}'."
-        } else if (kind == "merge" && !(type in ["triggerMerge", "branchMerge"])) {
+        // Trigger/action type NAMES are not pre-flighted: firmware extends the catalog, and a
+        // rule drawn in the hub UI with a type this build does not know must still round-trip.
+        // _vrb2CatalogWarnings reports them; the hub validator is the oracle.
+        if (kind == "merge" && !(type in ["triggerMerge", "branchMerge"])) {
             errors << "Merge node '${id}' has unsupported type '${node.type}'."
         } else if (kind == "decision" && node.type != null && !(type in ["all", "any"])) {
             errors << "Decision node '${id}' has unsupported type '${node.type}'."
@@ -690,9 +719,6 @@ private List _vrb2Validate(Map graph) {
                 }
                 if (conditionIds.contains(cid)) { errors << "Duplicate condition id '${cid}'."; return }
                 conditionIds << cid
-                if (!(cond.type?.toString() in _vrb2ConditionTypes())) {
-                    errors << "Condition '${cid}' has unsupported type '${cond.type}'."
-                }
                 if (!(cond.config instanceof Map)) errors << "Condition '${cid}' config must be an object."
             }
         }
@@ -752,16 +778,50 @@ private List _vrb2Validate(Map graph) {
         def terminal = branchMergeIds.size() == 1 ? branchMergeIds[0] : null
         def visited = ([triggerMergeId, decisionId] + triggerIds) as Set
         if (terminal != null) visited << terminal
-        errors.addAll(_vrb2ValidateChain(kinds, nextMap, decisionId, "true", terminal, visited))
-        errors.addAll(_vrb2ValidateChain(kinds, nextMap, decisionId, "false", terminal, visited))
+        def chainErrors = []
+        chainErrors.addAll(_vrb2ValidateChain(kinds, nextMap, decisionId, "true", terminal, visited))
+        chainErrors.addAll(_vrb2ValidateChain(kinds, nextMap, decisionId, "false", terminal, visited))
         if (terminal != null) {
-            errors.addAll(_vrb2ValidateChain(kinds, nextMap, terminal, "next", null, visited))
+            chainErrors.addAll(_vrb2ValidateChain(kinds, nextMap, terminal, "next", null, visited))
         }
+        errors.addAll(chainErrors)
         // The hub rejects disconnected nodes; a declared action the flow never reaches is the
-        // classic authoring slip (a node added, its edge forgotten).
-        idList.findAll { !visited.contains(it) }.each { errors << "Node '${it}' is not connected to the rule's flow." }
+        // classic authoring slip (a node added, its edge forgotten). Only meaningful when every
+        // chain walked to its end and the merge count is sane -- a chain that stopped at a bad hop
+        // leaves its downstream nodes unvisited, and reporting those as disconnected would send
+        // the author adding edges instead of fixing the one real problem.
+        if (chainErrors.isEmpty() && branchMergeIds.size() <= 1) {
+            idList.findAll { !visited.contains(it) }.each { errors << "Node '${it}' is not connected to the rule's flow." }
+        }
     }
     return errors.collect { it.toString() }.unique()
+}
+
+private List _vrb2CatalogWarnings(Map graph) {
+    // Advisory findings the hub will adjudicate: type names outside this build's catalogs (newer
+    // firmware may know them) and a rule with no action anywhere (valid, but does nothing).
+    def warnings = []
+    if (!(graph?.nodes instanceof List)) return warnings
+    def actions = 0
+    graph.nodes.each { node ->
+        if (!(node instanceof Map)) return
+        def id = node.id?.toString()
+        def type = node.type?.toString()
+        if (node.kind == "trigger" && !(type in _vrb2TriggerTypes())) {
+            warnings << "Trigger node '${id}' has type '${type}', which this build does not know; the hub will validate it."
+        } else if (node.kind == "action") {
+            actions++
+            if (!(type in _vrb2ActionTypes())) warnings << "Action node '${id}' has type '${type}', which this build does not know; the hub will validate it."
+        } else if (node.kind == "decision" && node.config instanceof Map && node.config.conditions instanceof List) {
+            node.config.conditions.each { cond ->
+                if (cond instanceof Map && !(cond.type?.toString() in _vrb2ConditionTypes())) {
+                    warnings << "Condition '${cond.id}' has type '${cond.type}', which this build does not know; the hub will validate it."
+                }
+            }
+        }
+    }
+    if (actions == 0) warnings << "The rule has no action on any branch; it will activate but do nothing."
+    return warnings.collect { it.toString() }
 }
 
 private Map _vrbClassicToGraph(Map classic) {
@@ -770,15 +830,20 @@ private Map _vrbClassicToGraph(Map classic) {
     // catalog, in which case it becomes a nested decision condition. The hub validator is the
     // oracle for the result -- _vrb2Validate only pre-flights the shape.
     _vrbValidateClassicShape(classic)
-    def whenNodes = (classic?.whenNodes ?: []) as List
+    // Classic nodes carry a per-list `index`; the arrays are observed in index order, but honour
+    // the field when every node has one so a translation can never reorder the user's actions.
+    def ordered = { List nodes ->
+        (nodes.every { it instanceof Map && it.index instanceof Number }) ? nodes.sort(false) { (it.index as Number).intValue() } : nodes
+    }
+    def whenNodes = ordered((classic?.whenNodes ?: []) as List)
     def conditionTypes = _vrb2ConditionTypes()
     def isCondition = { node -> node instanceof Map && (node.triggerType?.toString() in conditionTypes) }
     return _vrb2Compose([
         triggers: whenNodes.findAll { !isCondition(it) },
         conditions: whenNodes.findAll { isCondition(it) },
         decisionType: "all",
-        thenActions: (classic?.thenNodes ?: []) as List,
-        elseActions: (classic?.elseNodes ?: []) as List,
+        thenActions: ordered((classic?.thenNodes ?: []) as List),
+        elseActions: ordered((classic?.elseNodes ?: []) as List),
         commonActions: []
     ])
 }
@@ -831,7 +896,7 @@ private Map _vrbResolveTargetDefinition(String targetFormat, String definitionFo
         }
         def errors = _vrb2Validate(graph)
         if (errors) return [ok: false, validationErrors: errors]
-        return [ok: true, definition: graph, translatedFrom: translatedFrom]
+        return [ok: true, definition: graph, translatedFrom: translatedFrom, warnings: _vrb2CatalogWarnings(graph)]
     }
     if (definitionFormat == "classic") return [ok: true, definition: definitionMap, translatedFrom: null]
     return [ok: false, formatMismatch: true]
@@ -848,12 +913,17 @@ private Map _vrbPreflightRefusal(Integer appId, List validationErrors, String ex
 }
 
 private Map _vrbFormatMismatchRefusal(Integer appId, String definitionFormat, String extraNote) {
+    // appId == null: a CREATE on firmware whose builder can only make 1.0 children.
+    // appId != null: an EDIT of a rule that is itself 1.0 (the hub may well run both builders).
     def out = [success: false]
     if (appId != null) out.appId = appId
     out.format = "classic"
     out.hubNativeFormat = "classic"
-    out.error = "This hub still runs Visual Rule Builder 1.0, which speaks only the classic format; the definition is ${definitionFormat}-format."
-    def note = "Re-send the rule as a classic definition ({whenNodes, thenNodes, elseNodes}) -- see hub_get_tool_guide(section='visual_rule_reference'). 2.0-only features (OR decisions, a common action tail) cannot be expressed on a 1.0 hub."
+    out.error = appId == null ?
+            "This hub's Visual Rules Builder can only create Visual Rule Builder 1.0 rules, which speak only the classic format; the definition is ${definitionFormat}-format." :
+            "Rule ${appId} is a Visual Rule Builder 1.0 rule, which speaks only the classic format; the definition is ${definitionFormat}-format."
+    def note = "Re-send the rule as a classic definition ({whenNodes, thenNodes, elseNodes}) -- see hub_get_tool_guide(section='visual_rule_reference'). 2.0-only features (OR decisions, a common action tail) have no 1.0 expression" +
+            (appId == null ? " on this hub." : "; to use them, create a new 2.0 rule instead.")
     out.note = extraNote ? "${note} ${extraNote}" : note
     return out
 }
@@ -1065,6 +1135,9 @@ private Map _toolSetVisualRuleImpl(args) {
             def out = _vrbApplySave(created.appId, created.format, name, resolved.definition, hasPaused ? paused : null, false, true)
             if (created.version) out.version = created.version
             if (resolved.translatedFrom) out.translatedFrom = resolved.translatedFrom
+            if (resolved.warnings) out.preflightWarnings = resolved.warnings
+            // Which create route made the child -- the legacy fallback is otherwise invisible.
+            if (created.route) out.createRoute = created.route
             return out
         } catch (Exception e) {
             // Log the ORIGINAL failure before attempting cleanup -- the cleanup helper never
@@ -1105,6 +1178,7 @@ private Map _toolSetVisualRuleImpl(args) {
         try {
             def result = _vrbApplySave(appId, detected.format, name ?: detected.data.name?.toString(), resolved.definition, hasPaused ? paused : null, detected.data.rulePaused == true, false)
             if (resolved.translatedFrom) result.translatedFrom = resolved.translatedFrom
+            if (resolved.warnings) result.preflightWarnings = resolved.warnings
             def previousDefinition = detected.format == "graph" ? detected.data.definition :
                     [whenNodes: detected.data.whenNodes, thenNodes: detected.data.thenNodes, elseNodes: detected.data.elseNodes]
             // A never-saved graph has no prior definition. Omit the optional recovery aid
@@ -1189,7 +1263,9 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
             def failed = [success: false, error: "Hub rejected the graph save: ${saved.errorMessage}",
                           validationErrors: saved.validationErrors, activated: false,
                           note: created ? _vrbTryCleanupShell(appId) : "The rule's previous definition is untouched."]
-            if (saved.storageError != null) failed.storageError = saved.storageError
+            ["storageError", "activationError", "validationIssues", "revision", "referencedDeviceIds"].each { k ->
+                if (saved.containsKey(k) && saved[k] != null) failed[k] = saved[k]
+            }
             return failed
         }
         savedMeta = saved
@@ -1222,18 +1298,22 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
         // VRB2 separates STORAGE from ACTIVATION: an invalid document is stored as an inactive
         // draft. activatedSuccessfully is authoritative when the firmware sends it; otherwise an
         // empty validationErrors list is the only activation evidence available.
+        // A read-back that never happened (after == null) is "unknown", never "the hub did not
+        // say no" -- activated must not read true beside verified:false.
         out.activated = savedMeta?.containsKey("activatedSuccessfully") ?
                 (savedMeta.activatedSuccessfully == true) :
-                (validationErrors.isEmpty() && after?.data?.runtimeActive != false)
+                (after != null && validationErrors.isEmpty() && after.data?.runtimeActive != false)
         if (savedMeta?.activationError != null) out.activationError = savedMeta.activationError
         if (savedMeta?.storageError != null) out.storageError = savedMeta.storageError
-        def issues = savedMeta?.validationIssues ?: after?.data?.validationIssues
+        // Presence, not truthiness: an EMPTY list from the save is a positive statement that this
+        // save produced no issues, and must not be replaced by the read-back's older list.
+        def issues = savedMeta?.containsKey("validationIssues") ? savedMeta.validationIssues : after?.data?.validationIssues
         if (issues) out.validationIssues = issues
         def referenced = savedMeta?.containsKey("referencedDeviceIds") ?
                 savedMeta.referencedDeviceIds : after?.data?.referencedDeviceIds
         if (referenced != null) out.referencedDeviceIds = referenced
         // The opaque optimistic-concurrency token: prefer the one the save just minted.
-        def revision = savedMeta?.revision ?: after?.data?.revision
+        def revision = savedMeta?.containsKey("revision") ? savedMeta.revision : after?.data?.revision
         if (revision != null) out.revision = revision
         if (after?.data?.runtimeGraph != null) out.runtimeGraph = after.data.runtimeGraph
     }
@@ -1369,6 +1449,7 @@ private Map _vrbRestoreFromSnapshot(Map snapshot, String fileName) {
         boolean recreated
         String targetFormat
         String createdVersion = null
+        String createdRoute = null
         // A 1.0 snapshot can be replayed onto a 2.0 target by translating it; the reverse cannot
         // (2.0-only structure has no 1.0 expression), so a graph snapshot on a classic target
         // still refuses.
@@ -1396,6 +1477,7 @@ private Map _vrbRestoreFromSnapshot(Map snapshot, String fileName) {
             recreated = true
             targetFormat = created.format
             createdVersion = created.version
+            createdRoute = created.route
         }
 
         String translatedFrom = null
@@ -1420,6 +1502,7 @@ private Map _vrbRestoreFromSnapshot(Map snapshot, String fileName) {
                    recreated: recreated, backupFile: fileName, format: targetFormat,
                    name: saved.name, rulePaused: saved.rulePaused, verified: saved.verified]
         if (createdVersion) out.version = createdVersion
+        if (createdRoute) out.createRoute = createdRoute
         if (translatedFrom) out.translatedFrom = translatedFrom
         if (saved.containsKey("activated")) out.activated = saved.activated
         if (saved.activationError != null) out.activationError = saved.activationError
