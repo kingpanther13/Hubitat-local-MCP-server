@@ -46,7 +46,15 @@ private Map _vrbFetchGraph(Integer appId) {
     if (parsed.revision != null) out.revision = parsed.revision
     if (parsed.validationIssues != null) out.validationIssues = parsed.validationIssues
     if (parsed.referencedDeviceIds != null) out.referencedDeviceIds = parsed.referencedDeviceIds
-    if (parsed.ruleApps != null) out.ruleApps = parsed.ruleApps
+    if (parsed.ruleApps instanceof List) {
+        // The hub decorates these labels with the same HTML it uses on the apps list
+        // ("<span style='color:red'>*BROKEN*</span>"); strip it like every other label read.
+        out.ruleApps = parsed.ruleApps.collect { app ->
+            (app instanceof Map && app.label != null) ? (app + [label: stripAppConfigHtml(app.label)]) : app
+        }
+    } else if (parsed.ruleApps != null) {
+        out.ruleApps = parsed.ruleApps
+    }
     if (parsed.runtimeGraph != null) out.runtimeGraph = parsed.runtimeGraph
     // ruleJson is a STRING on the wire (double-encoded graph). Parse it for the tool response;
     // blank means a freshly-created empty rule.
@@ -886,16 +894,16 @@ private Map _toolSetVisualRuleImpl(args) {
     def paused = args?.paused == true
 
     if (args?.appId == null) {
-        // CREATE: the hub creates the child (and picks the serialization format); we then save
-        // the caller's definition into it. Both name and definition are required so no unnamed
-        // empty shells are left behind.
+        // CREATE: the definition's shape selects the builder version, we ask the parent for a
+        // child of that version, then save the definition into it. Both name and definition are
+        // required so no unnamed empty shells are left behind.
         if (!name) throw new IllegalArgumentException("name is required when creating a Visual Rule (appId omitted).")
         if (!hasDefinition) throw new IllegalArgumentException("definition is required when creating a Visual Rule. See hub_get_tool_guide(section='visual_rule_reference') for the schema.")
         def normalized = _vrbNormalizeDefinition(args.definition)
         // Pre-flight a 2.0 document BEFORE the child exists, so a malformed definition never
-        // strands an orphan shell. A CLASSIC definition cannot be pre-flighted here: whether it
-        // needs translating depends on the format this firmware's builder creates, which only
-        // _vrbCreateChild can tell us.
+        // strands an orphan shell. A CLASSIC definition needs no 2.0 pre-flight: it is saved
+        // as-is into the 1.0 child it asked for. It is only translated when the create falls
+        // back to firmware that can build nothing but 2.0, and that check runs after the create.
         def preflight = null
         if (normalized.format != "classic") {
             preflight = _vrbResolveTargetDefinition("graph", normalized.format, normalized.map)

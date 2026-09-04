@@ -640,7 +640,7 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         hubGet.register('/app/ruleBuilder20Json/840') { params ->
             json([name: 'Hall light', rulePaused: false, ruleJson: json(graph), validationErrors: [],
                   revision: 'r-7', referencedDeviceIds: [101, 201, 301],
-                  ruleApps: [[id: 42, label: 'Other rule']],
+                  ruleApps: [[id: 42, label: 'Other rule'], [id: 43, label: "Broken rule <span style='color:red'>*BROKEN*</span>"]],
                   runtimeGraph: [triggerCount: 2, actionCount: 3]])
         }
 
@@ -662,7 +662,9 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         and: 'the 2.0 read extras pass through when the firmware sends them'
         result.revision == 'r-7'
         result.referencedDeviceIds == [101, 201, 301]
+        result.ruleApps*.id == [42, 43]
         result.ruleApps[0].label == 'Other rule'
+        result.ruleApps[1].label == 'Broken rule *BROKEN*'
         result.runtimeGraph.triggerCount == 2
     }
 
