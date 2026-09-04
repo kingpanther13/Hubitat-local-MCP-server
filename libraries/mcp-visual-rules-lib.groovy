@@ -192,8 +192,15 @@ private Map _vrbCreateChild(String version) {
             } catch (Exception ignored) { }
         }
         if (appeared.size() == 1) {
-            mcpLog("warn", "vrb", "Versioned create of a Visual Rule Builder ${version} child answered without a usable Location (${e.message}); adopted the child that appeared, app ${appeared[0]}")
-            return [appId: appeared[0] as Integer, format: wantedFormat, version: version, route: "createchild"]
+            // A list delta alone does not prove ownership -- another client could have created a
+            // rule in the same window. Adopt only a child that looks exactly like what this
+            // request would have made: the requested builder version, no name, never saved.
+            def candidate = appeared[0] as Integer
+            if (_vrbIsFreshShell(candidate, version)) {
+                mcpLog("warn", "vrb", "Versioned create of a Visual Rule Builder ${version} child answered without a usable Location (${e.message}); adopted the fresh shell that appeared, app ${candidate}")
+                return [appId: candidate, format: wantedFormat, version: version, route: "createchild"]
+            }
+            throw new IllegalStateException("Versioned create of a Visual Rule Builder ${version} child answered without a usable Location (${e.message}); app ${candidate} appeared meanwhile but is not an empty ${version} shell, so it is not provably this request's -- inspect it with hub_get_visual_rule(appId=${candidate}) and retry.")
         }
         if (appeared.size() > 1) {
             throw new IllegalStateException("Versioned create of a Visual Rule Builder ${version} child answered without a usable Location (${e.message}) and ${appeared.size()} new children appeared (${appeared.join(', ')}); refusing to guess which is ours -- delete the strays with hub_delete_visual_rule and retry.")
@@ -204,6 +211,22 @@ private Map _vrbCreateChild(String version) {
     legacy.version = (legacy.format == "classic") ? "1.0" : "2.0"
     legacy.route = "createVisualRuleBuilderRule"
     return legacy
+}
+
+private boolean _vrbIsFreshShell(Integer appId, String version) {
+    // The signature of a child the versioned create just made and nobody has touched: typed as
+    // that builder version, nameless, and never saved (a 2.0 shell answers the graph endpoint
+    // with a blank ruleJson; a 1.0 shell does not yet answer the classic endpoint at all).
+    def existence = _vrbAppExistence(appId)
+    if (existence.state != "found") return false
+    def info = existence.info
+    if (info.type?.toString() != "Visual Rule Builder ${version}".toString()) return false
+    if (stripAppConfigHtml(info.name)?.toString()?.trim()) return false
+    if (version == "2.0") {
+        def graph = _vrbFetchGraph(appId)
+        return graph != null && !(graph.ruleJson?.toString()?.trim())
+    }
+    return _vrbFetchClassic(appId) == null
 }
 
 private Map _vrbCreateChildLegacy() {
@@ -670,10 +693,16 @@ private List _vrb2Validate(Map graph) {
     def nextMap = [:]
     graph.edges.eachWithIndex { edge, i ->
         if (!(edge instanceof Map)) { errors << "Edge at index ${i} must be an object."; return }
-        def from = edge.from?.toString()
-        def to = edge.to?.toString()
-        def port = edge.port?.toString()
-        if (!from?.trim() || !to?.trim() || !port?.trim()) {
+        // Endpoints and ports are STRINGS on the wire; a numeric `from` that merely prints like a
+        // node id would pass a stringified comparison here and then be stored as an inactive draft.
+        if (!(edge.from instanceof CharSequence) || !(edge.to instanceof CharSequence) || !(edge.port instanceof CharSequence)) {
+            errors << "Edge at index ${i} must have string 'from', 'to' and 'port' values."
+            return
+        }
+        def from = edge.from.toString()
+        def to = edge.to.toString()
+        def port = edge.port.toString()
+        if (!from.trim() || !to.trim() || !port.trim()) {
             errors << "Edge at index ${i} must have nonblank 'from', 'to' and 'port' strings."
             return
         }

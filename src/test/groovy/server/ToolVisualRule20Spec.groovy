@@ -342,6 +342,7 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         'a merge bypassing the decision' | { it.edges[1].to = 'a1' }                   | 'must connect to the decision node'
         'a non-action in a chain'        | { it.edges[2].to = 'tm' }                   | "Expected action node 'tm'."
         'both branches joining on one action' | { it.edges << [from: 'd1', to: 'a1', port: 'false'] } | "Node 'a1' is reached by more than one path"
+        'a numeric edge endpoint'        | { it.nodes[3].id = '7'; it.edges[2].to = 7 } | "Edge at index 2 must have string 'from', 'to' and 'port' values."
     }
 
     def "_vrb2Validate rejects fan-out: two edges leaving the decision on the same port"() {
@@ -531,6 +532,7 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         hubGet.register('/app/ruleBuilder20Json/814') { params ->
             json([name: state.name, rulePaused: false, ruleJson: state.ruleJson, validationErrors: []])
         }
+        hubGet.register('/installedapp/json/814') { params -> json([id: 814, name: '', type: 'Visual Rule Builder 2.0', disabled: false, user: false]) }
 
         when:
         def result = script.toolSetVisualRule([name: 'Adopted', definition: editorDefinition(), confirm: true])
@@ -541,6 +543,38 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         result.version == '2.0'
         rawPaths == [CREATE_2_0]
         posts[0].path == '/app/ruleBuilder20Json/814'
+    }
+
+    def "a versioned create that loses its Location refuses to adopt a child that is not an empty shell of the requested version"() {
+        given: 'the only child that appeared in the window is somebody else\'s -- it already has a name and content'
+        enableWrite()
+        def children = []
+        hubGet.register('/hub2/appsList') { params ->
+            json([apps: [[key: 700, data: [id: 700, appTypeId: 99, name: 'Visual Rules Builder', type: 'Visual Rules Builder', disabled: false],
+                          children: children.collect { [key: it, data: [id: it, name: 'Their rule', type: 'Visual Rule Builder 2.0', disabled: false], children: []] }]]])
+        }
+        def paths = rawPaths
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            paths << path
+            if (path.startsWith('/installedapp/createchild/')) {
+                children << 815
+                return [status: 200, location: null, data: '<html>configure page</html>']
+            }
+            [status: 302, location: '/installedapp/list', data: null]
+        }
+        stubPostJson()
+        hubGet.register('/installedapp/json/815') { params -> json([id: 815, name: 'Their rule', type: 'Visual Rule Builder 2.0', disabled: false, user: false]) }
+        hubGet.register('/app/ruleBuilder20Json/815') { params -> json([name: 'Their rule', rulePaused: false, ruleJson: json(validGraph()), validationErrors: []]) }
+
+        when:
+        def result = script.toolSetVisualRule([name: 'Mine', definition: editorDefinition(), confirm: true])
+
+        then: 'nothing was saved into the other rule, and the legacy route was NOT tried either'
+        result.success == false
+        result.error.contains('not provably this request')
+        result.error.contains('815')
+        posts.isEmpty()
+        rawPaths == [CREATE_2_0]
     }
 
     def "a compose error (OR decision with no conditions) surfaces as the pre-flight -32602, before any hub call"() {
