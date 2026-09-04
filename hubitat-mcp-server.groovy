@@ -476,7 +476,7 @@ def advancedOverridesPage() {
                   description: "e.g. mcp.example.com, hubitat.tailnet-1234.ts.net -- recognized in BOTH modes. Hostnames only; a pasted URL is reduced to its hostname.",
                   required: false
         }
-        section("Slow-write time budgets") {
+        section("Slow-operation time budgets") {
             paragraph "The cloud relay severs a slow /mcp call at a fixed ceiling while the hub keeps running the operation to completion. Modern MCP clients continue slow writes, and the two Logs-page reads that grow with hub size (hub_get_jobs, hub_get_performance_stats), automatically with requestState; legacy clients receive the existing resumable in_progress envelope. The concurrency cap protects the hub from overlapping writes by clients or parallel agents and requires no client token. The relay budget defaults ON (under the relay ceiling); the LAN budget defaults OFF."
             input "maxConcurrentWrites", "number", title: "Maximum concurrent writes (0 = unlimited)",
                   description: "Refuse a new write while this many live write requests are active (default: 2; 1 = fully serial; 0 disables the cap). Reads and read-shaped tool modes do not count; abandoned leases expire automatically.",
@@ -1554,7 +1554,8 @@ def handleResourcesRead(msg) {
 }
 
 // MCP 2026-07-28 request-to-request continuation wrapper. Only modern, explicitly
-// eligible slow writes enter this path; every other call keeps the established
+// eligible slow operations (the write set and, when the transport carries a time
+// budget, the Logs-page reads) enter this path; every other call keeps the established
 // dispatcher below. The first round is deliberately mutation-free so the client
 // possesses requestState before any write can outlive its HTTP response.
 def handleToolsCall(msg) {
@@ -1592,6 +1593,12 @@ def handleToolsCall(msg) {
                 binding, reqT0, reactiveToolName?.toString())
             rec = claim.record as Map
             if (claim.outcome == "terminal") {
+                if (rec.terminalResult instanceof Map && rec.terminalResult.__slowReadReplay == true) {
+                    Map replayArgs = _mrtrCopyMap(args as Map)
+                    replayArgs.__reqT0 = reqT0
+                    return _renderToolResult(msg.id, toolName, reactiveToolName, args,
+                        executeTool(toolName, replayArgs), false)
+                }
                 return _renderToolResult(msg.id, toolName, reactiveToolName, args,
                     rec.terminalResult, rec.terminalIsError == true)
             }
@@ -1819,10 +1826,9 @@ def _maxConcurrentWrites() {
     return settings.maxConcurrentWrites != null ? (settings.maxConcurrentWrites as Integer) : 2
 }
 
-// The leaves whose partial-commit or serial-dispatch loops consume the __reqT0 budget
-// clock. This is the injection allowlist for handleToolsCall/handleGateway: tools
-// outside it never see the key (several validate their args strictly and reject
-// unknown keys).
+// The leaves that consume the __reqT0 request-start clock: partial-commit and serial-dispatch
+// loops that pause under the budget, and the Logs-page reads that observe their background
+// fetch under it. Only these ever see the key; strict-arg leaves must not.
 def _budgetAwareTools() {
     return ["hub_set_rule", "hub_set_native_app", "hub_call_rule", "hub_clone_native_app",
             "hub_import_native_app", "hub_call_device_command",
@@ -1831,7 +1837,7 @@ def _budgetAwareTools() {
 
 // ==================== MCP 2026-07-28 request-to-request continuation ====================
 
-def _mrtrEligibleTools() {
+def _mrtrWriteTools() {
     return ["hub_set_rule", "hub_set_native_app", "hub_call_rule",
             "hub_clone_native_app", "hub_import_native_app",
             "hub_create_driver", "hub_update_driver", "hub_delete_item"] as Set
@@ -1839,10 +1845,17 @@ def _mrtrEligibleTools() {
 
 // Reads whose single hub fetch grows with hub size and can outrun the relay. They continue
 // under the same requestState contract as the writes above but never hold a write lease, never
-// count toward the write cap, and keep their terminal result only briefly (it is re-runnable).
-// The leaf itself answers status: "in_progress" while its background fetch is still running.
+// count toward the write cap, and store no payload in their terminal record (a replay re-runs
+// the read from its cached snapshot). The leaf itself answers status: "in_progress" while its
+// background fetch is still running. Every member must also be in getReadOnlyToolNames().
 def _mrtrReadTools() {
     return ["hub_get_jobs", "hub_get_performance_stats"] as Set
+}
+
+// A read only continues when the request's transport carries a time budget; without one the
+// fetch runs inline and a modern client gets the ordinary single-response shape.
+def _mrtrReadContinuationActive() {
+    return (_isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()) > 0L
 }
 
 private Set _mrtrDetachedWorkerTools() {
@@ -1852,8 +1865,9 @@ private Set _mrtrDetachedWorkerTools() {
 
 def _mrtrEligibleCall(outerToolName, leafToolName, args) {
     String leaf = leafToolName?.toString()
-    if (!(_mrtrEligibleTools().contains(leaf) || _mrtrReadTools().contains(leaf))
-            || !(args instanceof Map)) return false
+    boolean eligibleLeaf = _mrtrWriteTools().contains(leaf) ||
+        (_mrtrReadTools().contains(leaf) && _mrtrReadContinuationActive())
+    if (!eligibleLeaf || !(args instanceof Map)) return false
     // A mis-routed gateway call (a leaf outside this gateway's tool set) must refuse
     // through ordinary dispatch, never enter the MRTR path: round zero would reserve
     // an active record that pins a cap slot for its full TTL before the route is
@@ -2705,6 +2719,18 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
         // Finish with a protocol-level terminal result before a conforming client
         // can hit that ceiling and surface its own opaque retry-limit exception.
         if (((rec.rounds ?: 0) as Integer) >= (_mrtrMaxContinuationSlices() - 1)) {
+            if (continuation.kind?.toString() == "slow_read") {
+                // Nothing was committed: the read only ever observed its background fetch,
+                // which keeps running and publishes to the cache when it lands.
+                def readCapped = [
+                    success: false, isError: true, status: "slow_read_timeout", tool: leaf,
+                    error: "The hub's Logs-page fetch did not finish within ${_mrtrMaxContinuationSlices()} continuation slices.",
+                    note: "No hub state was changed. The fetch is still running and its result is cached once it lands; repeat the identical call. If this repeats, check hub_get_logs for a slow or failing /logs/json.",
+                    mrtr: [continued: true, rounds: ((rec.rounds ?: 0) as Integer) + 1, startedAt: rec.startedAt]
+                ]
+                _mrtrStoreTerminal(stateId, rec, claim, readCapped, true)
+                return [outcome: "terminal", result: readCapped, isError: true]
+            }
             def capped = [
                 success: false, isError: true, status: "continuation_limit",
                 tool: leaf,
@@ -2877,7 +2903,11 @@ private boolean _mrtrStoreTerminal(String stateId, Map originalRec, Map claim, r
             rec.remove("claimId")
             rec.remove("claimedGeneration")
             rec.remove("claimedAt")
-            rec.terminalResult = result
+            // A read's successful payload can be as large as the hub is; keep only a marker
+            // and re-run the idempotent read from its cached snapshot on replay.
+            boolean readLeaf = _mrtrReadTools().contains(rec.leafTool?.toString())
+            rec.terminalResult = (readLeaf && !isError)
+                ? [__slowReadReplay: true, tool: rec.leafTool] : result
             rec.terminalIsError = isError
             rec.finishedAt = now()
             rec.updatedAt = rec.finishedAt
@@ -6032,22 +6062,13 @@ private _hubRequest(String method, String path, Map opts = [:]) {
         }
     }
     long _hubRtT0 = now()
+    String _hubRtOutcome = "ok"
     try {
         if (method == 'GET') httpGet(params, reader)
         else httpPost(params, reader)
-        // [hubrt] per-call diagnostic: every internal hub round-trip funnels through here, so one
-        // debug line profiles a heavy RM wizard build (count + latency of each GET/POST). Debug-gated.
-        // Path is secret-redacted so the WiFi-join leg's psk is never written to the hub log.
-        long _hubRtMs = now() - _hubRtT0
-        logDebug("[hubrt] ${method} ${_redactSecretsInPath(path)} (${_hubRtMs}ms)")
-        // A single internal round-trip that already exceeds the relay budget cannot be
-        // answered synchronously over the relay from any caller; surface it whether or not
-        // the caller happened to be relay-bound, so a slow endpoint shows up before a 502 does.
-        long _hubRtBudget = _relayBudgetMs()
-        if (_hubRtBudget > 0L && _hubRtMs >= _hubRtBudget) {
-            mcpLog("warn", "hub-admin", "[hubrt] slow internal ${method} ${_redactSecretsInPath(path)} took ${_hubRtMs}ms, over the ${_hubRtBudget}ms cloud-relay budget -- a relay-bound caller must run this fetch off-request (see hub_get_tool_guide(section='slow_ops'))")
-        }
     } catch (Exception e) {
+        _hubRtOutcome = e.class.simpleName
+
         // hubInternalGetRaw path: a 3xx with followRedirects=false is the success case (read the
         // Location header), not an error.
         if (opts.handle3xx) {
@@ -6066,11 +6087,28 @@ private _hubRequest(String method, String path, Map opts = [:]) {
             return _hubRequest(method, path, opts + [isRetry: true])
         }
         throw e
+    } finally {
+        _hubRtLog(method, path, now() - _hubRtT0, _hubRtOutcome)
     }
     // Re-throw a mid-stream read failure rather than returning a Reader/stream toString() junk
     // string that downstream code would treat as a real body (matches the hardened deploy path).
     if (readError != null) throw readError
     return result
+}
+
+// [hubrt] per-call diagnostic: every internal hub round-trip funnels through here, on success
+// and on failure alike, so one debug line profiles a heavy RM wizard build (count + latency of
+// each GET/POST). Path is secret-redacted so the WiFi-join leg's psk is never written to the
+// hub log. A completed request whose duration meets the relay budget is also logged at warn
+// regardless of caller: no relay-bound caller can answer synchronously on top of it, so the
+// endpoint is named here before some client sees the 502.
+private void _hubRtLog(String method, String path, long elapsedMs, String outcome) {
+    String redacted = _redactSecretsInPath(path)
+    logDebug("[hubrt] ${method} ${redacted} (${elapsedMs}ms${outcome == 'ok' ? '' : ', ' + outcome})")
+    long budget = _relayBudgetMs()
+    if (budget > 0L && elapsedMs >= budget) {
+        mcpLog("warn", "hub-admin", "[hubrt] slow internal ${method} ${redacted} took ${elapsedMs}ms (${outcome}), at or over the ${budget}ms cloud-relay budget -- a request that waits on it synchronously cannot be answered over the relay (see hub_get_tool_guide(section='slow_ops'))")
+    }
 }
 
 /**
@@ -9785,13 +9823,13 @@ To move EXISTING devices into an existing room, set each device's room via hub_u
 Renaming a room preserves device assignments, but may require updating automations/dashboards that reference the room by name.
 ''',
 
-        slow_ops: '''## Slow writes over Streamable HTTP
+        slow_ops: '''## Slow operations over Streamable HTTP
 
 Hubitat's cloud relay can end one HTTP request while hub-side work continues. MCP 2026-07-28 request-to-request continuation solves this without changing transport, installing an extension, or asking the caller to invent a token.
 
 ### Automatic request-to-request continuation
 
-The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, and the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`.
+The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, and, only when the request's transport carries a time budget, the two Logs-page reads described below.
 
 The first request is a mutation-free preflight. The server returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients automatically repeat the same tool call with that state. Each resumed request advances or coordinates one bounded slice and gets a fresh relay deadline; native wizard slices may run in the internal worker. The logical call eventually returns one normal `resultType: "complete"` result describing all slices.
 
@@ -9805,7 +9843,7 @@ Every actual write obtains a server-side lease, whether it uses MRTR or complete
 
 Clients negotiated below MCP 2026-07-28 do not understand requestState. They retain the existing `status: "in_progress"` remainder envelope for bounded multi-step writes. Completed steps are already committed; reissue only the returned remaining work. This is a compatibility fallback, not a second polling protocol.
 
-Two reads use the same continuation: `hub_get_jobs` and `hub_get_performance_stats` both come from the hub's `/logs/json` page, one document that carries every device and app stat plus the job tables, so its fetch time grows with hub size and on a large hub outruns the relay. Over the relay the fetch runs in a background worker and the result is cached for 30 s; a modern client continues automatically, a legacy client that receives `status: "in_progress"` repeats the identical call. Reads never hold a write lease or count toward `maxConcurrentWrites`. On the LAN with `lanBudgetMs` unset the fetch runs inline as before.
+Two reads use the same continuation: `hub_get_jobs` and `hub_get_performance_stats` both come from the hub's `/logs/json` page, one document that carries every device and app stat plus the job tables, so its fetch time grows with hub size and on a large hub can outrun the relay. When the request's transport has a time budget (`relayBudgetMs` over the cloud relay, `lanBudgetMs` on the LAN) the fetch runs in a background worker and its trimmed result is cached for 30 s; a modern client continues automatically, a legacy client that receives `status: "in_progress"` repeats the identical call, and a failed fetch is returned as an ordinary `isError` result with a retry already scheduled. Reads never hold a write lease or count toward `maxConcurrentWrites`, and their terminal record carries no payload (a replay re-runs the read from the cache). With no budget on the transport the fetch runs inline and the call is a single ordinary response.
 
 The advanced `relayBudgetMs` setting (default 6000 ms, 0 disables) controls cloud slices. `lanBudgetMs` defaults to 0; set it just below a LAN client's request timeout only when needed.
 

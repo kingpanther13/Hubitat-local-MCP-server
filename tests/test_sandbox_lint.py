@@ -824,3 +824,97 @@ def test_output_schema_inventory_is_cwd_independent(monkeypatch, tmp_path):
     assert per_file == sl.OUTPUT_SCHEMA_FROZEN_PER_FILE
     assert digest == sl.OUTPUT_SCHEMA_FROZEN_DIGEST
 
+# ---------------------------------------------------------------------------
+# /logs/json snapshot guard
+# ---------------------------------------------------------------------------
+
+_SNAP_SERVER_OK = """
+def _budgetAwareTools() {
+    return ["hub_set_rule", "hub_get_jobs", "hub_get_performance_stats"] as Set
+}
+def _mrtrReadTools() {
+    return ["hub_get_jobs", "hub_get_performance_stats"] as Set
+}
+def executeTool(name, args) {
+    switch (name) {
+        case "hub_get_jobs": return toolGetHubJobs(args)
+        case "hub_get_performance_stats": return toolGetPerformanceStats(args)
+    }
+}
+"""
+
+_SNAP_LIB_OK = """
+def _logsJsonFetchAndPublish(Long fetchId = null) {
+    def responseText = hubInternalGet("/logs/json", null, 30)
+    return responseText
+}
+def _logsJsonSnapshot(Map args) { return [state: "ready"] }
+def toolGetHubJobs(args) {
+    def snap = _logsJsonSnapshot(args)
+    return snap
+}
+def toolGetPerformanceStats(args) {
+    def snap = _logsJsonSnapshot(args)
+    return snap
+}
+"""
+
+
+def _write_snapshot_repo(tmp_path, monkeypatch, *, server=_SNAP_SERVER_OK, lib=_SNAP_LIB_OK):
+    (tmp_path / "hubitat-mcp-server.groovy").write_text(server)
+    (tmp_path / "libraries").mkdir()
+    (tmp_path / "libraries" / "mcp-diagnostics-lib.groovy").write_text(lib)
+    monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
+
+
+def test_logs_json_guard_passes_a_valid_snapshot_consumer(tmp_path, monkeypatch):
+    _write_snapshot_repo(tmp_path, monkeypatch)
+    assert sl.check_logs_json_snapshot_guard() == []
+
+
+@pytest.mark.parametrize("call", ['hubInternalGet("/logs/json", null, 30)', "hubInternalGet('/logs/json')",
+                                  'hubInternalGetRaw("/logs/json")'])
+def test_logs_json_guard_flags_a_direct_fetch_outside_the_publisher(tmp_path, monkeypatch, call):
+    """Either quote style, and the Raw variant, must be caught: a blocking fetch anywhere but the
+    publisher is exactly the shape that 502'd on a large hub."""
+    lib = _SNAP_LIB_OK + "\ndef toolSomethingElse(args) {\n    def txt = %s\n    return txt\n}\n" % call
+    _write_snapshot_repo(tmp_path, monkeypatch, lib=lib)
+    findings = sl.check_logs_json_snapshot_guard()
+    assert len(findings) == 1
+    assert "toolSomethingElse" in findings[0]["message"]
+    assert "_logsJsonSnapshot(args)" in findings[0]["message"]
+
+
+def test_logs_json_guard_flags_a_reader_missing_from_mrtr_read_tools(tmp_path, monkeypatch):
+    server = _SNAP_SERVER_OK.replace('return ["hub_get_jobs", "hub_get_performance_stats"] as Set\n}\ndef executeTool',
+                                     'return ["hub_get_performance_stats"] as Set\n}\ndef executeTool')
+    _write_snapshot_repo(tmp_path, monkeypatch, server=server)
+    findings = sl.check_logs_json_snapshot_guard()
+    assert [f["message"] for f in findings if "hub_get_jobs" in f["message"] and "_mrtrReadTools" in f["message"]]
+
+
+def test_logs_json_guard_flags_a_reader_missing_from_budget_aware_tools(tmp_path, monkeypatch):
+    server = _SNAP_SERVER_OK.replace('return ["hub_set_rule", "hub_get_jobs", "hub_get_performance_stats"] as Set',
+                                     'return ["hub_set_rule", "hub_get_jobs"] as Set')
+    _write_snapshot_repo(tmp_path, monkeypatch, server=server)
+    findings = sl.check_logs_json_snapshot_guard()
+    assert [f for f in findings if "hub_get_performance_stats" in f["message"] and "_budgetAwareTools" in f["message"]]
+    assert not [f for f in findings if "hub_get_jobs" in f["message"]]
+
+
+def test_logs_json_guard_flags_an_undispatched_snapshot_reader(tmp_path, monkeypatch):
+    lib = _SNAP_LIB_OK + "\ndef toolOrphan(args) {\n    def snap = _logsJsonSnapshot(args)\n    return snap\n}\n"
+    _write_snapshot_repo(tmp_path, monkeypatch, lib=lib)
+    findings = sl.check_logs_json_snapshot_guard()
+    assert len(findings) == 1
+    assert "toolOrphan" in findings[0]["message"] and "no executeTool case" in findings[0]["message"]
+
+
+def test_logs_json_guard_reports_unparseable_set_literals(tmp_path, monkeypatch):
+    _write_snapshot_repo(tmp_path, monkeypatch, server=_SNAP_SERVER_OK.replace("_mrtrReadTools", "_somethingElse"))
+    findings = sl.check_logs_json_snapshot_guard()
+    assert len(findings) == 1 and "Could not parse" in findings[0]["message"]
+
+
+def test_logs_json_guard_is_green_on_the_checked_in_sources():
+    assert sl.check_logs_json_snapshot_guard() == []

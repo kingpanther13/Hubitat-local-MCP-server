@@ -4178,10 +4178,14 @@ def check_logs_json_snapshot_guard() -> list[dict]:
     built on it outruns the cloud relay on a large hub (hub_get_jobs and
     hub_get_performance_stats both 502'd that way). Two source-level invariants keep the fix in
     place: (1) the only hubInternalGet of "/logs/json" lives in _logsJsonFetchAndPublish, the
-    worker-run fetch behind the JVM snapshot; (2) every tool whose implementation reads the
+    single fetch implementation behind the JVM snapshot (invoked inline on an unbudgeted request
+    and by the scheduled worker otherwise); (2) every tool whose implementation reads the
     snapshot is listed in BOTH _mrtrReadTools() (so a modern client continues it through
     requestState) and _budgetAwareTools() (so the leaf sees the request's __reqT0 clock and
-    hands back in_progress inside the relay budget)."""
+    hands back in_progress inside the relay budget). The raw-fetch scan matches either quote
+    style of the "/logs/json" literal; an indirect fetch (a path built at runtime, or a call
+    through _hubRequest) is outside what a source scan can see, and the runtime [hubrt] slow
+    warning is the backstop for that."""
     findings: list[dict] = []
     server = REPO_ROOT / "hubitat-mcp-server.groovy"
     if not server.is_file():
@@ -4207,7 +4211,7 @@ def check_logs_json_snapshot_guard() -> list[dict]:
     for f in sources:
         src = f.read_text(encoding="utf-8")
         rel = str(f.relative_to(REPO_ROOT))
-        for m in re.finditer(r'hubInternalGet(?:Raw)?\(\s*"/logs/json"', src):
+        for m in re.finditer(r"""hubInternalGet(?:Raw)?\(\s*(["'])/logs/json\1""", src):
             fn = enclosing_fn(src, m.start())
             if fn != "_logsJsonFetchAndPublish":
                 findings.append({"file": rel, "line": src.count("\n", 0, m.start()) + 1, "severity": "error",

@@ -745,69 +745,90 @@ def toolGetHubLogs(args) {
 
 // /logs/json is the hub's whole live Logs page in one document: every device and app stat, the
 // job tables and the current log buffer. It grows with device and app count, so on a large hub
-// one fetch outruns the cloud relay's ceiling and the client sees a 502 with nothing to retry.
-// The fetch therefore runs in a scheduled worker whenever the request is relay-bound, and its
-// trimmed result is held in the JVM for a short window so both tools built on it, and their
-// cursor pages, answer from one fetch. hub_get_jobs and hub_get_performance_stats are the only
+// one fetch can outrun the cloud relay's ceiling, and a client then sees a 502 with nothing to
+// retry. When the request's transport carries a time budget (relayBudgetMs over the cloud,
+// lanBudgetMs on the LAN) the fetch therefore runs in a scheduled worker, and its trimmed
+// result is held in the JVM for a short window so both tools built on it, and their cursor
+// pages, answer from one fetch. hub_get_jobs and hub_get_performance_stats are the only
 // readers; keep any new /logs/json consumer on _logsJsonSnapshot (sandbox_lint enforces it).
 def _logsJsonSnapshotTtlMs() { 30000L }
-// An in-flight marker older than this belongs to a worker that died; schedule again.
+// A fetch marker or failure older than this is treated as stale: the marker no longer blocks a
+// new worker, and the failure is no longer reported. It is a bound, not proof the worker died,
+// so every publish is fenced by the fetchId the worker was scheduled with.
 def _logsJsonFetchStaleMs() { 45000L }
 
-// How long a relay-bound request may wait for the worker before handing back in_progress.
-// Cloud: the same headroom the scheduled write observer keeps under relayBudgetMs. LAN with a
-// budget: the same shape under lanBudgetMs. LAN without a budget never reaches this.
+// How long a budgeted request may wait for the worker before handing back in_progress. The
+// leg does nothing else, so it keeps less headroom than the write observer: 1500 ms under the
+// budget, capped so eight continuation slices still cover the fetch's own 30 s timeout.
 def _logsJsonObserveWaitMs() {
     boolean cloud = _isCloudRequest()
-    long cap = cloud ? 3500L : 6000L
+    long cap = cloud ? 4500L : 6000L
     long budget = cloud ? _relayBudgetMs() : _lanBudgetMs()
     if (budget <= 0L) return cap
-    return Math.max(1L, Math.min(cap, budget - 2000L))
+    return Math.max(1L, Math.min(cap, budget - 1500L))
 }
 
-def _logsJsonRelayBound() {
-    return _isCloudRequest() ? _relayBudgetMs() > 0L : _lanBudgetMs() > 0L
-}
+def _logsJsonUsesBackgroundFetch() { _mrtrReadContinuationActive() }
 
 private List _logsJsonTrimStats(statsList) {
     if (!(statsList instanceof List)) return []
-    return statsList.findAll { it instanceof Map }.collect { e ->
-        def t = [id: e.id, name: e.name, count: e.count, pct: e.pct, total: e.total, average: e.average,
-                 stateSize: e.stateSize, formattedPct: e.formattedPct, formattedPctTotal: e.formattedPctTotal,
-                 hubActionCount: e.hubActionCount, pendingEventsCount: e.pendingEventsCount,
-                 cloudCallCount: e.cloudCallCount]
-        if (e.customAttributes instanceof Map) {
-            t.customAttributes = [eventsCount: e.customAttributes.eventsCount,
-                                  statesCount: e.customAttributes.statesCount]
+    return statsList.collect { stat ->
+        def trimmed = [
+            id: stat.id, name: stat.name, count: stat.count, pct: stat.pct, total: stat.total,
+            average: stat.average, stateSize: stat.stateSize, formattedPct: stat.formattedPct,
+            formattedPctTotal: stat.formattedPctTotal, hubActionCount: stat.hubActionCount,
+            pendingEventsCount: stat.pendingEventsCount, cloudCallCount: stat.cloudCallCount
+        ]
+        if (stat.customAttributes instanceof Map) {
+            trimmed.customAttributes = [eventsCount: stat.customAttributes.eventsCount,
+                                        statesCount: stat.customAttributes.statesCount]
         }
-        if (e.largeState) t.largeState = true
-        return t
+        if (stat.largeState) trimmed.largeState = true
+        return trimmed
     }
 }
 
-// Fetch, trim to the fields the tools read, and publish. Runs inline on an unbudgeted LAN
-// request and inside runLogsJsonFetch for relay-bound ones.
-def _logsJsonFetchAndPublish() {
+// A present table that is not an array, or a table row that is not an object, is a changed
+// contract and must fail loudly rather than be reported as an empty hub.
+private List _logsJsonTable(Map data, String key) {
+    def table = data[key]
+    if (table == null) return []
+    if (!(table instanceof List)) throw new IllegalStateException("Unexpected /logs/json response: '${key}' is not an array")
+    if (key != "hubCommands" && table.any { !(it instanceof Map) }) {
+        throw new IllegalStateException("Unexpected /logs/json response: '${key}' contains a non-object entry")
+    }
+    return table
+}
+
+// Fetch, trim to the fields the tools read, and publish. Runs inline on an unbudgeted request
+// and inside runLogsJsonFetch for budgeted ones. A worker passes the fetchId it was scheduled
+// with; a stale worker (its id already replaced) parses for nothing and publishes nothing.
+def _logsJsonFetchAndPublish(Long fetchId = null) {
     long t0 = now()
     def responseText = hubInternalGet("/logs/json", null, 30)
     if (!responseText) throw new RuntimeException("No data returned from /logs/json")
     def data = new groovy.json.JsonSlurper().parseText(responseText)
+    if (!(data instanceof Map)) throw new IllegalStateException("Unexpected /logs/json response: expected a JSON object")
+    if (data.jobs == null && data.deviceStats == null && data.appStats == null) {
+        throw new IllegalStateException("Unexpected /logs/json response: no jobs or stats tables (page shape changed?)")
+    }
     def snap = [
         at: now(), fetchMs: now() - t0,
         uptime: data.uptime,
         totalDevicesRuntime: data.totalDevicesRuntime, devicePct: data.devicePct,
         totalAppsRuntime: data.totalAppsRuntime, appPct: data.appPct,
-        deviceStats: _logsJsonTrimStats(data.deviceStats),
-        appStats: _logsJsonTrimStats(data.appStats),
-        jobs: ((data.jobs instanceof List) ? data.jobs : []).findAll { it instanceof Map }.collect { job ->
+        deviceStats: _logsJsonTrimStats(_logsJsonTable(data, "deviceStats")),
+        appStats: _logsJsonTrimStats(_logsJsonTable(data, "appStats")),
+        jobs: _logsJsonTable(data, "jobs").collect { job ->
             [id: job.id, name: job.name, recurring: job.recurring, method: job.methodName, nextRun: job.nextRun]
         },
-        runningJobs: ((data.runningJobs instanceof List) ? data.runningJobs : []).findAll { it instanceof Map }.collect { job ->
+        runningJobs: _logsJsonTable(data, "runningJobs").collect { job ->
             [id: job.id, name: job.name, method: job.methodName]
         },
-        hubCommands: (data.hubCommands instanceof List) ? data.hubCommands : []
+        hubCommands: _logsJsonTable(data, "hubCommands")
     ]
     synchronized (LOGS_JSON_SNAPSHOT) {
+        if (fetchId != null && LOGS_JSON_SNAPSHOT.fetchId != fetchId) return snap
         LOGS_JSON_SNAPSHOT.snapshot = snap
         LOGS_JSON_SNAPSHOT.remove("fetchError")
     }
@@ -823,49 +844,76 @@ private Map _logsJsonFreshSnapshot() {
     }
 }
 
-// True when this call scheduled the worker; false when one is already in flight.
-private boolean _logsJsonEnsureFetchScheduled() {
+// Schedule the worker unless a non-stale fetch is already in flight. The marker is owned by a
+// fetchId; a scheduling failure rolls back exactly that marker and propagates.
+private void _logsJsonEnsureFetchScheduled() {
+    long fetchId
     synchronized (LOGS_JSON_SNAPSHOT) {
         def startedAt = LOGS_JSON_SNAPSHOT.fetchStartedAt
-        if (startedAt instanceof Long && now() - (startedAt as Long) < _logsJsonFetchStaleMs()) return false
+        if (startedAt instanceof Long && now() - (startedAt as Long) < _logsJsonFetchStaleMs()) return
+        fetchId = ((LOGS_JSON_SNAPSHOT.fetchId instanceof Long) ? (LOGS_JSON_SNAPSHOT.fetchId as Long) : 0L) + 1L
+        LOGS_JSON_SNAPSHOT.fetchId = fetchId
         LOGS_JSON_SNAPSHOT.fetchStartedAt = now()
     }
-    runInMillis(200, "runLogsJsonFetch", [overwrite: false])
-    return true
+    try {
+        runInMillis(200, "runLogsJsonFetch", [overwrite: false, data: [fetchId: fetchId]])
+    } catch (Exception scheduleErr) {
+        synchronized (LOGS_JSON_SNAPSHOT) {
+            if (LOGS_JSON_SNAPSHOT.fetchId == fetchId) LOGS_JSON_SNAPSHOT.remove("fetchStartedAt")
+        }
+        throw scheduleErr
+    }
 }
 
 def runLogsJsonFetch(Map job = [:]) {
+    Long fetchId = null
+    try { fetchId = job?.fetchId as Long } catch (Exception ignored) { fetchId = null }
     try {
-        _logsJsonFetchAndPublish()
+        _logsJsonFetchAndPublish(fetchId)
     } catch (Exception e) {
         mcpLogError("monitoring", "Background /logs/json fetch failed", e)
+        String detail = e.message?.toString()?.trim()
+        if (!detail) detail = "${e.class.simpleName} while fetching /logs/json".toString()
         synchronized (LOGS_JSON_SNAPSHOT) {
-            LOGS_JSON_SNAPSHOT.fetchError = [at: now(), message: e.message?.toString()]
+            if (fetchId == null || LOGS_JSON_SNAPSHOT.fetchId == fetchId) {
+                LOGS_JSON_SNAPSHOT.fetchError = [at: now(), message: detail]
+            }
         }
     } finally {
-        synchronized (LOGS_JSON_SNAPSHOT) { LOGS_JSON_SNAPSHOT.remove("fetchStartedAt") }
+        synchronized (LOGS_JSON_SNAPSHOT) {
+            if (fetchId == null || LOGS_JSON_SNAPSHOT.fetchId == fetchId) LOGS_JSON_SNAPSHOT.remove("fetchStartedAt")
+        }
     }
 }
 
-// A worker failure is reported exactly once, to the first request that observes it, so a
-// legacy client repeating the call sees the error and stops instead of re-scheduling the same
-// failing fetch on every repeat. The request after that schedules a fresh fetch.
-private Map _logsJsonTakeFetchError() {
+// The most recent worker failure, while it is younger than the stale bound. It stays visible to
+// every caller until a later fetch succeeds (publishing clears it) or it ages out, so a legacy
+// client repeating the call sees the same error and stops instead of polling.
+private Map _logsJsonRecentFetchError() {
     synchronized (LOGS_JSON_SNAPSHOT) {
-        def failure = LOGS_JSON_SNAPSHOT.remove("fetchError")
-        return (failure instanceof Map) ? failure : null
+        def failure = LOGS_JSON_SNAPSHOT.fetchError
+        if (!(failure instanceof Map)) return null
+        if (!(failure.at instanceof Long) || now() - (failure.at as Long) >= _logsJsonFetchStaleMs()) {
+            LOGS_JSON_SNAPSHOT.remove("fetchError")
+            return null
+        }
+        return [:] + failure
     }
 }
 
-// Resolve the snapshot for one request. Returns [ready: true, snapshot: ...],
-// [ready: false] while a relay-bound fetch is still running, or [ready: false, error: ...]
-// when the background fetch failed.
+// Resolve the snapshot for one request. Exactly one of:
+//   [state: "ready", snapshot: ...]   a snapshot inside its TTL (fetched inline when unbudgeted)
+//   [state: "pending"]                a budgeted request whose worker has not landed yet
+//   [state: "failed", error: ...]     the most recent worker failure; a retry is already scheduled
 def _logsJsonSnapshot(Map args) {
     def fresh = _logsJsonFreshSnapshot()
-    if (fresh != null) return [ready: true, snapshot: fresh]
-    if (!_logsJsonRelayBound()) return [ready: true, snapshot: _logsJsonFetchAndPublish()]
-    def failure = _logsJsonTakeFetchError()
-    if (failure != null) return [ready: false, error: failure.message]
+    if (fresh != null) return [state: "ready", snapshot: fresh]
+    if (!_logsJsonUsesBackgroundFetch()) return [state: "ready", snapshot: _logsJsonFetchAndPublish()]
+    def failure = _logsJsonRecentFetchError()
+    if (failure != null) {
+        _logsJsonEnsureFetchScheduled()
+        return [state: "failed", error: failure.message]
+    }
     long t0 = (args?.__reqT0 instanceof Number) ? (args.__reqT0 as Long) : now()
     _logsJsonEnsureFetchScheduled()
     long deadline = t0 + _logsJsonObserveWaitMs()
@@ -873,28 +921,38 @@ def _logsJsonSnapshot(Map args) {
     long remainingBudget = Math.max(0L, deadline - now())
     while (true) {
         fresh = _logsJsonFreshSnapshot()
-        if (fresh != null) return [ready: true, snapshot: fresh]
-        failure = _logsJsonTakeFetchError()
-        if (failure != null) return [ready: false, error: failure.message]
+        if (fresh != null) return [state: "ready", snapshot: fresh]
+        failure = _logsJsonRecentFetchError()
+        if (failure != null) return [state: "failed", error: failure.message]
         long remaining = Math.min(remainingBudget, Math.max(0L, deadline - now()))
-        if (remaining <= 0L) return [ready: false]
+        if (remaining <= 0L) return [state: "pending"]
         long sleepMs = Math.min(250L, remaining)
         try {
             pauseExecution(sleepMs as Long)
         } catch (Exception waitErr) {
             mcpLog("debug", "monitoring", "Snapshot wait interrupted: ${waitErr.message}")
-            return [ready: false]
+            return [state: "pending"]
         }
         remainingBudget -= sleepMs
     }
 }
 
-// The remainder envelope for a relay-bound request whose fetch is still running. A modern
-// client continues it through requestState; a legacy client repeats the identical call.
+// The remainder envelope for a budgeted request whose fetch is still running. A modern client
+// continues it through requestState; a legacy client repeats the identical call.
 private Map _logsJsonInProgress(String tool) {
     return [
         status: "in_progress", tool: tool, retryable: true,
         note: "The hub is still producing its Logs page payload (every device and app stat plus the job tables, which grows with hub size). Call ${tool} again with the same arguments; once the fetch finishes, its result is served from a ${(_logsJsonSnapshotTtlMs() / 1000L) as Long} s cache."
+    ]
+}
+
+// The runtime-error contract for a Logs-page read that could not be served.
+private Map _logsJsonFailure(String tool, String detail) {
+    String reason = detail?.toString()?.trim() ?: "unknown /logs/json fetch failure"
+    return [
+        success: false, isError: true, tool: tool,
+        error: "${tool} could not read the hub's Logs page: ${reason}",
+        note: "Repeat the identical call once; a fresh fetch is already scheduled. If it fails again, check hub_get_logs for the hub-side error, then see hub_get_tool_guide(section='slow_ops')."
     ]
 }
 
@@ -908,21 +966,22 @@ def toolGetPerformanceStats(args) {
     def data
     try {
         def snap = _logsJsonSnapshot(args)
-        if (snap.error != null) return [error: "Failed to fetch performance stats: ${snap.error}"]
-        if (snap.ready != true) return _logsJsonInProgress("hub_get_performance_stats")
+        if (snap.state == "failed") return _logsJsonFailure("hub_get_performance_stats", snap.error)
+        if (snap.state == "pending") return _logsJsonInProgress("hub_get_performance_stats")
         data = snap.snapshot
     } catch (Exception e) {
         mcpLogError("monitoring", "Failed to fetch performance stats", e)
-        return [error: "Failed to fetch performance stats: ${e.message}"]
+        return _logsJsonFailure("hub_get_performance_stats", e.message ?: e.class.simpleName)
     }
 
     def result = [
         uptime: data.uptime
     ]
 
-    def formatStats = { statsList ->
-        if (!statsList) return []
-        // Sort
+    def formatStats = { cached ->
+        if (!cached) return []
+        // Sort a copy: the cached lists are shared by every concurrent caller of the snapshot.
+        def statsList = new ArrayList(cached)
         switch (sortBy) {
             case "count": statsList = statsList.sort { -(it.count ?: 0) }; break
             case "stateSize": statsList = statsList.sort { -(it.stateSize ?: 0) }; break
@@ -991,20 +1050,21 @@ def toolGetHubJobs(args) {
     def data
     try {
         def snap = _logsJsonSnapshot(args)
-        if (snap.error != null) return [error: "Failed to fetch hub jobs: ${snap.error}"]
-        if (snap.ready != true) return _logsJsonInProgress("hub_get_jobs")
+        if (snap.state == "failed") return _logsJsonFailure("hub_get_jobs", snap.error)
+        if (snap.state == "pending") return _logsJsonInProgress("hub_get_jobs")
         data = snap.snapshot
     } catch (Exception e) {
         mcpLogError("monitoring", "Failed to fetch hub jobs", e)
-        return [error: "Failed to fetch hub jobs: ${e.message}"]
+        return _logsJsonFailure("hub_get_jobs", e.message ?: e.class.simpleName)
     }
 
     def scheduledJobs = (data.jobs instanceof List) ? data.jobs : []
     def runningJobs = (data.runningJobs instanceof List) ? data.runningJobs : []
     def hubActions = (data.hubCommands instanceof List) ? data.hubCommands : []
 
-    // Only scheduledJobs pages: it is the table that grows with app count. The other
-    // two are short by nature and stay in full on every page.
+    // Only scheduledJobs pages; runningJobs and hubActions keep their full, backward-compatible
+    // shape on every page. Pages are best-effort: the cursor is an offset into the current
+    // snapshot, and a traversal that outlives the 30 s TTL reads its later pages from a refetch.
     def paged = _paginateList(scheduledJobs, cursor, 100, "hub_get_jobs")
     def result = [
         uptime: data.uptime,
@@ -2229,7 +2289,7 @@ def _getAllToolDefinitions_partDiagnostics() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    cursor: [type: "string", description: "Opaque pagination cursor for scheduledJobs. Omit for the full list; pass '' for the first page of 100, then the returned nextCursor. runningJobs and hubActions stay in full on every page."]
+                    cursor: [type: "string", description: "Opaque pagination cursor for scheduledJobs. Omit for the full list; pass '' for the first page of 100, then the returned nextCursor. runningJobs and hubActions stay in full on every page. Pages read a snapshot cached for 30 s, so a traversal that takes longer is best-effort."]
                 ]
             ],
             outputSchema: [

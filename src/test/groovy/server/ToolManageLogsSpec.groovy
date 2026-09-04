@@ -1310,7 +1310,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         runInMillisCalls.size() == 1
         runInMillisCalls[0][0..1] == [200, 'runLogsJsonFetch']
         runInMillisCalls[0][2].overwrite == false
-        waitedMs.get() == (script._logsJsonObserveWaitMs() as Long)
+        waitedMs.get() == 4500L   // 6000 ms budget - 1500 ms headroom, capped at 4500 over the cloud
 
         when: 'the same call arrives again while the worker is still queued'
         def again = mcpDriver.parseInner(mcpDriver.callTool('hub_get_jobs', [:]))
@@ -1330,7 +1330,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         runInMillisCalls.size() == 1
     }
 
-    def "a failed background /logs/json fetch is reported once, then the next call schedules a fresh fetch"() {
+    def "a failed background /logs/json fetch is reported as an error result with a retry already scheduled"() {
         given:
         settingsMap.enableRead = true
         settingsMap.relayBudgetMs = 6000
@@ -1346,24 +1346,207 @@ class ToolManageLogsSpec extends ToolSpecBase {
 
         when: 'the first call schedules the worker, which fails; the repeat observes the failure'
         def first = script.toolGetPerformanceStats([__reqT0: virtualNow.get()])
-        script.runLogsJsonFetch()
+        script.runLogsJsonFetch(runInMillisCalls[0][2].data as Map)
         def second = script.toolGetPerformanceStats([__reqT0: virtualNow.get()])
 
-        then: 'a structured error, not another in_progress, and no extra worker'
+        then: 'the runtime-error contract, not another in_progress, and a replacement worker is queued'
         first.status == 'in_progress'
-        second.error == 'Failed to fetch performance stats: logs page timed out'
-        runInMillisCalls.size() == 1
+        second.success == false
+        second.isError == true
+        second.error == "hub_get_performance_stats could not read the hub's Logs page: logs page timed out"
+        second.note.contains('Repeat the identical call once')
+        runInMillisCalls.size() == 2
 
-        when: 'the call after that retries'
-        def third = script.toolGetPerformanceStats([__reqT0: virtualNow.get()])
-        script.runLogsJsonFetch()
+        when: 'a second caller arrives before the retry lands'
+        def third = script.toolGetHubJobs([__reqT0: virtualNow.get()])
+
+        then: 'it sees the same failure (not a silent in_progress) and does not stack a third worker'
+        third.isError == true
+        third.error.contains('logs page timed out')
+        runInMillisCalls.size() == 2
+
+        when: 'the retry worker succeeds'
+        script.runLogsJsonFetch(runInMillisCalls[1][2].data as Map)
         def fourth = script.toolGetPerformanceStats([__reqT0: virtualNow.get()])
 
-        then: 'a fresh worker ran and the data landed'
-        third.status == 'in_progress'
-        runInMillisCalls.size() == 2
+        then: 'the failure is cleared by the successful publish'
         attempts.get() == 2
         fourth.uptime == '1d'
+        fourth.isError == null
+    }
+
+    def "a worker failure with no exception message still reports a failure, naming the exception class"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        hubGet.register('/logs/json') { params -> throw new IllegalStateException() }
+        def virtualNow = new java.util.concurrent.atomic.AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
+
+        when:
+        script.toolGetHubJobs([__reqT0: virtualNow.get()])
+        script.runLogsJsonFetch(runInMillisCalls[0][2].data as Map)
+        def result = script.toolGetHubJobs([__reqT0: virtualNow.get()])
+
+        then:
+        result.isError == true
+        result.error.contains('IllegalStateException while fetching /logs/json')
+    }
+
+    def "a fetch failure reaches the legacy dispatch envelope as isError"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/logs/json') { params -> throw new RuntimeException('boom') }
+
+        when:
+        def response = mcpDriver.callTool('hub_get_jobs', [:])
+
+        then:
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('boom')
+    }
+
+    def "an unexpected /logs/json shape is an error, not an empty hub"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/logs/json') { params -> JsonOutput.toJson(body) }
+
+        when:
+        def result = script.toolGetHubJobs([:])
+
+        then:
+        result.isError == true
+        result.error.contains(expected)
+
+        where:
+        body                                               | expected
+        [error: 'login required']                          | 'no jobs or stats tables'
+        [uptime: '1d', jobs: 'nope']                       | "'jobs' is not an array"
+        [uptime: '1d', jobs: [[id: 1], 'stray-string']]    | "'jobs' contains a non-object entry"
+    }
+
+    def "the snapshot keeps only the fields the tools read and never the log buffer"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/logs/json') { params ->
+            JsonOutput.toJson([
+                uptime: '1d',
+                logs: (1..500).collect { [id: it, msg: "SENTINEL-LOG-${it}".toString()] },
+                unusedTopLevel: 'x',
+                deviceStats: [[id: 1, name: 'D', count: 2, pct: 3.5, total: 4, average: 2.0, stateSize: 5,
+                               formattedPct: '3.50', formattedPctTotal: '0.10', hubActionCount: 1,
+                               pendingEventsCount: 0, cloudCallCount: 7, largeState: true,
+                               customAttributes: [eventsCount: 8, statesCount: 9, extra: 'drop'],
+                               junk: 'drop']],
+                appStats: [], jobs: [], runningJobs: [], hubCommands: []
+            ])
+        }
+
+        when:
+        def stats = script.toolGetPerformanceStats([type: 'device'])
+        def cached = (scriptStaticField('LOGS_JSON_SNAPSHOT') as Map).snapshot as Map
+        def json = JsonOutput.toJson(cached)
+
+        then: 'every supported field survives the trim'
+        stats.deviceStats[0] == [id: 1, name: 'D', count: 2, pctBusy: '3.50', pctTotal: '0.10', stateSize: 5,
+                                 totalMs: 4, averageMs: 2.0, totalEvents: 8, states: 9, hubActions: 1,
+                                 pendingEvents: 0, cloudCalls: 7, largeState: true]
+
+        and: 'the log buffer and unknown fields are not retained'
+        !json.contains('SENTINEL-LOG')
+        !json.contains('unusedTopLevel')
+        !json.contains('junk')
+        !json.contains('"extra"')
+    }
+
+    def "sorting a performance read never mutates the shared cached list"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/logs/json') { params ->
+            JsonOutput.toJson([uptime: '1d', appStats: [], jobs: [],
+                deviceStats: [[id: 1, name: 'B', count: 1, pct: 9.0], [id: 2, name: 'A', count: 5, pct: 1.0]]])
+        }
+
+        when:
+        def byPct = script.toolGetPerformanceStats([type: 'device'])
+        def byName = script.toolGetPerformanceStats([type: 'device', sortBy: 'name'])
+        def byCount = script.toolGetPerformanceStats([type: 'device', sortBy: 'count'])
+        def cached = ((scriptStaticField('LOGS_JSON_SNAPSHOT') as Map).snapshot as Map).deviceStats as List
+
+        then:
+        byPct.deviceStats*.id == [1, 2]
+        byName.deviceStats*.id == [2, 1]
+        byCount.deviceStats*.id == [2, 1]
+        cached*.id == [1, 2]
+    }
+
+    def "a stale in-flight marker is replaced after 45 s, and the stale worker's late publish is ignored"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        def served = new java.util.concurrent.atomic.AtomicInteger(0)
+        hubGet.register('/logs/json') { params -> logsJsonWithJobs(served.incrementAndGet()) }
+        def virtualNow = new java.util.concurrent.atomic.AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
+
+        when: 'the first worker is scheduled and never runs; 45 s pass; a call schedules a replacement'
+        script.toolGetHubJobs([__reqT0: virtualNow.get()])
+        Map staleJob = runInMillisCalls[0][2].data as Map
+        virtualNow.addAndGet(45000L)
+        script.toolGetHubJobs([__reqT0: virtualNow.get()])
+        Map freshJob = runInMillisCalls[1][2].data as Map
+
+        then:
+        runInMillisCalls.size() == 2
+        freshJob.fetchId == (staleJob.fetchId as Long) + 1L
+
+        when: 'the fresh worker lands first, then the stale one finally runs'
+        script.runLogsJsonFetch(freshJob)
+        def afterFresh = script.toolGetHubJobs([__reqT0: virtualNow.get()])
+        script.runLogsJsonFetch(staleJob)
+        def afterStale = script.toolGetHubJobs([__reqT0: virtualNow.get()])
+        def cache = scriptStaticField('LOGS_JSON_SNAPSHOT') as Map
+
+        then: 'the stale worker fetched but did not overwrite the fresh snapshot or clear its marker state'
+        served.get() == 2
+        afterFresh.scheduledJobs.count == 1
+        afterStale.scheduledJobs.count == 1
+        !cache.containsKey('fetchStartedAt')
+    }
+
+    def "a scheduler failure rolls back the in-flight marker and surfaces as the tool's error"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        def fetches = new java.util.concurrent.atomic.AtomicInteger(0)
+        hubGet.register('/logs/json') { params -> fetches.incrementAndGet(); logsJsonWithJobs(1) }
+        def throwOnce = new java.util.concurrent.atomic.AtomicBoolean(true)
+        RUN_IN_MILLIS_OVERRIDE.set({ List call ->
+            if (throwOnce.getAndSet(false)) throw new IllegalStateException('scheduler saturated')
+            runInMillisCalls << call
+        })
+
+        when:
+        def failed = script.toolGetHubJobs([__reqT0: 1234567890000L])
+        def cache = scriptStaticField('LOGS_JSON_SNAPSHOT') as Map
+
+        then: 'the failure is reported and no phantom worker is left in flight'
+        failed.isError == true
+        failed.error.contains('scheduler saturated')
+        !cache.containsKey('fetchStartedAt')
+
+        when: 'the next call schedules normally'
+        def next = script.toolGetHubJobs([__reqT0: 1234567890000L])
+
+        then:
+        next.status == 'in_progress'
+        runInMillisCalls.size() == 1
+        runInMillisCalls[0][1] == 'runLogsJsonFetch'
     }
 
     // -------- toolGetDebugLogs --------

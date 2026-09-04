@@ -894,4 +894,29 @@ class RelayBudgetSpec extends ToolSpecBase {
         captured.edit.__reqT0 instanceof Long
         captured.edit.patches.size() == 2
     }
+
+    // -------- [hubrt] slow-request warning --------
+
+    @spock.lang.Unroll
+    def "_hubRtLog warns only when a completed internal request meets the relay budget (#elapsed ms, budget #budget)"() {
+        given:
+        settingsMap.relayBudgetMs = budget
+        settingsMap.mcpLogLevel = 'debug'
+        stateMap.debugLogs = [entries: [], config: [logLevel: 'debug', maxEntries: 100]]
+
+        when:
+        script._hubRtLog('GET', '/logs/json?token=secret', elapsed as long, outcome)
+        def warns = stateMap.debugLogs.entries.findAll { it.level == 'warn' && it.message?.contains('[hubrt] slow internal') }
+
+        then:
+        warns.size() == expectedWarns
+        warns.every { it.message.contains("(${outcome})") && it.message.contains("${elapsed}ms") }
+
+        where:
+        elapsed | budget | outcome                 | expectedWarns
+        5999    | 6000   | 'ok'                    | 0
+        6000    | 6000   | 'ok'                    | 1
+        9000    | 6000   | 'SocketTimeoutException'| 1
+        9000    | 0      | 'ok'                    | 0
+    }
 }

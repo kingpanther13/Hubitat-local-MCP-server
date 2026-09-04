@@ -10242,12 +10242,30 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
             cursor = page.get("nextCursor")
         assert len(seen) == sj["total"], \
             f"pages summed to {len(seen)} jobs but total is {sj['total']}"
-        # Both Logs-page reads come from one cached snapshot; back to back they must both answer.
+        # Exercise the second Logs-page reader immediately after the paginated jobs flow.
         stats = self.client.call_tool("hub_manage_logs", {
             "tool": "hub_get_performance_stats",
             "args": {"limit": 1},
         })
         assert isinstance(stats, dict) and "uptime" in stats, f"performance stats after jobs: {stats}"
+
+    @test("system_tools")
+    def test_get_hub_jobs_cold_fetch_continues(self) -> None:
+        """A cold Logs-page read over the cloud relay goes through requestState continuation.
+
+        The snapshot cache lives 30 s; after sitting past it, the first hub_get_jobs is a cold
+        fetch and the modern client must be handed the continuation provenance block, proving
+        the read took the budgeted path rather than a blocking fetch. The immediate second read
+        is served from the landed snapshot."""
+        import time as _time
+        _time.sleep(31)
+        cold = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_jobs", "args": {"cursor": ""}})
+        assert isinstance(cold, dict), f"hub_get_jobs returned {type(cold)}"
+        assert "scheduledJobs" in cold, f"cold read returned no jobs: {cold}"
+        assert "mrtr" in cold and cold["mrtr"].get("rounds", 0) >= 1, \
+            f"cold read did not carry continuation provenance: {cold.get('mrtr')}"
+        warm = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_performance_stats", "args": {"limit": 1}})
+        assert isinstance(warm, dict) and "uptime" in warm, f"warm read after cold fetch: {warm}"
 
     @test("system_tools")
     def test_manage_rooms_list(self) -> None:
