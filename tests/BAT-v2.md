@@ -4489,7 +4489,8 @@ The Visual Rules Builder tools live in the `hub_manage_rule_machine` gateway (th
 ### Safety Rules for Section 16
 
 - Only create/edit/delete **BAT-prefixed** Visual Rules created within the same scenario — never touch existing Visual Rules
-- Device-facing nodes only target BAT-created virtual switches
+- Device-facing nodes only target BAT-created virtual devices (the switches, dimmers and sensors the scenario itself created)
+- T700 and T705 are written for a hub that offers BOTH builders (platform 2.5.1 and later). On a 2.0-only hub T700 instead returns `format='graph'`, `version='2.0'` and `translatedFrom='classic'` with a graph read-back; on a 1.0-only hub T705 instead returns `success=false` + `hubNativeFormat='classic'` with the empty child cleaned up, and its graph read-back assertions do not apply. Check `hub_get_info` firmware first and grade against the branch that matches.
 - A 2.5.1 hub offers BOTH builders, and the definition's shape picks which one a new rule runs: a classic node-list (`whenNodes`/`thenNodes`/`elseNodes`) creates a Visual Rule Builder 1.0 rule, the editor form or a raw graph creates a 2.0 one. The create response echoes `version`. Older firmware that can only make one of the two falls back to it: a classic definition on a 2.0-only hub is translated (`translatedFrom: 'classic'`), and an editor/graph definition on a 1.0-only hub returns `hubNativeFormat: 'classic'` and cleans up the empty child — re-issue with a classic definition in that case
 
 ### T700 — hub_set_visual_rule create + hub_get_visual_rule read-back (classic format)
@@ -4540,7 +4541,7 @@ The Visual Rules Builder tools live in the `hub_manage_rule_machine` gateway (th
 
 ```json
 {
-  "setup_prompt": "The Write master is enabled and a hub backup was created within the last 24 hours (call hub_create_backup if unsure). Via hub_manage_virtual_device create a virtual motion sensor named 'BAT VRB2 Motion', a virtual switch named 'BAT VRB2 Override', a virtual dimmer named 'BAT VRB2 Lamp', and a virtual switch named 'BAT VRB2 Chime'. Note every device ID.",
+  "setup_prompt": "The Read and Write masters are enabled and a hub backup was created within the last 24 hours (call hub_create_backup if unsure). Via hub_manage_virtual_device create a virtual motion sensor named 'BAT VRB2 Motion', a virtual switch named 'BAT VRB2 Override', a virtual dimmer named 'BAT VRB2 Lamp', and a virtual switch named 'BAT VRB2 Chime'. Note every device ID.",
   "test_prompt": "Set up an automation named 'BAT VRB2 Editor' on the Visual Rules Builder, confirming the change. It runs whenever 'BAT VRB2 Motion' detects motion. It should then check two things and proceed if EITHER ONE holds: it is a weekday, or 'BAT VRB2 Override' is currently on. When either holds, set 'BAT VRB2 Lamp' to 40 percent; when neither does, turn that lamp off instead. Either way, finish by turning 'BAT VRB2 Chime' on. Then read the automation back and tell me which Visual Rules Builder version it runs, whether it is actually active, and how the trigger, the either-or check, the two branches and the shared final step are represented.",
   "teardown_prompt": "Delete the Visual Rule 'BAT VRB2 Editor' with hub_delete_visual_rule (confirm=true). Delete the virtual devices 'BAT VRB2 Motion', 'BAT VRB2 Override', 'BAT VRB2 Lamp' and 'BAT VRB2 Chime'."
 }
