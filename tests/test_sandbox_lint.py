@@ -877,7 +877,7 @@ def test_logs_json_guard_passes_a_valid_snapshot_consumer(tmp_path, monkeypatch)
 def test_logs_json_guard_flags_a_direct_fetch_outside_the_publisher(tmp_path, monkeypatch, call):
     """Either quote style, and the Raw variant, must be caught: a blocking fetch anywhere but the
     publisher is exactly the shape that 502'd on a large hub."""
-    lib = _SNAP_LIB_OK + "\ndef toolSomethingElse(args) {\n    def txt = %s\n    return txt\n}\n" % call
+    lib = _SNAP_LIB_OK + f"\ndef toolSomethingElse(args) {{\n    def txt = {call}\n    return txt\n}}\n"
     _write_snapshot_repo(tmp_path, monkeypatch, lib=lib)
     findings = sl.check_logs_json_snapshot_guard()
     assert len(findings) == 1
