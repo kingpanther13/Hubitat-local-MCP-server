@@ -4497,7 +4497,7 @@ The Visual Rules Builder tools live in the `hub_manage_rule_machine` gateway (th
 
 ```json
 {
-  "setup_prompt": "The Write master is enabled and a hub backup was created within the last 24 hours (call hub_create_backup if unsure). Create a virtual switch named 'BAT VRB Switch' via hub_manage_virtual_device and note its device ID.",
+  "setup_prompt": "The Read and Write masters are enabled and a hub backup was created within the last 24 hours (call hub_create_backup if unsure). Create a virtual switch named 'BAT VRB Switch' via hub_manage_virtual_device and note its device ID.",
   "test_prompt": "Create a Visual Rules Builder rule named 'BAT VRB Create' (confirming the creation): when 'BAT VRB Switch' turns on, turn it off. Author it in the classic when/then-nodes definition format. Then read the rule back and report the appId, format, and whether the persisted definition matches what was sent.",
   "teardown_prompt": "Delete the Visual Rule 'BAT VRB Create' with hub_delete_visual_rule (confirm=true). Delete the virtual switch 'BAT VRB Switch'."
 }
@@ -4511,7 +4511,7 @@ The Visual Rules Builder tools live in the `hub_manage_rule_machine` gateway (th
 
 ```json
 {
-  "setup_prompt": "The Write master is enabled and a recent backup exists. Create a virtual switch 'BAT VRB PauseSwitch' and a Visual Rule named 'BAT VRB Pause' via hub_set_visual_rule (classic definition: when the switch turns on, turn it off). Note the returned appId.",
+  "setup_prompt": "The Read and Write masters are enabled and a recent backup exists. Create a virtual switch 'BAT VRB PauseSwitch' and a Visual Rule named 'BAT VRB Pause' via hub_set_visual_rule (classic definition: when the switch turns on, turn it off). Note the returned appId.",
   "test_prompt": "First pause the Visual Rule 'BAT VRB Pause' (confirming the change) and verify it reads back as paused. Then rename it to 'BAT VRB Renamed' and resume it in ONE call — without re-sending or touching its definition. Verify by reading it back that the name changed, it is no longer paused, and the when/then nodes are UNCHANGED from setup.",
   "teardown_prompt": "Delete the Visual Rule 'BAT VRB Renamed' with hub_delete_visual_rule (confirm=true). Delete the virtual switch 'BAT VRB PauseSwitch'."
 }
@@ -4525,7 +4525,7 @@ The Visual Rules Builder tools live in the `hub_manage_rule_machine` gateway (th
 
 ```json
 {
-  "setup_prompt": "The Write master is enabled and a recent backup exists. Create (1) a virtual switch 'BAT VRB DelSwitch', (2) a Visual Rule named 'BAT VRB Delete' via hub_set_visual_rule (classic definition over that switch), and (3) a Rule Machine rule named 'BAT VRB NotVisual' via hub_set_rule. Note both appIds.",
+  "setup_prompt": "The Read and Write masters are enabled and a recent backup exists. Create (1) a virtual switch 'BAT VRB DelSwitch', (2) a Visual Rule named 'BAT VRB Delete' via hub_set_visual_rule (classic definition over that switch), and (3) a Rule Machine rule named 'BAT VRB NotVisual' via hub_set_rule. Note both appIds.",
   "test_prompt": "First try deleting the RM rule 'BAT VRB NotVisual' AS IF it were a Visual Rule — go through the Visual Rule delete path, confirming — and report what happens. Then delete the actual Visual Rule 'BAT VRB Delete' (confirming) and report whether the delete was verified and whether the response includes the pre-delete definition.",
   "teardown_prompt": "Delete the RM rule 'BAT VRB NotVisual' with hub_delete_native_app (confirm=true). Delete the virtual switch 'BAT VRB DelSwitch'. Confirm via hub_get_visual_rule (list mode) that no rule named 'BAT VRB Delete' remains."
 }
