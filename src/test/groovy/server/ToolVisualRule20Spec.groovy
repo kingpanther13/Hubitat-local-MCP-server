@@ -341,6 +341,10 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         'a non-action in a chain'        | { it.edges[2].to = 'tm' }                   | "Expected action node 'tm'."
         'both branches joining on one action' | { it.edges << [from: 'd1', to: 'a1', port: 'false'] } | "Node 'a1' is reached by more than one path"
         'a numeric edge endpoint'        | { it.nodes[3].id = '7'; it.edges[2].to = 7 } | "Edge at index 2 must have string 'from', 'to' and 'port' values."
+        'a trigger with no type'         | { it.nodes[0].remove('type') }              | "Node 't1' must have a nonblank string type."
+        'an action with a blank type'    | { it.nodes[3].type = '  ' }                 | "Node 'a1' must have a nonblank string type."
+        'an action with a numeric type'  | { it.nodes[3].type = 7 }                    | "Node 'a1' must have a nonblank string type."
+        'a condition with no type'       | { it.nodes[2].config.conditions = [[id: 'c1', config: [:]]] } | "Condition 'c1' must have a nonblank string type."
     }
 
     def "_vrb2Validate rejects fan-out: two edges leaving the decision on the same port"() {

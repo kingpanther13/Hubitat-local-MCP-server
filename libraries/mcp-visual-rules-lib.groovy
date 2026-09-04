@@ -680,7 +680,11 @@ private List _vrb2Validate(Map graph) {
         types[id] = type
         // Trigger/action type NAMES are not pre-flighted: firmware extends the catalog, and a
         // rule drawn in the hub UI with a type this build does not know must still round-trip.
-        // _vrb2CatalogWarnings reports them; the hub validator is the oracle.
+        // _vrb2CatalogWarnings reports them; the hub validator is the oracle. The SHAPE is ours
+        // though: a missing, non-string or blank type can never be valid.
+        if ((kind == "trigger" || kind == "action") && !((node.type instanceof CharSequence) && type.trim())) {
+            errors << "Node '${id}' must have a nonblank string type."
+        }
         if (kind == "merge" && !(type in ["triggerMerge", "branchMerge"])) {
             errors << "Merge node '${id}' has unsupported type '${node.type}'."
         } else if (kind == "decision" && node.type != null && !(type in ["all", "any"])) {
@@ -719,6 +723,9 @@ private List _vrb2Validate(Map graph) {
                 }
                 if (conditionIds.contains(cid)) { errors << "Duplicate condition id '${cid}'."; return }
                 conditionIds << cid
+                if (!((cond.type instanceof CharSequence) && cond.type.toString().trim())) {
+                    errors << "Condition '${cid}' must have a nonblank string type."
+                }
                 if (!(cond.config instanceof Map)) errors << "Condition '${cid}' config must be an object."
             }
         }
