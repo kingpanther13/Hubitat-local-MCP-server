@@ -39,14 +39,26 @@ name: Hub E2E (test hub)
 #
 # >>> A PENDING "Full e2e (runs with label)" on a PR is NORMAL and intended -- it's the gate waiting for
 # >>> the full-run label, NOT a stuck/missing run. Add release:*/e2e:full to run the full suite.
+#
+# E2E:SKIP -- the "leave the hub alone" label. Adding `e2e:skip` CANCELS the in-flight e2e run on that
+# branch (it joins the per-branch cancel group below) and posts the required gate PENDING from the
+# cheap lane-gate job, WITHOUT running the e2e job -- so the PR cannot merge, and cannot book the hub.
+# While the label is on, every PR event (push / reopen / other labels) is the same: nothing runs, the
+# gate is re-posted pending on the new head. Removing it re-runs e2e in whatever lane the remaining
+# labels select. Two LIVE-label backstops in the e2e job cover what the frozen event payload can't:
+# the gate step bails out before booking the hub, and the gate-status step re-checks before posting,
+# so a manual re-run or an isolated-group run that outlives the label add can never post success over
+# the skip. Both are INLINE (not a script) because the e2e job checks out the PR HEAD, which may
+# predate this flow. workflow_dispatch ignores the label.
 # ===================================================================================
 
 on:
   pull_request_target:
     branches: [main]
     # `labeled`/`unlabeled` are included so the lane-gate job can re-evaluate on a full-run-label
-    # (release:patch|minor|major|e2e:full) toggle -- but e2e RE-RUNS only when the toggle FLIPS the
-    # lane (focused <-> full); a redundant toggle is a no-op. See the "TWO-LANE FLOW" block below.
+    # (release:patch|minor|major|e2e:full) or e2e:skip toggle -- but e2e RE-RUNS only when the toggle
+    # FLIPS the lane (focused <-> full, skipped <-> live); a redundant toggle is a no-op. See the
+    # "TWO-LANE FLOW" and "E2E:SKIP" blocks above.
     types: [opened, synchronize, reopened, labeled, unlabeled]
     # Deliberately NO `paths:` filter. `e2e` is a REQUIRED status check, and a paths-filtered
     # required check never reports on a PR that doesn't touch those paths -- it sits at
@@ -99,17 +111,20 @@ permissions:
 # Cancelling mid-run is safe: the e2e job's disarm/restore + lease-release steps are `if: always()`
 # (so a cancel still frees the hub), and a hard kill is backstopped by the dead-man watchdog's
 # deadline restore plus the 30-min lease TTL.
-# group + cancel-in-progress: a run that should SUPERSEDE another -- a commit/reopen/dispatch, OR the
-# FIRST full-run label promoting a live FOCUSED run to full -- shares the per-branch group, so
+# group + cancel-in-progress: a run that should SUPERSEDE another -- a commit/reopen/dispatch, the
+# FIRST full-run label promoting a live FOCUSED run to full, OR the e2e:skip label add (which must
+# cancel whatever is in flight and then posts the gate pending) -- shares the per-branch group, so
 # cancel-in-progress (true) cancels the older run. EVERY OTHER label event -- a redundant full label,
-# a non-lane label, or a DEMOTE (the last full label removed) -- gets an ISOLATED per-run group so it
-# can neither cancel nor EVICT another run. That isolation is load-bearing: the per-branch group is
+# a non-lane label, a DEMOTE (the last full label removed), or the e2e:skip REMOVAL (nothing is in
+# flight while skipped) -- gets an ISOLATED per-run group so it can neither cancel nor EVICT another
+# run. That isolation is load-bearing: the per-branch group is
 # queue:single, so a no-op label run entering the SHARED group would EVICT a pending demote/flip run
 # (pending eviction happens regardless of cancel-in-progress), silently dropping a run that still owed
 # the gate a status. The "shares the group" test below is the FIRST-full-run-label condition (GitHub
-# has no arithmetic, so it's enumerated: the added label is full AND no OTHER full label is present);
-# it is a strict SUBSET of lane_gate.js's run decision, so a shared run never cancels a run that then
-# skips. It MUST stay in lockstep with lane_gate.js (same full-run-label set). DEMOTE: removing the
+# has no arithmetic, so it's enumerated: the added label is full AND no OTHER full label is present)
+# OR the e2e:skip add; it is a strict SUBSET of lane_gate.js's non-noop decisions ('run' or 'skip'),
+# so a shared run never cancels a run and then does nothing. It MUST stay in lockstep with
+# lane_gate.js (same full-run-label set + skip label). DEMOTE: removing the
 # last full label re-runs focused in its OWN isolated group (never evicted); it does not cancel the
 # in-flight full run, just queues behind it in the e2e job's hub-e2e-serialized group and posts the
 # pending gate after it.
@@ -127,7 +142,8 @@ concurrency:
     && (github.event_name != 'pull_request_target'
     || (github.event.action != 'labeled' && github.event.action != 'unlabeled')
     || (github.event.action == 'labeled' && (
-    (github.event.label.name == 'release:patch' && !contains(github.event.pull_request.labels.*.name, 'release:minor') && !contains(github.event.pull_request.labels.*.name, 'release:major') && !contains(github.event.pull_request.labels.*.name, 'e2e:full'))
+    github.event.label.name == 'e2e:skip'
+    || (github.event.label.name == 'release:patch' && !contains(github.event.pull_request.labels.*.name, 'release:minor') && !contains(github.event.pull_request.labels.*.name, 'release:major') && !contains(github.event.pull_request.labels.*.name, 'e2e:full'))
     || (github.event.label.name == 'release:minor' && !contains(github.event.pull_request.labels.*.name, 'release:patch') && !contains(github.event.pull_request.labels.*.name, 'release:major') && !contains(github.event.pull_request.labels.*.name, 'e2e:full'))
     || (github.event.label.name == 'release:major' && !contains(github.event.pull_request.labels.*.name, 'release:patch') && !contains(github.event.pull_request.labels.*.name, 'release:minor') && !contains(github.event.pull_request.labels.*.name, 'e2e:full'))
     || (github.event.label.name == 'e2e:full' && !contains(github.event.pull_request.labels.*.name, 'release:patch') && !contains(github.event.pull_request.labels.*.name, 'release:minor') && !contains(github.event.pull_request.labels.*.name, 'release:major'))))))
@@ -148,8 +164,9 @@ jobs:
   # label (focused->full) and removing the LAST one (full->focused) DO re-run, as does every
   # non-label event (opened/synchronize/reopened/dispatch). `approve` (and thus `e2e`) gate on this
   # output (probe is dispatch-only, where lane-gate is always true, so it is never label-gated in
-  # practice). lane-gate ITSELF always runs; on a skip every DOWNSTREAM job is skipped and posts
-  # nothing, so the prior posted gate status is untouched.
+  # practice). lane-gate ITSELF always runs; on a no-op every DOWNSTREAM job is skipped and posts
+  # nothing, so the prior posted gate status is untouched. The third verdict, e2e:skip on the PR,
+  # also runs no downstream job but posts the required gate PENDING right here (see E2E:SKIP at top).
   lane-gate:
     runs-on: ubuntu-latest
     outputs:
@@ -162,6 +179,31 @@ jobs:
       - uses: actions/checkout@v7
       - id: decide
         run: node .github/scripts/lane_gate.js
+      # e2e:skip: hold the merge without booking the hub. Posted from THIS job (no approve, no e2e,
+      # no hub-e2e-serialized queue wait) so the pending lands within seconds of the label add, on the
+      # head SHA this event carries. Same context string as the e2e job's post; a cancelled in-flight
+      # run never posts (its post step is !cancelled()), so this pending is the head's final word.
+      - name: Post e2e gate status (e2e:skip)
+        if: steps.decide.outputs.skip == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          echo "E2E NOT RUN -- e2e:skip label is on the PR. Gate posted PENDING; remove the label to run e2e." >> "$GITHUB_STEP_SUMMARY"
+          DESC="e2e disabled by the e2e:skip label; remove it to run"
+          echo "Posting gate status 'Full e2e (runs with label)': pending -- $DESC"
+          # Same 5x retry as the e2e job's post: a transient API blip must not strand the gate.
+          for attempt in 1 2 3 4 5; do
+            if gh api -X POST "repos/${{ github.repository }}/statuses/$GATE_SHA" \
+                 -f state=pending -f context="Full e2e (runs with label)" -f description="$DESC" >/dev/null; then
+              break
+            fi
+            if [ "$attempt" = 5 ]; then
+              echo "::error::Gate status POST failed after 5 attempts."; exit 1
+            fi
+            echo "::warning::Gate status POST attempt ${attempt}/5 failed; retrying in 5s..."
+            sleep 5
+          done
 
   # Approval gate. The environment NAME is chosen from the PR author's relationship to
   # the repo:
@@ -397,6 +439,22 @@ jobs:
             echo "available=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # LIVE PR labels, fetched once: the e2e:skip backstop here, the lane pick further down.
+          # `|| true`: the step runs under `-eo pipefail`, so a transient gh-api failure here would abort
+          # the whole gate; an empty label list just means "no label" -> not skipped, focused lane (the
+          # safe lane, which only HOLDS the merge pending -- it can't green-wash).
+          labels="$( { gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}" --jq '.labels[].name' 2>/dev/null || true; } | tr '\n' ' ')"
+          # LIVE e2e:skip backstop (see E2E:SKIP at top): lane-gate already skipped on the frozen payload,
+          # so this only fires for a manual re-run of an older run or a run the label add couldn't
+          # cancel. lane=skipped makes the gate-status step post PENDING (never success) -- the label
+          # holds the merge, it does not green-wash it. available=false keeps every hub step off.
+          case " $labels " in *" e2e:skip "*)
+            echo "::notice::e2e:skip label is on the PR — skipping all E2E lanes; gate stays PENDING."
+            echo "E2E NOT RUN — e2e:skip label is on the PR. Gate posted PENDING; remove the label to run e2e." >> "$GITHUB_STEP_SUMMARY"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "lane=skipped" >> "$GITHUB_OUTPUT"
+            exit 0 ;;
+          esac
           # Fetch the PR's changed-file list. Fail SAFE: if it can't be read, run the full suite
           # rather than risk green-washing a code PR.
           files="$(gh api --paginate "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" --jq '.[].filename')" || {
@@ -418,10 +476,7 @@ jobs:
           if [ "$relevant" = "true" ]; then
             echo "available=true" >> "$GITHUB_OUTPUT"
             # LANE: full if a release:*/e2e:full label is on the PR, else focused (see TWO-LANE FLOW at top).
-            # `|| true`: the step runs under `-eo pipefail`, so a transient gh-api failure here would abort
-            # the whole gate; an empty label list just means "no full-run label" -> focused (the safe lane,
-            # which only HOLDS the merge pending -- it can't green-wash).
-            labels="$( { gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}" --jq '.labels[].name' 2>/dev/null || true; } | tr '\n' ' ')"
+            # `$labels` is the live list fetched above (empty on an API blip -> focused, the safe lane).
             lane=focused
             for L in release:patch release:minor release:major e2e:full; do
               case " $labels " in *" $L "*) lane=full ;; esac
@@ -753,6 +808,10 @@ jobs:
       #   focused lane          -> pending (yellow): holds the merge until the full lane runs.
       #   full lane passed       -> success;   full lane failed -> failure.
       #   docs-only / no secret  -> success (the gate skip path; e2e not required to run).
+      #   e2e:skip on the PR     -> pending, whatever ran: checked LIVE right here, so a run that outlived
+      #                             the label add (isolated group / manual re-run) can't post over the
+      #                             lane-gate job's pending. Fails open (a label-read blip posts the real
+      #                             result) -- the frozen-payload skip already covers the common path.
       - name: Post e2e gate status
         # always() EXCEPT on cancel: a focused run cancelled by the FIRST-full-label promote shares the
         # PR head SHA with the full run it spawned (a label add doesn't change the SHA, unlike a commit),
@@ -767,7 +826,16 @@ jobs:
           [ -z "$SHA" ] && SHA="${{ github.sha }}"
           AVAIL="${{ steps.gate.outputs.available }}"
           LANE="${{ steps.gate.outputs.lane }}"
-          if [ "$AVAIL" != "true" ]; then
+          PR="${{ github.event.pull_request.number }}"
+          live_labels=""
+          if [ -n "$PR" ]; then   # dispatch has no PR -> the label can't apply
+            live_labels="$( { gh api "repos/${{ github.repository }}/pulls/$PR" --jq '.labels[].name' 2>/dev/null || true; } | tr '\n' ' ')"
+          fi
+          SKIPPED=false
+          case " $live_labels " in *" e2e:skip "*) SKIPPED=true ;; esac
+          if [ "$LANE" = "skipped" ] || [ "$SKIPPED" = "true" ]; then
+            STATE=pending; DESC="e2e disabled by the e2e:skip label; remove it to run"
+          elif [ "$AVAIL" != "true" ]; then
             STATE=success; DESC="e2e skipped (no hub-relevant change / no test-hub secret); not required to run"
           elif [ "$LANE" = "full" ]; then
             # pkg_validate and sdk_conformance are both SKIPPED (not failed) under a skip_install
