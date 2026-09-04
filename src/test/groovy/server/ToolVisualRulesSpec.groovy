@@ -1080,7 +1080,7 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.health.ok == false
     }
 
-    def "set attaches health on a FAILURE response that still resolves a rule id (pre-flight refusal) -- issue #254"() {
+    def "an edit whose definition fails pre-flight throws -32602 before any hub write"() {
         given:
         enableWrite()
         def graphState = [name: 'Hall light', rulePaused: false, ruleJson: '{"version":1,"nodes":[],"edges":[]}',
@@ -1089,18 +1089,14 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         hubGet.register('/app/ruleBuilderJson/9') { params -> json([graphAppState: true]) }
         stubPostJson()
 
-        when: "editing a graph rule with a structurally invalid graph -> success:false but appId is known"
-        def result = script.toolSetVisualRule([appId: 9, definition: [version: 1, nodes: [], edges: []], confirm: true])
+        when: "editing a graph rule with a structurally invalid graph -> nothing was written, so it is an argument error"
+        script.toolSetVisualRule([appId: 9, definition: [version: 1, nodes: [], edges: []], confirm: true])
 
         then:
-        result.success == false
-        result.appId == 9
-        result.format == 'graph'
-        result.error.contains('pre-flight validation')
-        result.validationErrors.any { it.contains('at least one trigger') }
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('pre-flight validation')
+        e.message.contains('at least one trigger')
         posts.isEmpty()                  // refused before any hub write
-        result.health != null            // health attaches on the failure response too
-        result.health.ruleFormat == 'vrb-graph'
     }
 
     def "set attaches health via the caller's appId when an edit-failure map omits appId (graph-save reject) -- codex review"() {

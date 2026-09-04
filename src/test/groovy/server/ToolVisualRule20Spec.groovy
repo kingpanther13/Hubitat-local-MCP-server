@@ -341,6 +341,7 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         'a trigger bypassing the merge'  | { it.edges[0].to = 'd1' }                   | 'must connect to the triggerMerge node'
         'a merge bypassing the decision' | { it.edges[1].to = 'a1' }                   | 'must connect to the decision node'
         'a non-action in a chain'        | { it.edges[2].to = 'tm' }                   | "Expected action node 'tm'."
+        'both branches joining on one action' | { it.edges << [from: 'd1', to: 'a1', port: 'false'] } | "Node 'a1' is reached by more than one path"
     }
 
     def "_vrb2Validate rejects fan-out: two edges leaving the decision on the same port"() {
@@ -461,7 +462,7 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         !result.containsKey('translatedFrom')
     }
 
-    def "an editor definition whose composed graph fails pre-flight is refused BEFORE the child app is created"() {
+    def "an editor definition whose composed graph fails pre-flight throws -32602 BEFORE the child app is created"() {
         given: 'no triggers -> the composed graph has no trigger node'
         enableWrite()
         registerAppsList([])
@@ -469,23 +470,80 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         stubPostJson()
 
         when:
-        def result = script.toolSetVisualRule([
+        script.toolSetVisualRule([
             name: 'Trigger-less',
             definition: [triggers: [], thenActions: [[type: 'turnOn', config: [switches: [9]]]]],
             confirm: true])
 
-        then:
-        result.success == false
-        result.error == 'Definition failed pre-flight validation; nothing was created/saved.'
-        result.validationErrors.any { it.contains('at least one trigger node') }
-        result.note.contains("hub_get_tool_guide(section='visual_rule_reference')")
+        then: 'a plain argument error -- nothing existed yet, so no envelope is needed'
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('pre-flight validation')
+        e.message.contains('at least one trigger node')
+        e.message.contains("hub_get_tool_guide(section='visual_rule_reference')")
 
         and: 'no shell was created and nothing was written'
         rawPaths.isEmpty()
         posts.isEmpty()
     }
 
-    def "a compose error (OR decision with no conditions) is reported as a pre-flight refusal, not a raw throw"() {
+    def "a classic definition whose node lists are not arrays is refused BEFORE the 1.0 child is created"() {
+        given:
+        enableWrite()
+        registerAppsList([])
+        stubCreateChild(813)
+        stubPostJson()
+
+        when:
+        script.toolSetVisualRule([name: 'Bad classic', confirm: true,
+                                  definition: [whenNodes: [triggerType: 'switch'], thenNodes: [], elseNodes: []]])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message == 'definition.whenNodes must be an array of node objects.'
+        rawPaths.isEmpty()
+        posts.isEmpty()
+    }
+
+    def "a versioned create that loses its Location adopts the child that appeared instead of creating a second one"() {
+        given: 'createchild answers 200 with no Location (an auto-followed absolute redirect) -- the child EXISTS'
+        enableWrite()
+        def children = []
+        hubGet.register('/hub2/appsList') { params ->
+            json([apps: [[key: 700, data: [id: 700, appTypeId: 99, name: 'Visual Rules Builder', type: 'Visual Rules Builder', disabled: false],
+                          children: children.collect { [key: it, data: [id: it, name: '', type: 'Visual Rule Builder 2.0', disabled: false], children: []] }]]])
+        }
+        def paths = rawPaths
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            paths << path
+            if (path.startsWith('/installedapp/createchild/')) {
+                children << 814
+                return [status: 200, location: null, data: '<html>configure page</html>']
+            }
+            [status: 302, location: '/installedapp/list', data: null]
+        }
+        def state = [name: null, ruleJson: null]
+        stubPostJson { path, body ->
+            def b = new JsonSlurper().parseText(body)
+            state.name = b.name
+            state.ruleJson = b.ruleJson
+            [name: b.name, ruleJson: b.ruleJson, validationErrors: []]
+        }
+        hubGet.register('/app/ruleBuilder20Json/814') { params ->
+            json([name: state.name, rulePaused: false, ruleJson: state.ruleJson, validationErrors: []])
+        }
+
+        when:
+        def result = script.toolSetVisualRule([name: 'Adopted', definition: editorDefinition(), confirm: true])
+
+        then: 'the child that appeared was adopted; the legacy route was never tried'
+        result.success == true
+        result.appId == 814
+        result.version == '2.0'
+        rawPaths == [CREATE_2_0]
+        posts[0].path == '/app/ruleBuilder20Json/814'
+    }
+
+    def "a compose error (OR decision with no conditions) surfaces as the pre-flight -32602, before any hub call"() {
         given:
         enableWrite()
         registerAppsList([])
@@ -501,9 +559,9 @@ class ToolVisualRule20Spec extends ToolSpecBase {
             confirm: true])
 
         then:
-        result.success == false
-        result.error.contains('pre-flight validation')
-        result.validationErrors == ['An OR decision must contain at least one condition.']
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('pre-flight validation')
+        e.message.contains('An OR decision must contain at least one condition.')
         rawPaths.isEmpty()
     }
 
@@ -722,6 +780,56 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         script.toolGetVisualRule([appId: 842]).activated == true
     }
 
+    def "a storage failure keeps the hub's storageError as the cause"() {
+        given: 'the documented exceptional-storage response: success:false, storageError, no errorMessage'
+        enableWrite()
+        registerAppsList([])
+        stubCreateChild(832)
+        stubPostJson { path, body ->
+            [success: false, storedSuccessfully: false, activatedSuccessfully: false, storageError: 'state write failed',
+             activationError: null, validationErrors: [], validationIssues: [], referencedDeviceIds: []]
+        }
+        hubGet.register('/app/ruleBuilder20Json/832') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/832') { params -> '{}' }
+        hubGet.register('/installedapp/json/832') { params -> throw new RuntimeException('status code: 404') }
+
+        when:
+        def result = script.toolSetVisualRule([name: 'Storage fails', definition: editorDefinition(), confirm: true])
+
+        then:
+        result.success == false
+        result.error == 'Hub rejected the graph save: state write failed'
+        result.storageError == 'state write failed'
+        result.activated == false
+    }
+
+    def "a save whose response body was lost takes the hub's verdict from the read-back"() {
+        given: 'the POST answers nothing usable (relay drop) but the stored graph reads back with validation errors'
+        enableWrite()
+        registerAppsList([])
+        stubCreateChild(833)
+        def state = [name: null, ruleJson: null]
+        stubPostJson { path, body ->
+            def b = new JsonSlurper().parseText(body)
+            state.name = b.name
+            state.ruleJson = b.ruleJson
+            null
+        }
+        hubGet.register('/app/ruleBuilder20Json/833') { params ->
+            json([name: state.name, rulePaused: false, ruleJson: state.ruleJson,
+                  validationErrors: ["Node 'trigger-1' config.motionSensors references missing device '101'"], runtimeGraph: null])
+        }
+
+        when:
+        def result = script.toolSetVisualRule([name: 'Lost body', definition: editorDefinition(), confirm: true])
+
+        then: 'verified write, and the read-back errors are the diagnostics'
+        result.success == true
+        result.activated == false
+        result.validationErrors == ["Node 'trigger-1' config.motionSensors references missing device '101'"]
+        result.note.contains('INACTIVE DRAFT')
+    }
+
     // ==================== hub_get_visual_rule: editor + version ====================
 
     def "a graph read returns the editor decomposition alongside the raw definition"() {
@@ -835,12 +943,10 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         def response = mcpDriver.callTool('hub_set_visual_rule',
                 [name: 'Nope', definition: [triggers: [], thenActions: []], confirm: true])
 
-        then:
-        response.error == null
-        def inner = mcpDriver.parseInner(response)
-        inner.success == false
-        inner.error.contains('pre-flight validation')
-        inner.validationErrors.any { it.contains('at least one trigger node') }
+        then: 'JSON-RPC -32602 with every problem in the message'
+        response.error.code == -32602
+        response.error.message.contains('pre-flight validation')
+        response.error.message.contains('at least one trigger node')
         rawPaths.isEmpty()
         posts.isEmpty()
     }

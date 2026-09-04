@@ -171,12 +171,34 @@ private Map _vrbCreateChild(String version) {
     // Firmware without the versioned child types throws here. The fallback is the parent's own
     // create link, which picks the version ITSELF -- the caller reconciles what it gets back.
     def wantedFormat = (version == "1.0") ? "classic" : "graph"
+    def before = [] as Set
+    def parentSeen = false
     try {
-        def parentId = _vrbParentNode().data.id as Integer
-        def newId = _rmCreateChildApp(parentId, "hubitat", "Visual Rule Builder ${version}".toString())
+        def parent = _vrbParentNode()
+        parentSeen = true
+        before = ((parent.children ?: []).collect { it?.data?.id?.toString() }.findAll { it }) as Set
+        def newId = _rmCreateChildApp(parent.data.id as Integer, "hubitat", "Visual Rule Builder ${version}".toString())
         return [appId: newId, format: wantedFormat, version: version, route: "createchild"]
     } catch (Exception e) {
-        mcpLog("warn", "vrb", "Versioned create of a Visual Rule Builder ${version} child failed (${e.message}); falling back to /app/createVisualRuleBuilderRule")
+        // The raw GET may auto-follow an ABSOLUTE redirect and answer 200 with no Location (see
+        // hubInternalGetRaw): the child then EXISTS and only its id was lost. Reconcile against the
+        // parent's children before any second non-idempotent create -- exactly one new child is
+        // adopted; none means the versioned route is genuinely unsupported; more than one is
+        // refused rather than guessed.
+        def appeared = []
+        if (parentSeen) {
+            try {
+                appeared = (_vrbParentNode().children ?: []).collect { it?.data?.id?.toString() }.findAll { it && !before.contains(it) }
+            } catch (Exception ignored) { }
+        }
+        if (appeared.size() == 1) {
+            mcpLog("warn", "vrb", "Versioned create of a Visual Rule Builder ${version} child answered without a usable Location (${e.message}); adopted the child that appeared, app ${appeared[0]}")
+            return [appId: appeared[0] as Integer, format: wantedFormat, version: version, route: "createchild"]
+        }
+        if (appeared.size() > 1) {
+            throw new IllegalStateException("Versioned create of a Visual Rule Builder ${version} child answered without a usable Location (${e.message}) and ${appeared.size()} new children appeared (${appeared.join(', ')}); refusing to guess which is ours -- delete the strays with hub_delete_visual_rule and retry.")
+        }
+        mcpLog("warn", "vrb", "Versioned create of a Visual Rule Builder ${version} child failed (${e.message}) and no child appeared; falling back to /app/createVisualRuleBuilderRule")
     }
     def legacy = _vrbCreateChildLegacy()
     legacy.version = (legacy.format == "classic") ? "1.0" : "2.0"
@@ -217,7 +239,7 @@ private Map _vrbSaveGraph(Integer appId, String name, String definitionJson) {
     def body = groovy.json.JsonOutput.toJson([name: name, ruleJson: definitionJson])
     def resp = hubInternalPostJson("/app/ruleBuilder20Json/${appId}", body)
     if (resp instanceof Map && resp.success == false) {
-        return _vrbSaveGraphMeta(resp, [success: false, errorMessage: resp.errorMessage ?: "hub rejected the save",
+        return _vrbSaveGraphMeta(resp, [success: false, errorMessage: resp.errorMessage ?: resp.storageError ?: "hub rejected the save",
                                         validationErrors: resp.validationErrors ?: []])
     }
     // A null resp (empty / non-JSON 200 body) is treated as accepted, mirroring the UI's
@@ -540,6 +562,11 @@ private List _vrb2ValidateChain(Map kinds, Map nextMap, String from, String port
     def cursor = start
     while (cursor != null && cursor != terminal) {
         if (seen.contains(cursor)) { errs << "The rule contains an action cycle."; return errs }
+        if (visited.contains(cursor)) {
+            // Arbitrary joins are rejected by the hub: two branches may only rejoin at the branchMerge.
+            errs << "Node '${cursor}' is reached by more than one path; branches may only rejoin at the branchMerge node."
+            return errs
+        }
         seen << cursor
         visited << cursor
         if (kinds[cursor] != "action") { errs << "Expected action node '${cursor}'."; return errs }
@@ -701,6 +728,7 @@ private Map _vrbClassicToGraph(Map classic) {
     // is ours: a classic whenNode is a real trigger unless its triggerType is in the condition
     // catalog, in which case it becomes a nested decision condition. The hub validator is the
     // oracle for the result -- _vrb2Validate only pre-flights the shape.
+    _vrbValidateClassicShape(classic)
     def whenNodes = (classic?.whenNodes ?: []) as List
     def conditionTypes = _vrb2ConditionTypes()
     def isCondition = { node -> node instanceof Map && (node.triggerType?.toString() in conditionTypes) }
@@ -712,6 +740,25 @@ private Map _vrbClassicToGraph(Map classic) {
         elseActions: (classic?.elseNodes ?: []) as List,
         commonActions: []
     ])
+}
+
+private void _vrbValidateClassicShape(Map definition) {
+    // A classic node-list carries ARRAYS of node objects. Anything else would either blow up as a
+    // cast after a child already exists or be POSTed verbatim for the hub to choke on, so it is
+    // refused up front -- before any create -- as a plain argument error.
+    if (definition == null) throw new IllegalArgumentException("definition must be a JSON object.")
+    ["whenNodes", "thenNodes", "elseNodes"].each { key ->
+        if (definition[key] == null) return
+        if (!(definition[key] instanceof List)) throw new IllegalArgumentException("definition.${key} must be an array of node objects.")
+        definition[key].eachWithIndex { node, i ->
+            if (!(node instanceof Map)) throw new IllegalArgumentException("definition.${key}[${i}] must be a node object.")
+        }
+    }
+}
+
+private String _vrbPreflightMessage(List validationErrors) {
+    return "Definition failed pre-flight validation; nothing was created or saved. Problems: " + validationErrors.join(" ") +
+           " Fix them and retry -- see hub_get_tool_guide(section='visual_rule_reference') for the graph schema, the editor form and the type catalogs."
 }
 
 private Map _vrbResolveTargetDefinition(String targetFormat, String definitionFormat, Map definitionMap) {
@@ -735,8 +782,11 @@ private Map _vrbResolveTargetDefinition(String targetFormat, String definitionFo
             } else {
                 graph = definitionMap
             }
-        } catch (IllegalArgumentException iae) {
-            return [ok: false, validationErrors: [iae.message?.toString() ?: "definition could not be composed into a 2.0 graph"]]
+        } catch (Exception e) {
+            // Any compose/translate failure (a bad shape can also surface as a cast error) is a
+            // pre-flight finding, never a raw throw -- this runs after the shell exists on the
+            // legacy-create fallback.
+            return [ok: false, validationErrors: [e.message?.toString() ?: "definition could not be composed into a 2.0 graph"]]
         }
         def errors = _vrb2Validate(graph)
         if (errors) return [ok: false, validationErrors: errors]
@@ -937,11 +987,16 @@ private Map _toolSetVisualRuleImpl(args) {
         // strands an orphan shell. A CLASSIC definition needs no 2.0 pre-flight: it is saved
         // as-is into the 1.0 child it asked for. It is only translated when the create falls
         // back to firmware that can build nothing but 2.0, and that check runs after the create.
+        // Nothing exists yet, so a bad definition is a plain argument error (-32602) here; the
+        // structured refusal envelope is reserved for the legacy-create fallback below, where the
+        // shell already exists and a throw would follow a side effect.
         def preflight = null
-        if (normalized.format != "classic") {
+        if (normalized.format == "classic") {
+            _vrbValidateClassicShape(normalized.map)
+        } else {
             preflight = _vrbResolveTargetDefinition("graph", normalized.format, normalized.map)
             if (preflight.ok == false && preflight.validationErrors != null) {
-                return _vrbPreflightRefusal(null, preflight.validationErrors)
+                throw new IllegalArgumentException(_vrbPreflightMessage(preflight.validationErrors))
             }
         }
         // The definition's shape picks the builder version: a classic node-list gets a VRB 1.0
@@ -996,10 +1051,12 @@ private Map _toolSetVisualRuleImpl(args) {
 
     if (hasDefinition) {
         def normalized = _vrbNormalizeDefinition(args.definition)
+        if (normalized.format == "classic") _vrbValidateClassicShape(normalized.map)
         def resolved = _vrbResolveTargetDefinition(detected.format, normalized.format, normalized.map)
         if (resolved.ok == false) {
             if (resolved.validationErrors != null) {
-                return _vrbPreflightRefusal(appId, resolved.validationErrors) + [format: detected.format]
+                // Nothing has been written: a pre-flight failure on edit is an argument error.
+                throw new IllegalArgumentException(_vrbPreflightMessage(resolved.validationErrors))
             }
             return _vrbFormatMismatchRefusal(appId, normalized.format,
                     "Fetch the current shape with hub_get_visual_rule(appId=${appId}), or delete and recreate the rule.")
@@ -1088,9 +1145,11 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
         def saved = _vrbSaveGraph(appId, name, definitionJson)
         if (saved.success == false) {
             mcpLog("warn", "vrb", "Graph save rejected for ${appId}: ${saved.errorMessage} ${saved.validationErrors ?: ''}")
-            return [success: false, error: "Hub rejected the graph save: ${saved.errorMessage}",
-                    validationErrors: saved.validationErrors, activated: false,
-                    note: created ? _vrbTryCleanupShell(appId) : "The rule's previous definition is untouched."]
+            def failed = [success: false, error: "Hub rejected the graph save: ${saved.errorMessage}",
+                          validationErrors: saved.validationErrors, activated: false,
+                          note: created ? _vrbTryCleanupShell(appId) : "The rule's previous definition is untouched."]
+            if (saved.storageError != null) failed.storageError = saved.storageError
+            return failed
         }
         savedMeta = saved
         validationErrors = saved.validationErrors ?: []
@@ -1107,6 +1166,11 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
     // real write verification: name, requested pause state, and node-list sizes (the hub may
     // normalize node CONTENTS on save, so deep equality would false-negative).
     def after = _vrbDetect(appId)
+    if (format == "graph" && !validationErrors && after?.data?.validationErrors instanceof List && after.data.validationErrors) {
+        // The POST body can be lost (relay drop, non-JSON 200) while the save landed; the
+        // read-back then holds the only copy of the hub's verdict.
+        validationErrors = after.data.validationErrors
+    }
     def nameOk = after != null && _vrbNameMatches(after, name)
     def pauseOk = pausedRequested == null || ((after?.data?.rulePaused == true) == pausedRequested)
     def countsOk = after != null && _vrbDefinitionCountsMatch(format, definition, after.data)
@@ -1317,12 +1381,16 @@ private Map _vrbRestoreFromSnapshot(Map snapshot, String fileName) {
         if (createdVersion) out.version = createdVersion
         if (translatedFrom) out.translatedFrom = translatedFrom
         if (saved.containsKey("activated")) out.activated = saved.activated
+        if (saved.activationError != null) out.activationError = saved.activationError
         if (saved.error) out.error = saved.error
         if (saved.validationErrors) out.validationErrors = saved.validationErrors
         out.note = saved.success ?
                 (recreated ? "Visual Rule was deleted; recreated with new id ${targetId} and its definition replayed." :
                              "Visual Rule definition restored in place.") :
                 (saved.note ?: "Restore did not verify -- inspect with hub_get_visual_rule(appId=${targetId}).")
+        // A restored rule that is stored but NOT running must say so -- the replay verified, the
+        // automation still is not active.
+        if (saved.success && saved.activated == false && saved.note) out.note = "${out.note} ${saved.note}".toString()
         mcpLog("info", "vrb", "Restored Visual Rule snapshot for ${savedId} -> ${targetId} (recreated=${recreated}, verified=${saved.verified})")
         return out
     } catch (Exception e) {

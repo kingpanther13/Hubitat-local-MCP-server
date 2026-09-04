@@ -8532,7 +8532,9 @@ class TestRunner:
         name = f"{PREFIX}VrbEditor"
         preflight_name = f"{PREFIX}VrbPreflight"
 
-        # (a) PRE-FLIGHT REFUSAL: no triggerMerge node -> refused before the create.
+        # (a) PRE-FLIGHT REFUSAL: no triggerMerge node -> a -32602 argument error BEFORE any create
+        # (nothing exists yet, so there is no envelope to return; the message lists the problems).
+        refused = None
         try:
             refused = self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_set_visual_rule",
@@ -8549,22 +8551,20 @@ class TestRunner:
                               {"from": "d1", "to": "a1", "port": "true"}],
                 }}})
         except (McpError, McpToolError, requests.HTTPError) as exc:
-            # Expected-refusal call: a relay 504 can't distinguish "refused" from "response
-            # dropped", so skip rather than soft-pass the contract.
-            if "504" not in str(exc):
-                raise
-            raise SkipTest("pre-flight refusal contract lost to relay 504 -- cannot tell a "
-                           "refusal from a dropped response") from exc
-        if isinstance(refused, dict) and refused.get("appId"):
-            # The pre-flight regressed and a rule exists -- track it for the cleanup sweep.
-            # The assertions below still fail the test.
-            self.created_native_app_ids.append(str(refused["appId"]))
-        assert refused.get("success") is False, \
-            f"a graph with no triggerMerge node must be refused: {refused}"
-        assert any("triggerMerge" in str(e) for e in (refused.get("validationErrors") or [])), \
-            f"the refusal must name the missing triggerMerge node: {refused}"
-        assert "appId" not in refused, \
-            f"a pre-flight refusal must not create a child app, so it carries no appId: {refused}"
+            detail = str(exc)
+            if "504" in detail:
+                # A relay 504 can't distinguish "refused" from "response dropped", so skip rather
+                # than soft-pass the contract.
+                raise SkipTest("pre-flight refusal contract lost to relay 504 -- cannot tell a "
+                               "refusal from a dropped response") from exc
+            assert "pre-flight validation" in detail and "triggerMerge" in detail, \
+                f"the -32602 must name the pre-flight failure and the missing triggerMerge node: {detail}"
+        else:
+            if isinstance(refused, dict) and refused.get("appId"):
+                # The pre-flight regressed and a rule exists -- track it for the cleanup sweep.
+                self.created_native_app_ids.append(str(refused["appId"]))
+            raise AssertionError(
+                f"a graph with no triggerMerge node must be refused with -32602 before any create, got: {refused}")
         assert not any(r.get("name") == preflight_name
                        for r in (self._get_visual_rule().get("rules") or [])), \
             f"the refused create left an orphan shell named {preflight_name!r} behind"

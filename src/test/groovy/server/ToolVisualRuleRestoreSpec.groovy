@@ -593,6 +593,43 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
         rawPaths == [CREATE_1_0, '/app/createVisualRuleBuilderRule']
     }
 
+    def "restore recreate whose activation threw on the hub reports activated=false and keeps the hub's activationError"() {
+        given: 'rule 644 is gone; the 2.0 child stores the graph but activation raises'
+        def graph = graphDefinition()
+        def snapshot = vrbSnapshot(644, [appLabel: 'Graph rule', vrbFormat: 'graph',
+                                         vrbRulePaused: false, vrbRuleJson: json(graph)])
+        stubDownload(json(snapshot).getBytes('UTF-8'))
+        hubGet.register('/installedapp/configure/json/644') { params -> throw new RuntimeException('410 -- rule gone') }
+        hubGet.register('/app/ruleBuilder20Json/644') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/644') { params -> '{}' }
+        registerVrbParent()
+        stubCreateChild(998)
+        def state998 = [name: null, rulePaused: false, ruleJson: null]
+        stubPostJson { path, body ->
+            def b = new JsonSlurper().parseText(body)
+            state998.name = b.name
+            state998.ruleJson = b.ruleJson
+            [name: b.name, ruleJson: b.ruleJson, storedSuccessfully: true, activatedSuccessfully: false,
+             activationError: 'scheduler unavailable', validationErrors: []]
+        }
+        hubGet.register('/app/ruleBuilderPause/998/false') { params -> '{"success":true}' }
+        hubGet.register('/app/ruleBuilder20Json/998') { params ->
+            json([name: state998.name, rulePaused: state998.rulePaused, ruleJson: state998.ruleJson, validationErrors: [], runtimeGraph: null])
+        }
+
+        when:
+        def result = script._rmRestoreFromBackup([type: 'rm-rule', fileName: 'mcp-rm-backup-644-t.json'])
+
+        then: 'the replay verified, but the caller is told the automation is NOT running and why'
+        result.success == true
+        result.ruleId == 998
+        result.activated == false
+        result.activationError == 'scheduler unavailable'
+        result.note.contains('recreated with new id 998')
+        result.note.contains('Stored but NOT activated')
+        result.note.contains('scheduler unavailable')
+    }
+
     def "restore recreate of a GRAPH snapshot asks for a 2.0 child and replays it untranslated"() {
         given: 'rule 643 is gone; the versioned route yields a graph child at 997'
         def graph = graphDefinition()
