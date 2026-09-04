@@ -562,6 +562,9 @@ private List _vrb2ValidateChain(Map kinds, Map nextMap, String from, String port
     def cursor = start
     while (cursor != null && cursor != terminal) {
         if (seen.contains(cursor)) { errs << "The rule contains an action cycle."; return errs }
+        // A chain may only run through action nodes -- report that before the join check so a
+        // branch routed into a structure node names the real mistake.
+        if (kinds[cursor] != "action") { errs << "Expected action node '${cursor}'."; return errs }
         if (visited.contains(cursor)) {
             // Arbitrary joins are rejected by the hub: two branches may only rejoin at the branchMerge.
             errs << "Node '${cursor}' is reached by more than one path; branches may only rejoin at the branchMerge node."
@@ -569,7 +572,6 @@ private List _vrb2ValidateChain(Map kinds, Map nextMap, String from, String port
         }
         seen << cursor
         visited << cursor
-        if (kinds[cursor] != "action") { errs << "Expected action node '${cursor}'."; return errs }
         cursor = nextMap["${cursor}:next".toString()]
     }
     if (terminal != null && cursor != terminal) {
