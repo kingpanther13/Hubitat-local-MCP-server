@@ -545,6 +545,33 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         posts[0].path == '/app/ruleBuilder20Json/814'
     }
 
+    def "a versioned create whose reconcile read fails refuses to create again"() {
+        given: 'createchild answers without a Location, and the parent re-read then fails -- existence is UNKNOWN'
+        enableWrite()
+        int appsListCalls = 0
+        hubGet.register('/hub2/appsList') { params ->
+            appsListCalls++
+            if (appsListCalls > 1) throw new RuntimeException('status code: 500')
+            json([apps: [[key: 700, data: [id: 700, appTypeId: 99, name: 'Visual Rules Builder', type: 'Visual Rules Builder', disabled: false], children: []]]])
+        }
+        def paths = rawPaths
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->
+            paths << path
+            [status: 200, location: null, data: '<html>configure page</html>']
+        }
+        stubPostJson()
+
+        when:
+        def result = script.toolSetVisualRule([name: 'Unknown', definition: editorDefinition(), confirm: true])
+
+        then: 'no second create of any kind, and the caller is told how to recover'
+        result.success == false
+        result.error.contains('could not be re-read')
+        result.error.contains('hub_get_visual_rule')
+        rawPaths == [CREATE_2_0]
+        posts.isEmpty()
+    }
+
     def "a versioned create that loses its Location refuses to adopt a child that is not an empty shell of the requested version"() {
         given: 'the only child that appeared in the window is somebody else\'s -- it already has a name and content'
         enableWrite()

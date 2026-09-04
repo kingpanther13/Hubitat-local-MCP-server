@@ -185,11 +185,21 @@ private Map _vrbCreateChild(String version) {
         // parent's children before any second non-idempotent create -- exactly one new child is
         // adopted; none means the versioned route is genuinely unsupported; more than one is
         // refused rather than guessed.
+        // "The read showed no new child" and "the read failed" must not collapse into the same
+        // branch: the second one leaves the child's existence UNKNOWN, and creating again on unknown
+        // is exactly the duplicate this block exists to prevent.
         def appeared = []
+        def reconciled = false
         if (parentSeen) {
             try {
                 appeared = (_vrbParentNode().children ?: []).collect { it?.data?.id?.toString() }.findAll { it && !before.contains(it) }
-            } catch (Exception ignored) { }
+                reconciled = true
+            } catch (Exception readError) {
+                mcpLog("warn", "vrb", "Could not re-read the Visual Rules Builder parent after a failed versioned create: ${readError.message}")
+            }
+        }
+        if (parentSeen && !reconciled) {
+            throw new IllegalStateException("Versioned create of a Visual Rule Builder ${version} child failed (${e.message}) and the parent could not be re-read to tell whether a child was created; refusing to create again. List rules with hub_get_visual_rule, delete any empty unnamed shell, and retry.")
         }
         if (appeared.size() == 1) {
             // A list delta alone does not prove ownership -- another client could have created a
