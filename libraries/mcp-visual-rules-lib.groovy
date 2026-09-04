@@ -55,6 +55,10 @@ private Map _vrbFetchGraph(Integer appId) {
     } else if (parsed.ruleApps != null) {
         out.ruleApps = parsed.ruleApps
     }
+    // `runtimeGraph` is null whenever nothing is active -- a stored-but-failed activation has an
+    // EMPTY validationErrors list and a null runtime, so activation must not be inferred from the
+    // error list alone. Absent key = older firmware = unknown (null); present = the hub's verdict.
+    if (parsed.containsKey("runtimeGraph")) out.runtimeActive = (parsed.runtimeGraph != null)
     if (parsed.runtimeGraph != null) out.runtimeGraph = parsed.runtimeGraph
     // ruleJson is a STRING on the wire (double-encoded graph). Parse it for the tool response;
     // blank means a freshly-created empty rule.
@@ -233,6 +237,10 @@ private Map _vrbSaveGraphMeta(def resp, Map out) {
     if (resp.revision != null) out.revision = resp.revision
     if (resp.validationIssues != null) out.validationIssues = resp.validationIssues
     if (resp.referencedDeviceIds != null) out.referencedDeviceIds = resp.referencedDeviceIds
+    // The ONLY diagnostics for a store-succeeded-but-activation-threw save (validationErrors is
+    // empty on that path) and for a storage failure -- never drop them.
+    if (resp.activationError != null) out.activationError = resp.activationError
+    if (resp.storageError != null) out.storageError = resp.storageError
     return out
 }
 
@@ -456,6 +464,12 @@ private Map _vrb2Compose(Map editor) {
     return [version: 1, nodes: nodes, edges: edges]
 }
 
+private boolean _vrb2IsVersionOne(def v) {
+    // The hub accepts INTEGER version 1 only; an `as int` coercion would let 1.5 through the
+    // pre-flight and store an inactive draft instead of refusing before the write.
+    return (v instanceof Integer || v instanceof Long) && (v as long) == 1L
+}
+
 private List _vrb2WalkChain(Map byId, Map nextMap, String start, String terminal) {
     def out = []
     def seen = [] as Set
@@ -476,7 +490,7 @@ private List _vrb2WalkChain(Map byId, Map nextMap, String start, String terminal
 private Map _vrb2Decompose(Map graph) {
     // 2.0 graph -> editor form: the inverse of _vrb2Compose, and of the hub builder's own
     // decomposition, with its error messages -- so a graph the UI cannot open reports the same way.
-    if (graph == null || !(graph.version instanceof Number) || (graph.version as int) != 1 ||
+    if (graph == null || !_vrb2IsVersionOne(graph.version) ||
         !(graph.nodes instanceof List) || !(graph.edges instanceof List)) {
         throw new IllegalArgumentException("The rule is not a Visual Rule Builder 2.0 schema version 1 document.")
     }
@@ -510,15 +524,29 @@ private Map _vrb2Decompose(Map graph) {
             structureIds: structureIds]
 }
 
-private List _vrb2ValidateChain(Map kinds, Map nextMap, String start, String terminal) {
+private List _vrb2ValidateChain(Map kinds, Map nextMap, String from, String port, String terminal, Set visited) {
+    // Walk one linear action chain leaving `from` on `port`. When a branchMerge exists every
+    // decision branch MUST reach it (an empty branch is the direct decision -> branchMerge edge
+    // the builder emits), so a chain that dead-ends short of its terminal is rejected here rather
+    // than by the hub, which would store it as an inactive draft. Every node walked is recorded in
+    // `visited` so the caller can flag declared nodes the flow never reaches.
     def errs = []
+    def start = nextMap["${from}:${port}".toString()]
+    if (start == null) {
+        if (terminal != null) errs << "Port '${port}' of node '${from}' must connect to the branchMerge node '${terminal}' (directly, or through a chain of actions)."
+        return errs
+    }
     def seen = [] as Set
     def cursor = start
     while (cursor != null && cursor != terminal) {
-        if (seen.contains(cursor)) { errs << "The rule contains an action cycle."; break }
+        if (seen.contains(cursor)) { errs << "The rule contains an action cycle."; return errs }
         seen << cursor
-        if (kinds[cursor] != "action") { errs << "Expected action node '${cursor}'."; break }
+        visited << cursor
+        if (kinds[cursor] != "action") { errs << "Expected action node '${cursor}'."; return errs }
         cursor = nextMap["${cursor}:next".toString()]
+    }
+    if (terminal != null && cursor != terminal) {
+        errs << "The action chain leaving port '${port}' of node '${from}' must end at the branchMerge node '${terminal}'."
     }
     return errs
 }
@@ -529,9 +557,7 @@ private List _vrb2Validate(Map graph) {
     // job, and its verdict comes back as validationErrors on the save. Empty list = looks sane.
     def errors = []
     if (graph == null) return ["Rule document must be a JSON object."]
-    if (!(graph.version instanceof Number) || (graph.version as int) != 1) {
-        errors << "Rule 'version' must be 1."
-    }
+    if (!_vrb2IsVersionOne(graph.version)) errors << "Rule 'version' must be 1."
     if (!(graph.nodes instanceof List)) errors << "Rule 'nodes' must be an array."
     if (!(graph.edges instanceof List)) errors << "Rule 'edges' must be an array."
     if (!(graph.nodes instanceof List) || !(graph.edges instanceof List)) {
@@ -656,11 +682,16 @@ private List _vrb2Validate(Map graph) {
             errors << "The triggerMerge node must connect to the decision node."
         }
         def terminal = branchMergeIds.size() == 1 ? branchMergeIds[0] : null
-        errors.addAll(_vrb2ValidateChain(kinds, nextMap, nextMap["${decisionId}:true".toString()], terminal))
-        errors.addAll(_vrb2ValidateChain(kinds, nextMap, nextMap["${decisionId}:false".toString()], terminal))
+        def visited = ([triggerMergeId, decisionId] + triggerIds) as Set
+        if (terminal != null) visited << terminal
+        errors.addAll(_vrb2ValidateChain(kinds, nextMap, decisionId, "true", terminal, visited))
+        errors.addAll(_vrb2ValidateChain(kinds, nextMap, decisionId, "false", terminal, visited))
         if (terminal != null) {
-            errors.addAll(_vrb2ValidateChain(kinds, nextMap, nextMap["${terminal}:next".toString()], null))
+            errors.addAll(_vrb2ValidateChain(kinds, nextMap, terminal, "next", null, visited))
         }
+        // The hub rejects disconnected nodes; a declared action the flow never reaches is the
+        // classic authoring slip (a node added, its edge forgotten).
+        idList.findAll { !visited.contains(it) }.each { errors << "Node '${it}' is not connected to the rule's flow." }
     }
     return errors.collect { it.toString() }.unique()
 }
@@ -817,8 +848,9 @@ private Map _vrbNotVisualRuleError(Integer appId) {
 }
 
 def toolGetVisualRule(args) {
-    // Read-only. No appId -> list every Visual Rules Builder rule (appId, name, disabled, paused).
-    // With appId -> full definition in whichever serialization the rule speaks.
+    // Read-only. No appId -> list every Visual Rules Builder rule (appId, name, version, disabled,
+    // paused). With appId -> full definition in whichever serialization the rule speaks, plus the
+    // editor decomposition and activation state for a graph rule.
     if (args?.appId == null) {
         try {
             def rules = _vrbListRules()
@@ -842,7 +874,8 @@ def toolGetVisualRule(args) {
             // `activated` is what tells the caller the rule actually RUNS: VRB2 stores an invalid
             // document as an inactive draft, so a successful read with validationErrors is a rule
             // that exists but is switched off.
-            out.activated = !(out.validationErrors)
+            out.activated = !(out.validationErrors) && out.runtimeActive != false
+            out.remove("runtimeActive")
             if (out.definition instanceof Map) {
                 // The editor form is the shape to modify and send back. A stored graph the
                 // builder cannot open must not fail the READ -- report why and keep the raw graph.
@@ -1085,7 +1118,10 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
         // draft. activatedSuccessfully is authoritative when the firmware sends it; otherwise an
         // empty validationErrors list is the only activation evidence available.
         out.activated = savedMeta?.containsKey("activatedSuccessfully") ?
-                (savedMeta.activatedSuccessfully == true) : validationErrors.isEmpty()
+                (savedMeta.activatedSuccessfully == true) :
+                (validationErrors.isEmpty() && after?.data?.runtimeActive != false)
+        if (savedMeta?.activationError != null) out.activationError = savedMeta.activationError
+        if (savedMeta?.storageError != null) out.storageError = savedMeta.storageError
         def issues = savedMeta?.validationIssues ?: after?.data?.validationIssues
         if (issues) out.validationIssues = issues
         def referenced = savedMeta?.containsKey("referencedDeviceIds") ?
@@ -1099,6 +1135,11 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
     if (validationErrors) {
         out.validationErrors = validationErrors
         out.note = "Stored as an INACTIVE DRAFT: the hub reported validation errors, so the rule was saved but NOT activated and will not run until they are fixed. See hub_get_tool_guide(section='visual_rule_reference')."
+    } else if (format == "graph" && out.activated == false) {
+        // Storage succeeded, validation passed, and the rule STILL is not running: activation
+        // threw on the hub (activationError) or no runtime exists. Say so with the cause.
+        out.note = "Stored but NOT activated: " + (out.activationError ? "the hub reported an activation error -- ${out.activationError}." : "the hub reports no active runtime for this rule.") +
+                " Re-read with hub_get_visual_rule(appId=${appId}); re-saving the definition retries activation."
     }
     if (!verified) {
         out.error = "Save POST was sent but the read-back did not confirm the new state (name ok: ${nameOk}, pause ok: ${pauseOk}, definition counts ok: ${countsOk}; read back name: ${after?.data?.name}, rulePaused: ${after?.data?.rulePaused})."
@@ -1332,13 +1373,13 @@ def _getAllToolDefinitions_partVisualRules() {
         ],
         [
             name: "hub_set_visual_rule",
-            description: "Create or update a Visual Rules Builder rule.[[FLAT_TRIM]] VRB is the PRIMARY rule engine for new automations; VRB 2.0 adds AND/OR condition gates, then/else branches and a shared action tail. Most automations fit it; use hub_set_rule (Rule Machine) only for complex ones (nested logic, loops, variables, custom device commands). On create the definition's shape picks the builder version (editor/graph -> 2.0, classic -> 1.0). The definition is structurally pre-flight validated before anything is created or saved, so a malformed rule never strands an empty shell.[[/FLAT_TRIM]] Omit appId to create (name + definition required). Pre-flight: backup within 24h + confirm=true. Schemas + worked example: hub_get_tool_guide(section='visual_rule_reference').",
+            description: "Create or update a Visual Rules Builder rule.[[FLAT_TRIM]] VRB is the PRIMARY rule engine for new automations; VRB 2.0 adds AND/OR condition gates, then/else branches and a shared action tail. Most automations fit it; use hub_set_rule (Rule Machine) only for complex ones (nested logic, loops, variables, custom device commands). On create the definition's shape picks the builder version (editor/graph -> 2.0, classic -> 1.0). Editor and graph definitions are structurally pre-flight validated before anything is created or saved, so a malformed 2.0 rule never strands an empty shell; a classic definition is saved as-is and validated by the hub.[[/FLAT_TRIM]] Omit appId to create (name + definition required). Pre-flight: backup within 24h + confirm=true. Schemas + worked example: hub_get_tool_guide(section='visual_rule_reference').",
             inputSchema: [
                 type: "object",
                 properties: [
                     appId: [type: "integer", description: "Existing Visual Rule app id to edit. Omit to create."],
                     name: [type: "string", description: "Rule name. Required on create; renames on edit."],
-                    definition: [type: "object", description: "Full rule definition (wholesale replacement). RECOMMENDED shape: the editor form {triggers, conditions, decisionType, thenActions, elseActions, commonActions}.[[FLAT_TRIM]] A raw 2.0 graph ({version, nodes, edges}) and a classic 1.0 node-list ({whenNodes, thenNodes, elseNodes}) are also accepted. On CREATE the shape picks the builder version: classic makes a Visual Rule Builder 1.0 rule, editor/graph a 2.0 one. On EDIT it must match the rule's existing format.[[/FLAT_TRIM]] Field schemas: hub_get_tool_guide(section='visual_rule_reference')."],
+                    definition: [type: "object", description: "Full rule definition (wholesale replacement). RECOMMENDED shape: the editor form {triggers, conditions, decisionType, thenActions, elseActions, commonActions}.[[FLAT_TRIM]] A raw 2.0 graph ({version, nodes, edges}) and a classic 1.0 node-list ({whenNodes, thenNodes, elseNodes}) are also accepted. On CREATE the shape picks the builder version: classic makes a Visual Rule Builder 1.0 rule, editor/graph a 2.0 one. On EDIT a 2.0 rule takes any of the three (a classic node-list is translated and the response says translatedFrom); a 1.0 rule takes classic only.[[/FLAT_TRIM]] Field schemas: hub_get_tool_guide(section='visual_rule_reference')."],
                     paused: [type: "boolean", description: "true=pause, false=resume. May be sent alone with appId."],
                     confirm: [type: "boolean", description: "REQUIRED: must be true (recent backup + user approval)."]
                 ],

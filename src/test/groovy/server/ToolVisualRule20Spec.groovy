@@ -324,6 +324,8 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         where:
         label                            | change                                      | fragment
         'a version other than 1'         | { it.version = 2 }                          | "Rule 'version' must be 1."
+        'a fractional version'           | { it.version = 1.5 }                        | "Rule 'version' must be 1."
+        'a string version'               | { it.version = '1' }                        | "Rule 'version' must be 1."
         'a missing triggerMerge'         | { it.nodes.remove(1) }                      | 'exactly one triggerMerge node'
         'a missing decision'             | { it.nodes.remove(2) }                      | 'exactly one decision node'
         'zero triggers'                  | { it.nodes.remove(0) }                      | 'at least one trigger node'
@@ -360,6 +362,41 @@ class ToolVisualRule20Spec extends ToolSpecBase {
 
         expect:
         script._vrb2Validate(graph).any { it.contains('action cycle') }
+    }
+
+    def "_vrb2Validate rejects a declared node the flow never reaches"() {
+        given: 'an action added but never wired -- the hub would store this as an inactive draft'
+        def graph = validGraph()
+        graph.nodes << [id: 'orphan', kind: 'action', type: 'turnOn', config: [switches: [59]]]
+
+        expect:
+        script._vrb2Validate(graph).any { it == "Node 'orphan' is not connected to the rule's flow." }
+
+        and: 'the same graph with the edge in place is clean'
+        graph.edges << [from: 'a1', to: 'orphan', port: 'next']
+        script._vrb2Validate(graph).isEmpty()
+    }
+
+    def "_vrb2Validate requires every decision branch to reach the branchMerge when one exists"() {
+        given: 'a common tail exists, but the THEN chain dead-ends and the ELSE port is unwired'
+        def graph = validGraph()
+        graph.nodes << [id: 'bm', kind: 'merge', type: 'branchMerge', config: [:]]
+        graph.nodes << [id: 'c1', kind: 'action', type: 'turnOn', config: [switches: [59]]]
+        graph.edges << [from: 'bm', to: 'c1', port: 'next']
+
+        when:
+        def errors = script._vrb2Validate(graph)
+
+        then:
+        errors.contains("The action chain leaving port 'true' of node 'd1' must end at the branchMerge node 'bm'.")
+        errors.contains("Port 'false' of node 'd1' must connect to the branchMerge node 'bm' (directly, or through a chain of actions).")
+
+        when: 'both branches are wired the way the builder composes them'
+        graph.edges << [from: 'a1', to: 'bm', port: 'next']
+        graph.edges << [from: 'd1', to: 'bm', port: 'false']
+
+        then:
+        script._vrb2Validate(graph).isEmpty()
     }
 
     def "_vrb2Validate checks the nested conditions the hub keeps inside the decision"() {
@@ -630,6 +667,59 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         result.validationIssues[0].field == 'motionSensors'
         result.referencedDeviceIds == [101, 201, 301]
         result.revision == 'r-2'
+    }
+
+    def "a save whose activation threw on the hub reports activated=false with the hub's activationError"() {
+        given: 'storage succeeded, validation passed, activation raised -- validationErrors is EMPTY on this path'
+        enableWrite()
+        registerAppsList([])
+        stubCreateChild(831)
+        def state = [name: null, ruleJson: null]
+        stubPostJson { path, body ->
+            def b = new JsonSlurper().parseText(body)
+            state.name = b.name
+            state.ruleJson = b.ruleJson
+            [name: b.name, ruleJson: b.ruleJson, revision: 'r-3', storedSuccessfully: true, activatedSuccessfully: false,
+             validationErrors: [], validationIssues: [], referencedDeviceIds: [101], activationError: 'scheduler unavailable', storageError: null]
+        }
+        hubGet.register('/app/ruleBuilder20Json/831') { params ->
+            json([name: state.name, rulePaused: false, ruleJson: state.ruleJson, validationErrors: [], runtimeGraph: null])
+        }
+
+        when:
+        def result = script.toolSetVisualRule([name: 'Activation threw', definition: editorDefinition(), confirm: true])
+
+        then: 'verified write, not running, and the ONLY diagnostic the hub gave is kept'
+        result.success == true
+        result.verified == true
+        result.activated == false
+        result.activationError == 'scheduler unavailable'
+        result.note.contains('Stored but NOT activated')
+        result.note.contains('scheduler unavailable')
+        !result.containsKey('validationErrors')
+    }
+
+    def "a graph read with no active runtime reports activated=false even when validationErrors is empty"() {
+        given: 'the hub sends runtimeGraph: null -- nothing is subscribed or scheduled'
+        def graph = script._vrb2Compose(editorDefinition())
+        hubGet.register('/app/ruleBuilder20Json/841') { params ->
+            json([name: 'Dormant', rulePaused: false, ruleJson: json(graph), validationErrors: [], runtimeGraph: null])
+        }
+
+        when:
+        def result = script.toolGetVisualRule([appId: 841])
+
+        then:
+        result.success == true
+        result.activated == false
+        !result.containsKey('runtimeGraph')
+        !result.containsKey('runtimeActive')
+
+        and: 'firmware that does not send the key at all leaves the error list as the only evidence'
+        hubGet.register('/app/ruleBuilder20Json/842') { params ->
+            json([name: 'Old firmware', rulePaused: false, ruleJson: json(graph), validationErrors: []])
+        }
+        script.toolGetVisualRule([appId: 842]).activated == true
     }
 
     // ==================== hub_get_visual_rule: editor + version ====================

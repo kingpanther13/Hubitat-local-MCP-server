@@ -1113,7 +1113,7 @@ A per-device command failure is logged and does not stop the rest of the branch.
 VRB2 separates STORAGE from ACTIVATION. A document that fails the hub's own validation is still STORED — as an inactive draft — and the rule stops running until it is fixed. So on a graph rule:
 
 - `success` / `verified` — the write landed and the read-back confirmed name, pause state and node counts.
-- `activated` — whether the rule actually RUNS. `false` with a non-empty `validationErrors` is an inactive draft; the response note says so.
+- `activated` — whether the rule actually RUNS. `false` with a non-empty `validationErrors` is an inactive draft; `false` with an empty list means the hub stored the document but reports no live runtime (an `activationError` is passed through when the hub gives one). The response note says which.
 - `validationErrors` — the hub's human-readable problems. `validationIssues` is the same list in editor form (`{nodeId, field, message}`) so you can highlight the offending node, and `referencedDeviceIds` lists the devices the graph touched.
 - `revision` (reads and writes) — the hub's opaque optimistic-concurrency token for the stored document. `ruleApps` (reads) lists the installed apps a `runRule` action can legally target. `runtimeGraph` (reads) summarizes the live runtime, and is absent when nothing is active.
 - Every field in the two bullets above is OPTIONAL on the wire and appears only when the firmware sends it. `hub_get_rule_health(appId)` reads the same verdict later; for a graph Visual Rule `broken: true` means non-empty `validationErrors`.
