@@ -13504,6 +13504,32 @@ def _inject_device_id(obj: dict, dev_id: str) -> dict:
     return result
 
 
+def refuse_unless_ci_test_hub(hub_url: str) -> None:
+    """This harness runs in the GitHub Actions e2e job against the SACRIFICIAL test hub and
+    nowhere else. Every invocation -- a single --test, --cleanup-only, --setup-perm-fixtures --
+    runs the cleanup sweep and the settings pins, which on any other hub means: every
+    mcp-rm-backup-*.json rollback baseline in File Manager deleted, every mcptest-namespace
+    throwaway code class deleted, bypassDeviceAllowlist forced ON, enableMandatoryBPS forced OFF,
+    maxConcurrentWrites forced to 0, BAT_E2E_-prefixed devices/rules/rooms/dashboards swept.
+    That happened to a personal production hub on 2026-09-05. Two independent tells, both
+    required: the Actions runner's own GITHUB_ACTIONS marker, and the cloud-relay URL shape the
+    CI job always parses MCP_URL into (a LAN address is a personal hub by definition). There is
+    deliberately no override flag."""
+    reasons = []
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        reasons.append("GITHUB_ACTIONS is not 'true' (not running inside the GitHub Actions e2e job)")
+    if not re.match(r"^https://cloud\.hubitat\.com/api/[^/]+$", hub_url or ""):
+        reasons.append(f"hub_url {hub_url!r} is not the CI cloud-relay base (https://cloud.hubitat.com/api/<uuid>)")
+    if reasons:
+        print("REFUSED: tests/e2e_test.py runs ONLY in the GitHub Actions e2e job against the sacrificial test hub.")
+        for r in reasons:
+            print(f"  - {r}")
+        print("  Its cleanup sweep deletes every mcp-rm-backup-*.json rollback baseline and forces MCP settings;")
+        print("  on a personal hub that is data loss. Test a PR on a personal hub with the MCP tools directly (BAT),")
+        print("  never with this harness.")
+        sys.exit(2)
+
+
 def load_config() -> dict:
     """Load config from e2e_config.json, with env var overrides."""
     config_path = Path(__file__).resolve().parent / "e2e_config.json"
@@ -13528,6 +13554,7 @@ def load_config() -> dict:
             print(f"  Config file not found: {config_path}")
             print("  Copy e2e_config.example.json to e2e_config.json and fill in values.")
         sys.exit(1)
+    refuse_unless_ci_test_hub(config["hub_url"])
 
     return config
 

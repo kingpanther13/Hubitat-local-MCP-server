@@ -8799,7 +8799,21 @@ Map _rmWalkStep(Integer appId, Map spec) {
         // schema rendered WITH the href params in scope. Stash it as
         // `navResponseConfigPage` so the AFTER block can use it instead
         // of doing a separate GET that would lose the param state.
-        opResult.navResponseConfigPage = _rmNavigateToPage(appId, page, target, hrefIndex, hrefName, hrefParams)?.configPage
+        def navResp = _rmNavigateToPage(appId, page, target, hrefIndex, hrefName, hrefParams)
+        // RM occasionally answers a navigate with an EMPTY render -- a target page carrying no
+        // inputs and no hrefs -- that the very next render fills in (observed on a 2.5.1.174 hub:
+        // a doActPage with nothing on it, no hub error logged, the same op green on every other
+        // run). Reported as-is it reads as "wizard broke", so take one bounded retry after a short
+        // pause; a second empty page IS the answer and flows through unchanged (commitSignal).
+        def navSchema = _rmCollectWalkSchema(navResp?.configPage, null)
+        if (navSchema.inputs.isEmpty() && navSchema.hrefs.isEmpty()) {
+            mcpLog("warn", "rm-native", "walkStep navigate ${page} -> ${target} for app ${appId} rendered an empty page; retrying once")
+            pauseExecution(750)
+            def retry = _rmNavigateToPage(appId, page, target, hrefIndex, hrefName, hrefParams)
+            if (retry?.configPage != null) navResp = retry
+            opResult.navRetried = true
+        }
+        opResult.navResponseConfigPage = navResp?.configPage
         opResult.navigated = [from: page, to: target, hrefName: hrefName, hrefIndex: hrefIndex, hrefParams: hrefParams]
         // After navigation the schema lives at the target page, not the source.
         page = target
