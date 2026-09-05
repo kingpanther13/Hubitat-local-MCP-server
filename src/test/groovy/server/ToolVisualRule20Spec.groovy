@@ -1260,6 +1260,31 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         result.rulePaused == true
     }
 
+    def "a save whose read-back holds a graph of different node counts is reported unconfirmed, not verified"() {
+        given: 'the hub stores something other than what was sent (one node short)'
+        enableWrite()
+        def state = [name: 'Rule', ruleJson: json(validGraph())]
+        stubPostJson { path, body ->
+            def b = new JsonSlurper().parseText(body)
+            def stored = new JsonSlurper().parseText(b.ruleJson as String)
+            stored.nodes = stored.nodes.take(stored.nodes.size() - 1)
+            state.name = b.name; state.ruleJson = json(stored)
+            [name: b.name, ruleJson: state.ruleJson, validationErrors: []]
+        }
+        hubGet.register('/app/ruleBuilder20Json/871') { params -> json([name: state.name, rulePaused: false, ruleJson: state.ruleJson, validationErrors: []]) }
+
+        when: 'a rename (the re-save path) and a definition edit both go through the shared tail'
+        def renamed = script.toolSetVisualRule([appId: 871, name: 'Renamed', confirm: true])
+        def edited = script.toolSetVisualRule([appId: 871, confirm: true, definition: validGraph()])
+
+        then: 'a guard that always answered true would be indistinguishable from a working one -- this pins it'
+        renamed.success == false
+        renamed.verified == false
+        renamed.error.contains('definition counts ok: false')
+        edited.success == false
+        edited.error.contains('definition counts ok: false')
+    }
+
     def "a classic read fed straight back as the definition is accepted (its envelope keys are ignored)"() {
         given: 'a 1.0 rule and the flat body hub_get_visual_rule returns for it'
         enableWrite()
