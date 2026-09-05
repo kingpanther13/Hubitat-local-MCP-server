@@ -2328,6 +2328,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         (1..writeCap).each { pool["mrtr-write-${it}".toString()] = fakeRecord('hub_set_rule', 1234567890000L - it) }
         (1..readCap).each { pool["mrtr-read-${it}".toString()] = fakeRecord('hub_get_performance_stats', 1234567890000L - it) }
         atomicStateMap.mrtrRequests = pool
+        script._writeStateCacheInvalidate()
 
         when: 'a new read arrives with every read slot active'
         def readRefused = mcpDriver.parseInner(modernCall('hub_get_jobs', [cursor: '']))
@@ -2341,6 +2342,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def finished = [:] + (atomicStateMap.mrtrRequests as Map)
         finished['mrtr-read-1'] = [:] + (finished['mrtr-read-1'] as Map) + [status: 'terminal']
         atomicStateMap.mrtrRequests = finished
+        script._writeStateCacheInvalidate()
         def readOk = modernCall('hub_get_jobs', [cursor: ''])
 
         then: 'the read pool made room among reads only; the full write pool did not block it'
@@ -2351,6 +2353,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def freed = [:] + (atomicStateMap.mrtrRequests as Map)
         freed.remove('mrtr-read-2')
         atomicStateMap.mrtrRequests = freed
+        script._writeStateCacheInvalidate()
         def writeRefused = mcpDriver.parseInner(modernCall('hub_call_rule', [ruleId: [401], action: 'stop']))
 
         then: 'it is refused on the WRITE cap; free read slots do not count for it'
