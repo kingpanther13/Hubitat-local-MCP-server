@@ -1136,6 +1136,7 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.format == 'classic'
         result.error.startsWith('Rule 42 is a Visual Rule Builder 1.0 rule')
         result.error.contains('graph-format')
+        !result.containsKey('hubNativeFormat')   // an edit measured THIS rule, not the hub's builders
         result.note.contains('hub_get_visual_rule')
         posts.isEmpty()
     }

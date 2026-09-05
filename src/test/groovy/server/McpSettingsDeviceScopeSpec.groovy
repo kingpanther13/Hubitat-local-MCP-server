@@ -802,15 +802,35 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
         hubGet.register('/hub2/vrb/devices') { params ->
             JsonOutput.toJson([[id: 11, label: "Eleven", capabilities: ["Switch"]]])
         }
-        hubGet.register('/hub2/devicesList') { params -> throw new RuntimeException("must not be reached") }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [[key: "DEV-11", data: [id: 11, name: "Eleven"], children: []]]])
+        }
 
         when:
         def result = setScope([11])
 
-        then: "the successor endpoint carries ids, so validation never reaches devicesList"
+        then: "the id is known through the assembled inventory"
         result.success == true
         sharedAppStub.settingsStore['selectedDevices'] == [type: 'capability.*', value: ['11']]
         hubGet.calls.any { it.path == '/hub2/vrb/devices' }
+    }
+
+    def "selectedDevices validation accepts an id the vrb feed omits but the devicesList spine carries"() {
+        given: 'the picker feed filtered device 12 out; the tree still lists it'
+        enableDevModeAndWrite()
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 11, label: "Eleven", capabilities: ["Switch"]]]) }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [[key: "DEV-11", data: [id: 11, name: "Eleven"], children: []],
+                                         [key: "DEV-12", data: [id: 12, name: "Twelve"], children: []]]])
+        }
+
+        when:
+        def result = setScope([12])
+
+        then: "a real device is never called unknown because the picker skipped it"
+        result.success == true
+        sharedAppStub.settingsStore['selectedDevices'] == [type: 'capability.*', value: ['12']]
     }
 
     def "selectedDevices validation falls back when the capabilities endpoint answers EMPTY (#body)"() {

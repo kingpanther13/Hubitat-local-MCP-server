@@ -20,9 +20,10 @@ with the hub's HTTP surface. Every file is downloaded verbatim from a hub at
 were captured **2026-09-03** from a Hubitat **C-8** on platform **2.5.1.181**.
 `vue-hub2.min.js` is still the **2.5.0.143 monolith** (captured 2026-05-26 / 2026-06-08),
 on purpose: the 2.5.1 SPA is code-split, so the shell that replaced it holds only a
-fraction of the endpoint literals; an earlier revision of this PR swapped it out and
-five of five randomly checked endpoints disappeared from the folder. The monolith
-stays as the greppable corpus until every chunk that carries an endpoint is vendored.
+fraction of the endpoint literals (five of five sampled endpoints — `/hub2/appsList`,
+`/device/runmethod`, `/device/preference/save`, `/app/saveOrUpdateJson`, `/bundle2/uploadZip`
+— exist in the monolith and in NO 2.5.1 file vendored here). The monolith stays as the
+greppable corpus until every chunk that carries an endpoint is vendored.
 `hubitat.min.js` was re-fetched the same day and is byte-identical to the earlier
 capture, so it carries both dates.
 
@@ -46,7 +47,8 @@ Several issues need the MCP server wired to hub features whose contract is the
 JSON/form payload the browser sends, not something the server documents. The
 two UIs split the work:
 
-- **Vue SPA (`vue-hub2.min.js` + its chunks)** — the contract for apps rewritten
+- **Vue SPA (`vue-hub2.min.js`, the 2.5.0.143 monolith, plus the 2.5.1 shell and
+  chunks)** — the contract for apps rewritten
   in Vue (Basic Rules, Visual Rules Builder, …) is the JSON the Vue components
   POST. The bundle is code-split, so a feature's body usually lives in a chunk,
   not the shell — Visual Rule Builder 2.0 is in
@@ -193,8 +195,11 @@ document also carries a top-level `version`, which must be `1`.
   edge into it on port `next`.
 - `kind: "decision"`, `type: "all"|"any"` (null defaults to `all`; `any` is OR and
   must carry at least one condition) — REQUIRED, exactly one.
-- `kind: "merge"`, `type: "branchMerge"` — present only when actions rejoin after
-  the if/else (the builder's `commonActions`).
+- `kind: "merge"`, `type: "branchMerge"` — optional, at most one. The builder emits it
+  only when `commonActions` is non-empty, but the hub ACCEPTS one with nothing after
+  it (live-verified 2.5.1.181: both branches → `branchMerge`, no tail, validates and
+  activates), which is why the MCP server keeps an explicit `structureIds.branchMerge`
+  across a read → edit → write even when the tail was emptied.
 - `kind: "action"` — `type` is the action variety (e.g. `"turnOff"`).
 
 **Conditions are not nodes.** They nest inside the decision as
@@ -261,6 +266,11 @@ choice on `triggerCondition`, not `condition`** — the dialog's key survived in
 the schema. Accepted `timeIsBetween` configs are
 `{triggerCondition:"specificTimes", startTime:"0700", endTime:"2200"}` and
 `{triggerCondition:"sunriseToSunset"|"sunsetToSunrise"}`.
+
+**Read shape, live-verified 2.5.1.181:** the loader prefers the hub's parsed
+`graphDocument` over re-parsing the `ruleJson` string
+(`n.graphDocument || this.parseRuleJson(n.ruleJson)`), and the MCP server reads
+the same way — so a rule can be read in full even when `ruleJson` is blank.
 
 #### Save semantics — stored vs activated
 
@@ -334,7 +344,7 @@ caller rather than hidden.
 | `GET  /app/ruleBuilder20Suggestions` | Prompt suggestions for the VRB **2.0** AI-generate dialog (the dialog's `suggestions-endpoint` prop) — a JSON array; live-probed `[]` on 2.5.1.181, as is the 1.0 endpoint |
 | `GET  /hub2/vrb/devices` | The VRB 2.0 device picker feed and the **successor to the removed `/device/listWithCapabilities/json`** — a flat JSON array of `{id, label, capabilities[], temperature, lightEffects, supportedFanSpeeds, buttonCount}` (the last four null unless the device has them; `lightEffects` is a JSON STRING of an id→name map). Live-probed on 2.5.1.181. Read-only and capability-bearing, and it returns the FULL flat inventory — 127 entries against 127 nodes in the `/hub2/devicesList` tree on the probed hub — so unlike the Groovy device model it is not authorization-scoped. **`hub_list_devices scope='all'` and the `hub_update_mcp_settings` `selectedDevices` validation now use it as their second tier**, projecting each record to the `{id, label, capabilities}` triple the removed endpoint returned |
 | `GET  /device/listWithCapabilities/json` | **Removed in platform 2.5.1.173 and later (404; confirmed on .173, .174 and .181).** Before that: all-hub device list with capabilities (`id`, `label`, `capabilities`) — fed the VRB device pickers AND `hub_list_devices` `scope='all'`. Still the first tier `hub_list_devices` tries, for hubs that predate the removal; on newer firmware it falls to `/hub2/vrb/devices` (above), which carries the same `id`/`label`/`capabilities` triple, and only then to the capability-less `/hub2/devicesList` below |
-| `GET  /hub2/devicesList` | All-hub device INVENTORY as a parent/child tree: `{devices: [{key, data: {id, name, secondaryName, ...}, children: [...]}]}` — `data.name` is the user-facing label, `secondaryName` the driver name; child devices nest under their parent's `children`. Carries NO capabilities. The last resort for `hub_list_devices scope='all'`, reached only when NEITHER capability-bearing endpoint above answers: it flattens the tree and fills capabilities for authorized devices only, reporting `capabilitiesPartial` |
+| `GET  /hub2/devicesList` | All-hub device INVENTORY as a parent/child tree: `{devices: [{key, data: {id, name, secondaryName, ...}, children: [...]}]}` — `data.name` is the user-facing label, `secondaryName` the driver name; child devices nest under their parent's `children`. Carries NO capabilities. On 2.5.1.173+ it is the SPINE of `hub_list_devices scope='all'` (authoritative ids and order) with `/hub2/vrb/devices` left-joined for capabilities; alone it flattens the tree and fills capabilities for authorized devices only, reporting `capabilitiesPartial` |
 | `GET  /device/listJson?capability=<cap>` | Classic `dynamicPage` device-input picker feed (`appUI.js` line 209 `$.getJSON('/device/listJson?capability='…)`, `main.js`) — a capability-filtered device list. The MCP server reaches the same data via `/device/fullJson` + `hub_list_devices`; this is the older classic-engine path, distinct from the Vue `listWithCapabilities/json` above |
 | `GET  /hub/zwave/getChildAndRouteInfoJson` | Z-Wave mesh route map — `{nodes, connectors}` (per-node route/neighbor graph). Read-only. Feeds `hub_get_radio_details(include_topology=true)` |
 | `GET  /hub/zigbee/getChildAndRouteInfoJson` | Zigbee mesh route map — `{children, neighbors, routes}` (routes carry `status`/`age`/`nextHopId`). Read-only. Feeds `hub_get_radio_details(include_topology=true)` |

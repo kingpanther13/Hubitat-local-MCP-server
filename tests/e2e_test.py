@@ -2225,8 +2225,9 @@ class TestRunner:
             # The feed carries capabilities; partial is flagged only when the devicesList
             # cross-check found devices the feed omitted, and then the note must say so.
             if result.get("capabilitiesPartial"):
-                assert "/hub2/vrb/devices" in (result.get("capabilitiesNote") or ""), \
-                    f"a partial /hub2/vrb/devices inventory must explain the omission: {result}"
+                note = result.get("capabilitiesNote") or ""
+                assert ("omitted" in note and "of" in note) or "could not be read" in note, \
+                    f"a partial /hub2/vrb/devices inventory must say what was omitted or why the cross-check failed: {result}"
             else:
                 assert result.get("capabilitiesPartial") is None, \
                     f"/hub2/vrb/devices carries capabilities, so nothing may be flagged partial: {result}"
@@ -8136,6 +8137,24 @@ class TestRunner:
             assert got.get("format") == fmt, f"read-back format {got.get('format')!r} != create format {fmt!r}"
             self._assert_trigger_device(got, fmt, switch_id)
 
+            if fmt == "classic":
+                # FORMAT MISMATCH on EDIT: a 2.0 editor definition aimed at this 1.0 rule is
+                # refused per-rule (no `hubNativeFormat` -- the hub's builders were not measured).
+                mismatch = self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_set_visual_rule",
+                    "args": {"appId": app_id, "confirm": True, "definition": {
+                        "triggers": [{"type": "switch", "config": {"switches": [switch_id], "switchEvent": "Turns off"}}],
+                        "thenActions": [{"type": "turnOff", "config": {"switches": [switch_id]}}]}}})
+                assert mismatch.get("success") is False and mismatch.get("format") == "classic", \
+                    f"an editor definition on a 1.0 rule must be refused as a format mismatch: {mismatch}"
+                assert str(mismatch.get("error", "")).startswith(f"Rule {app_id} is a Visual Rule Builder 1.0 rule"), \
+                    f"the edit-path refusal must name the rule, not the hub: {mismatch}"
+                assert "hubNativeFormat" not in mismatch, \
+                    f"an edit did not measure the hub's builders, so it must not claim hubNativeFormat: {mismatch}"
+                unchanged = self._get_visual_rule(app_id)
+                assert unchanged.get("format") == "classic" and unchanged.get("whenNodes"), \
+                    f"the refused edit must have left the 1.0 rule untouched: {unchanged}"
+
             # HEALTH on a Visual Rule (issue #254): hub_get_rule_health must NOT reject a VRB
             # rule -- it reports the engine-native verdict. ruleFormat identifies which engine
             # answered (vrb-graph reports broken from validationErrors; vrb-classic has none).
@@ -8605,6 +8624,10 @@ class TestRunner:
                 f"a valid editor definition must ACTIVATE, not land as an inactive draft: {created}"
             assert not created.get("validationErrors"), \
                 f"a valid editor definition must come back with no validationErrors: {created}"
+            assert created.get("createRoute") == "createchild", \
+                f"the versioned child route must have made the rule (the legacy fallback would say so): {created}"
+            assert "preflightWarnings" not in created, \
+                f"every type in this definition is in the catalog, so no advisory may be raised: {created}"
 
         try:
             # READ BACK: the composed graph AND its decomposition.
@@ -8672,6 +8695,83 @@ class TestRunner:
                                if n.get("kind") == "decision"]
             assert len(after_decisions) == 1 and after_decisions[0].get("type") == "all", \
                 f"the edited decision node did not recompose as 'all': {after_decisions}"
+
+            # (d) EMPTY-TAIL ROUND TRIP: send the read-back editor straight back with the common tail
+            # emptied but structureIds kept. The branchMerge must survive (the hub accepts one with
+            # nothing after it) and the rule must stay active -- identity, not a re-wiring.
+            emptied = dict(after_editor)
+            emptied["commonActions"] = []
+            rw = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_set_visual_rule",
+                    "args": {"appId": app_id, "confirm": True, "definition": emptied}}),
+                lambda: True,
+                "hub_set_visual_rule edit (empty common tail)",
+            )
+            if not rw["relayDropped"]:
+                assert rw["response"].get("success") is True and rw["response"].get("activated") is True, \
+                    f"emptying the common tail must keep the rule active: {rw['response']}"
+            kept = self._get_visual_rule(app_id)
+            kept_nodes = (kept.get("definition") or {}).get("nodes") or []
+            assert any(n.get("type") == "branchMerge" for n in kept_nodes), \
+                f"an explicit structureIds.branchMerge must survive an emptied common tail: {kept_nodes}"
+            assert (kept.get("editor") or {}).get("commonActions") == [], \
+                f"the tail must read back empty: {kept.get('editor')}"
+
+            # (e) UNKNOWN TYPE ON EDIT is refused before any write: a typo must not stop a running
+            # rule by storing it as an inactive draft.
+            typo = dict(kept.get("editor") or {})
+            typo["thenActions"] = [{"type": "turnOF", "config": {"switches": [switch_id]}}]
+            try:
+                refused_edit = self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_set_visual_rule",
+                    "args": {"appId": app_id, "confirm": True, "definition": typo}})
+            except (McpError, McpToolError, requests.HTTPError) as exc:
+                detail = str(exc)
+                if "504" in detail:
+                    raise SkipTest("unknown-type edit refusal lost to relay 504") from exc
+                assert "turnOF" in detail and "does not use it today" in detail, \
+                    f"the -32602 must name the unknown type and explain the refusal: {detail}"
+            else:
+                raise AssertionError(
+                    f"an unknown action type on EDIT must be refused with -32602, got: {refused_edit}")
+            still = self._get_visual_rule(app_id)
+            assert still.get("activated") is True, \
+                f"the refused edit must have left the rule running: {still}"
+            # (f) UNKNOWN TYPE ON CREATE is advisory: the rule is created, preflightWarnings names
+            # the type, and the hub's verdict (an inactive draft) is reported as activated False.
+            warn_name = f"{PREFIX}VrbWarn"
+            ww = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_rule_machine", {
+                    "tool": "hub_set_visual_rule",
+                    "args": {"name": warn_name, "confirm": True, "definition": {
+                        "triggers": [{"type": "switch",
+                                      "config": {"switches": [switch_id], "switchEvent": "Turns on"}}],
+                        "thenActions": [{"type": "turnOn", "config": {"switches": [switch_id]}},
+                                        {"type": "brandNewAction", "config": {"switches": [switch_id]}}]}}}),
+                lambda: self._find_visual_rule_id_by_name(warn_name),
+                "hub_set_visual_rule create (unknown type -> advisory)",
+            )
+            warn_id = ww["evidence"] if ww["relayDropped"] else (ww["response"] or {}).get("appId")
+            if warn_id:
+                self.created_native_app_ids.append(str(warn_id))
+            if not ww["relayDropped"]:
+                wr = ww["response"]
+                assert wr.get("success") is True and wr.get("activated") is False, \
+                    f"an unknown type on CREATE must be stored as an inactive draft, not refused: {wr}"
+                assert any("brandNewAction" in w for w in (wr.get("preflightWarnings") or [])), \
+                    f"preflightWarnings must name the unknown type: {wr}"
+                assert any("brandNewAction" in e for e in (wr.get("validationErrors") or [])), \
+                    f"the hub's own verdict must be forwarded: {wr}"
+            if warn_id:
+                self._soft_write(
+                    lambda: self.client.call_tool("hub_manage_rule_machine", {
+                        "tool": "hub_delete_visual_rule", "args": {"appId": warn_id, "confirm": True}}),
+                    lambda: self._get_visual_rule(warn_id).get("success") is False,
+                    "hub_delete_visual_rule (advisory fixture)",
+                )
+                if self._get_visual_rule(warn_id).get("success") is False:
+                    self._untrack_native_app(warn_id)
         finally:
             # DELETE, same contract the lifecycle test asserts: on a relay 504 the response is
             # gone so absence is the evidence, and the id stays tracked until an independent

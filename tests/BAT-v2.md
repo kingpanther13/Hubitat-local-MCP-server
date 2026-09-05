@@ -2684,7 +2684,7 @@ All 117 distinct tools are covered by at least one test, excluding the destructi
 
 Sections 1-9 each target a specific tool — named in the test's title and **Expected** criteria while the `test_prompt` stays goal-first (see Prompt style above). Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 269 test scenarios** (123 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 4 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 device-state state-change / fail-loud authoring parity + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 5 read-side convergence + 1 multi-device convergence + 3 MCP device-access scope + 1 official-SDK MRTR proof + 1 multi-rule call_rule aggregation + 1 rule-backup policy proof) plus 13 excluded destructive operations documented for manual testing
+**Total: 270 test scenarios** (123 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 5 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 device-state state-change / fail-loud authoring parity + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 5 read-side convergence + 1 multi-device convergence + 3 MCP device-access scope + 1 official-SDK MRTR proof + 1 multi-rule call_rule aggregation + 1 rule-backup policy proof) plus 13 excluded destructive operations documented for manual testing
 
 ---
 
@@ -4520,6 +4520,22 @@ The Visual Rules Builder tools live in the `hub_manage_rule_machine` gateway (th
 **Expected**: the pause call returns `success=true` with `rulePaused=true` (pause state rides `GET /app/ruleBuilderPause/<id>/true` under the hood); `hub_get_visual_rule` confirms. The rename+resume call (with `appId`, `name`, `paused=false`, no `definition`) re-saves the EXISTING nodes under the new name — the read-back shows `name='BAT VRB Renamed'`, `rulePaused=false`, and the original whenNode/thenNode pair intact. No `definition` replacement happens.
 
 **Failure modes**: the rename wipes the nodes (empty `whenNodes`/`thenNodes` after the rename — the re-save dropped the existing definition). The pause flag is silently ignored (`rulePaused` stays `false` after `paused=true`). The AI re-sends the whole definition just to rename (works, but a Partial — `name`-only is the point). A no-op call (`appId` with no `definition`/`name`/`paused`) must reject -32602 "Nothing to change", not return `success=true`.
+
+### T706 — A Visual Rule 2.0 create that succeeds with an advisory (unknown action type)
+
+```json
+{
+  "setup_prompt": "The Read and Write masters are enabled and a hub backup was created within the last 24 hours (call hub_create_backup if unsure). Create a virtual switch named 'BAT VRB2 Advisory' via hub_manage_virtual_device and note its device ID.",
+  "test_prompt": "Create a Visual Rules Builder automation named 'BAT VRB2 Advisory' that turns 'BAT VRB2 Advisory' on when it turns on, and give it a SECOND action of type 'brandNewAction' on the same switch -- I know that type name is not in the reference; use it verbatim. Tell me exactly what came back: was it refused, was it created, is it running, and what did the tool warn about versus what the hub itself said.",
+  "teardown_prompt": "Delete the Visual Rule 'BAT VRB2 Advisory' with hub_delete_visual_rule (confirm=true). Delete the virtual switch 'BAT VRB2 Advisory'."
+}
+```
+
+**Expected**: the create is NOT refused: unknown type names are advisory on create (newer firmware may know them). The response is `success: true`, `created: true`, `version: '2.0'`, `createRoute: 'createchild'`, with `preflightWarnings` naming `brandNewAction` (the tool's advisory) AND `validationErrors` from the hub naming the same node (the hub's verdict), `activated: false`, and the INACTIVE DRAFT note. The AI reports all three facts distinctly: created, warned by the tool, rejected by the hub, therefore not running -- it must not call this a success as an automation, and must not call it a refusal. A follow-up `hub_get_visual_rule(appId=N)` shows `activated: false`.
+
+**Failure modes**: the AI reports the rule as running because `success: true` (the draft note and `activated: false` ignored -- automatic Fail). The AI silently drops the unknown action to make the rule pass (the prompt asked for it verbatim). The AI treats `preflightWarnings` as an error and never issues the create. Confusing the tool's advisory with the hub's rejection -- they are two different sources and the AI should say which said what.
+
+---
 
 ### T702 — hub_delete_visual_rule type-gate refusal + verified delete with recovery definition
 

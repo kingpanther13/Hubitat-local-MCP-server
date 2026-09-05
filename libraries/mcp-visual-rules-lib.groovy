@@ -804,31 +804,46 @@ private List _vrb2Validate(Map graph) {
     return errors.collect { it.toString() }.unique()
 }
 
-private List _vrb2CatalogWarnings(Map graph) {
-    // Advisory findings the hub will adjudicate: type names outside this build's catalogs (newer
-    // firmware may know them) and a rule with no action anywhere (valid, but does nothing).
-    def warnings = []
-    if (!(graph?.nodes instanceof List)) return warnings
-    def actions = 0
+private List _vrb2UnknownTypes(Map graph) {
+    // [where, id, type] for every trigger/action/condition whose type is outside this build's catalogs.
+    def out = []
+    if (!(graph?.nodes instanceof List)) return out
     graph.nodes.each { node ->
         if (!(node instanceof Map)) return
-        def id = node.id?.toString()
         def type = node.type?.toString()
-        if (node.kind == "trigger" && !(type in _vrb2TriggerTypes())) {
-            warnings << "Trigger node '${id}' has type '${type}', which this build does not know; the hub will validate it."
-        } else if (node.kind == "action") {
-            actions++
-            if (!(type in _vrb2ActionTypes())) warnings << "Action node '${id}' has type '${type}', which this build does not know; the hub will validate it."
-        } else if (node.kind == "decision" && node.config instanceof Map && node.config.conditions instanceof List) {
+        if (node.kind == "trigger" && !(type in _vrb2TriggerTypes())) out << [where: "Trigger node", id: node.id?.toString(), type: type]
+        else if (node.kind == "action" && !(type in _vrb2ActionTypes())) out << [where: "Action node", id: node.id?.toString(), type: type]
+        else if (node.kind == "decision" && node.config instanceof Map && node.config.conditions instanceof List) {
             node.config.conditions.each { cond ->
-                if (cond instanceof Map && !(cond.type?.toString() in _vrb2ConditionTypes())) {
-                    warnings << "Condition '${cond.id}' has type '${cond.type}', which this build does not know; the hub will validate it."
-                }
+                if (cond instanceof Map && !(cond.type?.toString() in _vrb2ConditionTypes())) out << [where: "Condition", id: cond.id?.toString(), type: cond.type?.toString()]
             }
         }
     }
-    if (actions == 0) warnings << "The rule has no action on any branch; it will activate but do nothing."
-    return warnings.collect { it.toString() }
+    return out
+}
+
+private Set _vrb2TypeNames(def graph) {
+    // Every trigger/action/condition type name a stored graph uses.
+    def names = [] as Set
+    if (!(graph instanceof Map) || !(graph.nodes instanceof List)) return names
+    graph.nodes.each { node ->
+        if (!(node instanceof Map)) return
+        if (node.kind in ["trigger", "action"] && node.type != null) names << node.type.toString()
+        if (node.kind == "decision" && node.config instanceof Map && node.config.conditions instanceof List) {
+            node.config.conditions.each { if (it instanceof Map && it.type != null) names << it.type.toString() }
+        }
+    }
+    return names
+}
+
+private List _vrb2CatalogWarnings(Map graph) {
+    // Advisory findings the hub will adjudicate: type names outside this build's catalogs (newer
+    // firmware may know them) and a rule with no action anywhere (valid, but does nothing).
+    def warnings = _vrb2UnknownTypes(graph).collect { "${it.where} '${it.id}' has type '${it.type}', which this build does not know; the hub will validate it.".toString() }
+    if (graph?.nodes instanceof List && !graph.nodes.any { it instanceof Map && it.kind == "action" }) {
+        warnings << "The rule has no action on any branch; it will activate but do nothing."
+    }
+    return warnings
 }
 
 private Map _vrbClassicToGraph(Map classic) {
@@ -844,7 +859,9 @@ private Map _vrbClassicToGraph(Map classic) {
     }
     def whenNodes = ordered((classic?.whenNodes ?: []) as List)
     def conditionTypes = _vrb2ConditionTypes()
-    def isCondition = { node -> node instanceof Map && (node.triggerType?.toString() in conditionTypes) }
+    // The builder's own predicate (isWhenNodeCondition) also treats its "sampleCondition"
+    // placeholder as a condition; a half-built 1.0 rule can persist one.
+    def isCondition = { node -> node instanceof Map && ((node.triggerType?.toString() in conditionTypes) || node.triggerType?.toString() == "sampleCondition") }
     return _vrb2Compose([
         triggers: whenNodes.findAll { !isCondition(it) },
         conditions: whenNodes.findAll { isCondition(it) },
@@ -860,6 +877,10 @@ private void _vrbValidateClassicShape(Map definition) {
     // cast after a child already exists or be POSTed verbatim for the hub to choke on, so it is
     // refused up front -- before any create -- as a plain argument error.
     if (definition == null) throw new IllegalArgumentException("definition must be a JSON object.")
+    // Closed key set, same reason as the editor form: `thenNodez` must not silently become "no
+    // actions". promptHistory is tolerated because a read echoes it.
+    def unknownKeys = definition.keySet().collect { it.toString() }.findAll { !(it in ["whenNodes", "thenNodes", "elseNodes", "promptHistory"]) }
+    if (unknownKeys) throw new IllegalArgumentException("Unknown classic key(s): ${unknownKeys.join(', ')}. A classic definition takes only whenNodes, thenNodes, elseNodes.")
     ["whenNodes", "thenNodes", "elseNodes"].each { key ->
         if (definition[key] == null) return
         if (!(definition[key] instanceof List)) throw new IllegalArgumentException("definition.${key} must be an array of node objects.")
@@ -925,7 +946,9 @@ private Map _vrbFormatMismatchRefusal(Integer appId, String definitionFormat, St
     def out = [success: false]
     if (appId != null) out.appId = appId
     out.format = "classic"
-    out.hubNativeFormat = "classic"
+    // Only the CREATE path observed the hub's builder capability (the versioned 2.0 route failed
+    // and the legacy route made a classic child). An EDIT proves only that THIS rule is 1.0.
+    if (appId == null) out.hubNativeFormat = "classic"
     out.error = appId == null ?
             "This hub's Visual Rules Builder can only create Visual Rule Builder 1.0 rules, which speak only the classic format; the definition is ${definitionFormat}-format." :
             "Rule ${appId} is a Visual Rule Builder 1.0 rule, which speaks only the classic format; the definition is ${definitionFormat}-format."
@@ -1182,6 +1205,18 @@ private Map _toolSetVisualRuleImpl(args) {
             return _vrbFormatMismatchRefusal(appId, normalized.format,
                     "Fetch the current shape with hub_get_visual_rule(appId=${appId}), or delete and recreate the rule.")
         }
+        if (detected.format == "graph") {
+            // Create is permissive about type names (newer firmware may know them) but an EDIT
+            // puts a RUNNING rule at risk: a typo would be stored as an inactive draft and stop
+            // it. So a type name this build does not know is refused here unless the rule
+            // already uses it -- that is the hub having accepted it, which is the only oracle.
+            def knownToRule = _vrb2TypeNames(detected.data.definition)
+            def newUnknown = _vrb2UnknownTypes(resolved.definition).findAll { !(it.type in knownToRule) }
+            if (newUnknown) {
+                throw new IllegalArgumentException("Refusing to edit rule ${appId}: " + newUnknown.collect { "${it.where} '${it.id}' has type '${it.type}'" }.join("; ") +
+                        " -- this build does not know that type and the rule does not use it today, so saving would stop a running rule as an inactive draft. Check the spelling against hub_get_tool_guide(section='visual_rule_reference'); a type the hub already accepted for this rule is allowed.")
+            }
+        }
         try {
             def result = _vrbApplySave(appId, detected.format, name ?: detected.data.name?.toString(), resolved.definition, hasPaused ? paused : null, detected.data.rulePaused == true, false)
             if (resolved.translatedFrom) result.translatedFrom = resolved.translatedFrom
@@ -1218,9 +1253,17 @@ private Map _toolSetVisualRuleImpl(args) {
             // shape on this platform; the validator rejects its `{id, type, deviceIds}` nodes.
             def emptyTemplate = '{"version":1,"nodes":[{"id":"trigger-merge","kind":"merge","type":"triggerMerge","config":{}},{"id":"decision","kind":"decision","type":"all","config":{"conditions":[]}}],"edges":[{"from":"trigger-merge","to":"decision","port":"next"}]}'
             if (detected.format == "graph") {
-                def existing = detected.data.ruleJson?.toString()?.trim() ?: emptyTemplate
+                // The read prefers the hub's parsed graphDocument, so `definition` is the stored
+                // rule even when ruleJson reads blank -- re-serialize THAT, never the template, or a
+                // bare rename could wipe a rule the read had just shown in full.
+                def existing = (detected.data.definition instanceof Map) ? groovy.json.JsonOutput.toJson(detected.data.definition) :
+                        (detected.data.ruleJson?.toString()?.trim() ?: emptyTemplate)
                 def saved = _vrbSaveGraph(appId, name, existing)
-                if (saved.success == false) return [success: false, appId: appId, error: "Rename failed: ${saved.errorMessage}", validationErrors: saved.validationErrors]
+                if (saved.success == false) {
+                    def failed = [success: false, appId: appId, error: "Rename failed: ${saved.errorMessage}", validationErrors: saved.validationErrors]
+                    ["storageError", "activationError", "validationIssues", "revision", "referencedDeviceIds"].each { k -> if (saved.containsKey(k)) failed[k] = saved[k] }
+                    return failed
+                }
             } else {
                 // The classic save body always carries rulePaused, so a combined rename+pause
                 // commits the pause here -- calling the pause endpoint again would be redundant.
@@ -1240,11 +1283,14 @@ private Map _toolSetVisualRuleImpl(args) {
         def after = _vrbDetect(appId)
         def nameOk = after != null && _vrbNameMatches(after, requestedName)
         def pauseOk = !hasPaused || ((after?.data?.rulePaused == true) == paused)
-        def verified = nameOk && pauseOk
+        // A rename re-saves the existing graph: the node/edge counts must come back unchanged.
+        def countsOk = detected.format != "graph" || !(detected.data.definition instanceof Map) ||
+                (after?.data?.definition instanceof Map && _vrbDefinitionCountsMatch("graph", detected.data.definition, after.data))
+        def verified = nameOk && pauseOk && countsOk
         def out = [success: verified, appId: appId, format: detected.format, verified: verified,
                    name: after?.data?.name, rulePaused: after?.data?.rulePaused == true]
         if (!verified) {
-            out.error = "The ${name ? 'rename' : 'pause'} request was sent but the read-back did not confirm it (read back name: ${after?.data?.name}, rulePaused: ${after?.data?.rulePaused})."
+            out.error = "The ${name ? 'rename' : 'pause'} request was sent but the read-back did not confirm it (name ok: ${nameOk}, pause ok: ${pauseOk}, definition counts ok: ${countsOk}; read back name: ${after?.data?.name}, rulePaused: ${after?.data?.rulePaused})."
             out.note = "Re-read with hub_get_visual_rule(appId=${appId}) to inspect what the hub persisted."
             mcpLog("warn", "vrb", "Rename/pause read-back verification failed for ${appId} (nameOk=${nameOk}, pauseOk=${pauseOk})")
         }
@@ -1270,8 +1316,11 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
             def failed = [success: false, error: "Hub rejected the graph save: ${saved.errorMessage}",
                           validationErrors: saved.validationErrors, activated: false,
                           note: created ? _vrbTryCleanupShell(appId) : "The rule's previous definition is untouched."]
+            // containsKey is enough: _vrbSaveGraphMeta sets these only when the hub sent a
+            // non-null value. (Unlike the read-back merge below, where a present EMPTY list is
+            // itself the answer and must not be collapsed by a truthiness test.)
             ["storageError", "activationError", "validationIssues", "revision", "referencedDeviceIds"].each { k ->
-                if (saved.containsKey(k) && saved[k] != null) failed[k] = saved[k]
+                if (saved.containsKey(k)) failed[k] = saved[k]
             }
             return failed
         }
@@ -1315,7 +1364,7 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
         // Presence, not truthiness: an EMPTY list from the save is a positive statement that this
         // save produced no issues, and must not be replaced by the read-back's older list.
         def issues = savedMeta?.containsKey("validationIssues") ? savedMeta.validationIssues : after?.data?.validationIssues
-        if (issues) out.validationIssues = issues
+        if (issues != null) out.validationIssues = issues
         def referenced = savedMeta?.containsKey("referencedDeviceIds") ?
                 savedMeta.referencedDeviceIds : after?.data?.referencedDeviceIds
         if (referenced != null) out.referencedDeviceIds = referenced
@@ -1488,6 +1537,7 @@ private Map _vrbRestoreFromSnapshot(Map snapshot, String fileName) {
         }
 
         String translatedFrom = null
+        List preflightWarnings = null
         if (targetFormat != vrbFormat) {
             // Only the translated path is pre-flighted. A same-format graph snapshot is replayed
             // untouched: it validated on the hub once, and our structural check is not the oracle.
@@ -1501,6 +1551,7 @@ private Map _vrbRestoreFromSnapshot(Map snapshot, String fileName) {
             }
             definition = resolved.definition
             translatedFrom = resolved.translatedFrom
+            preflightWarnings = resolved.warnings
         }
 
         def saved = _vrbApplySave(targetId, targetFormat, name, definition,
@@ -1511,6 +1562,7 @@ private Map _vrbRestoreFromSnapshot(Map snapshot, String fileName) {
         if (createdVersion) out.version = createdVersion
         if (createdRoute) out.createRoute = createdRoute
         if (translatedFrom) out.translatedFrom = translatedFrom
+        if (preflightWarnings) out.preflightWarnings = preflightWarnings
         if (saved.containsKey("activated")) out.activated = saved.activated
         if (saved.activationError != null) out.activationError = saved.activationError
         if (saved.error) out.error = saved.error

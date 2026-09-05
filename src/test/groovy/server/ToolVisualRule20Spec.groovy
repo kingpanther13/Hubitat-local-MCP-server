@@ -1051,6 +1051,85 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         result.note.contains('INACTIVE DRAFT')
     }
 
+    def "an edit refuses a type name this build does not know unless the rule already uses it"() {
+        given: 'a stored rule that already carries a newer-firmware action type'
+        enableWrite()
+        def stored = script._vrb2Compose([triggers: [[type: 'switch', config: [switches: [1], switchEvent: 'Turns on']]],
+                                          thenActions: [[type: 'newFirmwareAction', config: [switches: [9]]]]])
+        def state = [ruleJson: json(stored)]
+        stubPostJson { path, body -> def b = new JsonSlurper().parseText(body); state.ruleJson = b.ruleJson; [name: b.name, ruleJson: b.ruleJson, validationErrors: []] }
+        hubGet.register('/app/ruleBuilder20Json/860') { params -> json([name: 'Live', rulePaused: false, ruleJson: state.ruleJson, validationErrors: []]) }
+
+        when: 'a typo on a running rule'
+        script.toolSetVisualRule([appId: 860, confirm: true, definition: [
+            triggers: [[type: 'switch', config: [switches: [1], switchEvent: 'Turns on']]],
+            thenActions: [[type: 'turnOF', config: [switches: [9]]]]]])
+
+        then: 'refused before any write -- the rule keeps running'
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("type 'turnOF'")
+        posts.isEmpty()
+
+        when: 'the type the hub already accepted for this rule is kept, plus a known one'
+        def result = script.toolSetVisualRule([appId: 860, confirm: true, definition: [
+            triggers: [[type: 'switch', config: [switches: [1], switchEvent: 'Turns on']]],
+            thenActions: [[type: 'newFirmwareAction', config: [switches: [9]]], [type: 'turnOn', config: [switches: [2]]]]]])
+
+        then:
+        result.success == true
+        result.preflightWarnings.any { it.contains("'newFirmwareAction'") }
+        posts.size() == 1
+    }
+
+    def "a classic definition with an unknown top-level key is refused instead of posting an empty list"() {
+        given:
+        enableWrite()
+        registerAppsList([])
+        stubCreateChild(861)
+        stubPostJson()
+
+        when:
+        script.toolSetVisualRule([name: 'Typo', confirm: true, definition: [
+            whenNodes: [[triggerType: 'switch', switches: [1], deviceIds: [1], switchEvent: 'Turns on', index: 0, type: 'when']],
+            thenNodez: [[actionType: 'turnOn', switches: [2], deviceIds: [2], index: 0, type: 'then']], elseNodes: []]])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('Unknown classic key(s): thenNodez')
+        rawPaths.isEmpty()
+    }
+
+    def "classic translation treats the builder's sampleCondition placeholder as a condition"() {
+        when:
+        def graph = script._vrbClassicToGraph([
+            whenNodes: [[triggerType: 'switch', switches: [1], deviceIds: [1], switchEvent: 'Turns on', index: 0, type: 'when'],
+                        [triggerType: 'sampleCondition', deviceIds: [], index: 1, type: 'when']],
+            thenNodes: [], elseNodes: []])
+
+        then: 'it is nested in the decision, not wired to the trigger merge'
+        graph.nodes.findAll { it.kind == 'trigger' }*.type == ['switch']
+        graph.nodes.find { it.kind == 'decision' }.config.conditions*.type == ['sampleCondition']
+    }
+
+    def "a rename re-posts the definition the read returned, even when ruleJson is blank, and verifies its counts"() {
+        given: 'the hub answers a populated graphDocument beside a blank ruleJson'
+        enableWrite()
+        def graph = script._vrb2Compose(editorDefinition())
+        def state = [name: 'Before', ruleJson: '', graphDocument: graph]
+        stubPostJson { path, body -> def b = new JsonSlurper().parseText(body); state.name = b.name; state.ruleJson = b.ruleJson; state.graphDocument = new JsonSlurper().parseText(b.ruleJson); [name: b.name, ruleJson: b.ruleJson, validationErrors: []] }
+        hubGet.register('/app/ruleBuilder20Json/862') { params ->
+            json([name: state.name, rulePaused: false, ruleJson: state.ruleJson, graphDocument: state.graphDocument, validationErrors: []])
+        }
+
+        when:
+        def result = script.toolSetVisualRule([appId: 862, name: 'After', confirm: true])
+
+        then: 'the stored graph, not the empty template, went back to the hub'
+        result.success == true
+        result.verified == true
+        new JsonSlurper().parseText(new JsonSlurper().parseText(posts[0].body as String).ruleJson as String).nodes.size() == graph.nodes.size()
+    }
+
     // ==================== hub_get_visual_rule: editor + version ====================
 
     def "a graph read returns the editor decomposition alongside the raw definition"() {

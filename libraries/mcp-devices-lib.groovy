@@ -760,7 +760,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
         r.source = sourceEndpoint
         if (!capabilitiesComplete) {
             r.capabilitiesPartial = true
-            r.capabilitiesNote = inventory.partialNote ?: "Neither capability-bearing endpoint answered on this hub -- /device/listWithCapabilities/json was removed in platform 2.5.1.173 and later, and its successor /hub2/vrb/devices did not answer either -- so the inventory came from /hub2/devicesList, which carries no capabilities. Capabilities are filled in for mcpAuthorized devices only; an unauthorized device shows an empty list because its capabilities are not visible to the app. capabilityFilter therefore matches authorized devices only."
+            r.capabilitiesNote = inventory.partialNote ?: "No capability-bearing source was usable on this hub -- /device/listWithCapabilities/json was removed in platform 2.5.1.173 and later, and /hub2/vrb/devices either did not answer or carried no capabilities lists -- so the inventory came from /hub2/devicesList, which carries no capabilities. Capabilities are filled in for mcpAuthorized devices only; an unauthorized device shows an empty list because its capabilities are not visible to the app. capabilityFilter therefore matches authorized devices only."
         }
         if (labelFilter) r.labelFilter = labelFilter
         if (capabilityFilter) r.capabilityFilter = capabilityFilter
@@ -787,7 +787,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
         // Say it plainly rather than let an empty list read as "this device has no capabilities":
         // capabilityFilter can only match authorized devices on this path.
         result.capabilitiesPartial = true
-        result.capabilitiesNote = inventory.partialNote ?: "Neither capability-bearing endpoint answered on this hub -- /device/listWithCapabilities/json was removed in platform 2.5.1.173 and later, and its successor /hub2/vrb/devices did not answer either -- so the inventory came from /hub2/devicesList, which carries no capabilities. Capabilities are filled in for mcpAuthorized devices only; an unauthorized device shows an empty list because its capabilities are not visible to the app. capabilityFilter therefore matches authorized devices only."
+        result.capabilitiesNote = inventory.partialNote ?: "No capability-bearing source was usable on this hub -- /device/listWithCapabilities/json was removed in platform 2.5.1.173 and later, and /hub2/vrb/devices either did not answer or carried no capabilities lists -- so the inventory came from /hub2/devicesList, which carries no capabilities. Capabilities are filled in for mcpAuthorized devices only; an unauthorized device shows an empty list because its capabilities are not visible to the app. capabilityFilter therefore matches authorized devices only."
     }
     if (labelFilter) result.labelFilter = labelFilter
     if (capabilityFilter) result.capabilityFilter = capabilityFilter

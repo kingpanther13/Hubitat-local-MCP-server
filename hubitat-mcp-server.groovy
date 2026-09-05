@@ -7340,16 +7340,18 @@ private List _flattenHub2DeviceTree(nodes, List acc = null) {
 
 // Every hub device, authorized or not -- shared by hub_list_devices(scope='all') and the
 // selectedDevices validation, which is why it lives here and not in either library.
-// Three tiers, capability-bearing first. /device/listWithCapabilities/json carries capabilities but
-// is gone as of platform 2.5.1.173 and later (404; confirmed on .173, .174 and .181).
-// /hub2/vrb/devices is its successor -- the VRB 2.0 device picker feed, a flat array whose
-// {id, label, capabilities} triple is the same shape over the same full (not authorization-scoped)
-// inventory, child devices included. /hub2/devicesList is the last resort: still a superset of the
-// authorized set, but it exposes no capabilities.
-// Returns [source, capabilities, records]. On failure records is null and `failure` is "fetch"
-// (with the exception message in fetchError) or "shape" -- which covers a missing body and a
-// missing `devices` key, both of which flatten to null. A well-formed inventory with no devices is
-// NOT a failure: it is a hub with no devices. The caller owns the wording.
+// /device/listWithCapabilities/json carried capabilities but is gone as of platform 2.5.1.173 and
+// later (404; confirmed on .173, .174 and .181). On such hubs the inventory is assembled from two
+// reads: /hub2/devicesList is the SPINE (the authoritative whole-hub tree, no capabilities) and
+// /hub2/vrb/devices -- the VRB 2.0 device picker feed, a flat array carrying {id, label,
+// capabilities} for every device -- is left-joined onto it by id for capabilities. The tree keeps
+// the ids complete and the order stable; a device the feed omits (or whose entry has no
+// capabilities list) is still present, just without a `capabilities` key, and the result is
+// flagged partial so the caller fills authorized devices in from the Groovy model.
+// Returns [source, capabilities, records] (+ partialNote when capabilities is false but records
+// exist). On failure records is null and `failure` is "fetch" (with fetchError) or "shape" -- a
+// missing body or a missing `devices` key, both of which flatten to null. A well-formed inventory
+// with no devices is NOT a failure: it is a hub with no devices. The caller owns the wording.
 private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
     try {
         def txt = hubInternalGet("/device/listWithCapabilities/json")
@@ -7359,70 +7361,82 @@ private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
             return [source: "/device/listWithCapabilities/json", capabilities: true, records: parsed]
         }
         // A 200 that is not a device list is contract drift; say so rather than fall through silently.
-        mcpLog("debug", logCategory, "${logPrefix}: /device/listWithCapabilities/json answered with ${txt ? 'an empty or non-list body' : 'no body'} -- trying /hub2/vrb/devices")
+        mcpLog("debug", logCategory, "${logPrefix}: /device/listWithCapabilities/json answered with ${txt ? 'an empty or non-list body' : 'no body'} -- assembling the inventory from /hub2/devicesList + /hub2/vrb/devices")
     } catch (Exception e) {
-        mcpLog("debug", logCategory, "${logPrefix}: /device/listWithCapabilities/json unavailable (${e.message}) -- trying /hub2/vrb/devices")
+        mcpLog("debug", logCategory, "${logPrefix}: /device/listWithCapabilities/json unavailable (${e.message}) -- assembling the inventory from /hub2/devicesList + /hub2/vrb/devices")
     }
-    try {
-        def txt = hubInternalGet("/hub2/vrb/devices")
-        def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "[]")
-        // Every entry must be a Map with an id before this counts as the device feed: anything
-        // else (an error object, an HTML body that happens to parse, a firmware contract move) is
-        // safer read as "absent" than as a short inventory, since callers treat the records as the
-        // whole hub. The feed also carries temperature/lightEffects/supportedFanSpeeds/buttonCount,
-        // which are projected away so the records match the removed primary's shape exactly.
-        if (txt && parsed instanceof List && !parsed.isEmpty() && parsed.every { it instanceof Map && it.id != null && it.capabilities instanceof List }) {
-            def projected = parsed.collect { [id: it.id, label: it.label, capabilities: it.capabilities] }
-            // This is a picker feed adopted as the whole-hub inventory. Cross-check it against
-            // /hub2/devicesList: a device the feed omits is appended without capabilities and
-            // the result is flagged partial, so selectedDevices validation can never call a real
-            // device "unknown" because the picker filtered it. A failed cross-check keeps the feed.
-            def extras = []
-            try {
-                def dl = new groovy.json.JsonSlurper().parseText(hubInternalGet("/hub2/devicesList") ?: "{}")
-                def flat = _flattenHub2DeviceTree(dl instanceof Map ? dl.devices : null)
-                if (flat instanceof List) {
-                    def known = (projected.collect { it.id?.toString() }) as Set
-                    extras = flat.findAll { it.id != null && !known.contains(it.id.toString()) }
-                            .collect { [id: it.id, label: it.label, capabilities: []] }
-                }
-            } catch (Exception e) {
-                mcpLog("debug", logCategory, "${logPrefix}: /hub2/devicesList cross-check of /hub2/vrb/devices failed (${e.message}); using the feed as-is")
-            }
-            if (extras) {
-                mcpLog("warn", logCategory, "${logPrefix}: /hub2/vrb/devices omitted ${extras.size()} device(s) present in /hub2/devicesList; appended without capabilities")
-                return [source: "/hub2/vrb/devices", capabilities: false, records: projected + extras,
-                        partialNote: "The Visual Rule Builder device feed (/hub2/vrb/devices) omitted ${extras.size()} device(s) that /hub2/devicesList lists; those were appended without capabilities, so capabilityFilter cannot match them."]
-            }
-            return [source: "/hub2/vrb/devices", capabilities: true, records: projected]
-        }
-        mcpLog("debug", logCategory, "${logPrefix}: /hub2/vrb/devices answered with ${txt ? 'an empty or unrecognized body' : 'no body'} -- falling back to /hub2/devicesList")
-    } catch (Exception e) {
-        mcpLog("debug", logCategory, "${logPrefix}: /hub2/vrb/devices unavailable (${e.message}) -- falling back to /hub2/devicesList")
-    }
-    def records
+
+    // The spine. Its failure modes are the caller's failure modes -- unless the feed can stand in.
+    def spine = null
+    def spineFailure = null
     try {
         def txt = hubInternalGet("/hub2/devicesList")
         def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "{}")
-        records = _flattenHub2DeviceTree(parsed instanceof Map ? parsed.devices : null)
+        spine = _flattenHub2DeviceTree(parsed instanceof Map ? parsed.devices : null)
+        if (!(spine instanceof List)) {
+            mcpLog("warn", logCategory, "${logPrefix}: /hub2/devicesList returned an unexpected shape")
+            spineFailure = [source: "/hub2/devicesList", capabilities: false, records: null, failure: "shape"]
+            spine = null
+        }
     } catch (Exception e) {
         mcpLog("warn", logCategory, "${logPrefix}: /hub2/devicesList fetch/parse failed: ${e.message}")
-        return [source: "/hub2/devicesList", capabilities: false, records: null,
-                failure: "fetch", fetchError: e.message]
+        spineFailure = [source: "/hub2/devicesList", capabilities: false, records: null, failure: "fetch", fetchError: e.message]
     }
-    if (!(records instanceof List)) {
-        mcpLog("warn", logCategory, "${logPrefix}: /hub2/devicesList returned an unexpected shape")
-        return [source: "/hub2/devicesList", capabilities: false, records: null, failure: "shape"]
+
+    // The capability feed: id -> capabilities for every entry that carries a real list. An entry
+    // without one is simply not joined (absorbed per record, never a reason to drop the feed).
+    def caps = null
+    def feedLabels = [:]
+    try {
+        def txt = hubInternalGet("/hub2/vrb/devices")
+        def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "[]")
+        if (txt && parsed instanceof List && !parsed.isEmpty()) {
+            caps = [:]
+            parsed.each { entry ->
+                if (!(entry instanceof Map) || entry.id == null) return
+                feedLabels[entry.id.toString()] = entry.label
+                if (entry.capabilities instanceof List) caps[entry.id.toString()] = entry.capabilities
+            }
+            if (caps.isEmpty()) {
+                mcpLog("debug", logCategory, "${logPrefix}: /hub2/vrb/devices answered ${parsed.size()} entries but none carried a capabilities list")
+                caps = null
+            }
+        } else {
+            mcpLog("debug", logCategory, "${logPrefix}: /hub2/vrb/devices answered with ${txt ? 'an empty or unrecognized body' : 'no body'}")
+        }
+    } catch (Exception e) {
+        mcpLog("debug", logCategory, "${logPrefix}: /hub2/vrb/devices unavailable (${e.message})")
     }
-    // An empty list here is a hub with no devices, and is reported as one: the read failures are
-    // already separated above -- no body or a missing `devices` key flattens to null and returns
-    // "shape", so nothing ambiguous reaches this point. (The two capability-bearing tiers above
-    // treat an empty answer differently: a dead endpoint on 2.5.1.173+ can answer empty, so those
-    // paths fall through to here rather than passing zero devices off as the truth.)
-    if (records.isEmpty()) {
-        mcpLog("debug", logCategory, "${logPrefix}: /hub2/devicesList reports no devices on this hub")
+
+    if (spine != null) {
+        if (caps == null) {
+            // Capability-less last resort: the caller fills authorized devices in from the model.
+            if (spine.isEmpty()) mcpLog("debug", logCategory, "${logPrefix}: /hub2/devicesList reports no devices on this hub")
+            return [source: "/hub2/devicesList", capabilities: false, records: spine]
+        }
+        def missing = 0
+        def records = spine.collect { d ->
+            def key = d.id?.toString()
+            if (key != null && caps.containsKey(key)) return [id: d.id, label: d.label, capabilities: caps[key]]
+            missing++
+            return [id: d.id, label: d.label]   // no `capabilities` key on purpose: routes to the model fill-in
+        }
+        if (missing == 0) return [source: "/hub2/vrb/devices", capabilities: true, records: records]
+        mcpLog("warn", logCategory, "${logPrefix}: /hub2/vrb/devices carried capabilities for ${spine.size() - missing} of ${spine.size()} devices in /hub2/devicesList")
+        return [source: "/hub2/vrb/devices", capabilities: false, records: records,
+                partialNote: "The Visual Rule Builder device feed (/hub2/vrb/devices) omitted ${missing} of ${spine.size()} device(s) listed by /hub2/devicesList; those carry capabilities only when MCP-authorized, so capabilityFilter cannot match them otherwise."]
     }
-    return [source: "/hub2/devicesList", capabilities: false, records: records]
+
+    // The spine could not be read. The feed alone is still a usable inventory, but nothing can
+    // vouch for its completeness, so it is reported partial with the reason -- never as the
+    // complete capability-bearing answer the successful path returns.
+    if (caps != null) {
+        def records = feedLabels.collect { id, label -> caps.containsKey(id) ? [id: id, label: label, capabilities: caps[id]] : [id: id, label: label] }
+        mcpLog("warn", logCategory, "${logPrefix}: /hub2/devicesList could not be read (${spineFailure?.fetchError ?: spineFailure?.failure}); inventory is the /hub2/vrb/devices feed alone")
+        return [source: "/hub2/vrb/devices", capabilities: false, records: records,
+                partialNote: "The whole-hub device tree (/hub2/devicesList) could not be read (${spineFailure?.fetchError ?: spineFailure?.failure}), so this inventory is the Visual Rule Builder device feed (/hub2/vrb/devices) alone and may omit devices the feed filters out. Retry to cross-check."]
+    }
+    return spineFailure
 }
 
 /**
@@ -9594,7 +9608,7 @@ One entry per rule: `{appId, name, version, disabled, paused}`. `disabled` is th
 
 The editor form is the same decomposition the hub's own Rule Builder 2.0 UI edits. It carries no merge nodes, no edges and no ports — those are generated for you, exactly as the builder generates them:
 
-```
+```text
 {
   "triggers":      [ {"type": "<triggerType>", "config": {...}}, ... ],
   "conditions":    [ {"type": "<conditionType>", "config": {...}}, ... ],
@@ -9611,7 +9625,7 @@ The editor form is the same decomposition the hub's own Rule Builder 2.0 UI edit
 
 **Worked create** — motion OR a mode change, gated on weekday AND after dark, dim the hall on the true branch, turn it off on the false branch, and notify either way:
 
-```
+```text
 hub_set_visual_rule(name="Hall light", confirm=true, definition={
   "triggers": [
     {"type": "motion", "config": {"motionSensors": [101], "motionSensorEvent": "Motion starts"}},
@@ -9632,7 +9646,7 @@ hub_set_visual_rule(name="Hall light", confirm=true, definition={
 
 ### The graph document (what actually goes on the wire)
 
-```
+```text
 {"version": 1,
  "nodes": [{"id": "...", "kind": "trigger|merge|decision|action", "type": "...", "config": {...}}, ...],
  "edges": [{"from": "...", "to": "...", "port": "next|true|false"}, ...]}
@@ -9640,7 +9654,7 @@ hub_set_visual_rule(name="Hall light", confirm=true, definition={
 
 Conditions are NOT flow nodes — they are nested in the one decision node as `{"id", "type", "config"}` entries (no `kind`) under `config.conditions`. Topology:
 
-```
+```text
 trigger --+
 trigger --+--> triggerMerge --> decision --true--> linear THEN chain --+
 trigger --+                              --false-> linear ELSE chain --+--> optional branchMerge --> linear common chain
@@ -9648,7 +9662,7 @@ trigger --+                              --false-> linear ELSE chain --+--> opti
 
 Ports by source: trigger `next`, `triggerMerge` `next`, decision `true` / `false`, action `next`, `branchMerge` `next`. Default structure ids are `trigger-merge`, `decision`, `branch-merge`. `branchMerge` is merge-any continuation, not a synchronization barrier — only the branch that ran continues through it.
 
-Pre-flight validation runs BEFORE anything is created or saved; on failure the call is rejected as an invalid-params error (JSON-RPC -32602) whose message lists every problem, and no child app is created. (Only the legacy-create fallback, where a shell already exists, answers `success: false` + `validationErrors` after cleaning that shell up.) It rejects a `version` other than the integer 1; a non-array `nodes`/`edges`; a blank, duplicate, or unknown-in-an-edge node id; a `kind` outside trigger/merge/decision/action; a missing or non-object `config`; a `type` outside the catalogs below; zero triggers; anything but exactly one `triggerMerge` and one decision; a second `branchMerge`; an `any` decision with no conditions; duplicate condition ids; a wrong or duplicated port, or two edges leaving one node on the same port (fan-out); a node reached by more than one path (the two structural exceptions: trigger paths converge only at the triggerMerge, and the then/else branches rejoin only at the branchMerge); a declared node the flow never reaches; a branch that fails to reach the branchMerge when one exists; a trigger not wired to the trigger merge, or a trigger merge not wired to the decision; a non-action node in a branch chain; and cycles. It does NOT check config CONTENTS (device ids, enum spelling, ranges), and it does not refuse a trigger/condition/action `type` outside the catalogs below — newer firmware may know it, so that comes back as `preflightWarnings` (so does a rule with no action on any branch) and the hub validator owns the verdict, answering with its own `validationErrors` on the save. The editor form's key set is closed: a misspelled key (`conditons`) is refused rather than silently read as "none".
+Pre-flight validation runs BEFORE anything is created or saved; on failure the call is rejected as an invalid-params error (JSON-RPC -32602) whose message lists every structural problem it can establish (node reachability is judged only once every branch chain walked to its end), and no child app is created. (Only the legacy-create fallback, where a shell already exists, answers `success: false` + `validationErrors` after cleaning that shell up.) It rejects a `version` other than the integer 1; a non-array `nodes`/`edges`; a blank, duplicate, or unknown-in-an-edge node id; a `kind` outside trigger/merge/decision/action; a missing or non-object `config`; zero triggers; anything but exactly one `triggerMerge` and one decision; a second `branchMerge`; an `any` decision with no conditions; duplicate condition ids; a wrong or duplicated port, or two edges leaving one node on the same port (fan-out); a node reached by more than one path (the two structural exceptions: trigger paths converge only at the triggerMerge, and the then/else branches rejoin only at the branchMerge); a declared node the flow never reaches; a branch that fails to reach the branchMerge when one exists; a trigger not wired to the trigger merge, or a trigger merge not wired to the decision; a non-action node in a branch chain; and cycles. It does NOT check config CONTENTS (device ids, enum spelling, ranges), and it does not refuse a trigger/condition/action `type` outside the catalogs below — newer firmware may know it, so on CREATE that comes back as `preflightWarnings` (so does a rule with no action on any branch) and the hub validator owns the verdict, answering with its own `validationErrors` on the save. On EDIT a running rule is at stake, so a type name this build does not know is refused unless the rule already uses it (the hub having accepted it is the oracle). The editor form's key set is closed: a misspelled key (`conditons`) is refused rather than silently read as "none".
 
 ### Trigger catalog (2.0)
 
@@ -9748,6 +9762,7 @@ VRB2 separates STORAGE from ACTIVATION. A document that fails the hub's own vali
 - `activated` — whether the rule actually RUNS. `false` with a non-empty `validationErrors` is an inactive draft; `false` with an empty list means the hub stored the document but reports no live runtime (an `activationError` is passed through when the hub gives one). The response note says which.
 - `validationErrors` — the hub's human-readable problems. `validationIssues` is the same list in editor form (`{nodeId, field, message}`) so you can highlight the offending node, and `referencedDeviceIds` lists the devices the graph touched.
 - `revision` (reads and writes) — the hub's opaque optimistic-concurrency token for the stored document. `ruleApps` (reads) lists the installed apps a `runRule` action can legally target. `runtimeGraph` (reads) summarizes the live runtime, and is absent when nothing is active.
+- `createRoute` (create and restore-recreate) — `createchild` when the per-version child route made the rule, `createVisualRuleBuilderRule` when the legacy builder-page fallback did; the fallback is the only path where the firmware, not your definition, picked the builder.
 - Every field in the two bullets above is OPTIONAL on the wire and appears only when the firmware sends it. `hub_get_rule_health(appId)` reads the same verdict later; for a graph Visual Rule `broken: true` means non-empty `validationErrors`.
 
 The serialized document is capped at 100,000 UTF-8 bytes; an oversized one is not stored at all. On the wire the graph travels as a JSON STRING inside `{name, ruleJson}` — the tool handles the double-encoding; always pass `definition` as a normal JSON object.

@@ -354,11 +354,50 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
         then: 'the omitted device is still an inventory member, without capabilities, and the caller is told why'
         result.source == "/hub2/vrb/devices"
         result.total == 2
+        result.devices*.id == ["80", "77"]   // spine order, not appended at the end
         result.devices.find { it.id == "77" }.label == "Filtered Out"
         result.devices.find { it.id == "77" }.capabilities == []
         result.capabilitiesPartial == true
         result.capabilitiesNote.contains("/hub2/vrb/devices")
-        result.capabilitiesNote.contains("omitted 1 device")
+        result.capabilitiesNote.contains("omitted 1 of 2")
+    }
+
+    def "an AUTHORIZED device the vrb feed omits still gets its capabilities from the Groovy model"() {
+        given: 'the picker feed skipped the authorized device; the model knows its capabilities'
+        settingsMap.selectedDevices = [dev(id: 80, capabilities: ["Switch", "Refresh"])]
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 99, label: "Hall", capabilities: ["MotionSensor"]]]) }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [[key: "DEV-80", data: [id: 80, name: "Authorized Switch"], children: []],
+                                         [key: "DEV-99", data: [id: 99, name: "Hall"], children: []]]])
+        }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then: 'no capabilities key on the omitted record, so the fill-in ran instead of an empty list winning'
+        result.capabilitiesPartial == true
+        result.devices.find { it.id == "80" }.capabilities.containsAll(["Switch", "Refresh"])
+        result.devices.find { it.id == "99" }.capabilities == ["MotionSensor"]
+    }
+
+    def "when the devicesList spine cannot be read the vrb feed alone is returned, flagged partial with the reason"() {
+        given:
+        settingsMap.selectedDevices = [dev(id: 80)]
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 80, label: "Authorized Switch", capabilities: ["Switch"]]]) }
+        hubGet.register('/hub2/devicesList') { params -> throw new RuntimeException("status code: 504") }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then: 'never a complete, capability-bearing answer while the cross-check could not run'
+        result.source == "/hub2/vrb/devices"
+        result.devices*.id == ["80"]
+        result.devices[0].capabilities == ["Switch"]
+        result.capabilitiesPartial == true
+        result.capabilitiesNote.contains("could not be read")
+        result.capabilitiesNote.contains("504")
     }
 
     def "scope='all' falls past a vrb feed whose entries carry no capabilities list"() {
@@ -428,7 +467,10 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
                 [id: 99, label: "Hall", capabilities: ["MotionSensor"]]
             ])
         }
-        hubGet.register('/hub2/devicesList') { params -> throw new RuntimeException("must not be reached") }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [[key: "DEV-98", data: [id: 98, name: "Porch"], children: []],
+                                         [key: "DEV-99", data: [id: 99, name: "Hall"], children: []]]])
+        }
 
         when:
         def result = script.toolListDevices(false, 0, 0, null, null, "MotionSensor", null, null, null, "all")

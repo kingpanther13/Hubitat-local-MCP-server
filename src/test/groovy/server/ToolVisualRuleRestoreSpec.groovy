@@ -576,6 +576,7 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
         result.ruleId == 999
         result.recreated == true
         result.format == 'graph'
+        result.version == '2.0'
         result.translatedFrom == 'classic'
         result.verified == true
 
@@ -622,6 +623,7 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
 
         then: 'the replay verified, but the caller is told the automation is NOT running and why'
         result.success == true
+        result.verified == true
         result.ruleId == 998
         result.activated == false
         result.activationError == 'scheduler unavailable'
@@ -695,6 +697,7 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
         result.recreated == false
         result.ruleId == 642
         result.format == 'graph'
+        !result.containsKey('version')   // nothing was created, so no builder version was chosen
         result.translatedFrom == 'classic'
         result.name == 'Hall light'
         rawPaths.isEmpty()
