@@ -823,14 +823,17 @@ private List _vrb2UnknownTypes(Map graph) {
 }
 
 private Set _vrb2TypeNames(def graph) {
-    // Every trigger/action/condition type name a stored graph uses.
+    // Every trigger/action/condition type a stored graph uses, keyed "<where>|<type>" with the
+    // same `where` labels _vrb2UnknownTypes reports, so a type the hub accepted as an ACTION does
+    // not vouch for the same name used as a TRIGGER.
     def names = [] as Set
     if (!(graph instanceof Map) || !(graph.nodes instanceof List)) return names
     graph.nodes.each { node ->
         if (!(node instanceof Map)) return
-        if (node.kind in ["trigger", "action"] && node.type != null) names << node.type.toString()
+        if (node.kind == "trigger" && node.type != null) names << "Trigger node|${node.type}".toString()
+        if (node.kind == "action" && node.type != null) names << "Action node|${node.type}".toString()
         if (node.kind == "decision" && node.config instanceof Map && node.config.conditions instanceof List) {
-            node.config.conditions.each { if (it instanceof Map && it.type != null) names << it.type.toString() }
+            node.config.conditions.each { if (it instanceof Map && it.type != null) names << "Condition|${it.type}".toString() }
         }
     }
     return names
@@ -846,7 +849,7 @@ private List _vrb2CatalogWarnings(Map graph) {
     return warnings
 }
 
-private Map _vrbClassicToGraph(Map classic) {
+private Map _vrbClassicToGraph(Map classic, List warnings = null) {
     // Deterministic 1.0 -> 2.0 translation. Native VRB2 does NOT migrate 1.0 documents, so this
     // is ours: a classic whenNode is a real trigger unless its triggerType is in the condition
     // catalog, in which case it becomes a nested decision condition. The hub validator is the
@@ -857,11 +860,20 @@ private Map _vrbClassicToGraph(Map classic) {
     def ordered = { List nodes ->
         (nodes.every { it instanceof Map && it.index instanceof Number }) ? nodes.sort(false) { (it.index as Number).intValue() } : nodes
     }
-    def whenNodes = ordered((classic?.whenNodes ?: []) as List)
+    // The 1.0 builder's "click to edit" placeholders (its isWhenNodeCondition predicate names
+    // sampleCondition; sampleTrigger is its sibling) can persist in a half-built rule. They carry
+    // no config and the 2.0 validator refuses both types (live-verified: "unsupported type
+    // 'sampleTrigger'" / "'sampleCondition'"), so carrying them across would turn the translation
+    // into an inactive draft -- and the edit gate would refuse it first. Drop them and say so; the
+    // `sample` ACTION placeholder is a 2.0 type the hub accepts as a no-op and is kept.
+    def placeholders = ["sampleTrigger", "sampleCondition"]
+    def allWhen = ordered((classic?.whenNodes ?: []) as List)
+    def whenNodes = allWhen.findAll { !(it instanceof Map && it.triggerType?.toString() in placeholders) }
+    if (whenNodes.size() != allWhen.size() && warnings != null) {
+        warnings << "Dropped ${allWhen.size() - whenNodes.size()} unfinished 1.0 builder placeholder row(s) (sampleTrigger/sampleCondition) from the translation; the 2.0 validator does not accept them.".toString()
+    }
     def conditionTypes = _vrb2ConditionTypes()
-    // The builder's own predicate (isWhenNodeCondition) also treats its "sampleCondition"
-    // placeholder as a condition; a half-built 1.0 rule can persist one.
-    def isCondition = { node -> node instanceof Map && ((node.triggerType?.toString() in conditionTypes) || node.triggerType?.toString() == "sampleCondition") }
+    def isCondition = { node -> node instanceof Map && (node.triggerType?.toString() in conditionTypes) }
     return _vrb2Compose([
         triggers: whenNodes.findAll { !isCondition(it) },
         conditions: whenNodes.findAll { isCondition(it) },
@@ -878,9 +890,12 @@ private void _vrbValidateClassicShape(Map definition) {
     // refused up front -- before any create -- as a plain argument error.
     if (definition == null) throw new IllegalArgumentException("definition must be a JSON object.")
     // Closed key set, same reason as the editor form: `thenNodez` must not silently become "no
-    // actions". promptHistory is tolerated because a read echoes it.
-    def unknownKeys = definition.keySet().collect { it.toString() }.findAll { !(it in ["whenNodes", "thenNodes", "elseNodes", "promptHistory"]) }
-    if (unknownKeys) throw new IllegalArgumentException("Unknown classic key(s): ${unknownKeys.join(', ')}. A classic definition takes only whenNodes, thenNodes, elseNodes.")
+    // actions". The keys a hub_get_visual_rule read wraps around the three arrays are tolerated
+    // (and ignored -- the top-level name/paused arguments govern) so a classic read can be fed
+    // straight back, which is exactly what the format-mismatch note tells the caller to do.
+    def readEnvelope = ["promptHistory", "name", "rawName", "rulePaused", "success", "appId", "format"]
+    def unknownKeys = definition.keySet().collect { it.toString() }.findAll { !(it in ["whenNodes", "thenNodes", "elseNodes"] + readEnvelope) }
+    if (unknownKeys) throw new IllegalArgumentException("Unknown classic key(s): ${unknownKeys.join(', ')}. A classic definition takes only whenNodes, thenNodes, elseNodes (the keys a hub_get_visual_rule read adds around them are ignored).")
     ["whenNodes", "thenNodes", "elseNodes"].each { key ->
         if (definition[key] == null) return
         if (!(definition[key] instanceof List)) throw new IllegalArgumentException("definition.${key} must be an array of node objects.")
@@ -907,11 +922,12 @@ private Map _vrbResolveTargetDefinition(String targetFormat, String definitionFo
     if (targetFormat == "graph") {
         Map graph
         String translatedFrom = null
+        def translationWarnings = []
         try {
             if (definitionFormat == "editor") {
                 graph = _vrb2Compose(definitionMap)
             } else if (definitionFormat == "classic") {
-                graph = _vrbClassicToGraph(definitionMap)
+                graph = _vrbClassicToGraph(definitionMap, translationWarnings)
                 translatedFrom = "classic"
             } else {
                 graph = definitionMap
@@ -924,7 +940,7 @@ private Map _vrbResolveTargetDefinition(String targetFormat, String definitionFo
         }
         def errors = _vrb2Validate(graph)
         if (errors) return [ok: false, validationErrors: errors]
-        return [ok: true, definition: graph, translatedFrom: translatedFrom, warnings: _vrb2CatalogWarnings(graph)]
+        return [ok: true, definition: graph, translatedFrom: translatedFrom, warnings: translationWarnings + _vrb2CatalogWarnings(graph)]
     }
     if (definitionFormat == "classic") return [ok: true, definition: definitionMap, translatedFrom: null]
     return [ok: false, formatMismatch: true]
@@ -1211,7 +1227,7 @@ private Map _toolSetVisualRuleImpl(args) {
             // it. So a type name this build does not know is refused here unless the rule
             // already uses it -- that is the hub having accepted it, which is the only oracle.
             def knownToRule = _vrb2TypeNames(detected.data.definition)
-            def newUnknown = _vrb2UnknownTypes(resolved.definition).findAll { !(it.type in knownToRule) }
+            def newUnknown = _vrb2UnknownTypes(resolved.definition).findAll { !("${it.where}|${it.type}".toString() in knownToRule) }
             if (newUnknown) {
                 throw new IllegalArgumentException("Refusing to edit rule ${appId}: " + newUnknown.collect { "${it.where} '${it.id}' has type '${it.type}'" }.join("; ") +
                         " -- this build does not know that type and the rule does not use it today, so saving would stop a running rule as an inactive draft. Check the spelling against hub_get_tool_guide(section='visual_rule_reference'); a type the hub already accepted for this rule is allowed.")
@@ -1233,7 +1249,7 @@ private Map _toolSetVisualRuleImpl(args) {
         }
     }
 
-    // Rename and/or pause without replacing the definition: re-save the EXISTING nodes under
+    // Rename and/or pause without replacing the definition: re-save the EXISTING definition under
     // the new name (the save endpoints have no rename-only verb), then apply the pause flag.
     try {
         // Strip the hub's "(Paused)" decoration off the fallback. On a RESUME the caller sends no
@@ -1243,56 +1259,61 @@ private Map _toolSetVisualRuleImpl(args) {
         // tolerant branch needs rulePaused==true, which the resume just made false: every resume
         // of a paused rule therefore reported verified:false on a write that had landed.
         def requestedName = (name ?: _vrbBareName(detected.data?.name, detected.data?.rulePaused == true))?.toString()
-        def classicBodyCarriedPause = false
         if (name && name != detected.data.name?.toString()) {
-            // A never-saved graph rule reads back a blank ruleJson. Mirror what the Rule Builder 2.0
-            // UI saves for a rule with nothing in it rather than POSTing "": its graph composer
-            // (vue-hub2-visual-rule-builder-20, platform 2.5.1.177) always emits the trigger-merge
-            // and decision structure nodes -- with no triggers, conditions or actions that is the
-            // whole graph. The older builder's `sampleTrigger` placeholder template is not a saved
-            // shape on this platform; the validator rejects its `{id, type, deviceIds}` nodes.
-            def emptyTemplate = '{"version":1,"nodes":[{"id":"trigger-merge","kind":"merge","type":"triggerMerge","config":{}},{"id":"decision","kind":"decision","type":"all","config":{"conditions":[]}}],"edges":[{"from":"trigger-merge","to":"decision","port":"next"}]}'
+            Map existing = null
             if (detected.format == "graph") {
-                // The read prefers the hub's parsed graphDocument, so `definition` is the stored
-                // rule even when ruleJson reads blank -- re-serialize THAT, never the template, or a
-                // bare rename could wipe a rule the read had just shown in full.
-                def existing = (detected.data.definition instanceof Map) ? groovy.json.JsonOutput.toJson(detected.data.definition) :
-                        (detected.data.ruleJson?.toString()?.trim() ?: emptyTemplate)
-                def saved = _vrbSaveGraph(appId, name, existing)
-                if (saved.success == false) {
-                    def failed = [success: false, appId: appId, error: "Rename failed: ${saved.errorMessage}", validationErrors: saved.validationErrors]
-                    ["storageError", "activationError", "validationIssues", "revision", "referencedDeviceIds"].each { k -> if (saved.containsKey(k)) failed[k] = saved[k] }
-                    return failed
+                // Re-save what the hub STORED, in this order: the ruleJson bytes it returned (parsed
+                // so the shared save tail can re-serialize them), then its parsed graphDocument (the
+                // read prefers that, so `definition` is populated even when ruleJson reads blank),
+                // and only for a never-saved shell the graph the Rule Builder 2.0 UI itself saves
+                // for a rule with nothing in it: its composer (vue-hub2-visual-rule-builder-20,
+                // platform 2.5.1.177) always emits the trigger-merge and decision structure nodes.
+                // Never a template while a stored document exists, or a bare rename could wipe a
+                // rule the read had just shown in full.
+                def stored = detected.data.ruleJson?.toString()?.trim()
+                if (stored) {
+                    try {
+                        def parsed = new groovy.json.JsonSlurper().parseText(stored)
+                        if (parsed instanceof Map) existing = parsed
+                    } catch (Exception ignore) { /* fall through to the parsed graphDocument */ }
+                }
+                if (existing == null && detected.data.definition instanceof Map) existing = detected.data.definition
+                if (existing == null) {
+                    existing = [version: 1,
+                                nodes: [[id: "trigger-merge", kind: "merge", type: "triggerMerge", config: [:]],
+                                        [id: "decision", kind: "decision", type: "all", config: [conditions: []]]],
+                                edges: [[from: "trigger-merge", to: "decision", port: "next"]]]
                 }
             } else {
-                // The classic save body always carries rulePaused, so a combined rename+pause
-                // commits the pause here -- calling the pause endpoint again would be redundant.
-                def existing = [whenNodes: detected.data.whenNodes, thenNodes: detected.data.thenNodes, elseNodes: detected.data.elseNodes]
-                _vrbSaveClassic(appId, name, hasPaused ? paused : detected.data.rulePaused == true, existing)
-                classicBodyCarriedPause = hasPaused
+                existing = [whenNodes: detected.data.whenNodes, thenNodes: detected.data.thenNodes, elseNodes: detected.data.elseNodes]
             }
+            // The shared save tail, exactly as a definition edit uses it: the pause rides the
+            // classic body / the pause endpoint, the read-back verifies name + pause + node counts,
+            // and -- the reason a rename must not have its own envelope -- a stored graph the hub
+            // no longer accepts (a device deleted since the last save) is persisted as an INACTIVE
+            // DRAFT: that comes back as activated:false + validationErrors + note, never as a
+            // clean success, and a rejected save keeps the same diagnostics as any other.
+            return _vrbApplySave(appId, detected.format, name, existing, hasPaused ? paused : null, detected.data.rulePaused == true, false)
         }
-        if (hasPaused && !classicBodyCarriedPause) {
+        if (hasPaused) {
             def pauseResult = _vrbSetPaused(appId, paused)
             if (pauseResult.success == false) {
                 return [success: false, appId: appId, error: "Pause/resume failed", note: pauseResult.error]
             }
         }
-        // Neither save endpoint returns a usable body, so the read-back comparison is the
-        // only write confirmation -- success must not be claimed without it.
+        // Pause-only: nothing was re-saved, so the read-back verifies the name and the pause state
+        // and NOT the definition counts -- comparing two independent reads would report a landed
+        // pause as failed on a transient read that lacked the graph.
         def after = _vrbDetect(appId)
         def nameOk = after != null && _vrbNameMatches(after, requestedName)
         def pauseOk = !hasPaused || ((after?.data?.rulePaused == true) == paused)
-        // A rename re-saves the existing graph: the node/edge counts must come back unchanged.
-        def countsOk = detected.format != "graph" || !(detected.data.definition instanceof Map) ||
-                (after?.data?.definition instanceof Map && _vrbDefinitionCountsMatch("graph", detected.data.definition, after.data))
-        def verified = nameOk && pauseOk && countsOk
+        def verified = nameOk && pauseOk
         def out = [success: verified, appId: appId, format: detected.format, verified: verified,
                    name: after?.data?.name, rulePaused: after?.data?.rulePaused == true]
         if (!verified) {
-            out.error = "The ${name ? 'rename' : 'pause'} request was sent but the read-back did not confirm it (name ok: ${nameOk}, pause ok: ${pauseOk}, definition counts ok: ${countsOk}; read back name: ${after?.data?.name}, rulePaused: ${after?.data?.rulePaused})."
+            out.error = "The pause request was sent but the read-back did not confirm it (name ok: ${nameOk}, pause ok: ${pauseOk}; read back name: ${after?.data?.name}, rulePaused: ${after?.data?.rulePaused})."
             out.note = "Re-read with hub_get_visual_rule(appId=${appId}) to inspect what the hub persisted."
-            mcpLog("warn", "vrb", "Rename/pause read-back verification failed for ${appId} (nameOk=${nameOk}, pauseOk=${pauseOk})")
+            mcpLog("warn", "vrb", "Pause read-back verification failed for ${appId} (nameOk=${nameOk}, pauseOk=${pauseOk})")
         }
         return out
     } catch (Exception e) {
@@ -1624,7 +1645,7 @@ def _getAllToolDefinitions_partVisualRules() {
         ],
         [
             name: "hub_set_visual_rule",
-            description: "Create or update a Visual Rules Builder rule.[[FLAT_TRIM]] VRB is the PRIMARY rule engine for new automations; VRB 2.0 adds AND/OR condition gates, then/else branches and a shared action tail. Most automations fit it; use hub_set_rule (Rule Machine) only for complex ones (nested logic, loops, variables, custom device commands). On create the definition's shape picks the builder version (editor/graph -> 2.0, classic -> 1.0). Editor and graph definitions are structurally pre-flight validated before anything is created or saved, so a malformed 2.0 rule never strands an empty shell; a classic definition is saved as-is and validated by the hub.[[/FLAT_TRIM]] Omit appId to create (name + definition required). Pre-flight: backup within 24h + confirm=true. Schemas + worked example: hub_get_tool_guide(section='visual_rule_reference').",
+            description: "Create or update a Visual Rules Builder rule.[[FLAT_TRIM]] VRB is the PRIMARY rule engine for new automations; VRB 2.0 adds AND/OR condition gates, then/else branches and a shared action tail. Most automations fit it; use hub_set_rule (Rule Machine) only for complex ones (nested logic, loops, variables, custom device commands). On create the definition's shape picks the builder version (editor/graph -> 2.0, classic -> 1.0). Editor and graph definitions are structurally pre-flight validated before anything is created or saved, so a malformed 2.0 rule never strands an empty shell; a classic definition is saved as-is and validated by the hub.[[/FLAT_TRIM]] Omit appId to create (name + definition required). On EDIT two refusals (-32602, nothing written): a 2.0 type name this build does not know unless the rule already uses it, and a classic key outside whenNodes/thenNodes/elseNodes. Pre-flight: backup within 24h + confirm=true. Schemas + worked example: hub_get_tool_guide(section='visual_rule_reference').",
             inputSchema: [
                 type: "object",
                 properties: [

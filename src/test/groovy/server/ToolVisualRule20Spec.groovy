@@ -1099,16 +1099,65 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         rawPaths.isEmpty()
     }
 
-    def "classic translation treats the builder's sampleCondition placeholder as a condition"() {
+    def "classic translation drops the 1.0 builder's sampleTrigger/sampleCondition placeholders and says so"() {
+        given: 'the 2.0 validator refuses both placeholder types (live-verified), so they must not cross'
+        def warnings = []
+
         when:
         def graph = script._vrbClassicToGraph([
             whenNodes: [[triggerType: 'switch', switches: [1], deviceIds: [1], switchEvent: 'Turns on', index: 0, type: 'when'],
-                        [triggerType: 'sampleCondition', deviceIds: [], index: 1, type: 'when']],
-            thenNodes: [], elseNodes: []])
+                        [triggerType: 'sampleCondition', deviceIds: [], index: 1, type: 'when'],
+                        [triggerType: 'sampleTrigger', deviceIds: [], index: 2, type: 'when']],
+            thenNodes: [[actionType: 'sample', deviceIds: [], index: 0, type: 'then']], elseNodes: []], warnings)
 
-        then: 'it is nested in the decision, not wired to the trigger merge'
+        then: 'the real trigger survives, the placeholders are gone, the `sample` ACTION (a 2.0 type the hub accepts) stays'
         graph.nodes.findAll { it.kind == 'trigger' }*.type == ['switch']
-        graph.nodes.find { it.kind == 'decision' }.config.conditions*.type == ['sampleCondition']
+        graph.nodes.find { it.kind == 'decision' }.config.conditions == []
+        graph.nodes.findAll { it.kind == 'action' }*.type == ['sample']
+        warnings.size() == 1
+        warnings[0].contains('Dropped 2')
+    }
+
+    def "a classic document with a placeholder row edits a 2.0 rule: translated, the drop reported, never refused by the type gate"() {
+        given: 'a running 2.0 rule'
+        enableWrite()
+        def state = stubGraphChild(863)
+        state.name = 'Live'
+        state.ruleJson = json(validGraph())
+
+        when:
+        def result = script.toolSetVisualRule([appId: 863, confirm: true, definition: [
+            whenNodes: [[triggerType: 'switch', switches: [59], deviceIds: [59], switchEvent: 'Turns off', index: 0, type: 'when'],
+                        [triggerType: 'sampleCondition', deviceIds: [], index: 1, type: 'when']],
+            thenNodes: [[actionType: 'turnOff', switches: [59], deviceIds: [59], index: 0, type: 'then']], elseNodes: []]])
+
+        then:
+        result.success == true
+        result.translatedFrom == 'classic'
+        result.preflightWarnings.any { it.contains('placeholder') }
+        posts.size() == 1
+        !(posts[0].body as String).contains('sampleCondition')
+    }
+
+    def "a type the hub accepted as an ACTION does not whitelist the same name as a TRIGGER on edit"() {
+        given: 'a stored rule whose only unknown type is an action'
+        enableWrite()
+        def stored = script._vrb2Compose([triggers: [[type: 'switch', config: [switches: [1], switchEvent: 'Turns on']]],
+                                          thenActions: [[type: 'newFirmwareThing', config: [switches: [9]]]]])
+        def state = [ruleJson: json(stored)]
+        stubPostJson { path, body -> def b = new JsonSlurper().parseText(body); state.ruleJson = b.ruleJson; [name: b.name, ruleJson: b.ruleJson, validationErrors: []] }
+        hubGet.register('/app/ruleBuilder20Json/864') { params -> json([name: 'Live', rulePaused: false, ruleJson: state.ruleJson, validationErrors: []]) }
+
+        when: 'the same name used as a trigger'
+        script.toolSetVisualRule([appId: 864, confirm: true, definition: [
+            triggers: [[type: 'newFirmwareThing', config: [switches: [1]]]],
+            thenActions: [[type: 'newFirmwareThing', config: [switches: [9]]]]]])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("Trigger node")
+        e.message.contains("'newFirmwareThing'")
+        posts.isEmpty()
     }
 
     def "a rename re-posts the definition the read returned, even when ruleJson is blank, and verifies its counts"() {
@@ -1128,6 +1177,106 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         result.success == true
         result.verified == true
         new JsonSlurper().parseText(new JsonSlurper().parseText(posts[0].body as String).ruleJson as String).nodes.size() == graph.nodes.size()
+    }
+
+    def "a rename whose re-save the hub drafts reports the draft, not a clean success"() {
+        given: 'a running rule whose stored graph the hub no longer accepts (a device deleted since the last save)'
+        enableWrite()
+        def graph = validGraph()
+        def state = [name: 'Before', ruleJson: json(graph), runtimeGraph: [triggerNodeIds: ['t1']]]
+        stubPostJson { path, body ->
+            def b = new JsonSlurper().parseText(body)
+            state.name = b.name; state.ruleJson = b.ruleJson; state.runtimeGraph = null
+            [name: b.name, ruleJson: b.ruleJson, validationErrors: ["Node 't1' config.switches references missing device '59'"], activatedSuccessfully: false]
+        }
+        hubGet.register('/app/ruleBuilder20Json/865') { params ->
+            json([name: state.name, rulePaused: false, ruleJson: state.ruleJson, runtimeGraph: state.runtimeGraph,
+                  validationErrors: state.runtimeGraph == null ? ["Node 't1' config.switches references missing device '59'"] : []])
+        }
+
+        when:
+        def result = script.toolSetVisualRule([appId: 865, name: 'After', confirm: true])
+
+        then: 'the rename landed (verified) but the automation stopped, and the response says so'
+        result.success == true
+        result.verified == true
+        result.name == 'After'
+        result.activated == false
+        result.validationErrors.any { it.contains("missing device '59'") }
+        result.note.contains('INACTIVE DRAFT')
+    }
+
+    def "a rename the hub rejects carries the same diagnostics as any rejected save"() {
+        given:
+        enableWrite()
+        stubPostJson { path, body -> [success: false, message: 'storage failed', storageError: 'disk', validationErrors: [], revision: 'r1'] }
+        hubGet.register('/app/ruleBuilder20Json/866') { params -> json([name: 'Before', rulePaused: false, ruleJson: json(validGraph()), validationErrors: []]) }
+
+        when:
+        def result = script.toolSetVisualRule([appId: 866, name: 'After', confirm: true])
+
+        then:
+        result.success == false
+        result.activated == false
+        result.storageError == 'disk'
+        result.note.contains('untouched')
+    }
+
+    def "a rename re-posts the ruleJson bytes the hub returned, ahead of its parsed graphDocument"() {
+        given: 'ruleJson and graphDocument disagree (a stale parsed view)'
+        enableWrite()
+        def stored = validGraph()
+        def stale = validGraph(); stale.nodes[0].config.switchEvent = 'STALE'
+        def state = [name: 'Before', ruleJson: json(stored), graphDocument: stale]
+        stubPostJson { path, body -> def b = new JsonSlurper().parseText(body); state.name = b.name; state.ruleJson = b.ruleJson; state.graphDocument = new JsonSlurper().parseText(b.ruleJson); [name: b.name, ruleJson: b.ruleJson, validationErrors: []] }
+        hubGet.register('/app/ruleBuilder20Json/867') { params -> json([name: state.name, rulePaused: false, ruleJson: state.ruleJson, graphDocument: state.graphDocument, validationErrors: []]) }
+
+        when:
+        def result = script.toolSetVisualRule([appId: 867, name: 'After', confirm: true])
+
+        then:
+        result.success == true
+        new JsonSlurper().parseText(new JsonSlurper().parseText(posts[0].body as String).ruleJson as String).nodes[0].config.switchEvent == 'Turns off'
+    }
+
+    def "a pause-only call verifies the pause and the name, not definition counts it never wrote"() {
+        given: 'the read-back after the pause happens to lack the graph (transient)'
+        enableWrite()
+        def reads = 0
+        hubGet.register('/app/ruleBuilder20Json/868') { params ->
+            reads++
+            reads == 1 ? json([name: 'Rule', rulePaused: false, ruleJson: json(validGraph()), validationErrors: []]) :
+                         json([name: 'Rule', rulePaused: true, ruleJson: '', validationErrors: []])
+        }
+        hubGet.register('/app/ruleBuilderPause/868/true') { params -> '{"success":true}' }
+        stubPostJson()
+
+        when:
+        def result = script.toolSetVisualRule([appId: 868, paused: true, confirm: true])
+
+        then: 'nothing was re-saved, and the landed pause is reported as such'
+        posts.isEmpty()
+        result.success == true
+        result.rulePaused == true
+    }
+
+    def "a classic read fed straight back as the definition is accepted (its envelope keys are ignored)"() {
+        given: 'a 1.0 rule and the flat body hub_get_visual_rule returns for it'
+        enableWrite()
+        def savedState = [name: 'Hall', rulePaused: false, whenNodes: classicDefinition().whenNodes, thenNodes: classicDefinition().thenNodes, elseNodes: []]
+        stubPostJson { path, body -> savedState.putAll(new JsonSlurper().parseText(body) as Map); null }
+        hubGet.register('/app/ruleBuilder20Json/869') { params -> GRAPH_NOT_FOUND }
+        hubGet.register('/app/ruleBuilderJson/869') { params -> json(savedState) }
+        def read = script.toolGetVisualRule([appId: 869])
+
+        when:
+        def result = script.toolSetVisualRule([appId: 869, confirm: true, definition: read])
+
+        then:
+        read.format == 'classic' && read.containsKey('rawName') && read.containsKey('success')
+        result.success == true
+        posts.size() == 1
+        !new JsonSlurper().parseText(posts[0].body as String).containsKey('rawName')
     }
 
     // ==================== hub_get_visual_rule: editor + version ====================

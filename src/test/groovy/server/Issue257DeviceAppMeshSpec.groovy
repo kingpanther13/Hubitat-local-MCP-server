@@ -335,8 +335,8 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
     // {id, label, capabilities} triple over the same full inventory, so capabilities survive the
     // removal of /device/listWithCapabilities/json on 2.5.1.173+.
 
-    def "scope='all' appends devices the vrb feed omits from /hub2/devicesList and flags the result partial"() {
-        given: 'a picker feed that filtered one device out'
+    def "scope='all' keeps devices the vrb feed omits from /hub2/devicesList, in tree order, and flags the result partial"() {
+        given: 'a picker feed that filtered one device out; the tree lists that device FIRST'
         settingsMap.selectedDevices = [dev(id: 80)]
         hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
         hubGet.register('/hub2/vrb/devices') { params ->
@@ -344,8 +344,8 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
         }
         hubGet.register('/hub2/devicesList') { params ->
             JsonOutput.toJson([devices: [
-                [key: "DEV-80", data: [id: 80, name: "Authorized Switch"], children: []],
-                [key: "DEV-77", data: [id: 77, name: "Filtered Out"], children: []]]])
+                [key: "DEV-77", data: [id: 77, name: "Filtered Out"], children: []],
+                [key: "DEV-80", data: [id: 80, name: "Authorized Switch"], children: []]]])
         }
 
         when:
@@ -354,7 +354,7 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
         then: 'the omitted device is still an inventory member, without capabilities, and the caller is told why'
         result.source == "/hub2/vrb/devices"
         result.total == 2
-        result.devices*.id == ["80", "77"]   // spine order, not appended at the end
+        result.devices*.id == ["77", "80"]   // tree order (an append-at-the-end join would give 80, 77)
         result.devices.find { it.id == "77" }.label == "Filtered Out"
         result.devices.find { it.id == "77" }.capabilities == []
         result.capabilitiesPartial == true
@@ -398,6 +398,71 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
         result.capabilitiesPartial == true
         result.capabilitiesNote.contains("could not be read")
         result.capabilitiesNote.contains("504")
+    }
+
+    def "an EMPTY /hub2/devicesList beside a populated vrb feed is the feed alone, flagged partial -- never zero devices as the truth"() {
+        given: 'the tree answers no devices while the feed lists two'
+        settingsMap.selectedDevices = [dev(id: 80, capabilities: ["Switch"])]
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params ->
+            JsonOutput.toJson([[id: 80, label: "Authorized Switch", capabilities: ["Switch"]],
+                               [id: 99, label: "Hall", capabilities: ["MotionSensor"]]])
+        }
+        hubGet.register('/hub2/devicesList') { params -> JsonOutput.toJson([devices: []]) }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then: 'contradictory data: the feed is the honest answer, and nothing vouches for its completeness'
+        result.source == "/hub2/vrb/devices"
+        result.devices*.id == ["80", "99"]
+        result.devices.find { it.id == "99" }.capabilities == ["MotionSensor"]
+        result.capabilitiesPartial == true
+        result.capabilitiesNote.contains("answered no devices")
+        result.capabilitiesNote.contains("listed 2")
+    }
+
+    def "a device only the vrb feed lists is kept after the tree's devices and the tree's omission is counted"() {
+        given: 'the tree lacks a device the feed carries'
+        settingsMap.selectedDevices = [dev(id: 80)]
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params ->
+            JsonOutput.toJson([[id: 99, label: "Feed Only", capabilities: ["MotionSensor"]],
+                               [id: 80, label: "Authorized Switch", capabilities: ["Switch"]]])
+        }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [[key: "DEV-80", data: [id: 80, name: "Authorized Switch"], children: []]]])
+        }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then: 'the union: tree devices first, then the feed-only device with its own capabilities; partial says which source fell short'
+        result.source == "/hub2/vrb/devices"
+        result.devices*.id == ["80", "99"]
+        result.devices.find { it.id == "99" }.capabilities == ["MotionSensor"]
+        result.devices.find { it.id == "99" }.mcpAuthorized == false
+        result.capabilitiesPartial == true
+        result.capabilitiesNote.contains("tree (/hub2/devicesList) omitted 1")
+        !result.capabilitiesNote.contains("feed (/hub2/vrb/devices) omitted")
+    }
+
+    def "a tree node without a data.id fails the read as a shape error rather than shrinking the inventory"() {
+        given: 'no feed to fall back on, and a tree with an id-less node'
+        settingsMap.selectedDevices = []
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [[key: "DEV-80", data: [id: 80, name: "A"], children: []],
+                                         [key: "DEV-?", data: [name: "No id"], children: []]]])
+        }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then:
+        result.success == false
+        result.error?.contains("/hub2/devicesList")
     }
 
     def "scope='all' falls past a vrb feed whose entries carry no capabilities list"() {

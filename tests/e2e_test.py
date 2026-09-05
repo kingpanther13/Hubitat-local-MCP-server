@@ -2205,9 +2205,9 @@ class TestRunner:
     @test("devices")
     def test_list_devices_scope_all(self) -> None:
         # Item 1 (#257): scope='all' lists EVERY hub device with an mcpAuthorized flag, sourced from
-        # the hub-wide inventory, not the authorization-scoped Groovy model. Three tiers:
-        # /device/listWithCapabilities/json, its successor /hub2/vrb/devices on platform 2.5.1.173
-        # and later where that endpoint is gone, then the capability-less /hub2/devicesList.
+        # the hub-wide inventory, not the authorization-scoped Groovy model: from
+        # /device/listWithCapabilities/json where it exists, else (platform 2.5.1.173 and later)
+        # the /hub2/devicesList tree unioned with the /hub2/vrb/devices picker feed for capabilities.
         result = self.client.call_tool("hub_list_devices", {"scope": "all"})
         assert isinstance(result, dict), "scope='all' did not return an object"
         assert result.get("scope") == "all", f"scope='all' not echoed: {result}"
@@ -2222,12 +2222,15 @@ class TestRunner:
             assert result.get("capabilitiesPartial") is True and result.get("capabilitiesNote"), \
                 f"the /hub2/devicesList fallback must flag partial capabilities: {result}"
         elif result.get("source") == "/hub2/vrb/devices":
-            # The feed carries capabilities; partial is flagged only when the devicesList
-            # cross-check found devices the feed omitted, and then the note must say so.
+            # The feed carries capabilities; partial is flagged when either source omitted a device
+            # the other lists, or when the tree could not be read (feed alone), and the note names
+            # the endpoint at fault and which of those it was.
             if result.get("capabilitiesPartial"):
                 note = result.get("capabilitiesNote") or ""
-                assert ("omitted" in note and "of" in note) or "could not be read" in note, \
-                    f"a partial /hub2/vrb/devices inventory must say what was omitted or why the cross-check failed: {result}"
+                assert "/hub2/devicesList" in note and "/hub2/vrb/devices" in note, \
+                    f"a partial /hub2/vrb/devices inventory must name both endpoints: {result}"
+                assert "omitted" in note or "could not be read" in note or "not trusted" in note, \
+                    f"a partial /hub2/vrb/devices inventory must say what was omitted or why the tree was not usable: {result}"
             else:
                 assert result.get("capabilitiesPartial") is None, \
                     f"/hub2/vrb/devices carries capabilities, so nothing may be flagged partial: {result}"
@@ -8154,6 +8157,35 @@ class TestRunner:
                 unchanged = self._get_visual_rule(app_id)
                 assert unchanged.get("format") == "classic" and unchanged.get("whenNodes"), \
                     f"the refused edit must have left the 1.0 rule untouched: {unchanged}"
+                # The refusal's own advice -- fetch the current shape and send it back -- must
+                # work verbatim: the read's envelope keys (success/appId/format/name/rawName/
+                # rulePaused) are ignored, not refused as unknown classic keys.
+                fb = self._soft_write(
+                    lambda: self.client.call_tool("hub_manage_rule_machine", {
+                        "tool": "hub_set_visual_rule",
+                        "args": {"appId": app_id, "confirm": True, "definition": unchanged}}),
+                    lambda: True,
+                    "hub_set_visual_rule edit (classic read fed back)",
+                )
+                if not fb["relayDropped"]:
+                    assert fb["response"].get("success") is True, \
+                        f"a classic read fed straight back must be accepted: {fb['response']}"
+                # A misspelled classic key is refused before any write (-32602), not read as "none".
+                typo = {"whenNodes": unchanged.get("whenNodes"), "thenNodez": unchanged.get("thenNodes"), "elseNodes": []}
+                try:
+                    refused = self.client.call_tool("hub_manage_rule_machine", {
+                        "tool": "hub_set_visual_rule",
+                        "args": {"appId": app_id, "confirm": True, "definition": typo}})
+                except (McpError, McpToolError, requests.HTTPError) as exc:
+                    detail = str(exc)
+                    if "504" in detail:
+                        raise SkipTest("classic-key refusal lost to relay 504") from exc
+                    assert "thenNodez" in detail, f"the -32602 must name the unknown classic key: {detail}"
+                else:
+                    raise AssertionError(f"a misspelled classic key must be refused with -32602, got: {refused}")
+                still_classic = self._get_visual_rule(app_id)
+                assert still_classic.get("thenNodes"), \
+                    f"the refused classic edit must have left the actions in place: {still_classic}"
 
             # HEALTH on a Visual Rule (issue #254): hub_get_rule_health must NOT reject a VRB
             # rule -- it reports the engine-native verdict. ruleFormat identifies which engine
@@ -8624,8 +8656,15 @@ class TestRunner:
                 f"a valid editor definition must ACTIVATE, not land as an inactive draft: {created}"
             assert not created.get("validationErrors"), \
                 f"a valid editor definition must come back with no validationErrors: {created}"
-            assert created.get("createRoute") == "createchild", \
-                f"the versioned child route must have made the rule (the legacy fallback would say so): {created}"
+            # Which route made the child is reported, and both documented values are correct
+            # outcomes: the versioned child type on this firmware, the legacy builder page on a
+            # hub without it. A hub-vintage fact, not a regression -- so name it, don't pin it.
+            assert created.get("createRoute") in ("createchild", "createVisualRuleBuilderRule"), \
+                f"createRoute must name the route that made the rule: {created}"
+            if created.get("createRoute") != "createchild":
+                print(f"    hub_set_visual_rule create: made via the legacy route ({created.get('createRoute')})")
+            assert created.get("validationIssues") == [], \
+                f"a clean save answers an EMPTY validationIssues list, and it must survive as one: {created}"
             assert "preflightWarnings" not in created, \
                 f"every type in this definition is in the catalog, so no advisory may be raised: {created}"
 
@@ -8763,6 +8802,25 @@ class TestRunner:
                     f"preflightWarnings must name the unknown type: {wr}"
                 assert any("brandNewAction" in e for e in (wr.get("validationErrors") or [])), \
                     f"the hub's own verdict must be forwarded: {wr}"
+            if warn_id:
+                # (g) A RENAME re-saves the stored graph, so a graph the hub drafts comes back as the
+                # draft it is -- activated False with the hub's verdict -- never as a clean success
+                # that hides a stopped automation.
+                rn = self._soft_write(
+                    lambda: self.client.call_tool("hub_manage_rule_machine", {
+                        "tool": "hub_set_visual_rule",
+                        "args": {"appId": warn_id, "name": f"{warn_name}2", "confirm": True}}),
+                    lambda: True,
+                    "hub_set_visual_rule rename (drafted graph)",
+                )
+                if not rn["relayDropped"]:
+                    rr = rn["response"]
+                    assert rr.get("success") is True and rr.get("activated") is False, \
+                        f"renaming a drafted rule must report activated False: {rr}"
+                    assert any("brandNewAction" in e for e in (rr.get("validationErrors") or [])), \
+                        f"the rename must forward the hub's verdict on the re-saved graph: {rr}"
+                    assert "INACTIVE DRAFT" in str(rr.get("note") or ""), \
+                        f"the rename must say the rule is a draft: {rr}"
             if warn_id:
                 self._soft_write(
                     lambda: self.client.call_tool("hub_manage_rule_machine", {

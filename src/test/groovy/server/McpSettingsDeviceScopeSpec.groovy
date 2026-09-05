@@ -792,8 +792,10 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
     }
 
     // Platform 2.5.1.173 and later removed /device/listWithCapabilities/json (confirmed on .173/.174).
-    // Id validation falls back to its successor /hub2/vrb/devices, then to /hub2/devicesList -- all
-    // three carry every device id, which is all this check needs.
+    // Id validation then uses the /hub2/devicesList tree unioned with the /hub2/vrb/devices feed
+    // (_fetchAllHubDeviceRecords): an id either source carries validates. When the tree cannot be
+    // read the inventory is the feed alone and flagged idsComplete:false -- an id it lacks is
+    // "could not validate", never "unknown".
 
     def "selectedDevices validation accepts an id known only via the vrb tier"() {
         given:
@@ -884,6 +886,40 @@ class McpSettingsDeviceScopeSpec extends ToolSpecBase {
         then:
         def e = thrown(IllegalArgumentException)
         e.message.contains("999")
+    }
+
+    def "selectedDevices validation declines, rather than rejects, an id missing from a feed-alone inventory"() {
+        given: 'the tree cannot be read, so the inventory is the picker feed alone'
+        enableDevModeAndWrite()
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 11, label: "Eleven", capabilities: ["Switch"]]]) }
+        hubGet.register('/hub2/devicesList') { params -> throw new RuntimeException("status code: 504") }
+
+        when:
+        def result = setScope([12])
+
+        then: 'a knowingly incomplete set cannot call a device unknown; nothing is written'
+        result.success == false
+        result.isError == true
+        result.error.contains("Could not validate")
+        result.error.contains("12")
+        result.error.contains("504")
+        !sharedAppStub.settingsStore.containsKey('selectedDevices')
+    }
+
+    def "selectedDevices validation still accepts an id the feed-alone inventory does carry"() {
+        given:
+        enableDevModeAndWrite()
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 11, label: "Eleven", capabilities: ["Switch"]]]) }
+        hubGet.register('/hub2/devicesList') { params -> throw new RuntimeException("status code: 504") }
+
+        when:
+        def result = setScope([11])
+
+        then:
+        result.success == true
+        sharedAppStub.settingsStore['selectedDevices'] == [type: 'capability.*', value: ['11']]
     }
 
     def "selectedDevices validation errors when ALL THREE inventory endpoints fail"() {
