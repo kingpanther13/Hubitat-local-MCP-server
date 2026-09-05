@@ -2171,4 +2171,367 @@ class MrtrContinuationSpec extends ToolSpecBase {
         workItems['c1'] == null
     }
 
+
+    // -------- slow reads --------
+
+    private void registerLogsJson(AtomicInteger fetches, int jobCount) {
+        hubGet.register('/logs/json') { params ->
+            fetches.incrementAndGet()
+            groovy.json.JsonOutput.toJson([
+                uptime: '2d',
+                jobs: (1..jobCount).collect { [id: it, name: "Job${it}".toString(), recurring: false, methodName: 'run', nextRun: 'soon'] },
+                runningJobs: [], hubCommands: []
+            ])
+        }
+    }
+
+    def "a budgeted hub_get_jobs continues through requestState while its background fetch runs, holding no write slot"() {
+        given: 'the Write master is OFF (a read must not need it) and the write cap is already full'
+        settingsMap.enableRead = true
+        settingsMap.enableWrite = false
+        settingsMap.useGateways = true
+        settingsMap.maxConcurrentWrites = 1
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        def fetches = new AtomicInteger(0)
+        registerLogsJson(fetches, 120)
+        def virtualNow = new AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
+        assert script._writeReserveRequest('hub_set_rule', 'legacy').accepted == true
+        def args = [tool: 'hub_get_jobs', args: [cursor: '']]
+
+        when: 'round zero runs the read: the fetch is scheduled and observed, and is still pending'
+        def preflight = modernCall('hub_read_diagnostics', args)
+        String stateId = preflight.result.requestState
+
+        then: 'a requestState is reserved despite the full write cap; nothing ran on the request thread'
+        preflight.error == null
+        preflight.result.resultType == 'input_required'
+        stateId?.startsWith('mrtr-')
+        fetches.get() == 0
+        runInMillisCalls.size() == 1
+        runInMillisCalls[0][0..1] == [200, 'runLogsJsonFetch']
+        script._activeWrites()*.tool == ['hub_set_rule']
+
+        when: 'the client continues while the worker is still queued'
+        def leg1 = modernCall('hub_read_diagnostics', args, stateId)
+
+        then: 'same state, no second worker, still not an active write'
+        leg1.error == null
+        leg1.result.resultType == 'input_required'
+        leg1.result.requestState == stateId
+        fetches.get() == 0
+        runInMillisCalls.size() == 1
+        script._activeWrites()*.tool == ['hub_set_rule']
+
+        when: 'the worker lands the snapshot; five seconds later the client continues'
+        script.runLogsJsonFetch(runInMillisCalls[0][2].data as Map)
+        virtualNow.addAndGet(5000L)
+        def leg2 = modernCall('hub_read_diagnostics', args, stateId)
+        def inner = mcpDriver.parseInner(leg2)
+
+        then: 'one normal complete result, paged, carrying the continuation and snapshot provenance'
+        leg2.error == null
+        leg2.result.resultType == 'complete'
+        !leg2.result.isError
+        fetches.get() == 1
+        inner.scheduledJobs.count == 100
+        inner.scheduledJobs.total == 120
+        inner.nextCursor == '100'
+        inner.snapshot.background == true
+        inner.snapshot.ageMs == 5000
+        inner.mrtr.continued == true
+        inner.mrtr.rounds == 2
+
+        when: 'the final response is replayed under the same state'
+        def replay = mcpDriver.parseInner(modernCall('hub_read_diagnostics', args, stateId))
+        def rec = (atomicStateMap.mrtrRequests as Map)[stateId] as Map
+
+        then: 'the terminal record holds a marker, not the payload; the replay re-reads the cached snapshot; the record expires with that snapshot, clocked from its fetch'
+        replay.scheduledJobs.total == 120
+        replay.nextCursor == '100'
+        fetches.get() == 1
+        rec.status == 'terminal'
+        rec.terminalResult == [__slowReadReplay: true, tool: 'hub_get_jobs']
+        rec.expiresAt == (inner.snapshot.fetchedAt as Long) + 30000L
+        (rec.expiresAt as Long) < (rec.finishedAt as Long) + 30000L
+
+        when: 'the snapshot ages out and the same state is replayed'
+        virtualNow.set((inner.snapshot.fetchedAt as Long) + 30000L)
+        def late = modernCall('hub_read_diagnostics', args, stateId)
+
+        then: 'an expired state, never a refetch or an in_progress inside a completed envelope'
+        late.error.code == -32602
+        late.error.message.contains('expired requestState')
+        fetches.get() == 1
+    }
+
+    def "the sweep caps read and write records separately, so read traffic never evicts a write terminal"() {
+        given: 'sixteen write terminals still inside their replay window, and the read pool full'
+        settingsMap.enableRead = true
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        def fetches = new AtomicInteger(0)
+        registerLogsJson(fetches, 1)
+        def virtualNow = new AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
+        def pool = [:]
+        int writeCap = script._mrtrMaxRecords() as Integer
+        int readCap = script._mrtrMaxReadRecords() as Integer
+        (1..writeCap).each {
+            pool["mrtr-wterm-${it}".toString()] = fakeRecord('hub_set_rule', 1234567890000L - 100000L - it) +
+                [status: 'terminal', terminalResult: [success: true], terminalIsError: false]
+        }
+        (1..readCap).each { pool["mrtr-read-${it}".toString()] = fakeRecord('hub_get_jobs', 1234567890000L - it) }
+        atomicStateMap.mrtrRequests = pool
+        script._writeStateCacheInvalidate()
+
+        when: 'a read arrives (its reserve runs the sweep) and is refused on the read cap'
+        def refused = mcpDriver.parseInner(modernCall('hub_get_performance_stats', [limit: 1]))
+        def after = atomicStateMap.mrtrRequests as Map
+
+        then: 'every write terminal survived; the combined count is over 16 by design'
+        refused.status == 'request_state_capacity'
+        after.keySet().count { it.startsWith('mrtr-wterm-') } == writeCap
+        after.size() == writeCap + readCap
+    }
+
+    def "a budgeted read whose snapshot is already cached answers in one round trip with no request state"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        def fetches = new AtomicInteger(0)
+        registerLogsJson(fetches, 3)
+        script._logsJsonFetchAndPublish()
+
+        when:
+        def only = modernCall('hub_get_jobs', [cursor: ''])
+        def inner = mcpDriver.parseInner(only)
+
+        then:
+        only.result.resultType == 'complete'
+        inner.scheduledJobs.count == 3
+        inner.snapshot.background == false
+        inner.mrtr == null
+        fetches.get() == 1
+        runInMillisCalls.isEmpty()
+        !(atomicStateMap.mrtrRequests instanceof Map) || (atomicStateMap.mrtrRequests as Map).isEmpty()
+    }
+
+    def "a budgeted read whose fetch lands inside round zero's observe window answers in one round trip"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        def fetches = new AtomicInteger(0)
+        registerLogsJson(fetches, 2)
+        def virtualNow = new AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        RUN_IN_MILLIS_OVERRIDE.set({ List call ->
+            runInMillisCalls << call
+            // The platform runs the worker while round zero is still observing.
+            script.runLogsJsonFetch(call[2].data as Map)
+        })
+
+        when:
+        def only = modernCall('hub_get_performance_stats', [limit: 1])
+        def inner = mcpDriver.parseInner(only)
+
+        then:
+        only.result.resultType == 'complete'
+        inner.uptime == '2d'
+        inner.snapshot.background == true
+        fetches.get() == 1
+        !(atomicStateMap.mrtrRequests instanceof Map) || (atomicStateMap.mrtrRequests as Map).isEmpty()
+    }
+
+    private Map fakeRecord(String leaf, long at) {
+        [schemaVersion: 1, status: 'active', outerTool: leaf, leafTool: leaf, argDigest: "d-${at}".toString(),
+         startedAt: at, updatedAt: at, expiresAt: at + 600000L, rounds: 1, generation: 1]
+    }
+
+    def "read and write request-state records are capped separately, so neither class can starve the other"() {
+        given: 'the write pool is full and the read pool is full'
+        settingsMap.enableRead = true
+        settingsMap.enableWrite = true
+        settingsMap.maxConcurrentWrites = 0
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        def fetches = new AtomicInteger(0)
+        registerLogsJson(fetches, 1)
+        def virtualNow = new AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
+        def pool = [:]
+        int writeCap = script._mrtrMaxRecords() as Integer
+        int readCap = script._mrtrMaxReadRecords() as Integer
+        (1..writeCap).each { pool["mrtr-write-${it}".toString()] = fakeRecord('hub_set_rule', 1234567890000L - it) }
+        (1..readCap).each { pool["mrtr-read-${it}".toString()] = fakeRecord('hub_get_performance_stats', 1234567890000L - it) }
+        atomicStateMap.mrtrRequests = pool
+        script._writeStateCacheInvalidate()
+
+        when: 'a new read arrives with every read slot active'
+        def readRefused = mcpDriver.parseInner(modernCall('hub_get_jobs', [cursor: '']))
+
+        then: 'it is refused on the READ cap, and the write records were untouched'
+        readRefused.status == 'request_state_capacity'
+        readRefused.limit == readCap
+        (atomicStateMap.mrtrRequests as Map).keySet().count { it.startsWith('mrtr-write-') } == writeCap
+
+        when: 'one read record finishes and a read arrives again'
+        def finished = [:] + (atomicStateMap.mrtrRequests as Map)
+        finished['mrtr-read-1'] = [:] + (finished['mrtr-read-1'] as Map) + [status: 'terminal']
+        atomicStateMap.mrtrRequests = finished
+        script._writeStateCacheInvalidate()
+        def readOk = modernCall('hub_get_jobs', [cursor: ''])
+
+        then: 'the read pool made room among reads only; the full write pool did not block it'
+        readOk.result.resultType == 'input_required'
+        (atomicStateMap.mrtrRequests as Map).keySet().count { it.startsWith('mrtr-write-') } == writeCap
+
+        when: 'a write arrives with every write slot active but read slots available'
+        def freed = [:] + (atomicStateMap.mrtrRequests as Map)
+        freed.remove('mrtr-read-2')
+        atomicStateMap.mrtrRequests = freed
+        script._writeStateCacheInvalidate()
+        def writeRefused = mcpDriver.parseInner(modernCall('hub_call_rule', [ruleId: [401, 402], action: 'stop']))
+
+        then: 'it is refused on the WRITE cap; free read slots do not count for it'
+        writeRefused.status == 'request_state_capacity'
+        writeRefused.limit == writeCap
+    }
+
+    def "a budgeted read whose fetch fails is a terminal isError result, not a successful envelope"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        hubGet.register('/logs/json') { params -> throw new RuntimeException('logs page 500') }
+        def virtualNow = new AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
+        def args = [type: 'app', limit: 1]
+
+        when:
+        String stateId = modernCall('hub_get_performance_stats', args).result.requestState
+        script.runLogsJsonFetch(runInMillisCalls[0][2].data as Map)
+        def terminal = modernCall('hub_get_performance_stats', args, stateId)
+        def rec = (atomicStateMap.mrtrRequests as Map)[stateId] as Map
+
+        then:
+        terminal.result.resultType == 'complete'
+        terminal.result.isError == true
+        mcpDriver.parseInner(terminal).error.contains('logs page 500')
+        rec.terminalIsError == true
+        rec.terminalResult.isError == true
+    }
+
+    def "a read whose worker never lands ends with a read-specific timeout terminal, never the write cap text"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        def fetches = new AtomicInteger(0)
+        registerLogsJson(fetches, 1)
+        def virtualNow = new AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
+        def args = [cursor: '']
+
+        when: 'the client keeps continuing while the worker stays queued'
+        String stateId = modernCall('hub_get_jobs', args).result.requestState
+        def legs = []
+        int cap = script._mrtrMaxContinuationSlices() as Integer
+        (1..cap).each { legs << modernCall('hub_get_jobs', args, stateId) }
+        def last = legs[-1]
+        def inner = mcpDriver.parseInner(last)
+
+        then: 'every leg but the last continued; round zero plus the legs observed well past the fetch timeout'
+        legs[0..-2].every { it.result.resultType == 'input_required' }
+        last.result.resultType == 'complete'
+        last.result.isError == true
+        inner.status == 'slow_read_timeout'
+        inner.note.contains('No hub state was changed')
+        !inner.note.contains('committed')
+        inner.mrtr.rounds == cap
+        virtualNow.get() - 1234567890000L >= 30000L
+        fetches.get() == 0
+        runInMillisCalls.size() == 1
+
+        when: 'the worker finally lands and the client starts a fresh identical call'
+        script.runLogsJsonFetch(runInMillisCalls[0][2].data as Map)
+        String fresh = modernCall('hub_get_jobs', args).result.requestState
+        def served = mcpDriver.parseInner(modernCall('hub_get_jobs', args, fresh))
+
+        then:
+        served.scheduledJobs.count == 1
+        fetches.get() == 1
+    }
+
+    def "a read preflight is refused when the Read master is off and reserves no request state"() {
+        given:
+        settingsMap.enableRead = false
+        settingsMap.enableWrite = true
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+
+        when:
+        def refused = modernCall('hub_get_performance_stats', [limit: 5])
+
+        then:
+        refused.error.code == -32602
+        refused.error.message.contains('Read tools are disabled')
+        !(atomicStateMap.mrtrRequests instanceof Map) || (atomicStateMap.mrtrRequests as Map).isEmpty()
+    }
+
+    def "an unbudgeted read is not continuation-eligible: one modern call, inline fetch, no worker"() {
+        given:
+        settingsMap.enableRead = true
+        def fetches = new AtomicInteger(0)
+        registerLogsJson(fetches, 2)
+
+        when:
+        def only = modernCall('hub_get_performance_stats', [type: 'app', limit: 1])
+
+        then:
+        only.result.resultType == 'complete'
+        fetches.get() == 1
+        runInMillisCalls.isEmpty()
+        mcpDriver.parseInner(only).uptime == '2d'
+        !(atomicStateMap.mrtrRequests instanceof Map) || (atomicStateMap.mrtrRequests as Map).isEmpty()
+    }
+
+    def "the mandatory best-practice gate never blocks a read preflight, and still blocks a write one"() {
+        given:
+        settingsMap.enableRead = true
+        settingsMap.enableWrite = true
+        settingsMap.enableMandatoryBPS = true
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+
+        when: 'a read with no bestPracticeKey'
+        def read = modernCall('hub_get_jobs', [cursor: ''])
+
+        then:
+        read.error == null
+        read.result.resultType in ['input_required', 'complete']
+        !read.result.isError
+
+        when: 'a write with no bestPracticeKey'
+        def write = modernCall('hub_call_rule', [ruleId: [401, 402], action: 'stop'])
+
+        then:
+        write.error.code == -32602
+        write.error.message.contains('Mandatory best-practice acknowledgment')
+    }
+
+    def "every continuation-eligible read is a canonical read-only tool"() {
+        expect:
+        (script._mrtrReadTools() as Set).every { (script.getReadOnlyToolNames() as Set).contains(it) }
+        (script._mrtrReadTools() as Set).every { (script._budgetAwareTools() as Set).contains(it) }
+        (script._mrtrReadTools() as Set).intersect(script._mrtrWriteTools() as Set).isEmpty()
+    }
 }

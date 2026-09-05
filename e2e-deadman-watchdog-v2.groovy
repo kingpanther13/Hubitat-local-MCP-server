@@ -2175,7 +2175,7 @@ def adminListLibraries(args) {
 
 // hub_get_jobs: condensed from toolGetHubJobs (hubitat-mcp-server.groovy). Reads jobs over loopback
 // from the verified /logs/json endpoint (jobs / runningJobs / hubCommands, keyed by methodName) --
-// the same shape the main server's toolGetHubJobs consumes via fetchLogsJson().
+// the same shape the main server's toolGetHubJobs consumes via _logsJsonSnapshot().
 def adminGetJobs(args) {
     def responseText = hubGet("/logs/json", [:])
     if (!responseText) return [error: "Empty response from hub jobs endpoint"]

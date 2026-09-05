@@ -83,6 +83,7 @@ These tools follow an explicit opt-in convention so pre-`cursor` callers see no 
 | `hub_get_logs` | 100 | Filters + `limit` apply first; cursor pages within the filtered result. |
 | `hub_get_memory_history` | 100 | `limit=0` + cursor pages the full hub ring buffer (the only way to retrieve every entry without losing data). |
 | `hub_get_debug_logs` | 100 | Filters apply first; cursor pages within. |
+| `hub_get_jobs` | 100 | Pages `scheduledJobs`; `runningJobs` and `hubActions` stay in full. Served from a 30 s cached `/logs/json` snapshot shared with `hub_get_performance_stats`, so a traversal is best-effort past that TTL. When the transport carries a time budget (`relayBudgetMs` over the cloud relay, `lanBudgetMs` on LAN) the fetch runs in the background and the call continues via `requestState`; legacy clients repeat the identical call on `status: "in_progress"`. |
 
 Tools without cursor support (`hub_get_app_config`, `hub_export_native_app`, `hub_get_source`) rely on their existing controls (`includeSettings=false`, `saveAs=<file>`, `hub_list_files`/`hub_read_file` round-trip) plus the universal size guard as the backstop.
 

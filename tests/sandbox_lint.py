@@ -4172,6 +4172,93 @@ def check_bm25_key_subscripts() -> list[dict]:
         flag(0, "bm25Score never calls _bm25Key -- the sandbox-safe key namespacing has been removed.")
     return findings
 
+def check_logs_json_snapshot_guard() -> list[dict]:
+    """Slow-read guard for the hub's /logs/json page. That one document carries every device and
+    app stat plus the job tables, so its fetch time grows with hub size and a synchronous read
+    built on it outruns the cloud relay on a large hub (hub_get_jobs and
+    hub_get_performance_stats both 502'd that way). Two source-level invariants keep the fix in
+    place: (1) the only hubInternalGet of "/logs/json" lives in _logsJsonFetchAndPublish, the
+    single fetch implementation behind the JVM snapshot (invoked inline on an unbudgeted request
+    and by the scheduled worker otherwise); (2) every tool whose implementation reads the
+    snapshot is listed in BOTH _mrtrReadTools() (so a modern client continues it through
+    requestState) and _budgetAwareTools() (so the leaf sees the request's __reqT0 clock and
+    hands back in_progress inside the relay budget). The raw-fetch scan matches either quote
+    style of the "/logs/json" literal; an indirect fetch (a path built at runtime, or a call
+    through _hubRequest) is outside what a source scan can see, and the runtime [hubrt] slow
+    warning is the backstop for that."""
+    findings: list[dict] = []
+    server = REPO_ROOT / "hubitat-mcp-server.groovy"
+    if not server.is_file():
+        return findings
+    sources = [server, *sorted((REPO_ROOT / "libraries").glob("*.groovy"))]
+    fn_re = re.compile(r"^(?:private\s+|static\s+)*(?:def|void|boolean|Map|List|String|Set|Long|long|int|Integer)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", re.M)
+
+    def enclosing_fn(src: str, pos: int) -> str | None:
+        last = None
+        for m in fn_re.finditer(src, 0, pos):
+            last = m.group(1)
+        return last
+
+    def fn_bodies(src: str) -> list[tuple[str, int, str]]:
+        heads = list(fn_re.finditer(src))
+        out = []
+        for i, m in enumerate(heads):
+            end = heads[i + 1].start() if i + 1 < len(heads) else len(src)
+            out.append((m.group(1), src.count("\n", 0, m.start()) + 1, src[m.start():end]))
+        return out
+
+    # (1) the raw fetch has exactly one home.
+    for f in sources:
+        src = f.read_text(encoding="utf-8")
+        rel = str(f.relative_to(REPO_ROOT))
+        for m in re.finditer(r"""hubInternalGet(?:Raw)?\(\s*(["'])/logs/json\1""", src):
+            fn = enclosing_fn(src, m.start())
+            if fn != "_logsJsonFetchAndPublish":
+                findings.append({"file": rel, "line": src.count("\n", 0, m.start()) + 1, "severity": "error",
+                                 "rule": "logs-json-snapshot-guard", "source": "",
+                                 "message": f"`{fn}` fetches /logs/json directly. That page grows with hub size and outruns the cloud relay; read it through _logsJsonSnapshot(args) so the fetch runs in the background worker and is cached."})
+
+    # (2) every snapshot reader is a continuation-eligible, budget-aware tool.
+    server_src = server.read_text(encoding="utf-8")
+
+    def set_literal(name: str) -> set[str] | None:
+        m = re.search(rf"def {re.escape(name)}\(\)\s*\{{\s*return\s*\[(.*?)\]\s*as\s+Set", server_src, re.S)
+        if not m:
+            return None
+        return set(re.findall(r'"([^"]+)"', m.group(1)))
+
+    read_set = set_literal("_mrtrReadTools")
+    budget_set = set_literal("_budgetAwareTools")
+    if read_set is None or budget_set is None:
+        findings.append({"file": "hubitat-mcp-server.groovy", "line": 1, "severity": "error",
+                         "rule": "logs-json-snapshot-guard", "source": "",
+                         "message": "Could not parse _mrtrReadTools() / _budgetAwareTools() set literals -- has their shape changed?"})
+        return findings
+    dispatch: dict[str, set[str]] = {}
+    for f in sources:
+        for tool, fn in re.findall(r'case "(hub_[a-z0-9_]+)":\s*return\s+([A-Za-z_][A-Za-z0-9_]*)\(',
+                                   f.read_text(encoding="utf-8")):
+            dispatch.setdefault(fn, set()).add(tool)
+    for f in sources:
+        src = f.read_text(encoding="utf-8")
+        rel = str(f.relative_to(REPO_ROOT))
+        for fn, line, body in fn_bodies(src):
+            if fn.startswith("_logsJson") or "_logsJsonSnapshot(" not in body:
+                continue
+            tools = dispatch.get(fn)
+            if not tools:
+                findings.append({"file": rel, "line": line, "severity": "error",
+                                 "rule": "logs-json-snapshot-guard", "source": "",
+                                 "message": f"`{fn}` reads the /logs/json snapshot but no executeTool case dispatches to it, so its tool name cannot be checked against _mrtrReadTools()/_budgetAwareTools()."})
+                continue
+            for tool in sorted(tools):
+                missing = [n for n, members in (("_mrtrReadTools", read_set), ("_budgetAwareTools", budget_set)) if tool not in members]
+                if missing:
+                    findings.append({"file": rel, "line": line, "severity": "error",
+                                     "rule": "logs-json-snapshot-guard", "source": "",
+                                     "message": f"`{tool}` ({fn}) reads the /logs/json snapshot but is missing from {' and '.join(missing)}() in hubitat-mcp-server.groovy -- without both, a relay-bound call of it cannot continue and 502s on a large hub."})
+    return findings
+
 def check_library_no_file_scope_block_comments() -> list[dict]:
     """BP20 library hygiene: no file-scope /* */ or /** */ block comments in any
     libraries/*.groovy (see _scan_library_block_comments for the rationale)."""
@@ -4425,6 +4512,10 @@ def main() -> int:
 
     # outputSchema is frozen: no new declarations (AGENTS.md § Schema design).
     all_findings.extend(check_output_schema_freeze())
+
+    # /logs/json grows with hub size: its only fetch is the worker-run one behind the JVM
+    # snapshot, and every tool reading the snapshot continues via requestState.
+    all_findings.extend(check_logs_json_snapshot_guard())
 
     # The conformance leg's referee is the vendored MCP JSON Schemas; make the byte hashes
     # their README records ENFORCED, so a loosened or half-refreshed schema fails here
