@@ -1271,6 +1271,9 @@ class ToolManageLogsSpec extends ToolSpecBase {
         then: 'one inline fetch served all three; no worker on an unbudgeted LAN request'
         fetches.get() == 1
         jobs.scheduledJobs.count == 2
+        jobs.snapshot.background == false
+        jobs.snapshot.ageMs == 0L
+        stats.snapshot.fetchedAt == jobs.snapshot.fetchedAt
         stats.uptime == '1d'
         stats.deviceSummary.deviceCount == 0
         paged.scheduledJobs.total == 2
@@ -1326,8 +1329,35 @@ class ToolManageLogsSpec extends ToolSpecBase {
         then:
         fetches.get() == 1
         served.scheduledJobs.count == 3
+        served.snapshot.background == true
         served.uptime == '1d'
         runInMillisCalls.size() == 1
+    }
+
+    def "a LAN request with lanBudgetMs set also uses the background fetch, with the LAN observe window"() {
+        given: 'not a cloud request (harness default), LAN budget 6000: window = 6000 - 1500, under the 6000 LAN cap'
+        settingsMap.enableRead = true
+        settingsMap.lanBudgetMs = 6000
+        def fetches = new java.util.concurrent.atomic.AtomicInteger(0)
+        hubGet.register('/logs/json') { params -> fetches.incrementAndGet(); logsJsonWithJobs(2) }
+        def virtualNow = new java.util.concurrent.atomic.AtomicLong(1234567890000L)
+        def waitedMs = new java.util.concurrent.atomic.AtomicLong(0L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> waitedMs.addAndGet(ms); virtualNow.addAndGet(ms) })
+
+        when:
+        def first = script.toolGetHubJobs([__reqT0: virtualNow.get()])
+        script.runLogsJsonFetch(runInMillisCalls[0][2].data as Map)
+        def second = script.toolGetHubJobs([__reqT0: virtualNow.get()])
+
+        then:
+        script._isCloudRequest() == false
+        script._mrtrReadContinuationActive() == true
+        first.status == 'in_progress'
+        waitedMs.get() == 4500L
+        runInMillisCalls.size() == 1
+        fetches.get() == 1
+        second.scheduledJobs.count == 2
     }
 
     def "a failed background /logs/json fetch is reported as an error result with a retry already scheduled"() {

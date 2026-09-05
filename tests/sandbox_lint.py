@@ -4215,7 +4215,7 @@ def check_logs_json_snapshot_guard() -> list[dict]:
             fn = enclosing_fn(src, m.start())
             if fn != "_logsJsonFetchAndPublish":
                 findings.append({"file": rel, "line": src.count("\n", 0, m.start()) + 1, "severity": "error",
-                                 "rule": "logs-json-snapshot-guard",
+                                 "rule": "logs-json-snapshot-guard", "source": "",
                                  "message": f"`{fn}` fetches /logs/json directly. That page grows with hub size and outruns the cloud relay; read it through _logsJsonSnapshot(args) so the fetch runs in the background worker and is cached."})
 
     # (2) every snapshot reader is a continuation-eligible, budget-aware tool.
@@ -4231,7 +4231,7 @@ def check_logs_json_snapshot_guard() -> list[dict]:
     budget_set = set_literal("_budgetAwareTools")
     if read_set is None or budget_set is None:
         findings.append({"file": "hubitat-mcp-server.groovy", "line": 1, "severity": "error",
-                         "rule": "logs-json-snapshot-guard",
+                         "rule": "logs-json-snapshot-guard", "source": "",
                          "message": "Could not parse _mrtrReadTools() / _budgetAwareTools() set literals -- has their shape changed?"})
         return findings
     dispatch: dict[str, set[str]] = {}
@@ -4246,14 +4246,14 @@ def check_logs_json_snapshot_guard() -> list[dict]:
             tools = dispatch.get(fn)
             if not tools:
                 findings.append({"file": rel, "line": line, "severity": "error",
-                                 "rule": "logs-json-snapshot-guard",
+                                 "rule": "logs-json-snapshot-guard", "source": "",
                                  "message": f"`{fn}` reads the /logs/json snapshot but no executeTool case dispatches to it, so its tool name cannot be checked against _mrtrReadTools()/_budgetAwareTools()."})
                 continue
             for tool in sorted(tools):
                 missing = [n for n, members in (("_mrtrReadTools", read_set), ("_budgetAwareTools", budget_set)) if tool not in members]
                 if missing:
                     findings.append({"file": rel, "line": line, "severity": "error",
-                                     "rule": "logs-json-snapshot-guard",
+                                     "rule": "logs-json-snapshot-guard", "source": "",
                                      "message": f"`{tool}` ({fn}) reads the /logs/json snapshot but is missing from {' and '.join(missing)}() in hubitat-mcp-server.groovy -- without both, a relay-bound call of it cannot continue and 502s on a large hub."})
     return findings
 

@@ -905,12 +905,13 @@ class RelayBudgetSpec extends ToolSpecBase {
         stateMap.debugLogs = [entries: [], config: [logLevel: 'debug', maxEntries: 100]]
 
         when:
-        script._hubRtLog('GET', '/logs/json?token=secret', elapsed as long, outcome)
+        script._hubRtLog('GET', '/hub/wifi/join?psk=hunter2', elapsed as long, outcome)
         def warns = stateMap.debugLogs.entries.findAll { it.level == 'warn' && it.message?.contains('[hubrt] slow internal') }
 
         then:
         warns.size() == expectedWarns
         warns.every { it.message.contains("(${outcome})") && it.message.contains("${elapsed}ms") }
+        warns.every { !it.message.contains('hunter2') && it.message.contains('psk=') }
 
         where:
         elapsed | budget | outcome                 | expectedWarns

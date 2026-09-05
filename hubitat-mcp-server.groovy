@@ -32,7 +32,9 @@
 @groovy.transform.Field static final Map MRTR_WORK_ITEMS = new java.util.HashMap()
 @groovy.transform.Field static final Map MRTR_TERMINAL_EVIDENCE = new java.util.HashMap()
 // JVM-live /logs/json snapshot shared by hub_get_jobs and hub_get_performance_stats (see
-// _logsJsonSnapshot in McpDiagnosticsLib). Keys: snapshot, fetchStartedAt, fetchError.
+// _logsJsonSnapshot in McpDiagnosticsLib). Keys: snapshot (the trimmed page + at), fetchId
+// (monotonic; fences a stale worker's publish), fetchStartedAt (in-flight marker owned by
+// fetchId), fetchError (last worker failure, at + message).
 @groovy.transform.Field static final Map LOGS_JSON_SNAPSHOT = new java.util.HashMap()
 // Newest same-rule edit baseline per ruleId ([key:, entry:]), mirrored at snapshot
 // time. The reuse decision consults this beside the atomicState manifest because a
@@ -477,7 +479,7 @@ def advancedOverridesPage() {
                   required: false
         }
         section("Slow-operation time budgets") {
-            paragraph "The cloud relay severs a slow /mcp call at a fixed ceiling while the hub keeps running the operation to completion. Modern MCP clients continue slow writes, and the two Logs-page reads that grow with hub size (hub_get_jobs, hub_get_performance_stats), automatically with requestState; legacy clients receive the existing resumable in_progress envelope. The concurrency cap protects the hub from overlapping writes by clients or parallel agents and requires no client token. The relay budget defaults ON (under the relay ceiling); the LAN budget defaults OFF."
+            paragraph "The cloud relay severs a slow /mcp call at a fixed ceiling while the hub keeps running the operation to completion. Modern MCP clients continue slow writes and the two Logs-page reads that grow with hub size (hub_get_jobs, hub_get_performance_stats) automatically with requestState; legacy clients receive the existing resumable in_progress envelope. The concurrency cap protects the hub from overlapping writes by clients or parallel agents and requires no client token. The relay budget defaults ON (under the relay ceiling); the LAN budget defaults OFF."
             input "maxConcurrentWrites", "number", title: "Maximum concurrent writes (0 = unlimited)",
                   description: "Refuse a new write while this many live write requests are active (default: 2; 1 = fully serial; 0 disables the cap). Reads and read-shaped tool modes do not count; abandoned leases expire automatically.",
                   defaultValue: 2, range: "0..100", required: false
@@ -1593,7 +1595,8 @@ def handleToolsCall(msg) {
                 binding, reqT0, reactiveToolName?.toString())
             rec = claim.record as Map
             if (claim.outcome == "terminal") {
-                if (rec.terminalResult instanceof Map && rec.terminalResult.__slowReadReplay == true) {
+                if (rec.terminalResult instanceof Map && rec.terminalResult.__slowReadReplay == true
+                        && _mrtrReadTools().contains(rec.leafTool?.toString())) {
                     Map replayArgs = _mrtrCopyMap(args as Map)
                     replayArgs.__reqT0 = reqT0
                     return _renderToolResult(msg.id, toolName, reactiveToolName, args,
@@ -1626,6 +1629,17 @@ def handleToolsCall(msg) {
                     requireDestructiveConfirm(leafArgs?.confirm as Boolean)
                     return _renderToolResult(msg.id, toolName, reactiveToolName,
                         args, refusal, false)
+                }
+            }
+            if (_mrtrReadTools().contains(leafName)) {
+                // A read has no mutation to protect, so round zero runs it: a cached or
+                // quickly landed snapshot answers in one round trip, and only a fetch that is
+                // still pending reserves a requestState for the client to continue.
+                Map readArgs = _mrtrCopyMap(args as Map)
+                readArgs.__reqT0 = reqT0
+                def readResult = executeTool(toolName, readArgs)
+                if (!(readResult instanceof Map && readResult.status == "in_progress")) {
+                    return _renderToolResult(msg.id, toolName, reactiveToolName, args, readResult, false)
                 }
             }
             def reservation = _mrtrReserve(toolName, reactiveToolName, binding)
@@ -2240,9 +2254,11 @@ private boolean _mrtrBindingMatches(Map rec, Map binding) {
 
 def _mrtrActiveTtlMs() { _writeLeaseMs() }
 def _mrtrTerminalTtlMs() { 10L * 60L * 1000L }
-// A read terminal only needs to survive a lost final HTTP response; it is re-runnable and
-// its payload is the part of the record worth not keeping in atomicState for ten minutes.
-def _mrtrReadTerminalTtlMs() { 60L * 1000L }
+// A read terminal only needs to survive a lost final HTTP response, not the ten-minute write
+// TTL: its record holds a replay marker rather than a payload, and the replay re-reads the
+// cached snapshot, so the record is kept exactly as long as that snapshot can be (30 s). A
+// later replay gets "expired requestState" and starts a fresh call instead of a refetch.
+def _mrtrReadTerminalTtlMs() { _logsJsonSnapshotTtlMs() }
 def _mrtrMaxRecords() { 16 }
 def _mrtrMaxContinuationSlices() { 8 }
 
@@ -2424,10 +2440,18 @@ private Map _mrtrFindActiveLocked(leafTool, Map binding) {
     return null
 }
 
-private boolean _mrtrMakeRoomLocked() {
+// Reads and writes each have their own share of the retained-record pool, so a burst of read
+// continuations (several agents polling jobs) can never refuse a write with
+// request_state_capacity, and a backlog of write terminals never blocks a read.
+def _mrtrMaxReadRecords() { 8 }
+
+private boolean _mrtrMakeRoomLocked(boolean readLeaf = false) {
     def stored = _writeStateMapLocked("mrtrRequests")
-    if (stored.size() < _mrtrMaxRecords()) return true
-    def removable = stored.entrySet().findAll { it.value?.status != "active" }.sort { a, b ->
+    Set readSet = _mrtrReadTools()
+    int cap = readLeaf ? _mrtrMaxReadRecords() : _mrtrMaxRecords()
+    def sameClass = stored.entrySet().findAll { readSet.contains(it.value?.leafTool?.toString()) == readLeaf }
+    if (sameClass.size() < cap) return true
+    def removable = sameClass.findAll { it.value?.status != "active" }.sort { a, b ->
         long av = (a.value?.updatedAt ?: a.value?.startedAt ?: 0L) as Long
         long bv = (b.value?.updatedAt ?: b.value?.startedAt ?: 0L) as Long
         av <=> bv
@@ -2435,10 +2459,10 @@ private boolean _mrtrMakeRoomLocked() {
     if (removable.isEmpty()) return false
     def kept = [:]
     kept.putAll(stored)
-    int removeCount = Math.max(1, kept.size() - _mrtrMaxRecords() + 1)
+    int removeCount = Math.max(1, sameClass.size() - cap + 1)
     removable.take(Math.min(removeCount, removable.size())).each { kept.remove(it.key) }
     _writeStateSetLocked("mrtrRequests", kept)
-    return kept.size() < _mrtrMaxRecords()
+    return kept.count { k, v -> readSet.contains(v?.leafTool?.toString()) == readLeaf } < cap
 }
 
 // Duplicate detection, global write capacity, storage capacity, and record
@@ -2457,15 +2481,16 @@ def _mrtrReserve(outerTool, leafTool, Map binding) {
             // unchanged, so this cannot schedule or execute the write twice.
             outcome = [accepted: true, stateId: duplicate.stateId, rejoined: true]
         } else {
-            def capacityRefusal = _mrtrReadTools().contains(leafTool?.toString())
-                ? null : _writeCapacityRefusalLocked()
+            boolean readLeaf = _mrtrReadTools().contains(leafTool?.toString())
+            def capacityRefusal = readLeaf ? null : _writeCapacityRefusalLocked()
             if (capacityRefusal != null) {
                 outcome = [accepted: false, refusal: capacityRefusal]
-            } else if (!_mrtrMakeRoomLocked()) {
+            } else if (!_mrtrMakeRoomLocked(readLeaf)) {
+                int limit = readLeaf ? _mrtrMaxReadRecords() : _mrtrMaxRecords()
                 outcome = [accepted: false, refusal: [
                     success: false, isError: true, status: "request_state_capacity",
-                    limit: _mrtrMaxRecords(),
-                    note: "All ${_mrtrMaxRecords()} retained requestState records are active. Nothing was run; finish or let an existing operation expire before starting another."
+                    limit: limit,
+                    note: "All ${limit} retained ${readLeaf ? 'read' : 'write'} requestState records are active. Nothing was run; finish or let an existing operation expire before starting another."
                 ]]
             } else {
                 String stateId = "mrtr-${java.util.UUID.randomUUID()}".toString()
@@ -2911,8 +2936,7 @@ private boolean _mrtrStoreTerminal(String stateId, Map originalRec, Map claim, r
             rec.terminalIsError = isError
             rec.finishedAt = now()
             rec.updatedAt = rec.finishedAt
-            rec.expiresAt = rec.finishedAt + (_mrtrReadTools().contains(rec.leafTool?.toString())
-                ? _mrtrReadTerminalTtlMs() : _mrtrTerminalTtlMs())
+            rec.expiresAt = rec.finishedAt + (readLeaf ? _mrtrReadTerminalTtlMs() : _mrtrTerminalTtlMs())
             _mrtrPutLocked(stateId, rec)
             // Record proof only AFTER the durable terminal write returned. If a
             // subsequent app disable/enable exposes the older claimed-active
@@ -6088,7 +6112,10 @@ private _hubRequest(String method, String path, Map opts = [:]) {
         }
         throw e
     } finally {
-        _hubRtLog(method, path, now() - _hubRtT0, _hubRtOutcome)
+        // Diagnostic only: a failure inside the logger must never replace the real outcome
+        // (or the real exception) of the round-trip it describes.
+        try { _hubRtLog(method, path, now() - _hubRtT0, _hubRtOutcome) }
+        catch (Exception logErr) { log.warn "[hubrt] diagnostic logging failed: ${logErr.message}" }
     }
     // Re-throw a mid-stream read failure rather than returning a Reader/stream toString() junk
     // string that downstream code would treat as a real body (matches the hardened deploy path).
@@ -9843,7 +9870,7 @@ Every actual write obtains a server-side lease, whether it uses MRTR or complete
 
 Clients negotiated below MCP 2026-07-28 do not understand requestState. They retain the existing `status: "in_progress"` remainder envelope for bounded multi-step writes. Completed steps are already committed; reissue only the returned remaining work. This is a compatibility fallback, not a second polling protocol.
 
-Two reads use the same continuation: `hub_get_jobs` and `hub_get_performance_stats` both come from the hub's `/logs/json` page, one document that carries every device and app stat plus the job tables, so its fetch time grows with hub size and on a large hub can outrun the relay. When the request's transport has a time budget (`relayBudgetMs` over the cloud relay, `lanBudgetMs` on the LAN) the fetch runs in a background worker and its trimmed result is cached for 30 s; a modern client continues automatically, a legacy client that receives `status: "in_progress"` repeats the identical call, and a failed fetch is returned as an ordinary `isError` result with a retry already scheduled. Reads never hold a write lease or count toward `maxConcurrentWrites`, and their terminal record carries no payload (a replay re-runs the read from the cache). With no budget on the transport the fetch runs inline and the call is a single ordinary response.
+Two reads use the same continuation: `hub_get_jobs` and `hub_get_performance_stats` both come from the hub's `/logs/json` page, one document that carries every device and app stat plus the job tables, so its fetch time grows with hub size and on a large hub can outrun the relay. When the request's transport has a time budget (`relayBudgetMs` over the cloud relay, `lanBudgetMs` on the LAN) the fetch runs in a background worker and its trimmed result is cached for 30 s; a modern client's first call already runs the read (a cached or quickly landed snapshot answers in one round trip) and only a still-pending fetch hands back `requestState` to continue, a legacy client that receives `status: "in_progress"` repeats the identical call, and a failed fetch is returned as an ordinary `isError` result with a retry already scheduled. Reads never hold a write lease or count toward `maxConcurrentWrites`, and their terminal record carries no payload (a replay re-runs the read from the cache). With no budget on the transport the fetch runs inline and the call is a single ordinary response.
 
 The advanced `relayBudgetMs` setting (default 6000 ms, 0 disables) controls cloud slices. `lanBudgetMs` defaults to 0; set it just below a LAN client's request timeout only when needed.
 

@@ -758,8 +758,9 @@ def _logsJsonSnapshotTtlMs() { 30000L }
 def _logsJsonFetchStaleMs() { 45000L }
 
 // How long a budgeted request may wait for the worker before handing back in_progress. The
-// leg does nothing else, so it keeps less headroom than the write observer: 1500 ms under the
-// budget, capped so eight continuation slices still cover the fetch's own 30 s timeout.
+// leg does nothing else, so it keeps 1500 ms of headroom under the budget (the write
+// observer's cloud path keeps 2000 ms), capped so eight continuation slices still cover the
+// fetch's own 30 s timeout.
 def _logsJsonObserveWaitMs() {
     boolean cloud = _isCloudRequest()
     long cap = cloud ? 4500L : 6000L
@@ -813,7 +814,7 @@ def _logsJsonFetchAndPublish(Long fetchId = null) {
         throw new IllegalStateException("Unexpected /logs/json response: no jobs or stats tables (page shape changed?)")
     }
     def snap = [
-        at: now(), fetchMs: now() - t0,
+        at: now(), fetchMs: now() - t0, background: fetchId != null,
         uptime: data.uptime,
         totalDevicesRuntime: data.totalDevicesRuntime, devicePct: data.devicePct,
         totalAppsRuntime: data.totalAppsRuntime, appPct: data.appPct,
@@ -833,6 +834,13 @@ def _logsJsonFetchAndPublish(Long fetchId = null) {
         LOGS_JSON_SNAPSHOT.remove("fetchError")
     }
     return snap
+}
+
+// Provenance a client can read back: whether this answer came from a cached snapshot, how old
+// it is, and whether the fetch ran in the background worker. Makes cache reuse observable.
+private Map _logsJsonProvenance(Map snap) {
+    return [fetchedAt: snap.at, ageMs: Math.max(0L, now() - (snap.at as Long)),
+            fetchMs: snap.fetchMs, background: snap.background == true]
 }
 
 private Map _logsJsonFreshSnapshot() {
@@ -930,7 +938,9 @@ def _logsJsonSnapshot(Map args) {
         try {
             pauseExecution(sleepMs as Long)
         } catch (Exception waitErr) {
-            mcpLog("debug", "monitoring", "Snapshot wait interrupted: ${waitErr.message}")
+            // Not an ordinary timeout: name the exception so a scheduler fault does not hide
+            // behind normal-looking in_progress traffic.
+            mcpLog("warn", "monitoring", "Snapshot wait interrupted (${waitErr.class.simpleName}): ${waitErr.message}")
             return [state: "pending"]
         }
         remainingBudget -= sleepMs
@@ -975,7 +985,8 @@ def toolGetPerformanceStats(args) {
     }
 
     def result = [
-        uptime: data.uptime
+        uptime: data.uptime,
+        snapshot: _logsJsonProvenance(data)
     ]
 
     def formatStats = { cached ->
@@ -1058,9 +1069,10 @@ def toolGetHubJobs(args) {
         return _logsJsonFailure("hub_get_jobs", e.message ?: e.class.simpleName)
     }
 
-    def scheduledJobs = (data.jobs instanceof List) ? data.jobs : []
-    def runningJobs = (data.runningJobs instanceof List) ? data.runningJobs : []
-    def hubActions = (data.hubCommands instanceof List) ? data.hubCommands : []
+    // The snapshot's tables are lists by construction (_logsJsonTable is list-or-throw).
+    def scheduledJobs = data.jobs
+    def runningJobs = data.runningJobs
+    def hubActions = data.hubCommands
 
     // Only scheduledJobs pages; runningJobs and hubActions keep their full, backward-compatible
     // shape on every page. Pages are best-effort: the cursor is an offset into the current
@@ -1068,6 +1080,7 @@ def toolGetHubJobs(args) {
     def paged = _paginateList(scheduledJobs, cursor, 100, "hub_get_jobs")
     def result = [
         uptime: data.uptime,
+        snapshot: _logsJsonProvenance(data),
         scheduledJobs: [
             count: paged.page.size(),
             jobs: paged.page

@@ -10238,6 +10238,8 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                 "tool": "hub_get_jobs",
                 "args": {"cursor": cursor},
             })
+            assert "runningJobs" in page and "hubActions" in page, \
+                f"page {pages}: runningJobs / hubActions must stay in full on every page"
             seen.extend(page["scheduledJobs"]["jobs"])
             cursor = page.get("nextCursor")
         assert len(seen) == sj["total"], \
@@ -10251,21 +10253,27 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
 
     @test("system_tools")
     def test_get_hub_jobs_cold_fetch_continues(self) -> None:
-        """A cold Logs-page read over the cloud relay goes through requestState continuation.
+        """A cold Logs-page read over the cloud relay runs its fetch in the background worker.
 
         The snapshot cache lives 30 s; after sitting past it, the first hub_get_jobs is a cold
-        fetch and the modern client must be handed the continuation provenance block, proving
-        the read took the budgeted path rather than a blocking fetch. The immediate second read
-        is served from the landed snapshot."""
+        fetch. Over the relay (a budgeted transport) that fetch must come from the background
+        worker, which the result's snapshot provenance reports, whether the call completed in
+        one round trip or continued via requestState. The immediate second read is served from
+        the same snapshot: same fetchedAt, older age."""
         import time as _time
         _time.sleep(31)
         cold = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_jobs", "args": {"cursor": ""}})
         assert isinstance(cold, dict), f"hub_get_jobs returned {type(cold)}"
         assert "scheduledJobs" in cold, f"cold read returned no jobs: {cold}"
-        assert "mrtr" in cold and cold["mrtr"].get("rounds", 0) >= 1, \
-            f"cold read did not carry continuation provenance: {cold.get('mrtr')}"
+        prov = cold.get("snapshot") or {}
+        assert prov.get("background") is True, f"cold read did not use the background fetch: {prov}"
+        assert prov.get("ageMs", 10**9) < 30000, f"cold read served a stale snapshot: {prov}"
         warm = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_performance_stats", "args": {"limit": 1}})
         assert isinstance(warm, dict) and "uptime" in warm, f"warm read after cold fetch: {warm}"
+        wprov = warm.get("snapshot") or {}
+        assert wprov.get("fetchedAt") == prov.get("fetchedAt"), \
+            f"warm read did not reuse the cold snapshot: {wprov} vs {prov}"
+        assert wprov.get("ageMs", 0) >= prov.get("ageMs", 0), f"warm age went backwards: {wprov} vs {prov}"
 
     @test("system_tools")
     def test_manage_rooms_list(self) -> None:

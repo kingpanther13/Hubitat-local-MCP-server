@@ -918,3 +918,18 @@ def test_logs_json_guard_reports_unparseable_set_literals(tmp_path, monkeypatch)
 
 def test_logs_json_guard_is_green_on_the_checked_in_sources():
     assert sl.check_logs_json_snapshot_guard() == []
+
+
+def test_logs_json_guard_findings_format_without_error(tmp_path, monkeypatch):
+    """main() prints every finding through format_finding, which reads f["source"]; a finding
+    without it would turn the guard's first real catch into a KeyError."""
+    lib = _SNAP_LIB_OK + "\ndef toolOrphan(args) {\n    def snap = _logsJsonSnapshot(args)\n    return snap\n}\n" \
+        + "\ndef toolDirect(args) {\n    def txt = hubInternalGet('/logs/json')\n    return txt\n}\n"
+    server = _SNAP_SERVER_OK.replace('return ["hub_set_rule", "hub_get_jobs", "hub_get_performance_stats"] as Set',
+                                     'return ["hub_set_rule"] as Set')
+    _write_snapshot_repo(tmp_path, monkeypatch, server=server, lib=lib)
+    findings = sl.check_logs_json_snapshot_guard()
+    assert len(findings) >= 4
+    for f in findings:
+        assert "source" in f
+        assert sl.format_finding(f).startswith("ERROR: ")
