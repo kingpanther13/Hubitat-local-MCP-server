@@ -1323,7 +1323,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         runInMillisCalls.size() == 1
 
         when: 'Hubitat runs the worker and the client repeats the identical call'
-        script.runLogsJsonFetch()
+        script.runLogsJsonFetch(runInMillisCalls[0][2].data as Map)
         def served = mcpDriver.parseInner(mcpDriver.callTool('hub_get_jobs', [:]))
 
         then:

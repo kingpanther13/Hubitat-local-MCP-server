@@ -804,7 +804,7 @@ private List _logsJsonTable(Map data, String key) {
 // Fetch, trim to the fields the tools read, and publish. Runs inline on an unbudgeted request
 // and inside runLogsJsonFetch for budgeted ones. A worker passes the fetchId it was scheduled
 // with; a stale worker (its id already replaced) parses for nothing and publishes nothing.
-def _logsJsonFetchAndPublish(Long fetchId = null) {
+def _logsJsonFetchAndPublish(Long fetchId = null, boolean background = false) {
     long t0 = now()
     def responseText = hubInternalGet("/logs/json", null, 30)
     if (!responseText) throw new RuntimeException("No data returned from /logs/json")
@@ -814,7 +814,7 @@ def _logsJsonFetchAndPublish(Long fetchId = null) {
         throw new IllegalStateException("Unexpected /logs/json response: no jobs or stats tables (page shape changed?)")
     }
     def snap = [
-        at: now(), fetchMs: now() - t0, background: fetchId != null,
+        at: now(), fetchMs: now() - t0, background: background,
         uptime: data.uptime,
         totalDevicesRuntime: data.totalDevicesRuntime, devicePct: data.devicePct,
         totalAppsRuntime: data.totalAppsRuntime, appPct: data.appPct,
@@ -877,7 +877,7 @@ def runLogsJsonFetch(Map job = [:]) {
     Long fetchId = null
     try { fetchId = job?.fetchId as Long } catch (Exception ignored) { fetchId = null }
     try {
-        _logsJsonFetchAndPublish(fetchId)
+        _logsJsonFetchAndPublish(fetchId, true)
     } catch (Exception e) {
         mcpLogError("monitoring", "Background /logs/json fetch failed", e)
         String detail = e.message?.toString()?.trim()
