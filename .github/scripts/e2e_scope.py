@@ -50,8 +50,11 @@ FILE_GROUP_MAP = {
     # native_apps: the MRTR continuation aggregator lives here, and its client-visible
     # guard (test_call_rule_multi_id_aggregates_per_rule) is registered in that group. Without
     # it, a PR editing the aggregation but no test file selects a lane that never runs it.
+    # devices + developer_mode: the all-hub inventory (_fetchAllHubDeviceRecords) lives here and
+    # has TWO consumers -- hub_list_devices scope='all' (guarded in devices) and the selectedDevices
+    # validation of hub_update_mcp_settings (guarded in developer_mode).
     "hubitat-mcp-server.groovy":                ["mrtr", "protocol", "legacy_protocol",
-                                                 "native_apps"],
+                                                 "native_apps", "devices", "developer_mode"],
 }
 
 

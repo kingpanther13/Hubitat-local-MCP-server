@@ -2695,7 +2695,7 @@ All 117 distinct tools are covered by at least one test, excluding the destructi
 
 Sections 1-9 each target a specific tool — named in the test's title and **Expected** criteria while the `test_prompt` stays goal-first (see Prompt style above). Section 10 re-tests the same tool coverage through purely conversational language to measure whether the LLM can discover tools without being told which ones exist. Section 11 covers the built-in app integration tools.
 
-**Total: 268 test scenarios** (123 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 3 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 device-state state-change / fail-loud authoring parity + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 5 read-side convergence + 1 multi-device convergence + 3 MCP device-access scope + 1 official-SDK MRTR proof + 1 multi-rule call_rule aggregation + 1 rule-backup policy proof) plus 13 excluded destructive operations documented for manual testing
+**Total: 270 test scenarios** (123 explicit + 65 natural language + 21 built-in-app integration + 9 library management + 2 reveal-walker coverage + 3 deviceId normalization + 1 subExpression rejection + 1 reveal-fallback sentinel + 1 compareToDevice fallback + 1 Between-two-times sunrise/sunset + 10 periodic-frequency completeness + 5 Visual Rules Builder + 1 device swap + 2 installed-app read modes + 2 enum-attribute state-change comparator + 4 device-state state-change / fail-loud authoring parity + 4 replaceRequiredExpression in-place RE replace + 3 rule-local variable lifecycle/namespace + 5 read-side convergence + 1 multi-device convergence + 3 MCP device-access scope + 1 official-SDK MRTR proof + 1 multi-rule call_rule aggregation + 1 rule-backup policy proof) plus 13 excluded destructive operations documented for manual testing
 
 ---
 
@@ -4500,28 +4500,29 @@ The Visual Rules Builder tools live in the `hub_manage_rule_machine` gateway (th
 ### Safety Rules for Section 16
 
 - Only create/edit/delete **BAT-prefixed** Visual Rules created within the same scenario — never touch existing Visual Rules
-- Device-facing nodes only target BAT-created virtual switches
-- The current firmware creates **classic**-format rules (`whenNodes`/`thenNodes`/`elseNodes`); if a hub creates graph-format rules instead, `hub_set_visual_rule` returns `hubNativeFormat: "graph"` and cleans up the empty child — re-issue with a graph definition in that case
+- Device-facing nodes only target BAT-created virtual devices (the switches, dimmers and sensors the scenario itself created)
+- T700 and T705 are written for a hub that offers BOTH builders (platform 2.5.1 and later). On a 2.0-only hub T700 instead returns `format='graph'`, `version='2.0'` and `translatedFrom='classic'` with a graph read-back; on a 1.0-only hub T705 instead returns `success=false` + `hubNativeFormat='classic'` with the empty child cleaned up, and its graph read-back assertions do not apply. Check `hub_get_info` firmware first and grade against the branch that matches.
+- A 2.5.1 hub offers BOTH builders, and the definition's shape picks which one a new rule runs: a classic node-list (`whenNodes`/`thenNodes`/`elseNodes`) creates a Visual Rule Builder 1.0 rule, the editor form or a raw graph creates a 2.0 one. The create response echoes `version`. Older firmware that can only make one of the two falls back to it: a classic definition on a 2.0-only hub is translated (`translatedFrom: 'classic'`), and an editor/graph definition on a 1.0-only hub returns `hubNativeFormat: 'classic'` and cleans up the empty child — re-issue with a classic definition in that case
 
 ### T700 — hub_set_visual_rule create + hub_get_visual_rule read-back (classic format)
 
 ```json
 {
-  "setup_prompt": "The Write master is enabled and a hub backup was created within the last 24 hours (call hub_create_backup if unsure). Create a virtual switch named 'BAT VRB Switch' via hub_manage_virtual_device and note its device ID.",
+  "setup_prompt": "The Read and Write masters are enabled and a hub backup was created within the last 24 hours (call hub_create_backup if unsure). Create a virtual switch named 'BAT VRB Switch' via hub_manage_virtual_device and note its device ID.",
   "test_prompt": "Create a Visual Rules Builder rule named 'BAT VRB Create' (confirming the creation): when 'BAT VRB Switch' turns on, turn it off. Author it in the classic when/then-nodes definition format. Then read the rule back and report the appId, format, and whether the persisted definition matches what was sent.",
   "teardown_prompt": "Delete the Visual Rule 'BAT VRB Create' with hub_delete_visual_rule (confirm=true). Delete the virtual switch 'BAT VRB Switch'."
 }
 ```
 
-**Expected**: AI calls `hub_manage_rule_machine(tool=hub_set_visual_rule)` with NO `appId`, `name='BAT VRB Create'`, the classic `definition`, and `confirm=true`. The response returns a new `appId`, `created=true`, `format='classic'`, and `verified=true` (the tool's read-back confirmed the persisted name); the echoed `definition` contains the whenNode/thenNode pair. A follow-up `hub_get_visual_rule(appId=N)` returns `success=true`, `format='classic'`, `name='BAT VRB Create'`, `rulePaused=false`, and the same `whenNodes`/`thenNodes`. The rule also appears in list mode (`hub_get_visual_rule` with no `appId` — `rules[]` contains `{appId, name:'BAT VRB Create', disabled:false}`).
+**Expected**: AI calls `hub_manage_rule_machine(tool=hub_set_visual_rule)` with NO `appId`, `name='BAT VRB Create'`, the classic `definition`, and `confirm=true`. The response returns a new `appId`, `created=true`, `format='classic'`, `version='1.0'` (the classic shape is what selected the 1.0 builder), and `verified=true` (the tool's read-back confirmed the persisted name); the echoed `definition` contains the whenNode/thenNode pair. A follow-up `hub_get_visual_rule(appId=N)` returns `success=true`, `format='classic'`, `name='BAT VRB Create'`, `rulePaused=false`, and the same `whenNodes`/`thenNodes`. The rule also appears in list mode (`hub_get_visual_rule` with no `appId` — `rules[]` contains `{appId, name:'BAT VRB Create', disabled:false}`).
 
-**Failure modes**: the call is issued without `confirm=true` (rejected -32602 — the AI must include it after user approval, not retry blindly). `verified=false` (the save POST was sent but the read-back did not confirm — inspect with `hub_get_visual_rule`). A format-mismatch response (`success=false` + `hubNativeFormat='graph'`) on graph-native firmware — the AI should re-issue with a graph definition, and the empty child app created during the attempt must have been cleaned up, not stranded. The AI routes to `hub_set_native_app(appType='visual_rule')` instead — that path now throws with a redirect to `hub_set_visual_rule`.
+**Failure modes**: the call is issued without `confirm=true` (rejected -32602 — the AI must include it after user approval, not retry blindly). `verified=false` (the save POST was sent but the read-back did not confirm — inspect with `hub_get_visual_rule`). A format-mismatch response (`success=false` + `hubNativeFormat='classic'`) — that only happens when an editor/graph definition meets a hub whose builder can create nothing but 1.0 children, so it should NOT appear for this classic definition; if it does, the AI should re-issue with a classic definition and the empty child app created during the attempt must have been cleaned up, not stranded. The AI routes to `hub_set_native_app(appType='visual_rule')` instead — that path now throws with a redirect to `hub_set_visual_rule`.
 
 ### T701 — hub_set_visual_rule pause + rename without touching the definition
 
 ```json
 {
-  "setup_prompt": "The Write master is enabled and a recent backup exists. Create a virtual switch 'BAT VRB PauseSwitch' and a Visual Rule named 'BAT VRB Pause' via hub_set_visual_rule (classic definition: when the switch turns on, turn it off). Note the returned appId.",
+  "setup_prompt": "The Read and Write masters are enabled and a recent backup exists. Create a virtual switch 'BAT VRB PauseSwitch' and a Visual Rule named 'BAT VRB Pause' via hub_set_visual_rule (classic definition: when the switch turns on, turn it off). Note the returned appId.",
   "test_prompt": "First pause the Visual Rule 'BAT VRB Pause' (confirming the change) and verify it reads back as paused. Then rename it to 'BAT VRB Renamed' and resume it in ONE call — without re-sending or touching its definition. Verify by reading it back that the name changed, it is no longer paused, and the when/then nodes are UNCHANGED from setup.",
   "teardown_prompt": "Delete the Visual Rule 'BAT VRB Renamed' with hub_delete_visual_rule (confirm=true). Delete the virtual switch 'BAT VRB PauseSwitch'."
 }
@@ -4531,11 +4532,27 @@ The Visual Rules Builder tools live in the `hub_manage_rule_machine` gateway (th
 
 **Failure modes**: the rename wipes the nodes (empty `whenNodes`/`thenNodes` after the rename — the re-save dropped the existing definition). The pause flag is silently ignored (`rulePaused` stays `false` after `paused=true`). The AI re-sends the whole definition just to rename (works, but a Partial — `name`-only is the point). A no-op call (`appId` with no `definition`/`name`/`paused`) must reject -32602 "Nothing to change", not return `success=true`.
 
+### T706 — A Visual Rule 2.0 create that succeeds with an advisory (unknown action type)
+
+```json
+{
+  "setup_prompt": "The Read and Write masters are enabled and a hub backup was created within the last 24 hours (call hub_create_backup if unsure). Create a virtual switch named 'BAT VRB2 Advisory' via hub_manage_virtual_device and note its device ID.",
+  "test_prompt": "Create a Visual Rules Builder automation named 'BAT VRB2 Advisory' that turns 'BAT VRB2 Advisory' on when it turns on, and give it a SECOND action of type 'brandNewAction' on the same switch -- I know that type name is not in the reference; use it verbatim. Tell me exactly what came back: was it refused, was it created, is it running, and what did the tool warn about versus what the hub itself said.",
+  "teardown_prompt": "Delete the Visual Rule 'BAT VRB2 Advisory' with hub_delete_visual_rule (confirm=true). Delete the virtual switch 'BAT VRB2 Advisory'."
+}
+```
+
+**Expected**: the create is NOT refused: unknown type names are advisory on create (newer firmware may know them). The response is `success: true`, `created: true`, `version: '2.0'`, `createRoute` naming the route that made it (`createchild` on any hub with the versioned child type; `createVisualRuleBuilderRule` only on a hub without it, which is a correct result, not a failure), with `preflightWarnings` naming `brandNewAction` (the tool's advisory) AND `validationErrors` from the hub naming the same node (the hub's verdict), `activated: false`, and the INACTIVE DRAFT note. The AI reports all three facts distinctly: created, warned by the tool, rejected by the hub, therefore not running -- it must not call this a success as an automation, and must not call it a refusal. A follow-up `hub_get_visual_rule(appId=N)` shows `activated: false`.
+
+**Failure modes**: the AI reports the rule as running because `success: true` (the draft note and `activated: false` ignored -- automatic Fail). The AI silently drops the unknown action to make the rule pass (the prompt asked for it verbatim). The AI treats `preflightWarnings` as an error and never issues the create. Confusing the tool's advisory with the hub's rejection -- they are two different sources and the AI should say which said what.
+
+---
+
 ### T702 — hub_delete_visual_rule type-gate refusal + verified delete with recovery definition
 
 ```json
 {
-  "setup_prompt": "The Write master is enabled and a recent backup exists. Create (1) a virtual switch 'BAT VRB DelSwitch', (2) a Visual Rule named 'BAT VRB Delete' via hub_set_visual_rule (classic definition over that switch), and (3) a Rule Machine rule named 'BAT VRB NotVisual' via hub_set_rule. Note both appIds.",
+  "setup_prompt": "The Read and Write masters are enabled and a recent backup exists. Create (1) a virtual switch 'BAT VRB DelSwitch', (2) a Visual Rule named 'BAT VRB Delete' via hub_set_visual_rule (classic definition over that switch), and (3) a Rule Machine rule named 'BAT VRB NotVisual' via hub_set_rule. Note both appIds.",
   "test_prompt": "First try deleting the RM rule 'BAT VRB NotVisual' AS IF it were a Visual Rule — go through the Visual Rule delete path, confirming — and report what happens. Then delete the actual Visual Rule 'BAT VRB Delete' (confirming) and report whether the delete was verified and whether the response includes the pre-delete definition.",
   "teardown_prompt": "Delete the RM rule 'BAT VRB NotVisual' with hub_delete_native_app (confirm=true). Delete the virtual switch 'BAT VRB DelSwitch'. Confirm via hub_get_visual_rule (list mode) that no rule named 'BAT VRB Delete' remains."
 }
@@ -4544,6 +4561,22 @@ The Visual Rules Builder tools live in the `hub_manage_rule_machine` gateway (th
 **Expected**: the first call does NOT delete anything: the RM rule's appId fails the VRB type-gate and returns `success=false` with the app's real type (e.g. `appType: 'Rule Machine'` / `'Rule-5.1'`) and a note redirecting to `hub_delete_native_app` — the RM rule still exists afterward (verify with `hub_list_rules`). The second call deletes the Visual Rule: `success=true`, `verified=true` (the app is confirmed gone), and `predeleteDefinition` carries the whenNodes/thenNodes so the rule could be recreated via `hub_set_visual_rule`. A follow-up `hub_get_visual_rule(appId=N)` returns `success=false` ("No installed app...") and list mode no longer contains the rule.
 
 **Failure modes**: the type-gate is bypassed and the RM rule is force-deleted (the exact failure the gate exists to prevent — automatic Fail). `predeleteDefinition` missing from the delete response (the recovery contract broken). `verified=false` with the app still present but reported as deleted. A nonexistent-appId delete returning anything other than the structured `success=false` "No installed app with appId N" envelope.
+
+---
+
+### T705 — Visual Rule 2.0 editor form: OR-gated rule with then/else branches and a shared tail
+
+```json
+{
+  "setup_prompt": "The Read and Write masters are enabled and a hub backup was created within the last 24 hours (call hub_create_backup if unsure). Via hub_manage_virtual_device create a virtual motion sensor named 'BAT VRB2 Motion', a virtual switch named 'BAT VRB2 Override', a virtual dimmer named 'BAT VRB2 Lamp', and a virtual switch named 'BAT VRB2 Chime'. Note every device ID.",
+  "test_prompt": "Set up an automation named 'BAT VRB2 Editor' on the Visual Rules Builder, confirming the change. It runs whenever 'BAT VRB2 Motion' detects motion. It should then check two things and proceed if EITHER ONE holds: it is a weekday, or 'BAT VRB2 Override' is currently on. When either holds, set 'BAT VRB2 Lamp' to 40 percent; when neither does, turn that lamp off instead. Either way, finish by turning 'BAT VRB2 Chime' on. Then read the automation back and tell me which Visual Rules Builder version it runs, whether it is actually active, and how the trigger, the either-or check, the two branches and the shared final step are represented.",
+  "teardown_prompt": "Delete the Visual Rule 'BAT VRB2 Editor' with hub_delete_visual_rule (confirm=true). Delete the virtual devices 'BAT VRB2 Motion', 'BAT VRB2 Override', 'BAT VRB2 Lamp' and 'BAT VRB2 Chime'."
+}
+```
+
+**Expected**: the AI calls `hub_manage_rule_machine(tool=hub_set_visual_rule)` with NO `appId`, `name='BAT VRB2 Editor'`, `confirm=true`, and a `definition` in the editor form — one `motion` entry in `triggers`, `decisionType: 'any'` (the either-or check is the 2.0 OR decision, not two rules and not a nested condition), a `daysOfWeek` and a `switchCondition` entry in `conditions`, one `setBrightness` in `thenActions`, one `turnOff` in `elseActions`, and one `turnOn` in `commonActions`. Because the definition is editor-shaped, the hub creates a **2.0** child: the response carries `version: '2.0'`, `format: 'graph'`, `created: true`, `verified: true`, `activated: true`, and NO `translatedFrom`. The read-back (`hub_get_visual_rule(appId=N)`) returns `format: 'graph'`, an empty `validationErrors`, `activated: true`, and an `editor` block with `decisionType: 'any'`, both conditions, and one action in each of `thenActions` / `elseActions` / `commonActions` — the common tail proving a `branchMerge` was composed. List mode shows the rule with `version: '2.0'`.
+
+**Failure modes**: the AI hand-builds a raw graph with node ids, merge nodes and edges when the editor form would do (Partial — it works, but it is the harder path the `editor` block exists to avoid). `decisionType` is left at its `all` default so the rule only runs when BOTH checks hold (the OR requirement silently lost — automatic Fail), or the either-or is split into two separate rules. A classic `whenNodes`/`thenNodes` definition is sent instead, which creates a **1.0** rule (`version: '1.0'`) that can express neither the OR decision nor the shared tail — the chime step ends up duplicated into both branches. `activated: false` with non-empty `validationErrors` (the rule was stored as an inactive draft — usually a bad device id or a misspelled event label; the AI must report it as not running, never as success). The AI routes to `hub_set_rule` (Rule Machine) instead of the Visual Rules Builder. The pre-flight refusal ("Definition failed pre-flight validation; nothing was created/saved.") is returned and the AI retries blindly instead of fixing the listed `validationErrors`.
 
 ---
 

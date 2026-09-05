@@ -25,7 +25,7 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
 
     private TestDevice dev(Map p) {
         new TestDevice(id: p.id, name: "D${p.id}", label: p.label ?: "Device ${p.id}", roomName: null,
-            capabilities: [], supportedAttributes: [], supportedCommands: [], attributeValues: [:])
+            capabilities: p.capabilities ?: [], supportedAttributes: [], supportedCommands: [], attributeValues: [:])
     }
 
     // ---- Item 1: hub_list_devices scope='all' ----------------------------
@@ -329,6 +329,251 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
         result.devices.size() == 1
         result.devices[0].mcpAuthorized == true
         result.devices[0].capabilities == ["Switch"]
+    }
+
+    // The middle tier: /hub2/vrb/devices, the VRB 2.0 device picker feed, carries the same
+    // {id, label, capabilities} triple over the same full inventory, so capabilities survive the
+    // removal of /device/listWithCapabilities/json on 2.5.1.173+.
+
+    def "scope='all' keeps devices the vrb feed omits from /hub2/devicesList, in tree order, and flags the result partial"() {
+        given: 'a picker feed that filtered one device out; the tree lists that device FIRST'
+        settingsMap.selectedDevices = [dev(id: 80)]
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params ->
+            JsonOutput.toJson([[id: 80, label: "Authorized Switch", capabilities: ["Switch"]]])
+        }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [
+                [key: "DEV-77", data: [id: 77, name: "Filtered Out"], children: []],
+                [key: "DEV-80", data: [id: 80, name: "Authorized Switch"], children: []]]])
+        }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then: 'the omitted device is still an inventory member, without capabilities, and the caller is told why'
+        result.source == "/hub2/vrb/devices"
+        result.total == 2
+        result.devices*.id == ["77", "80"]   // tree order (an append-at-the-end join would give 80, 77)
+        result.devices.find { it.id == "77" }.label == "Filtered Out"
+        result.devices.find { it.id == "77" }.capabilities == []
+        result.capabilitiesPartial == true
+        result.capabilitiesNote.contains("/hub2/vrb/devices")
+        result.capabilitiesNote.contains("omitted 1 of 2")
+    }
+
+    def "an AUTHORIZED device the vrb feed omits still gets its capabilities from the Groovy model"() {
+        given: 'the picker feed skipped the authorized device; the model knows its capabilities'
+        settingsMap.selectedDevices = [dev(id: 80, capabilities: ["Switch", "Refresh"])]
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 99, label: "Hall", capabilities: ["MotionSensor"]]]) }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [[key: "DEV-80", data: [id: 80, name: "Authorized Switch"], children: []],
+                                         [key: "DEV-99", data: [id: 99, name: "Hall"], children: []]]])
+        }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then: 'no capabilities key on the omitted record, so the fill-in ran instead of an empty list winning'
+        result.capabilitiesPartial == true
+        result.devices.find { it.id == "80" }.capabilities.containsAll(["Switch", "Refresh"])
+        result.devices.find { it.id == "99" }.capabilities == ["MotionSensor"]
+    }
+
+    def "when the devicesList spine cannot be read the vrb feed alone is returned, flagged partial with the reason"() {
+        given:
+        settingsMap.selectedDevices = [dev(id: 80)]
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 80, label: "Authorized Switch", capabilities: ["Switch"]]]) }
+        hubGet.register('/hub2/devicesList') { params -> throw new RuntimeException("status code: 504") }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then: 'never a complete, capability-bearing answer while the cross-check could not run'
+        result.source == "/hub2/vrb/devices"
+        result.devices*.id == ["80"]
+        result.devices[0].capabilities == ["Switch"]
+        result.capabilitiesPartial == true
+        result.capabilitiesNote.contains("could not be read")
+        result.capabilitiesNote.contains("504")
+    }
+
+    def "an EMPTY /hub2/devicesList beside a populated vrb feed is the feed alone, flagged partial -- never zero devices as the truth"() {
+        given: 'the tree answers no devices while the feed lists two'
+        settingsMap.selectedDevices = [dev(id: 80, capabilities: ["Switch"])]
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params ->
+            JsonOutput.toJson([[id: 80, label: "Authorized Switch", capabilities: ["Switch"]],
+                               [id: 99, label: "Hall", capabilities: ["MotionSensor"]]])
+        }
+        hubGet.register('/hub2/devicesList') { params -> JsonOutput.toJson([devices: []]) }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then: 'contradictory data: the feed is the honest answer, and nothing vouches for its completeness'
+        result.source == "/hub2/vrb/devices"
+        result.devices*.id == ["80", "99"]
+        result.devices.find { it.id == "99" }.capabilities == ["MotionSensor"]
+        result.capabilitiesPartial == true
+        result.capabilitiesNote.contains("answered no devices")
+        result.capabilitiesNote.contains("listed 2")
+    }
+
+    def "a device only the vrb feed lists is kept after the tree's devices and the tree's omission is counted"() {
+        given: 'the tree lacks a device the feed carries'
+        settingsMap.selectedDevices = [dev(id: 80)]
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params ->
+            JsonOutput.toJson([[id: 99, label: "Feed Only", capabilities: ["MotionSensor"]],
+                               [id: 80, label: "Authorized Switch", capabilities: ["Switch"]]])
+        }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [[key: "DEV-80", data: [id: 80, name: "Authorized Switch"], children: []]]])
+        }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then: 'the union: tree devices first, then the feed-only device with its own capabilities; partial says which source fell short'
+        result.source == "/hub2/vrb/devices"
+        result.devices*.id == ["80", "99"]
+        result.devices.find { it.id == "99" }.capabilities == ["MotionSensor"]
+        result.devices.find { it.id == "99" }.mcpAuthorized == false
+        result.capabilitiesPartial == true
+        result.capabilitiesNote.contains("tree (/hub2/devicesList) omitted 1")
+        !result.capabilitiesNote.contains("feed (/hub2/vrb/devices) omitted")
+    }
+
+    def "a tree node without a data.id fails the read as a shape error rather than shrinking the inventory"() {
+        given: 'no feed to fall back on, and a tree with an id-less node'
+        settingsMap.selectedDevices = []
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [[key: "DEV-80", data: [id: 80, name: "A"], children: []],
+                                         [key: "DEV-?", data: [name: "No id"], children: []]]])
+        }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then:
+        result.success == false
+        result.error?.contains("/hub2/devicesList")
+    }
+
+    def "scope='all' falls past a vrb feed whose entries carry no capabilities list"() {
+        given:
+        settingsMap.selectedDevices = [dev(id: 80)]
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 80, label: "Authorized Switch"]]) }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [[key: "DEV-80", data: [id: 80, name: "Authorized Switch"], children: []]]])
+        }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then: 'a feed that cannot vouch for capabilities is not adopted as the capability source'
+        result.source == "/hub2/devicesList"
+        result.capabilitiesPartial == true
+    }
+
+    def "scope='all' takes the vrb tier when the capabilities endpoint is gone"() {
+        given:
+        settingsMap.selectedDevices = [dev(id: 80)]
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params ->
+            // A FLAT array -- child devices ride it as their own entries, no tree to walk -- with
+            // the picker-only fields the projection drops.
+            JsonOutput.toJson([
+                [id: 80, label: "Authorized Switch", capabilities: ["Switch", "Actuator"], temperature: null, lightEffects: null, supportedFanSpeeds: null, buttonCount: null],
+                [id: 81, label: "Child Of 80", capabilities: ["Bulb", "Switch"], temperature: null, lightEffects: "{}", supportedFanSpeeds: null, buttonCount: null],
+                [id: 99, label: "Unauthorized Motion", capabilities: ["MotionSensor"], temperature: 71, lightEffects: null, supportedFanSpeeds: null, buttonCount: null]
+            ])
+        }
+        // The tier cross-checks the feed against the full tree; here they agree.
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [
+                [key: "DEV-80", data: [id: 80, name: "Authorized Switch"], children: [[key: "DEV-81", data: [id: 81, name: "Child Of 80"], children: []]]],
+                [key: "DEV-99", data: [id: 99, name: "Unauthorized Motion"], children: []]]])
+        }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then: "capabilities survive, so nothing is reported as partial"
+        result.source == "/hub2/vrb/devices"
+        result.capabilitiesPartial == null
+        !result.containsKey("capabilitiesNote")
+
+        and: "every hub device is listed, the child device among them"
+        result.total == 3
+        result.devices*.id.sort() == ["80", "81", "99"]
+        result.devices.find { it.id == "81" }.label == "Child Of 80"
+        result.devices.find { it.id == "81" }.capabilities == ["Bulb", "Switch"]
+
+        and: "an UNAUTHORIZED device carries its real capabilities -- the point of the tier"
+        result.devices.find { it.id == "99" }.mcpAuthorized == false
+        result.devices.find { it.id == "99" }.capabilities == ["MotionSensor"]
+        result.devices.find { it.id == "80" }.mcpAuthorized == true
+    }
+
+    def "the vrb tier matches an UNAUTHORIZED device by capabilityFilter"() {
+        given: "nothing is authorized, so the capability-less last resort would match nothing"
+        settingsMap.selectedDevices = []
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params ->
+            JsonOutput.toJson([
+                [id: 98, label: "Porch", capabilities: ["Switch"]],
+                [id: 99, label: "Hall", capabilities: ["MotionSensor"]]
+            ])
+        }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [[key: "DEV-98", data: [id: 98, name: "Porch"], children: []],
+                                         [key: "DEV-99", data: [id: 99, name: "Hall"], children: []]]])
+        }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, "MotionSensor", null, null, null, "all")
+
+        then:
+        result.source == "/hub2/vrb/devices"
+        result.devices*.id == ["99"]
+        result.devices[0].mcpAuthorized == false
+        result.unfilteredTotal == 2
+        result.capabilitiesPartial == null
+    }
+
+    def "a vrb tier answering #desc still falls through to /hub2/devicesList"() {
+        given:
+        settingsMap.selectedDevices = [dev(id: 80)]
+        hubGet.register('/device/listWithCapabilities/json') { params -> throw new RuntimeException("status code: 404") }
+        hubGet.register('/hub2/vrb/devices') { params -> body }
+        hubGet.register('/hub2/devicesList') { params ->
+            JsonOutput.toJson([devices: [[key: "DEV-80", data: [id: 80, name: "Authorized Switch"], children: []]]])
+        }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, null, null, null, "all")
+
+        then: "the capability-less last resort answers, and says so"
+        result.source == "/hub2/devicesList"
+        result.capabilitiesPartial == true
+        result.capabilitiesNote?.contains("/hub2/vrb/devices")
+        result.devices*.id == ["80"]
+
+        where:
+        desc                    | body
+        "no body"               | null
+        "an empty body"         | ''
+        "an empty array"        | '[]'
+        "a JSON object"         | JsonOutput.toJson([success: false])
+        "an array of non-maps"  | JsonOutput.toJson(["nope"])
+        "an id-less array"      | JsonOutput.toJson([[label: "No id", capabilities: ["Switch"]]])
     }
 
     def "scope='all' keeps the capabilities endpoint as the primary source when it still answers"() {

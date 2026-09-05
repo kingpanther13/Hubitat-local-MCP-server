@@ -265,9 +265,15 @@ private Map _validateMcpDeviceScope(scopeValue) {
     // present (or no longer exists on the hub) is a harmless no-op, and forcing an unknown-id read
     // fetch there would block a legitimate cleanup of a since-deleted device.
     if (mode in ["replace", "add"] && !requestedIds.isEmpty()) {
-        // Same two-source fallback as hub_list_devices scope='all' (_fetchAllHubDeviceRecords).
-        // Only ids are needed here, which both endpoints carry, so the missing capabilities on the
-        // fallback source do not affect validation.
+        // The same inventory as hub_list_devices scope='all' (_fetchAllHubDeviceRecords): the
+        // /hub2/devicesList tree unioned with the /hub2/vrb/devices feed where the old
+        // capabilities endpoint is gone. Only ids matter here, and capabilities being partial
+        // does not affect validation -- but the ID SET can be partial too: when the tree could not
+        // be read (or answered empty against a populated feed) the inventory is the feed alone,
+        // which may omit devices the picker filters out. That case is flagged idsComplete:false,
+        // and an id it does not contain is "could not validate", never "unknown" -- rejecting off a
+        // knowingly incomplete set would send the operator to hub_list_devices(scope='all'), which
+        // returns the same incomplete set.
         // isError:true on the failure paths so handleToolsCall hoists them onto the JSON-RPC
         // envelope -- a failed validation that wrote nothing must reach the client AS an error,
         // not a quiet result.
@@ -281,6 +287,11 @@ private Map _validateMcpDeviceScope(scopeValue) {
         def hubDeviceIds = (inventory.records.findAll { it instanceof Map }.collect { it.id?.toString() }.findAll { it != null }) as Set
         def unknown = requestedIds.findAll { !hubDeviceIds.contains(it) }
         if (!unknown.isEmpty()) {
+            if (inventory.idsComplete == false) {
+                return [success: false, isError: true,
+                        error: "Could not validate device id(s) ${unknown.join(', ')}: the all-hub device inventory is incomplete, so they may be real devices it omitted. ${inventory.partialNote ?: ''}".toString().trim(),
+                        note: "Nothing was changed. Retry once /hub2/devicesList answers; hub_list_devices(scope='all') reports the same inventory and its capabilitiesNote says what is missing."]
+            }
             throw new IllegalArgumentException("Unknown device id(s): ${unknown.join(', ')}. Use hub_list_devices(scope='all') to see valid ids. Nothing was changed.")
         }
     }

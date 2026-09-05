@@ -10156,6 +10156,83 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         (result.repairHints as List)?.any { it.toString().contains("updateRule") }
     }
 
+    def "walkStep navigate retries ONCE when the hub answers an empty render, and reports the retry"() {
+        given: 'the first nav response is a page with nothing on it; the second is the real page'
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true, version: 7,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectActions", title: "A", install: false, error: null,
+                             sections: [[title: "", input: [], body: [[element: "href", name: "name", page: "doActPage"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.pauseExecution = { Long ms -> }
+        def navPosts = 0
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (!(body?.any { k, v -> k.toString().startsWith("_action_href_") })) return [status: 200, location: null, data: "{}"]
+            navPosts++
+            def page = navPosts == 1 ?
+                [name: "doActPage", sections: []] :
+                [name: "doActPage", sections: [[input: [[name: "actType.1", type: "enum"]]]]]
+            [status: 200, location: null, data: JsonOutput.toJson([app: [id: 100, version: 7], configPage: page])]
+        }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            walkStep: [page: "selectActions", operation: "navigate", navigate: [targetPage: "doActPage"]],
+            confirm: true
+        ])
+
+        then: 'the second render is what the caller sees, and the retry is on the record'
+        result.success == true
+        navPosts == 2
+        result.opResult?.navRetried == true
+        result.after?.inputs*.name == ["actType.1"]
+    }
+
+    def "walkStep navigate reports a page that is STILL empty after the retry as-is, with the empty-schema signal"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true, version: 7,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "selectActions", title: "A", install: false, error: null,
+                             sections: [[title: "", input: [], body: [[element: "href", name: "name", page: "doActPage"]]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.pauseExecution = { Long ms -> }
+        def navPosts = 0
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (!(body?.any { k, v -> k.toString().startsWith("_action_href_") })) return [status: 200, location: null, data: "{}"]
+            navPosts++
+            [status: 200, location: null, data: JsonOutput.toJson([app: [id: 100, version: 7], configPage: [name: "doActPage", sections: []]])]
+        }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            walkStep: [page: "selectActions", operation: "navigate", navigate: [targetPage: "doActPage"]],
+            confirm: true
+        ])
+
+        then: 'exactly one retry, never a loop, and the truth is reported'
+        navPosts == 2
+        result.opResult?.navRetried == true
+        result.after?.inputs == []
+        result.commitSignal == "schema_empty_no_commit_check_health"
+    }
+
     def "walkStep drive carries the page forward: a step omitting page inherits the navigate target"() {
         given:
         enableWrite()
