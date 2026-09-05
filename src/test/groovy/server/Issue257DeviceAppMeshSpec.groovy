@@ -25,7 +25,7 @@ class Issue257DeviceAppMeshSpec extends ToolSpecBase {
 
     private TestDevice dev(Map p) {
         new TestDevice(id: p.id, name: "D${p.id}", label: p.label ?: "Device ${p.id}", roomName: null,
-            capabilities: [], supportedAttributes: [], supportedCommands: [], attributeValues: [:])
+            capabilities: p.capabilities ?: [], supportedAttributes: [], supportedCommands: [], attributeValues: [:])
     }
 
     // ---- Item 1: hub_list_devices scope='all' ----------------------------
