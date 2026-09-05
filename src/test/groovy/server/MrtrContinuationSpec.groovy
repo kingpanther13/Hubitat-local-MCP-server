@@ -2354,7 +2354,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         freed.remove('mrtr-read-2')
         atomicStateMap.mrtrRequests = freed
         script._writeStateCacheInvalidate()
-        def writeRefused = mcpDriver.parseInner(modernCall('hub_call_rule', [ruleId: [401], action: 'stop']))
+        def writeRefused = mcpDriver.parseInner(modernCall('hub_call_rule', [ruleId: [401, 402], action: 'stop']))
 
         then: 'it is refused on the WRITE cap; free read slots do not count for it'
         writeRefused.status == 'request_state_capacity'
@@ -2478,7 +2478,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         !read.result.isError
 
         when: 'a write with no bestPracticeKey'
-        def write = modernCall('hub_call_rule', [ruleId: [401], action: 'stop'])
+        def write = modernCall('hub_call_rule', [ruleId: [401, 402], action: 'stop'])
 
         then:
         write.error.code == -32602
