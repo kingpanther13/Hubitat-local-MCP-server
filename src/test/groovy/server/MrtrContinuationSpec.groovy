@@ -2225,8 +2225,9 @@ class MrtrContinuationSpec extends ToolSpecBase {
         runInMillisCalls.size() == 1
         script._activeWrites()*.tool == ['hub_set_rule']
 
-        when: 'the worker lands the snapshot and the client continues'
+        when: 'the worker lands the snapshot; five seconds later the client continues'
         script.runLogsJsonFetch(runInMillisCalls[0][2].data as Map)
+        virtualNow.addAndGet(5000L)
         def leg2 = modernCall('hub_read_diagnostics', args, stateId)
         def inner = mcpDriver.parseInner(leg2)
 
@@ -2239,6 +2240,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         inner.scheduledJobs.total == 120
         inner.nextCursor == '100'
         inner.snapshot.background == true
+        inner.snapshot.ageMs == 5000
         inner.mrtr.continued == true
         inner.mrtr.rounds == 2
 
@@ -2246,13 +2248,54 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def replay = mcpDriver.parseInner(modernCall('hub_read_diagnostics', args, stateId))
         def rec = (atomicStateMap.mrtrRequests as Map)[stateId] as Map
 
-        then: 'the terminal record holds a marker, not the payload; the replay re-reads the cached snapshot; the record lives exactly as long as that snapshot (30 s)'
+        then: 'the terminal record holds a marker, not the payload; the replay re-reads the cached snapshot; the record expires with that snapshot, clocked from its fetch'
         replay.scheduledJobs.total == 120
         replay.nextCursor == '100'
         fetches.get() == 1
         rec.status == 'terminal'
         rec.terminalResult == [__slowReadReplay: true, tool: 'hub_get_jobs']
-        rec.expiresAt == (rec.finishedAt as Long) + 30000L
+        rec.expiresAt == (inner.snapshot.fetchedAt as Long) + 30000L
+        (rec.expiresAt as Long) < (rec.finishedAt as Long) + 30000L
+
+        when: 'the snapshot ages out and the same state is replayed'
+        virtualNow.set((inner.snapshot.fetchedAt as Long) + 30000L)
+        def late = modernCall('hub_read_diagnostics', args, stateId)
+
+        then: 'an expired state, never a refetch or an in_progress inside a completed envelope'
+        late.error.code == -32602
+        late.error.message.contains('expired requestState')
+        fetches.get() == 1
+    }
+
+    def "the sweep caps read and write records separately, so read traffic never evicts a write terminal"() {
+        given: 'sixteen write terminals still inside their replay window, and the read pool full'
+        settingsMap.enableRead = true
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        def fetches = new AtomicInteger(0)
+        registerLogsJson(fetches, 1)
+        def virtualNow = new AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> virtualNow.get() })
+        PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
+        def pool = [:]
+        int writeCap = script._mrtrMaxRecords() as Integer
+        int readCap = script._mrtrMaxReadRecords() as Integer
+        (1..writeCap).each {
+            pool["mrtr-wterm-${it}".toString()] = fakeRecord('hub_set_rule', 1234567890000L - 100000L - it) +
+                [status: 'terminal', terminalResult: [success: true], terminalIsError: false]
+        }
+        (1..readCap).each { pool["mrtr-read-${it}".toString()] = fakeRecord('hub_get_jobs', 1234567890000L - it) }
+        atomicStateMap.mrtrRequests = pool
+        script._writeStateCacheInvalidate()
+
+        when: 'a read arrives (its reserve runs the sweep) and is refused on the read cap'
+        def refused = mcpDriver.parseInner(modernCall('hub_get_performance_stats', [limit: 1]))
+        def after = atomicStateMap.mrtrRequests as Map
+
+        then: 'every write terminal survived; the combined count is over 16 by design'
+        refused.status == 'request_state_capacity'
+        after.keySet().count { it.startsWith('mrtr-wterm-') } == writeCap
+        after.size() == writeCap + readCap
     }
 
     def "a budgeted read whose snapshot is already cached answers in one round trip with no request state"() {

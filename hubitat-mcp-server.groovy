@@ -1599,8 +1599,13 @@ def handleToolsCall(msg) {
                         && _mrtrReadTools().contains(rec.leafTool?.toString())) {
                     Map replayArgs = _mrtrCopyMap(args as Map)
                     replayArgs.__reqT0 = reqT0
-                    return _renderToolResult(msg.id, toolName, reactiveToolName, args,
-                        executeTool(toolName, replayArgs), false)
+                    def replayed = executeTool(toolName, replayArgs)
+                    if (replayed instanceof Map && replayed.status == "in_progress") {
+                        // The snapshot is gone and a fresh fetch did not land in time; a
+                        // terminal record cannot continue, so the client starts a fresh call.
+                        throw new IllegalArgumentException("Invalid or expired requestState")
+                    }
+                    return _renderToolResult(msg.id, toolName, reactiveToolName, args, replayed, false)
                 }
                 return _renderToolResult(msg.id, toolName, reactiveToolName, args,
                     rec.terminalResult, rec.terminalIsError == true)
@@ -2409,15 +2414,19 @@ private List _mrtrSweepLocked() {
             cleanup << ([:] + (v as Map))
         }
     }
-    if (kept.size() > _mrtrMaxRecords()) {
-        def removable = kept.entrySet().findAll { it.value?.status != "active" }.sort { a, b ->
+    // Reads and writes are capped as separate pools here too, so read traffic can never
+    // push a write's replayable terminal out and a write backlog never evicts a read.
+    Set readSet = _mrtrReadTools()
+    [true, false].each { boolean readClass ->
+        int cap = readClass ? _mrtrMaxReadRecords() : _mrtrMaxRecords()
+        def sameClass = kept.entrySet().findAll { readSet.contains(it.value?.leafTool?.toString()) == readClass }
+        if (sameClass.size() <= cap) return
+        def removable = sameClass.findAll { it.value?.status != "active" }.sort { a, b ->
             long av = (a.value?.updatedAt ?: a.value?.startedAt ?: 0L) as Long
             long bv = (b.value?.updatedAt ?: b.value?.startedAt ?: 0L) as Long
             av <=> bv
         }
-        removable.take(Math.min(removable.size(), kept.size() - _mrtrMaxRecords())).each {
-            kept.remove(it.key)
-        }
+        removable.take(Math.min(removable.size(), sameClass.size() - cap)).each { kept.remove(it.key) }
     }
     if (kept.size() != stored.size()) _writeStateSetLocked("mrtrRequests", kept)
     _mrtrSweepWorkItemsLocked()
@@ -2937,6 +2946,13 @@ private boolean _mrtrStoreTerminal(String stateId, Map originalRec, Map claim, r
             rec.finishedAt = now()
             rec.updatedAt = rec.finishedAt
             rec.expiresAt = rec.finishedAt + (readLeaf ? _mrtrReadTerminalTtlMs() : _mrtrTerminalTtlMs())
+            // The replay re-reads the cached snapshot, so the record must not outlive it:
+            // clock the read TTL from when that snapshot was fetched, not from finishedAt.
+            def fetchedAt = (readLeaf && result instanceof Map && result.snapshot instanceof Map)
+                ? result.snapshot.fetchedAt : null
+            if (fetchedAt instanceof Number) {
+                rec.expiresAt = Math.min(rec.expiresAt as Long, (fetchedAt as Long) + _logsJsonSnapshotTtlMs())
+            }
             _mrtrPutLocked(stateId, rec)
             // Record proof only AFTER the durable terminal write returned. If a
             // subsequent app disable/enable exposes the older claimed-active

@@ -4235,8 +4235,10 @@ def check_logs_json_snapshot_guard() -> list[dict]:
                          "message": "Could not parse _mrtrReadTools() / _budgetAwareTools() set literals -- has their shape changed?"})
         return findings
     dispatch: dict[str, set[str]] = {}
-    for tool, fn in re.findall(r'case "(hub_[a-z0-9_]+)":\s*return\s+([A-Za-z_][A-Za-z0-9_]*)\(', server_src):
-        dispatch.setdefault(fn, set()).add(tool)
+    for f in sources:
+        for tool, fn in re.findall(r'case "(hub_[a-z0-9_]+)":\s*return\s+([A-Za-z_][A-Za-z0-9_]*)\(',
+                                   f.read_text(encoding="utf-8")):
+            dispatch.setdefault(fn, set()).add(tool)
     for f in sources:
         src = f.read_text(encoding="utf-8")
         rel = str(f.relative_to(REPO_ROOT))

@@ -10238,8 +10238,10 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
                 "tool": "hub_get_jobs",
                 "args": {"cursor": cursor},
             })
-            assert "runningJobs" in page and "hubActions" in page, \
-                f"page {pages}: runningJobs / hubActions must stay in full on every page"
+            assert page.get("runningJobs") == first.get("runningJobs"), \
+                f"page {pages}: runningJobs must match page 1 in full"
+            assert page.get("hubActions") == first.get("hubActions"), \
+                f"page {pages}: hubActions must match page 1 in full"
             seen.extend(page["scheduledJobs"]["jobs"])
             cursor = page.get("nextCursor")
         assert len(seen) == sj["total"], \
@@ -10266,7 +10268,11 @@ def driverLegMarker() { return "DRIVER-LEG-MARKER-V1" }
         assert isinstance(cold, dict), f"hub_get_jobs returned {type(cold)}"
         assert "scheduledJobs" in cold, f"cold read returned no jobs: {cold}"
         prov = cold.get("snapshot") or {}
-        assert prov.get("background") is True, f"cold read did not use the background fetch: {prov}"
+        # background is the worker path; it is taken exactly when the transport carries a
+        # budget (relayBudgetMs over the relay), which the provenance reports as budgeted.
+        assert "budgeted" in prov and "background" in prov, f"cold read carries no provenance: {prov}"
+        assert prov["background"] == prov["budgeted"], \
+            f"cold read fetch path does not match the transport budget: {prov}"
         assert prov.get("ageMs", 10**9) < 30000, f"cold read served a stale snapshot: {prov}"
         warm = self.client.call_tool("hub_read_diagnostics", {"tool": "hub_get_performance_stats", "args": {"limit": 1}})
         assert isinstance(warm, dict) and "uptime" in warm, f"warm read after cold fetch: {warm}"

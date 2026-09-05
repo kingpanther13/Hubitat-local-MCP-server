@@ -1272,6 +1272,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         fetches.get() == 1
         jobs.scheduledJobs.count == 2
         jobs.snapshot.background == false
+        jobs.snapshot.budgeted == false
         jobs.snapshot.ageMs == 0L
         stats.snapshot.fetchedAt == jobs.snapshot.fetchedAt
         stats.uptime == '1d'
@@ -1330,6 +1331,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         fetches.get() == 1
         served.scheduledJobs.count == 3
         served.snapshot.background == true
+        served.snapshot.budgeted == true
         served.uptime == '1d'
         runInMillisCalls.size() == 1
     }

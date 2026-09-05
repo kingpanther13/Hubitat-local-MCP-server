@@ -840,7 +840,8 @@ def _logsJsonFetchAndPublish(Long fetchId = null, boolean background = false) {
 // it is, and whether the fetch ran in the background worker. Makes cache reuse observable.
 private Map _logsJsonProvenance(Map snap) {
     return [fetchedAt: snap.at, ageMs: Math.max(0L, now() - (snap.at as Long)),
-            fetchMs: snap.fetchMs, background: snap.background == true]
+            fetchMs: snap.fetchMs, background: snap.background == true,
+            budgeted: _logsJsonUsesBackgroundFetch()]
 }
 
 private Map _logsJsonFreshSnapshot() {
