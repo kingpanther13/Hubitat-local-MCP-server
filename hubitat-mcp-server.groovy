@@ -6103,6 +6103,7 @@ private _hubRequest(String method, String path, Map opts = [:]) {
     }
     long _hubRtT0 = now()
     String _hubRtOutcome = "ok"
+    boolean _hubRtLogged = false
     try {
         if (method == 'GET') httpGet(params, reader)
         else httpPost(params, reader)
@@ -6123,6 +6124,11 @@ private _hubRequest(String method, String path, Map opts = [:]) {
             }
         }
         if (shouldRetryWithFreshCookie(e, opts.isRetry)) {
+            // Log this attempt on its own before recursing, so the outer finally does not
+            // fold the retry's duration into the failed attempt's line.
+            _hubRtLogged = true
+            try { _hubRtLog(method, path, now() - _hubRtT0, "${_hubRtOutcome}, retrying".toString()) }
+            catch (Exception logErr) { log.warn "[hubrt] diagnostic logging failed: ${logErr.message}" }
             mcpLog("debug", "hub-admin", "Retrying with fresh cookie after auth failure on ${method} ${_redactSecretsInPath(path)}")
             return _hubRequest(method, path, opts + [isRetry: true])
         }
@@ -6130,8 +6136,10 @@ private _hubRequest(String method, String path, Map opts = [:]) {
     } finally {
         // Diagnostic only: a failure inside the logger must never replace the real outcome
         // (or the real exception) of the round-trip it describes.
-        try { _hubRtLog(method, path, now() - _hubRtT0, _hubRtOutcome) }
-        catch (Exception logErr) { log.warn "[hubrt] diagnostic logging failed: ${logErr.message}" }
+        if (!_hubRtLogged) {
+            try { _hubRtLog(method, path, now() - _hubRtT0, _hubRtOutcome) }
+            catch (Exception logErr) { log.warn "[hubrt] diagnostic logging failed: ${logErr.message}" }
+        }
     }
     // Re-throw a mid-stream read failure rather than returning a Reader/stream toString() junk
     // string that downstream code would treat as a real body (matches the hardened deploy path).
